@@ -1468,13 +1468,9 @@
         "copy_path_2": "パスをコピー：{{path}}",
         "download": "ダウンロード",
         "more_options": "その他のオプション",
-        "open_in_file_explorer": "エクスプローラーで開く",
-        "open_in_finder": "Finder で開く",
-        "path_copied_to_clipboard_no_desktop_available": "パスをクリップボードにコピーしました（デスクトップ環境がありません）",
         "reload": "再読み込み",
         "select_a_file_to_view": "表示するファイルを選択",
         "sensitive_file_avoid_sharing_your_screen_while_v": "機密ファイル — 認証情報を表示しながら画面を共有しないでください",
-        "show_in_file_manager": "ファイルマネージャーに表示",
         "tip_ctrl_cmd_f_to_search": "ヒント: Ctrl/Cmd+Fで検索",
         "truncated": "· 省略"
       },
@@ -5505,7 +5501,6 @@
       "open_in_file_explorer": "エクスプローラーで開く",
       "open_in_finder": "Finder で開く",
       "open_with_default_app": "デフォルトアプリで開く",
-      "path_copied_to_clipboard_no_desktop_available": "パスをクリップボードにコピーしました（デスクトップ環境がありません）",
       "preview": "プレビュー",
       "previous_match": "前の一致",
       "previous_shift_enter": "前へ (Shift+Enter)",
@@ -5550,7 +5545,9 @@
       "generating_diagram": "ダイアグラムを生成中…",
       "reset_zoom": "ズームをリセット (0)",
       "zoom_in": "ズームイン (+)",
-      "zoom_out": "ズームアウト (-)"
+      "zoom_out": "ズームアウト (-)",
+      "click_to_browse_shift_click_to_copy_path": "クリックして参照 / Shift+クリックでパスをコピー",
+      "click_to_open_shift_click_to_copy_path": "クリックして開く / Shift+クリックでパスをコピー"
     },
     "markdownToc": {
       "contents": "目次",
@@ -6006,13 +6003,10 @@
       "include_recent_logs": "最近のログを含める",
       "note_placeholder": "例：更新後、すべてのメッセージが「process exited (rc=None)」で失敗します。",
       "open_github_issue": "GitHub イシューを開く",
-      "open_in_file_explorer": "エクスプローラーで開く",
-      "open_in_finder": "Finder で開く",
       "prefill_hint": "イシューを開くと詳細が事前入力されます — その後、zip をドラッグしてください。",
       "redaction_notice": "Bearer トークン、セッションクッキー、および AWS キーは、zip が作成される前に自動的に削除されます。",
       "report_a_problem": "問題を報告",
       "saved_to": "保存先",
-      "show_in_file_manager": "ファイルマネージャーに表示",
       "what_happened": "何が起こりましたか？"
     },
     "resizeHandle": {
@@ -6137,11 +6131,6 @@
       "split_right": "右に分割",
       "split_right_d": "右に分割 (⌘D)",
       "terminal_pane_coming_in_phase_2": "ターミナルペイン — フェーズ 2 で提供予定"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "移動先",
-      "undo": "取り消し",
-      "removed_from_folder": "フォルダーから移動"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "アンケートを閉じる",
@@ -6711,6 +6700,18 @@
       "billing_notice": "これは有料の AWS サービスです。確認するまでリクエストは送信されません。",
       "confirm_button": "確認して有効化",
       "withdraw": "確認を取り消す"
+    },
+    "filePathMenu": {
+      "copy_failed": "パスをコピーできませんでした",
+      "copy_path": "パスをコピー",
+      "path_copied": "パスをコピーしました",
+      "reveal_blocked": "このパスは保護されているため開けません。",
+      "reveal_failed": "Kiro Crew を実行しているマシンでこのパスを開けませんでした。"
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "移動先",
+      "undo": "取り消し",
+      "removed_from_folder": "フォルダーから移動"
     }
   },
   "hooks": {
@@ -7724,14 +7725,11 @@
         "matches": "一致",
         "no_changes": "作業ツリーに変更はありません",
         "no_files_match": "一致するファイルがありません",
-        "open_in_file_explorer": "エクスプローラーで開く",
-        "open_in_finder": "Finder で開く",
         "parent_folder": "親フォルダー",
         "refresh": "更新",
         "search_failed": "検索に失敗しました",
         "search_files": "ファイルを検索",
         "searching": "検索中…",
-        "show_in_file_manager": "ファイルマネージャーに表示",
         "showing_first_matches": "最初の {{shown}} 件の一致を表示しています",
         "unable_to_list_folder": "フォルダーを一覧表示できません"
       },
@@ -8077,7 +8075,6 @@
       "filesHome": {
         "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
         "refresh": "更新",
-        "reveal_in_finder": "ファイルマネージャーで表示",
         "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
         "title": "ファイル",
         "tree_error": "ファイルツリーを読み込めませんでした"

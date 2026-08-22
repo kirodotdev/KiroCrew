@@ -15,7 +15,30 @@ vi.mock('../apps/pptx-maker/api', async () => {
 })
 
 const revealPath = vi.fn()
-vi.mock('../api/client', () => ({ api: { revealPath } }))
+// DeckViewer's reveal now routes through the shared `revealOrOpen` helper, which
+// branches its failure wording on `err instanceof ApiError`. The mock must export
+// ApiError so that `instanceof` check resolves (an undefined export throws in the
+// mocker); a plain-Error rejection below is correctly treated as the generic
+// non-policy failure.
+class ApiError extends Error {
+  status: number
+  authRequired: boolean
+  constructor(message: string, status = 500, authRequired = false) {
+    super(message)
+    this.status = status
+    this.authRequired = authRequired
+  }
+}
+vi.mock('../api/client', () => ({ api: { revealPath }, ApiError }))
+
+// The "Reveal folder" action is gated on branding.directLocal: a remote session
+// cannot drive the operator's file manager, so the button is hidden there.
+// Default to a local session so the reveal cases below hold; a dedicated case
+// flips it to pin the hidden (remote) state.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
 
 // The three leaf renderers are stubbed: this file's job is tab routing and the
 // follow rule, and each leaf (markdown, the sandboxed board frame, the SVG slide)
@@ -73,6 +96,7 @@ function renderViewer(deckId = 'zzq-deck') {
 beforeEach(() => {
   vi.clearAllMocks()
   revealPath.mockResolvedValue(undefined)
+  brandingEnv.directLocal = true
 })
 
 describe('DeckViewer — shell states', () => {
@@ -182,7 +206,9 @@ describe('DeckViewer — header actions', () => {
     deck.mockResolvedValue(detail({ dirPath: '/zzq/decks/one' }))
     renderViewer()
     await userEvent.click(await screen.findByText('Reveal folder'))
-    expect(revealPath).toHaveBeenCalledWith('/zzq/decks/one')
+    // Routed through the shared `revealOrOpen(path, 'reveal')` helper, so the
+    // transport call carries the explicit action argument.
+    expect(revealPath).toHaveBeenCalledWith('/zzq/decks/one', 'reveal')
   })
 
   it('swallows a failed reveal rather than throwing into the render', async () => {
@@ -192,6 +218,17 @@ describe('DeckViewer — header actions', () => {
     await userEvent.click(await screen.findByText('Reveal folder'))
     await waitFor(() => expect(revealPath).toHaveBeenCalled())
     expect(screen.getByText('Reveal folder')).toBeInTheDocument()
+  })
+
+  it('hides the reveal action on a remote session even with a deck folder', async () => {
+    // A remote session cannot drive the host's file manager, so the affordance
+    // is gated out rather than firing a reveal the backend degrades to a copy.
+    brandingEnv.directLocal = false
+    deck.mockResolvedValue(detail({ dirPath: '/zzq/decks/one' }))
+    renderViewer()
+    await screen.findByText('Slides')
+    expect(screen.queryByText('Reveal folder')).toBeNull()
+    expect(revealPath).not.toHaveBeenCalled()
   })
 
   it('offers the download only once a pptx exists, named after the deck', async () => {

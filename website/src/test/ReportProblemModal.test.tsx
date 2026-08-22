@@ -1,13 +1,15 @@
 /**
- * Report a Problem — the diagnostics bundle's three deliveries.
+ * Report a Problem — the diagnostics bundle's deliveries.
  *
- * The reveal delivery had no test at all, which is how it survived a sweep of
- * every other reveal surface still naming Finder unconditionally: the bundle is
- * written on the GATEWAY and `/api/reveal` shells out there, so a Windows or
- * Linux operator was told to look in an application their host does not have.
+ * The success view offers two deliveries — download the zip, or open a
+ * pre-filled GitHub issue — plus the saved path shown above them. It carries no
+ * reveal button: three peer buttons in one action row exceed the two-button cap,
+ * and `/api/reveal` shells out on the GATEWAY, so a reveal from a browser that is
+ * not on the gateway host drives a file manager the user is not looking at. The
+ * saved path is shown as text so a local operator can still find the bundle.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, act } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import ReportProblemModal from '../components/ReportProblemModal'
@@ -23,12 +25,9 @@ const BUNDLE = {
 }
 
 /** Render, collect a bundle, and land on the success state. */
-async function collect(platform?: string) {
+async function collect() {
   vi.spyOn(api, 'collectDiagnostics').mockResolvedValue(BUNDLE as never)
   const view = renderWithProviders(<ReportProblemModal open onClose={vi.fn()} />)
-  if (platform) {
-    act(() => { view.queryClient.setQueryData(['kiro-prerequisite'], { platform }) })
-  }
   await userEvent.click(screen.getByRole('button', { name: 'Create report' }))
   await waitFor(() => expect(screen.getByText('Saved to')).toBeInTheDocument())
   return view
@@ -37,23 +36,17 @@ async function collect(platform?: string) {
 describe('ReportProblemModal deliveries', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
-  it('hands the zip to the desktop through the reveal endpoint', async () => {
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
-    await collect('darwin')
-    await userEvent.click(screen.getByRole('button', { name: 'Open in Finder' }))
-    expect(reveal).toHaveBeenCalledWith(BUNDLE.zip_path)
+  it('shows the saved bundle path so a local operator can find it on disk', async () => {
+    await collect()
+    expect(screen.getByText(BUNDLE.zip_path)).toBeInTheDocument()
   })
 
-  it.each([
-    ['darwin', 'Open in Finder'],
-    ['win32', 'Open in File Explorer'],
-    // The sentinel a non-owner dashboard user (and a probe that could not run)
-    // receives; it must never be read as a platform we can name.
-    ['gateway', 'Show in file manager'],
-    ['linux', 'Show in file manager'],
-  ])('names the reveal delivery for a %s gateway host', async (platform, label) => {
-    await collect(platform)
-    expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
-    expect(screen.queryByText('Show in Finder')).not.toBeInTheDocument()
+  it('offers download and the GitHub issue, and never a reveal button', async () => {
+    await collect()
+    expect(screen.getByRole('button', { name: 'Download zip' })).toBeInTheDocument()
+    // No reveal delivery on any surface: the row keeps two buttons and a reveal
+    // would target the gateway host, not the browser's machine.
+    expect(screen.queryByRole('button', { name: /finder|file explorer|file manager/i }))
+      .not.toBeInTheDocument()
   })
 })

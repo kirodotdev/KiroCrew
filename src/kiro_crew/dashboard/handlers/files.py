@@ -30,6 +30,7 @@ from aiohttp.multipart import BodyPartReader
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.origin import is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
 from kiro_crew.messaging.link import is_channel_session_key
@@ -93,6 +94,18 @@ async def api_reveal_path(request: web.Request) -> web.Response:
             outcome="denied", error="sensitive_path",
             resources=path, metadata={"action": action})
         return web.json_response({"error": "access denied"}, status=403)
+    # Gate: only spawn native openers from direct-local requests. Remote/tunneled
+    # callers get the copy-to-clipboard fallback — spawning Finder on a machine
+    # the user is not looking at is surprising and useless.
+    if not is_direct_local_request(request):
+        _sel().log_tool_invocation(
+            session_key="api", source="api", tool_name="reveal_path",
+            outcome="denied", error="remote_request",
+            resources=path, metadata={"action": action})
+        # Degrade to a clipboard copy: `copy` is the path to write. The remote
+        # cause is recorded in the SEL audit above (error="remote_request"); the
+        # response body carries no path, host, or exception detail beyond `copy`.
+        return web.json_response({"ok": True, "copy": path})
     # Every ALLOWED outcome leaves through the single audited return below —
     # including the clipboard answer, which is a granted decision whose host
     # simply had no file manager. An early return here would drop that decision
@@ -114,7 +127,11 @@ async def api_reveal_path(request: web.Request) -> web.Response:
     _sel().log_tool_invocation(
         session_key="api", source="api", tool_name="reveal_path",
         outcome="success", resources=path, metadata={"action": action})
-    return web.json_response({"ok": True, "copy": path} if copied else {"ok": True})
+    # A local grant whose host had no working file manager degrades to the
+    # clipboard; `copy` is the path to write.
+    if copied:
+        return web.json_response({"ok": True, "copy": path})
+    return web.json_response({"ok": True})
 
 
 async def api_outbox_notify(request: web.Request) -> web.Response:

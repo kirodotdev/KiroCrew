@@ -13,7 +13,8 @@ import { ExternalLink, FolderOpen, Presentation } from 'lucide-react'
 import { EmptyState } from '../../components/ui'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import SegmentedControl from '../../components/SegmentedControl'
-import { api } from '../../api/client'
+import { revealOrOpen } from '../../components/FilePathMenu'
+import { useBranding } from '../../hooks/useBranding'
 import { i18nT } from '../../i18n/t'
 import {
   fetchArtifactJson,
@@ -117,6 +118,11 @@ function SlidesTab({ detail, defs }: { detail: DeckDetail; defs: ComposeDefs | n
 export default function DeckViewer({ deckId }: { deckId: string }) {
   const [tab, setTab] = useState<DeckTab>('slides')
   const seenRef = useRef<Record<string, number> | null>(null)
+  // Reveal shells out on the gateway host, so it is only useful when the browser
+  // is on that same machine. On a remote session the backend degrades reveal to a
+  // clipboard copy (and this button already swallowed every failure silently), so
+  // hide it there to match every other gated file-location surface.
+  const isLocal = useBranding().directLocal
 
   const detailQuery = useQuery({
     queryKey: ['pptx-maker', 'deck', deckId],
@@ -180,12 +186,10 @@ export default function DeckViewer({ deckId }: { deckId: string }) {
           collapse={false}
         />
         <div className="flex-1" />
-        {detail.dirPath && (
+        {isLocal && detail.dirPath && (
           <button
             type="button"
-            onClick={() => {
-              void api.revealPath(detail.dirPath).catch(() => undefined)
-            }}
+            onClick={() => { void revealOrOpen(detail.dirPath, 'reveal') }}
             className="inline-flex items-center gap-1 text-[12px] text-muted px-2 py-1 rounded hover:bg-bg-elevated hover:text-text transition-colors bg-transparent border-none cursor-pointer"
           >
             <FolderOpen className="lucide-inline" />

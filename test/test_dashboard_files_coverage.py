@@ -753,6 +753,8 @@ class TestRevealPath:
                     "/api/reveal", json={"path": str(f), "action": "open"}
                 )
                 assert resp.status == 200
+                # Windows has no launch-by-association verb, so the local grant
+                # degrades to the clipboard: `copy` carries the path to write.
                 assert await resp.json() == {"ok": True, "copy": str(f)}
 
     @pytest.mark.asyncio
@@ -786,6 +788,8 @@ class TestRevealPath:
                         "/api/reveal", json={"path": str(f), "action": action}
                     )
                     assert resp.status == 200, f"{platform}/{action} should not 500"
+                    # A local grant whose host had no working file manager
+                    # degrades to the clipboard: `copy` carries the path to write.
                     assert await resp.json() == {"ok": True, "copy": str(f)}
 
     @pytest.mark.asyncio

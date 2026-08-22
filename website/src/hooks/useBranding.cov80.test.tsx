@@ -7,6 +7,7 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const branding = vi.hoisted(() => vi.fn())
 vi.mock('../api/client', () => ({ api: { branding } }))
@@ -19,10 +20,16 @@ function Consumer() {
 }
 
 function renderProvider() {
+  // In production BrandingProvider runs on the app-wide QueryClient; tests
+  // supply their own (see useBrandingDirectLocal.test.tsx). retry: false so the
+  // rejection case settles at once rather than waiting out the retry ladder.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <BrandingProvider>
-      <Consumer />
-    </BrandingProvider>,
+    <QueryClientProvider client={client}>
+      <BrandingProvider>
+        <Consumer />
+      </BrandingProvider>
+    </QueryClientProvider>,
   )
 }
 

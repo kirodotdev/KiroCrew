@@ -1523,13 +1523,9 @@
         "copy_path_2": "Копировать путь: {{path}}",
         "download": "Скачать",
         "more_options": "Дополнительные параметры",
-        "open_in_file_explorer": "Открыть в проводнике",
-        "open_in_finder": "Открыть в Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Путь скопирован в буфер обмена (рабочий стол недоступен)",
         "reload": "Перезагрузить",
         "select_a_file_to_view": "Выберите файл для просмотра",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Конфиденциальный файл — не демонстрируйте экран при просмотре учётных данных",
-        "show_in_file_manager": "Показать в файловом менеджере",
         "tip_ctrl_cmd_f_to_search": "Совет: Ctrl/Cmd+F для поиска",
         "truncated": "· усечено"
       },
@@ -5751,7 +5747,6 @@
       "open_in_file_explorer": "Открыть в проводнике",
       "open_in_finder": "Открыть в Finder",
       "open_with_default_app": "Открыть в приложении по умолчанию",
-      "path_copied_to_clipboard_no_desktop_available": "Путь скопирован в буфер обмена (рабочий стол недоступен)",
       "preview": "Просмотр",
       "previous_match": "Предыдущее совпадение",
       "previous_shift_enter": "Назад (Shift+Enter)",
@@ -5796,7 +5791,9 @@
       "generating_diagram": "создание диаграммы…",
       "reset_zoom": "Сбросить масштаб (0)",
       "zoom_in": "Увеличить (+)",
-      "zoom_out": "Уменьшить (-)"
+      "zoom_out": "Уменьшить (-)",
+      "click_to_browse_shift_click_to_copy_path": "Щелчок — просмотреть / Shift+щелчок — скопировать путь",
+      "click_to_open_shift_click_to_copy_path": "Щелчок — открыть / Shift+щелчок — скопировать путь"
     },
     "markdownToc": {
       "contents": "Содержание",
@@ -6270,13 +6267,10 @@
       "include_recent_logs": "Включить недавние логи",
       "note_placeholder": "например: После обновления все сообщения падают с «process exited (rc=None)».",
       "open_github_issue": "Открыть issue на GitHub",
-      "open_in_file_explorer": "Открыть в проводнике",
-      "open_in_finder": "Открыть в Finder",
       "prefill_hint": "При открытии issue детали подставятся автоматически — затем перетащите туда zip.",
       "redaction_notice": "Токены Bearer, cookie сессии и ключи AWS удаляются автоматически до создания zip.",
       "report_a_problem": "Сообщить о проблеме",
       "saved_to": "Сохранено в",
-      "show_in_file_manager": "Показать в файловом менеджере",
       "what_happened": "Что произошло?"
     },
     "resizeHandle": {
@@ -6401,11 +6395,6 @@
       "split_right": "Разделить вправо",
       "split_right_d": "Разделить вправо (⌘D)",
       "terminal_pane_coming_in_phase_2": "Панель терминала — появится на этапе 2"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "Перемещено в",
-      "undo": "Отменить",
-      "removed_from_folder": "Убрано из папки"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "Закрыть опрос",
@@ -6978,6 +6967,18 @@
       "billing_notice": "Это платный сервис AWS. До подтверждения запросы не отправляются.",
       "confirm_button": "Подтвердить и включить",
       "withdraw": "Отозвать подтверждение"
+    },
+    "filePathMenu": {
+      "copy_failed": "Не удалось скопировать путь",
+      "copy_path": "Копировать путь",
+      "path_copied": "Путь скопирован",
+      "reveal_blocked": "Этот путь защищён, и его нельзя открыть.",
+      "reveal_failed": "Не удалось открыть этот путь на компьютере, где запущен Kiro Crew."
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "Перемещено в",
+      "undo": "Отменить",
+      "removed_from_folder": "Убрано из папки"
     }
   },
   "hooks": {
@@ -8030,14 +8031,11 @@
         "matches": "Совпадения",
         "no_changes": "Рабочее дерево без изменений",
         "no_files_match": "Нет подходящих файлов",
-        "open_in_file_explorer": "Открыть в проводнике",
-        "open_in_finder": "Открыть в Finder",
         "parent_folder": "Родительская папка",
         "refresh": "Обновить",
         "search_failed": "Поиск не удался",
         "search_files": "Поиск файлов",
         "searching": "Поиск…",
-        "show_in_file_manager": "Показать в файловом менеджере",
         "showing_first_matches": "Показаны первые {{shown}} совпадений",
         "unable_to_list_folder": "Не удалось получить список папки"
       },
@@ -8389,7 +8387,6 @@
       "filesHome": {
         "no_project_dir": "Для этого чата не задан каталог проекта",
         "refresh": "Обновить",
-        "reveal_in_finder": "Показать в файловом менеджере",
         "select_file_hint": "Выберите файл в дереве, чтобы открыть его в новой вкладке",
         "title": "Файлы",
         "tree_error": "Не удалось загрузить дерево файлов"

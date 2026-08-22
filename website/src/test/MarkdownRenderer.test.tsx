@@ -5,6 +5,15 @@ import MarkdownRenderer, { Lightbox, dispatchLightbox, isPathCandidate, splitLin
 import { __resetPathKindCache } from '../hooks/usePathKind'
 import { api } from '../api/client'
 
+// The chip's reveal hint is now gated on branding.directLocal: a remote session
+// degrades shift+click to a clipboard copy, so revealHintFor only promises
+// Finder/Explorer/file-manager on a direct-local gateway. The platform-aware
+// hint assertions below therefore mount against a local session; the remote
+// (directLocal:false) copy wording is pinned in MarkdownRenderer.contextmenu.test.tsx.
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: true }),
+}))
+
 type LightboxDetail = { images: { src: string; alt: string }[]; index: number }
 
 describe('MarkdownRenderer list indentation', () => {
@@ -575,7 +584,7 @@ describe('MarkdownRenderer path chips — activation routing', () => {
 
   it('falls back to reveal-in-OS for a directory when no folder handler is wired', async () => {
     stubKind('dir', false)
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({ ok: true } as never)
     const { container } = render(<MarkdownRenderer content={'`/Users/me/ws`'} onFileOpen={vi.fn()} />)
     const chip = await waitFor(() => {
       const c = container.querySelector('code[data-path-kind="dir"]')
@@ -583,13 +592,15 @@ describe('MarkdownRenderer path chips — activation routing', () => {
       return c!
     })
     fireEvent.click(chip)
-    expect(reveal).toHaveBeenCalledWith('/Users/me/ws')
+    // Now routed through the shared `revealOrOpen` helper, which passes the
+    // explicit 'reveal' action to the transport call.
+    expect(reveal).toHaveBeenCalledWith('/Users/me/ws', 'reveal')
   })
 
   it('shift-click reveals instead of opening', async () => {
     stubKind('file', true)
     const onFileOpen = vi.fn()
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({ ok: true } as never)
     const { container } = render(
       <MarkdownRenderer content={'`/home/user/a.md`'} onFileOpen={onFileOpen} />,
     )
@@ -599,7 +610,7 @@ describe('MarkdownRenderer path chips — activation routing', () => {
       return c!
     })
     fireEvent.click(chip, { shiftKey: true })
-    expect(reveal).toHaveBeenCalledWith('/home/user/a.md')
+    expect(reveal).toHaveBeenCalledWith('/home/user/a.md', 'reveal')
     expect(onFileOpen).not.toHaveBeenCalled()
   })
 
@@ -865,14 +876,15 @@ describe('MarkdownRenderer path chips — file:line references', () => {
 
   it('shift-click still reveals the file itself, without the line', async () => {
     stubPaths(['/Users/me/src/_dispatch.py'])
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({ ok: true } as never)
     const onFileOpen = vi.fn()
     const { container } = render(
       <MarkdownRenderer content={'`/Users/me/src/_dispatch.py:447`'} onFileOpen={onFileOpen} />,
     )
     fireEvent.click(await chipOf(container), { shiftKey: true })
-    // Finder/Explorer selects a file; it has no notion of a line.
-    expect(reveal).toHaveBeenCalledWith('/Users/me/src/_dispatch.py')
+    // Finder/Explorer selects a file; it has no notion of a line. Routed through
+    // the shared helper, which passes the explicit 'reveal' action.
+    expect(reveal).toHaveBeenCalledWith('/Users/me/src/_dispatch.py', 'reveal')
     expect(onFileOpen).not.toHaveBeenCalled()
   })
 
@@ -904,7 +916,7 @@ describe('MarkdownRenderer path chips — forgery resistance', () => {
       Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
     ) as unknown as typeof fetch
     const onFileOpen = vi.fn()
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({ ok: true } as never)
     const { container } = render(
       <MarkdownRenderer
         content={'<code data-path-kind="file" data-path="/etc/hosts">totally harmless</code>'}

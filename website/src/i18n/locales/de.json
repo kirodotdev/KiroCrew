@@ -1497,13 +1497,9 @@
         "copy_path_2": "Pfad kopieren: {{path}}",
         "download": "Herunterladen",
         "more_options": "Weitere Optionen",
-        "open_in_file_explorer": "Im Explorer öffnen",
-        "open_in_finder": "Im Finder öffnen",
-        "path_copied_to_clipboard_no_desktop_available": "Pfad in die Zwischenablage kopiert (kein Desktop verfügbar)",
         "reload": "Neu laden",
         "select_a_file_to_view": "Wählen Sie eine Datei zur Anzeige",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Sensible Datei — vermeiden Sie das Teilen Ihres Bildschirms, während Sie Anmeldedaten ansehen",
-        "show_in_file_manager": "Im Dateimanager anzeigen",
         "tip_ctrl_cmd_f_to_search": "Tipp: Strg/Cmd+F zum Suchen",
         "truncated": "· gekürzt"
       },
@@ -5587,7 +5583,6 @@
       "open_in_file_explorer": "Im Explorer öffnen",
       "open_in_finder": "Im Finder öffnen",
       "open_with_default_app": "Mit Standardanwendung öffnen",
-      "path_copied_to_clipboard_no_desktop_available": "Pfad in die Zwischenablage kopiert (kein Desktop verfügbar)",
       "preview": "Vorschau",
       "previous_match": "Vorheriger Treffer",
       "previous_shift_enter": "Zurück (Shift+Enter)",
@@ -5632,7 +5627,9 @@
       "generating_diagram": "Diagramm wird erstellt…",
       "reset_zoom": "Zoom zurücksetzen (0)",
       "zoom_in": "Vergrößern (+)",
-      "zoom_out": "Verkleinern (-)"
+      "zoom_out": "Verkleinern (-)",
+      "click_to_browse_shift_click_to_copy_path": "Klicken zum Durchsuchen / Shift+Klick zum Kopieren des Pfads",
+      "click_to_open_shift_click_to_copy_path": "Klicken zum Öffnen / Shift+Klick zum Kopieren des Pfads"
     },
     "markdownToc": {
       "contents": "Inhalt",
@@ -6094,13 +6091,10 @@
       "include_recent_logs": "Aktuelle Protokolle einbeziehen",
       "note_placeholder": "z. B. Nach dem Update schlägt jede Nachricht mit „process exited (rc=None)“ fehl.",
       "open_github_issue": "GitHub-Issue öffnen",
-      "open_in_file_explorer": "Im Explorer öffnen",
-      "open_in_finder": "Im Finder öffnen",
       "prefill_hint": "Beim Öffnen des Issues werden die Details vorbefüllt — ziehen Sie dann die ZIP-Datei hinein.",
       "redaction_notice": "Bearer-Tokens, Sitzungs-Cookies und AWS-Schlüssel werden automatisch entfernt, bevor die ZIP-Datei erstellt wird.",
       "report_a_problem": "Problem melden",
       "saved_to": "Gespeichert unter",
-      "show_in_file_manager": "Im Dateimanager anzeigen",
       "what_happened": "Was ist passiert?"
     },
     "resizeHandle": {
@@ -6225,11 +6219,6 @@
       "split_right": "Nach rechts teilen",
       "split_right_d": "Nach rechts teilen (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal-Bereich — kommt in Phase 2"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "Verschoben nach",
-      "undo": "Rückgängig",
-      "removed_from_folder": "Aus Ordner entfernt"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "Umfrage schließen",
@@ -6800,6 +6789,18 @@
       "billing_notice": "Dies ist ein kostenpflichtiger AWS-Dienst. Bis zur Bestaetigung wird keine Anfrage gesendet.",
       "confirm_button": "Bestaetigen und aktivieren",
       "withdraw": "Bestaetigung zuruecknehmen"
+    },
+    "filePathMenu": {
+      "copy_failed": "Pfad konnte nicht kopiert werden",
+      "copy_path": "Pfad kopieren",
+      "path_copied": "Pfad kopiert",
+      "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
+      "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem Kiro Crew läuft, nicht geöffnet werden."
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "Verschoben nach",
+      "undo": "Rückgängig",
+      "removed_from_folder": "Aus Ordner entfernt"
     }
   },
   "hooks": {
@@ -7826,14 +7827,11 @@
         "matches": "Treffer",
         "no_changes": "Arbeitsverzeichnis ohne Änderungen",
         "no_files_match": "Keine Dateien gefunden",
-        "open_in_file_explorer": "Im Explorer öffnen",
-        "open_in_finder": "Im Finder öffnen",
         "parent_folder": "Übergeordneter Ordner",
         "refresh": "Aktualisieren",
         "search_failed": "Suche fehlgeschlagen",
         "search_files": "Dateien suchen",
         "searching": "Suche…",
-        "show_in_file_manager": "Im Dateimanager anzeigen",
         "showing_first_matches": "Die ersten {{shown}} Treffer werden angezeigt",
         "unable_to_list_folder": "Ordnerinhalt kann nicht aufgelistet werden"
       },
@@ -8181,7 +8179,6 @@
       "filesHome": {
         "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",
         "refresh": "Aktualisieren",
-        "reveal_in_finder": "Im Dateimanager anzeigen",
         "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
         "title": "Dateien",
         "tree_error": "Der Dateibaum konnte nicht geladen werden"

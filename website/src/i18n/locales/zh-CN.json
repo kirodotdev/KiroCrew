@@ -1436,13 +1436,9 @@
         "copy_path_2": "复制路径：{{path}}",
         "download": "下载",
         "more_options": "更多选项",
-        "open_in_file_explorer": "在文件资源管理器中打开",
-        "open_in_finder": "在 Finder 中打开",
-        "path_copied_to_clipboard_no_desktop_available": "路径已复制到剪贴板（无可用桌面环境）",
         "reload": "重新加载",
         "select_a_file_to_view": "选择要查看的文件",
         "sensitive_file_avoid_sharing_your_screen_while_v": "敏感文件 — 查看凭证时请避免共享屏幕",
-        "show_in_file_manager": "在文件管理器中显示",
         "tip_ctrl_cmd_f_to_search": "提示：Ctrl/Cmd+F 搜索",
         "truncated": "· 已截断"
       },
@@ -5505,7 +5501,6 @@
       "open_in_file_explorer": "在文件资源管理器中打开",
       "open_in_finder": "在 Finder 中打开",
       "open_with_default_app": "用默认应用打开",
-      "path_copied_to_clipboard_no_desktop_available": "路径已复制到剪贴板（无可用桌面环境）",
       "preview": "预览",
       "previous_match": "上一个匹配",
       "previous_shift_enter": "上一个（Shift+Enter）",
@@ -5550,7 +5545,9 @@
       "generating_diagram": "正在生成图表…",
       "reset_zoom": "重置缩放（0）",
       "zoom_in": "放大（+）",
-      "zoom_out": "缩小（-）"
+      "zoom_out": "缩小（-）",
+      "click_to_browse_shift_click_to_copy_path": "点击浏览 / Shift+点击复制路径",
+      "click_to_open_shift_click_to_copy_path": "点击打开 / Shift+点击复制路径"
     },
     "markdownToc": {
       "contents": "目录",
@@ -6006,13 +6003,10 @@
       "include_recent_logs": "包含最近日志",
       "note_placeholder": "例如：更新后每条消息都失败，报“process exited (rc=None)”。",
       "open_github_issue": "新建 GitHub issue",
-      "open_in_file_explorer": "在文件资源管理器中打开",
-      "open_in_finder": "在 Finder 中打开",
       "prefill_hint": "打开后会自动填好详情 — 再把 zip 拖进去即可。",
       "redaction_notice": "Bearer 令牌、会话 cookie 和 AWS 密钥会在生成 zip 前自动移除。",
       "report_a_problem": "反馈问题",
       "saved_to": "保存至",
-      "show_in_file_manager": "在文件管理器中显示",
       "what_happened": "发生了什么？"
     },
     "resizeHandle": {
@@ -6137,11 +6131,6 @@
       "split_right": "向右分屏",
       "split_right_d": "向右分屏（⌘D）",
       "terminal_pane_coming_in_phase_2": "终端窗格 — 将在第二阶段推出"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "已移到",
-      "undo": "撤销",
-      "removed_from_folder": "已移出文件夹"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "关闭调查",
@@ -6711,6 +6700,18 @@
       "billing_notice": "这是付费 AWS 服务。在你确认之前不会发送任何请求。",
       "confirm_button": "确认并启用",
       "withdraw": "撤销确认"
+    },
+    "filePathMenu": {
+      "copy_failed": "无法复制路径",
+      "copy_path": "复制路径",
+      "path_copied": "路径已复制",
+      "reveal_blocked": "此路径受保护，无法打开。",
+      "reveal_failed": "无法在运行 Kiro Crew 的计算机上打开此路径。"
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "已移到",
+      "undo": "撤销",
+      "removed_from_folder": "已移出文件夹"
     }
   },
   "hooks": {
@@ -7724,14 +7725,11 @@
         "matches": "匹配项",
         "no_changes": "工作区无更改",
         "no_files_match": "没有匹配的文件",
-        "open_in_file_explorer": "在文件资源管理器中打开",
-        "open_in_finder": "在 Finder 中打开",
         "parent_folder": "上级目录",
         "refresh": "刷新",
         "search_failed": "搜索失败",
         "search_files": "搜索文件",
         "searching": "正在搜索…",
-        "show_in_file_manager": "在文件管理器中显示",
         "showing_first_matches": "显示前 {{shown}} 个匹配项",
         "unable_to_list_folder": "无法列出目录内容"
       },
@@ -8077,7 +8075,6 @@
       "filesHome": {
         "no_project_dir": "此聊天未设置项目目录",
         "refresh": "刷新",
-        "reveal_in_finder": "在文件管理器中显示",
         "select_file_hint": "在树中选择一个文件，即可在新标签页中打开",
         "title": "文件",
         "tree_error": "无法加载文件树"

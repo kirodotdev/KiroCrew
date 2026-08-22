@@ -356,7 +356,9 @@ describe('MarkdownRenderer path chip with no file handler', () => {
     globalThis.fetch = vi.fn(() =>
       Promise.resolve({ ok: true, status: 200, headers: new Headers({ 'X-Path-Kind': 'file' }) } as Response),
     ) as unknown as typeof fetch
-    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
+    // Resolve the wire shape (the OS handled it, no copy path) so the shared
+    // `revealOrOpen` can read `r.copy` without tripping over `undefined`.
+    const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue({} as never)
     const { container } = render(<MarkdownRenderer content={'`/tmp/notes/plan.md`'} />)
     const chip = await waitFor(() => {
       const c = container.querySelector('code[data-path-kind="file"]') as HTMLElement | null
@@ -364,7 +366,9 @@ describe('MarkdownRenderer path chip with no file handler', () => {
       return c!
     })
     fireEvent.click(chip)
-    expect(reveal).toHaveBeenCalledWith('/tmp/notes/plan.md')
+    // The chip routes through the shared `revealOrOpen`, which calls the
+    // transport with the explicit 'reveal' action rather than a bare path.
+    expect(reveal).toHaveBeenCalledWith('/tmp/notes/plan.md', 'reveal')
   })
 })
 

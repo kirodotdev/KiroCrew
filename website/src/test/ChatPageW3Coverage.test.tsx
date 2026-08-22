@@ -415,7 +415,9 @@ describe('renderUserContent — folder references', () => {
       }),
       { shiftKey: true },
     )
-    expect(apiMocks.revealPath).toHaveBeenCalledWith('/repo/main/src')
+    // Shift-click routes through the shared `revealOrOpen`, which passes the
+    // explicit 'reveal' action to the transport.
+    expect(apiMocks.revealPath).toHaveBeenCalledWith('/repo/main/src', 'reveal')
     expect(openFolder).not.toHaveBeenCalled()
   })
 

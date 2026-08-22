@@ -31,10 +31,10 @@ function spliceChildren(parent: HastParent, index: number, nodes: Array<HastElem
   else parent.children.splice(index, 1, ...nodes)
 }
 import '../utils/hljs'
-import { api } from '../api/client'
 import { useBlockAssembler, maskInlineCode } from '../hooks/useBlockAssembler'
 import { usePathKind, type PathKind } from '../hooks/usePathKind'
 import { useGatewayPlatform, type GatewayPlatform } from '../hooks/useGatewayPlatform'
+import { useBranding } from '../hooks/useBranding'
 import { fileIcon } from '../utils/fileIcons'
 import { urlTransform, ALLOWED_PROTOCOLS, WINDOWS_ABS_PATH_RE, decodeLocalPath } from '../utils/urlTransform'
 import { safeHttpUrl } from '../lib/safeUrl'
@@ -47,6 +47,7 @@ import GithubLogo from './icons/GithubLogo'
 import GitlabLogo from './icons/GitlabLogo'
 import DiffBlock from './DiffBlock'
 import EditableCodeBlock from './EditableCodeBlock'
+import FilePathMenu, { revealOrOpen } from './FilePathMenu'
 import { SmoothResize } from './SmoothResize'
 import type { ContentBlock } from '../types'
 
@@ -637,15 +638,20 @@ function usePathResolution(raw: string, probeEnabled: boolean): PathResolution {
  * and a directory does not have one either.
  */
 function activatePath(path: string, kind: PathKind, reveal: boolean, actions: PathActions, line?: number, endLine?: number): void {
-  if (reveal) { api.revealPath(path); return }
+  // Route through the shared helper, not bare `api.revealPath`: the helper owns
+  // the clipboard write and the failure message. `api.revealPath` is side-effect-
+  // free, so a bare call on a remote/headless session would answer {ok, copy} and
+  // nobody would write the clipboard — the chip's "Shift+click to copy path"
+  // promise would silently do nothing.
+  if (reveal) { void revealOrOpen(path); return }
   if (kind === 'dir') {
     // No folder handler wired: fall back to the OS file manager rather than
     // silently doing nothing.
     if (actions.onFolderOpen) actions.onFolderOpen(path)
-    else api.revealPath(path)
+    else void revealOrOpen(path)
     return
   }
-  if (!actions.onFileOpen) { api.revealPath(path); return }
+  if (!actions.onFileOpen) { void revealOrOpen(path); return }
   // Called with ONE argument when there is no line, not with an explicit
   // `undefined`: the handler is also the app's general-purpose file opener, and
   // an omitted argument keeps a chip click indistinguishable from every other
@@ -670,7 +676,18 @@ const CHIP_BASE = 'bg-bg-elevated px-1.5 py-0.5 rounded text-accent text-sm font
  * Dateimanager", "dans le gestionnaire de fichiers", "ファイルマネージャーに表示"),
  * which a placeholder cannot carry.
  */
-function revealHintFor(isDir: boolean, platform: GatewayPlatform): string {
+function revealHintFor(isDir: boolean, platform: GatewayPlatform, directLocal: boolean): string {
+  // On a remote or tunneled session /api/reveal cannot drive the gateway host's
+  // file manager, so shift+click degrades to a clipboard copy (files.py answers
+  // the copy-degrade branch). Naming Finder/Explorer here would promise an action
+  // the backend no longer performs, so the hint tells the truth: shift+click
+  // copies the path. The click (open/browse) arm is unchanged — it drives the
+  // in-app viewer, which works remotely — so only the shift+click clause differs.
+  if (!directLocal) {
+    return isDir
+      ? i18nT('components.markdownRenderer.click_to_browse_shift_click_to_copy_path')
+      : i18nT('components.markdownRenderer.click_to_open_shift_click_to_copy_path')
+  }
   if (isDir) {
     if (platform === 'darwin') return i18nT('components.markdownRenderer.click_to_browse_shift_click_to_reveal_in_finder')
     if (platform === 'windows') return i18nT('components.markdownRenderer.click_to_browse_shift_click_to_open_in_file_explorer')
@@ -743,6 +760,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
   const gatewayPlatform = useGatewayPlatform()
+  const { directLocal } = useBranding()
   const raw = codeStr.trim()
   const pathResolution = usePathResolution(raw, probeEnabled)
 
@@ -761,7 +779,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   }
   const isDir = pathResolution.kind === 'dir'
   const { path, splitPath, kind, line: targetLine, endLine: targetEndLine } = pathResolution
-  const revealHint = revealHintFor(isDir, gatewayPlatform)
+  const revealHint = revealHintFor(isDir, gatewayPlatform, directLocal)
   // A leading glyph is what makes "this is actionable" legible at rest. Without
   // one, a confirmed chip and an inert one differ only on hover, so a reader
   // cannot tell which paths the backend actually resolved. Files use the same
@@ -784,39 +802,47 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
     if (e.ctrlKey || e.metaKey) { copyToClipboard(raw); return }
     activatePath(path, kind, e.shiftKey, actions, targetLine, targetEndLine)
   }
+  // Right-click opens the shared file-path menu (Open in default app / reveal /
+  // copy path), additive to the existing click/shift-click activation. The menu
+  // items self-gate on directLocal, so a remote session sees only Copy path.
+  // `kind` is threaded through so a directory chip hides "Open with default
+  // app" — the reveal endpoint 400s an `open` on a directory, which would land
+  // the user on an error for a click they cannot fix.
   return (
-    <code
-      className={`${CHIP_BASE} cursor-pointer hover:underline`}
-      role="button"
-      tabIndex={0}
-      onClick={act}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') act(e) }}
-      {...safeProps}
-      data-path={path}
-      data-path-kind={kind}
-      data-path-line={targetLine}
-      data-path-end-line={targetEndLine}
-      // The resolved path leads the tooltip, not just the instruction. A native
-      // tooltip paints in the browser's own layer, above page content, and any
-      // element overlaying the chip must be pointer-events-none to let the click
-      // reach it — so hovering always discloses the real target even when
-      // surrounding markup visually covers the chip's text. It also shows a long
-      // path in full when layout truncates it.
-      //
-      // `raw`, not `path`, so a `file:447` chip discloses the line it will jump
-      // to. That keeps the disclosure honest without a second catalog string:
-      // the location is already in the text the user is hovering.
-      title={`${raw}\n${revealHint}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
-    >
-      <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
-      {targetLine != null && raw.length > splitPath.length
-        // Keep the location suffix atomic. A range is the case that actually
-        // misleads: broken across lines, `…2026.md:10-` / `16` reads as a citation
-        // ending at line 10 until the eye reaches the next line. The path itself
-        // stays breakable, since that is what lets a long citation wrap at all.
-        ? <>{splitPath}<span className="whitespace-nowrap">{raw.slice(splitPath.length)}</span></>
-        : children}
-    </code>
+    <FilePathMenu filePath={path} kind={kind}>
+      <code
+        className={`${CHIP_BASE} cursor-pointer hover:underline`}
+        role="button"
+        tabIndex={0}
+        onClick={act}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') act(e) }}
+        {...safeProps}
+        data-path={path}
+        data-path-kind={kind}
+        data-path-line={targetLine}
+        data-path-end-line={targetEndLine}
+        // The resolved path leads the tooltip, not just the instruction. A native
+        // tooltip paints in the browser's own layer, above page content, and any
+        // element overlaying the chip must be pointer-events-none to let the click
+        // reach it — so hovering always discloses the real target even when
+        // surrounding markup visually covers the chip's text. It also shows a long
+        // path in full when layout truncates it.
+        //
+        // `raw`, not `path`, so a `file:447` chip discloses the line it will jump
+        // to. That keeps the disclosure honest without a second catalog string:
+        // the location is already in the text the user is hovering.
+        title={`${raw}\n${revealHint}\n${i18nT('components.markdownRenderer.ctrl_click_to_copy')}`}
+      >
+        <Glyph size={12} aria-hidden="true" className="inline align-middle mr-1 opacity-70" />
+        {targetLine != null && raw.length > splitPath.length
+          // Keep the location suffix atomic. A range is the case that actually
+          // misleads: broken across lines, `…2026.md:10-` / `16` reads as a citation
+          // ending at line 10 until the eye reaches the next line. The path itself
+          // stays breakable, since that is what lets a long citation wrap at all.
+          ? <>{splitPath}<span className="whitespace-nowrap">{raw.slice(splitPath.length)}</span></>
+          : children}
+      </code>
+    </FilePathMenu>
   )
 }
 

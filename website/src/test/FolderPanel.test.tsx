@@ -13,6 +13,14 @@ import FolderPanel from '../pages/chat/FolderPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 
+// The header reveal button is gated on directLocal (a remote session cannot
+// drive Finder on the gateway). Most tests exercise the local case, so pin
+// directLocal true; a dedicated test covers the remote (hidden) case.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
 const LISTING = {
   path: '/Users/me/ws',
   parent: '/Users/me',
@@ -21,7 +29,7 @@ const LISTING = {
 }
 
 describe('FolderPanel', () => {
-  beforeEach(() => { vi.restoreAllMocks() })
+  beforeEach(() => { vi.restoreAllMocks(); brandingEnv.directLocal = true })
 
   it('lists the directory it was opened on', async () => {
     vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
@@ -83,7 +91,19 @@ describe('FolderPanel', () => {
     const reveal = vi.spyOn(api, 'revealPath').mockResolvedValue(undefined as never)
     renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
     fireEvent.click(await waitFor(() => screen.getByLabelText('Show in file manager')))
-    expect(reveal).toHaveBeenCalledWith('/Users/me/ws')
+    // Routes through the shared revealOrOpen helper, which passes the explicit
+    // 'reveal' action so a failed reveal surfaces the shared message.
+    expect(reveal).toHaveBeenCalledWith('/Users/me/ws', 'reveal')
+  })
+
+  it('hides the reveal button for a remote (non-local) session', async () => {
+    brandingEnv.directLocal = false
+    vi.spyOn(api, 'browseFiles').mockResolvedValue(LISTING)
+    renderWithProviders(<FolderPanel path="/Users/me/ws" onClose={vi.fn()} />)
+    // The listing still renders; only the header reveal button is gone, because
+    // /api/reveal would drive Finder on a host the user is not looking at.
+    await waitFor(() => expect(screen.getByText('src')).toBeTruthy())
+    expect(screen.queryByLabelText('Show in file manager')).not.toBeInTheDocument()
   })
 
   /**

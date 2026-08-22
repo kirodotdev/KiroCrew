@@ -1,7 +1,8 @@
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
 import { FileText, RotateCw, ExternalLink } from 'lucide-react'
-import { api } from '../../api/client'
+import { useBranding } from '../../hooks/useBranding'
+import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
 import FileBrowserRail, { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
@@ -25,6 +26,15 @@ export default function FilesHomePanel({ projectDir, onFileOpen }: {
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
+  // Reveal shells out on the gateway host, so it only makes sense when the
+  // browser is on that same machine. On a remote/tunneled session the backend
+  // degrades reveal to a clipboard copy, so hide the affordance to match every
+  // other gated file-location surface (FilePathMenu, ReportProblemModal, …).
+  const isLocal = useBranding().directLocal
+  // The platform-aware wording every other file-location surface uses ("Open in
+  // Finder" / "Open in File Explorer" / "Show in file manager"), read from the
+  // gateway host that `/api/reveal` shells out on — not a static "file manager".
+  const revealLabel = useRevealLabel()
   const treeState = useTreeState(projectDir)
   const treeAvailable = treeState === 'ready'
   const refresh = () => {
@@ -50,9 +60,11 @@ export default function FilesHomePanel({ projectDir, onFileOpen }: {
                 <RotateCw size={14} />
               </button>
             )}
-            <button onClick={() => api.revealPath(projectDir)} className={iconBtn} title={t('pages.chat.filesHome.reveal_in_finder')} aria-label={t('pages.chat.filesHome.reveal_in_finder')}>
-              <ExternalLink size={14} />
-            </button>
+            {isLocal && (
+              <button onClick={() => { void revealOrOpen(projectDir, 'reveal') }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
+                <ExternalLink size={14} />
+              </button>
+            )}
           </>
         )}
       </div>

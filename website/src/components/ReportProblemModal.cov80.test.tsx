@@ -12,6 +12,14 @@ vi.mock('../api/client', async importOriginal => {
   }
 })
 
+// The modal no longer offers a reveal delivery, so its output does not depend on
+// directLocal; the branding hook is stubbed only so the component renders under
+// test. Pinned local for a representative session.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
+
 const collectDiagnostics = vi.mocked(api.collectDiagnostics)
 const revealPath = vi.mocked(api.revealPath)
 
@@ -37,6 +45,7 @@ describe('ReportProblemModal', () => {
     collectDiagnostics.mockReset()
     revealPath.mockReset()
     revealPath.mockResolvedValue(undefined as never)
+    brandingEnv.directLocal = true
   })
 
   it('sends the typed note and the logs toggle to the collector', async () => {
@@ -55,7 +64,7 @@ describe('ReportProblemModal', () => {
     )
   })
 
-  it('shows the bundle path and the three deliveries on success', async () => {
+  it('shows the bundle path and the two deliveries on success', async () => {
     collectDiagnostics.mockResolvedValue(bundle())
     renderWithProviders(<ReportProblemModal open onClose={vi.fn()} />)
     fireEvent.click(createBtn())
@@ -69,16 +78,28 @@ describe('ReportProblemModal', () => {
     expect(
       screen.getByRole('link', { name: i18nT('components.reportProblemModal.open_github_issue') }),
     ).toHaveAttribute('href', 'https://example.invalid/zzq-issue')
+  })
 
-    // The reveal delivery names the GATEWAY host's file manager. This render
-    // seeds no platform, so it is the generic arm; the per-platform arms live in
-    // test/ReportProblemModal.test.tsx.
-    fireEvent.click(
-      screen.getByRole('button', {
-        name: i18nT('components.reportProblemModal.show_in_file_manager'),
+  it('carries no reveal delivery — the saved path stands in for it', async () => {
+    // The success row keeps two buttons (download + GitHub issue); a reveal is
+    // not offered because /api/reveal shells out on the GATEWAY, so it cannot
+    // usefully drive a file manager for a browser that is not on that host. The
+    // saved path is shown as text so a local operator can still locate the zip.
+    collectDiagnostics.mockResolvedValue(bundle())
+    renderWithProviders(<ReportProblemModal open onClose={vi.fn()} />)
+    fireEvent.click(createBtn())
+
+    await waitFor(() => expect(screen.getByText('/zzq/tmp/zzq-bundle.zip')).toBeInTheDocument())
+
+    expect(
+      screen.queryByRole('button', {
+        name: i18nT('components.markdownPanel.show_in_file_manager'),
       }),
-    )
-    expect(revealPath).toHaveBeenCalledWith('/zzq/tmp/zzq-bundle.zip')
+    ).not.toBeInTheDocument()
+    expect(
+      screen.getByRole('link', { name: i18nT('components.reportProblemModal.download_zip') }),
+    ).toBeInTheDocument()
+    expect(revealPath).not.toHaveBeenCalled()
   })
 
   it('surfaces an ApiError message verbatim', async () => {

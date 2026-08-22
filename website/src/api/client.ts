@@ -1,4 +1,3 @@
-import { copyToClipboard } from '../utils/clipboard'
 import { resizeImageForModel, type ResizeInfo } from '../utils/resizeImage'
 import type {
   ChatSlot,
@@ -57,6 +56,12 @@ function themeConsentSha(colorTheme?: string): string | null {
  *  from the server or the config (an env name, a capability path, a protocol
  *  version) and is deliberately NOT translated.
  */
+/** Response of POST /api/reveal. When the backend cannot drive a file manager
+ *  (a remote or headless session) it degrades to a clipboard copy: `copy` is the
+ *  path to write. The caller (`revealOrOpen`) writes the clipboard silently — the
+ *  affordance that routed here already promised a copy. */
+type RevealResult = { copy?: string }
+
 export type McpShareReason = {
   code: string
   detail: string
@@ -1655,7 +1660,7 @@ export const api = {
   // the enterprise ceiling is file-authored and un-editable via the UI.
   governancePolicy: () => get('/api/governance/policy').then(j) as Promise<GovernancePolicyData>,
   suggestions: (force?: boolean) => fetch(`/api/suggestions${force ? '?force=1' : ''}`).then(j) as Promise<{ suggestions: string[]; generated_at: number; stale: boolean }>,
-  branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string }>,
+  branding: () => fetch('/api/dashboard/branding').then(j) as Promise<{ bot_name: string; avatar: string; direct_local?: boolean }>,
   // Instances (multi-instance management) — owner-only, gated by instances.enabled.
   // listInstances throws ApiError(403) when the feature is disabled; callers
   // should catch and render the enable toggle rather than an error. `active`
@@ -2338,10 +2343,12 @@ export const api = {
   // hands a regular file to its default application. Headless hosts have
   // neither, so the backend answers with `copy` and the path goes to the
   // clipboard instead of the call silently doing nothing.
-  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') => post('/api/reveal', { path, action }).then(j).then((r: { copy?: string }) => {
-    if (r.copy) copyToClipboard(r.copy)
-    return r
-  }),
+  // This is a SIDE-EFFECT-FREE transport call: it neither writes the clipboard
+  // nor shows a dialog. The single caller `revealOrOpen` owns the clipboard copy,
+  // so the degrade is presented in exactly one place instead of in the transport
+  // layer where a dialog is a surprise.
+  revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') =>
+    post('/api/reveal', { path, action }).then(j) as Promise<RevealResult>,
   collectDiagnostics: (body: { note: string; include_logs: boolean }) =>
     post('/api/diagnostics/collect', body).then(j) as Promise<{
       zip_path: string

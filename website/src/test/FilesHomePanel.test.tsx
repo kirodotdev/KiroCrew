@@ -20,7 +20,18 @@ const H = vi.hoisted(() => ({
   },
 }))
 
-vi.mock('../api/client', () => ({ api: H.api }))
+// `ApiError` is exported alongside `api` because the shared `revealOrOpen`
+// helper (which the reveal button now routes through) branches on it.
+vi.mock('../api/client', () => ({ api: H.api, ApiError: class ApiError extends Error {} }))
+
+// The reveal-in-file-manager button is gated on branding.directLocal: a remote
+// session degrades reveal to a clipboard copy, so the affordance is hidden
+// there. Default to a local session so the existing header assertions hold; a
+// dedicated case below flips it to pin the hidden (remote) state.
+const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+}))
 
 vi.mock('../pierre/tree', () => ({
   TreeSkeleton: () => null,
@@ -51,6 +62,7 @@ beforeEach(() => {
   H.api.projectTree.mockReset().mockResolvedValue({ root: DIR, paths: [], repo: true })
   H.api.projectGitStatus.mockReset().mockResolvedValue({ repo: true, files: [] })
   H.api.revealPath.mockReset().mockResolvedValue(undefined)
+  brandingEnv.directLocal = true
 })
 
 describe('FilesHomePanel header', () => {
@@ -74,7 +86,7 @@ describe('FilesHomePanel header', () => {
     mount('')
     expect(screen.getByText('Files')).toBeInTheDocument()
     expect(within(header()).queryByLabelText('Refresh')).toBeNull()
-    expect(within(header()).queryByLabelText('Reveal in file manager')).toBeNull()
+    expect(within(header()).queryByLabelText('Show in file manager')).toBeNull()
     expect(H.api.projectTree).not.toHaveBeenCalled()
   })
 
@@ -101,9 +113,21 @@ describe('FilesHomePanel header', () => {
   })
 
   it('reveals the project directory in the file manager', () => {
+    // The button routes through the shared revealOrOpen helper (so a failed
+    // reveal surfaces the shared message instead of dead-clicking), which calls
+    // api.revealPath with the explicit 'reveal' action. The label is the shared
+    // platform-aware wording — generic here, with no gateway platform seeded.
     mount()
-    fireEvent.click(within(header()).getByLabelText('Reveal in file manager'))
-    expect(H.api.revealPath).toHaveBeenCalledWith(DIR)
+    fireEvent.click(within(header()).getByLabelText('Show in file manager'))
+    expect(H.api.revealPath).toHaveBeenCalledWith(DIR, 'reveal')
+  })
+
+  it('hides the reveal action on a remote session', () => {
+    // A remote session cannot drive the operator's file manager, so the button
+    // is gated out entirely rather than firing a reveal that degrades to a copy.
+    brandingEnv.directLocal = false
+    mount()
+    expect(within(header()).queryByLabelText('Show in file manager')).toBeNull()
   })
 })
 

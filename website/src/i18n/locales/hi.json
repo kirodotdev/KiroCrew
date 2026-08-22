@@ -1465,13 +1465,9 @@
         "copy_path_2": "पाथ कॉपी करो: {{path}}",
         "download": "डाउनलोड करें",
         "more_options": "अधिक विकल्प",
-        "open_in_file_explorer": "File Explorer में खोलें",
-        "open_in_finder": "Finder में खोलें",
-        "path_copied_to_clipboard_no_desktop_available": "पाथ क्लिपबोर्ड में कॉपी किया गया (कोई डेस्कटॉप उपलब्ध नहीं)",
         "reload": "रीलोड करें",
         "select_a_file_to_view": "देखने के लिए कोई फ़ाइल चुनें",
         "sensitive_file_avoid_sharing_your_screen_while_v": "संवेदनशील फ़ाइल — क्रेडेंशियल देखते समय अपनी स्क्रीन साझा करने से बचें",
-        "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
         "tip_ctrl_cmd_f_to_search": "सुझाव: खोजने के लिए Ctrl/Cmd+F",
         "truncated": "· छोटा किया गया"
       },
@@ -5587,7 +5583,6 @@
       "open_in_file_explorer": "File Explorer में खोलें",
       "open_in_finder": "Finder में खोलें",
       "open_with_default_app": "डिफ़ॉल्ट ऐप में खोलो",
-      "path_copied_to_clipboard_no_desktop_available": "पाथ क्लिपबोर्ड में कॉपी किया गया (कोई डेस्कटॉप उपलब्ध नहीं)",
       "preview": "प्रीव्यू",
       "previous_match": "पिछला मैच",
       "previous_shift_enter": "पिछला (Shift+Enter)",
@@ -5632,7 +5627,9 @@
       "generating_diagram": "डायग्राम बन रहा है…",
       "reset_zoom": "ज़ूम रीसेट करें (0)",
       "zoom_in": "ज़ूम इन (+)",
-      "zoom_out": "ज़ूम आउट (-)"
+      "zoom_out": "ज़ूम आउट (-)",
+      "click_to_browse_shift_click_to_copy_path": "ब्राउज़ करने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें",
+      "click_to_open_shift_click_to_copy_path": "खोलने के लिए क्लिक करें / पथ कॉपी करने के लिए Shift+क्लिक करें"
     },
     "markdownToc": {
       "contents": "विषय-सूची",
@@ -6094,13 +6091,10 @@
       "include_recent_logs": "हाल के लॉग शामिल करें",
       "note_placeholder": "उदा. अपडेट के बाद हर मैसेज “process exited (rc=None)” के साथ फेल हो रहा है।",
       "open_github_issue": "GitHub पर issue खोलें",
-      "open_in_file_explorer": "File Explorer में खोलें",
-      "open_in_finder": "Finder में खोलें",
       "prefill_hint": "issue खोलने पर विवरण पहले से भर जाते हैं — फिर zip को उसमें खींचकर डालें।",
       "redaction_notice": "zip बनने से पहले Bearer टोकन, सेशन कुकी और AWS कीज़ अपने आप हटा दी जाती हैं।",
       "report_a_problem": "समस्या रिपोर्ट करें",
       "saved_to": "यहाँ सहेजा गया",
-      "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
       "what_happened": "क्या हुआ?"
     },
     "resizeHandle": {
@@ -6225,11 +6219,6 @@
       "split_right": "दाईं ओर विभाजित करें",
       "split_right_d": "दाईं ओर विभाजित करें (⌘D)",
       "terminal_pane_coming_in_phase_2": "टर्मिनल पैन — चरण 2 में आ रहा है"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "ले जाया गया",
-      "undo": "पूर्ववत करें",
-      "removed_from_folder": "फ़ोल्डर से हटाया गया"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "सर्वेक्षण खारिज करें",
@@ -6800,6 +6789,18 @@
       "billing_notice": "यह एक सशुल्क AWS सेवा है। पुष्टि होने तक कोई अनुरोध नहीं भेजा जाता।",
       "confirm_button": "पुष्टि करें और चालू करें",
       "withdraw": "पुष्टि वापस लें"
+    },
+    "filePathMenu": {
+      "copy_failed": "पथ कॉपी नहीं किया जा सका",
+      "copy_path": "पथ कॉपी करें",
+      "path_copied": "पथ कॉपी किया गया",
+      "reveal_blocked": "यह पथ सुरक्षित है और इसे खोला नहीं जा सकता।",
+      "reveal_failed": "Kiro Crew चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।"
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "ले जाया गया",
+      "undo": "पूर्ववत करें",
+      "removed_from_folder": "फ़ोल्डर से हटाया गया"
     }
   },
   "hooks": {
@@ -7826,14 +7827,11 @@
         "matches": "मिलान",
         "no_changes": "कार्यक्षेत्र में कोई परिवर्तन नहीं",
         "no_files_match": "कोई फ़ाइल मेल नहीं खाती",
-        "open_in_file_explorer": "File Explorer में खोलें",
-        "open_in_finder": "Finder में खोलें",
         "parent_folder": "पैरेंट फ़ोल्डर",
         "refresh": "रिफ़्रेश करें",
         "search_failed": "खोज विफल",
         "search_files": "फ़ाइलें खोजें",
         "searching": "खोज रहे हैं…",
-        "show_in_file_manager": "फ़ाइल मैनेजर में दिखाओ",
         "showing_first_matches": "पहले {{shown}} मिलान दिखा रहे हैं",
         "unable_to_list_folder": "फ़ोल्डर की सूची नहीं बनाई जा सकी"
       },
@@ -8181,7 +8179,6 @@
       "filesHome": {
         "no_project_dir": "इस चैट के लिए कोई प्रोजेक्ट डायरेक्टरी सेट नहीं है",
         "refresh": "रीफ़्रेश करें",
-        "reveal_in_finder": "फ़ाइल प्रबंधक में दिखाएँ",
         "select_file_hint": "ट्री से फ़ाइल चुनें, वह नए टैब में खुलेगी",
         "title": "फ़ाइलें",
         "tree_error": "फ़ाइल ट्री लोड नहीं हो सका"

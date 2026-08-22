@@ -275,11 +275,7 @@
     "fileExplorer": {
       "fileViewer": {
         "copy_path_2": "Copy path: {{path}}",
-        "more_options": "More options",
-        "open_in_file_explorer": "Open in File Explorer",
-        "open_in_finder": "Open in Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Path copied to clipboard (no desktop available)",
-        "show_in_file_manager": "Show in file manager"
+        "more_options": "More options"
       },
       "searchPanel": {
         "search_failed": "search failed",
@@ -1754,7 +1750,6 @@
       "open_in_file_explorer": "Open in File Explorer",
       "open_in_finder": "Open in Finder",
       "open_with_default_app": "Open with default app",
-      "path_copied_to_clipboard_no_desktop_available": "Path copied to clipboard (no desktop available)",
       "preview": "Preview",
       "refresh_file_re_read_from_disk": "Refresh file (re-read from disk)",
       "save": "Save",
@@ -1779,7 +1774,9 @@
       "click_to_open_shift_click_to_show_in_file_manager": "Click to open / Shift+click to show in file manager",
       "reset_zoom": "Reset zoom (0)",
       "zoom_in": "Zoom in (+)",
-      "zoom_out": "Zoom out (-)"
+      "zoom_out": "Zoom out (-)",
+      "click_to_open_shift_click_to_copy_path": "Click to open / Shift+click to copy path",
+      "click_to_browse_shift_click_to_copy_path": "Click to browse / Shift+click to copy path"
     },
     "mcpAppFrame": {
       "collapse": "Collapse",
@@ -2284,10 +2281,7 @@
       "saved_to": "Saved to",
       "download_zip": "Download zip",
       "open_github_issue": "Open GitHub issue",
-      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it.",
-      "open_in_finder": "Open in Finder",
-      "open_in_file_explorer": "Open in File Explorer",
-      "show_in_file_manager": "Show in file manager"
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it."
     },
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
@@ -2758,14 +2752,11 @@
         "matches": "Matches",
         "no_changes": "Working tree clean",
         "no_files_match": "No files match",
-        "open_in_file_explorer": "Open in File Explorer",
-        "open_in_finder": "Open in Finder",
         "parent_folder": "Parent folder",
         "refresh": "Refresh",
         "search_failed": "Search failed",
         "search_files": "Search files",
         "searching": "Searching…",
-        "show_in_file_manager": "Show in file manager",
         "showing_first_matches": "Showing the first {{shown}} matches",
         "unable_to_list_folder": "Unable to list folder"
       },
@@ -2950,7 +2941,6 @@
       "filesHome": {
         "no_project_dir": "No project directory is set for this chat",
         "refresh": "Refresh",
-        "reveal_in_finder": "Reveal in file manager",
         "select_file_hint": "Select a file from the tree to open it in a new tab",
         "title": "Files",
         "tree_error": "Couldn't load the file tree"

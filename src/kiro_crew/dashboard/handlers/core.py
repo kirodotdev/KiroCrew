@@ -204,10 +204,15 @@ async def logo(request: web.Request) -> web.StreamResponse:
 async def api_branding(request: web.Request) -> web.Response:
     """GET /api/dashboard/branding — bot name and avatar config."""
     cfg = KiroCrewConfig.load()
+    # `direct_local` is the canonical client-side origin signal: true only for a
+    # direct-local (loopback, no proxy) caller. The dashboard reads it to gate
+    # OS-desktop file actions (open/reveal); any future consumer of origin
+    # posture should reuse this flag rather than invent a second home.
     return web.json_response(
         {
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
+            "direct_local": is_direct_local_request(request),
         }
     )
 

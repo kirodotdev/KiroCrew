@@ -4292,11 +4292,6 @@
       "split_right_d": "Split right (⌘D)",
       "terminal_pane_coming_in_phase_2": "Terminal pane — coming in Phase 2"
     },
-    "sessionMoveUndoBar": {
-      "moved_to": "Moved to",
-      "undo": "Undo",
-      "removed_from_folder": "Removed from folder"
-    },
     "sessionPulseSurveyCard": {
       "dismiss": "Dismiss survey",
       "email_disclosure": "We may want to contact you about your feedback. Your rating and any feedback are sent to the {{productName}} team.",
@@ -4659,6 +4654,18 @@
       "billing_notice": "This is a paid AWS service. Until you confirm, no request is sent.",
       "confirm_button": "Confirm and enable",
       "withdraw": "Withdraw confirmation"
+    },
+    "filePathMenu": {
+      "copy_failed": "Couldn't copy the path",
+      "copy_path": "Copy path",
+      "path_copied": "Path copied",
+      "reveal_blocked": "This path is protected and can’t be opened.",
+      "reveal_failed": "Couldn't open this path on the machine running Kiro Crew."
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "Moved to",
+      "undo": "Undo",
+      "removed_from_folder": "Removed from folder"
     }
   },
   "hooks": {

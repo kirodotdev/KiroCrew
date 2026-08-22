@@ -3,7 +3,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { Folder, RotateCw, ExternalLink, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
-import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
+import { revealOrOpen, useRevealLabel } from '../../components/FilePathMenu'
+import { useBranding } from '../../hooks/useBranding'
 import { api } from '../../api/client'
 import { fileIcon, colorForExt } from '../../utils/fileIcons'
 
@@ -64,7 +65,6 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   onPathChange?: (p: string) => void
 }) {
   const { t } = useTranslation()
-  const gatewayPlatform = useGatewayPlatform()
   const [cwd, setCwd] = useState(path)
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -128,12 +128,14 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   // Name the real application where the gateway HAS one, and fall back to the
   // generic term for Linux and for a platform we could not read. The platform is
   // the GATEWAY's because `/api/reveal` shells out there, and the wording holds for
-  // a directory as well as a file — this button reveals `cwd` itself.
-  const revealLabel = gatewayPlatform === 'darwin'
-    ? t('pages.chat.folderPanel.open_in_finder')
-    : gatewayPlatform === 'windows'
-      ? t('pages.chat.folderPanel.open_in_file_explorer')
-      : t('pages.chat.folderPanel.show_in_file_manager')
+  // a directory as well as a file — this button reveals `cwd` itself. Shared with
+  // every other file-location surface via useRevealLabel.
+  const revealLabel = useRevealLabel()
+  // `/api/reveal` shells out on the gateway, so revealing `cwd` only makes sense
+  // when the browser is on that same machine. A remote/tunneled session would
+  // otherwise get a mis-worded "Path copied" alert; hide the button there, the
+  // same directLocal gate every other file-location surface applies.
+  const { directLocal } = useBranding()
 
   return (
     <DetailPanel
@@ -154,14 +156,16 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
           >
             <RotateCw size={14} className={isFetching ? 'animate-spin' : undefined} />
           </button>
-          <button
-            onClick={() => api.revealPath(cwd)}
-            className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
-            title={revealLabel}
-            aria-label={revealLabel}
-          >
-            <ExternalLink size={14} />
-          </button>
+          {directLocal && (
+            <button
+              onClick={() => { void revealOrOpen(cwd, 'reveal') }}
+              className="flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none"
+              title={revealLabel}
+              aria-label={revealLabel}
+            >
+              <ExternalLink size={14} />
+            </button>
+          )}
         </div>
       }
     >

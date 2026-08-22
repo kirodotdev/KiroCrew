@@ -1494,13 +1494,9 @@
         "copy_path_2": "Copiar ruta: {{path}}",
         "download": "Descargar",
         "more_options": "Más opciones",
-        "open_in_file_explorer": "Abrir en el Explorador de archivos",
-        "open_in_finder": "Abrir en Finder",
-        "path_copied_to_clipboard_no_desktop_available": "Ruta copiada al portapapeles (no hay escritorio disponible)",
         "reload": "Recargar",
         "select_a_file_to_view": "Selecciona un archivo para verlo",
         "sensitive_file_avoid_sharing_your_screen_while_v": "Archivo sensible — evita compartir tu pantalla mientras ves credenciales",
-        "show_in_file_manager": "Mostrar en el gestor de archivos",
         "tip_ctrl_cmd_f_to_search": "Consejo: Ctrl/Cmd+F para buscar",
         "truncated": "· truncado"
       },
@@ -5669,7 +5665,6 @@
       "open_in_file_explorer": "Abrir en el Explorador de archivos",
       "open_in_finder": "Abrir en Finder",
       "open_with_default_app": "Abrir con la aplicación predeterminada",
-      "path_copied_to_clipboard_no_desktop_available": "Ruta copiada al portapapeles (no hay escritorio disponible)",
       "preview": "Vista previa",
       "previous_match": "Coincidencia anterior",
       "previous_shift_enter": "Anterior (Shift+Enter)",
@@ -5714,7 +5709,9 @@
       "generating_diagram": "generando el diagrama…",
       "reset_zoom": "Restablecer zoom (0)",
       "zoom_in": "Acercar (+)",
-      "zoom_out": "Alejar (-)"
+      "zoom_out": "Alejar (-)",
+      "click_to_browse_shift_click_to_copy_path": "Clic para explorar / Shift+clic para copiar la ruta",
+      "click_to_open_shift_click_to_copy_path": "Clic para abrir / Shift+clic para copiar la ruta"
     },
     "markdownToc": {
       "contents": "Contenido",
@@ -6182,13 +6179,10 @@
       "include_recent_logs": "Incluir los registros recientes",
       "note_placeholder": "p. ej. Todos los mensajes fallan con \"process exited (rc=None)\" después de actualizar.",
       "open_github_issue": "Abrir incidencia en GitHub",
-      "open_in_file_explorer": "Abrir en el Explorador de archivos",
-      "open_in_finder": "Abrir en Finder",
       "prefill_hint": "Al abrir la incidencia se rellenan los detalles automáticamente — después arrastra el zip dentro.",
       "redaction_notice": "Los tokens Bearer, las cookies de sesión y las claves de AWS se eliminan automáticamente antes de crear el zip.",
       "report_a_problem": "Reportar un problema",
       "saved_to": "Guardado en",
-      "show_in_file_manager": "Mostrar en el gestor de archivos",
       "what_happened": "¿Qué ha pasado?"
     },
     "resizeHandle": {
@@ -6313,11 +6307,6 @@
       "split_right": "Dividir a la derecha",
       "split_right_d": "Dividir a la derecha (⌘D)",
       "terminal_pane_coming_in_phase_2": "Panel de terminal: llegará en la fase 2"
-    },
-    "sessionMoveUndoBar": {
-      "moved_to": "Movido a",
-      "undo": "Deshacer",
-      "removed_from_folder": "Quitado de la carpeta"
     },
     "sessionPulseSurveyCard": {
       "dismiss": "Descartar encuesta",
@@ -6889,6 +6878,18 @@
       "billing_notice": "Este es un servicio de AWS de pago. Hasta que lo confirmes, no se envia ninguna solicitud.",
       "confirm_button": "Confirmar y activar",
       "withdraw": "Retirar la confirmacion"
+    },
+    "filePathMenu": {
+      "copy_failed": "No se pudo copiar la ruta",
+      "copy_path": "Copiar ruta",
+      "path_copied": "Ruta copiada",
+      "reveal_blocked": "Esta ruta está protegida y no se puede abrir.",
+      "reveal_failed": "No se pudo abrir esta ruta en el equipo donde se ejecuta Kiro Crew."
+    },
+    "sessionMoveUndoBar": {
+      "moved_to": "Movido a",
+      "undo": "Deshacer",
+      "removed_from_folder": "Quitado de la carpeta"
     }
   },
   "hooks": {
@@ -7928,14 +7929,11 @@
         "matches": "Coincidencias",
         "no_changes": "Árbol de trabajo sin cambios",
         "no_files_match": "Ningún archivo coincide",
-        "open_in_file_explorer": "Abrir en el Explorador de archivos",
-        "open_in_finder": "Abrir en Finder",
         "parent_folder": "Carpeta superior",
         "refresh": "Actualizar",
         "search_failed": "La búsqueda falló",
         "search_files": "Buscar archivos",
         "searching": "Buscando…",
-        "show_in_file_manager": "Mostrar en el gestor de archivos",
         "showing_first_matches": "Mostrando las primeras {{shown}} coincidencias",
         "unable_to_list_folder": "No se puede listar la carpeta"
       },
@@ -8285,7 +8283,6 @@
       "filesHome": {
         "no_project_dir": "Este chat no tiene un directorio de proyecto",
         "refresh": "Actualizar",
-        "reveal_in_finder": "Mostrar en el gestor de archivos",
         "select_file_hint": "Selecciona un archivo del árbol para abrirlo en una nueva pestaña",
         "title": "Archivos",
         "tree_error": "No se pudo cargar el árbol de archivos"

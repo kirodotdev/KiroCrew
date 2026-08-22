@@ -54,9 +54,17 @@ vi.mock('../components/MarkdownRenderer', async () => {
 
 vi.mock('../utils/clipboard', () => ({ copyToClipboard: vi.fn() }))
 
+// FileViewer's overflow gates Open/Reveal on directLocal (the browser is on the
+// gateway machine). Mock it true so the reveal-menu tests can see those items;
+// the remote-hidden case is covered in FilePathMenu.test.tsx.
+vi.mock('../hooks/useBranding', () => ({
+  useBranding: () => ({ botName: 'Kiro Crew', avatar: '/logo.png', directLocal: true }),
+}))
+
 import { fileExplorerApi } from '../apps/file-explorer/api'
 import { api } from '../api/client'
 import { copyToClipboard } from '../utils/clipboard'
+import { i18nT } from '../i18n/t'
 import { STORAGE_KEY } from '../apps/file-explorer/constants'
 import FileExplorerPage from '../apps/file-explorer/FileExplorerPage'
 import type { TreeEntry, FileMeta, GitInfo } from '../apps/file-explorer/types'
@@ -368,29 +376,35 @@ describe('FileExplorerPage reveal', () => {
     await ready()
     await openFromTree('notes.txt')
     await pickFromOverflow('Show in file manager')
-    expect(reveal).toHaveBeenCalledExactlyOnceWith('/home/user/notes.txt')
+    expect(reveal).toHaveBeenCalledExactlyOnceWith('/home/user/notes.txt', 'reveal')
   })
 
-  it('explains the clipboard fallback when the host has no desktop', async () => {
-    // `api.revealPath` has already copied the path by the time it answers with
-    // `copy`; without the notice the click would look like it did nothing.
-    spyReveal({ ok: true, copy: '/home/user/notes.txt' })
+  it('does not alert locally when the mocked backend resolves with a copy fallback', async () => {
+    // The copy-fallback confirmation is centralized in api.revealPath itself
+    // (client.ts), right next to its copyToClipboard call, so this call site
+    // must not also alert — that would double-notify once the real client
+    // resolves.
+    const reveal = spyReveal({ ok: true, copy: '/home/user/notes.txt' })
     const alerted = captureAlert()
     renderPage()
     await ready()
     await openFromTree('notes.txt')
     await pickFromOverflow('Show in file manager')
-    await waitFor(() => expect(alerted).toHaveBeenCalledWith('Path copied to clipboard (no desktop available)'))
+    await waitFor(() => expect(reveal).toHaveBeenCalled())
+    expect(alerted).not.toHaveBeenCalled()
   })
 
-  it("surfaces a refusal with the server's own message", async () => {
+  it('surfaces a refusal with the shared i18n failure message', async () => {
+    // The overflow funnels reveal failures through the shared FilePathMenu path,
+    // which shows a neutral catalog string rather than leaking the raw server
+    // message per surface.
     spyReveal(new Error('access denied'))
     const alerted = captureAlert()
     renderPage()
     await ready()
     await openFromTree('notes.txt')
     await pickFromOverflow('Show in file manager')
-    await waitFor(() => expect(alerted).toHaveBeenCalledWith('access denied'))
+    await waitFor(() => expect(alerted).toHaveBeenCalledWith(i18nT('components.filePathMenu.reveal_failed')))
   })
 
   /** Publish a gateway platform into the cache the prerequisite gate owns. */

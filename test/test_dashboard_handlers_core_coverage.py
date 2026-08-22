@@ -119,7 +119,11 @@ class TestPageAndAssets:
     async def test_branding_defaults_to_product_name(self) -> None:
         resp = await core_mod.api_branding(_req())
         body = json.loads(resp.body)
-        assert body == {"bot_name": "Kiro Crew", "avatar": "/logo.png"}
+        assert body == {
+            "bot_name": "Kiro Crew",
+            "avatar": "/logo.png",
+            "direct_local": True,
+        }
 
     @pytest.mark.asyncio
     async def test_logo_refuses_sensitive_avatar_path(self, monkeypatch) -> None:
