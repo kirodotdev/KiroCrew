@@ -632,6 +632,21 @@ describe('App routing', () => {
     }
   })
 
+  it('invalidates the registry query on mc:apps-changed so install state refreshes', async () => {
+    // The Explore shelf renders Get vs Installed from the server-computed
+    // `installed` flag on the `['registry']` rows, cached with a multi-minute
+    // staleTime. Install/uninstall surfaces announce themselves via
+    // mc:apps-changed; the handler must drop that cache or a just-installed
+    // registry app keeps showing a "Get" button until the cache expires.
+    const { queryClient } = renderWithProviders(<App />, { route: '/chat' })
+    queryClient.setQueryData(['registry'], { apps: [] })
+    expect(queryClient.getQueryState(['registry'])?.isInvalidated).toBe(false)
+    act(() => { window.dispatchEvent(new Event('mc:apps-changed')) })
+    await waitFor(() => {
+      expect(queryClient.getQueryState(['registry'])?.isInvalidated).toBe(true)
+    })
+  })
+
   it('shows a portaled hover label for a collapsed (icon-only) nav item', async () => {
     // Covers useNavTip: in collapsed mode nav rows hide their text label and
     // instead show it via a portal to <body> on hover (so the rail's vertical

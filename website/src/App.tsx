@@ -1538,10 +1538,19 @@ export default function App() {
     return () => { if (appNavRetryRef.current) clearTimeout(appNavRetryRef.current) }
   }, [refreshAppNav])
   useEffect(() => {
-    const handler = () => refreshAppNav()
+    const handler = () => {
+      refreshAppNav()
+      // The Explore shelf's install state lives in the server-computed
+      // `installed` flag on the `['registry']` rows, which are cached with a
+      // multi-minute staleTime. Every install/uninstall/enable surface
+      // announces itself through this event, so drop that cache here too —
+      // otherwise a just-installed registry app keeps rendering a "Get"
+      // button until the cache expires.
+      queryClient.invalidateQueries({ queryKey: ['registry'] })
+    }
     window.addEventListener('mc:apps-changed', handler)
     return () => window.removeEventListener('mc:apps-changed', handler)
-  }, [refreshAppNav])
+  }, [refreshAppNav, queryClient])
   // Refetch the Apps nav when the gateway connection is *re*-established after a
   // drop — e.g. a `kirocrew update` restart disconnects then reconnects the
   // WebSocket. Only fires on a connected→disconnected→connected cycle, NOT the

@@ -566,7 +566,8 @@ export default function AppsPage() {
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ['apps'] })
-    queryClient.invalidateQueries({ queryKey: ['registry'] })
+    // ['registry'] is deliberately not invalidated here: the mc:apps-changed
+    // listener in App.tsx owns that, for every dispatch site at once.
     window.dispatchEvent(new Event('mc:apps-changed'))
   }
 
