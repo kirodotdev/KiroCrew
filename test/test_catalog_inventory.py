@@ -277,7 +277,9 @@ class TestPinnedFetchNeverEatsUserData:
             "https://example.com/a.git", SHA, dest, log,
             clone_env={}, sandbox_mode="standard",
         )
-        assert result is not None and result["error"] == "destination_not_a_checkout"
+        # Machine slug lives in `code`; `error` carries the human sentence the
+        # install banner renders verbatim.
+        assert result is not None and result["code"] == "destination_not_a_checkout"
         assert (dest / "important.txt").read_text(encoding="utf-8") == "user data"
 
     @pytest.mark.asyncio
@@ -293,7 +295,7 @@ class TestPinnedFetchNeverEatsUserData:
             "https://example.com/a.git", SHA, dest, log,
             clone_env={}, sandbox_mode="standard",
         )
-        assert result is not None and result["error"] == "destination_not_a_checkout"
+        assert result is not None and result["code"] == "destination_not_a_checkout"
         assert (dest / ".git").is_file(), "the link was left alone"
 
     @pytest.mark.asyncio
@@ -592,7 +594,7 @@ class TestPinnedInstallNeverReusesAnExistingTree:
 
         result = await reg._git_clone_or_pull(URL, "main", dest, [], commit=SHA)
         assert result is not None
-        assert result["error"] == "existing_checkout_not_moved_aside"
+        assert result["code"] == "existing_checkout_not_moved_aside"
         assert dest.exists(), "a checkout we could not move is left untouched"
 
     @pytest.mark.asyncio
