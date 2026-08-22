@@ -11,6 +11,7 @@ grows into a subsystem should become a spec under
 | [session-slack-linking.md](session-slack-linking.md) | How a Slack thread maps onto a Kiro Crew session, and how thread state stays in sync. |
 | [mcp-oauth-ownership.md](mcp-oauth-ownership.md) | Who owns an MCP server's OAuth tokens, and why that ownership is contested. |
 | [connections-status-tiers.md](connections-status-tiers.md) | The authorization axis behind a Connections card: grant-presence status, source-backed connected-since, what Cancel releases, and which mint tiers exist. |
+| [connections-l1-smoke.md](connections-l1-smoke.md) | The Connections launch-gate ladder, and what an automated smoke run over a real stored grant can and cannot prove. |
 | [mcp-entry-provenance.md](mcp-entry-provenance.md) | Which entries in a shared MCP config file a sync may rewrite: the write-authorship marker and its four outcomes. |
 | [mcp-gateway-claim-push.md](mcp-gateway-claim-push.md) | Event-driven caller identity for pooled MCP stubs. |
 | [mcp-gateway-oversize-response.md](mcp-gateway-oversize-response.md) | Handling an MCP tool response that exceeds the gateway read buffer. |

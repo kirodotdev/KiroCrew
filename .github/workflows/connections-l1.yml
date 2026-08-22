@@ -1,0 +1,79 @@
+name: Connections L1 Authorized-Grant Smoke
+
+# Scheduled smoke over the Connections providers that ALREADY hold a persisted
+# OAuth grant on the runner: where L0 (connections-l0.yml) checks account-free
+# static metadata, this rung checks a once-consented grant still works live.
+# READ FIRST -- docs/architecture/design-notes/connections-l1-smoke.md: verdict
+# table, runbook, and what a green run does NOT prove (Kiro Crew holds no token,
+# so a runtime-custody provider greens as GRANT_HELD, not a proven tool call).
+#
+# OPT-IN BY DESIGN -- inert until the repository variable CONNECTIONS_L1_RUNNER
+# names a self-hosted runner on the box where the grants live: a hosted runner
+# has no grants (every provider SKIPPED -> --min-exercised 1 makes that an
+# explicit `vacuous` failure), and seeding one takes a human at a browser once
+# per provider -- nothing here initiates consent. Not a pull_request check, for
+# connections-l0.yml's stated reason. No repository secrets, no writes to the
+# repository; the report is an artifact and the grants never leave the box.
+
+on:
+  schedule:
+    - cron: "40 7 * * *" # 07:20 is L0's slot; stagger so the two never contend
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connections-l1
+  # NOT cancel-in-progress: a cancelled run uploads no report -- the only
+  # record of the night it was cancelled on.
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    name: Smoke providers holding a grant
+    # Empty variable = no seeded box configured: skip rather than queue forever.
+    if: vars.CONNECTIONS_L1_RUNNER != ''
+    runs-on: ${{ vars.CONNECTIONS_L1_RUNNER }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Deliberately no setup-python / setup-uv: this self-hosted box already
+      # runs the gateway and the grants belong to the kiro-cli installed there;
+      # a fresh interpreter would smoke a different environment than the one
+      # the user connects from. So the sweep runs under the interpreter that
+      # OWNS the installed module (bare `python3` cannot import it under a
+      # pipx/venv install, and this src-layout checkout adds nothing to
+      # sys.path): resolve from the kirocrew entry point's shebang, fall back
+      # to python3, and fail loudly rather than smoke the wrong environment.
+      - name: Run the authorized-grant smoke sweep
+        run: |
+          set -uo pipefail
+          python_bin=""
+          entry="$(command -v kirocrew || true)"
+          shebang="$(sed -n '1s/^#!//p' "$entry" 2>/dev/null || true)"
+          case "$shebang" in
+            /*python*) "$shebang" -c 'import kiro_crew.connections.l1_smoke' 2>/dev/null && python_bin="$shebang" || true ;;
+          esac
+          if [ -z "$python_bin" ] && python3 -c 'import kiro_crew.connections.l1_smoke' 2>/dev/null; then python_bin=python3; fi
+          if [ -z "$python_bin" ]; then
+            echo "::error::no interpreter with kiro_crew.connections.l1_smoke found (checked the kirocrew entry point's shebang, then python3) -- is the installed release older than this module?"
+            exit 1
+          fi
+          "$python_bin" -m kiro_crew.connections.l1_smoke \
+            --report connections-l1-report.json \
+            --min-exercised 1
+
+      # always(): a failing sweep's report is the only record of WHICH provider
+      # regressed.
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: connections-l1
+          path: connections-l1-report.json
+          if-no-files-found: error
+          retention-days: 14
