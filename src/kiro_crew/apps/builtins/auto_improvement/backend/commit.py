@@ -22,7 +22,9 @@ from pathlib import Path
 
 from kiro_crew.security import redact
 
-from ..profiles.github_repo.pr_recipe import _prefer_authenticated_remote
+# Host-dispatching: rewrites the transport with whichever provider CLI (gh/glab)
+# owns the URL's host, so this path needs no provider knowledge of its own.
+from ..profiles import prefer_authenticated_remote as _prefer_authenticated_remote
 from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
 from ..spine.push_policy import (
     authorize_direct_push,

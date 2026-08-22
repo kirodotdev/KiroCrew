@@ -1481,6 +1481,7 @@ class GitHubRepoProfile(ProfileFieldAliases):
         # urls are neutralized so agent-run Bash inside it cannot find a push target.
         # Only the pr_recipe (a trusted publisher) receives it.
         origin_url: str = "",
+        provider: str = "github",
         track: str = TRACK_BUG,
         benchmark_cmd: str = "",
         scope_base: str = "",
@@ -1554,7 +1555,17 @@ class GitHubRepoProfile(ProfileFieldAliases):
         #: reads, so discovery keys off this raw value (see ``discover``).
         self._user_edit_globs = list(allowed_globs) if allowed_globs else None
         self.isolation = RepoIsolation(clone_path=self.clone_path, base_ref=base_ref)  # ④
-        self.pr_recipe = GitHubPRRecipe(  # ⑤ — reused verbatim
+        # ⑤ — chosen by the configured target's provider. One profile serves both
+        # hosts because only the draft CLI differs; the measurement machinery is
+        # provider-independent. The GitLab import is lazy so a GitHub-only install
+        # never pays for it on this (already-heavy) import path.
+        if provider == "gitlab":
+            from ..gitlab_repo.mr_recipe import GitLabMRRecipe
+
+            recipe_cls: type = GitLabMRRecipe
+        else:
+            recipe_cls = GitHubPRRecipe
+        self.pr_recipe = recipe_cls(
             user=user,
             clone_path=self.clone_path,
             pr_queue_dir=Path(pr_queue_dir),
@@ -1813,11 +1824,17 @@ def build_profile(config: dict) -> GitHubRepoProfile:
     else:
         base_ref = f"origin/{branch}"
 
+    # Which review provider field ⑤ drafts against. Read through the registry's
+    # resolver so a stored ``provider`` wins and legacy configs fall back to the
+    # target URL's host.
+    from .. import target_provider
+
     return GitHubRepoProfile(
         clone_path=Path(clone),
         pr_queue_dir=store.pr_queue_dir(),
         user=str(cfg.get("prUser") or cfg.get("user") or ""),
         base_ref=base_ref,
+        provider=target_provider(cfg),
         track=str(cfg.get("track") or TRACK_BUG),
         benchmark_cmd=str(cfg.get("benchmarkCommand") or ""),
         scope_base=str(cfg.get("scopeDiffBase") or ""),

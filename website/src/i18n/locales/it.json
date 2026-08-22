@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "Misura un repository GitHub prima di modificarlo. Progetta una metrica di prestazione calibrata (il metro), dimostra che la metrica è affidabile rispetto a un miglioramento noto, poi esegue cicli mantieni-o-annulla: ogni correzione candidata viene scritta in un worktree isolato, filtrata da un elenco di file modificabili e dai test del repository, e mantenuta solo quando il guadagno misurato supera la banda di rumore. I sopravvissuti vengono redatti come pull request GitHub in bozza, che sei tu a rivedere e pubblicare.",
+        "description": "Misura un repository GitHub o GitLab prima di modificarlo. Progetta una metrica di prestazione calibrata (il metro), dimostra che la metrica è affidabile rispetto a un miglioramento noto, poi esegue cicli mantieni-o-annulla: ogni correzione candidata viene scritta in un worktree isolato, filtrata da un elenco di file modificabili e dai test del repository, e mantenuta solo quando il guadagno misurato supera la banda di rumore. I sopravvissuti vengono redatti come pull request GitHub o merge request GitLab in bozza, che sei tu a rivedere e pubblicare.",
         "display_name": "Auto-Improvement",
         "highlight_1": "Dimostra prima la propria metrica: un’esecuzione si rifiuta di partire con un metro inaffidabile",
         "highlight_2": "Ogni candidato è misurato in A/B, o RED/GREEN per le correzioni di bug, mai solo “sembra giusto”",
         "highlight_3": "Mantiene una modifica solo quando il guadagno supera la banda di rumore misurata",
-        "highlight_4": "Redige pull request GitHub: solo bozze, mai pubblicate né unite per te",
+        "highlight_4": "Redige pull request GitHub e merge request GitLab: solo bozze, mai pubblicate né unite per te",
         "highlight_5": "Lavora su un clone senza push, così nulla esce dalla sandbox senza revisione",
-        "highlight_6": "Una sessione di chat riprendibile per ogni pull request, risultato ed esecuzione",
+        "highlight_6": "Una sessione di chat riprendibile per ogni pull request o merge request, risultato ed esecuzione",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo o https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

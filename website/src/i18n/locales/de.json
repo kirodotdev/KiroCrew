@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "Misst ein GitHub-Repository, bevor es daran etwas ändert. Entwirft eine kalibrierte Leistungsmetrik (das Maß), weist anhand eines bekannten Gewinns nach, dass die Metrik vertrauenswürdig ist, und führt dann Verbessern-oder-Verwerfen-Zyklen aus: Jede Kandidatenkorrektur entsteht in einem isolierten Worktree, wird gegen eine Bearbeitungs-Allowlist und die Tests des Repositorys geprüft und nur behalten, wenn der gemessene Gewinn das Rauschband übersteigt. Was übrig bleibt, wird als GitHub-Pull-Request im Entwurfsstatus angelegt, den du selbst prüfst und veröffentlichst.",
+        "description": "Misst ein GitHub- oder GitLab-Repository, bevor es daran etwas ändert. Entwirft eine kalibrierte Leistungsmetrik (das Maß), weist anhand eines bekannten Gewinns nach, dass die Metrik vertrauenswürdig ist, und führt dann Verbessern-oder-Verwerfen-Zyklen aus: Jede Kandidatenkorrektur entsteht in einem isolierten Worktree, wird gegen eine Bearbeitungs-Allowlist und die Tests des Repositorys geprüft und nur behalten, wenn der gemessene Gewinn das Rauschband übersteigt. Was übrig bleibt, wird als GitHub-Pull-Request oder GitLab-Merge-Request im Entwurfsstatus angelegt, den du selbst prüfst und veröffentlichst.",
         "display_name": "Auto-Improvement",
         "highlight_1": "Weist zuerst die eigene Metrik nach — ein Lauf startet nicht mit einem unzuverlässigen Maß",
         "highlight_2": "Jeder Kandidat wird A/B gemessen, bei Fehlerkorrekturen RED/GREEN, niemals nur „sieht richtig aus“",
         "highlight_3": "Behält eine Änderung nur, wenn der Gewinn das gemessene Rauschband übersteigt",
-        "highlight_4": "Legt GitHub-Pull-Requests an — nur als Entwurf, niemals für dich veröffentlicht oder gemergt",
+        "highlight_4": "Legt GitHub-Pull-Requests oder GitLab-Merge-Requests an — nur als Entwurf, niemals für dich veröffentlicht oder gemergt",
         "highlight_5": "Arbeitet auf einem Klon ohne Push-Recht, damit nichts ungeprüft die Sandbox verlässt",
-        "highlight_6": "Eine fortsetzbare Chat-Sitzung pro Pull Request, Befund und Lauf",
+        "highlight_6": "Eine fortsetzbare Chat-Sitzung pro Pull- oder Merge-Request, Befund und Lauf",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo oder https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

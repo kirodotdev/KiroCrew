@@ -335,6 +335,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # contained; these calls are the harness around it, not the agent's hands.
         "apps/builtins/auto_improvement/backend/clone_setup.py::_disable_push",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_gh_prefers_ssh",
+        "apps/builtins/auto_improvement/backend/clone_setup.py::_glab_prefers_ssh",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_ok",
         "apps/builtins/auto_improvement/backend/clone_setup.py::_run",
         "apps/builtins/auto_improvement/backend/clone_setup.py::list_clone_branches",
@@ -362,19 +363,24 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Was keyed to `commit_finding` until the checkout+apply block was extracted here so
         # the draft-PR route could reuse it (the detector keys by the ENCLOSING function).
         "apps/builtins/auto_improvement/backend/commit.py::materialize_queued_diff",
-        "apps/builtins/auto_improvement/backend/deps.py::_gh_authenticated",
+        "apps/builtins/auto_improvement/backend/deps.py::_forge_cli_authenticated",
         "apps/builtins/auto_improvement/backend/deps.py::install_deps",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_gh",
         "apps/builtins/auto_improvement/backend/pr_watchers.py::_git",
+        "apps/builtins/auto_improvement/backend/pr_watchers.py::_glab",
         "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py::_gh_prefers_ssh",
-        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py::_git",
+        "apps/builtins/auto_improvement/profiles/gitlab_repo/mr_recipe.py::_glab_prefers_ssh",
+        # Shared recipe plumbing: fixed argv git/forge-CLI calls against the operator's
+        # clone. Was keyed to github_repo/pr_recipe.py until the gh/glab split extracted
+        # the common half here (the detector keys by the enclosing function's file).
+        "apps/builtins/auto_improvement/profiles/pr_recipe_base.py::_git",
         # Fixed `git rev-parse --verify` argv (shell=False) against the OPERATOR-chosen
         # clone, asking whether the operator's `scopeDiffBase` resolves. The ref comes from
         # config (`_CONFIG_WRITABLE`), not from the agent, and it is passed as one argv
         # element — same class as the clone_setup git spawns above.
         # Its test's fixture: literal `git init/add/commit` against a tmp_path repo.
         "apps/builtins/auto_improvement/tests/test_suite_scope.py::_repo",
-        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py::draft",
+        "apps/builtins/auto_improvement/profiles/pr_recipe_base.py::draft",
         # Spine git plumbing: fixed argv (worktree add/remove, diff, rev-parse, status,
         # commit, push) against paths the SPINE derives — a worktree root it created and
         # a branch the operator authorized. The agent never supplies a path or a flag

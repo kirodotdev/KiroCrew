@@ -2,17 +2,17 @@
   "name": "auto-improvement",
   "version": "1.0.0",
   "displayName": "Auto-Improvement",
-  "description": "Measures a GitHub repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests you review and publish yourself.",
+  "description": "Measures a GitHub or GitLab repository before it changes it. Designs a calibrated performance metric (the ruler), proves the metric is trustworthy against a known win, then runs keep-or-revert improvement cycles: every candidate fix is written in an isolated worktree, gated against an edit allowlist and the repo's own tests, and kept only when the measured win clears the noise band. Survivors are drafted as GitHub pull requests or GitLab merge requests you review and publish yourself.",
   "author": "zedmor",
   "minKiroCrewVersion": "0.1.0",
-  "tags": ["performance", "code-quality", "automation", "agents", "github"],
+  "tags": ["performance", "code-quality", "automation", "agents", "github", "gitlab"],
   "highlights": [
     "Proves its own metric first — a run refuses to start on an untrustworthy ruler",
     "Every candidate is measured A/B, or RED/GREEN for bug fixes, never just 'looks right'",
     "Keeps a change only when the win clears the measured noise band",
-    "Drafts GitHub pull requests — draft-only, never published or merged for you",
+    "Drafts GitHub pull requests or GitLab merge requests — draft-only, never published or merged for you",
     "Works on a push-disabled clone, so nothing escapes the sandbox unreviewed",
-    "One resumable chat session per pull request, finding, and run"
+    "One resumable chat session per pull or merge request, finding, and run"
   ],
   "defaultEnabled": false,
   "skills": ["skills/ai-discover", "skills/metric-design"],
@@ -51,7 +51,8 @@
     "storage": true
   },
   "dependencies": {
-    "commands": ["git", "gh"]
+    "commands": ["git"],
+    "optionalCommands": ["gh", "glab"]
   },
   "ui": {
     "pages": [
