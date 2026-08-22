@@ -366,16 +366,59 @@ if has node && [ -d "$KIROCREW_APP_DIR/website" ]; then
     _fe_log="$(mktemp)"
     (
         cd "$KIROCREW_APP_DIR/website" &&
+        # Raise V8's heap ceiling for the bundle build. The default (~2 GB on
+        # 64-bit) is not enough for this app's 6k+ module graph, and the OOM
+        # surfaces as a build that dies without a clear cause -- leaving no
+        # dist/ and a "Dashboard HTML not found" page at first launch.
+        _fe_build() { NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" npm run build 2>>"$_fe_log"; }
+
+        # Install the exact platform-specific rolldown native binding the
+        # bundler needs, keyed off the resolved rolldown version. Last-resort
+        # repair for npm/cli#4828 when even a clean reinstall omits it.
+        _fe_install_binding() {
+            _rd_ver="$(node -p "require('./node_modules/rolldown/package.json').version" 2>/dev/null)" || return 1
+            [ -n "$_rd_ver" ] || return 1
+            case "$(uname -s)" in
+                Linux)  _rd_os="linux" ;;
+                Darwin) _rd_os="darwin" ;;
+                *) return 1 ;;
+            esac
+            case "$(uname -m)" in
+                x86_64|amd64)  _rd_arch="x64" ;;
+                aarch64|arm64) _rd_arch="arm64" ;;
+                *) return 1 ;;
+            esac
+            _rd_abi=""
+            if [ "$_rd_os" = "linux" ]; then
+                if ldd --version 2>&1 | grep -qi musl; then _rd_abi="-musl"; else _rd_abi="-gnu"; fi
+            fi
+            echo "installing @rolldown/binding-${_rd_os}-${_rd_arch}${_rd_abi}@${_rd_ver} explicitly (npm/cli#4828)" >>"$_fe_log"
+            npm install --no-audit --no-fund --no-save --loglevel=error \
+                "@rolldown/binding-${_rd_os}-${_rd_arch}${_rd_abi}@${_rd_ver}" 2>>"$_fe_log"
+        }
+
         if [ -f package-lock.json ]; then
             npm ci --no-audit --no-fund --loglevel=error 2>"$_fe_log"
         else
             npm install --no-audit --no-fund --loglevel=error 2>"$_fe_log"
         fi &&
-        # Raise V8's heap ceiling for the bundle build. The default (~2 GB on
-        # 64-bit) is not enough for this app's 6k+ module graph, and the OOM
-        # surfaces as a build that dies without a clear cause -- leaving no
-        # dist/ and a "Dashboard HTML not found" page at first launch.
-        NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=8192}" npm run build 2>>"$_fe_log"
+        # npm's optional-dependencies bug (npm/cli#4828) can leave `npm ci`
+        # without the platform-specific native binding the bundler needs
+        # (e.g. @rolldown/binding-<os>-<arch>), so the build aborts with
+        # "Cannot find native binding". `npm ci` replays a lockfile resolved
+        # on another OS/arch and drops the entry for THIS platform. Recover in
+        # two escalating steps: re-resolve from scratch (re-evaluates optional
+        # deps for the current platform), then, if that still omits it, install
+        # the exact binding explicitly. Each step rebuilds; the first that
+        # produces a bundle wins.
+        if ! _fe_build; then
+            echo "npm run build failed; re-resolving optional native deps (npm/cli#4828) and retrying" >>"$_fe_log"
+            rm -rf node_modules package-lock.json
+            npm install --no-audit --no-fund --loglevel=error 2>>"$_fe_log"
+            if ! _fe_build; then
+                _fe_install_binding && _fe_build
+            fi
+        fi
     ) &
     spinner $! "Installing npm packages & building React app…"
     _fe_ok=0
