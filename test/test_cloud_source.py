@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import os
 import tarfile
 from pathlib import Path
 
@@ -304,12 +306,434 @@ class TestBuildTarball:
             tarball.unlink()
 
     def test_clean_tree_prefers_git_archive(self, monkeypatch, tmp_path):
-        # The fast path (git archive) is still used when the tree is clean.
+        # The fast path (git archive) is still used when the tree is clean —
+        # the tarball is the git-archive output, passed through _inject_dist
+        # (a no-op without a local static/dist, which tmp_path lacks).
         monkeypatch.setattr(source, "_tracked_tree_is_dirty", lambda root: False)
-        sentinel = tmp_path / "archive.tar.gz"
-        sentinel.write_bytes(b"x")
-        monkeypatch.setattr(source, "_use_git_archive", lambda root: sentinel)
-        assert source.build_source_tarball(tmp_path) == sentinel
+
+        def _fake_archive(root):
+            out = tmp_path / "archive.tar.gz"
+            with tarfile.open(out, "w:gz") as tf:
+                payload = tmp_path / "app.py"
+                payload.write_text("x=1\n")
+                tf.add(payload, arcname="app.py")
+            return out
+
+        monkeypatch.setattr(source, "_use_git_archive", _fake_archive)
+        tarball = source.build_source_tarball(tmp_path)
+        try:
+            with tarfile.open(tarball) as tf:
+                assert "app.py" in tf.getnames()
+        finally:
+            tarball.unlink()
+
+
+class TestBuildArchivedDist:
+    @staticmethod
+    def _archive(tmp_path: Path, members: dict[str, bytes]) -> Path:
+        archive = tmp_path / "source.tar.gz"
+        with tarfile.open(archive, "w:gz") as tf:
+            for name, data in members.items():
+                ti = tarfile.TarInfo(name)
+                ti.size = len(data)
+                tf.addfile(ti, io.BytesIO(data))
+        return archive
+
+    def test_build_uses_archived_source_not_residual_checkout(self, tmp_path, monkeypatch):
+        archive = self._archive(
+            tmp_path,
+            {
+                "website/package-lock.json": b'\n{"lockfileVersion": 3}\n',
+                "website/source-marker.txt": b"archived source\n",
+            },
+        )
+        residual = tmp_path / "src" / "kiro_crew" / "static" / "dist"
+        (residual / "assets").mkdir(parents=True)
+        (residual / "index.html").write_text("<html>residual</html>\n")
+        (residual / "assets" / "app.js").write_text("// malicious residual\n")
+
+        def _build(build_root, **_kwargs):
+            website = build_root / "website"
+            assert (website / "source-marker.txt").read_text(
+                encoding="utf-8"
+            ) == "archived source\n"
+            dist = website / "dist"
+            (dist / "assets").mkdir(parents=True)
+            (dist / "index.html").write_bytes(b'<script src="/assets/app.js"></script>\n')
+            (dist / "assets" / "app.js").write_bytes(b"// archive-bound bundle\n")
+            return dist
+
+        monkeypatch.setattr(source.frontend, "build_stock_frontend", _build)
+
+        admitted = dict(source._build_archived_dist(archive))
+
+        assert admitted[f"{source._DIST_PREFIX}/assets/app.js"] == (b"// archive-bound bundle\n")
+        assert b"malicious residual" not in b"".join(admitted.values())
+
+    def test_build_refuses_output_outside_isolated_tree(self, tmp_path, monkeypatch):
+        archive = self._archive(
+            tmp_path, {"website/package-lock.json": b'{"lockfileVersion": 3}\n'}
+        )
+        outside = tmp_path / "outside-dist"
+        (outside / "assets").mkdir(parents=True)
+        (outside / "index.html").write_text("<html>outside</html>\n")
+        (outside / "assets" / "app.js").write_text("// outside\n")
+        monkeypatch.setattr(source.frontend, "build_stock_frontend", lambda *_a, **_kw: outside)
+
+        with pytest.raises(source._AbortInjection, match="outside the isolated"):
+            source._build_archived_dist(archive)
+
+
+class TestInjectDist:
+    """``_inject_dist`` ships only a frontend built from archived source."""
+
+    @staticmethod
+    def _make_archive(tmp_path: Path, names: list[str]) -> Path:
+        out = tmp_path / "in.tar.gz"
+        with tarfile.open(out, "w:gz") as tf:
+            for name in names:
+                payload = tmp_path / "payload.txt"
+                payload.write_text("x=1\n")
+                tf.add(payload, arcname=name)
+        return out
+
+    @staticmethod
+    def _make_dist(root: Path) -> Path:
+        dist = root / "src" / "kiro_crew" / "static" / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text("<html>spa</html>\n")
+        (dist / "assets" / "app.js").write_text("// bundle\n")
+        return dist
+
+    @pytest.fixture(autouse=True)
+    def _build_local_dist(self, monkeypatch, tmp_path):
+        """Keep admission tests focused; provenance has dedicated tests below."""
+
+        def _build(archive):
+            dist = archive.parent / "src" / "kiro_crew" / "static" / "dist"
+            if not dist.exists():
+                raise source._AbortInjection("frontend build failed")
+            return source._read_dist_bundle(dist, dist.resolve(strict=True))
+
+        monkeypatch.setattr(source, "_build_archived_dist", _build)
+
+    def test_dist_members_injected(self, tmp_path):
+        self._make_dist(tmp_path)
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert "install.sh" in names
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert f"{source._DIST_PREFIX}/assets/app.js" in names
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_no_dist_returns_archive_unchanged(self, tmp_path):
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        assert source._inject_dist(archive, tmp_path) == archive
+        assert archive.exists()  # not rewritten/removed
+
+    def test_dist_symlinks_never_shipped(self, tmp_path):
+        dist = self._make_dist(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_text("secret beyond the tree\n")
+        link = dist / "linked.txt"
+        try:
+            link.symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation not permitted here")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert not any("linked.txt" in n for n in names)
+            assert not any("outside.txt" in n for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_dist_secret_files_still_filtered(self, tmp_path):
+        # allow_dist_under skips only the _EXCLUDE_DIRS ("dist") check — the
+        # credential checks (.env, .npmrc, .pem) still apply inside the bundle.
+        dist = self._make_dist(tmp_path)
+        (dist / ".env").write_text("TOKEN=x\n")
+        (dist / ".npmrc").write_text("//registry/:_authToken=x\n")
+        (dist / "cert.pem").write_text("-----BEGIN-----\n")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert not any(n.endswith(".env") for n in names)
+            assert not any(n.endswith(".npmrc") for n in names)
+            assert not any(n.endswith(".pem") for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_dist_secret_dirs_still_filtered(self, tmp_path):
+        # The allow exempts only the literal "dist" component: a secret-bearing
+        # DIRECTORY staged inside the bundle (e.g. a copied static/dist/.aws)
+        # must still be refused — the credential checks are name/suffix-based
+        # and would not catch .aws/credentials on their own.
+        dist = self._make_dist(tmp_path)
+        aws_dir = dist / ".aws"
+        aws_dir.mkdir()
+        (aws_dir / "credentials").write_text("[default]\naws_access_key_id=x\n")
+        ssh_dir = dist / ".ssh"
+        ssh_dir.mkdir()
+        (ssh_dir / "id_ed25519").write_text("OPENSSH PRIVATE KEY\n")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert not any("/.aws/" in n for n in names)
+            assert not any("/.ssh/" in n for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_exclude_filter_default_still_drops_dist(self):
+        # The prefix allow is opt-in: without allow_dist_under, "dist" members
+        # (e.g. node_modules/pkg/dist/junk.js) stay excluded as before.
+        ti = tarfile.TarInfo("node_modules/pkg/dist/junk.js")
+        assert source._exclude_filter(ti) is None
+        assert source._exclude_filter(ti, allow_dist_under=source._DIST_PREFIX) is None
+        ok = tarfile.TarInfo(f"{source._DIST_PREFIX}/index.html")
+        assert source._exclude_filter(ok) is None  # default unchanged
+        assert source._exclude_filter(ok, allow_dist_under=source._DIST_PREFIX) is ok
+
+    def test_allow_dist_under_does_not_allow_sibling_prefix(self):
+        # The allow is an exact prefix: a path under "dist-evil" is NOT under
+        # "dist", so the allow must not rescue it. This one has no literal "dist"
+        # part so it passes either way — the discriminating case is below.
+        not_under = tarfile.TarInfo("src/kiro_crew/static/dist-evil/x.js")
+        assert source._exclude_filter(not_under, allow_dist_under=source._DIST_PREFIX) is not_under
+        # A member that IS under a "dist" dir but NOT the exact allowed prefix
+        # must stay excluded even when the allow is active.
+        other_dist = tarfile.TarInfo("website/node_modules/pkg/dist/junk.js")
+        assert source._exclude_filter(other_dist, allow_dist_under=source._DIST_PREFIX) is None
+
+    def test_hardlinked_credential_in_dist_refused(self, tmp_path):
+        # A HARDLINK planted in dist aliasing a credential file has a path
+        # inside the checkout and is not a symlink — only the nolink read gate
+        # (fstat st_nlink > 1 on the opened descriptor) catches it. A planted
+        # filesystem object has no legitimate shape inside a Vite build tree,
+        # so ONE rejection aborts the WHOLE injection: nothing ships, the box
+        # builds with npm.
+        dist = self._make_dist(tmp_path)
+        secret = tmp_path / "outside-secret.txt"
+        secret.write_text("AKIAIOSFODNN7EXAMPLE\n")
+        try:
+            os.link(secret, dist / "assets" / "vendor-abc123.js")
+        except (OSError, NotImplementedError):
+            pytest.skip("hardlinks not supported on this filesystem")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        assert out == archive  # aborted: original archive, no dist at all
+        with tarfile.open(archive) as tf:
+            assert tf.getnames() == ["install.sh"]
+
+    def test_oversized_asset_aborts_atomically(self, tmp_path, monkeypatch):
+        dist = self._make_dist(tmp_path)
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        original = archive.read_bytes()
+        real_read = source.hooks.safe_read_file_bytes_nolink
+        created: list[str] = []
+        real_ntf = source.tempfile.NamedTemporaryFile
+
+        def _oversized(path, *args, **kwargs):
+            if Path(path) == dist / "assets" / "app.js":
+                raise source.hooks.FileTooLargeError("over the per-file cap")
+            return real_read(path, *args, **kwargs)
+
+        def _capturing_ntf(*args, **kwargs):
+            temp = real_ntf(*args, **kwargs)
+            created.append(temp.name)
+            return temp
+
+        monkeypatch.setattr(source.hooks, "safe_read_file_bytes_nolink", _oversized)
+        monkeypatch.setattr(source.tempfile, "NamedTemporaryFile", _capturing_ntf)
+
+        assert source._inject_dist(archive, tmp_path) == archive
+        assert archive.read_bytes() == original
+        assert created and not any(Path(path).exists() for path in created)
+
+    def test_credential_in_text_asset_aborts_injection(self, tmp_path):
+        dist = self._make_dist(tmp_path)
+        (dist / "assets" / "config.js").write_text(
+            'window.config={accessKey:"AKIAIOSFODNN7EXAMPLE"};\n'
+        )
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        original = archive.read_bytes()
+
+        out = source._inject_dist(archive, tmp_path)
+
+        assert out == archive
+        assert archive.read_bytes() == original
+        with tarfile.open(archive) as tf:
+            assert tf.getnames() == ["install.sh"]
+
+    def test_exact_bare_aws_secret_in_text_asset_aborts_injection(self, tmp_path):
+        dist = self._make_dist(tmp_path)
+        (dist / "assets" / "config.js").write_text(
+            'window.secret="wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY";\n'
+        )
+        archive = self._make_archive(tmp_path, ["install.sh"])
+
+        assert source._inject_dist(archive, tmp_path) == archive
+
+    def test_real_bundled_data_uri_does_not_false_positive(self, tmp_path):
+        dist = self._make_dist(tmp_path)
+        # This 231-character PNG data run comes from Kiro Crew's built editor
+        # CSS and trips the generic bare-secret sliding-window heuristic. Long
+        # minified runs are not an asset-safe signal; distinctive credentials
+        # and exact 40-character bare AWS secrets remain blocked.
+        data = (
+            "iVBORw0KGgoAAAANSUhEUgAAAAQAAAAECAYAAACp8Z5+AAAAAXNSR0IArs4c6Q"
+            "AAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAAZdEVYdFNv"
+            "ZnR3YXJlAHBhaW50Lm5ldCA0LjAuMTZEaa/1AAAAHUlEQVQYV2PYvXu3JAi7u"
+            "LiAMaYAjAGTQBPYLQkAa/0Zef3qRswAAAAASUVORK5CYII"
+        )
+        (dist / "assets" / "editor.css").write_text(
+            f'.icon{{background:url("data:image/png;base64,{data}")}}\n'
+        )
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                assert f"{source._DIST_PREFIX}/assets/editor.css" in tf.getnames()
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_symlinked_index_is_not_read(self, tmp_path):
+        dist = tmp_path / "src" / "kiro_crew" / "static" / "dist"
+        (dist / "assets").mkdir(parents=True)
+        outside = tmp_path / "outside-index.html"
+        outside.write_text("<html>outside</html>\n")
+        try:
+            (dist / "index.html").symlink_to(outside)
+        except OSError:
+            pytest.skip("symlink creation not permitted here")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+
+        assert source._inject_dist(archive, tmp_path) == archive
+
+    def test_control_char_in_ref_is_escaped_in_diagnostic(self, tmp_path):
+        dist = tmp_path / "src" / "kiro_crew" / "static" / "dist"
+        dist.mkdir(parents=True)
+        (dist / "index.html").write_text('<script src="/assets/missing\x1b[31m.js"></script>\n')
+
+        with pytest.raises(source._AbortInjection) as exc_info:
+            source._read_dist_bundle(dist, dist.resolve(strict=True))
+        reason = str(exc_info.value)
+
+        assert "\x1b" not in reason
+        assert r"\x1b" in reason
+
+    def test_non_asset_extension_refused_by_allowlist(self, tmp_path):
+        # Vite copies website/public/* into dist verbatim, so an untracked
+        # secrets.yaml (or an extensionless credential) parked there would
+        # ship to S3. The type allowlist refuses it independent of the
+        # name/suffix denylists, while the legit members still ship.
+        dist = self._make_dist(tmp_path)
+        (dist / "secrets.yaml").write_text("aws_secret_access_key: hunter2\n")
+        (dist / "id_rsa_backup").write_text("PRIVATE KEY\n")
+        (dist / "notes.txt").write_text("internal deploy notes\n")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = tf.getnames()
+            assert f"{source._DIST_PREFIX}/index.html" in names
+            assert f"{source._DIST_PREFIX}/assets/app.js" in names
+            assert not any(n.endswith("secrets.yaml") for n in names)
+            assert not any(n.endswith("id_rsa_backup") for n in names)
+            assert not any(n.endswith("notes.txt") for n in names)
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_allowlist_admits_typical_vite_output(self, tmp_path):
+        # The allowlist must not refuse real build output: hashed chunks,
+        # sourcemaps, the webmanifest, fonts, images and wasm all ship.
+        dist = self._make_dist(tmp_path)
+        for name in (
+            "assets/chunk-ab12cd34.js",
+            "assets/style-ef56ab78.css",
+            "assets/app.js.map",
+            "manifest.json",
+            "site.webmanifest",
+            "icon-192.png",
+            "logo.svg",
+            "fonts/inter.woff2",
+            "vendor/react.mjs",
+            "pcm.wasm",
+        ):
+            p = dist / name
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("x\n")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        try:
+            with tarfile.open(out) as tf:
+                names = set(tf.getnames())
+            for name in (
+                "assets/chunk-ab12cd34.js",
+                "assets/style-ef56ab78.css",
+                "assets/app.js.map",
+                "manifest.json",
+                "site.webmanifest",
+                "icon-192.png",
+                "logo.svg",
+                "fonts/inter.woff2",
+                "vendor/react.mjs",
+                "pcm.wasm",
+            ):
+                assert f"{source._DIST_PREFIX}/{name}" in names
+        finally:
+            out.unlink(missing_ok=True)
+
+    def test_refused_referenced_chunk_aborts_injection(self, tmp_path):
+        # Atomicity: if a chunk index.html references is refused admission
+        # (here: the chunk on disk is a SYMLINK, which the walk skips), the
+        # bundle must not ship AT ALL — shipping the index without its chunk
+        # would make install.sh skip the on-box build and the box serve a
+        # shell whose chunk 404s.
+        dist = tmp_path / "src" / "kiro_crew" / "static" / "dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            '<html><script src="/assets/app-deadbeef.js"></script></html>\n'
+        )
+        real = tmp_path / "elsewhere.js"
+        real.write_text("// real chunk kept outside the tree\n")
+        try:
+            (dist / "assets" / "app-deadbeef.js").symlink_to(real)
+        except OSError:
+            pytest.skip("symlink creation not permitted here")
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        assert out == archive  # aborted: partial dist never rides
+        with tarfile.open(archive) as tf:
+            assert tf.getnames() == ["install.sh"]
+
+    def test_incomplete_dist_not_shipped(self, tmp_path):
+        # An index whose referenced hashed chunks are missing (torn tree from a
+        # failed/partial build) must NOT ship: install.sh would skip the on-box
+        # npm build because index.html exists, and the box would serve a shell
+        # whose every chunk 404s.
+        dist = tmp_path / "src" / "kiro_crew" / "static" / "dist"
+        dist.mkdir(parents=True)
+        (dist / "index.html").write_text(
+            '<html><script src="/assets/app-deadbeef.js"></script></html>\n'
+        )
+        archive = self._make_archive(tmp_path, ["install.sh"])
+        out = source._inject_dist(archive, tmp_path)
+        assert out == archive  # unchanged: incomplete bundle refused
+        with tarfile.open(archive) as tf:
+            assert tf.getnames() == ["install.sh"]
 
 
 class TestBucketNaming:

@@ -192,13 +192,11 @@ src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
 src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
-src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
 src/kiro_crew/cli_doctor.py
 src/kiro_crew/cli_server.py
 src/kiro_crew/cli_setup.py
 src/kiro_crew/cloud/connect.py
-src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
 src/kiro_crew/config/paths.py
@@ -322,7 +320,6 @@ src/kiro_crew/eval/bench/safepath.py
 src/kiro_crew/eval/bench/scorers.py
 src/kiro_crew/eval/runner.py
 src/kiro_crew/eval/scenario.py
-src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
 src/kiro_crew/heartbeat.py
@@ -853,7 +850,6 @@ test/test_fixtures_helper.py
 test/test_folder_store_writer.py
 test/test_folder_watch_handlers.py
 test/test_folder_watcher.py
-test/test_frontend_dist_resolve.py
 test/test_frontend_edition_build.py
 test/test_frontmatter.py
 test/test_gateway_appkit_endpoints.py

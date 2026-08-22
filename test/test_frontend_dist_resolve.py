@@ -346,6 +346,8 @@ async def test_build_frontend_async_spawns_resolved_npm_path(tmp_path, monkeypat
     for program in calls:
         assert program == fake_npm
         assert program != "npm"
+
+
 # ── stage_built_dist: the served tree must not alias the Vite output ────────
 #
 # ensure_dev_dist_symlink() points static/dist at website/dist, so a running
@@ -423,8 +425,7 @@ def test_stage_built_dist_keeps_serving_when_copy_fails(tmp_path):
 
     assert (static_dist / "index.html").read_text() == "previously staged"
     assert not any(
-        p.name.startswith(".dist.staging.") and p.is_dir()
-        for p in static_dist.parent.iterdir()
+        p.name.startswith(".dist.staging.") and p.is_dir() for p in static_dist.parent.iterdir()
     ), "temporary staging dir must not be left behind"
     assert built.is_dir()
 
@@ -446,8 +447,7 @@ def test_stage_built_dist_sweeps_abandoned_staging_dirs(tmp_path):
 
     assert not orphan.exists()
     leftovers = [
-        p for p in static_parent.iterdir()
-        if p.name.startswith(".dist.staging.") and p.is_dir()
+        p for p in static_parent.iterdir() if p.name.startswith(".dist.staging.") and p.is_dir()
     ]
     assert leftovers == []
 
@@ -517,8 +517,10 @@ def test_concurrent_staging_does_not_destroy_the_served_tree(tmp_path):
         except BaseException as exc:  # noqa: BLE001 - surfaced via assert below
             errors.append(exc)
 
-    with patch.object(frontend.platform_compat, "file_lock", _counting_lock), \
-            patch.object(frontend, "_stage_dist_locked", _instrumented):
+    with (
+        patch.object(frontend.platform_compat, "file_lock", _counting_lock),
+        patch.object(frontend, "_stage_dist_locked", _instrumented),
+    ):
         threads = [threading.Thread(target=_stage) for _ in range(workers)]
         for t in threads:
             t.start()
@@ -566,7 +568,8 @@ def test_stage_built_dist_restores_previous_bundle_when_swap_fails(tmp_path):
     assert (static_dist / "index.html").read_text() == "last good bundle"
     assert (static_dist / "assets" / "old-chunk.js").is_file()
     leftovers = [
-        p.name for p in static_dist.parent.iterdir()
+        p.name
+        for p in static_dist.parent.iterdir()
         if p.is_dir() and p.name.startswith(".dist.staging.")
     ]
     assert leftovers == [], leftovers
@@ -598,7 +601,8 @@ def test_stage_built_dist_restores_symlink_when_swap_fails(tmp_path):
     assert static_dist.resolve() == built.resolve()
     assert (static_dist / "index.html").is_file()
     residue = [
-        p.name for p in static_dist.parent.iterdir()
+        p.name
+        for p in static_dist.parent.iterdir()
         if p.name.startswith((".dist.staging.", ".dist.previous."))
         and p.name != ".dist.staging.lock"
     ]
@@ -654,7 +658,8 @@ def test_stage_built_dist_refuses_when_source_is_emptied_mid_copy(tmp_path, caps
     assert (static_dist / "index.html").read_text() == "last good bundle"
     assert built.is_dir()
     residue = [
-        p.name for p in static_dist.parent.iterdir()
+        p.name
+        for p in static_dist.parent.iterdir()
         if p.name.startswith((".dist.staging.", ".dist.previous."))
         and p.name != ".dist.staging.lock"
     ]
@@ -686,7 +691,7 @@ def test_incomplete_bundle_reason_ignores_route_served_references(tmp_path):
     than emitted into dist. Treating it as missing would refuse every stage.
     """
     complete = _make_dist(tmp_path / "dist")
-    assert '/manifest.js' in (complete / "index.html").read_text()
+    assert "/manifest.js" in (complete / "index.html").read_text()
     assert not (complete / "manifest.js").exists()
 
     assert frontend._incomplete_bundle_reason(complete) == ""
@@ -709,6 +714,51 @@ def test_stage_built_dist_sweeps_residue_even_when_refusing(tmp_path):
     assert frontend._stage_dist(tmp_path / "website" / "dist", tmp_path) is False
 
     assert not orphan.exists(), "residue survived a refused stage"
+
+
+def test_build_stock_frontend_uses_lockfile_without_lifecycle_scripts(tmp_path, monkeypatch):
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    monkeypatch.setenv("KIROCREW_EDITION_DIR", "/private/edition")
+    monkeypatch.setenv("KIROCREW_ALLOW_EDITION", "1")
+    calls: list[tuple[list[str], dict[str, str]]] = []
+
+    def _run(website_dir, npm, args, timeout, log, label, *, env=None):
+        assert website_dir == website
+        assert npm == "/usr/bin/npm"
+        assert env is not None
+        calls.append((args, env))
+        if args == ["run", "build"]:
+            _make_dist(website / "dist")
+        return True
+
+    monkeypatch.setattr(frontend, "_run_npm_step", _run)
+
+    assert frontend.build_stock_frontend(tmp_path, npm="/usr/bin/npm") == (website / "dist")
+    assert [args for args, _env in calls] == [
+        ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+        ["run", "build"],
+    ]
+    for _args, env in calls:
+        assert "KIROCREW_EDITION_DIR" not in env
+        assert "KIROCREW_ALLOW_EDITION" not in env
+
+
+def test_build_stock_frontend_stops_when_install_fails(tmp_path, monkeypatch):
+    website = tmp_path / "website"
+    website.mkdir()
+    (website / "package-lock.json").write_text('{"lockfileVersion": 3}\n')
+    calls: list[list[str]] = []
+
+    def _run(_website, _npm, args, *_rest, **_kwargs):
+        calls.append(args)
+        return False
+
+    monkeypatch.setattr(frontend, "_run_npm_step", _run)
+
+    assert frontend.build_stock_frontend(tmp_path, npm="/usr/bin/npm") is None
+    assert calls == [["ci", "--ignore-scripts", "--no-audit", "--no-fund"]]
 
 
 def test_build_and_stage_holds_the_lock_across_the_build(tmp_path):
@@ -790,16 +840,19 @@ def test_build_and_stage_reaps_the_whole_tree_on_timeout(tmp_path):
                 raise subprocess.TimeoutExpired(cmd="npm", timeout=timeout or 0)
             return -9
 
-    with patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _HangingProc()), \
-         patch.object(
-             frontend.platform_compat, "kill_process_tree",
-             lambda pid, sig: killed.append((pid, sig)) or True,
-         ):
+    with (
+        patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _HangingProc()),
+        patch.object(
+            frontend.platform_compat,
+            "kill_process_tree",
+            lambda pid, sig: killed.append((pid, sig)) or True,
+        ),
+    ):
         assert frontend.build_and_stage(tmp_path, npm="/usr/bin/true") is False
 
-    assert killed == [(424242, frontend.platform_compat.SIGKILL)], (
-        "the build tree was not reaped as a group on timeout"
-    )
+    assert killed == [
+        (424242, frontend.platform_compat.SIGKILL)
+    ], "the build tree was not reaped as a group on timeout"
 
 
 def test_build_timeout_reaps_a_descendant_that_escaped_the_group(tmp_path):
@@ -833,9 +886,11 @@ def test_build_timeout_reaps_a_descendant_that_escaped_the_group(tmp_path):
         killed.append(pid)
         return True
 
-    with patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _HangingProc()), \
-         patch.object(frontend.platform_compat, "process_descendants", _descendants), \
-         patch.object(frontend.platform_compat, "kill_process_tree", _kill):
+    with (
+        patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _HangingProc()),
+        patch.object(frontend.platform_compat, "process_descendants", _descendants),
+        patch.object(frontend.platform_compat, "kill_process_tree", _kill),
+    ):
         assert frontend.build_and_stage(tmp_path, npm="/usr/bin/true") is False
 
     assert 515151 in killed, "the escaped descendant was left writing website/dist"
@@ -870,11 +925,14 @@ def test_build_and_stage_accepts_a_string_repo_path(tmp_path):
         def wait(self, timeout=None):
             return 0
 
-    with patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _Done()), \
-         patch.object(frontend.subprocess, "run", lambda *a, **kw: _Done()):
+    with (
+        patch.object(frontend.subprocess, "Popen", lambda *a, **kw: _Done()),
+        patch.object(frontend.subprocess, "run", lambda *a, **kw: _Done()),
+    ):
         # str, exactly as `build_and_stage(sys.argv[1], npm=sys.argv[2])` gets it.
-        assert frontend.build_and_stage(
-            str(tmp_path), npm="/usr/bin/true", log=lambda _m: None
-        ) is True
+        assert (
+            frontend.build_and_stage(str(tmp_path), npm="/usr/bin/true", log=lambda _m: None)
+            is True
+        )
 
     assert (tmp_path / "src" / "kiro_crew" / "static" / "dist" / "index.html").is_file()

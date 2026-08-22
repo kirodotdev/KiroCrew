@@ -12,14 +12,17 @@ reused; each launch uploads to ``<tag>/kirocrew-src.tar.gz``.
 
 from __future__ import annotations
 
+import io
 import logging
 import os
+import shutil
 import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 from typing import Optional
 
+from kiro_crew import frontend, hooks, security
 from kiro_crew.cloud import aws
 from kiro_crew.sel import sel
 
@@ -122,10 +125,88 @@ def repo_root() -> Path:
     )
 
 
-def _exclude_filter(ti: tarfile.TarInfo) -> Optional[tarfile.TarInfo]:
-    """Shared tar member filter: drop excluded dirs + credential-shaped files."""
+# Repo-relative destination for the source-bound frontend bundle. ``static/dist``
+# is git-ignored (and "dist" is in ``_EXCLUDE_DIRS``), so the source archive never
+# carries a residual checkout bundle; ``_inject_dist`` builds from the archived
+# ``website/`` bytes and appends only the admitted result.
+_DIST_PREFIX = "src/kiro_crew/static/dist"
+
+# Extension allowlist for injected dist members. Vite/Rollup output (and the
+# ``website/public/`` files it copies verbatim) is entirely static web assets,
+# so admission is type-level: only build-artifact-shaped files ship. A stray
+# ``secrets.yaml`` / ``id_rsa`` / extensionless credential dropped into
+# ``website/public/`` is refused by TYPE, independent of the name/suffix
+# denylists in :func:`_exclude_filter` — an allowlist cannot be extended by an
+# attacker naming a file cleverly, where a denylist can be sidestepped.
+_DIST_ALLOWED_SUFFIXES = frozenset(
+    {
+        # documents + code
+        ".html",
+        ".js",
+        ".mjs",
+        ".cjs",
+        ".css",
+        ".map",
+        ".json",
+        ".webmanifest",
+        ".wasm",
+        # images
+        ".svg",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".ico",
+        ".avif",
+        # fonts
+        ".woff",
+        ".woff2",
+        ".ttf",
+    }
+)
+
+# Allowed asset types whose bytes must be valid UTF-8 and credential-free. Binary
+# formats bypass text decoding but still pass the name, type and hardened-read
+# gates. SVG is XML text and source maps/manifests are JSON text.
+_DIST_TEXT_SUFFIXES = frozenset(
+    {".html", ".js", ".mjs", ".cjs", ".css", ".map", ".json", ".webmanifest", ".svg"}
+)
+
+
+def _dist_suffix_allowed(arcname: str) -> bool:
+    """Whether an injected dist member's extension is an allowed asset type."""
+    suffix = Path(arcname).suffix.lower()
+    return suffix in _DIST_ALLOWED_SUFFIXES
+
+
+def _exclude_filter(
+    ti: tarfile.TarInfo, allow_dist_under: Optional[str] = None
+) -> Optional[tarfile.TarInfo]:
+    """Shared tar member filter: drop excluded dirs + credential-shaped files.
+
+    ``allow_dist_under`` names the ONE repo-relative prefix whose members
+    exempt only the ``dist`` component of ``_EXCLUDE_DIRS`` — used by
+    :func:`_inject_dist` for the prebuilt ``static/dist`` bundle, which
+    otherwise trips on the ``dist`` dir name. Every other excluded dir (``.aws``,
+    ``.ssh``, …) and the suffix / ``.env`` / credential-name checks still apply
+    to every member, so a ``static/dist/.aws/credentials`` or
+    ``static/dist/.env`` is still refused. Default ``None`` keeps every other
+    caller byte-identical.
+    """
+    # Pure-posix join: injected arcnames are already posix and the allow-prefix
+    # comparison must not vary with the host separator.
+    name = "/".join(Path(ti.name).parts)
     parts = set(Path(ti.name).parts)
-    if parts & _EXCLUDE_DIRS:  # excluded / secret-bearing directory anywhere in path
+    excluded = parts & _EXCLUDE_DIRS
+    if allow_dist_under is not None and (
+        name == allow_dist_under or name.startswith(allow_dist_under + "/")
+    ):
+        # Only the prefix's own `dist` component is exempt; every other excluded
+        # dir (secret-bearing or not) still refuses the member — a staged
+        # ``static/dist/.aws/credentials`` must never ship.
+        excluded -= {"dist"}
+    if excluded:  # excluded / secret-bearing dir anywhere
         return None
     if ti.name.endswith(_EXCLUDE_SUFFIXES):  # credential file suffixes
         return None
@@ -329,24 +410,196 @@ def _tar_fallback(root: Path) -> Path:
     return Path(out.name)
 
 
+class _AbortInjection(Exception):
+    """Internal: discard the injected tarball and ship the original archive."""
+
+
+def _read_dist_bundle(dist: Path, dist_resolved: Path) -> list[tuple[str, bytes]]:
+    """Return one policy-checked, immutable snapshot of the dist bundle.
+
+    Every candidate is read exactly once through the no-link gate. Text assets
+    are decoded strictly and scanned for credential-shaped content without
+    rewriting their bytes. ``index.html`` is parsed from that same pinned byte
+    snapshot, so completeness checks cannot follow a swapped path or inspect
+    content different from what the tarball receives.
+    """
+    admitted: list[tuple[str, bytes]] = []
+    admitted_arcnames: set[str] = set()
+    index_html: Optional[str] = None
+
+    for file_path in sorted(dist.rglob("*")):
+        if not file_path.is_file() or file_path.is_symlink():
+            continue
+        arcname = f"{_DIST_PREFIX}/{file_path.relative_to(dist).as_posix()}"
+        ti = tarfile.TarInfo(arcname)
+        if _exclude_filter(ti, allow_dist_under=_DIST_PREFIX) is None:
+            logger.info("excluding %r from source tarball", arcname)
+            continue
+        if not _dist_suffix_allowed(arcname):
+            logger.info(
+                "excluding %r (extension not in the dist asset allowlist)",
+                arcname,
+            )
+            continue
+
+        try:
+            data = hooks.safe_read_file_bytes_nolink(str(file_path), within_root=str(dist_resolved))
+        except hooks.FileTooLargeError as exc:
+            raise _AbortInjection(f"{arcname!r} exceeds the hardened read limit") from exc
+        if data is None:
+            raise _AbortInjection(
+                f"{arcname!r} rejected by the hardened read gate "
+                "(hardlink/symlink/non-regular or escaped the tree)"
+            )
+
+        suffix = Path(arcname).suffix.lower()
+        if suffix in _DIST_TEXT_SUFFIXES:
+            try:
+                decoded = data.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise _AbortInjection(f"text asset {arcname!r} is not valid UTF-8") from exc
+            _, warnings = security.redact_credentials(decoded)
+            # The generic bare-secret heuristic slides over arbitrarily long
+            # base64-shaped runs. Minified JS/CSS legitimately contains such
+            # runs (including this project's Mermaid/editor bundles), so that
+            # warning is not an asset-safe signal. Keep every distinctive and
+            # encoded-credential match; those have reliable token structure.
+            actionable = [
+                warning
+                for warning in warnings
+                if not warning.startswith("Redacted bare secret key")
+                or warning == "Redacted bare secret key (40 chars)"
+            ]
+            if actionable:
+                raise _AbortInjection(f"text asset {arcname!r} contains credential-shaped content")
+            if arcname == f"{_DIST_PREFIX}/index.html":
+                index_html = decoded
+
+        admitted.append((arcname, data))
+        admitted_arcnames.add(arcname)
+
+    if index_html is None:
+        raise _AbortInjection("index.html was not admitted by the hardened read gate")
+
+    unshipped = [
+        ref
+        for ref in frontend._index_asset_refs(index_html)
+        if f"{_DIST_PREFIX}{ref}" not in admitted_arcnames
+    ]
+    if unshipped:
+        raise _AbortInjection(
+            f"index.html references {unshipped[0]!r} which was refused admission "
+            "— a partial dist must never ship"
+        )
+    return admitted
+
+
+def _build_archived_dist(archive: Path) -> list[tuple[str, bytes]]:
+    """Build and admit a stock frontend from the exact archived source bytes."""
+    with tempfile.TemporaryDirectory(prefix="kirocrew-frontend-") as temp:
+        build_root = Path(temp).resolve(strict=True)
+        website_root = build_root / "website"
+        with tarfile.open(archive, "r:gz") as src:
+            for member in src:
+                try:
+                    rel = Path(member.name).relative_to("website")
+                except ValueError:
+                    continue
+                if not member.isreg() or not rel.parts or ".." in rel.parts:
+                    continue
+                target = website_root / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                source_fh = src.extractfile(member)
+                if source_fh is None:
+                    raise _AbortInjection(f"could not read archived {member.name!r}")
+                with source_fh:
+                    target.write_bytes(source_fh.read())
+
+        messages: list[str] = []
+        dist = frontend.build_stock_frontend(build_root, log=messages.append)
+        if dist is None:
+            reason = messages[-1].strip() if messages else "frontend build failed"
+            raise _AbortInjection(reason)
+        try:
+            dist.lstat()
+            dist_resolved = dist.resolve(strict=True)
+        except OSError as exc:
+            raise _AbortInjection(f"could not resolve built frontend ({exc!r})") from exc
+        if dist.is_symlink() or build_root not in dist_resolved.parents:
+            raise _AbortInjection("built frontend resolves outside the isolated source tree")
+        return _read_dist_bundle(dist, dist_resolved)
+
+
+def dist_ineligible_reason(root: Path) -> str:
+    """Why a source-bound frontend cannot be built for a cloud launch ("" = eligible)."""
+    website = root / "website"
+    if not website.is_dir():
+        return "website source is not present in this checkout"
+    if not (website / "package-lock.json").is_file():
+        return "website/package-lock.json is missing"
+    if not shutil.which("npm"):
+        return "npm is not installed"
+    return ""
+
+
+def _inject_dist(archive: Path, root: Path) -> Path:
+    """Build from archived ``website/`` source and append the admitted dist.
+
+    The ignored checkout ``static/dist`` is never trusted: build scripts can
+    produce arbitrary same-origin JavaScript, so no marker can safely bind a
+    residual bundle to the source being shipped. Instead the stock frontend is
+    rebuilt in a temporary root populated only from the already-filtered source
+    archive. Any build or admission refusal returns that original archive
+    unchanged so the box builds with npm.
+    """
+    injected = tempfile.NamedTemporaryFile(  # noqa: SIM115 - handed to caller
+        prefix="kirocrew-src-", suffix=".tar.gz", delete=False
+    )
+    injected.close()
+    try:
+        admitted = _build_archived_dist(archive)
+        with tarfile.open(archive, "r:gz") as src, tarfile.open(injected.name, "w:gz") as dst:
+            for member in src:
+                fh = src.extractfile(member) if member.isreg() else None
+                dst.addfile(member, fh)
+            for arcname, data in admitted:
+                ti = tarfile.TarInfo(arcname)
+                ti.size = len(data)
+                dst.addfile(ti, io.BytesIO(data))
+    except _AbortInjection as exc:
+        logger.warning("not shipping %s: %s — the box will build with npm", _DIST_PREFIX, exc)
+        Path(injected.name).unlink(missing_ok=True)
+        return archive
+    except BaseException:
+        Path(injected.name).unlink(missing_ok=True)
+        raise
+    archive.unlink(missing_ok=True)
+    logger.info("built and injected frontend %s from archived source", _DIST_PREFIX)
+    return Path(injected.name)
+
+
 def build_source_tarball(root: Optional[Path] = None) -> Path:
     """Package the local source tree into a gzip tarball; return its path.
 
     Uses ``git archive HEAD`` (fast) for a clean checkout, but if the tracked
     working tree is DIRTY (uncommitted edits to tracked files) it uses the
     ``git ls-files`` tar path instead — otherwise the launch would silently ship
-    stale last-commit code. Both paths ship only tracked files.
+    stale last-commit code. Both paths ship only tracked files. ``_inject_dist``
+    then builds the stock frontend from that exact archive in an isolated
+    temporary tree and appends only its admitted byte snapshot. A residual
+    gitignored checkout bundle is never read; a failed build leaves the original
+    archive unchanged so the box builds its own frontend.
     """
     root = root or repo_root()
     if _tracked_tree_is_dirty(root):
         logger.info("working tree has uncommitted tracked changes; packaging the working tree")
-        return _tar_fallback(root)
+        return _inject_dist(_tar_fallback(root), root)
     archive = _use_git_archive(root)
     if archive is not None:
         logger.info("packaged source via git archive: %s", archive)
-        return archive
+        return _inject_dist(archive, root)
     logger.info("git archive unavailable; using tracked-file tarfile fallback")
-    return _tar_fallback(root)
+    return _inject_dist(_tar_fallback(root), root)
 
 
 def _account_id(profile: str, region: str) -> str:

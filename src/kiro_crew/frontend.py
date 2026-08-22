@@ -21,7 +21,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Iterator, List, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.executors import subprocess_executor
@@ -240,6 +240,18 @@ def ensure_dev_dist_symlink() -> Optional[Path]:
     return candidate
 
 
+def _index_asset_refs(html: str) -> List[str]:
+    """The ``/assets/`` chunk paths ``index.html`` references.
+
+    Vite emits the content-hashed chunks under ``/assets/``, so these are the
+    completeness signal shared by :func:`_incomplete_bundle_reason` (chunks
+    exist on disk) and the source-shipping injector (chunks made it into the
+    tarball). Gateway-served routes (``/manifest.js``) are deliberately not
+    matched.
+    """
+    return re.findall(r'(?:src|href)="(/assets/[^"?#]+\.(?:js|css))', html)
+
+
 def _incomplete_bundle_reason(tree: Path) -> str:
     """Why ``tree`` is not a complete built frontend, or ``""`` if it is.
 
@@ -260,7 +272,7 @@ def _incomplete_bundle_reason(tree: Path) -> str:
         html = index.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return f"index.html is unreadable ({exc})"
-    refs = re.findall(r'(?:src|href)="(/assets/[^"?#]+\.(?:js|css))', html)
+    refs = _index_asset_refs(html)
     missing = [ref for ref in refs if not (tree / ref.lstrip("/")).is_file()]
     if missing:
         return f"{len(missing)} referenced asset(s) missing, e.g. {missing[0]}"
@@ -289,10 +301,111 @@ def _staging_lock(static_parent: Path) -> Iterator[None]:
         # required=True: Windows msvcrt acquisition failures are otherwise
         # swallowed, and running without exclusion is the very outage this
         # lock exists to prevent.
-        with platform_compat.file_lock(
-            lock_fh.fileno(), exclusive=True, required=True
-        ):
+        with platform_compat.file_lock(lock_fh.fileno(), exclusive=True, required=True):
             yield
+
+
+def _run_npm_step(
+    website_dir: Path,
+    npm: str,
+    args: list[str],
+    timeout: int,
+    log: Callable[[str], None],
+    label: str,
+    *,
+    env: Optional[dict[str, str]] = None,
+) -> bool:
+    """Run one npm step and reap its whole process tree on timeout."""
+    proc = subprocess.Popen(
+        [npm, *args],
+        env=env,
+        cwd=str(website_dir),
+        # DEVNULL, not PIPE: nothing reads the build's output, and pipes would
+        # make the post-kill drain block until every grandchild closes its
+        # inherited write handle.
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=platform_compat.IS_POSIX,
+        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
+    )
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Enumerate BEFORE killing: the kill reparents survivors to init and
+        # erases the PPID links that identify them. The group kill alone misses
+        # a descendant that started its own session.
+        descendants = platform_compat.process_descendants(proc.pid)
+        try:
+            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
+        except (ProcessLookupError, OSError, ValueError) as exc:
+            log(f"  ⚠️  Could not reap the timed-out frontend {label}: {exc}")
+        for child in descendants:
+            try:
+                platform_compat.kill_process_tree(child, platform_compat.SIGKILL)
+            except (ProcessLookupError, OSError, ValueError):
+                continue
+        try:
+            proc.wait(timeout=_BUILD_KILL_GRACE)
+        except subprocess.TimeoutExpired:
+            log(f"  ⚠️  Frontend {label} did not die after SIGKILL")
+        log(f"  ⚠️  Frontend {label} timed out — dashboard may be stale")
+        return False
+    if proc.returncode != 0:
+        log(f"  ⚠️  Frontend {label} failed — dashboard may be stale")
+        return False
+    return True
+
+
+def build_stock_frontend(
+    proj_path: Path,
+    npm: str | None = None,
+    log: Callable[[str], None] = print,
+) -> Optional[Path]:
+    """Build a stock dist from an isolated source tree without staging it.
+
+    Cloud source packaging extracts ``website/`` from the exact source archive
+    into a temporary root and calls this helper. Edition variables are removed:
+    an inherited composition root points outside that archive and would break
+    the guarantee that the shipped JavaScript derives only from packaged source.
+    """
+    website_dir = proj_path / _DIR_NAME
+    lockfile = website_dir / "package-lock.json"
+    if not website_dir.is_dir() or not lockfile.is_file():
+        log("  ⚠️  Archived website source or package-lock.json is missing")
+        return None
+    npm_bin = npm or shutil.which("npm")
+    if not npm_bin:
+        log("  ⚠️  npm not found — cannot build the archived frontend")
+        return None
+    env = dict(os.environ)
+    env.pop(_EDITION_DIR_ENV, None)
+    env.pop(_EDITION_OPT_IN_ENV, None)
+    if not _run_npm_step(
+        website_dir,
+        npm_bin,
+        ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
+        _INSTALL_TIMEOUT,
+        log,
+        "npm install",
+        env=env,
+    ):
+        return None
+    if not _run_npm_step(
+        website_dir,
+        npm_bin,
+        ["run", "build"],
+        _BUILD_TIMEOUT,
+        log,
+        "build",
+        env=env,
+    ):
+        return None
+    dist = website_dir / "dist"
+    reason = _incomplete_bundle_reason(dist)
+    if reason:
+        log(f"  ⚠️  Archived frontend build is incomplete ({reason})")
+        return None
+    return dist
 
 
 def _npm_build_and_stage_locked(
@@ -301,56 +414,16 @@ def _npm_build_and_stage_locked(
     npm: str,
     log: Callable[[str], None],
 ) -> bool:
-    """Run ``npm run build`` then stage it. Caller holds the staging lock.
-
-    The build is spawned in its own process group and the whole tree is reaped
-    on timeout. ``npm run build`` is ``tsc -b && vite build``, so killing only
-    npm would leave vite writing ``website/dist`` after this function returns
-    and the lock releases — a surviving writer makes the lock's exclusion
-    meaningless, since a peer could then stage a tree vite is still rewriting.
-    """
-    proc = subprocess.Popen(
-        [npm, "run", "build"],
+    """Run ``npm run build`` then stage it. Caller holds the staging lock."""
+    if not _run_npm_step(
+        website_dir,
+        npm,
+        ["run", "build"],
+        _BUILD_TIMEOUT,
+        log,
+        "build",
         env=_edition_build_env(),
-        cwd=str(website_dir),
-        # DEVNULL, not PIPE: nothing reads the build's output, and pipes would
-        # make the post-kill drain block until every grandchild closes its
-        # inherited write handle — inside the lock holder, which would then
-        # never release it.
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        start_new_session=platform_compat.IS_POSIX,
-        creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
-    )
-    try:
-        proc.wait(timeout=_BUILD_TIMEOUT)
-    except subprocess.TimeoutExpired:
-        # Enumerate BEFORE killing: the kill reparents survivors to init and
-        # erases the PPID links that identify them. The group kill alone misses
-        # a descendant that started its own session, and such an escapee keeps
-        # rewriting website/dist after this holder releases the staging lock —
-        # the mixed-bundle publication this lock exists to prevent.
-        descendants = platform_compat.process_descendants(proc.pid)
-        try:
-            platform_compat.kill_process_tree(proc.pid, platform_compat.SIGKILL)
-        except (ProcessLookupError, OSError, ValueError) as exc:
-            log(f"  ⚠️  Could not reap the timed-out frontend build: {exc}")
-        for child in descendants:
-            try:
-                platform_compat.kill_process_tree(child, platform_compat.SIGKILL)
-            except (ProcessLookupError, OSError, ValueError):
-                # Already reaped by the group kill, or no longer signalable.
-                continue
-        # Reap the direct child so it is not left a zombie. Bounded, so a
-        # survivor cannot hold the staging lock open indefinitely.
-        try:
-            proc.wait(timeout=_BUILD_KILL_GRACE)
-        except subprocess.TimeoutExpired:
-            log("  ⚠️  Frontend build did not die after SIGKILL")
-        log("  ⚠️  Frontend build timed out — dashboard may be stale")
-        return False
-    if proc.returncode != 0:
-        log("  ⚠️  Frontend build failed — dashboard may be stale")
+    ):
         return False
     static_dist = proj_path / "src" / "kiro_crew" / "static" / "dist"
     return _stage_dist_locked(website_dir / "dist", static_dist, log)
@@ -375,11 +448,7 @@ def build_and_stage(
     re-resolved here. Returns ``True`` when ``static/dist`` holds the newly built
     bundle.
     """
-    root = (
-        Path(proj_path)
-        if proj_path is not None
-        else Path(__file__).resolve().parents[2]
-    )
+    root = Path(proj_path) if proj_path is not None else Path(__file__).resolve().parents[2]
     website_dir = root / _DIR_NAME
     if not website_dir.is_dir():
         log(f"  ⚠️  No {_DIR_NAME}/ directory at {root} — nothing to build")
@@ -480,9 +549,7 @@ def _stage_dist_locked(
     try:
         # Same parent as the destination so the swap is a rename within one
         # filesystem; a cross-device staging dir would make os.replace fail.
-        tmp_dist = Path(
-            tempfile.mkdtemp(prefix=".dist.staging.", dir=static_dist.parent)
-        )
+        tmp_dist = Path(tempfile.mkdtemp(prefix=".dist.staging.", dir=static_dist.parent))
         # mkdtemp already created it, but copytree needs to create the target.
         tmp_dist.rmdir()
         shutil.copytree(built_dist, tmp_dist)
@@ -629,7 +696,9 @@ def build_frontend_sync(
     try:
         r = subprocess.run(
             [npm, *install_args],
-            cwd=str(website_dir), capture_output=True, timeout=_INSTALL_TIMEOUT,
+            cwd=str(website_dir),
+            capture_output=True,
+            timeout=_INSTALL_TIMEOUT,
         )
     except subprocess.TimeoutExpired:
         log("  ⚠️  Frontend npm install timed out — dashboard may be stale")
@@ -689,7 +758,8 @@ async def build_frontend_async(
         else ["install", "--no-audit", "--no-fund"]
     )
     npm_i = await asyncio.create_subprocess_exec(
-        npm, *install_args,
+        npm,
+        *install_args,
         cwd=str(website_dir),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
@@ -719,9 +789,7 @@ async def build_frontend_async(
         # _warn reaches push_progress, which belongs to the loop thread.
         try:
             with _staging_lock(proj_path / "src" / "kiro_crew" / "static"):
-                return _npm_build_and_stage_locked(
-                    website_dir, proj_path, npm, messages.append
-                )
+                return _npm_build_and_stage_locked(website_dir, proj_path, npm, messages.append)
         except OSError as exc:
             messages.append(f"Could not acquire the static/dist staging lock: {exc}")
             return False
