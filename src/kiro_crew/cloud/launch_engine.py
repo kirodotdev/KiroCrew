@@ -114,13 +114,16 @@ class RealLaunchEngine:
     def _allocate_port(self) -> int:
         """Pick a gateway port this crew can actually be reached on.
 
-        The tunnel forces ``local_port == remote_port`` so the embedded dashboard's
-        Origin matches what the remote gateway trusts, and it hard-fails rather than
-        falling back when that port is busy. Registering every crew on the default
-        5476 therefore produced a crew that could never be connected: the operator's
-        own gateway usually owns 5476, and a second crew would collide with the
-        first. Allocate deterministically upward from the tunnel base, skipping every
-        port the registry already hands out.
+        The tunnel PREFERS ``local_port == remote_port`` so the embedded dashboard's
+        Origin matches what the remote gateway trusts, falling back to an allocated
+        loopback port only when the mirrored one is already bound locally. Handing
+        every crew the default 5476 would therefore still be wrong, just quietly:
+        the operator's own gateway usually owns 5476 and a second crew would collide
+        with the first, so every such crew would connect on a fallback port instead
+        of the one it registered. Allocating a distinct port up front keeps the
+        registered port and the live forward the same in the common case. Allocate
+        deterministically upward from the tunnel base, skipping every port the
+        registry already hands out.
         """
         if self._port:
             return self._port

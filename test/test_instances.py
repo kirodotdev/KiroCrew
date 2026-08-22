@@ -13,6 +13,7 @@ suite needs no asyncio pytest plugin.
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 import logging
 import os
@@ -343,6 +344,80 @@ class TestPortAllocator:
         port = s.getsockname()[1]
         s.close()
         assert _is_port_free(port) is True
+
+    @pytest.mark.skipif(not socket.has_ipv6, reason="host has no IPv6 support")
+    def test_is_port_free_rejects_port_held_on_ipv6_loopback_only(self):
+        """A port free on 127.0.0.1 but LISTENing on ::1 counts as in use.
+
+        The forward binds one address, so leaving the other loopback family to a
+        foreign listener makes `localhost:<port>` resolve to whichever socket the
+        client's resolver and the platform's bind precedence pick. The probe must
+        therefore clear every loopback address, not just IPv4.
+        """
+        from kiro_crew.instances.port_allocator import _is_port_free
+
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        try:
+            s.bind(("::1", 0))
+        except OSError:  # ::1 not configured on this host
+            s.close()
+            pytest.skip("::1 is not assignable here")
+        s.listen(1)
+        port = s.getsockname()[1]
+        try:
+            # Quick check: the IPv4 half really is free, so only the ::1 half can be
+            # what makes the aggregate probe say "in use".
+            assert _is_port_free(port, "127.0.0.1") is True
+            assert _is_port_free(port) is False
+        finally:
+            s.close()
+
+    def test_is_port_free_treats_unassignable_address_as_free(self, monkeypatch):
+        """EADDRNOTAVAIL means the address does not exist, not that it is taken.
+
+        Without this, a host with IPv6 compiled in but ::1 not configured would
+        see every candidate port as occupied and connect would never allocate one.
+        """
+        import kiro_crew.instances.port_allocator as pa
+
+        real_socket = socket.socket
+
+        def fake_socket(family, type_):
+            sock = real_socket(family, type_)
+            if family == socket.AF_INET6:
+                sock.close()
+
+                class _Unassignable:
+                    def setsockopt(self, *a):
+                        pass
+
+                    def bind(self, *a):
+                        raise OSError(errno.EADDRNOTAVAIL, "Cannot assign address")
+
+                    def close(self):
+                        pass
+
+                return _Unassignable()
+            return sock
+
+        monkeypatch.setattr(pa.socket, "socket", fake_socket)
+
+        s = real_socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        assert pa._is_port_free(port) is True
+
+    def test_allocate_skips_port_held_on_one_loopback_family(self, monkeypatch):
+        """The allocator climbs past a port the aggregate probe rejects."""
+        import kiro_crew.instances.port_allocator as pa
+
+        base = 41000
+        monkeypatch.setattr(
+            pa, "_is_addr_free", lambda port, host: not (port == base and host == "::1")
+        )
+        assert pa.PortAllocator(base_port=base).allocate() == base + 1
 
 
 # ── token mint ──────────────────────────────────────────────────────────────
@@ -1305,8 +1380,10 @@ Host {host}
 class TestSshTunnelManager:
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        # Connect now probes _is_port_free (CSE SEC-016 mirror conflict check).
-        # Keep these unit tests hermetic / independent of the host's real ports.
+        # Connect probes _is_port_free for the preferred (remote) port. Keep these
+        # unit tests hermetic / independent of the host's real ports; the
+        # busy-port fallback path has its own coverage in
+        # TestConnectLocalPortAllocation.
         import kiro_crew.instances.ssh_tunnel_manager as stm
 
         monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
@@ -3595,10 +3672,11 @@ class TestInstancesStartupHooks:
 
 
 class TestPortMirror:
-    """CSE SEC-016: the SSH tunnel's local port mirrors the remote (configured)
-    port so the embedded dashboard's Origin (http://127.0.0.1:<port>) matches the
-    remote gateway's trusted port. Each connected instance must use a distinct
-    remote port; a local bind conflict hard-fails (no dynamic fallback)."""
+    """The SSH tunnel's local port PREFERS the remote (configured) port, so the
+    embedded dashboard keeps a stable, predictable origin (and reuses its
+    `mc_token_<port>` cookie) across reconnects. It is a preference, not an
+    invariant: when the preferred port is already bound locally, connect
+    allocates a free loopback port instead of refusing."""
 
     @staticmethod
     def _mgr(reg, factory, monkeypatch, *, port_free=True):
@@ -3657,26 +3735,37 @@ class TestPortMirror:
         assert reg.get("cd-1").local_port == 7900
 
     @pytest.mark.asyncio
-    async def test_port_conflict_hard_fails(self, tmp_path, monkeypatch):
+    async def test_port_conflict_falls_back_to_allocated_port(self, tmp_path, monkeypatch):
+        """A locally-bound preferred port yields an allocated local port, not an error.
+
+        The forward's REMOTE end is unchanged — only the local end moves — so the
+        remote gateway keeps serving whatever port it was configured for.
+        """
+        import kiro_crew.instances.port_allocator as pa
+        from kiro_crew.instances.constants import DEFAULT_TUNNEL_BASE_PORT
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
         captured: dict = {}
 
         def factory(iid, ssh_host, lp, rp, **k):
-            captured["called"] = True
+            captured["lp"], captured["rp"] = lp, rp
             return _FakeTunnel(iid, ssh_host, lp, rp, **k)
+
+        # Every candidate the allocator probes is free; only the preferred port
+        # (patched via _mgr's port_free=False) is taken.
+        monkeypatch.setattr(pa, "_is_port_free", lambda port, host="127.0.0.1": True)
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", remote_port=7900)
         mgr = self._mgr(reg, factory, monkeypatch, port_free=False)
 
         status = await mgr.connect("cd-1")
-        assert status.state == TunnelState.ERROR
-        assert "already in use" in (status.error or "")
-        assert "distinct remote port" in (status.error or "")
-        # We fail before opening the tunnel — factory never invoked.
-        assert "called" not in captured
+
+        assert status.state == TunnelState.CONNECTED
+        assert captured["lp"] == DEFAULT_TUNNEL_BASE_PORT
+        assert captured["rp"] == 7900
+        assert reg.get("cd-1").local_port == DEFAULT_TUNNEL_BASE_PORT
 
 
 class TestLastError:
@@ -4692,3 +4781,173 @@ class TestSsmExitErrorClassification:
         t = _SshTunnel("dev", "dev-1", 7777, 7777)
         t._stderr_buf = "Permission denied (publickey)."
         assert "ssh auth failed" in t._exit_error(255)
+
+
+class TestConnectLocalPortAllocation:
+    """`connect()` prefers the remote port but falls back to an allocated one.
+
+    The two `_is_port_free` references are deliberately patched INDEPENDENTLY:
+    `ssh_tunnel_manager`'s copy gates the preflight on the preferred port, while
+    `port_allocator`'s copy decides what the fallback allocation finds free. A
+    test that patched only one would not be able to express "preferred port busy,
+    other ports free".
+    """
+
+    def _mgr(self, tmp_path, *, base_port=53400):
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+
+        async def ok_mint(
+            host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, **_kw
+        ):
+            return "SECRET_TOK"
+
+        captured: list = []
+
+        def factory(iid, ssh_host, lp, rp, **kw):
+            tunnel = _FakeTunnel(iid, ssh_host, lp, rp, **kw)
+            captured.append(tunnel)
+            return tunnel
+
+        mgr = SshTunnelManager(
+            reg, base_port=base_port, mint_token=ok_mint, tunnel_factory=factory
+        )
+        return reg, mgr, captured
+
+    @staticmethod
+    def _patch_ports(monkeypatch, *, busy=(), allocator_free=True):
+        """Mark *busy* ports unavailable to the preflight; set allocator freedom."""
+        import kiro_crew.instances.port_allocator as pa
+        import kiro_crew.instances.ssh_tunnel_manager as stm
+
+        monkeypatch.setattr(
+            stm, "_is_port_free", lambda port, host="127.0.0.1": port not in set(busy)
+        )
+        monkeypatch.setattr(
+            pa, "_is_port_free", lambda port, host="127.0.0.1": bool(allocator_free)
+        )
+
+    @pytest.mark.asyncio
+    async def test_prefers_remote_port_when_free(self, tmp_path, monkeypatch):
+        """A free preferred port is still mirrored — no gratuitous port churn."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        self._patch_ports(monkeypatch)
+        reg, mgr, captured = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+
+        st = await mgr.connect("cd-1")
+
+        assert st.state == TunnelState.CONNECTED
+        assert st.local_port == 5476
+        assert reg.get("cd-1").local_port == 5476
+
+    @pytest.mark.asyncio
+    async def test_allocates_when_preferred_port_busy(self, tmp_path, monkeypatch):
+        """The local gateway owning the remote port no longer blocks the connect.
+
+        This is the regression this class exists for: a hub whose own dashboard
+        is on 5476 connecting to a remote that also serves 5476.
+        """
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        self._patch_ports(monkeypatch, busy=(5476,))
+        reg, mgr, captured = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+
+        st = await mgr.connect("cd-1")
+
+        assert st.state == TunnelState.CONNECTED
+        assert st.local_port == 53400
+        # The forward still targets the remote's real port; only the local end moved.
+        assert captured[0].status.remote_port == 5476
+        assert reg.get("cd-1").local_port == 53400
+
+    @pytest.mark.asyncio
+    async def test_allocation_skips_ports_held_by_other_instances(
+        self, tmp_path, monkeypatch
+    ):
+        """Two instances on the same remote port get DIFFERENT local ports."""
+        self._patch_ports(monkeypatch, busy=(5476,))
+        reg, mgr, _captured = self._mgr(tmp_path)
+        # A sibling already committed the allocator's base port.
+        reg.add(name="Other", ssh_host="other-alias", remote_port=5476, instance_id="other")
+        reg.update("other", local_port=53400)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+
+        st = await mgr.connect("cd-1")
+
+        assert st.local_port == 53401
+
+    @pytest.mark.asyncio
+    async def test_errors_when_no_port_can_be_allocated(self, tmp_path, monkeypatch):
+        """Exhaustion is a clean connect error, not an exception out of connect()."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        self._patch_ports(monkeypatch, busy=(5476,), allocator_free=False)
+        reg, mgr, captured = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+
+        st = await mgr.connect("cd-1")
+
+        assert st.state == TunnelState.ERROR
+        assert "no free loopback" in st.error
+        # No tunnel was ever spawned for a connect that could not get a port.
+        assert captured == []
+
+    @staticmethod
+    def _record_reaps(mgr):
+        """Enable reaping and capture the ports it is asked to clear.
+
+        The manager only reaps when it owns tunnel spawning (`tunnel_factory is
+        None`), which this class's fake factory disables, so the flag is set back
+        on explicitly to exercise the path.
+        """
+        reaped: list[int] = []
+
+        async def fake_reap(port: int) -> int:
+            reaped.append(int(port))
+            return 0
+
+        mgr._reaps_orphans = True
+        mgr._reap_orphan_forwarder = fake_reap  # type: ignore[method-assign]
+        return reaped
+
+    @pytest.mark.asyncio
+    async def test_reaps_previously_allocated_port_so_it_can_be_reclaimed(
+        self, tmp_path, monkeypatch
+    ):
+        """An orphan on the port this instance last used is cleared too.
+
+        Reaping only the preferred port leaves the previous fallback's forwarder
+        alive; the allocator then finds that port bound, climbs past it, and the
+        instance strands one forwarder and one port per unclean exit.
+        """
+        self._patch_ports(monkeypatch, busy=(5476,))
+        reg, mgr, _captured = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+        # A prior connect fell back to 53400 and exited uncleanly.
+        reg.update("cd-1", local_port=53400)
+        reaped = self._record_reaps(mgr)
+
+        st = await mgr.connect("cd-1")
+
+        assert reaped == [5476, 53400]
+        # With the orphan cleared the instance reclaims its old port instead of
+        # creeping to the next one.
+        assert st.local_port == 53400
+
+    @pytest.mark.asyncio
+    async def test_does_not_reap_the_preferred_port_twice(self, tmp_path, monkeypatch):
+        """No redundant reap when the persisted port IS the preferred one."""
+        self._patch_ports(monkeypatch)
+        reg, mgr, _captured = self._mgr(tmp_path)
+        reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+        reg.update("cd-1", local_port=5476)
+        reaped = self._record_reaps(mgr)
+
+        await mgr.connect("cd-1")
+
+        assert reaped == [5476]

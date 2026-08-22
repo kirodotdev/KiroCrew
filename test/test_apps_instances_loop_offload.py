@@ -403,3 +403,64 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
         if is_reg_name or is_registry_call:
             offenders.append(f"{owner}:{call.lineno} calls registry .{func.attr}() on the loop")
     assert not offenders, "direct registry call on the event loop:\n" + "\n".join(offenders)
+
+
+@pytest.mark.asyncio
+async def test_connect_fallback_allocation_runs_off_the_loop_thread(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The busy-preferred-port fallback allocates on a worker thread.
+
+    When the mirrored port is taken, connect() reserves-and-allocates: a registry
+    read plus one socket bind per candidate port. Both are synchronous, so the
+    whole expression is handed to ``asyncio.to_thread`` as a single callable.
+    Reverting that offload makes the recorded probe thread the loop thread.
+    """
+    import kiro_crew.instances.port_allocator as pa
+    import kiro_crew.instances.ssh_tunnel_manager as stm
+    from kiro_crew.instances.registry import InstancesRegistry
+    from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager, TunnelState
+
+    loop_thread = threading.current_thread()
+    probe_threads: list[threading.Thread] = []
+
+    # The preferred (mirrored) port reads as busy so connect takes the fallback;
+    # every candidate the allocator probes reads as free, and records its thread.
+    monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": False)
+
+    def _recording_probe(port: int, host: str = "127.0.0.1") -> bool:
+        probe_threads.append(threading.current_thread())
+        return True
+
+    monkeypatch.setattr(pa, "_is_port_free", _recording_probe)
+
+    async def _mint(host: str, **_kw: object) -> str:
+        return "TOK"
+
+    class _FakeTunnel:
+        def __init__(self, iid: str, ssh_host: str, lp: int, rp: int, **_kw: object) -> None:
+            from kiro_crew.instances.ssh_tunnel_manager import TunnelStatus
+
+            self.status = TunnelStatus(instance_id=iid, local_port=lp, remote_port=rp)
+
+        async def start(self) -> bool:
+            self.status.state = TunnelState.CONNECTED
+            return True
+
+        async def stop(self) -> None:
+            self.status.state = TunnelState.STOPPED
+
+    reg = InstancesRegistry(path=tmp_path / "instances.json")
+    reg.add(name="CD", ssh_host="cd-1-alias", remote_port=5476, instance_id="cd-1")
+    mgr = SshTunnelManager(
+        reg, base_port=53400, mint_token=_mint, tunnel_factory=_FakeTunnel  # type: ignore[arg-type]
+    )
+
+    status = await mgr.connect("cd-1")
+
+    assert status.state == TunnelState.CONNECTED
+    assert status.local_port == 53400, "the fallback allocation did not happen"
+    assert probe_threads, "the allocator never probed a candidate port"
+    assert all(t is not loop_thread for t in probe_threads), (
+        "the fallback port allocation ran synchronously on the event loop thread"
+    )

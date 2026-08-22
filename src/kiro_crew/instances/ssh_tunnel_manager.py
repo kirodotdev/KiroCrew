@@ -887,14 +887,6 @@ class SshTunnelManager:
         if cancelled is not None:
             raise cancelled
 
-    def _reserved_ports(self) -> set[int]:
-        """Ports already taken: live tunnels + local_port set on any instance."""
-        reserved: set[int] = {t.status.local_port for t in self._tunnels.values()}
-        for inst in self._registry.list():
-            if inst.local_port:
-                reserved.add(inst.local_port)
-        return reserved
-
     def _connect_timeout_for(self, method: str) -> float:
         """Readiness timeout for *method*, honoring an explicit caller override.
 
@@ -944,6 +936,45 @@ class SshTunnelManager:
         except Exception:
             return []
         return out.decode("utf-8", "replace").splitlines()
+
+    def _reserved_ports(self, except_id: str = "") -> set[int]:
+        """Ports already taken: live tunnels + local_port set on any instance.
+
+        Two sources, unioned because neither alone is sufficient: the live tunnels
+        (authoritative for what is bound right now) and the registry's persisted
+        ``local_port`` hints (which cover an instance whose tunnel is momentarily
+        down but which will reclaim its port on reconnect).
+
+        *except_id* omits one instance's own reservation, so a reconnecting
+        instance can reclaim the port it previously held instead of stepping past
+        it. Omitting the argument reserves every port, which is what a caller
+        asking "what is taken?" without a subject wants.
+
+        Feeds :meth:`PortAllocator.allocate`'s ``exclude``. A stale hint naming a
+        now-free port only costs the allocator one skipped candidate, so erring
+        toward exclusion is the safe direction. Registry failure is likewise
+        non-fatal: fewer exclusions is recoverable (the allocator still probes
+        each candidate), while refusing to connect is not.
+
+        Synchronous on purpose, and therefore a frame the loop-offload ratchet in
+        ``test_apps_instances_loop_offload.py`` does not scan: callers on an async
+        path must hand it to ``asyncio.to_thread`` along with the allocation it
+        feeds, because it reads the registry.
+        """
+        reserved: set[int] = set()
+        for inst_id, tunnel in self._tunnels.items():
+            if inst_id == except_id:
+                continue
+            port = getattr(tunnel.status, "local_port", 0)
+            if port:
+                reserved.add(int(port))
+        try:
+            for inst in self._registry.list():
+                if inst.id != except_id and inst.local_port:
+                    reserved.add(int(inst.local_port))
+        except Exception:  # a registry read failure must not block connecting
+            logger.debug("could not read registry for port exclusion", exc_info=True)
+        return reserved
 
     async def _reap_orphan_forwarder(self, local_port: int) -> int:
         """SIGTERM any stale ssh forwarder still holding *local_port*.
@@ -1079,34 +1110,81 @@ class SshTunnelManager:
                 if not cloud_ssm.session_manager_plugin_installed():
                     return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
 
-            # Mirror the local forward port to the remote (configured)
-            # port. The embedded dashboard runs in an iframe at
-            # http://127.0.0.1:<local_port>, and the remote gateway only trusts
-            # CSRF/WebSocket Origins on its own configured port. Forcing
-            # local_port == remote_port keeps the Origin valid without per-instance
-            # allow-listing. Each simultaneously-connected instance must therefore
-            # use a distinct remote port (a local port cannot be bound twice).
+            # The local forward port PREFERS the remote (configured) port, because
+            # a stable, predictable port is worth keeping: the dashboard cookie is
+            # named ``mc_token_<browser-facing port>``, so reconnecting on the same
+            # port reuses the same cookie instead of stranding one per attempt.
+            #
+            # It is a preference, not an invariant. Every layer that sees the
+            # browser-facing port derives it FROM THE REQUEST rather than assuming
+            # the remote gateway's own listen port, so a divergent local port is
+            # already safe end to end:
+            #   * ``check_origin`` accepts a loopback Origin equal to the request
+            #     Host — which is what the embedded iframe sends (it is served at
+            #     the forward's port and opens its WebSocket to that same host);
+            #   * ``build_allowed_hosts`` compares hostname only, port-independent;
+            #   * the parent's CSP ``frame-src`` admits ``http://127.0.0.1:*``;
+            #   * ``frame-ancestors`` keys off ``embed_parent_port`` (the PARENT's
+            #     port), which this does not change;
+            #   * ``_cookie_port_from_host`` keys the cookie by the Host port.
+            # So when the preferred port is unavailable we allocate a free one
+            # rather than refuse the connection: the remote keeps whatever port it
+            # runs on, and two remotes that both serve the same port can be
+            # connected simultaneously through distinct forwards.
             local_port = inst.remote_port
 
             # Clear any orphaned forwarder still holding this port from an
             # unclean prior exit (hard kill bypasses graceful shutdown; macOS has no
-            # parent-death signal) so the new tunnel can bind it.
+            # parent-death signal) so the new tunnel can bind it. Done BEFORE the
+            # free probe so a reclaimable port is still preferred over a new one.
+            #
+            # The port this instance last forwarded is reaped alongside it when it
+            # differs, i.e. when the previous connect fell back to an allocated
+            # port. Its orphan is invisible to the reap above (that one matches the
+            # preferred port's forward signature) and to the allocator, which skips
+            # the still-bound port and climbs to the next one — so without this the
+            # instance strands one forwarder per unclean exit and its port walks
+            # upward on every reconnect.
             if self._reaps_orphans:
                 await self._reap_orphan_forwarder(local_port)
+                previous = int(inst.local_port or 0)
+                if previous and previous != local_port:
+                    await self._reap_orphan_forwarder(previous)
 
-            # Hard-fail with a clear message if the mirrored port is still occupied
-            # (e.g. another instance on the same remote port, or the local gateway).
-            # No dynamic fallback — a different local port would break the
-            # origin match and leave the embedded dashboard unable to stream/act.
             if not _is_port_free(local_port):
-                return self._error_status(
-                    inst,
-                    f"local port {local_port} is already in use. Each connected "
-                    f"instance must use a distinct remote port — change this "
-                    f"instance's remote port (and set that same port on the remote "
-                    f"host's dashboard.url), or disconnect whatever is holding "
-                    f"port {local_port}.",
+                # Occupied by something we do not own (this host's own gateway, an
+                # unrelated process, or another instance forwarding the same remote
+                # port). Fall back to an allocated loopback port, excluding ports
+                # already committed to other instances so two connects cannot race
+                # onto one port.
+                #
+                # Offloaded as ONE callable: the reservation lookup reads the
+                # instances registry and the allocation probes candidate ports with
+                # a socket bind apiece, both synchronous filesystem/syscall work
+                # that the repo keeps off the event loop (see
+                # test_apps_instances_loop_offload.py). Splitting them into two
+                # to_thread hops would also widen the TOCTOU window between
+                # "what is reserved" and "what did we take".
+                try:
+                    allocated = await asyncio.to_thread(
+                        lambda: self._allocator.allocate(
+                            exclude=self._reserved_ports(except_id=inst.id)
+                        )
+                    )
+                except RuntimeError as e:
+                    return self._error_status(
+                        inst,
+                        f"local port {local_port} is in use and no free loopback "
+                        f"port could be allocated: {e}",
+                    )
+                logger.info(
+                    "Instance %s: local port %d unavailable; forwarding %d -> remote %d",
+                    inst.id,
+                    inst.remote_port,
+                    allocated,
+                    inst.remote_port,
                 )
+                local_port = allocated
 
             # Open the tunnel first so the forward is live.
             tunnel = self._tunnel_factory(

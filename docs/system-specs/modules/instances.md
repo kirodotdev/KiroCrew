@@ -131,7 +131,7 @@ Module responsibilities:
 | Module | Responsibility |
 |--------|----------------|
 | `registry.py` | Persistent list of configured instances (`~/.kiro/crew/instances.json`) + `last_active_id`. Light charset check on `ssh_host`/`remote_bin` (SSH) or `ssm_target`/`aws_profile`/`aws_region`/`ssm_run_as` (SSM) at add/update, per `connection_method`; every mutation re-reads the file and writes atomically, so a live gateway and a CLI edit cannot clobber each other. |
-| `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). The probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use". |
+| `port_allocator.py` | Probes for a free loopback port at or above `tunnel_base_port` (7778). A port must be free on **every** loopback address (`127.0.0.1` and `::1`) to count as free. The probe sets `SO_REUSEADDR` so a `TIME_WAIT` remnant from a just-closed forward is not a false "in use". |
 | `token_mint.py` | Runs `kirocrew token --ttl --port --embed-parent-port` on the remote over SSH (run-marker first, then a bin-candidate ladder) and parses the JWT out of the printed URL. Token is returned in memory only, **never logged**. |
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
@@ -140,16 +140,50 @@ Module responsibilities:
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder) and `diagnose_instance_ssm` (SSM ladder). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
-**The local forward port mirrors the remote port.** `connect()` sets
-`local_port = inst.remote_port` rather than allocating a fresh one: the embedded
-iframe loads from `http://<host>:<local_port>`, and the remote gateway only
-trusts CSRF/WebSocket `Origin`s on its own configured port, so mirroring keeps
-the Origin valid with no per-instance allowlisting. The consequence is a hard
-constraint: **every simultaneously-connected instance must use a distinct remote
-port**, and a busy port is a clear connect error rather than a silent fallback
-(a different local port would leave the pane unable to stream or act). The
-`PortAllocator` is therefore constructed but not on the connect path today; the
-`tunnel_base_port` setting configures it.
+**The local forward port prefers — but no longer requires — the remote port.**
+`connect()` starts from `local_port = inst.remote_port`, because a stable,
+predictable port is worth keeping: the dashboard cookie is named
+`mc_token_<browser-facing port>`, so reconnecting on the same port reuses the
+same cookie rather than stranding one per attempt. When that port is
+unavailable — this host's own gateway owns it, an unrelated process holds it, or
+another instance already forwards the same remote port — `connect()` allocates a
+free loopback port from `PortAllocator` (based at `tunnel_base_port`, excluding
+ports committed to other instances) instead of failing the connect. Two remotes
+that both serve the same port can therefore be connected simultaneously through
+distinct forwards, and the remote keeps whatever port it runs on. The reservation
+lookup and the allocation go to `asyncio.to_thread` as a **single** callable: both
+are synchronous (a registry read, then a socket bind per candidate port), and one
+hop keeps the window between "what is reserved" and "what did we take" narrower
+than two hops would. `test/test_apps_instances_loop_offload.py` owns that
+convention and enforces it for this call site.
+
+A divergent local port is safe because every layer that sees the browser-facing
+port derives it **from the request** rather than assuming the remote gateway's
+own listen port: `check_origin` accepts a loopback `Origin` equal to the request
+`Host` (which is exactly what the embedded iframe sends), `build_allowed_hosts`
+compares hostname only, the parent's CSP `frame-src` admits `http://127.0.0.1:*`,
+`frame-ancestors` keys off the parent's `embed_parent_port`, and
+`_cookie_port_from_host` keys the cookie by the `Host` port. Connect fails only
+when no loopback port can be allocated at all.
+
+**A port counts as free only when it is free on every loopback address.**
+`_is_port_free` probes each of `127.0.0.1` and `::1` and requires all of them, so
+a port already held by a foreign listener on one family is never handed out.
+`ssh -L` binds a single address; leaving the other family to someone else would
+make `localhost:<port>` resolve to whichever socket the client's resolver and the
+platform's bind precedence happened to pick, which is not something the hub
+controls. Over-refusing costs the allocator one skipped candidate. A bind that
+fails with `EADDRNOTAVAIL` or `EAFNOSUPPORT` reads as *free*, not occupied —
+nothing can listen on an address the host cannot assign — so a host with IPv6
+disabled still allocates normally.
+
+**The port an instance last forwarded is reaped alongside the preferred one.**
+When the persisted `local_port` differs from the preferred port, the previous
+connect fell back to an allocated port; its orphan matches neither the preferred
+port's forward signature nor anything the allocator will reuse, since the
+allocator skips a still-bound port and climbs to the next one. Reaping both means
+a fallback instance reclaims its old port across unclean exits instead of
+stranding one forwarder and walking its port upward on every reconnect.
 
 **Platform note.** The hub side of this feature assumes a POSIX host with an
 OpenSSH `ssh` client on `PATH`. Two paths make that explicit: the
@@ -163,7 +197,7 @@ direct `os.kill(pid, signal.SIGTERM)` rather than going through
 ## 4. The connect → warm → self-heal lifecycle
 
 1. **Connect.** `POST /api/instances/{id}/connect` validates the ssh inputs,
-   reaps any orphaned forwarder still holding the mirrored port, starts
+   reaps any orphaned forwarder still holding the preferred port, starts
    `ssh -N -L`, waits until the local forward accepts a TCP connection, mints a
    dashboard token on the remote over SSH, and returns the live status plus the
    token. Connect is **idempotent**: an already-connected instance returns its
@@ -738,7 +772,7 @@ whose current variable parts are all charset-bound literals.
 | Iframe is blank or black | The pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
-| "local port N is already in use" | The forward mirrors the remote port, so two instances cannot share one. Change this instance's remote port (and the remote gateway's own port to match), or stop whatever holds the port. |
+| "local port N is in use and no free loopback port could be allocated" | The preferred port is taken *and* the allocator found nothing free from `tunnel_base_port` upward — every candidate was either bound on a loopback address or committed to another instance. Disconnect instances that no longer need to be live, or lower `instances.tunnel_base_port` to open up range below the crowded band. |
 | Instance keeps dropping | The health probe plus 2-tier self-heal retry over roughly a two-minute window (8 attempts, capped-exponential backoff). Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
 | A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it. Raise `instances.warm_set_cap` if you want more panes resident. |
 | Every token mint fails on one remote, though its gateway is healthy | The remote's `~/.local/bin/kirocrew` probably points at an uninstalled checkout. See §12: the run-marker is what makes mint follow the *running* gateway's install. |
