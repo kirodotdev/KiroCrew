@@ -191,12 +191,43 @@ def _is_safe_env_key(key: str) -> bool:
     return platform_compat.env_key_allowed(key, _SAFE_ENV_KEYS)
 
 
+#: Locale forced onto the INDEX-ORIGINATED clone (:func:`anonymous_git_env`) —
+# the only clone whose stderr feeds the credential-posture classifier
+# (:func:`_git_output_is_auth_shaped`). ``_SAFE_ENV_KEYS`` passes the operator's
+# ``LANG``/``LC_ALL`` through to the child, so git would localize its client-side
+# ``fatal: Authentication failed`` message on a non-English host — and the STRICT
+# English-only marker allowlist would then miss, silently dropping the
+# credential-posture hint for the exact credential-blocked owner it exists to
+# help. Pinning ``LC_ALL`` (which wins over ``LANG`` and any narrower ``LC_*``)
+# AFTER the ``os.environ`` copy makes that classifier's input deterministic
+# English regardless of the operator locale. The value is a platform-appropriate
+# UTF-8 locale — always English message text with UTF-8 decoding of any path
+# bytes — because there is no single name valid on both libcs: ``C.UTF-8`` is the
+# always-present UTF-8 locale on glibc/musl (Linux) but is NOT a valid BSD-libc
+# locale on macOS, where an explicitly-set invalid ``LC_ALL`` makes ``setlocale``
+# fall to C/ASCII AND suppresses CPython's PEP 538 coercion, so a child reading
+# non-ASCII git output raises ``UnicodeDecodeError``. macOS ships ``en_US.UTF-8``
+# in its base locale set, so Darwin uses that (mirroring
+# :func:`kiro_crew.service.common` for the same reason). This is a
+# location/format hint, never a credential, so it does not weaken any
+# suppression in :func:`anonymous_git_env`. It is pinned ONLY there, not in
+# :func:`minimal_env`, whose subprocesses never reach the classifier.
+_GIT_CLONE_LOCALE = "en_US.UTF-8" if sys.platform == "darwin" else "C.UTF-8"
+
+
 def minimal_env(**extra: str) -> dict[str, str]:
     """Build a minimal environment dict from the current process env.
 
     Only passes through safe keys (PATH, HOME, SSH_AUTH_SOCK, etc.)
     plus any explicit *extra* overrides.  Used by both registry install
     and route-level uninstall handlers.
+
+    The operator's ``LANG``/``LC_ALL`` are passed through unchanged: this env
+    is NOT read by the credential-posture classifier (that runs only on the
+    index-originated path, which uses :func:`anonymous_git_env`), so pinning a
+    locale here would only degrade the many other ``minimal_env`` subprocesses
+    (pip installs, app backends, lifecycle scripts, …) for no classifier
+    benefit — and ``C.UTF-8`` is invalid on macOS BSD libc.
     """
     env = {k: v for k, v in os.environ.items() if _is_safe_env_key(k)}
     env.update(extra)
@@ -271,6 +302,11 @@ def anonymous_git_env(**extra: str) -> dict[str, str]:
     # If a trusted-host remote is nonetheless SSH, force batch mode with no
     # identity/agent so it can't silently authenticate as the gateway.
     env["GIT_SSH_COMMAND"] = "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+    # Pin the locale (over any operator LANG/LC_ALL from os.environ) so git's
+    # client-side failure text stays English for the credential-posture
+    # classifier — see :data:`_GIT_CLONE_LOCALE`. A benign format hint, not a
+    # credential, so it preserves every suppression above.
+    env["LC_ALL"] = _GIT_CLONE_LOCALE
     env.update(extra)
     return env
 
@@ -3756,8 +3792,10 @@ async def _git_fetch_commit(
             return {
                 "ok": False,
                 "name": dest.name,
-                "error": "destination_not_a_checkout",
-                "message": (
+                # Human sentence in `error`, machine slug in `code`: the install
+                # banner renders `result.error`, never `result.message`.
+                "code": "destination_not_a_checkout",
+                "error": (
                     "The destination exists but is not a git checkout. Remove or fix it "
                     "manually and retry the install."
                 ),
@@ -3833,6 +3871,101 @@ async def _git_fetch_commit(
             await asyncio.to_thread(platform_compat.rmtree_force, dest)
 
 
+# Auth/permission failure classes on the clone-failure surface. The clone
+# subprocess merges stderr into stdout (``stderr=STDOUT``), so this classifier
+# sees git's auth-failure text. Kept as a STRICT allowlist of known
+# auth-refusal phrasings so the credential-posture remedy ("private app repos
+# must live inside the registry repo") only fires when withheld credentials
+# are a plausible cause — an owner who hits a typo'd branch or a DNS blip must
+# NOT be told to restructure their repositories. Matched case-insensitively.
+_GIT_AUTH_FAILURE_MARKERS = (
+    "permission denied",
+    "authentication failed",
+    "could not read username",
+    "could not read password",
+    "access denied",
+    "fatal: authentication",
+    "terminal prompts disabled",
+    "invalid username or password",
+)
+
+# "Repository not found" is ambiguous: auth-gated forges return it for a
+# private repo the caller cannot see, so on an index-originated (credential-
+# free) clone a withheld credential is a *possible* cause. Treat it as
+# posture-possible — keep the hint, softened to "a likely cause". Deliberately
+# NARROW: a *branch* not found ("Remote branch X not found") is a definite
+# typo, not a posture signal, so the bare token "not found" is excluded.
+_GIT_POSTURE_POSSIBLE_MARKERS = ("repository not found",)
+
+# Known NON-auth failure classes, mapped to a fixed derived label. This is an
+# allowlist emitting a CONSTANT string per class — never a slice of raw git
+# output — so no credential-bearing or path-bearing stderr can reach the
+# banner (PR-1418 lesson: free-text stderr passthrough cannot be closed by
+# shape enumeration). Matched case-insensitively; first match wins.
+_GIT_FAILURE_CLASS_LABELS: tuple[tuple[str, str], ...] = (
+    ("could not resolve", "host could not be resolved"),
+    ("connection timed out", "the connection timed out"),
+    ("connection refused", "the connection was refused"),
+    ("network is unreachable", "the network was unreachable"),
+    ("remote branch", "the requested branch does not exist"),
+    # Anchored on git's own ref-error phrasing ("couldn't find remote ref …",
+    # "remote ref … does not exist"), NOT the bare token "does not exist": that
+    # substring also appears in unrelated failures (e.g. a path/pathspec error),
+    # and matching it would mislabel them "the requested ref does not exist".
+    # "remote ref" occurs only in git's missing-ref messages, so it stays a
+    # precise ref-error signal.
+    ("remote ref", "the requested ref does not exist"),
+    # Anchored on git/curl/(open|gnu)tls TLS-error phrasing, NOT the bare token
+    # "ssl": that substring also appears in a repo URL (e.g. cloning
+    # github.com/openssl/openssl, whose stderr echoes the URL), and matching it
+    # would mislabel an ordinary auth/not-found failure "a TLS/SSL error
+    # occurred" — the exact false-positive class this table guards against.
+    # These phrases occur in genuine TLS handshake/verification errors
+    # ("SSL certificate problem …", "SSL routines:…", "gnutls_handshake()
+    # failed", "TLS handshake failed", "Unsupported SSL backend 'schannel'")
+    # and never in a normal repo URL path segment. Deliberately no bare "ssl_"
+    # anchor: a repo path like ".../ssl_utils" would match it. Likewise the
+    # gnutls anchor carries git's full symbol "gnutls_handshake" rather than the
+    # bare library name, so cloning github.com/gnutls/gnutls (whose stderr
+    # echoes the URL) is not mislabeled a TLS error.
+    ("ssl certificate", "a TLS/SSL error occurred"),
+    ("ssl routines", "a TLS/SSL error occurred"),
+    ("ssl backend", "a TLS/SSL error occurred"),
+    ("gnutls_handshake", "a TLS/SSL error occurred"),
+    ("tls handshake", "a TLS/SSL error occurred"),
+)
+
+
+def _git_output_is_auth_shaped(text: str) -> bool:
+    """Whether *text* matches a known auth/permission failure class.
+
+    Strict allowlist — see :data:`_GIT_AUTH_FAILURE_MARKERS`. Never echoes
+    *text*; returns only a boolean.
+    """
+    low = text.lower()
+    return any(marker in low for marker in _GIT_AUTH_FAILURE_MARKERS)
+
+
+def _git_output_is_posture_possible(text: str) -> bool:
+    """Whether *text* is ambiguous enough that withheld credentials are a
+    plausible (not certain) cause. See :data:`_GIT_POSTURE_POSSIBLE_MARKERS`."""
+    low = text.lower()
+    return any(marker in low for marker in _GIT_POSTURE_POSSIBLE_MARKERS)
+
+
+def _redacted_git_failure_class(text: str) -> str:
+    """A fixed, derived label for a known non-auth failure class, or ``""``.
+
+    Returns a CONSTANT allowlisted phrase — never a slice of *text* — so no
+    credential-bearing or path-bearing subprocess output reaches the banner.
+    """
+    low = text.lower()
+    for marker, label in _GIT_FAILURE_CLASS_LABELS:
+        if marker in low:
+            return label
+    return ""
+
+
 async def _git_clone_or_pull(
     git_url: str,
     branch: str,
@@ -3882,8 +4015,13 @@ async def _git_clone_or_pull(
         log_lines.append(f"Refusing clone: host of {git_url!r} is not a trusted forge/registry")
         return {
             "ok": False,
-            "error": "untrusted_clone_host",
-            "message": "Refusing to clone from an untrusted host (not a public forge or configured registry).",
+            # Human sentence in `error`, machine slug in `code`: the install
+            # banner renders `result.error`, never `result.message`.
+            "code": "untrusted_clone_host",
+            "error": (
+                "Refusing to clone from an untrusted host "
+                "(not a public forge or configured registry)."
+            ),
         }
     # Track a moved-aside directory if we need to preserve the old checkout
     # during origin-mismatch re-clone (delete-after-success pattern).
@@ -4003,8 +4141,10 @@ async def _git_clone_or_pull(
                 return {
                     "ok": False,
                     "name": dest.name,
-                    "error": "stale_clone_not_removed",
-                    "message": (
+                    # Human sentence in `error`, machine slug in `code`: the
+                    # install banner renders `result.error`, never `.message`.
+                    "code": "stale_clone_not_removed",
+                    "error": (
                         "A checkout on the wrong branch is present and could not be "
                         "moved aside. Remove it manually and retry the install."
                     ),
@@ -4053,8 +4193,10 @@ async def _git_clone_or_pull(
                 return {
                     "ok": False,
                     "name": dest.name,
-                    "error": "existing_checkout_not_moved_aside",
-                    "message": (
+                    # Human sentence in `error`, machine slug in `code`: the
+                    # install banner renders `result.error`, never `.message`.
+                    "code": "existing_checkout_not_moved_aside",
+                    "error": (
                         "The existing app checkout could not be moved aside, so a "
                         "pinned install cannot be performed safely. Remove or move it "
                         "manually and retry the install."
@@ -4173,9 +4315,11 @@ async def _git_clone_or_pull(
         # the next install finds `dest/.git` present with a matching origin and
         # takes the fast-forward branch instead -- `git pull` in a repo the clone
         # never finished, which fails, so every retry of that install fails too.
+        clone_output = ""
         try:
             stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=_CLONE_TIMEOUT)
-            log_lines.append(stdout.decode(errors="replace").strip())
+            clone_output = stdout.decode(errors="replace").strip()
+            log_lines.append(clone_output)
         except asyncio.TimeoutError:
             await _kill_process_group(proc)
             await asyncio.to_thread(platform_compat.rmtree_force, dest)
@@ -4190,23 +4334,54 @@ async def _git_clone_or_pull(
                 # The clone ran credential-free (anonymous_git_env + strict
                 # sandbox) because the repo URL came from an external registry
                 # index whose repo differs from the registry URL, so owner
-                # credentials were withheld (confused-deputy defense). A
-                # private sibling repo therefore fails to clone. Tell the owner
-                # the cause and the remedy instead of a bare "git clone failed".
-                # Human sentence in `error`, machine slug in `code`: the install
-                # banner renders `result.error`, never `result.message`.
-                return {
-                    "ok": False,
-                    "name": dest.name,
-                    "code": "git_clone_failed_no_credentials",
-                    "error": (
-                        "Git clone failed (cloned without credentials because "
-                        "this app's repo URL differs from the registry URL, so "
-                        "owner credentials are withheld). Private app repos must "
-                        "live inside the registry repo — see the monorepo layout "
-                        "in docs/app-kit/publishing-guide.md."
-                    ),
-                }
+                # credentials were withheld (confused-deputy defense). A private
+                # sibling repo therefore fails to clone. BUT the credential-
+                # posture remedy ("private app repos must live inside the
+                # registry repo") is only honest when a withheld credential is a
+                # plausible cause: gate it on an auth-shaped failure class. A
+                # typo'd branch, a DNS blip, or a deleted public repo returns the
+                # bare honest failure instead — being told to restructure
+                # repositories for a transient error is the misleading-remedy
+                # defect this gate closes.
+                #
+                # No raw clone output ever reaches the banner: the classifiers
+                # return only booleans, and the appended failure class is a
+                # CONSTANT allowlisted label, so credential-bearing or path-
+                # bearing stderr cannot leak (PR-1418 lesson).
+                if _git_output_is_auth_shaped(clone_output):
+                    remedy_lead = "so owner credentials are withheld"
+                elif _git_output_is_posture_possible(clone_output):
+                    # Ambiguous "repository not found" on an auth-gated forge:
+                    # posture-possible, so keep the hint but soften it.
+                    remedy_lead = "so a likely cause is that owner credentials are withheld"
+                else:
+                    remedy_lead = ""
+                if remedy_lead:
+                    # Human sentence in `error`, machine slug in `code`: the
+                    # install banner renders `result.error`, never `.message`.
+                    return {
+                        "ok": False,
+                        "name": dest.name,
+                        "code": "git_clone_failed_no_credentials",
+                        "error": (
+                            "Git clone failed (cloned without credentials because "
+                            "this app's repo URL differs from the registry URL, "
+                            f"{remedy_lead}). Private app repos must live inside "
+                            "the registry repo — see the monorepo layout in "
+                            "docs/app-kit/publishing-guide.md."
+                        ),
+                    }
+                # Not auth-shaped: bare honest failure, with the redacted
+                # (allowlisted, constant) failure class when one is recognized.
+                failure_class = _redacted_git_failure_class(clone_output)
+                if failure_class:
+                    return {
+                        "ok": False,
+                        "name": dest.name,
+                        "code": "git_clone_failed",
+                        "error": f"Git clone failed: {failure_class}.",
+                    }
+                return {"ok": False, "name": dest.name, "error": "git clone failed"}
             return {"ok": False, "name": dest.name, "error": "git clone failed"}
         clone_succeeded = True
         return None
