@@ -21,6 +21,7 @@ from collections.abc import Callable
 from typing import Any
 
 from kiro_crew import mcp_core
+from kiro_crew.context import RECALL_ROLES
 from kiro_crew.history import ConversationLog
 from kiro_crew.validation import (
     GET_CHAT_SESSION_SCHEMA,
@@ -317,7 +318,17 @@ def get_chat_session(name: str, args: dict[str, Any]) -> str:
             )
             return "Access denied: that conversation belongs to a different workspace."
 
-    messages = cl.recent(key, max_messages=max_messages, roles={"user", "assistant"})
+    # RECALL_ROLES rather than a literal, because this is the one surface whose
+    # whole purpose is reading a past session: a breadcrumb appended with
+    # role="inject" (a /note, a cron result) is precisely a message meant to
+    # survive the session boundary being crossed here, and a hardcoded
+    # {"user", "assistant"} dropped it. The constant already governs replay and
+    # compression in context.py, so sharing it keeps the fetch from drifting
+    # from them. Note it is narrowING as well as widening: "system" is absent
+    # from RECALL_ROLES, so passing no roles at all would not be equivalent --
+    # recent() treats a falsy roles as "no filter" and would admit internal
+    # rows here.
+    messages = cl.recent(key, max_messages=max_messages, roles=RECALL_ROLES)
     if not messages:
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
