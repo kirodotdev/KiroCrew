@@ -526,14 +526,26 @@ class TestResourceShims:
         # The peak, by contrast, is not allowed to fall.
         assert pc.proc_peak_rss_bytes() >= peak_while_held
 
-    def test_proc_peak_rss_bytes_is_never_below_the_current_reading(self):
-        # The high-water mark of a quantity cannot be under the quantity. A
-        # mismatched unit on either side (ru_maxrss is KiB on Linux, bytes on
-        # macOS) shows up here as a 1024x violation.
+    def test_proc_peak_rss_bytes_reads_the_same_unit_as_the_current_reading(self):
+        # The property under test is the UNIT, not the ordering: ru_maxrss is KiB on
+        # Linux and bytes on macOS, so a missing or spurious conversion puts the two
+        # readings 1024x apart. Asserted as a bounded ratio rather than
+        # `peak >= current`, which reads as the tighter and more obvious invariant but
+        # is not atomically observable on Linux: the two come from DIFFERENT kernel
+        # accounting paths. proc_rss_bytes reads /proc/self/statm, recomputed on
+        # read, while proc_peak_rss_bytes reads getrusage's high-water mark, which
+        # the kernel maintains from per-CPU RSS deltas it syncs in batches. So while
+        # the process is allocating, the live reading legitimately sits a little
+        # above the last-synced peak -- measured up to 1.02x on this 32-core host,
+        # which is what made the strict form fail under a loaded full-suite run.
+        # 4x leaves that mechanism ~250x of headroom before a real unit error passes.
         current = pc.proc_rss_bytes()
         peak = pc.proc_peak_rss_bytes()
         assert peak > 0
-        assert peak >= current
+        assert peak * 4 >= current, (
+            f"peak {peak} is more than 4x under the live reading {current} -- too far "
+            "apart to be counter-sync lag, so one side is in the wrong unit"
+        )
 
     def test_proc_rss_bytes_for_pid_self_positive(self):
         rss = pc.proc_rss_bytes_for_pid(os.getpid())

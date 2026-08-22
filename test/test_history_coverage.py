@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1430,8 +1431,21 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
         log.append(key, "user", "first message")
         log.append(key, "assistant", "first reply")
         log.append(key, "user", "second message")
+        # Age the transcript BEFORE stamping the sidecars against its mtime.
+        # Filesystem mtime resolution is not the clock's: tmpfs and ext4 stamp from
+        # the kernel's cached wall time, which advances on a timer tick rather than
+        # per write, so these appends and a later one can share a single
+        # ``st_mtime_ns`` (measured: 200 rapid writes to /tmp on a 6.12 kernel
+        # produced ONE distinct value). Every test in this class turns on telling
+        # "the mtime moved" apart from "the mtime was preserved", so that gap has to
+        # be REPRESENTABLE. Backdating states the precondition outright; a sleep
+        # would express the same thing by guessing how long a tick is.
+        now = log.session_mtime(key)
+        assert now is not None
+        aged = now - 60.0
+        os.utime(log._path(key), (aged, aged))
         sig = log.session_mtime(key)
-        assert sig is not None
+        assert sig == aged
         log.set_cached_summary(key, "describes the PRE-rewrite conversation", sig)
         log.set_cached_intent_summary(key, {"intents": [{"text": "pre-rewrite"}]}, sig)
         assert log.get_cached_summary(key) == "describes the PRE-rewrite conversation"

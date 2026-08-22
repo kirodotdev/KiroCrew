@@ -2140,6 +2140,60 @@ def _make_app(registry=None, cfg=None, user="testuser"):
     return app
 
 
+async def _recv_matching(ws, predicate, what: str, *, frames: int = 40, timeout: float = 3):
+    """Return the first frame satisfying *predicate*, skipping the ones it does not.
+
+    The socket carries three interleaved things, and only one of them is what any given
+    test is about: the reply to what the test just sent, raw binary PTY output the shell
+    produced on its own, and a ``ready`` control frame.
+
+    ``ready``'s arrival is NOT ordered against the test's own send. When the resolved
+    shell has no ready-marker to inject, ``api_terminal_ws`` sets ``shell_ready`` and
+    emits ``ready`` while still setting the connection up, so it precedes any reply;
+    when the marker IS injected (Bash), ``ready`` waits for the marker to appear in PTY
+    output and so usually arrives after. Taking the first TEXT frame, or assuming the
+    first frame is BINARY, therefore asserts on which shell the host resolved rather
+    than on the behaviour under test -- and fails on a host whose shell is not Bash.
+
+    Bounded by a frame COUNT, not a sleep: every iteration consumes a real frame, so
+    this cannot pass by waiting.
+    """
+    for _ in range(frames):
+        msg = await ws.receive(timeout=timeout)
+        if msg.type in (
+            web.WSMsgType.CLOSE,
+            web.WSMsgType.CLOSING,
+            web.WSMsgType.CLOSED,
+            web.WSMsgType.ERROR,
+        ):
+            raise AssertionError(f"socket closed ({msg.type!r}) before {what} arrived")
+        if predicate(msg):
+            return msg
+    raise AssertionError(f"{what} did not arrive within {frames} frames")
+
+
+async def _recv_control(ws, wanted: str, **kw):
+    """The JSON control frame whose ``type`` is *wanted*. See :func:`_recv_matching`."""
+
+    def _is_wanted(msg) -> bool:
+        if msg.type is not web.WSMsgType.TEXT:
+            return False
+        try:
+            return json.loads(msg.data).get("type") == wanted
+        except (ValueError, AttributeError):
+            return False
+
+    return json.loads((await _recv_matching(ws, _is_wanted, f"a {wanted!r} frame", **kw)).data)
+
+
+async def _recv_pty_output(ws, **kw) -> bytes:
+    """The first BINARY frame — bytes the PTY itself produced. See :func:`_recv_matching`."""
+    msg = await _recv_matching(
+        ws, lambda m: m.type is web.WSMsgType.BINARY, "binary PTY output", **kw
+    )
+    return msg.data
+
+
 @pytest.mark.xdist_group("pty_integration")
 class TestTerminalWsIntegration:
     """Integration tests that exercise the full WebSocket PTY lifecycle.
@@ -2198,13 +2252,7 @@ class TestTerminalWsIntegration:
         async with TestClient(TestServer(app)) as client:
             async with client.ws_connect("/api/ws/terminal/ping-sess") as ws:
                 await ws.send_str(json.dumps({"type": "ping"}))
-                # Drain binary PTY frames until we get the text pong
-                for _ in range(20):
-                    msg = await ws.receive(timeout=2)
-                    if msg.type == web.WSMsgType.TEXT:
-                        break
-                data = json.loads(msg.data)
-                assert data == {"type": "pong"}
+                assert await _recv_control(ws, "pong") == {"type": "pong"}
                 await ws.close()
 
             await terminal._kill_session(registry["ping-sess"])
@@ -2259,10 +2307,7 @@ class TestTerminalWsIntegration:
             async with client.ws_connect("/api/ws/terminal/io-sess") as ws:
                 # Send a command — the PTY should echo something back
                 await ws.send_bytes(b"echo hello\n")
-                # Read at least one binary frame back (PTY output)
-                msg = await ws.receive(timeout=3)
-                assert msg.type == web.WSMsgType.BINARY
-                assert len(msg.data) > 0
+                assert len(await _recv_pty_output(ws)) > 0
                 await ws.close()
 
             await terminal._kill_session(registry["io-sess"])
@@ -2544,13 +2589,7 @@ class TestTerminalWsIntegration:
                 await ws.send_str("not valid json")
                 # Should not crash — send a ping to verify connection alive
                 await ws.send_str(json.dumps({"type": "ping"}))
-                # Drain binary PTY frames until we get the text pong
-                for _ in range(20):
-                    msg = await ws.receive(timeout=2)
-                    if msg.type == web.WSMsgType.TEXT:
-                        break
-                data = json.loads(msg.data)
-                assert data == {"type": "pong"}
+                assert await _recv_control(ws, "pong") == {"type": "pong"}
                 await ws.close()
 
             await terminal._kill_session(registry["json-sess"])
