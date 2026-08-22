@@ -1365,3 +1365,135 @@ class TestUpdateWheelInstaller:
         monkeypatch.setattr(subprocess, "run", unreachable)
         cli_server._update_wheel(_LAYOUT)
         assert "Already on the latest version" in capsys.readouterr().out
+
+
+class TestEnsureVaultDirExists:
+    """Boot eagerly creates the vault directory so the sandbox can mask it.
+
+    Closes the first-creation TOCTOU: an agent spawned before the first
+    ``secrets set`` would otherwise get a namespace built without ``.vault``
+    present, and a later first-creation would leave that agent able to read the
+    key file. Creating the directory at boot means every spawn masks a real path.
+    """
+
+    def test_creates_vault_dir_when_absent(self, tmp_path, monkeypatch):
+        home = tmp_path / "crew"
+        home.mkdir()
+        monkeypatch.setattr(cli_server, "config_dir", lambda: home)
+
+        cli_server._ensure_vault_dir_exists()
+
+        vault = home / ".vault"
+        assert vault.is_dir()
+        # The key file is deliberately NOT created — only the directory, so the
+        # sandbox has a path to mask; SecretVault mints the key under O_EXCL.
+        assert not (vault / ".vault_key").exists()
+
+    def test_no_op_when_vault_dir_already_exists(self, tmp_path, monkeypatch):
+        home = tmp_path / "crew"
+        vault = home / ".vault"
+        vault.mkdir(parents=True)
+        sentinel = vault / ".vault_key"
+        sentinel.write_bytes(b"preexisting-key")
+        monkeypatch.setattr(cli_server, "config_dir", lambda: home)
+
+        cli_server._ensure_vault_dir_exists()
+
+        # Idempotent: the existing directory and its contents are untouched.
+        assert vault.is_dir()
+        assert sentinel.read_bytes() == b"preexisting-key"
+
+    def test_raises_when_mkdir_fails(self, tmp_path, monkeypatch):
+        """FAIL CLOSED: a mkdir failure propagates so boot can abort."""
+        home = tmp_path / "crew"
+        home.mkdir()
+        monkeypatch.setattr(cli_server, "config_dir", lambda: home)
+
+        def _boom(*a, **k):
+            raise PermissionError("read-only filesystem")
+
+        monkeypatch.setattr(Path, "mkdir", _boom)
+
+        with pytest.raises(PermissionError):
+            cli_server._ensure_vault_dir_exists()
+
+    def test_gateway_aborts_when_vault_mkdir_fails(self, tmp_path, monkeypatch):
+        """`_gateway` fails closed (SystemExit) before binding when mkdir errors.
+
+        The gateway must never bind the socket or spawn agents into namespaces
+        that could not mask the vault.
+        """
+
+        def _boom() -> None:
+            raise PermissionError("read-only data home")
+
+        monkeypatch.setattr(cli_server, "_ensure_vault_dir_exists", _boom)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+
+        async def _fail_run_gateway(*a, **k):  # pragma: no cover - must never run
+            raise AssertionError("run_gateway must not be reached on vault failure")
+
+        monkeypatch.setattr(cli_server, "run_gateway", _fail_run_gateway)
+        # Config load + node/dist checks would run first; skip straight to the
+        # guarded section by pre-satisfying the cheap gates.
+        monkeypatch.setattr(cli_server, "activate_mise", lambda: [])
+        import kiro_crew.cli as _cli_mod
+
+        monkeypatch.setattr(_cli_mod, "_node_ok", lambda: True)
+        monkeypatch.setattr(cli_server, "_should_reconcile_launchd_launcher", lambda: False)
+        monkeypatch.setattr(cli_server, "config_path", lambda: tmp_path / "config.json")
+        (tmp_path / "config.json").write_text("{}")
+
+        with pytest.raises(SystemExit) as exc:
+            asyncio.run(cli_server._gateway(no_dashboard=True))
+        assert "could not secure the secrets vault" in str(exc.value)
+
+    def test_gateway_hard_exits_when_vault_mkdir_hangs(self, tmp_path, monkeypatch):
+        """`_gateway` fails closed on a wedged mount via a HARD os._exit(1).
+
+        A network-mounted data home that never returns cannot be cancelled once
+        handed to a thread, so `wait_for` firing does not free the executor.
+        The timeout path must `os._exit(1)` — a normal SystemExit under
+        `asyncio.run()` would block on interpreter shutdown joining the wedged
+        thread. `os._exit` is patched to a sentinel so the abort is observable.
+        """
+        import time
+
+        def _hang() -> None:
+            time.sleep(2)  # exceeds the 0.2s test bound; thread ends quickly after
+
+        monkeypatch.setattr(cli_server, "_ensure_vault_dir_exists", _hang)
+        monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
+
+        async def _fail_run_gateway(*a, **k):  # pragma: no cover - must never run
+            raise AssertionError("run_gateway must not be reached on vault timeout")
+
+        monkeypatch.setattr(cli_server, "run_gateway", _fail_run_gateway)
+        monkeypatch.setattr(cli_server, "activate_mise", lambda: [])
+        import kiro_crew.cli as _cli_mod
+
+        monkeypatch.setattr(_cli_mod, "_node_ok", lambda: True)
+        monkeypatch.setattr(cli_server, "_should_reconcile_launchd_launcher", lambda: False)
+        monkeypatch.setattr(cli_server, "config_path", lambda: tmp_path / "config.json")
+        (tmp_path / "config.json").write_text("{}")
+
+        # Shrink the bound so the test is fast.
+        orig_wait_for = asyncio.wait_for
+
+        async def _fast_wait_for(aw, timeout):
+            return await orig_wait_for(aw, timeout=0.2)
+
+        monkeypatch.setattr(cli_server.asyncio, "wait_for", _fast_wait_for)
+
+        # Make the hard exit observable instead of killing the test process.
+        class _HardExit(Exception):
+            pass
+
+        def _fake_exit(code: int) -> None:
+            raise _HardExit(code)
+
+        monkeypatch.setattr(cli_server.os, "_exit", _fake_exit)
+
+        with pytest.raises(_HardExit) as exc:
+            asyncio.run(cli_server._gateway(no_dashboard=True))
+        assert exc.value.args[0] == 1

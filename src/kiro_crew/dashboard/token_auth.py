@@ -422,6 +422,13 @@ _BYPASS_EXACT = {
     "/sw.js",
     "/pcm-worklet.js",
     "/api/token/local",
+    # `kirocrew secrets set/rm` (CLI) queries this before a mutation, gated by
+    # loopback + the local secret via an X-Local-Secret header, exactly like
+    # /api/token/local. api_secrets_vault_floor re-checks BOTH itself. It must
+    # bypass the cookie/token gate for the same reason: the CLI holds no
+    # dashboard token, so without this entry the middleware denies it 403 before
+    # the handler runs.
+    "/api/secrets/vault-floor",
     "/api/shutdown",
     # `kirocrew logout` (CLI) authenticates with loopback + the local secret via
     # an X-Local-Secret header, exactly like /api/token/local and /api/shutdown

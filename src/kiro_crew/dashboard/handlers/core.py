@@ -2203,6 +2203,43 @@ async def api_token_local(request: web.Request) -> web.Response:
     return web.json_response({"token": token, "expires_in": ttl})
 
 
+async def api_secrets_vault_floor(request: web.Request) -> web.Response:
+    """GET /api/secrets/vault-floor — report whether the OS vault floor is in
+    force for the sessions THIS gateway spawns.
+
+    Authoritative, non-forgeable source for the secrets-CLI mutation gate: the
+    value is resolved ONCE at gateway boot from the gateway's own process state
+    (``server._set_vault_floor_posture``) and served here, so an agent — even an
+    unconfined one under ``sandbox=off`` — cannot forge it (it lives in gateway
+    memory, not a file the agent can rewrite) and cannot impersonate the gateway
+    without the ``.local_secret`` and the listening socket. Same loopback +
+    ``X-Local-Secret`` gate as ``/api/token/local``.
+    """
+    import kiro_crew.dashboard.handlers as _h  # noqa: F811
+
+    if not _h.is_loopback(request.remote or ""):
+        return web.json_response({"error": "loopback only", "code": "loopback_only"}, status=403)
+    expected = request.app.get("local_secret", "")
+    if not expected:
+        return web.json_response(
+            {"error": "not available", "code": "local_secret_unavailable"}, status=503
+        )
+    provided = request.headers.get("X-Local-Secret", "")
+    if not provided or not hmac.compare_digest(expected, provided):
+        return web.json_response(
+            {"error": "invalid secret", "code": "invalid_local_secret"}, status=403
+        )
+    # Fail closed: if the posture was never cached, report NOT in force so the
+    # CLI refuses the mutation.
+    in_force = bool(request.app.get("vault_floor_in_force", False))
+    reason = str(request.app.get("vault_floor_reason", "") or "")
+    if in_force:
+        reason = ""
+    elif not reason:
+        reason = "sandbox_posture_unknown"
+    return web.json_response({"in_force": in_force, "reason": reason})
+
+
 # ── Session workspace (Orchestrated Chat) ────────────────────────────
 
 

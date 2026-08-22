@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http.client
+import importlib
 import json
 import logging
 import os
@@ -1339,6 +1340,66 @@ def _should_reconcile_launchd_launcher() -> bool:
     )
 
 
+def _ensure_vault_dir_exists() -> None:
+    """Eagerly create the encrypted-vault DIRECTORY before any agent is spawned.
+
+    The sandbox builds each agent's mount-namespace hide of ``.kiro/crew/.vault``
+    at spawn time, and a mount namespace can only mask a path that already
+    exists. ``SecretVault`` otherwise creates ``.vault`` lazily on the first
+    ``secrets set``, so an agent spawned BEFORE that first write would have a
+    namespace built without the directory present — and a later first-creation
+    by a human ``secrets set`` would leave that already-running agent able to
+    read ``.vault/.vault_key``. Creating the directory at boot, before
+    ``run_gateway`` spawns anything, closes that first-creation TOCTOU: every
+    agent namespace is built with the directory present and masked.
+
+    Only the directory is created. The key file is deliberately NOT touched —
+    ``SecretVault`` mints it under ``O_CREAT | O_EXCL`` with its own
+    ``restrict_to_owner`` lockdown; all the sandbox needs is a real path to
+    mask. The directory is created exactly as ``SecretVault._config_dir`` would
+    (``mkdir(parents=True, exist_ok=True)``), so pre-creating it is
+    byte-indistinguishable from the lazy path — only earlier. No-op when the
+    directory already exists.
+
+    **Fails CLOSED.** If the directory cannot be created the exception
+    propagates: the caller aborts gateway startup rather than binding the socket
+    and spawning agents into namespaces that could not mask the vault. A gateway
+    that cannot secure the vault directory must not run insecure.
+    """
+    (config_dir() / ".vault").mkdir(parents=True, exist_ok=True)
+    # Record the sandbox posture THIS gateway resolved at boot, so a later
+    # `secrets set`/`rm` can tell whether the operator has since edited
+    # `agent.sandbox` on disk WITHOUT restarting — the gateway does not
+    # hot-apply that key, so a live disk value newer than this record means the
+    # running agents were spawned under a DIFFERENT (possibly unconfined) tier
+    # than the disk now claims. The CLI floor check compares the two and fails
+    # closed on a mismatch (see `_vault_floor_unavailable`). Written inside
+    # `.vault` (masked from confined agents) and best-effort: a write failure
+    # only makes the CLI fail closed (absent record ⇒ refuse), never open.
+    #
+    # A single home-wide marker is sufficient because a home has at most ONE
+    # live gateway: `run_gateway` acquires the exclusive `gateway.lock` flock
+    # and exits(1) on failure BEFORE this coroutine ever runs (see
+    # `cli.py` — `GatewayLock(...).acquire()` gates `asyncio.run(_gateway(...))`).
+    # A second gateway booting under a different tier therefore cannot overwrite
+    # this marker while the first stays live: it is refused the lock and dies
+    # before reaching this write. The marker is only ever (re)written by the
+    # sole lock-holding gateway, i.e. the one that spawned every live agent, so
+    # it cannot come to describe a posture other than that of the live session
+    # set. The remaining skew — operator edits `agent.sandbox` on disk without
+    # restarting — is exactly what reason 7 (`sandbox_posture_changed_since_boot`)
+    # catches by comparing this record against the live disk mode.
+    try:
+        _sandbox = importlib.import_module("kiro_crew.sandbox")
+        (config_dir() / ".vault" / ".boot_sandbox_mode").write_text(
+            str(_sandbox.configured_sandbox_mode()), encoding="utf-8"
+        )
+    except Exception:
+        logging.getLogger(__name__).warning(
+            "could not record boot sandbox posture; secrets set/rm will fail closed"
+        )
+
+
 async def _gateway(
     *,
     no_dashboard: bool = False,
@@ -1398,6 +1459,68 @@ async def _gateway(
         print(f"👻 Created default config: {config_path()}")
 
     cfg = KiroCrewConfig.load()
+
+    # Secure the encrypted-vault directory BEFORE run_gateway binds the socket
+    # or spawns any agent, closing the first-creation TOCTOU (see the helper).
+    #
+    # Bounded + off the event loop: the mkdir touches config_dir(), which may be
+    # a slow or unresponsive network-mounted data home. `asyncio.to_thread` keeps
+    # a blocking mkdir off the loop; `wait_for` bounds it so a wedged mount cannot
+    # hang boot indefinitely. Both failure modes FAIL CLOSED — the gateway must
+    # never bind the socket or spawn agents into namespaces that could not mask
+    # the vault.
+    #
+    # The two exits differ deliberately:
+    #   * TimeoutError → os._exit(1). `wait_for` cancels the AWAIT, but the
+    #     executor thread running a wedged `mkdir` is NOT cancellable, so a
+    #     normal `SystemExit`/`raise` under `asyncio.run()` would block on
+    #     interpreter shutdown joining that thread — the "bounded" abort would
+    #     hang forever. `os._exit` terminates the process immediately without
+    #     the executor join. A stalled network mkdir cannot be cancelled once
+    #     handed to a thread, so a hard exit is the only way to bound startup;
+    #     failing closed is required because proceeding would run with an
+    #     unmasked vault.
+    #   * OSError → SystemExit. That path returned (the thread is done), so the
+    #     normal exit unwinds cleanly with a clear message.
+    try:
+        await asyncio.wait_for(asyncio.to_thread(_ensure_vault_dir_exists), timeout=5.0)
+    except asyncio.TimeoutError:
+        # Write the reason straight to stderr fd 2 and hard-exit IMMEDIATELY.
+        # A file-backed logging handler could itself block writing to the same
+        # stalled/unresponsive data-home mount that caused the timeout, so the
+        # `os._exit(1)` must not sit behind any handler that touches the mount.
+        # os.write to fd 2 is a direct syscall — it does not route through the
+        # logging handlers. The write is made NON-BLOCKING first: a full or
+        # stalled stderr pipe would otherwise block the os.write itself and the
+        # `os._exit(1)` would never be reached (startup hangs). With O_NONBLOCK a
+        # write to a full pipe raises EAGAIN (caught below) instead of blocking,
+        # so the hard exit is always reached — the diagnostic is best-effort, the
+        # bounded fail-closed exit is guaranteed.
+        try:
+            os.set_blocking(2, False)
+        except (OSError, ValueError):
+            pass
+        try:
+            os.write(
+                2,
+                (
+                    "👻 Gateway startup aborted: could not secure the secrets "
+                    "vault directory within 5s; refusing to start to avoid "
+                    "running with an unmasked vault. Check that the data home "
+                    "is writable and responsive, then start the gateway again.\n"
+                ).encode("utf-8", "replace"),
+            )
+        except (OSError, BlockingIOError):
+            pass
+        os._exit(1)
+    except OSError as exc:
+        raise SystemExit(
+            f"👻 Gateway startup aborted: could not secure the secrets vault "
+            f"directory at {config_dir() / '.vault'} ({exc}). The gateway will not "
+            f"bind while the vault is unprotected. Check that the data home is "
+            f"writable, then start the gateway again."
+        ) from exc
+
     await run_gateway(
         cfg,
         no_dashboard=no_dashboard,
