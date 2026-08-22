@@ -3563,6 +3563,7 @@
         "one_notification_per_state_change_never_per_hear": "每次状态变化通知一次，绝不按心跳通知：一直不通的源只报一次，而不是每两分钟报一次。同一事件的重复通知会堆叠成一行。",
         "only_the_on_call_instance_picks_up_work": "只有值班中的实例才接手工作",
         "pagerduty_user_id_help": "用来与 PagerDuty 报告的值班人比对，这样此实例就能判断呼叫是不是给你的。保存在代理碰不到的地方 — 留空则把排班表上任何人都当成你。",
+        "incidentio_user_id_help": "用来与 incident.io 排班表上的用户比对，这样此实例就能判断这个班次是不是你的。保存在代理碰不到的地方 — 留空则 incident.io 不参与排班判定。",
         "prod_star": "prod-*",
         "providers": "提供方",
         "pushes_stay_refused_until": "推送会一直遭拒，直到",
@@ -3602,6 +3603,7 @@
         "wrong_local_branch": "本地分支不对",
         "your_github_login": "你的 GitHub 登录名",
         "your_pagerduty_user_id": "你的 PagerDuty 用户 ID",
+        "your_incident_io_user_id": "你的 incident.io 用户 ID",
         "your_team_s_ledger_is_still_being_exchanged_sync": "你们团队的账本仍在交换 — 同步每次都会显式指定"
       },
       "signalsPanel": {

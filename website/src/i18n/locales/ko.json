@@ -3595,6 +3595,7 @@
         "one_notification_per_state_change_never_per_hear": "상태 변경마다 알림 하나이며 하트비트마다가 아닙니다. 계속 다운된 소스는\n 2분마다가 아니라 한 번만 보고됩니다. 같은 인시던트의 반복은 한 행으로\n 쌓입니다.",
         "only_the_on_call_instance_picks_up_work": "당번 인스턴스만 작업을 가져갑니다",
         "pagerduty_user_id_help": "PagerDuty가 당번으로 보고하는 대상과 대조되므로 이 인스턴스가 그 호출이 사용자의 것인지 판단할 수 있습니다. 에이전트가 접근할 수 없는 곳에 저장됩니다 — 스케줄에 있는 누구나 사용자로 취급하려면 비워 두세요.",
+        "incidentio_user_id_help": "incident.io 일정에 있는 사용자와 대조되므로 이 인스턴스가 해당 근무가 사용자의 것인지 판단할 수 있습니다. 에이전트가 접근할 수 없는 곳에 저장됩니다 — 비워 두면 incident.io는 로테이션 판단에 참여하지 않습니다.",
         "prod_star": "prod-*",
         "providers": "공급자",
         "pushes_stay_refused_until": "푸시는",
@@ -3634,6 +3635,7 @@
         "wrong_local_branch": "잘못된 로컬 브랜치",
         "your_github_login": "GitHub 로그인",
         "your_pagerduty_user_id": "PagerDuty 사용자 ID",
+        "your_incident_io_user_id": "incident.io 사용자 ID",
         "your_team_s_ledger_is_still_being_exchanged_sync": "팀의 원장이 아직 교환 중입니다 — 동기화가 지정하는 이름:"
       },
       "signalsPanel": {

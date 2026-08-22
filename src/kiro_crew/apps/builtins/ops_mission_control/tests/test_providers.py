@@ -882,6 +882,7 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
             cloudwatch,
             datadog,
             github_issues,
+            incidentio,
             pagerduty,
             webhook,
         )
@@ -892,6 +893,7 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
                 cloudwatch.CloudWatchSignalSource(),
                 cloudwatch.CloudWatchEvidenceSource(),
                 pagerduty.PagerDutyAdapter(),
+                incidentio.IncidentIoAdapter(),
                 datadog.DatadogAdapter(),
                 datadog.DatadogEvidenceSource(),
                 github_issues.GitHubIssuesAdapter(),
@@ -905,18 +907,20 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
     async def test_unconfigured_poll_returns_empty(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
             cloudwatch,
+            incidentio,
             pagerduty,
         )
 
         self.assertEqual(await cloudwatch.CloudWatchSignalSource().poll(), [])
         self.assertEqual(await pagerduty.PagerDutyAdapter().poll(), [])
+        self.assertEqual(await incidentio.IncidentIoAdapter().poll(), [])
 
     async def test_public_registry_installs_expected_adapters(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry as reg
 
         reg.reset_registry()
         catalog = {p.id for p in reg.get_registry().catalog()}
-        for expected in ("noop", "always-on", "cloudwatch", "pagerduty", "datadog"):
+        for expected in ("noop", "always-on", "cloudwatch", "pagerduty", "incidentio", "datadog"):
             self.assertIn(expected, catalog)
         reg.reset_registry()
 

@@ -885,6 +885,7 @@ def describe(shift: ShiftStatus) -> dict[str, Any]:
         "identities": {
             "schedule_github_login": str(policy_store.get(policy_store.SCHEDULE_LOGIN_KEY) or ""),
             "pagerduty_user_id": str(policy_store.get(policy_store.PAGERDUTY_USER_KEY) or ""),
+            "incidentio_user_id": str(policy_store.get(policy_store.INCIDENTIO_USER_KEY) or ""),
         },
     }
 

@@ -3646,6 +3646,7 @@
         "one_notification_per_state_change_never_per_hear": "One notification per state change, never per heartbeat: a source that stays down\n        is reported once, not every two minutes. Repeats for the same incident stack into\n        one row.",
         "only_the_on_call_instance_picks_up_work": "Only the on-call instance picks up work",
         "pagerduty_user_id_help": "Matched against who PagerDuty reports on call, so this instance can tell whether the pager is yours. Stored where the agent cannot reach it — leave blank to treat anyone on the schedule as you.",
+        "incidentio_user_id_help": "Wird mit den Nutzern in deinem incident.io-Zeitplan abgeglichen, damit diese Instanz erkennt, ob die Schicht dir gehört. Wird dort gespeichert, wo der Agent nicht herankommt — leer lassen, dann nimmt incident.io nicht an der Rotationsentscheidung teil.",
         "prod_star": "prod-*",
         "providers": "Providers",
         "pushes_stay_refused_until": "Pushes stay refused until",
@@ -3685,6 +3686,7 @@
         "wrong_local_branch": "wrong local branch",
         "your_github_login": "Your GitHub login",
         "your_pagerduty_user_id": "Your PagerDuty user ID",
+        "your_incident_io_user_id": "Your incident.io user ID",
         "your_team_s_ledger_is_still_being_exchanged_sync": "Your team's ledger is still being exchanged — sync names"
       },
       "signalsPanel": {
