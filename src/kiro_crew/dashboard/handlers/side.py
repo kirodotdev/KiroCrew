@@ -18,7 +18,11 @@ from aiohttp import web
 
 from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.agent_discovery import warm_project_agent_names
-from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+from kiro_crew.config.loader import (
+    KiroCrewConfig,
+    refresh_materialized_agents,
+    resolve_agent_bindings,
+)
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_state import (
     MAX_SIDE_QUEUE,
@@ -29,6 +33,7 @@ from kiro_crew.dashboard.side_state import (
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
+from kiro_crew.executors import subprocess_executor
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
@@ -271,6 +276,14 @@ async def _run_side_turn(
     is_first_turn: bool,
 ) -> None:
     """Background task: drive one side turn and broadcast chunks over WS."""
+    # Local import: chat_runner imports this package, so a module-level import
+    # would close a cycle. Bound here rather than inside the try below because
+    # the ``except`` clause has to name the exception.
+    from kiro_crew.dashboard.chat_runner import (
+        _AppAgentNotLoaded,
+        _recover_app_agent_binding,
+    )
+
     side_key = _side_session_key(slot.key)
     # The sidecar this turn belongs to. Every later mutation is gated on the slot
     # still pointing at THIS object, so a close+reopen part-way through can never
@@ -339,21 +352,67 @@ async def _run_side_turn(
         # a config-load failure degrades to the raw slot.agent rather than
         # crashing the turn.
         kiro_agent: str | None = None
+        # An app-owned slot whose agent never resolved (see the fail-loud guard
+        # after this block). Captured inside the try so the raise lives OUTSIDE
+        # it and is not swallowed by the resolve except.
+        _app_agent_unresolved = False
         try:
             cfg = KiroCrewConfig.load()
             # Warm off-loop, resolve inline — same reasoning as the main chat path
             # (offloading the resolver itself would swallow a StopIteration into a
             # Future and hang the await).
             await warm_project_agent_names(slot.project)
-            kiro_agent = resolve_agent_bindings(
-                cfg, slot.agent or None, slot.project or None
-            ).kiro_agent
+            bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+            kiro_agent = bindings.kiro_agent
+            # SELF-HEAL an app-owned slot whose agent did not resolve, on the same
+            # two escalating rungs `_run_chat` uses, for the same reason: an app's
+            # agents live only in ``~/.kiro/agents/<app>--<agent>.json``, so the
+            # resolver can honor them only through the materialized-agent snapshot,
+            # which is COLD on the event loop until a warm lands. A cold read falls
+            # back to the default agent with ``requested_resolved=False``.
+            #
+            # A side turn reaches this with its OWN session, so it cannot ride on
+            # the main chat having healed first — a user can open the side panel on
+            # an app slot that has never taken a turn. Guarded so the common path
+            # (no ``_app``, or already resolved) does zero extra work and no I/O.
+            if slot._app and not bindings.requested_resolved:
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        subprocess_executor(), refresh_materialized_agents
+                    )
+                except Exception:  # noqa: BLE001 — a warm failure only costs the fail-loud
+                    logger.warning(
+                        "Side turn: failed to warm materialized agents for app slot %s",
+                        slot.key,
+                        exc_info=True,
+                    )
+                bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+                kiro_agent = bindings.kiro_agent
+                if not bindings.requested_resolved:
+                    bindings = await _recover_app_agent_binding(
+                        cfg, slot, project=slot.project or None
+                    )
+                    kiro_agent = bindings.kiro_agent
+            _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
         except Exception:
             logger.warning(
                 "Side turn: failed to resolve agent bindings for slot=%s; "
                 "falling back to raw slot.agent",
                 slot.key,
                 exc_info=True,
+            )
+
+        # FAIL-LOUD, exactly as the main chat does: an app-owned slot whose agent
+        # STILL did not resolve must NOT run the default agent. Substituting it
+        # here is worse than the main chat's version of the same bug, because a
+        # side answer carries no turn card the user would scrutinise — it reads as
+        # this app's assistant answering, while actually being the generic default
+        # with none of the app's MCP tools. Raised before get_or_create, so the
+        # turn aborts without ever creating a session or dispatching an agent.
+        if _app_agent_unresolved:
+            raise _AppAgentNotLoaded(
+                f"The app agent '{slot.agent or ''}' isn't loaded yet — "
+                "try again in a moment, or restart the gateway."
             )
 
         provider, _is_new, _resumed = await state.sessions.get_or_create(
@@ -447,6 +506,28 @@ async def _run_side_turn(
         from kiro_crew.dashboard.chat_runner import _mark_kiro_signed_out
 
         _mark_kiro_signed_out(state)
+        broadcast_side_result(
+            state,
+            slot_key=slot.key,
+            run_id=run_id,
+            role="assistant",
+            content=str(exc),
+            is_error=True,
+            final=True,
+        )
+    except _AppAgentNotLoaded as exc:
+        # Terminal for this turn and deliberately not a generic failure: the
+        # message names the agent and says what to do, which the catch-all below
+        # would replace with "see server logs". No session was created, so there
+        # is nothing to release. The queue is NOT held (unlike the auth arm
+        # above): the self-heal rungs re-run per turn, so the next queued
+        # question is a real retry rather than a repeat of a settled refusal.
+        logger.warning(
+            "Side turn: app agent not loaded for slot=%s run_id=%s: %s",
+            slot.key,
+            run_id,
+            exc,
+        )
         broadcast_side_result(
             state,
             slot_key=slot.key,

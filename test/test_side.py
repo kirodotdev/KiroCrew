@@ -590,3 +590,216 @@ async def test_side_stream_redacts_credential_split_across_chunks(tmp_path, monk
     assert raw_cred not in stored[-1]["content"]
     assert exfil_payload not in stored[-1]["content"]
     assert "[REDACTED" in stored[-1]["content"]
+
+
+def _app_slot(state, *, app: str = "notes", agent: str = "notes--assistant"):
+    """A slot owned by an app, with an open sidecar and one pending run."""
+    slot = state.get_or_create_slot("app-parent")
+    slot._app = app
+    slot.agent = agent
+    slot._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    slot._side.append_user("q")
+    slot._side.last_run_id = "run-1"
+    slot._side.is_complete = False
+    return slot
+
+
+def _side_errors(events: list[tuple[str, Any]]) -> list[str]:
+    return [
+        d.get("content", "")
+        for _t, d in events
+        if isinstance(d, dict) and d.get("is_error") and d.get("kind") == "side"
+    ]
+
+
+def _dispatch_recorder(state) -> list[str]:
+    dispatched: list[str] = []
+
+    async def _fake_get_or_create(key, **kwargs):
+        dispatched.append(kwargs.get("agent") or "")
+        return MagicMock(), True, False
+
+    state.sessions.get_or_create = _fake_get_or_create
+    state.sessions.release = MagicMock()
+    return dispatched
+
+
+@pytest.mark.asyncio
+async def test_side_turn_refuses_to_substitute_the_default_for_an_app_agent(
+    tmp_path, monkeypatch
+):
+    """An app slot whose agent never materialized must not answer as the default.
+
+    An app's agents live only in ``~/.kiro/agents/<app>--<agent>.json``, so
+    ``resolve_agent_bindings`` can honor them only through the materialized-agent
+    snapshot -- COLD on the event loop until a warm lands. A cold read falls back
+    to the default agent with ``requested_resolved=False``, and dispatching that
+    silently runs the generic assistant with none of the app's MCP tools.
+
+    The main chat closed this in #4995 / #4983; the side path was the counted
+    unfixed sibling, carrying none of the three rungs. A side answer is the worse
+    place for it: there is no turn card to scrutinise, so it simply reads as this
+    app's assistant answering.
+
+    Here BOTH self-heal rungs fail, so the turn must end without ever creating a
+    session, and must say why.
+    """
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot = _app_slot(state)
+    dispatched = _dispatch_recorder(state)
+    warms: list[int] = []
+
+    async def _recover_fails(cfg, _slot, *, project=None):
+        # Mirrors the real coroutine's contract: a recovery failure only logs and
+        # hands back the still-cold bindings.
+        return MagicMock(kiro_agent="kirocrew", requested_resolved=False)
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", lambda: MagicMock()
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
+        lambda cfg, agent, project_dir=None: MagicMock(
+            kiro_agent="kirocrew", requested_resolved=False
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.refresh_materialized_agents",
+        lambda: warms.append(1),
+        # raising=False so this asserts the CONTRACT rather than where the rescan
+        # happens to live. Against a build that has no such rung the test still
+        # RUNS, and fails on the dispatch below -- the actual defect -- instead of
+        # erroring because a name was missing from the module.
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._recover_app_agent_binding",
+        _recover_fails,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value="ok"),
+    )
+
+    await _run_side_turn(state, slot, "run-1", "q", is_first_turn=True)
+
+    assert dispatched == [], (
+        "the side turn dispatched an agent for an app slot whose agent never "
+        "resolved -- it would have answered as %r, not the app's agent" % (dispatched,)
+    )
+    assert warms == [1], "the snapshot-rescan rung did not run exactly once: %r" % (warms,)
+    errors = _side_errors(events)
+    assert errors, "the refusal was silent; the side panel has no other channel"
+    assert "notes--assistant" in errors[0], (
+        "the error does not name the agent the user asked for: %r" % (errors[0],)
+    )
+    assert "see server logs" not in errors[0], (
+        "the actionable message was flattened into the generic failure text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_side_turn_self_heals_a_cold_app_agent_and_then_dispatches_it(
+    tmp_path, monkeypatch
+):
+    """When a rung succeeds, the turn proceeds on the app's own agent.
+
+    The refusal above must not be the only outcome: a cold snapshot is the common
+    case and it is recoverable, so the fix has to heal it rather than only refuse.
+    Ordering is deterministic rather than raced -- the rescan flips the resolver
+    stub's answer, so the second resolve is guaranteed to see the warm one.
+    """
+    state = _make_state(tmp_path)
+    _capture_broadcasts(state)
+    slot = _app_slot(state)
+    dispatched = _dispatch_recorder(state)
+    warmed: list[int] = []
+    recovered: list[int] = []
+
+    def _resolve(cfg, agent, project_dir=None):
+        if warmed:
+            return MagicMock(kiro_agent="notes--assistant", requested_resolved=True)
+        return MagicMock(kiro_agent="kirocrew", requested_resolved=False)
+
+    async def _recover(cfg, _slot, *, project=None):
+        recovered.append(1)
+        return MagicMock(kiro_agent="kirocrew", requested_resolved=False)
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", lambda: MagicMock()
+    )
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.resolve_agent_bindings", _resolve)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.refresh_materialized_agents",
+        lambda: warmed.append(1),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_runner._recover_app_agent_binding", _recover, raising=False
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value="ok"),
+    )
+
+    await _run_side_turn(state, slot, "run-1", "q", is_first_turn=True)
+
+    assert dispatched == ["notes--assistant"], (
+        "the healed app agent did not reach get_or_create: %r" % (dispatched,)
+    )
+    assert recovered == [], (
+        "the expensive register-from-source rung ran even though the rescan had "
+        "already resolved the agent"
+    )
+
+
+@pytest.mark.asyncio
+async def test_side_turn_self_heal_is_scoped_to_app_slots(tmp_path, monkeypatch):
+    """A non-app slot never pays for the self-heal, and is never refused.
+
+    ``requested_resolved`` is False for any unknown agent name, not only a cold
+    app one. Gating on ``slot._app`` is what keeps an ordinary slot on its
+    existing best-effort behaviour -- it still dispatches -- and keeps the common
+    path free of the rescan's I/O.
+    """
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot = state.get_or_create_slot("plain-parent")
+    slot.agent = "default"
+    slot._side = SideState(open=True, created_at="2026-01-01T00:00:00Z")
+    slot._side.append_user("q")
+    slot._side.last_run_id = "run-1"
+    slot._side.is_complete = False
+    dispatched = _dispatch_recorder(state)
+    warms: list[int] = []
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.KiroCrewConfig.load", lambda: MagicMock()
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.resolve_agent_bindings",
+        lambda cfg, agent, project_dir=None: MagicMock(
+            kiro_agent="kirocrew", requested_resolved=False
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.refresh_materialized_agents",
+        lambda: warms.append(1),
+        # raising=False so this asserts the CONTRACT rather than where the rescan
+        # happens to live. Against a build that has no such rung the test still
+        # RUNS, and fails on the dispatch below -- the actual defect -- instead of
+        # erroring because a name was missing from the module.
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.side.stream_and_collect",
+        AsyncMock(return_value="ok"),
+    )
+
+    await _run_side_turn(state, slot, "run-1", "q", is_first_turn=True)
+
+    assert dispatched == ["kirocrew"], "a non-app slot stopped dispatching: %r" % (dispatched,)
+    assert warms == [], "a non-app slot paid for the app-only snapshot rescan"
+    assert not _side_errors(events), "a non-app slot was refused by the app-only guard"
