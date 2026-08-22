@@ -173,6 +173,69 @@ rm_rf_resilient() {
   done
 }
 
+# Invoke electron-builder. Split into its own function purely so a test can
+# shadow it with a stub -- CSC_IDENTITY_AUTO_DISCOVERY=false disables macOS
+# codesign identity auto-discovery for local/CI builds.
+_eb_invoke() {
+  CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@"
+}
+
+# Run electron-builder (EB_ARGS as "$@"), retrying a bounded number of times
+# on two transient failure classes -- and still failing the build on anything
+# else, or once the retry budget is exhausted:
+#
+#   - macOS .DS_Store/ENOTEMPTY temp-dir race (electron-userland/electron-builder#6890):
+#     the universal build's lipo-merge stage removes dist/mac-universal-<arch>-temp
+#     dirs with a recursive fs.rm that has no retries of its own, and Desktop
+#     Services (Finder/Spotlight) can drop a fresh .DS_Store into one mid-removal.
+#   - transient network/TLS failures in electron-builder's OWN mid-build
+#     fetches: the AppImage and NSIS/Squirrel targets pull their own tooling
+#     through `got` AFTER the electron zip has already reported
+#     progress=100%. A dropped connection ("socket hang up") or a
+#     TLS-intercepted response ("self-signed certificate") aborts the whole
+#     build there. These are per-execution network events, not build errors --
+#     the same commit passes on a plain re-run, and one matrix leg can fail
+#     while its siblings go green in the same attempt (#3088).
+#
+# Split out of the packaging step (rather than left inline) so the
+# retry/classification logic is testable in isolation, mirroring
+# rm_rf_resilient above: a test extracts this function's body, shadows
+# _eb_invoke with a stub that fails N times, and asserts the real retry/
+# classification logic here recovers (or correctly gives up).
+run_electron_builder_with_retry() {
+  local attempt=1 max_attempts=3 eb_log eb_transient eb_backoff
+  while : ; do
+    eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
+    if _eb_invoke "$@" 2>&1 | tee "$eb_log"; then
+      rm -f "$eb_log"; return 0
+    fi
+    # Classify the failure before deciding: each transient class needs its
+    # own cleanup, and anything unrecognised must still abort on the first
+    # failure.
+    eb_transient=""
+    if grep -q "ENOTEMPTY" "$eb_log"; then
+      eb_transient="ds_store"
+    elif grep -qE "socket hang up|self[- ]signed certificate|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND" "$eb_log"; then
+      eb_transient="network"
+    fi
+    if [ -n "$eb_transient" ] && [ "$attempt" -lt "$max_attempts" ]; then
+      if [ "$eb_transient" = "ds_store" ]; then
+        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
+        find dist -name .DS_Store -delete 2>/dev/null || true
+        rm -rf dist/*-temp 2>/dev/null || true
+        eb_backoff=2
+      else
+        echo "  ⚠ transient network/TLS failure in an electron-builder fetch (attempt $attempt/$max_attempts); retrying…" >&2
+        eb_backoff=$((attempt * 10))
+      fi
+      rm -f "$eb_log"; attempt=$((attempt + 1)); sleep "$eb_backoff"; continue
+    fi
+    rm -f "$eb_log"
+    echo "❌ electron-builder failed (not a known transient class, or retries exhausted)." >&2
+    return 1
+  done
+}
+
 # --- 1. Frontend ------------------------------------------------------------
 if [ "${SKIP_FRONTEND:-0}" != "1" ]; then
   log "Building dashboard (npm)…"
@@ -598,40 +661,18 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
   # per target, and clearing between them would delete the previous artifact.
   rm_rf_resilient dist
 
-  # One electron-builder invocation, with the macOS .DS_Store/ENOTEMPTY retry:
-  # electron-builder's universal step stages each arch into
-  # dist/mac-universal-<arch>-temp, lipo-merges them, then removes the temp
-  # dirs with a recursive fs.rm. If macOS Desktop Services (Finder/Spotlight)
-  # drops a .DS_Store into a temp dir *during* that removal, Node's fs.rm --
-  # which performs no retries -- fails the final rmdir with ENOTEMPTY and the
-  # whole build aborts (electron-userland/electron-builder#6890). It is a
-  # transient race, so retry from a swept, clean dir a bounded number of times.
-  eb_run() {
-    local attempt=1 max_attempts=3 eb_log
-    while : ; do
-      eb_log="$(mktemp "${TMPDIR:-/tmp}/kc-eb.XXXXXX")"
-      if CSC_IDENTITY_AUTO_DISCOVERY=false ./node_modules/.bin/electron-builder "$@" 2>&1 | tee "$eb_log"; then
-        rm -f "$eb_log"; return 0
-      fi
-      if grep -q "ENOTEMPTY" "$eb_log" && [ "$attempt" -lt "$max_attempts" ]; then
-        echo "  ⚠ macOS .DS_Store/ENOTEMPTY temp-dir race (attempt $attempt/$max_attempts); sweeping .DS_Store and retrying…" >&2
-        find dist -name .DS_Store -delete 2>/dev/null || true
-        rm -rf dist/*-temp 2>/dev/null || true
-        rm -f "$eb_log"; attempt=$((attempt + 1)); sleep 2; continue
-      fi
-      rm -f "$eb_log"
-      echo "❌ electron-builder failed (not the .DS_Store race, or retries exhausted)." >&2
-      exit 1
-    done
-  }
-
+  # Each electron-builder invocation below goes through
+  # run_electron_builder_with_retry (defined above, alongside rm_rf_resilient)
+  # so the macOS .DS_Store/ENOTEMPTY race AND transient network/TLS failures
+  # in electron-builder's own mid-build fetches are both retried, not just
+  # the former.
   if [ "$OS" = "darwin" ]; then
     EB_ARGS+=( --mac )
     [ "$UNIVERSAL" = "1" ] && EB_ARGS+=( --universal )
-    eb_run "${EB_ARGS[@]}"
+    run_electron_builder_with_retry "${EB_ARGS[@]}"
   elif [ "$OS" = "windows" ]; then
     EB_ARGS+=( --win )
-    eb_run "${EB_ARGS[@]}"
+    run_electron_builder_with_retry "${EB_ARGS[@]}"
   else
     # One invocation PER FORMAT, each preceded by its own beacon stamp, so the
     # AppImage and the deb do not both claim the label of whichever was built
@@ -642,7 +683,7 @@ log "Packaging desktop app (electron-builder, version: $KC_VERSION)…"
       target="${pair%%:*}"; dist="${pair##*:}"
       log "Packaging Linux ${target} (dist=${dist})…"
       restamp_backends "$dist"
-      eb_run "${EB_ARGS[@]}" --linux "$target"
+      run_electron_builder_with_retry "${EB_ARGS[@]}" --linux "$target"
     done
   fi
 )
