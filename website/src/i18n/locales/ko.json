@@ -4324,20 +4324,6 @@
     "viewPr": "풀 리퀘스트"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "활성",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "이 크루의 일정을 불러올 수 없어 무엇이 깨우는지 알 수 없습니다.",
-      "no_schedules_run_this_crew_automatically": "이 크루를 자동으로 실행하는 일정이 없습니다.",
-      "open_schedule": "일정 열기",
-      "pause_named": "{{name}} 일시중지",
-      "paused": "일시중지됨",
-      "resume_named": "{{name}} 재개",
-      "run_named_now": "{{name}} 지금 실행",
-      "running": "실행 중",
-      "schedule": "일정",
-      "schedules_that_run_this_crew_without_you_asking": "요청하지 않아도 이 크루를 실행하는 일정입니다. 위의 트리거와는 별개로, 트리거는 오케스트레이터가 이 크루를 선택할 시점만 결정합니다.",
-      "what_wakes_this_crew": "이 크루를 깨우는 것"
-    },
     "agentDropdownList": {
       "active_in_this_session": "이 세션에서 활성",
       "could_not_change_the_default_agent": "기본 에이전트를 변경할 수 없습니다",
@@ -4597,22 +4583,6 @@
       "artifact": "아티팩트: {{slug}}",
       "image_could_not_be_loaded": "이미지를 불러올 수 없습니다",
       "rendering": "렌더링 중…"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",
-      "checking_account": "계정 확인 중…",
-      "checking_credit_usage": "크레딧 사용량 확인 중",
-      "credit_usage_unavailable": "크레딧 사용량을 불러올 수 없음",
-      "days_until_expiration": "만료까지 남은 일수: {{count}}",
-      "estimated_overage_cost": "예상 초과 요금",
-      "hide_email": "이메일 숨기기",
-      "kiro_account": "Kiro 계정",
-      "kiro_credit_usage": "Kiro 크레딧 사용량",
-      "overage_rate_value": "크레딧당 {{rate}}",
-      "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
-      "show_email": "이메일 표시",
-      "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
-      "used_credits": "사용: {{used}} / {{total}}"
     },
     "artifactChatPanel": {
       "agent_chat": "에이전트 채팅",
@@ -4997,6 +4967,54 @@
       "copy": "{{label}} {{branch}} 복사",
       "copy_2": "{{label}} 복사"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "작업이 들어오는 경로",
+      "group_what_it_can_do": "무엇을 할 수 있는지",
+      "group_where_it_works": "어디에서 작동하는지",
+      "group_who_it_is": "무엇인지",
+      "node_none": "없음",
+      "pane_overview": "개요",
+      "pane_schedules": "일정",
+      "pane_webhook": "웹훅",
+      "pane_workspace_memory": "워크스페이스 · 메모리 저장소",
+      "rail_label": "크루 설정",
+      "stat_active_schedules": "활성 일정",
+      "stat_crews_sharing": "저장소를 공유하는 크루",
+      "stat_resolved_model": "확정된 모델",
+      "stat_unknown": "알 수 없음",
+      "tag_shared": "공유됨",
+      "unsaved_changes": "저장되지 않은 변경",
+      "webhook_unbound_short": "크루에 연결되지 않음",
+      "wire_what_it_works_with": "무엇으로 작동하는지"
+    },
+    "crewWakeSection": {
+      "active": "활성",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "이 크루의 일정을 불러올 수 없어 무엇이 깨우는지 알 수 없습니다.",
+      "no_schedules_run_this_crew_automatically": "이 크루를 자동으로 실행하는 일정이 없습니다.",
+      "open_schedule": "일정 열기",
+      "pause_named": "{{name}} 일시중지",
+      "paused": "일시중지됨",
+      "resume_named": "{{name}} 재개",
+      "run_named_now": "{{name}} 지금 실행",
+      "running": "실행 중",
+      "schedule": "일정",
+      "schedules_that_run_this_crew_without_you_asking": "요청하지 않아도 이 크루를 실행하는 일정입니다. 위의 트리거와는 별개로, 트리거는 오케스트레이터가 이 크루를 선택할 시점만 결정합니다.",
+      "what_wakes_this_crew": "이 크루를 깨우는 것"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "Webhook을 불러오지 못해 지금은 무엇이 이 크루를 깨우는지 알 수 없습니다.",
+      "inbound_webhooks_are_switched_off": "인바운드 webhook이 꺼져 있어 바인딩된 토큰을 포함해 아무것도 호출할 수 없습니다.",
+      "last_used_ago": "{{time}} 사용",
+      "no_tokens_are_bound_to_this_crew": "이 크루에 바인딩된 webhook 토큰이 없습니다.",
+      "off": "꺼짐",
+      "open_webhooks": "Webhooks 열기",
+      "outside_systems_holding_one_of_these_credentials": "이 토큰을 가진 외부 시스템은 이 크루로 턴을 시작할 수 있습니다. 생성과 폐기는 Webhooks 페이지에서 하세요.",
+      "retry": "다시 시도",
+      "signed": "서명 필수",
+      "unbound_tokens_can_wake_any_crew_other": "크루에 바인딩되지 않은 토큰이 {{count}}개 있으며, 이 크루를 포함한 모든 크루를 깨울 수 있습니다.",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "이 크루를 깨우는 Webhook"
+    },
     "detailPanel": {
       "close_panel": "패널 닫기",
       "resize_panel": "패널 크기 조절"
@@ -5208,6 +5226,18 @@
       "this_session_has_no_project_directory_so_there_i": "이 세션에는 프로젝트 디렉터리가 없어 브랜치를 만들 저장소가 없습니다",
       "worktree_disabled_no_project_directory": "‘이 세션에 추가’는 작성창을 미리 채웁니다 — 전송을 누르기 전까지는 아무것도 전송되지 않습니다. 여기서는 worktree를 사용할 수 없습니다. 이 세션에는 프로젝트 디렉터리가 없습니다 (작성창의 프로젝트 칩에서 선택하세요)."
     },
+    "gitPanel": {
+      "changes": "변경 사항",
+      "clean": "깨끗함",
+      "commits": "커밋",
+      "empty_state": "표시할 변경 사항이나 커밋이 없습니다.",
+      "just_now": "방금 전",
+      "loading": "로드 중…",
+      "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
+      "refresh": "새로 고침",
+      "title": "Git",
+      "uncommitted": "커밋되지 않음 {{count}}개"
+    },
     "inboundLinkChip": {
       "driven_from": "{{label}}에서 구동 중"
     },
@@ -5361,6 +5391,22 @@
       "no_execution_history_yet": "아직 실행 기록이 없습니다",
       "prev": "← 이전",
       "s_elapsed": "초 경과"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",
+      "checking_account": "계정 확인 중…",
+      "checking_credit_usage": "크레딧 사용량 확인 중",
+      "credit_usage_unavailable": "크레딧 사용량을 불러올 수 없음",
+      "days_until_expiration": "만료까지 남은 일수: {{count}}",
+      "estimated_overage_cost": "예상 초과 요금",
+      "hide_email": "이메일 숨기기",
+      "kiro_account": "Kiro 계정",
+      "kiro_credit_usage": "Kiro 크레딧 사용량",
+      "overage_rate_value": "크레딧당 {{rate}}",
+      "remaining_credit_balance": "남은 크레딧 잔액: {{count}}",
+      "show_email": "이메일 표시",
+      "usage_scope": "kiro-cli /usage에서 집계한 채팅, 에이전트, MCP 및 서브에이전트 전체의 월간 Kiro 크레딧 사용량입니다.",
+      "used_credits": "사용: {{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "에이전트 사양 없음",
@@ -5797,6 +5843,26 @@
       "select": "선택",
       "subdirectories": "하위 디렉터리"
     },
+    "pttTestStrip": {
+      "focus_lost": "창이 포커스를 잃어 키에서 손을 뗀 것을 감지하지 못했습니다. 실제 대화에서는 안전 타이머가 녹음을 중지합니다.",
+      "headline_captured": "키가 정상 작동합니다",
+      "headline_idle": "키 입력을 기다리는 중",
+      "headline_lost": "키에서 손을 뗀 것을 감지하지 못했습니다",
+      "headline_matched": "설정한 키와 일치합니다",
+      "headline_other_key": "다른 키입니다",
+      "idle_press": "{{name}} 을(를) 눌렀다 놓으세요.",
+      "no_mic_note": "이 테스트는 키보드만 확인합니다. 마이크는 계속 꺼져 있습니다.",
+      "readout_held": "{{secs}}초 동안 눌렀습니다",
+      "state_deciding": "확인 중…",
+      "state_done": "완료",
+      "state_recording_sim": "녹음될 상태",
+      "title": "직접 확인하기",
+      "verdict_hold": "길게 누르셨습니다. 실제 대화에서는 누르고 있는 동안 녹음하고, 손을 떼면 중지합니다.",
+      "verdict_tap_latch": "짧게 누르셨습니다. 실제 대화에서는 녹음이 시작되어 키를 다시 누를 때까지 계속됩니다.",
+      "verdict_tap_noop": "짧게 누르셨습니다. ‘{{mode}}’ 모드에서는 아무 일도 일어나지 않습니다. 키를 더 길게 누르세요.",
+      "verdict_toggle": "인식되었습니다. 실제 대화에서는 이 입력으로 녹음이 시작되고, 다음에 누르면 중지됩니다.",
+      "verdict_wrong_key": "{{got}} 이(가) 입력되었습니다. 위에서 선택한 {{want}} 이(가) 아닙니다. 사용 중인 키보드에 해당 키가 없다면 ‘{{field}}’에서 다른 키를 선택하세요."
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "이해했습니다. 공개로 게시합니다",
       "anyone_with_the_link": "링크를 아는 전 세계 누구나 {{target}}을(를) 볼 수 있습니다. 인증도 접근 제어도 없습니다.",
@@ -6163,6 +6229,18 @@
       "remove_reference": "참조 삭제",
       "remove_reference_to": "{{name}} 참조 삭제"
     },
+    "settingRef": {
+      "copied": "복사됨!",
+      "copyCommand": "명령 복사",
+      "copyFailed": "복사 실패",
+      "envVarAriaLabel": "환경 변수 {{key}}",
+      "envVarDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 설정하세요.",
+      "envVarUnsetDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 해제하세요.",
+      "fileOnlyDescription": "아래 CLI 명령으로 이 값을 설정하세요.",
+      "fileSettingAriaLabel": "파일 전용 설정 {{key}}",
+      "openSettingsAriaLabel": "{{key}}을(를) 설정 → {{tab}}에서 열기",
+      "orEditConfigJson": "또는 ~/.kiro/crew/config.json 파일을 직접 편집하세요."
+    },
     "settings": {
       "click_to_reset": "클릭하여 초기화",
       "decrease": "감소",
@@ -6251,6 +6329,14 @@
     "skillPickerMenu": {
       "loading_skills": "스킬을 불러오는 중…",
       "no_matching_skills": "일치하는 스킬 없음"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "활성 에이전트를 전환하거나 관리합니다",
@@ -6620,79 +6706,6 @@
       "select": "선택",
       "workspace_name": "워크스페이스 이름",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "copied": "복사됨!",
-      "copyCommand": "명령 복사",
-      "copyFailed": "복사 실패",
-      "envVarAriaLabel": "환경 변수 {{key}}",
-      "envVarDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 설정하세요.",
-      "envVarUnsetDescription": "Kiro Crew를 시작하기 전에 이 환경 변수를 해제하세요.",
-      "fileOnlyDescription": "아래 CLI 명령으로 이 값을 설정하세요.",
-      "fileSettingAriaLabel": "파일 전용 설정 {{key}}",
-      "openSettingsAriaLabel": "{{key}}을(를) 설정 → {{tab}}에서 열기",
-      "orEditConfigJson": "또는 ~/.kiro/crew/config.json 파일을 직접 편집하세요."
-    },
-    "pttTestStrip": {
-      "focus_lost": "창이 포커스를 잃어 키에서 손을 뗀 것을 감지하지 못했습니다. 실제 대화에서는 안전 타이머가 녹음을 중지합니다.",
-      "headline_captured": "키가 정상 작동합니다",
-      "headline_idle": "키 입력을 기다리는 중",
-      "headline_lost": "키에서 손을 뗀 것을 감지하지 못했습니다",
-      "headline_matched": "설정한 키와 일치합니다",
-      "headline_other_key": "다른 키입니다",
-      "idle_press": "{{name}} 을(를) 눌렀다 놓으세요.",
-      "no_mic_note": "이 테스트는 키보드만 확인합니다. 마이크는 계속 꺼져 있습니다.",
-      "readout_held": "{{secs}}초 동안 눌렀습니다",
-      "state_deciding": "확인 중…",
-      "state_done": "완료",
-      "state_recording_sim": "녹음될 상태",
-      "title": "직접 확인하기",
-      "verdict_hold": "길게 누르셨습니다. 실제 대화에서는 누르고 있는 동안 녹음하고, 손을 떼면 중지합니다.",
-      "verdict_tap_latch": "짧게 누르셨습니다. 실제 대화에서는 녹음이 시작되어 키를 다시 누를 때까지 계속됩니다.",
-      "verdict_tap_noop": "짧게 누르셨습니다. ‘{{mode}}’ 모드에서는 아무 일도 일어나지 않습니다. 키를 더 길게 누르세요.",
-      "verdict_toggle": "인식되었습니다. 실제 대화에서는 이 입력으로 녹음이 시작되고, 다음에 누르면 중지됩니다.",
-      "verdict_wrong_key": "{{got}} 이(가) 입력되었습니다. 위에서 선택한 {{want}} 이(가) 아닙니다. 사용 중인 키보드에 해당 키가 없다면 ‘{{field}}’에서 다른 키를 선택하세요."
-    },
-    "gitPanel": {
-      "changes": "변경 사항",
-      "clean": "깨끗함",
-      "commits": "커밋",
-      "empty_state": "표시할 변경 사항이나 커밋이 없습니다.",
-      "just_now": "방금 전",
-      "loading": "로드 중…",
-      "no_project": "이 세션에 설정된 프로젝트 폴더가 없습니다.",
-      "refresh": "새로 고침",
-      "title": "Git",
-      "uncommitted": "커밋되지 않음 {{count}}개"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "작업이 들어오는 경로",
-      "group_what_it_can_do": "무엇을 할 수 있는지",
-      "group_where_it_works": "어디에서 작동하는지",
-      "group_who_it_is": "무엇인지",
-      "node_none": "없음",
-      "pane_overview": "개요",
-      "pane_schedules": "일정",
-      "pane_webhook": "웹훅",
-      "pane_workspace_memory": "워크스페이스 · 메모리 저장소",
-      "rail_label": "크루 설정",
-      "stat_active_schedules": "활성 일정",
-      "stat_crews_sharing": "저장소를 공유하는 크루",
-      "stat_resolved_model": "확정된 모델",
-      "stat_unknown": "알 수 없음",
-      "tag_shared": "공유됨",
-      "unsaved_changes": "저장되지 않은 변경",
-      "webhook_unbound_reason": "웹훅 토큰은 아직 크루에 연결되지 않으므로 어떤 토큰으로도 아무 크루를 깨울 수 있습니다.",
-      "webhook_unbound_short": "크루에 연결되지 않음",
-      "wire_what_it_works_with": "무엇으로 작동하는지"
     }
   },
   "hooks": {

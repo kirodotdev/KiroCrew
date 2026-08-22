@@ -74,6 +74,7 @@
   "components.artifactPanel.comment",
   "components.commentOverlay.comment",
   "components.commentThreadPopover.comment",
+  "components.crewWebhookSection.unbound_tokens_can_wake_any_crew",
   "components.discoverySearchBar.result",
   "components.fileChangeChips.additions",
   "components.fileChangeChips.file",

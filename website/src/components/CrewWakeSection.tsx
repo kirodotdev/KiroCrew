@@ -6,11 +6,10 @@
  * started, while everything listed here starts a turn with no human present.
  * Users conflate the two, so the section carries a one-line disambiguator.
  *
- * Only clock triggers are listed. A cron records the crew it runs as, so it can
- * be attributed; a webhook token carries no crew binding at all (the agent
- * arrives per request on `POST /api/hooks/agent`) and a dashboard nudge loop is
- * keyed by slot, not by crew. Listing those would require inventing an
- * attribution the backend cannot answer, so they are absent rather than guessed.
+ * Only clock triggers are listed. Webhook tokens carry their own crew binding
+ * and are the webhook pane's answer (CrewWebhookSection), not a second row kind
+ * here; a dashboard nudge loop is keyed by slot, not by crew, so listing it
+ * would still be inventing an attribution the backend cannot answer.
  */
 import { useCallback } from 'react'
 import { useNavigate } from 'react-router-dom'

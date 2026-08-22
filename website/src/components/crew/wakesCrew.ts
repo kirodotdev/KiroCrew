@@ -28,3 +28,12 @@ export function wakesCrew(job: CronJob, crew: string, isDefaultCrew: boolean): b
 /** Query key shared by the wake pane and the rail's count, so one fetch serves
  *  both instead of the rail issuing a second identical request. */
 export const crewWakeQueryKey = (crew: string) => ['crons', 'crew-wake', crew]
+
+/** The crew editor's own entry under the `webhooks` prefix. Deliberately NOT
+ *  the page's bare `['webhooks']`: the two have different queryFns — the page
+ *  substitutes an empty view on failure so an old gateway renders as
+ *  unconfigured, while the editor must THROW so a failure renders as unknown
+ *  rather than "nothing wakes this crew" — and sharing one key would let
+ *  whichever mounts first decide the other's shape. Mint/revoke on the page
+ *  still reaches this cache, because invalidation matches keys by prefix. */
+export const crewWebhooksQueryKey = ['webhooks', 'crew-editor']
