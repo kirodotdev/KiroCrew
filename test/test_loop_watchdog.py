@@ -234,3 +234,168 @@ def test_start_stop_thread_lifecycle() -> None:
     assert wd.is_running() is True
     wd.stop()
     assert wd.is_running() is False
+
+
+# ---------------------------------------------------------------------------
+# Stall enrichment stage (journal-only capture; dump file is a crash sentinel
+# that only faulthandler may write into — see crash_dump_store._is_header_only)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDumpFile:
+    """DumpFile stand-in proving the watchdog NEVER writes into the sentinel."""
+
+    def __init__(self) -> None:
+        self.written: list[str] = []
+        self.flushes = 0
+
+    def write(self, data: str) -> int:
+        self.written.append(data)
+        return len(data)
+
+    def flush(self) -> None:
+        self.flushes += 1
+
+
+class _RecordingHandler(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+
+def _make_enrich(enrich_after: float = 15.0, stall_after: float = 30.0):
+    """Fixture for the enrichment stage: fake clock, sentinel-guard dump file,
+    recording collector + logger; armed timer disabled so nothing touches real
+    faulthandler."""
+    clock = _Clock()
+    dump_file = _FakeDumpFile()
+    calls: list[float] = []
+    handler = _RecordingHandler()
+    log = logging.Logger("test.loop_watchdog.enrich")
+    log.addHandler(handler)
+
+    def collector(silence: float) -> list[str]:
+        calls.append(silence)
+        return [f"=== STALL ENRICHMENT (test) silence={silence:.1f}s ==="]
+
+    wd = LoopStallWatchdog(
+        stall_after=stall_after,
+        exit_after=None,
+        poll_interval=5.0,
+        now=clock,
+        dump=lambda: None,
+        arm_later=lambda _t: None,
+        cancel_later=lambda: None,
+        dump_file=dump_file,
+        enrich_after=enrich_after,
+        enrich=collector,
+        log=log,
+    )
+    return wd, clock, dump_file, calls, handler
+
+
+def test_enrichment_fires_once_per_episode_at_threshold() -> None:
+    wd, clock, dump_file, calls, handler = _make_enrich()
+
+    clock.advance(10.0)  # below enrich_after
+    wd.check()
+    assert calls == []
+
+    clock.advance(6.0)  # silence 16s >= 15s
+    wd.check()
+    assert len(calls) == 1
+    assert calls[0] >= 15.0
+    assert any("STALL ENRICHMENT" in m for m in handler.messages)
+
+    clock.advance(5.0)  # still the same episode — no second capture
+    wd.check()
+    assert len(calls) == 1
+
+
+def test_recoverable_stall_leaves_dump_file_untouched() -> None:
+    # THE sentinel-integrity regression (PR #4678 review finding): a 15-25s
+    # stall that recovers must leave loopstall-*.txt byte-identical, or the
+    # next boot misclassifies the session as crashed (_is_header_only counts
+    # lines) — false "work lost" notification, cautious boot, unreapable file.
+    wd, clock, dump_file, calls, handler = _make_enrich()
+
+    clock.advance(16.0)  # cross enrich_after
+    wd.check()
+    assert len(calls) == 1
+
+    wd.beat()  # loop recovers before exit_after would have fired
+    wd.check()
+    assert any("recovered after stall enrichment" in m for m in handler.messages)
+
+    clock.advance(16.0)  # a second, distinct stall episode re-enriches
+    wd.check()
+    assert len(calls) == 2
+
+    # The invariant under test: zero writes into the crash sentinel, ever.
+    assert dump_file.written == []
+    assert dump_file.flushes == 0
+
+
+def test_enrichment_collector_failure_is_contained() -> None:
+    clock = _Clock()
+    dump_file = _FakeDumpFile()
+    handler = _RecordingHandler()
+    log = logging.Logger("test.loop_watchdog.enrich")
+    log.addHandler(handler)
+
+    def broken(_silence: float) -> list[str]:
+        raise RuntimeError("collector exploded")
+
+    wd = LoopStallWatchdog(
+        stall_after=30.0,
+        exit_after=None,
+        poll_interval=5.0,
+        now=clock,
+        dump=lambda: None,
+        arm_later=lambda _t: None,
+        cancel_later=lambda: None,
+        dump_file=dump_file,
+        enrich_after=15.0,
+        enrich=broken,
+        log=log,
+    )
+    clock.advance(16.0)
+    wd.check()  # must not raise
+    assert any("ENRICHMENT FAILED" in m for m in handler.messages)
+    assert dump_file.written == []  # failure marker goes to the log, never the sentinel
+
+
+def test_enrichment_without_dump_file_only_logs() -> None:
+    clock = _Clock()
+    calls: list[float] = []
+    wd = LoopStallWatchdog(
+        stall_after=30.0,
+        exit_after=None,
+        poll_interval=5.0,
+        now=clock,
+        dump=lambda: None,
+        arm_later=lambda _t: None,
+        cancel_later=lambda: None,
+        dump_file=None,
+        enrich_after=15.0,
+        enrich=lambda s: (calls.append(s) or ["line"]),
+        log=logging.getLogger("test.loop_watchdog.enrich"),
+    )
+    clock.advance(16.0)
+    wd.check()  # must not raise despite no file target
+    assert len(calls) == 1
+
+
+def test_enrichment_precedes_soft_dump_threshold() -> None:
+    # One episode crossing both thresholds: enrichment at 15s, soft dump at 30s.
+    wd, clock, dump_file, calls, handler = _make_enrich()
+    clock.advance(16.0)
+    assert wd.check() is False  # enriched, not yet soft-dumped
+    assert len(calls) == 1
+    clock.advance(15.0)  # silence 31s
+    assert wd.check() is True  # soft dump fires; enrichment still once
+    assert len(calls) == 1
+    assert dump_file.written == []  # even a full episode writes nothing itself
