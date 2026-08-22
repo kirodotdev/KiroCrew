@@ -197,16 +197,19 @@ class DiscordClient:
                 await self._ws.close()
             except Exception:
                 pass
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        try:
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._task = None
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     def set_message_handler(self, on_message: Callable[[DiscordInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.

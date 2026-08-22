@@ -101,6 +101,43 @@ class TestLifecycle:
         assert client._closed is True
         assert client._task is None
 
+    @pytest.mark.asyncio
+    async def test_close_closes_session_even_when_ws_close_raises(self, client) -> None:
+        """A websocket whose transport is already broken raises on close();
+        that must not take the session close down with it (issue #4627)."""
+
+        class _BadWS(_FakeWS):
+            async def close(self) -> None:
+                raise RuntimeError("transport already broken")
+
+        ws = _BadWS()
+        session = _FakeSession()
+        client._ws = ws  # type: ignore[assignment]
+        client._session = session  # type: ignore[assignment]
+        await client.close()
+        assert client._closed is True
+        assert session.closed is True
+
+    @pytest.mark.asyncio
+    async def test_close_closes_session_even_when_task_died_with_a_bug(self, client) -> None:
+        """A task already dead from an uncaught, non-CancelledError exception
+        makes ``task.cancel()`` a no-op, and re-``await``ing it re-raises that
+        exception -- which must not skip the session close (issue #4627)."""
+        session = _FakeSession()
+        client._session = session  # type: ignore[assignment]
+
+        async def _buggy_loop() -> None:
+            raise ValueError("malformed frame")
+
+        client._task = asyncio.create_task(_buggy_loop())
+        await asyncio.sleep(0)  # let the task actually finish before close()
+
+        with pytest.raises(ValueError, match="malformed frame"):
+            await client.close()
+
+        assert client._task is None
+        assert session.closed is True
+
 
 class _FakeSession:
     def __init__(self) -> None:

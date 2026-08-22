@@ -180,21 +180,24 @@ class WebexClient:
     async def close(self) -> None:
         """Gracefully shut down."""
         self._closed = True
-        if self._task:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        if self._handler_tasks:
-            for t in list(self._handler_tasks):
-                t.cancel()
-            await asyncio.gather(*self._handler_tasks, return_exceptions=True)
-            self._handler_tasks.clear()
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        try:
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._task = None
+        finally:
+            if self._handler_tasks:
+                for t in list(self._handler_tasks):
+                    t.cancel()
+                await asyncio.gather(*self._handler_tasks, return_exceptions=True)
+                self._handler_tasks.clear()
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     def set_message_handler(self, on_message: Callable[[WebexInbound], Awaitable[None]]) -> None:
         """Set/replace the inbound-message handler after construction.

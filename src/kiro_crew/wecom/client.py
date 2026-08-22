@@ -118,17 +118,23 @@ class WeComClient:
         """Gracefully shut down the client."""
         self._closed = True
         if self._ws and not self._ws.closed:
-            await self._ws.close()
-        if self._task:
-            self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await self._ws.close()
+            except Exception:
                 pass
-            self._task = None
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        try:
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._task = None
+        finally:
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     async def _ws_send(self, ws: aiohttp.ClientWebSocketResponse[Any], frame: dict) -> None:
         """Serialize a single WS send under ``_send_lock`` (concurrent-safe)."""
