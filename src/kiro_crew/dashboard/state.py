@@ -19,7 +19,7 @@ import uuid
 from collections.abc import Coroutine, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, TypeVar
+from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TypeVar
 
 from aiohttp import web
 
@@ -289,7 +289,6 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "stat",
     "du",
     "df",
-    "tree",
     "diff",
     "pwd",
     "echo",
@@ -328,12 +327,1065 @@ _READ_ONLY_BASH_PREFIXES: tuple[str, ...] = (
     "javac -version",
 )
 
-_READ_ONLY_PIPE_RE = re.compile(
-    r"^\s*(grep|egrep|fgrep|head|tail|wc|sort|uniq|cut|less|more|cat)\b"
+# Not every allowlisted entry needs a vetting rule: for most of them the arguments
+# are INPUTS (paths to read, patterns to match, refs to describe). That fact is
+# recorded in `_OPERANDS_ARE_INPUTS` in `test/test_trust_reads.py`, NOT here --
+# nothing in this module reads it, so it is test data rather than production
+# surface. `test_every_allowlisted_prefix_has_an_argument_story` asserts every
+# prefix is accounted for by exactly one story, so ADDING A PREFIX BELOW WITHOUT
+# DECIDING ITS ARGUMENT STORY TURNS THE SUITE RED rather than auto-approving the
+# command -- which is the failure mode this whole change is about.
+#
+# That set was audited after its first draft proved WRONG: it held `file`, and
+# `file -C -m ./magic` writes `magic.mgc`. Auditing the rest found three more, all
+# helper execution -- `git cat-file --textconv`, `git cat-file --filters` and
+# `git blame --textconv`. The last is why the git exec-flag table below covers EVERY
+# git prefix: `git blame --help` does not list `--textconv`, so for git the help
+# text is not an authoritative enumeration of what a subcommand accepts.
+
+# An allowlist entry above vouches for a command SHAPE, but the match that
+# consults it (`first == p or first.startswith(p + " ")`) gates only the head, so
+# a trailing argument can leave the shape the entry vouched for. Two kinds do.
+#
+# 1. A version probe stops being a probe once it carries an operand.
+#
+# `javac -version` does not act on `-version` and exit -- it prints the version
+# and then compiles whatever else it was given, so the entry grants read-only
+# status to a compile:
+#
+#     javac -version T.java -d out                      # writes out/T.class
+#     javac -version -processorpath p -processor Evil x.java
+#
+# The second form runs an annotation processor, which is ordinary compiled Java
+# on a path the caller supplies, during that compile -- arbitrary code execution
+# under an auto-approval posture, not merely an unwanted build.
+#
+# Measured on this toolchain, `javac` is the only one of the five that acts on a
+# trailing operand: `java -version T`, `python3 --version s.py`,
+# `python3 --version -c <code>` and `node --version s.js` all print a version and
+# exit. The rule still covers all five, because "does this interpreter ignore a
+# trailing operand" is a property of the installed toolchain and its release, not
+# something this file can pin -- JDK single-file source mode (`java Foo.java`)
+# already made that answer version-dependent once. An entry that exists to vouch
+# for a probe should mean the probe, and nothing is newly blocked: an operand
+# form falls through to the human prompt.
+_EXACT_ONLY_BASH_PREFIXES: frozenset[str] = frozenset(
+    (
+        "python --version",
+        "python3 --version",
+        "node --version",
+        "java -version",
+        "javac -version",
+    )
 )
 
-# Reject redirections and command substitutions — conservative.
-_UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<\(|(?<!&)&(?!&)")
+# 2. A read command that accepts a flag naming an output path becomes a write.
+#
+# `git log`, `git diff` and `git show` all take diff options, and
+# `--output=<path>` sends their output to an arbitrary file. No shell `>` is
+# involved, so `_UNSAFE_SHELL_RE` never sees it:
+#
+#     git diff --output=/tmp/anywhere HEAD~1        # writes /tmp/anywhere
+#
+# Verified against git on this host: those three honour `--output`; the other ten
+# git entries (`status`, `branch`, `tag`, `remote`, `rev-parse`, `describe`,
+# `ls-files`, `ls-tree`, `cat-file`, `blame`) ignore it. Keyed per prefix rather
+# than refused globally because the flag spellings are not interchangeable across
+# tools -- `ls -o` is a long-format read, while `sort -o` would be a write.
+#
+# These entries cannot join `_EXACT_ONLY_BASH_PREFIXES`: operands are the normal
+# way to use them (`git diff HEAD~1`, `git log --oneline -5`), so only the
+# write-capable flag is refused.
+_WRITE_FLAGS_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    "git log": ("--output",),
+    "git diff": ("--output",),
+    "git show": ("--output",),
+    # `tree` is NOT here any more, and not on `_READ_ONLY_BASH_PREFIXES` either.
+    # It was the one entry whose rules could not be verified at all: the tool is not
+    # installed on this machine and there is no man page for it either, so `-o` was
+    # entered from recalled documentation rather than from a run. Review then found a
+    # SECOND writer, `-R`, which re-runs tree in each subdirectory implicitly adding
+    # `-o 00Tree.html` -- so it writes a file per directory without `-o` ever being
+    # typed. That is two documented writers on a tool where no rule can be checked,
+    # which is the same position the pagers were in, resolved the same way: an entry
+    # whose surface cannot be established does not belong on a read-only allowlist.
+    # `ls -R` remains allowlisted and covers the recursive-listing use.
+    # `date` is NOT here any more: it is vetted POSITIVELY in
+    # `_OPTION_ACCEPT_LISTS`. This table only ever carried `--set`, because the
+    # cluster test cannot tell an option letter from a character inside an attached
+    # value and `date -Iseconds` is an ordinary read whose VALUE contains `s`, so a
+    # `-s` entry would have rejected it. An accept-list dissolves that dilemma
+    # instead of living with it: `-I` is declared value-taking, so `seconds` is
+    # consumed as a value and never scanned for option letters, which lets `-s` be
+    # refused. Both spellings AND the legacy operand form now prompt.
+}
+
+# Flags that make an allowlisted git read EXECUTE a configured helper program.
+# Distinct from a write: nothing lands on disk, an arbitrary command runs.
+#
+# Measured with `diff.external` pointed at a script that touches a marker file:
+#
+#   git log -p --ext-diff   -> ran it        git log -p        -> did not
+#   git show --ext-diff     -> ran it        git show          -> did not
+#   git diff --ext-diff     -> ran it        git diff          -> RAN IT
+#   git diff --no-ext-diff  -> did not
+#
+# and the same for `--textconv` against a configured `diff.<name>.textconv`.
+#
+# ⚠️ INCOMPLETE BY CONSTRUCTION FOR `git diff`, stated because it cannot be closed
+# here. `git diff` honours a configured external driver with NO flag at all, so
+# there is no argument to refuse -- this table closes `git log` and `git show`,
+# where the flag is required, and cannot close `git diff`.
+#
+# What bounds that gap: the capability is CONFIG-sourced, never repo-content
+# sourced. Verified -- a committed `.gitattributes` saying `* diff=evil` executes
+# NOTHING on its own, because the `diff.evil.command` mapping has to exist in
+# config, and a clone does not carry config. So a hostile repository alone cannot
+# reach this; it needs `.git/config`, global config, or `GIT_EXTERNAL_DIFF` in the
+# environment -- all of which are the operator's own side, and any of which already
+# implies the ability to run commands. Whether `git diff` should stay on the
+# allowlist given that is a judgement call, and it is left visible rather than
+# quietly accepted.
+# `--filters` belongs with them: it applies the configured clean/smudge filters, which
+# are also arbitrary configured commands. Verified with `filter.<name>.smudge` pointed
+# at a marker script -- `git cat-file --filters HEAD:f` ran it.
+_GIT_HELPER_EXEC_FLAGS: tuple[str, ...] = ("--ext-diff", "--textconv", "--filters")
+
+# Applied to EVERY allowlisted git prefix, not just the subcommands whose `--help`
+# mentions these flags. Two reasons, both measured:
+#
+# * `git blame --textconv` runs a configured helper, and `git blame --help` does NOT
+#   list `--textconv`. An enumeration built from help text would have missed it -- and
+#   did, until execution found it while auditing `_OPERANDS_ARE_INPUTS`. For git,
+#   `--help` is not an authoritative list of what a subcommand accepts.
+# * refusing a flag a subcommand does not accept costs nothing: `git status
+#   --textconv` exits non-zero on its own, so over-approximating removes no working
+#   read.
+#
+# Derived from the allowlist rather than written out, so a git prefix added later
+# inherits the refusal instead of quietly starting life unvetted.
+_HELPER_EXEC_FLAGS_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    prefix: _GIT_HELPER_EXEC_FLAGS
+    for prefix in _READ_ONLY_BASH_PREFIXES
+    if prefix == "git" or prefix.startswith("git ")
+}
+
+# `git branch NAME` creates a branch and `git tag NAME` creates a tag, so here the
+# OPERAND is the mutation and no flag table can express it. An operand is a filter
+# pattern only when a list-mode flag is present (`git branch --list 'feat/*'`,
+# `git tag -l 'v*'`, `git branch --contains <sha>`); git itself refuses the
+# ambiguous middle case, `git branch -a <name>`.
+# `git remote` has the identical shape: the operand is a SUBCOMMAND, and all of
+# `add`, `remove`, `rename`, `set-url` and `prune` mutate. Verified: `git remote
+# add injected <url>` took the remote list from empty to `injected`, and
+# `git remote prune origin` deletes remote-tracking refs. Stated positively,
+# because `show` and `get-url` are reads that legitimately take an operand.
+_SUBCOMMAND_READ_ONLY: dict[str, frozenset[str]] = {
+    "git remote": frozenset(("show", "get-url")),
+}
+# `hostname` used to need a registry of its own here, for the fact that ANY bare
+# operand sets the hostname. It is now vetted positively in `_OPTION_ACCEPT_LISTS`,
+# whose spec carries that fact as `operands="none"` -- so the one-entry frozenset is
+# gone rather than restated. It had to go: an operand rule alone missed
+# `hostname -b` and `hostname --file=F`, which set the hostname with NO operand at
+# all (both verified: they fail only on privilege).
+
+_REF_MUTATING_PREFIXES: frozenset[str] = frozenset(("git branch", "git tag"))
+# Modes of those two that mutate with NO operand at all, so an operand rule alone
+# never sees them. Verified: `git branch --unset-upstream` on a tracking branch
+# leaves `git rev-parse @{u}` reporting "no upstream configured". Exact spellings
+# are sufficient here because git does NOT accept abbreviated long options
+# (measured: `git diff --outp=F` exits 129), unlike GNU getopt_long.
+_REF_OPTION_ONLY_MUTATORS: frozenset[str] = frozenset(
+    (
+        "--unset-upstream",
+        "--set-upstream",
+        "-u",
+        "--set-upstream-to",
+        "--edit-description",
+        "-d",
+        "-D",
+        "--delete",
+        "-m",
+        "-M",
+        "--move",
+        "-c",
+        "-C",
+        "--copy",
+        # `git tag -F FILE NAME` takes the tag message from FILE and creates an
+        # annotated tag. Verified: with a file present, `git tag -F --list injected`
+        # created the tag `injected` -- `-F` ate the `--list`, so the list-flag rule
+        # saw a list mode and read `injected` as a filter.
+        "-F",
+        "-f",
+        "--force",
+    )
+)
+_REF_LIST_FLAGS: frozenset[str] = frozenset(
+    (
+        "-l",
+        "--list",
+        "--contains",
+        "--no-contains",
+        "--merged",
+        "--no-merged",
+        "--points-at",
+    )
+)
+
+
+# The same escape exists on the pipe-target allowlist, which `_READ_ONLY_PIPE_RE`
+# matches by head only. Of the filters it names, `sort` and `uniq` can write, by
+# two different mechanisms (a value flag and a second operand).
+#
+# THE PAGERS ARE NOT CURATED -- THEY ARE GONE. `less` and `more` used to sit here
+# behind a four-entry log-file denylist (`-o`, `-O`, `--log-file`, `--LOG-FILE`).
+# That denylist was incomplete: `less '+!CMD<CR>'` runs CMD through a shell, and
+# `+|CMD` pipes through one, because `+` submits a startup command to the same
+# command line a human would type. Measured on less 458: with stdout on a tty,
+# `cat f | less '+!touch P<CR>'` created P and exited 0. The literal `<CR>` is
+# load-bearing -- without it the startup command is typed but never submitted, and
+# nothing runs. Non-tty stdout does not execute it, but that is not a defence: the
+# `-o` write this table already blocked has the SAME tty precondition, so any route
+# that makes `-o` reachable makes `+!CMD` reachable, and blocking one while
+# auto-approving the other is not a coherent position.
+#
+# Deleting the entry rather than adding `+` to it, for the reason `sort` was
+# inverted: a denylist on this tool cannot converge. `less --help` prints an
+# interactive command list, not a flag table, so its surface cannot be enumerated
+# from the tool itself -- there is no positive accept-list to build either. The
+# third option costs nothing: in a pipe stdout is not a tty, so a pager copies its
+# input and exits. Verified byte-for-byte, `cat f | less` == `cat f | more` ==
+# `cat f | cat`, and `cat` is already on this allowlist. So removing both pagers
+# subtracts zero capability and takes the whole un-enumerable surface with it.
+#
+# CURATION COST of what remains, stated plainly: deciding whether a given `-o` is
+# a write needs per-tool semantics, and a naive scan does not settle it: `ls -o`
+# (long format), `grep -o` (only-matching), `uname -o` (print OS),
+# `df --output=FIELDS` and `cut --output-delimiter=STR` all look like output flags
+# and are reads, while `sort -o` and `tree -o` are writes. Any new allowlist entry
+# needs its arguments read by a human -- and if its surface cannot be enumerated,
+# the entry does not belong on the allowlist at all.
+
+# `sort` is vetted POSITIVELY: every option token must be a recognised read-only
+# flag, and anything unrecognised goes to the human prompt.
+#
+# The inversion is here because the denylist demonstrably did not converge on this
+# one tool. Five review rounds produced six distinct spellings of the same escape:
+# `-o FILE`, `--output=FILE`, attached `-oFILE`, bundled `-uo FILE`, abbreviated
+# `--o FILE`, and finally `--compress-program=PROG` -- which is not a write at all
+# but arbitrary CODE EXECUTION. Verified: with the input large enough to spill to
+# temporaries, `sort -S 1k --compress-program=./payload big.txt` ran the payload and
+# exited 0. Enumerated from this box's own `sort --help`, so it is complete for that
+# release rather than for a guess.
+#
+# Deliberately NOT read-only: `-o/--output` (writes), `-T/--temporary-directory`
+# (writes temporaries into a caller-named directory), `--compress-program`
+# (executes), and `--random-source` / `--files0-from` (open a caller-named path).
+# An unlisted flag costs a prompt, so omission is the safe direction.
+# `k`, `t` and `S` are value-taking AND read-only (key, field separator, buffer
+# size); `o` and `T` are value-taking and NOT read-only, which is what makes the
+# value branch below refuse them while `-k2n` and `-S1k` pass.
+_SORT_READONLY_SHORT: frozenset[str] = frozenset("bdfgiMhnRrVcCmsuzktS")
+# Short options that consume the rest of the token (or the next one) as a VALUE.
+# Needed so `-k2n` and `-S1k` read as flag-plus-value instead of a letter cluster
+# where `2` and `1` look like unknown options.
+_SORT_VALUE_SHORT: frozenset[str] = frozenset("ktSTo")
+_SORT_READONLY_LONG: frozenset[str] = frozenset(
+    (
+        "--ignore-leading-blanks",
+        "--dictionary-order",
+        "--ignore-case",
+        "--general-numeric-sort",
+        "--ignore-nonprinting",
+        "--month-sort",
+        "--human-numeric-sort",
+        "--numeric-sort",
+        "--random-sort",
+        "--reverse",
+        "--sort",
+        "--version-sort",
+        "--batch-size",
+        "--check",
+        "--debug",
+        "--key",
+        "--merge",
+        "--stable",
+        "--buffer-size",
+        "--field-separator",
+        "--parallel",
+        "--unique",
+        "--zero-terminated",
+        "--help",
+        "--version",
+    )
+)
+
+
+# `date`'s read-only surface. Enumerated from GNU coreutils `date --help`, then
+# narrowed for a second axis the other accept-lists did not have to face: the same
+# LETTER means different things in different `date` implementations.
+#
+# `-d` is absent for exactly that reason. Under GNU it is `--date=STRING` and prints
+# (verified on coreutils 8.22: `date -d 1` printed a date). Under BSD/macOS, `date -d`
+# SETS the kernel's daylight-saving value. This module ships to macOS -- the repo has a
+# macOS gateway job and a desktop build -- so a letter that reads on one platform and
+# writes on another cannot sit on a read-only list.
+#
+# STATED PLAINLY: the BSD half is DOCUMENTATION-sourced. There is no macOS on the box
+# this was written on, so unlike every other rule here it is not backed by an
+# execution. That is also why the fix DROPS the letter rather than branching on
+# `sys.platform`: the platform does not reliably predict the implementation (macOS with
+# brew coreutils ahead on PATH has GNU `date`), so a platform test would be a guess
+# wearing a check's clothing. Dropping it is correct on every platform and every
+# implementation.
+#
+# Cost: a prompt on `date -d yesterday`. `date --date=yesterday` still reads, and long
+# options are safe by construction -- BSD `date` has none, so there they error rather
+# than meaning something else.
+#
+# The other three accept-lists were swept for the same divergence and need no change:
+# BSD `sort`'s writers are `-o`/`-T` and BSD `file`'s is `-C`, all already excluded, and
+# BSD `hostname` offers only `-f`/`-s` plus a name OPERAND, which `operands="none"`
+# already refuses. BSD `date`'s other setters -- `-t` (minutes west), `-j`, `-n`, `-v`
+# -- are likewise absent from this list, so they fail closed already.
+#
+# `-s`/`--set` is the setter GNU shares, verified accepted and failing only on
+# privilege ("date: cannot set date: Operation not permitted"). `-f`, `-r` and `-I`
+# take values, which is what makes `-Iseconds` and `-r FILE` read cleanly while `-s` is
+# refused -- the dilemma that kept `-s` out of the old write-flag table.
+_DATE_READONLY_SHORT: frozenset[str] = frozenset("fIrRu")
+_DATE_VALUE_SHORT: frozenset[str] = frozenset("dfIrs")
+_DATE_READONLY_LONG: frozenset[str] = frozenset(
+    (
+        "--date",
+        "--file",
+        "--iso-8601",
+        "--reference",
+        "--rfc-2822",
+        "--rfc-3339",
+        "--universal",
+        "--utc",
+        "--help",
+        "--version",
+    )
+)
+# Long and short forms that consume the NEXT token, so an operand count is not
+# fooled by a flag's value. `-I` is absent on purpose: its TIMESPEC is optional and
+# must be attached (`-Iseconds`), so `-I` never eats the following word.
+_DATE_VALUE_FLAGS: frozenset[str] = frozenset(
+    ("-d", "-f", "-r", "-s", "--date", "--file", "--reference", "--set")
+)
+
+# `hostname`'s surface, from its own `--help`. Tiny and fully enumerable, which is
+# why a positive list is cheap here. `-b/--boot` and `-F/--file` SET the name with
+# no operand (both verified: privilege-only failure, with `-F` re-tested against a
+# file that EXISTS -- against a missing path it fails at open() and looks read-only).
+_HOSTNAME_READONLY_SHORT: frozenset[str] = frozenset("aAdfiIsyVh")
+_HOSTNAME_VALUE_SHORT: frozenset[str] = frozenset("F")
+_HOSTNAME_READONLY_LONG: frozenset[str] = frozenset(
+    (
+        "--alias",
+        "--all-fqdns",
+        "--all-ip-addresses",
+        "--domain",
+        "--fqdn",
+        "--ip-address",
+        "--long",
+        "--nis",
+        "--short",
+        "--yp",
+        "--help",
+        "--version",
+    )
+)
+
+
+# `file`'s surface, from its own `--help`. It reached an accept-list rather than a
+# `-C` denylist entry because that is the shape this change keeps converging on: an
+# unlisted option prompts instead of passing, so a flag missing from the help text
+# costs a prompt rather than a write. `git blame --textconv` is the reason that
+# distinction is not academic.
+#
+# `-C/--compile` is the setter: with `-m FILE` it compiles that magic file and writes
+# `FILE.mgc` beside it (verified, 464 bytes). `-z/--uncompress` is ALSO excluded, on
+# the omission-is-cheap principle rather than a measured escape -- libmagic can shell
+# out to an external decompressor for formats it does not handle internally, and the
+# flag is rare enough that a prompt costs nothing. Everything else prints.
+# `f`/`--files-from` is absent, and for a different reason than `-C`: it does not
+# write, it INDIRECTS. `file -f LIST` opens every path named inside LIST, and those
+# paths never appear in the command, so the hook layer's path gates
+# (`is_sensitive_path` / `is_sensitive_bash_command`, applied to the command text) see
+# only LIST and cannot see what is actually read. A guard that inspects argv is blind
+# to one more level of indirection, so the option has to go rather than the guard get
+# cleverer. `sort --files0-from` was already excluded for the same shape; `hostname -F`
+# is already refused as a setter.
+#
+# Kept: `-m/--magic-file`, `-e/--exclude`, `-F/--separator` all take a value, but the
+# value IS the path or string being used, visible in argv, so the guards can act on it.
+# There is no indirection to hide behind.
+#
+# `p`/`--preserve-date` is absent too, and it is the subtlest of the three exclusions.
+# It LOOKS read-only because it RESTORES the access time rather than setting a caller
+# chosen one -- which is how it was originally, and wrongly, admitted here. Restoring
+# still requires a `utimes()` call on the named path, and the `ctime` that call bumps is
+# NOT restorable. So the option erases the evidence that a file was read while leaving a
+# permanent metadata modification behind: the wrong side of read-only in both directions.
+#
+# MEASURED, because `noatime` on this box hides the atime effect entirely and made the
+# obvious test inconclusive. `ctime` advances on any inode metadata write and is visible
+# whatever the mount options are:
+#
+#   file t.txt            -> ctime unchanged   (control)
+#   file -b t.txt         -> ctime unchanged   (control)
+#   file -p t.txt         -> ctime ADVANCED
+#   file --preserve-date  -> ctime ADVANCED
+#
+# The same probe was then run over every other accept-list flag that opens a named file
+# -- `file -m/-k/-L/-s/-r`, `sort`, `sort -u`, `sort -k1`, `date -r`, `date -f`, plus
+# `cat` and `wc -l` as controls -- and all twelve are clean. `-p` is the only one.
+_FILE_READONLY_SHORT: frozenset[str] = frozenset("vmbceFiklLhnN0rsd")
+# `f` stays here so `-f LIST` and `-fLIST` are both recognised as flag-plus-value and
+# refused, rather than `LIST` being mistaken for an operand.
+_FILE_VALUE_SHORT: frozenset[str] = frozenset("mefF")
+_FILE_READONLY_LONG: frozenset[str] = frozenset(
+    (
+        "--apple",
+        "--brief",
+        "--checking-printout",
+        "--debug",
+        "--dereference",
+        "--exclude",
+        "--keep-going",
+        "--list",
+        "--magic-file",
+        "--mime",
+        "--mime-encoding",
+        "--mime-type",
+        "--no-buffer",
+        "--no-dereference",
+        "--no-pad",
+        "--print0",
+        "--raw",
+        "--separator",
+        "--special-files",
+        "--help",
+        "--version",
+    )
+)
+_FILE_VALUE_FLAGS: frozenset[str] = frozenset(
+    ("-m", "-e", "-f", "-F", "--magic-file", "--exclude", "--files-from", "--separator")
+)
+
+
+class _AcceptSpec(NamedTuple):
+    """A tool's read-only surface, stated positively.
+
+    One registry rather than three bespoke checks, because the algorithm turned out
+    identical for every tool that needed it. `sort` had this shape first; `date` and
+    `hostname` arrived at it for the same reason -- a per-tool DENYLIST had already
+    leaked on each of them, and an accept-list is closed by construction instead.
+    """
+
+    reason_fmt: str  # carries `{tok}`
+    readonly_short: frozenset[str]
+    value_short: frozenset[str]
+    readonly_long: frozenset[str]
+    operands: str  # "any" (they are inputs) | "none" | "plus" (only +FORMAT)
+    operand_reason: str
+    value_flags: frozenset[str]  # for operand counting
+
+
+_OPTION_ACCEPT_LISTS: dict[str, _AcceptSpec] = {
+    "sort": _AcceptSpec(
+        reason_fmt="pipe target 'sort {tok}' is not a recognised read-only option",
+        readonly_short=_SORT_READONLY_SHORT,
+        value_short=_SORT_VALUE_SHORT,
+        readonly_long=_SORT_READONLY_LONG,
+        # sort's operands are input FILES, which it reads.
+        operands="any",
+        operand_reason="",
+        value_flags=frozenset(),
+    ),
+    "date": _AcceptSpec(
+        reason_fmt="'date {tok}' is not a recognised read-only option",
+        readonly_short=_DATE_READONLY_SHORT,
+        value_short=_DATE_VALUE_SHORT,
+        readonly_long=_DATE_READONLY_LONG,
+        # `date 08221200` sets the clock (verified: privilege-only failure). A `+`
+        # operand is the output FORMAT and only prints.
+        operands="plus",
+        operand_reason=("'date <operand>' sets the system clock unless it is a +FORMAT string"),
+        value_flags=_DATE_VALUE_FLAGS,
+    ),
+    "file": _AcceptSpec(
+        reason_fmt="'file {tok}' is not a recognised read-only option",
+        readonly_short=_FILE_READONLY_SHORT,
+        value_short=_FILE_VALUE_SHORT,
+        readonly_long=_FILE_READONLY_LONG,
+        # `file`'s operands are the FILES it identifies, which it only reads.
+        operands="any",
+        operand_reason="",
+        value_flags=_FILE_VALUE_FLAGS,
+    ),
+    "hostname": _AcceptSpec(
+        reason_fmt="'hostname {tok}' is not a recognised read-only option",
+        readonly_short=_HOSTNAME_READONLY_SHORT,
+        value_short=_HOSTNAME_VALUE_SHORT,
+        readonly_long=_HOSTNAME_READONLY_LONG,
+        operands="none",
+        operand_reason=("'hostname <operand>' sets the hostname; every read form is flag-only"),
+        value_flags=frozenset(("-F", "--file")),
+    ),
+}
+
+
+def _option_accept_list_violation(prefix: str, tokens: list[str]) -> str:
+    """Reason *tokens* leave *prefix*'s positively-vetted read-only surface, else "".
+
+    Deny-by-default per tool: an option has to be RECOGNISED as read-only, so an
+    unlisted one prompts instead of passing. That is what makes this closed by
+    construction where a write-flag denylist was not -- a spelling nobody thought of
+    is refused rather than admitted.
+
+    A long flag must match EXACTLY, which disposes of getopt_long abbreviation for
+    free: `--out` is an abbreviation of `--output` and simply is not in the read-only
+    set. The cost is that an abbreviation of a read-only flag (`--rev` for
+    `--reverse`) also prompts.
+    """
+    spec = _OPTION_ACCEPT_LISTS[prefix]
+    # `--` does not stop this loop either. HARDENING rather than a fix here: measured,
+    # every value-taking read flag of this box's `sort` REJECTS `--` as its value and
+    # aborts (`-k` "invalid number", `-S` "invalid -S argument '--'", `-t`
+    # "multi-character tab"), so `sort -k -- -o OUT` writes nothing today. That is
+    # sort's argument validation saving us, not this classifier, and it is not a
+    # property worth depending on -- the git path above proved the same shape does
+    # write when the tool is more permissive. Cost is a prompt on an input FILE named
+    # like an option (`sort -- -o`).
+    for token in tokens:
+        if not token.startswith("-") or token == "-":
+            continue  # operand, or `-` for stdin
+        if token.startswith("--"):
+            if token.partition("=")[0] not in spec.readonly_long:
+                return spec.reason_fmt.format(tok=token)
+            continue
+        for letter in token[1:]:
+            if letter in spec.value_short:
+                # This option takes a value, so the remainder of the token is that
+                # value and carries no further option letters.
+                if letter not in spec.readonly_short:
+                    return spec.reason_fmt.format(tok=f"-{letter}")
+                break
+            if letter not in spec.readonly_short:
+                return spec.reason_fmt.format(tok=f"-{letter}")
+    if spec.operands == "any":
+        return ""
+    operands = _operands(tokens, spec.value_flags)
+    if spec.operands == "none" and operands:
+        return spec.operand_reason
+    if spec.operands == "plus" and any(not o.startswith("+") for o in operands):
+        return spec.operand_reason
+    return ""
+
+
+# `uniq` short options that consume the NEXT token as their value. Needed so
+# `uniq -f 1 file` counts one operand, not two, and stays read-only.
+_UNIQ_VALUE_FLAGS: frozenset[str] = frozenset(("-f", "-s", "-w"))
+
+
+def _arg_tokens(text: str) -> list[str] | None:
+    """Shell-accurate argv for *text*, or None when argv cannot be established.
+
+    `str.split()` is not sufficient here. This classifier sees the command BEFORE
+    the shell touches it, so `git diff '--output=/tmp/x'` splits into a single
+    token that still carries its quotes and therefore matches no flag, while bash
+    strips them and git writes the file.
+
+    None means "argv unknown", and every caller must treat that as a violation
+    rather than a pass: an argument set that cannot be read cannot be vouched for.
+    """
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return None
+
+
+# Syntax the SHELL rewrites before the tool ever sees it, so the token this
+# classifier holds is not the argument that will be passed. `$(`/backtick are
+# already refused upstream by `_UNSAFE_SHELL_RE`; these are the rest.
+# Measured: `bash -c 'uniq {input,pwned}'` writes `pwned`, while `shlex.split`
+# reports ONE operand, so brace expansion defeats an operand count outright.
+_EXPANSION_RE = re.compile(r"[{}$]")
+# A glob defeats BOTH safety properties this classifier relies on, not just one.
+# It was previously held apart from `_EXPANSION_RE` on the grounds that a glob is
+# common inside a legitimate pattern argument (`git branch --list 'feat/*'`) and so
+# only mattered where the operand COUNT decides the verdict. That was wrong by
+# half: a glob also synthesizes OPTION tokens. Measured -- with a file named
+# `--output=pwned` in the tree and `pwned` a symlink, `git diff --out*` expanded to
+# `--output=pwned` and truncated the symlink target, while `git diff --output=pwned`
+# spelled out was already refused. So a flag table cannot be trusted on a globbed
+# token either: the token vetted is not the token git parses.
+#
+# The legitimate-pattern case cannot be rescued by looking at quoting, because this
+# classifier cannot see quoting: `shlex.split` yields the identical token list for
+# `--list 'feat/*'` and `--list feat/*` (verified), so the safe quoted form is
+# indistinguishable from the unsafe unquoted one. Fail closed. `git branch --list
+# 'feat/*'` and `git diff *.py` therefore cost a prompt now -- only for the vetted
+# prefixes, since nothing below `_WRITE_FLAGS_BY_PREFIX` et al. consults this, so
+# `ls *.py` and `grep x *.py` are untouched.
+#
+# The `[@!+]\(` arm covers bash EXTGLOB operators. `?(` and `*(` were already caught
+# by the `?` and `*` above, so only `@(`, `!(` and `+(` were missing -- and they are
+# glob metacharacters exactly like the rest, so the same "the token vetted is not the
+# token git parses" argument applies unchanged. Measured, with a file literally named
+# `--output=pwned` in the tree:
+#
+#   env BASHOPTS=extglob bash -c 'git diff @(--output=pwned)'  -> rc=0, wrote `pwned`
+#
+# Two premises of that measurement are worth recording, because they bound the
+# finding rather than inflate it. Extglob is OFF by default in a non-interactive
+# shell, and with it off `@(` is a SYNTAX ERROR, not a literal -- verified in a clean
+# tree that `pwned` is absent both before and after. And `BASHOPTS` in the
+# environment does enable it at startup, verified with `shopt extglob` reporting
+# `on`. So this needs extglob enabled AND a matching file to exist; it is a narrower
+# escape than the plain-glob case above, and it is closed on the same principle
+# because the cost of refusing `@(` is zero -- no read spells an argument that way.
+#
+# Swept rather than patched: all 19 bash word-expansion forms were run against the
+# classifier (brace, tilde, parameter, `${}`, arithmetic, command substitution,
+# backtick, process substitution both directions, ANSI-C, `*`, `?`, `[]`, globstar,
+# and all five extglob operators). These three were the only gaps.
+_GLOB_RE = re.compile(r"[*?\[]|[@!+]\(")
+
+
+def _shell_rewrites(token: str) -> bool:
+    """True when the shell will rewrite *token* into something else.
+
+    A leading `~` only expands at the start of a word, which is why
+    `git diff HEAD~1` is untouched by this.
+    """
+    return (
+        token.startswith("~") or bool(_EXPANSION_RE.search(token)) or bool(_GLOB_RE.search(token))
+    )
+
+
+def _flag_hit(token: str, flag: str) -> bool:
+    """True when *token* supplies *flag*, in any spelling getopt accepts.
+
+    A short option has three forms beyond the bare one, and all of them reach the
+    same write. Measured against GNU sort, each writing the named file:
+
+        sort -o OUT      separate value
+        sort -oOUT       value attached to the option
+        sort -uo OUT     option bundled behind another, value in the next token
+        sort -uoOUT      bundled AND attached
+
+    So for a short flag the test is membership in the option CLUSTER, not a
+    prefix match: `-uo` starts with `-u`, and a prefix test reads it as some other
+    option and misses the write. A long option always separates its value with
+    `=` or whitespace, so it keeps the exact / `flag=` test.
+
+    Being case-sensitive matters: `less -o` (log-file) and `less -O`
+    (LOG-FILE, overwrite) are different options.
+
+    The cluster test OVER-approximates, deliberately: it cannot tell an option
+    letter from a character inside an attached value, so `sort -to` (field
+    separator `o`) reads as the `-o` write and goes to the human prompt. Erring
+    that way is the safe direction, but it is why a tool whose read options carry
+    values containing the write letter does NOT belong in these tables. `date` is
+    the worked example: `date -s` sets the clock, yet `date -Iseconds` is an
+    ordinary read whose VALUE contains `s`, so a `-s` entry would reject it.
+    """
+    if token == flag or token.startswith(flag + "="):
+        return True
+    if flag.startswith("--"):
+        # getopt_long accepts any UNIQUE PREFIX of a long option, so every
+        # spelling the parser will take for `--output` is a prefix of it.
+        # Measured on GNU sort: `--outpu`, `--outp`, `--out`, `--ou` and `--o`
+        # all wrote the file. Refusing the prefixes therefore covers the whole
+        # abbreviation class by construction instead of enumerating spellings,
+        # and it cannot over-reach: a token that is not a prefix (`--line-numbers`
+        # against `--log-file`) is untouched.
+        name = token.partition("=")[0]
+        return len(name) > 2 and flag.startswith(name)
+    if len(flag) == 2 and flag.startswith("-"):
+        # A single-dash token is a cluster of short options; `--` and long
+        # options are excluded, and a bare `-` (stdin) has an empty cluster.
+        if token.startswith("-") and not token.startswith("--"):
+            return flag[1] in token[1:]
+    return False
+
+
+def _operands(tokens: list[str], value_flags: frozenset[str] = frozenset()) -> list[str]:
+    """Non-flag operands in *tokens*.
+
+    A bare `--` ends the OPTION list, not the operand list, so every token after
+    it is an operand however it is spelled: `uniq -- IN -OUT` writes `-OUT`, and
+    a leading-dash test alone would read it as a flag and miss the write.
+
+    *value_flags* names short options that consume the next token as their value,
+    so `uniq -f 1 file` yields one operand rather than two.
+    """
+    out: list[str] = []
+    skip_next = False
+    after_ddash = False
+    for token in tokens:
+        if after_ddash:
+            out.append(token)
+            continue
+        if token == "--":
+            after_ddash = True
+            continue
+        if skip_next:
+            skip_next = False
+            continue
+        if token in value_flags:
+            skip_next = True
+            continue
+        if not token.startswith("-"):
+            out.append(token)
+    return out
+
+
+# Negations that CANCEL a list mode. Derived from `_REF_LIST_FLAGS` rather than
+# listed, and minus the two `--no-` spellings that ARE list modes in their own right:
+# verified, `git branch --no-contains HEAD injected` and `--no-merged injected` create
+# nothing, so they filter rather than cancel. Result: `--no-list`, `--no-points-at`.
+_REF_LIST_CANCELLERS: frozenset[str] = (
+    frozenset(
+        "--no-" + flag[2:]
+        for flag in _REF_LIST_FLAGS
+        if flag.startswith("--") and not flag.startswith("--no-")
+    )
+    - _REF_LIST_FLAGS
+)
+
+
+# Short options of `git branch` / `git tag` that take NO value, so they cannot eat the
+# following word. Enumerated from both `--help` pages: branch `-a -r -v -q -i -l`, tag
+# `-e -s -v -i -l`.
+#
+# Stated POSITIVELY on purpose. The previous rule exempted every short option, on the
+# grounds that no READ-only short of these two takes a value -- which was true and
+# still missed the point, because a MUTATING short that takes a value eats the word
+# just the same. `git tag -F` is exactly that, and it created a tag. Listing the
+# valueless ones instead means an unknown or newly added short is treated as
+# possibly-consuming, which costs a prompt rather than a ref.
+#
+# `n` and the digits are here because tag's `-n[NUM]` is ATTACHED-only, so it never eats
+# the following word: measured, `git tag -n 5` treats `5` as the pattern (prints
+# nothing) while `git tag -n5 -l` prints annotations. Omitting it would have newly
+# blocked `git tag -n5 -l 'v*'` and `git tag -n -l`, which are ordinary reads. The
+# digits cover the attached form as a cluster, `-n5` being `n` then `5`.
+#
+# Deliberately absent: `-u`/`-F`/`-m`/`-c` take required values, and branch `-t`, whose
+# combination with a list flag git rejects anyway (`git branch -t --list x` exits 1 and
+# creates nothing), so failing closed on it costs no working read. The mutating members
+# of that group are also refused outright by `_REF_OPTION_ONLY_MUTATORS`; this set is
+# the second line of defence, not the only one.
+_REF_VALUELESS_SHORTS: frozenset[str] = frozenset("arvqiles" + "0123456789" + "n")
+
+
+def _consumes_next_word(prev: str) -> bool:
+    """True when *prev* might take the FOLLOWING word as its value.
+
+    Used to decide whether a list flag is a list mode or somebody else's value. Errs
+    towards "yes it might", because a false yes turns list mode off and costs a prompt,
+    while a false no creates refs.
+
+    A long option with no attached `=` might take a value -- this cannot tell which do
+    without enumerating git's surface. A short option or CLUSTER is safe only when
+    EVERY letter in it is known valueless, so `-av` passes and `-F` does not.
+    """
+    if not prev or prev == "--" or not prev.startswith("-"):
+        return False
+    if prev.startswith("--"):
+        return "=" not in prev
+    return not all(char in _REF_VALUELESS_SHORTS for char in prev[1:])
+
+
+def _cancels_ref_list(token: str) -> bool:
+    """True when *token* could turn a list mode back off.
+
+    Prefix-matched, because git DOES abbreviate a boolean long option: measured,
+    `git branch --list --no-lis injected` and `--no-li` both created the branch. An
+    exact-token test sees neither. (Its value-taking options are different --
+    `git diff --outp F` errors rather than writing -- so this is about booleans.)
+
+    Over-approximating is the safe direction here: treating something as a canceller
+    turns list mode OFF, which makes the operand rule fire and costs a prompt.
+    """
+    if not token.startswith("--") or token == "--" or "=" in token:
+        return False
+    return any(canceller.startswith(token) for canceller in _REF_LIST_CANCELLERS)
+
+
+def _ref_list_flag_present(tokens: list[str]) -> bool:
+    """True when the tokens leave `git branch`/`git tag` in a LIST mode.
+
+    Order matters, so this is a fold rather than a search. git applies these options
+    left to right and the last one wins -- verified: `--list --no-list` creates the
+    ref, and `--list --no-list --list` does not. Returning True at the first list flag
+    (which this did) accepts the first of those, which is the bypass.
+
+    Two things can stop a list flag counting:
+
+    * a LATER canceller, per the fold above;
+    * an EARLIER value-taking option that ate it. A value-taking option consumes the
+      next word whatever it looks like, so a list flag right after one is that
+      option's VALUE and not a list mode -- verified twice: `git branch --format
+      --list injected` created `injected` because `--list` became the format string,
+      and `git tag -F --list injected` created the tag because `--list` became the
+      message FILENAME. See `_consumes_next_word` for how that is decided; short
+      options are included, since it was a SHORT one that got through.
+    """
+    list_mode = False
+    for i, token in enumerate(tokens):
+        if token in _REF_LIST_FLAGS:
+            prev = tokens[i - 1] if i else ""
+            if not _consumes_next_word(prev):
+                list_mode = True
+        elif _cancels_ref_list(token):
+            list_mode = False
+    return list_mode
+
+
+def _allowlist_arg_violation(first: str) -> str:
+    """Reason *first* escapes the shape its allowlist entry vouched for, else "".
+
+    Runs only after the head matched `_READ_ONLY_BASH_PREFIXES`, and only for a
+    head that carries arguments -- an exact match has nothing to vet.
+    """
+    # A discard-only redirect is not an argument. `java -version 2>&1` is the
+    # canonical probe because java prints its version to stderr, so counting
+    # `2>&1` as a trailing operand would newly reject it. Scrub the sinks exactly
+    # as the unsafe-shell check upstream does, then decide what really trails.
+    vetted = _DEVNULL_REDIR_RE.sub(" ", first).strip()
+    # Recognise the prefix case-insensitively, then slice the ORIGINAL text so the
+    # argument tokens keep their case. `lowered` is the same length as `vetted`, so
+    # the offsets line up. See `_classify_bash` for why the case has to survive.
+    lowered = vetted.lower()
+    for prefix in _READ_ONLY_BASH_PREFIXES:
+        if lowered == prefix or not lowered.startswith(prefix + " "):
+            continue
+        if prefix in _EXACT_ONLY_BASH_PREFIXES:
+            return (
+                f"'{prefix}' is allowlisted as a version probe only; a trailing "
+                f"operand can make it act (javac compiles, and -processorpath runs "
+                f"code at compile time)"
+            )
+        flags = _WRITE_FLAGS_BY_PREFIX.get(prefix, ())
+        exec_flags = _HELPER_EXEC_FLAGS_BY_PREFIX.get(prefix, ())
+        ref_mutating = prefix in _REF_MUTATING_PREFIXES
+        read_subcommands = _SUBCOMMAND_READ_ONLY.get(prefix)
+        accept_listed = prefix in _OPTION_ACCEPT_LISTS
+        if not (flags or exec_flags or ref_mutating or read_subcommands or accept_listed):
+            continue
+        tokens = _arg_tokens(vetted[len(prefix) :])
+        if tokens is None:
+            return f"'{prefix}' arguments cannot be parsed, so they are not vouched for"
+        # An argument the shell rewrites is not the argument the tool receives, so
+        # nothing below can speak to it.
+        for token in tokens:
+            if _shell_rewrites(token):
+                return (
+                    f"'{prefix}' has an argument the shell expands ({token}), so the "
+                    f"real argument cannot be established"
+                )
+        # EVERY token is scanned, including anything after a bare `--`.
+        #
+        # `--` used to stop this loop, on the reasoning that it ends the option list
+        # so `git diff -- --output` names a file rather than redirecting output. That
+        # reasoning assumed `--` is always the separator, and it is not: a
+        # value-taking option consumes the NEXT word whatever it looks like, so an
+        # earlier option can eat the `--` and leave the rest as real options.
+        # Verified -- `git log --decorate-refs -- --output=victim` OVERWROTE victim
+        # with log output, because `--decorate-refs` took `--` as its pattern and
+        # `--output=` was then an ordinary option. Reproduced with `--grep`,
+        # `--format` and `--src-prefix`, and on `git log`, `git show` and `git diff`.
+        #
+        # Scanning past `--` rather than modelling which options take values: git's
+        # value-taking surface is very large, enumerating it is the denylist problem
+        # again, and getting it wrong fails OPEN. Scanning everything cannot miss a
+        # write flag, and its only cost is a prompt on a PATHSPEC that is spelled
+        # like one -- `git diff -- --output` means "the file named --output", which
+        # now prompts. That is a file nobody has.
+        for token in tokens:
+            for flag in flags:
+                if _flag_hit(token, flag):
+                    return f"'{prefix} {flag}' writes to an arbitrary path"
+            for flag in exec_flags:
+                if _flag_hit(token, flag):
+                    return (
+                        f"'{prefix} {flag}' runs a configured external helper "
+                        f"program, which is arbitrary code rather than a read"
+                    )
+        # Positive vetting takes over entirely for the tools that have it, so it
+        # answers for their operands too and nothing below needs a second rule.
+        if accept_listed:
+            violation = _option_accept_list_violation(prefix, tokens)
+            if violation:
+                return violation
+            continue
+        operands = _operands(tokens)
+        if read_subcommands and operands and operands[0] not in read_subcommands:
+            return (
+                f"'{prefix} {operands[0]}' is not one of its read subcommands "
+                f"({', '.join(sorted(read_subcommands))})"
+            )
+        # Matched through `_flag_hit`, NOT an exact-token test. git's parse-options
+        # takes a short option's value attached, so `git branch -uother` really does
+        # set the upstream (measured: "branch 'main' set up to track 'other'"),
+        # and `-uother` equals neither `-u` nor `-u=`. An exact-token test also
+        # missed `-dNAME`, `-DNAME`, `-mNAME` and `-cNAME`. `_flag_hit` already knew
+        # how to read attached and bundled short options; this check simply was not
+        # using it.
+        #
+        # Cluster membership is safe for these two commands specifically: no
+        # READ-only short option of `git branch` / `git tag` takes a value, so no
+        # value character can be mistaken for a mutator letter. `-a`, `-r`, `-v`,
+        # `-vv` and `-av` all stay read-only.
+        if ref_mutating:
+            # Scanned past `--` for the same reason as the write-flag loop above:
+            # `git branch --format -- -dNAME` lets `--format` eat the `--`.
+            for token in tokens:
+                for flag in _REF_OPTION_ONLY_MUTATORS:
+                    if _flag_hit(token, flag):
+                        # These mutate with no operand, so the operand rule below
+                        # never sees them: `git branch --unset-upstream` rewrites
+                        # branch config on its own.
+                        return f"'{prefix} {flag}' is a mutating mode, not a listing mode"
+        if ref_mutating and not _ref_list_flag_present(tokens) and _operands(tokens):
+            # Positive recognition, not a denylist: the operand is a filter only
+            # when a list-mode flag says so, otherwise it names a ref to create.
+            return (
+                f"'{prefix} <name>' creates a ref; an operand is only a filter "
+                f"alongside a list flag ({', '.join(sorted(_REF_LIST_FLAGS))})"
+            )
+    return ""
+
+
+def _pipe_target_violation(target: str) -> str:
+    """Reason a read-only pipe *target* can still write, else "".
+
+    `_READ_ONLY_PIPE_RE` vouches for the filter's head and never looks at its
+    arguments, which is the same root cause `_allowlist_arg_violation` closes for
+    the head of the command. Verified: `sort -o FILE`, `sort --output=FILE` and
+    `uniq IN OUT` each write an arbitrary path with no shell `>` for
+    `_UNSAFE_SHELL_RE` to catch; the remaining filters cannot. The pagers used to
+    need a third mechanism here (a log-file flag) and no longer do -- they are off
+    the pipe allowlist entirely, see `_READ_ONLY_PIPE_RE`.
+    """
+    vetted = _DEVNULL_REDIR_RE.sub(" ", target).strip()
+    tokens = _arg_tokens(vetted)
+    if tokens is None:
+        head = vetted.split()[0] if vetted.split() else vetted
+        return f"pipe target '{head}' arguments cannot be parsed, so they are not vouched for"
+    if not tokens:
+        return ""
+    head, rest = tokens[0], tokens[1:]
+    # FAIL CLOSED when the two parsers disagree. `_READ_ONLY_PIPE_RE` vouched for
+    # this target by regex; `shlex` is what actually says which word is the command.
+    # If they name different things, the regex has been satisfied by something that
+    # is not the command being run -- which is precisely how `sort=1 sh payload`
+    # passed: the regex saw `sort`, shlex saw `sort=1`, and every check below keys
+    # off the shlex head, so nothing matched and nothing was vetted.
+    #
+    # Tightening the pattern closes that one spelling; requiring the two to AGREE
+    # closes the class, because any future divergence lands here instead of silently
+    # skipping validation. Both are in place: the pattern so the shapes are refused
+    # early, this so a shape that slips through cannot be un-vetted.
+    if head not in _READ_ONLY_PIPE_FILTERS:
+        return (
+            f"pipe target '{head}' is not a read-only filter (the command word does "
+            f"not match what the pipe pattern matched)"
+        )
+    vetted_head = head in ("uniq", "sort")
+    if vetted_head:
+        for token in rest:
+            if _shell_rewrites(token):
+                return (
+                    f"pipe target '{head}' has an argument the shell expands "
+                    f"({token}), so the real argument cannot be established"
+                )
+    if head == "sort":
+        violation = _option_accept_list_violation("sort", rest)
+        if violation:
+            return violation
+    # `uniq IN OUT` writes OUT. That is a second OPERAND, not a flag, so no flag
+    # table can express it; one operand still only reads. A globbed argument would
+    # defeat the operand count, but it no longer needs its own check here: `uniq` is
+    # a `vetted_head`, and `_shell_rewrites` above now refuses globs for exactly
+    # this reason.
+    if head == "uniq":
+        if len(_operands(rest, _UNIQ_VALUE_FLAGS)) > 1:
+            return "pipe target 'uniq IN OUT' writes to its second operand"
+    return ""
+
+
+# `less` and `more` are deliberately absent. Both are interactive pagers whose
+# startup-command argument (`+!CMD<CR>`) reaches a shell, and neither has an
+# enumerable flag surface to build a positive accept-list from. In a pipe stdout is
+# not a tty, so a pager degrades to `cat` -- which is right here -- making their
+# removal free. The measurement is in the "THE PAGERS ARE NOT CURATED" note that
+# precedes `_SORT_READONLY_SHORT`.
+_READ_ONLY_PIPE_FILTERS: tuple[str, ...] = (
+    "grep",
+    "egrep",
+    "fgrep",
+    "head",
+    "tail",
+    "wc",
+    "sort",
+    "uniq",
+    "cut",
+    "cat",
+)
+
+# `(\s|$)`, NOT `\b`. A word boundary is satisfied by `=`, and `VAR=value cmd` is
+# a valid simple command: bash assigns into the environment and runs `cmd`. So
+# `cat f | sort=1 sh payload` matched this pattern on `sort`, and then
+# `_pipe_target_violation` saw a shlex head of `sort=1`, recognised nothing, and
+# vetted nothing -- verified, it ran the payload and classified read-only.
+#
+# Requiring whitespace-or-end is the same strictness the HEAD path always had
+# (`first == p or first.startswith(p + " ")`), which is why the head path was never
+# reachable this way. `_is_help_probe` also already refused a `VAR=value` prefix for
+# exactly this reason. The knowledge existed in two places out of three; this brings
+# the third into line rather than treating it as a new discovery.
+_READ_ONLY_PIPE_RE = re.compile(r"^\s*(" + "|".join(_READ_ONLY_PIPE_FILTERS) + r")(\s|$)")
+
+# Reject redirections, command substitutions, and comments — conservative.
+#
+# `shlex.split` tokenises but does not model *token elision*: the shell deletes
+# words from argv that shlex keeps as ordinary tokens. That makes the token list
+# a strict SUPERSET of the real argv, so any conclusion resting on a token being
+# PRESENT can be forged with a word the shell will drop. Measured:
+#
+#   git branch injected # --list    -> shlex sees `--list`, bash runs
+#                                      `git branch injected` -> branch CREATED
+#   git branch injected < --list    -> same, via input redirection (needs a file
+#                                      named `--list`; trivially created) -> CREATED
+#   git branch injected <<< --list  -> same, via here-string, no file needed -> CREATED
+#   git tag forged # --list         -> tag CREATED
+#
+# All four were auto-approved under trust-reads before this. `--list` made
+# `_ref_list_flag_present` report list mode while the shell never passed it.
+#
+# `<` covers bare redirection, `<<` here-docs and `<<<` here-strings in one
+# alternative, so it replaces the narrower `<\(` process-substitution case
+# rather than adding to it. This costs `cat < f.txt` / `wc -l < f.txt` a prompt;
+# they are rewritable as `cat f.txt`, and `>` was already refused outright, so
+# this is the symmetric treatment of the other direction rather than a new
+# posture. The honest position for a classifier that cannot emulate the shell
+# is to refuse the constructs it cannot faithfully model.
+#
+# The `#` arm is pinned to a word start, which is exactly when bash begins a
+# comment — measured: `echo a#b` prints `a#b` (literal), `echo a # b` prints `a`.
+# So a quoted `#` still classifies: `grep '#include' f.c` is preceded by a quote
+# and does not match. Note `shlex.split(comments=True)` is NOT the right detector
+# here: it treats mid-word `a#b` as a comment too, which bash does not.
+_UNSAFE_SHELL_RE = re.compile(r">|`|\$\(|<|(?<!&)&(?!&)|(?:^|\s)#")
 
 # Discard-only redirect idioms that are read-only despite containing '>'/'&':
 # `2>/dev/null`, `>/dev/null`, `&>/dev/null`, `2>>/dev/null`, and `2>&1`.
@@ -539,10 +1591,11 @@ def _is_help_probe(segment: str) -> bool:
     The old rule was ``segment.endswith("--help")``, which auto-approved any
     command at all once the token was appended.
     """
-    try:
-        tokens = shlex.split(segment)
-    except ValueError:
-        # Unbalanced quotes: cannot establish the argv, so do not vouch for it.
+    # `_arg_tokens` is the single fail-closed argv parser; None means the argv
+    # could not be established, which is the same "do not vouch for it" answer
+    # this function used to spell out with its own try/except.
+    tokens = _arg_tokens(segment)
+    if tokens is None:
         return False
     if len(tokens) < 2 or len(tokens) > 3:
         return False
@@ -600,7 +1653,10 @@ def _classify_bash(cmd: str) -> str:
     # unsafe-shell check; they are read-only but contain '>' / '&'.
     scrubbed = _DEVNULL_REDIR_RE.sub(" ", cmd)
     if _UNSAFE_SHELL_RE.search(scrubbed):
-        return "unsafe shell pattern (redirect, command/process substitution, or backgrounding)"
+        return (
+            "unsafe shell pattern (redirect, command/process substitution, "
+            "comment, or backgrounding)"
+        )
     parts = re.split(r"\s*(?:&&|\|\||;|\n)\s*", cmd.strip())
     for part in parts:
         if not part.strip():
@@ -608,17 +1664,35 @@ def _classify_bash(cmd: str) -> str:
         pipe_parts = [p.strip() for p in part.split("|") if p.strip()]
         if not pipe_parts:
             return "unsafe shell pattern"
-        first = pipe_parts[0].strip().lower()
+        # Lower-case ONLY to recognise the command name. The arguments must be vetted
+        # in their original case, because option letters are case-significant and
+        # folding them changes what they mean: `hostname -F file` SETS the hostname
+        # while `-f` merely prints the FQDN, and `date -Iseconds` is a read whose
+        # option letter is uppercase. Passing the folded string on made the head path
+        # disagree with the pipe path, which never folded (see `_pipe_target_violation`
+        # below) -- so `sort`'s accept-list saw true case and `date`'s did not.
+        head = pipe_parts[0].strip()
+        first = head.lower()
         if not (
             _is_help_probe(first)
             or any(first == p or first.startswith(p + " ") for p in _READ_ONLY_BASH_PREFIXES)
         ):
             base = first.split()[0] if first.split() else first
             return f"command '{base}' is not on the read-only allowlist"
+        # The head is allowlisted; its arguments still have to stay inside the
+        # shape that entry vouched for.
+        violation = _allowlist_arg_violation(head)
+        if violation:
+            return violation
         for target in pipe_parts[1:]:
             if not _READ_ONLY_PIPE_RE.match(target):
                 tgt = target.split()[0] if target.split() else target
                 return f"pipe target '{tgt}' is not a read-only filter"
+            # Head-allowlisted, same as above: its arguments still have to stay
+            # inside what the filter entry vouched for.
+            pipe_violation = _pipe_target_violation(target)
+            if pipe_violation:
+                return pipe_violation
     return ""
 
 
