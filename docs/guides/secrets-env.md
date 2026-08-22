@@ -125,3 +125,75 @@ unit), so they cannot read the root-owned file.
   `~/.kiro/crew/mcp-secrets.env` or `~/.kiro/.env` is accessible to the
   agent via filesystem reads.  Use root-owned paths (`/etc/kirocrew/`)
   or wait for the encrypted vault.
+
+---
+
+## The encrypted vault (recommended)
+
+The interim routes above deliver a secret to an MCP server's process
+environment, where an agent sharing that process tree can observe it.  The
+encrypted vault closes that gap: secrets are stored encrypted on disk under
+`.vault` in the data home, and a `secret://NAME` reference in an MCP server's
+env is resolved to the real value only at spawn time, injected into that
+server's environment alone — never the agent's.
+
+Store a secret through the dashboard **Settings → Secrets** tab, then reference
+it from `mcp.json`:
+
+```jsonc
+{
+  "mcpServers": {
+    "my-server": {
+      "command": "my-mcp-server",
+      "env": { "MY_MCP_SECRET": "secret://MY_MCP_SECRET" }
+    }
+  }
+}
+```
+
+At spawn the gateway resolves `secret://MY_MCP_SECRET` from the vault.  If the
+named secret does not exist, the server fails to start rather than launching
+with a missing credential.
+
+### Migrating existing plaintext secrets
+
+If you already keep the Jira API token as a plaintext `KEY=VALUE` line in the
+data home's `.env`, the importer moves it into the vault. It migrates ONLY the
+Jira credential keys the vault-aware Jira consumer reads — the global
+`JIRA_API_TOKEN` and per-host `JIRA_TOKEN_<hex>` tokens; other credential keys
+are left untouched because their consumers still read the literal `.env` value:
+
+```bash
+# Dry run (default): report what WOULD migrate, change nothing.
+kirocrew secrets import
+
+# Apply: store the Jira token(s) in the vault and rewrite each .env line
+# to a secret:// reference.
+kirocrew secrets import --apply
+```
+
+The importer reads only the data-home `.env` (there is no `--file` option, so a
+caller cannot point it at an attacker-controlled file). A key whose value is
+overridden in the process environment is skipped, and the `.env` rewrite aborts
+if the file changes under a concurrent writer.
+
+Only the Jira credential keys are migrated (`JIRA_API_TOKEN` and per-host
+`JIRA_TOKEN_<HEX>`); every other credential key and unrecognized operator
+setting is left untouched.  On `--apply` each migrated line becomes
+`KEY=secret://KEY`, so the resolver picks the value up from the vault.
+
+The importer **does not delete** the `.env` file — it rewrites the migrated
+lines in place, so the plaintext value for those keys is replaced by the
+`secret://` reference.  A line that is already a `secret://` reference is left
+alone, so re-running `--apply` is a no-op.  If you keep a separate backup copy
+of the file, delete that plaintext copy once you have verified the migration.
+
+### Jira uses the vault automatically
+
+The Jira integration reads its API token from the vault first, then falls back
+to the legacy `.env` / environment value.  Per host it looks up the vault
+secret `JIRA_TOKEN_<HEX>` (the hex-encoded host name); for a single configured
+host it also accepts the global `JIRA_API_TOKEN` vault secret.  If neither vault
+entry exists it uses the same `.env` value it always has, so existing setups
+keep working without change — run `kirocrew secrets import --apply` to move the
+Jira token into the vault when you are ready.
