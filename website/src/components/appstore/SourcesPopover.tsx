@@ -9,7 +9,6 @@
 import { useState } from 'react'
 import { Database, FolderOpen } from 'lucide-react'
 import { api } from '../../api/client'
-import { useQueryClient } from '@tanstack/react-query'
 import { recordEvent } from '../../rum'
 import { Btn, Input, IconButton } from '../ui'
 import { Popover, PopoverTrigger, PopoverContent } from '../ui/popover'
@@ -25,7 +24,6 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
   // closes and a freshly-installed (disabled) app is invisible in the sidebar.
   onInstalled?: (name: string) => void
 }) {
-  const queryClient = useQueryClient()
   const [installPath, setInstallPath] = useState('')
   const [installing, setInstalling] = useState(false)
 
@@ -37,7 +35,8 @@ export default function SourcesPopover({ open, onOpenChange, onError, onInstalle
       const installedName = result.name || installPath.trim()
       recordEvent('app_install', { app: installedName, source: 'local' })
       setInstallPath('')
-      queryClient.invalidateQueries({ queryKey: ['apps'] })
+      // Cache invalidation (['apps'] + ['registry']) is owned by the
+      // mc:apps-changed listener in App.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
       onInstalled?.(installedName)
       onOpenChange(false)

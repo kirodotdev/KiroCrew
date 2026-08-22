@@ -9,7 +9,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import {
   AlertTriangle, Download, CheckCircle, RefreshCw, Trash2, ArrowRight, Database, X,
 } from 'lucide-react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { PageHeader, Card, CardTitle, Btn, Badge, ContentSkeleton } from '../components/ui'
 
@@ -36,7 +36,6 @@ type MigrationState = 'loading' | 'available' | 'not-in-registry' | 'already-ins
 export default function MigrationPage() {
   const { name } = useParams<{ name: string }>()
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const [error, setError] = useState('')
   const [cleanedUp, setCleanedUp] = useState(false)
 
@@ -70,8 +69,9 @@ export default function MigrationPage() {
     mutationFn: () => api.migrateCleanup(name!),
     onSuccess: () => {
       setCleanedUp(true)
+      // Cache invalidation (['apps'] + ['registry']) is owned by the
+      // mc:apps-changed listener in App.tsx, for every dispatch site at once.
       window.dispatchEvent(new Event('mc:apps-changed'))
-      queryClient.invalidateQueries({ queryKey: ['apps'] })
     },
     onError: (e: unknown) => {
       setError((e instanceof Error && e.message) || i18nT('pages.migrationPage.cleanup_failed'))

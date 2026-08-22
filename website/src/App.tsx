@@ -1539,6 +1539,16 @@ export default function App() {
   }, [refreshAppNav])
   useEffect(() => {
     const handler = () => {
+      // Mark the shared ['apps'] cache stale BEFORE the refetch: refreshAppNav
+      // publishes fresh data only on fetch SUCCESS (setQueryData), so when its
+      // bounded retry chain exhausts, an un-invalidated cache would keep
+      // serving stale rows marked fresh. Invalidating up front makes that
+      // failure mode stale-but-marked-stale, which is what lets dispatch
+      // sites skip a local ['apps'] invalidation of their own.
+      // refetchType 'none' keeps refreshAppNav the single fetcher: without it,
+      // an active ['apps'] observer (the /apps page) would refetch immediately
+      // on invalidation, duplicating the request refreshAppNav is about to make.
+      queryClient.invalidateQueries({ queryKey: ['apps'], refetchType: 'none' })
       refreshAppNav()
       // The Explore shelf's install state lives in the server-computed
       // `installed` flag on the `['registry']` rows, which are cached with a

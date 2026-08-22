@@ -15,7 +15,7 @@
  * the Sources gear in the header (SourcesPopover).
  */
 import { useEffect, useMemo, useState } from 'react'
-import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import {
   Package, Bot, Zap, Clock, ShoppingBag, Lock, Trash2, X, ArrowUp, Boxes,
@@ -243,7 +243,6 @@ export function keepInLibrary(
 
 export default function AppsPage() {
   const navigate = useNavigate()
-  const queryClient = useQueryClient()
   const [tab, setTab] = useState<Tab>(initialTab)
   useEffect(() => { sessionStorage.setItem('appstore-tab', tab) }, [tab])
   const [query, setQuery] = useState('')
@@ -564,10 +563,10 @@ export default function AppsPage() {
 
   // ---- Actions --------------------------------------------------------------
 
-  const invalidate = () => {
-    queryClient.invalidateQueries({ queryKey: ['apps'] })
-    // ['registry'] is deliberately not invalidated here: the mc:apps-changed
-    // listener in App.tsx owns that, for every dispatch site at once.
+  const announceAppsChanged = () => {
+    // Neither ['apps'] nor ['registry'] is invalidated here: the
+    // mc:apps-changed listener in App.tsx owns both caches, for every
+    // dispatch site at once.
     window.dispatchEvent(new Event('mc:apps-changed'))
   }
 
@@ -600,7 +599,7 @@ export default function AppsPage() {
   const runEnable = async (name: string) => {
     await api.enableApp(name)
     recordEvent('app_enable', { app: name })
-    invalidate()
+    announceAppsChanged()
   }
 
   const trust = useTrustGate(runEnable)
@@ -661,7 +660,7 @@ export default function AppsPage() {
       if (action === 'enable') await runEnable(name)
       else if (action === 'disable') await api.disableApp(name)
       else if (action === 'update') await api.updateApp(name)
-      invalidate()
+      announceAppsChanged()
       // An in-place sync is the one action here whose success is otherwise
       // INVISIBLE: re-copying a source directory usually carries the same
       // version, so the card re-renders byte-identical and the dev cannot tell
@@ -697,7 +696,7 @@ export default function AppsPage() {
     try {
       await api.uninstallApp(name, keepData, false, Array.from(keepSpecific))
       recordEvent('app_uninstall', { app: name, version: uninstallTarget.version })
-      invalidate()
+      announceAppsChanged()
     } catch (e) {
       setError((e as Error)?.message || i18nT('pages.appsPage.failed_to_uninstall', { name }))
     } finally {
@@ -722,7 +721,7 @@ export default function AppsPage() {
       setUpdatingAll({ done: i + 1, total: targets.length })
     }
     setUpdatingAll(null)
-    invalidate()
+    announceAppsChanged()
     if (failed.length) setError(i18nT('pages.appsPage.failed_to_update', { names: failed.join(', ') }))
     else {
       setSuccessMsg(`Updated ${targets.length} app${targets.length === 1 ? '' : 's'}.`)
