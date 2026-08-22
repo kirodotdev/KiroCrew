@@ -1,17 +1,21 @@
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
-import { Star, Brain, Plug, Pin, Package, Lock, Hourglass, Bot, ChevronDown, LayoutTemplate, X } from 'lucide-react'
+import { Star, Brain, Plug, Pin, Package, Lock, Hourglass, Bot, ChevronDown, LayoutTemplate, X, Plus, Pencil, Copy, MoreHorizontal } from 'lucide-react'
 import { createPortal } from 'react-dom'
 import { api } from '../api/client'
 import type { SubagentInfo } from '../types'
 import Clickable from '../components/Clickable'
 import { SourceBadge, PageHeader, EmptyState, Btn, Input, SearchInput, Card, CardTitle, Badge } from '../components/ui'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../components/ui/dropdown-menu'
 import ModelDropdownList from '../components/ModelDropdownList'
 import AgentSkillsEditor from '../components/AgentSkillsEditor'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar from '../components/CrewAvatar'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import InfoTip from '../components/InfoTip'
+import AgentTemplateCreator from '../components/AgentTemplateCreator'
 import ListDetailBack from '../components/ListDetailBack'
 import { useProvider } from '../providers'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -116,6 +120,8 @@ interface InstalledAgent {
   mcp_servers: string[]
   package?: string
   filename?: string
+  /** True when the PUT endpoint refuses edits to this spec (managed by Kiro Crew). */
+  managed?: boolean
 }
 
 /**
@@ -478,10 +484,20 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   const [selectedAgent, setSelectedAgent] = useState<AgentDetail | null>(null)
   // Narrow viewport shows one pane at a time; a desktop shows both.
   const { isMobile, showList, showDetail, openDetail, closeDetail } = useListDetailView()
+  /**
+   * Whether `selectedAgent` came from the detail endpoint rather than a list-row
+   * fallback. Edit and Clone are gated on it: a list row carries no prompt, tools
+   * or mcpServers, so submitting from one would ask the backend to replace those
+   * fields with empties.
+   */
+  const [detailComplete, setDetailComplete] = useState(false)
   const [tab, setTab] = useState<DetailTab>('overview')
   const [filter, setFilter] = useState('')
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [creatorOpen, setCreatorOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<AgentDetail | null>(null)
+  const [cloneMode, setCloneMode] = useState(false)
   const modelOptions = useAvailableModels()
   const { open: modelDropOpen, setOpen: setModelDropOpen, filter: modelFilter, setFilter: setModelFilter, dropdownRef: modelDropRef, inputRef: modelInputRef, filtered: filteredModels } = useFilteredDropdown(modelOptions)
   // Roving-focus keyboard nav for the model dropdown (shared with StyledSelect/AgentSelector).
@@ -555,6 +571,11 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
     // Synchronous, not effect-deferred: arming is destructive, so it must be
     // dropped the moment a different template is asked for.
     setConfirmDelete(false)
+    // Same reasoning for the Edit/Clone gate. While B's detail is in flight the
+    // pane still shows A, and leaving the flag set from A meant those buttons
+    // stayed live and acted on A after the user had already asked for B. Cleared
+    // here and set again only when a detail load actually lands.
+    setDetailComplete(false)
     // The refusal named the PREVIOUS template; keeping it would misattribute.
     setDeleteError(null)
     setTab('overview')
@@ -562,11 +583,16 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
       const d = await api.agentDetail(a.name)
       if (seq !== selectSeq.current) return
       setSelectedAgent(d)
+      setDetailComplete(true)
     } catch {
       if (seq !== selectSeq.current) return
       // List rows carry display NAMES; the editor round-trips catalog KEYS, so
       // drop them rather than offer unsavable chips.
       setSelectedAgent({ ...a, skills: undefined })
+      // A list row has no prompt, tools or mcpServers at all. Editing from it
+      // would open the dialog on fields that merely LOOK empty, so the pane is
+      // readable but Edit and Clone stay closed until a real detail load lands.
+      setDetailComplete(false)
     }
   }
 
@@ -580,7 +606,10 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
   // has clicked a row, a slow first-template fetch resolving late must not take
   // the pane back (which could seat an armed confirm on the wrong template).
   useEffect(() => {
-    if (initialAgentDetail && !selectedAgent && selectSeq.current === 0) setSelectedAgent(initialAgentDetail)
+    if (initialAgentDetail && !selectedAgent && selectSeq.current === 0) {
+      setSelectedAgent(initialAgentDetail)
+      setDetailComplete(true)
+    }
   }, [initialAgentDetail, selectedAgent])
 
   // Backstop for the selections `select()` does not make — the auto-open query
@@ -750,14 +779,25 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
              address bar. Identical on a desktop; `vh` stays as the fallback. */
           <div className="card-glow border border-border bg-card rounded-lg mb-4 animate-rise shadow-sm transition-all overflow-hidden flex h-[62vh] supports-[height:100svh]:h-[62svh] min-h-[420px] max-h-[760px]">
             {showList && <div className={`${isMobile ? 'w-full border-r-0' : 'w-[288px] border-r'} shrink-0 border-border flex flex-col bg-bg-accent`}>
-              <div className="p-2.5 border-b border-border">
+              {/* `flex` here so the create button sits beside the filter input
+                  rather than below it. */}
+              <div className="p-2.5 border-b border-border flex items-center gap-1.5">
                 <SearchInput
-                  className="w-full"
+                  className="flex-1"
                   placeholder={i18nT('pages.agentsPage.filter_templates')}
                   aria-label={i18nT('pages.agentsPage.filter_templates')}
                   value={filter}
                   onChange={e => setFilter(e.target.value)}
                 />
+                <Btn
+                  type="button"
+                  className="shrink-0 px-2 py-1.5"
+                  onClick={() => { setEditTarget(null); setCloneMode(false); setCreatorOpen(true) }}
+                  aria-label={i18nT('pages.agentsPage.create_template')}
+                  title={i18nT('pages.agentsPage.create_template')}
+                >
+                  <Plus className="lucide-inline" />
+                </Btn>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
                 {filtered.length === 0 ? (
@@ -813,6 +853,47 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
                       </span>
                     )}
                     <div className="flex-1" />
+                    {/* Edit / Clone for user-owned templates. Gated on the
+                        endpoint's own `managed` flag rather than on `source`:
+                        the auxiliary managed specs (knowledge, research, lite)
+                        do not report source 'kirocrew', so a source-only check
+                        offered Edit for templates whose PUT always returns 403. */}
+                    {listed && !listed.managed && listed.source !== 'package' && listed.source !== 'kirocrew' && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Btn
+                            type="button"
+                            className="!px-1.5"
+                            aria-label={i18nT('pages.agentsPage.template_actions')}
+                            title={i18nT('pages.agentsPage.template_actions')}
+                          >
+                            <MoreHorizontal size={14} />
+                          </Btn>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end" className="min-w-[160px]">
+                          <DropdownMenuItem
+                            disabled={!detailComplete}
+                            title={detailComplete
+                              ? i18nT('pages.agentsPage.edit_template')
+                              : i18nT('pages.agentsPage.detail_unavailable')}
+                            onSelect={() => { setEditTarget(selectedAgent); setCloneMode(false); setCreatorOpen(true) }}
+                          >
+                            <Pencil size={13} className="shrink-0 text-muted" />
+                            <span>{i18nT('pages.agentsPage.edit')}</span>
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            disabled={!detailComplete}
+                            title={detailComplete
+                              ? i18nT('pages.agentsPage.clone_template')
+                              : i18nT('pages.agentsPage.detail_unavailable')}
+                            onSelect={() => { setEditTarget(selectedAgent); setCloneMode(true); setCreatorOpen(true) }}
+                          >
+                            <Copy size={13} className="shrink-0 text-muted" />
+                            <span>{i18nT('pages.agentsPage.clone')}</span>
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                     {/* A button that silently disappears teaches nothing, so the
                         two states the user can act on say what to do first. The
                         owner cases (built-in, package) stay silent: nothing the
@@ -1038,6 +1119,17 @@ export default function AgentsPage({ embedded }: { embedded?: boolean } = {}) {
         {usage && <ProviderUsageCard usage={usage} />}
         <SubagentsCard agents={agents} onClear={() => spawnClearMut.mutate()} onDelete={id => spawnDeleteMut.mutate(id)} />
       </div>
+
+      <AgentTemplateCreator
+        open={creatorOpen}
+        onClose={() => { setCreatorOpen(false); setEditTarget(null); setCloneMode(false) }}
+        onCreated={(name) => { refetchInstalled(); void select({ name } as InstalledAgent) }}
+        modelOptions={modelOptions}
+        existingNames={installed.map(a => a.name)}
+        mcpServerNames={Object.keys(mcpTools)}
+        editTarget={editTarget}
+        cloneMode={cloneMode}
+      />
     </>
   )
 }

@@ -10086,3 +10086,110 @@ def apply_resource_limits(config: dict | None = None) -> "Callable[[], None]":
         _bias_child_oom_score()
 
     return _set_limits
+
+
+# ── MCP Credential Detection (env blocks and request headers) ──────
+# Shared predicates for rejecting literal secrets in MCP server env blocks and
+# in the `headers` block of a remote (http) server -- both carry credentials, so
+# both screen through these same tokens rather than each growing its own list.
+
+_MCP_ENV_SECRET_KEY_TOKENS: frozenset[str] = frozenset({
+    "SECRET", "TOKEN", "PASSWORD", "PASSWD", "APIKEY",
+    "CREDENTIAL", "CREDENTIALS", "AUTHORIZATION", "AUTH",
+    # A Cookie header is a session credential, and `Cookie` shares no token with
+    # any entry above, so it was the one realistic credential-bearing header name
+    # the key screen missed.
+    "COOKIE",
+})
+
+_MCP_ENV_SECRET_TOKEN_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    {("API", "KEY"), ("ACCESS", "KEY"), ("PRIVATE", "KEY"), ("AUTH", "TOKEN")}
+)
+
+# Value screening delegates to the canonical credential signatures
+# (``_CREDENTIAL_PATTERNS``, exposed by :func:`get_credential_patterns`) rather
+# than restating provider formats here. Delegation, not a second pattern list,
+# because the two lists cannot be kept in sync by convention: a hand-written copy
+# of the provider prefixes omitted every OpenAI / Anthropic / Stripe / SendGrid /
+# npm / PyPI / DigitalOcean / Google / Telegram shape the canonical set already
+# carried, so a project key (``sk-proj-`` prefix) passed the screen and was
+# written into a world-readable agent spec. Deriving the pattern from the
+# canonical source means a prefix added there is screened here on the same commit.
+#
+# The supplement below holds ONLY the shapes that differ because this screen reads
+# a single env value in isolation, while the canonical patterns scan free-form
+# prose and are scoped tighter to avoid over-redacting it:
+#   - a bare ``Bearer`` / ``Basic`` value with no ``Authorization:`` label, which
+#     is how an MCP server takes a pre-built header;
+#   - lower length floors for GitHub PATs (canonical requires production lengths;
+#     a truncated or rotated value in a spec is still a credential);
+#   - a PEM header without its closing dashes, i.e. a truncated paste;
+#   - userinfo in a URL of ANY scheme, not just the database schemes canonical
+#     enumerates.
+# Shapes the canonical set already covers at an equal-or-looser bound (AWS access
+# key IDs, GitLab PATs, Slack tokens, full PEM blocks, JWTs, database URIs) are
+# deliberately absent here.
+_MCP_ENV_VALUE_SUPPLEMENT_PATTERN: str = (
+    r"(?:"
+    r"(?:Bearer|Basic)\s+[A-Za-z0-9+/=_.\-]{8,}"
+    r"|gh[pousr]_[A-Za-z0-9]{20,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|xox[bpas]-[0-9a-zA-Z-]+"
+    r"|-----BEGIN\s+(?:RSA|DSA|EC|OPENSSH)?\s*PRIVATE\s+KEY"
+    r"|eyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}"
+    r"|://[^/\s:@]+:[^/\s@]+@"
+    r")"
+)
+
+_MCP_ENV_SECRET_VALUE_RE: re.Pattern[str] = re.compile(
+    "|".join(
+        [pattern.pattern for pattern in get_credential_patterns()]
+        + [_MCP_ENV_VALUE_SUPPLEMENT_PATTERN]
+    )
+)
+
+ENV_VAR_REFERENCE_RE: re.Pattern[str] = re.compile(
+    r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$|^\$[A-Za-z_][A-Za-z0-9_]*$"
+)
+
+#: Key suffixes that name a piece of METADATA rather than a secret, so a literal
+#: value is expected and must not be refused. ``HEADER`` is deliberately absent: a
+#: header value is frequently the credential itself (``AUTH_HEADER=Bearer ...``),
+#: and the suffix check returns before the secret-token check, so exempting it
+#: would let ``AUTH_HEADER`` bypass screening entirely.
+_MCP_ENV_METADATA_SUFFIXES: frozenset[str] = frozenset(
+    {"URL", "URI", "ENDPOINT", "PATH", "FILE", "HOST", "NAME", "ID", "MODE", "TYPE"}
+)
+
+
+def env_key_is_credential_like(key: str) -> bool:
+    """Token-split match: GITHUB_TOKEN yes, OAUTH_CLIENT_ID no."""
+    normalized = re.sub(r"(?<=[a-z0-9])(?=[A-Z])", "_", key).upper().replace("-", "_")
+    tokens = [t for t in normalized.split("_") if t]
+    if tokens and tokens[-1] in _MCP_ENV_METADATA_SUFFIXES:
+        return False
+    if any(t in _MCP_ENV_SECRET_KEY_TOKENS for t in tokens):
+        return True
+    return any(
+        (tokens[i], tokens[i + 1]) in _MCP_ENV_SECRET_TOKEN_PAIRS for i in range(len(tokens) - 1)
+    )
+
+
+def mcp_env_value_is_credential_like(value: str) -> bool:
+    """Return True when an MCP env value carries a literal credential.
+
+    The full value screen: the pattern search plus the two label-independent
+    passes the canonical scanner owns, which no pattern can express --
+    :func:`_decode_b64_safe` for a base64-encoded credential and
+    :func:`_text_contains_bare_secret` for a bare 40-char AWS secret access key,
+    which carries no prefix at all. Both are the same passes
+    :func:`redact_credentials` and :func:`oauth_url_contains_credential` use, so a
+    value that would be redacted out of tool output is also refused entry into an
+    agent spec. A caller that searches ``_MCP_ENV_SECRET_VALUE_RE`` alone is
+    prefix-bound and misses those two shapes.
+    """
+    return bool(
+        _MCP_ENV_SECRET_VALUE_RE.search(value)
+        or _decode_b64_safe(value)
+        or _text_contains_bare_secret(value)
+    )

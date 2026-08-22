@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import errno
+import hashlib
 import json
 import logging
 import os
 import re
 import subprocess
+import tempfile
 import uuid
-from pathlib import Path
-from typing import Any
+from pathlib import Path, PureWindowsPath
+from typing import Any, Callable
 
 from aiohttp import web
 
@@ -19,12 +22,14 @@ from kiro_crew import agent_state, model_registry
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.agent import AGENT_FILENAME, get_shipped_tools, install_agent, kiro_agents_dir_path
 from kiro_crew.agent_discovery import (
+    _read_agent_spec,
     clear_list_agents_cache,
     list_agents,
     project_agent_names,
     spec_model,
     spec_str,
 )
+from kiro_crew.agent_files import OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewAgentConfig,
@@ -55,9 +60,14 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
+from kiro_crew.platform.governance import sanitize_agent_config_governance
+from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -65,6 +75,11 @@ from kiro_crew.sandbox import (
     create_subprocess_limited,
     wrap_argv,
 )
+from kiro_crew.security import ENV_VAR_REFERENCE_RE as _ENV_VAR_REFERENCE_RE
+from kiro_crew.security import env_key_is_credential_like as _env_key_is_credential_like
+from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import mcp_env_value_is_credential_like as _mcp_env_value_is_credential_like
+from kiro_crew.security import path_contains_sensitive
 from kiro_crew.validation import _AGENT_NAME_RE
 
 _MODEL_LIST_STDERR_TAIL_CHARS = 1000
@@ -196,8 +211,6 @@ async def api_agent_config(request: web.Request) -> web.Response:
             # otherwise restore a ceiling-governed @denied grant or a governed
             # server's autoApprove that the per-ref writers strip. Filter the map
             # here too (no-op on an ungoverned host).
-            from kiro_crew.platform.governance import sanitize_agent_config_governance
-
             # Offloaded: the filter resolves the ceiling AND scans the profile
             # directory per ref, which is synchronous filesystem work — running it
             # inline would stall the aiohttp event loop for the duration.
@@ -668,7 +681,16 @@ async def api_agents_installed(request: web.Request) -> web.Response:
         return agents
 
     agents = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _collect)
-    return web.json_response([a.to_dict() for a in agents])
+    # ``managed`` is derived from the SAME predicate the PUT handler enforces, so
+    # the editor cannot offer an action the endpoint will refuse. Deriving it here
+    # rather than restating the filename list in the frontend keeps one source of
+    # truth: adding a managed spec to OWNED_KIRO_AGENT_FILES updates both at once.
+    payload = []
+    for a in agents:
+        row = a.to_dict()
+        row["managed"] = _template_is_writable(str(row.get("filename") or "")) is not None
+        payload.append(row)
+    return web.json_response(payload)
 
 
 def _normalize_model_key(name: str) -> str:
@@ -726,6 +748,38 @@ def _advertised_cc_models(request: web.Request) -> list[dict]:
     return []
 
 
+def _live_advertised_model_ids(request: web.Request) -> list[str]:
+    """Model ids the most recently started live session advertises, or ``[]``.
+
+    Newest session first. ``active_providers()`` walks a dict of live sessions, so
+    forward order is creation order — and a session that started BEFORE a plan
+    change still holds the advertised list it captured at its own ``session/new``.
+    Reading the oldest one would narrow to pre-downgrade entitlements, i.e. keep
+    offering exactly the models the narrowing exists to hide.
+
+    ``[]`` means "entitlement unknown", which every caller must treat as allow:
+    :func:`model_is_unusable` fails open on an empty set for the same reason.
+    Shared by the picker and by template validation so the two cannot disagree
+    about what a live session advertises.
+    """
+    try:
+        state: DashboardState = request.app["state"]
+        providers = state.sessions.active_providers()
+    except (KeyError, AttributeError):
+        return []
+    for provider in reversed(providers):
+        getter = getattr(provider, "available_models", None)
+        if not callable(getter):
+            continue
+        try:
+            ids = advertised_model_ids(getter())
+        except Exception:
+            continue
+        if ids:
+            return ids
+    return []
+
+
 def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict]:
     """Narrow the ``--list-models`` catalog to what a live session advertises.
 
@@ -755,29 +809,10 @@ def _entitled_kiro_models(request: web.Request, models: list[dict]) -> list[dict
     backend's bare ids). Filtering on any of those would empty the picker, which
     is worse than listing one model too many.
     """
-    try:
-        state: DashboardState = request.app["state"]
-        providers = state.sessions.active_providers()
-    except (KeyError, AttributeError):
-        return models
-    advertised: list[str] = []
-    # Newest session first. `active_providers()` walks a dict of live sessions, so
-    # forward order is creation order — and a session that started BEFORE a plan
-    # change still holds the advertised list it captured at its own session/new.
-    # Reading the oldest one would narrow the catalog to pre-downgrade
-    # entitlements, i.e. keep offering exactly the models this narrowing exists to
-    # hide. The most recently started session carries the most recent snapshot.
-    for provider in reversed(providers):
-        getter = getattr(provider, "available_models", None)
-        if not callable(getter):
-            continue
-        try:
-            ids = advertised_model_ids(getter())
-        except Exception:
-            continue
-        if ids:
-            advertised = ids
-            break
+    # An unresolvable advertised set (no live session, a backend that omits
+    # `models`, or a surprising payload) means entitlement is unknown, and the
+    # catalog is returned unfiltered rather than emptied.
+    advertised = _live_advertised_model_ids(request)
     if not advertised:
         return models
     advertises_auto = any(_normalize_model_key(i) == "auto" for i in advertised)
@@ -1847,3 +1882,1271 @@ def _regen_conductor() -> None:
         generate_conductor_skill(SkillsLoader())
     except Exception:
         logger.exception("Failed to regenerate conductor skill")
+
+
+# ── Agent Template Authoring (CREATE / UPDATE) ──────────────────────
+
+_TEMPLATE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_TEMPLATE_MAX_PROMPT_CHARS = 100_000
+_TEMPLATE_MAX_DESCRIPTION_CHARS = 2000
+_TEMPLATE_MAX_MCP_SERVERS = 50
+_TEMPLATE_MAX_TOOLS = 500
+_TEMPLATE_MAX_RESOURCES = 200
+
+#: Spec keys the authoring form owns. A PUT replaces exactly these; anything else
+#: in the existing spec is carried forward untouched (see the update handler).
+_EDITOR_OWNED_SPEC_KEYS = frozenset(
+    {
+        "name",
+        "description",
+        "model",
+        "prompt",
+        "tools",
+        "allowedTools",
+        "mcpServers",
+        "resources",
+    }
+)
+
+
+def _reserved_template_names() -> set[str]:
+    """Names a template may not take.
+
+    The managed specs' own stems, plus ``default`` — the built-in agent that has
+    no config file and is special-cased by :func:`api_agent_detail`.
+    """
+    return {Path(f).stem for f in OWNED_KIRO_AGENT_FILES} | {"default"}
+
+
+def _template_is_writable(filename: str) -> str | None:
+    """Return a refusal reason for a spec this endpoint must not overwrite.
+
+    Two classes are refused:
+
+    * ``<app>--<agent>.json`` — owned by an installed app.
+    * ``OWNED_KIRO_AGENT_FILES`` — Kiro Crew rebuilds these from shipped defaults
+      on every install and at boot self-heal. A full-replace write here drops
+      ``hooks`` (including the bash audit hook), ``includeMcpJson`` and the
+      managed MCP server block, breaking the running install until the next
+      rebuild. A ``--``-only check misses every one of them, since none contains
+      a double dash.
+    """
+    if "--" in filename:
+        return "Cannot edit app-managed agent templates"
+    if filename in OWNED_KIRO_AGENT_FILES:
+        return (
+            f"'{Path(filename).stem}' is managed by Kiro Crew and is rebuilt on "
+            "every install; edits here would be silently reverted. Clone it to "
+            "get an editable copy"
+        )
+    return None
+
+
+def _name_already_claimed(agents_dir: Path, name: str) -> bool:
+    """True when any existing spec already answers to *name*.
+
+    kiro-cli resolves an agent by the ``name`` FIELD, not the filename, so a
+    package spec at ``<pkg>-reviewer.json`` declaring ``"name": "reviewer"``
+    makes a new ``reviewer.json`` a coin flip over which one wins. A filename
+    check alone does not catch it.
+
+    Reads go through the shared :func:`_read_agent_spec`, not ``read_text``: the
+    agents directory is user-writable and shared with other tools, so a spec may
+    be a symlink to a character device or an arbitrarily large file. That reader
+    already caps the size, resolves the link and refuses a sensitive target, so
+    scanning for a name collision cannot be turned into an unbounded read.
+    """
+    try:
+        candidates = sorted(agents_dir.glob("*.json"))
+    except OSError:
+        return False
+    for path in candidates:
+        if path.stem == name:
+            return True
+        data = _read_agent_spec(path)
+        if isinstance(data, dict) and spec_str(data, "name") == name:
+            return True
+    return False
+
+
+def _carry_forward_unowned(spec: dict, existing: dict, body: dict) -> None:
+    """Copy keys from *existing* that this request did not author into *spec*.
+
+    Ownership is decided by what the REQUEST actually carried, not by a static
+    key list. A static list is wrong in both directions and cost a data-loss bug:
+    ``resources`` and ``mcpServers`` are nominally editor-owned, but the dialog
+    omits ``resources`` entirely and can submit args-only servers, so treating
+    them as owned regardless deleted hand-authored ``file://`` steering globs and
+    stripped ``command`` / ``env`` off stdio MCP entries on an edit that only
+    touched the description.
+
+    The rule that holds: a key present in the body is replaced, a key absent from
+    the body is preserved.
+    """
+    for key, value in existing.items():
+        if key in _EDITOR_OWNED_SPEC_KEYS and key in body:
+            continue  # the request authored this one; the built spec wins
+        spec.setdefault(key, value)
+
+
+async def _persist_spec(
+    spec: dict,
+    target: Path,
+    *,
+    exclusive: bool,
+    expect_version: tuple[int, int, str] | None = None,
+) -> str | None:
+    """Write *spec* to *target* off the event loop. Returns an error code or None.
+
+    ``sanitize_agent_config_governance`` runs here rather than at the call sites
+    so no future writer can reach the file without it: this handler assigns
+    ``allowedTools`` and ``mcpServers`` wholesale, which is exactly the shape that
+    reopens the auto-approve bypass its docstring describes. Serialisation and the
+    write are both filesystem/CPU work and belong off the loop with the scans.
+
+    ``lift_and_strip_bookkeeping`` runs here for the same chokepoint reason. Its
+    own docstring requires EVERY writer of a kiro agent spec to call it, and this
+    is the fourth such writer (#2570 named the other three). ``model_managed`` and
+    ``cc_model`` are Kiro Crew's, not kiro-cli's: carry-forward copies unowned keys
+    verbatim, so one acquired after boot would survive an edit, and kiro-cli
+    rejects the ENTIRE spec on an unknown field and silently falls the session back
+    to the default agent. Already off the loop here, so the sync helper is called
+    directly rather than through another executor hop.
+    """
+
+    def _work() -> str | None:
+        raw_name = spec.get("name")
+        name = raw_name if isinstance(raw_name, str) and raw_name.strip() else target.stem
+        if agent_state.lift_and_strip_bookkeeping(spec, name):
+            logger.info(
+                "Stripped Kiro Crew bookkeeping keys from an agent template write for %r",
+                name,
+            )
+        sanitize_agent_config_governance(spec)
+        payload = json.dumps(spec, indent=2) + "\n"
+        if exclusive:
+            return _write_spec_exclusive(target, payload)
+        return _replace_spec_atomically(target, payload, expect_version)
+
+    return await asyncio.get_running_loop().run_in_executor(discovery_executor(), _work)
+
+
+def _spec_version(target: Path) -> tuple[int, int, str] | None:
+    """An identity for the bytes currently at *target*, or None if absent.
+
+    ``(st_mtime_ns, st_size, sha256)``. The digest is load-bearing, not belt-and-
+    braces: ``st_mtime_ns`` reports nanoseconds but many filesystems only STORE
+    coarse timestamps (ext3 and some network mounts at one second, FAT at two), so a
+    same-size save inside one tick compares equal on mtime and size alone and the
+    conflict check waves the overwrite through. Hashing costs one extra read of a
+    file this handler already reads, off the event loop, which is cheap next to
+    silently losing someone's edit.
+    """
+    try:
+        st = target.stat()
+        digest = hashlib.sha256(target.read_bytes()).hexdigest()
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size, digest)
+
+
+def _replace_spec_atomically(
+    target: Path, content: str, expect_version: tuple[int, int, str] | None = None
+) -> str | None:
+    """Overwrite *target* via a temp file + rename. Returns an error code or None.
+
+    When *expect_version* is given, the file is replaced only while it still matches
+    the version the caller read. The config lock serializes Kiro Crew's own writers,
+    but kiro-cli, an editor, or any other tool writes the same file outside it, so
+    without this check a save landing after the read would be replaced wholesale and
+    silently lost. Checked as late as possible, immediately before the rename.
+    """
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".json.tmp")
+    except OSError as exc:
+        logger.warning("Failed to stage agent template %s: %s", target, exc)
+        return "agent_template_write_failed"
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        # The replacement inherits the STAGED file's permissions, so restricting it
+        # here is what keeps an edited spec owner-only. Without this a PUT silently
+        # widens access on a spec that was restricted when created.
+        restrict_to_owner(tmp_path)
+        if expect_version is not None and _spec_version(target) != expect_version:
+            # Someone else wrote between the read and now. Refusing loses this
+            # request; replacing would lose theirs, and theirs is already on disk.
+            os.unlink(tmp_path)
+            return "agent_template_conflict"
+        os.replace(tmp_path, str(target))
+    except OSError as exc:
+        logger.warning("Failed to write agent template %s: %s", target, exc)
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return "agent_template_write_failed"
+    return None
+
+
+def _write_spec_exclusive(target: Path, content: str) -> str | None:
+    """Create *target* only if absent, publishing complete content. Error code or None.
+
+    Two properties are needed at once, and neither alone is sufficient:
+
+    * **Exclusive.** ``exists()`` then ``os.replace`` is two steps and ``os.replace``
+      overwrites, so a concurrent POST -- or any other tool writing that path --
+      silently clobbers the loser. Only the kernel can make "create only if absent"
+      atomic.
+    * **Complete.** Opening the target with ``O_EXCL`` and then writing into it
+      publishes the path before the bytes are there, so a crash mid-write leaves
+      truncated JSON visible under a name kiro-cli will try to load, and an unparsable
+      spec takes the whole agent down rather than failing this one request.
+
+    ``os.link`` gives both: the content is staged in a temp file first, and the link
+    is a single atomic operation that fails outright when the name already exists. The
+    file is therefore never visible in a partial state.
+    """
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".json.tmp")
+    except OSError as exc:
+        logger.warning("Failed to stage agent template %s: %s", target, exc)
+        return "agent_template_write_failed"
+
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        # Owner-only BEFORE publication, and via platform_compat rather than a bare
+        # chmod: a spec can name a credential-bearing MCP env, and on Windows a
+        # mkstemp file inherits the parent directory's ACL, which chmod does not
+        # touch. Restricting the staged file means the published spec is never
+        # readable by another principal, not even briefly.
+        restrict_to_owner(tmp_path)
+        try:
+            os.link(tmp_path, str(target))
+        except FileExistsError:
+            return "agent_template_exists"
+        except OSError as exc:
+            # A filesystem without hardlinks (some FAT/exFAT mounts, a few network
+            # filesystems). REFUSE rather than fall back to writing into the target:
+            # that fallback keeps exclusivity but publishes the name before the bytes
+            # are there, so an interrupted write leaves truncated JSON that kiro-cli
+            # rejects — trading a failed request for a broken template. A refusal is
+            # recoverable; a corrupt spec on disk is not.
+            if exc.errno not in (errno.EPERM, errno.ENOSYS, errno.EOPNOTSUPP, errno.EXDEV):
+                raise
+            logger.warning(
+                "Cannot publish agent template atomically on %s (%s); refusing rather "
+                "than risking a partially written spec",
+                target.parent,
+                exc.strerror,
+            )
+            return "agent_template_write_failed"
+    except OSError as exc:
+        logger.warning("Failed to create agent template %s: %s", target, exc)
+        return "agent_template_write_failed"
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    return None
+
+
+def _validate_mcp_env(
+    env: dict[str, str],
+    server_name: str,
+    field: str = "env",
+    stored: dict | None = None,
+    exemptions: list[tuple[tuple[str, ...], object]] | None = None,
+) -> str | None:
+    """Screen an mcpServers[] ``env`` or ``headers`` block for literal secrets.
+
+    One screen for both blocks, parameterised only by the field name used in the
+    error message. They are the same problem -- a key/value map on an MCP server
+    whose values are frequently credentials -- and a remote server's bearer token
+    lives in ``headers`` exactly as a stdio server's lives in ``env``. A second
+    copy for headers would be a second place to forget a token.
+
+    Returns an error message string on violation, or None if clean.
+    """
+    # What the stored spec holds at this exact location, if anything. A value the
+    # request leaves byte-identical was not introduced by this request, so screening
+    # it again only blocks editing an unrelated field on a template that already
+    # carries a secret. Anything NEW or CHANGED is still screened.
+    stored_block = stored.get(field) if isinstance(stored, dict) else None
+    if not isinstance(stored_block, dict):
+        stored_block = {}
+
+    for key, value in env.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            return f"mcpServers.{server_name}.{field}: keys and values must be strings"
+        # Allow env-var references ($VAR or ${VAR})
+        if _ENV_VAR_REFERENCE_RE.match(value):
+            continue
+        if stored_block.get(key) == value:
+            # Recorded so the caller can re-check it against the authoritative
+            # in-lock read: this exemption asserts "already stored", and the read it
+            # was judged against is older than the one being replaced.
+            if exemptions is not None:
+                exemptions.append((("mcpServers", server_name, field, key), value))
+            continue
+        # Check key name for credential-like patterns
+        if _env_key_is_credential_like(key):
+            return (
+                f"mcpServers.{server_name}.{field}.{key}: looks like a credential. "
+                f"Use an environment variable reference (${{VAR}}) instead of a literal value"
+            )
+        # Check value for known secret patterns. Uses the full validator rather
+        # than the pattern alone: two credential shapes cannot be expressed as a
+        # prefix pattern and are only reachable through it -- a base64-wrapped
+        # credential, and a bare 40-char AWS secret access key, which carries no
+        # prefix at all.
+        if _mcp_env_value_is_credential_like(value):
+            return (
+                f"mcpServers.{server_name}.{field}.{key}: value matches a known secret pattern. "
+                f"Use an environment variable reference (${{VAR}}) instead"
+            )
+    return None
+
+
+_RESOURCE_GLOB_MAGIC = re.compile(r"[*?\[]")
+
+
+_ABSENT = object()
+
+
+def _mcp_entry_credential_error(
+    srv_name: str,
+    srv_spec: dict,
+    stored: dict | None = None,
+    exemptions: list[tuple[tuple[str, ...], object]] | None = None,
+) -> str | None:
+    """Screen EVERY string value in an MCP server entry for a literal credential.
+
+    Field-by-field screening is what produced this function. `env` was screened,
+    then `headers` had to be added, then `url` and `args`: four rounds of the same
+    defect, because each new credential-carrying field was a separate thing to
+    remember. This walks the entry's values instead, so a field nobody has thought
+    of yet -- or one kiro-cli adds later -- is covered on arrival.
+
+    ``command`` is excluded: it is a filesystem path, screened for sensitivity by
+    its own check, and a path is not a credential.
+
+    A URL embedding userinfo (``https://user:secret@host``) needs no separate rule
+    here -- the shared credential patterns already recognise that shape, which a
+    revert-verify proved by showing a dedicated regex was unreachable. Screening it
+    twice would be a second spelling of the same question, free to drift from the
+    canonical patterns.
+    """
+
+    def _stored_at(path: str) -> object:
+        """The stored value at a dotted/indexed path, or a sentinel when absent."""
+        node: object = stored
+        for part in path.lstrip(".").replace("[", ".").replace("]", "").split("."):
+            if not part:
+                continue
+            if isinstance(node, dict):
+                if part not in node:
+                    return _ABSENT
+                node = node[part]
+            elif isinstance(node, list):
+                try:
+                    node = node[int(part)]
+                except (ValueError, IndexError):
+                    return _ABSENT
+            else:
+                return _ABSENT
+        return node
+
+    def _walk(value: object, path: str) -> str | None:
+        if isinstance(value, str):
+            # Unchanged from the stored spec -> not introduced by this request.
+            if stored is not None and _stored_at(path) == value:
+                if exemptions is not None:
+                    parts = tuple(
+                        x
+                        for x in path.lstrip(".").replace("[", ".").replace("]", "").split(".")
+                        if x
+                    )
+                    exemptions.append((("mcpServers", srv_name) + parts, value))
+                return None
+            # An env-var reference is the SANCTIONED form and must stay allowed
+            # wherever it appears -- including inside args, which is how a stdio
+            # server is normally handed a token.
+            if _ENV_VAR_REFERENCE_RE.match(value):
+                return None
+            if _mcp_env_value_is_credential_like(value):
+                return (
+                    f"mcpServers.{srv_name}{path}: value matches a known secret "
+                    "pattern. Use an environment variable reference (${VAR}) instead"
+                )
+            return None
+        if isinstance(value, list):
+            for i, item in enumerate(value):
+                err = _walk(item, f"{path}[{i}]")
+                if err:
+                    return err
+            return None
+        if isinstance(value, dict):
+            for key, item in value.items():
+                err = _walk(item, f"{path}.{key}")
+                if err:
+                    return err
+        return None
+
+    for field, value in srv_spec.items():
+        if field == "command":
+            continue
+        err = _walk(value, f".{field}")
+        if err:
+            return err
+    return None
+
+
+def _resource_target_is_sensitive(uri: str) -> bool:
+    """True when a resource URI addresses a credential file or the trust root.
+
+    ``resources`` entries are handed to kiro-cli, which READS each match into the
+    agent's context, so an entry like ``file://~/.ssh/id_rsa`` turns a template
+    into a credential disclosure path. Only ``file://`` is screened; other schemes
+    (``skill://``) address no filesystem location.
+
+    A glob is screened by the last complete directory segment before the first
+    wildcard, in the CONTAINS direction as well as the IS direction: a glob
+    matches many files, so ``file://~/**`` never equals a sensitive path while
+    sweeping every one of them. A precise glob like
+    ``file://.kiro/steering/**/*.md`` stays allowed, which is the shape templates
+    legitimately use.
+
+    A glob must be ANCHORED to a concrete root. ``file://.*/*`` and ``file://**``
+    name no directory at all, so what they match is decided entirely by the
+    agent's working directory -- which this validator, running in the gateway,
+    does not know. Under a home-directory workspace they sweep dotfile
+    directories including ``.ssh``. Refusing them is the same rule already applied
+    to parent traversal: when the base is unknowable here, do not resolve it,
+    refuse it.
+    """
+    if not uri.startswith("file://"):
+        return False
+    raw = uri[len("file://") :]
+    if not raw:
+        return False
+
+    magic = _RESOURCE_GLOB_MAGIC.search(raw)
+    if magic is None:
+        return _path_escapes_or_is_sensitive(raw)
+
+    prefix = raw[: magic.start()]
+    # The text immediately before the wildcard is a partial filename, not a
+    # directory, so cut back to the last complete segment.
+    root = prefix.rsplit("/", 1)[0] if "/" in prefix else ""
+    if not root:
+        return True  # unanchored: no concrete root to screen
+    if _path_escapes_or_is_sensitive(root):
+        return True
+    return _screen_both_bases(os.path.expanduser(root), path_contains_sensitive)
+
+
+def _screen_both_bases(expanded: str, check: Callable[..., bool]) -> bool:
+    """Apply *check* to a resource path under every base it could resolve against.
+
+    A relative resource path is resolved by the AGENT against its workspace at
+    prompt time, while this validator runs in the gateway process, so a bare
+    ``.kube/config`` resolves against the gateway's cwd here and against the
+    workspace there. Every screen in this module therefore applies its check
+    TWICE for a relative path: once with HOME as the base -- the worst case the
+    workspace can be, and the scenario these screens exist to defend -- and once
+    with the process default.
+
+    BOTH directions (is-sensitive and contains-sensitive) go through this single
+    helper deliberately. Letting each call site pass its own base is what allowed
+    the contains-direction to keep resolving against the gateway cwd after the
+    is-direction was given a HOME base: the two checks sat adjacent, looked
+    symmetric, and disagreed about the base. Centralising the choice means a new
+    screening direction cannot reintroduce the gap by omission.
+    """
+    if not os.path.isabs(expanded) and check(expanded, base_dir=os.path.expanduser("~")):
+        return True
+    return check(expanded)
+
+
+def _path_escapes_or_is_sensitive(raw: str) -> bool:
+    """True when a resource path is sensitive OR climbs out of its own tree.
+
+    Parent traversal is refused outright rather than resolved: a template
+    resource has no legitimate reason to climb above the tree it is scoped to,
+    and refusing is the only answer that does not depend on a working directory
+    this process does not know.
+    """
+    expanded = os.path.expanduser(raw)
+    if not os.path.isabs(expanded):
+        # PureWindowsPath, deliberately, on every platform: it treats BOTH "/" and
+        # "\" as separators, so one parse covers a POSIX-style URI path and a
+        # Windows-style one without hand-splitting on a hardcoded separator.
+        if ".." in PureWindowsPath(expanded).parts:
+            return True
+    return _screen_both_bases(expanded, is_sensitive_path)
+
+
+def _reserved_namespace_error(name: str) -> str | None:
+    """Refuse a template name inside the app-owned agent namespace.
+
+    `_safe_link_name` maps `app/agent` to `app--agent.json`, and
+    `_deregister_agents` deletes by that PREFIX alone -- it checks neither
+    ownership nor whether the entry is the app's own symlink -- so a user template
+    named `calendar--assistant` is silently unlinked when the `calendar` app is
+    disabled. `spawn_sdk` reads the same prefix as proof of which agents an app may
+    run, so a name in that namespace is also an authority claim.
+
+    Refused at the point the name is chosen rather than made safe downstream: three
+    separate readers already treat the prefix as ownership, and a rule at the entry
+    point cannot be missed by a fourth.
+    """
+    if "--" in name:
+        return (
+            "name may not contain '--': that separator is reserved for app-owned "
+            "agents (app--agent) and a template using it would be deleted when "
+            "that app is disabled"
+        )
+    return None
+
+
+def _build_template_spec(
+    body: dict,
+    advertised: list[str] | None = None,
+    stored: dict | None = None,
+    exemptions: list[tuple[tuple[str, ...], object]] | None = None,
+) -> tuple[dict, str | None]:
+    """Validate and build a kiro-cli agent spec dict from a request body.
+
+    Returns (spec, None) on success or ({}, error_message) on validation failure.
+    """
+    name = body.get("name", "")
+    if not isinstance(name, str) or not _TEMPLATE_NAME_RE.match(name):
+        return {}, (
+            "name must match ^[a-z0-9][a-z0-9._-]{0,63}$ "
+            "(lowercase, start with alphanumeric, max 64 chars)"
+        )
+    # A template name must ALSO satisfy the repository's shared agent-name grammar,
+    # because the name this endpoint writes to disk is the same string that is later
+    # supplied as an `agent` value and validated against `_AGENT_NAME_RE`. The two
+    # grammars are not identical -- this one is deliberately narrower on case (files
+    # are lowercase) but was wider on separators, so `release.bot`, `my.agent` and
+    # any trailing `-`/`_`/`.` were creatable here and then rejected everywhere the
+    # shared grammar is enforced: a template that exists but cannot be selected.
+    # Requiring both keeps this endpoint from minting names the rest of the system
+    # refuses, rather than restating what a valid agent name is.
+    if not _AGENT_NAME_RE.match(name):
+        return {}, (
+            "name must also match the agent-name grammar shared with the rest of "
+            "Kiro Crew: no dots, and it must end in a letter or digit"
+        )
+    # `--` is deliberately NOT rejected here. It is a name-CHOICE rule enforced by
+    # `_reserved_namespace_error` on the CREATE path only: update cannot rename (a
+    # body name differing from the URL is refused), and for an app-owned file the
+    # authoritative refusal is the managed 403, which carries its own audit event
+    # and states the real reason. Enforcing it in this shared builder, which runs
+    # before that check, made the name rule pre-empt the 403.
+
+    spec: dict = {"name": name}
+
+    # Scalar fields are type-checked on PRESENCE, before any truthiness test. A
+    # falsy non-string (``false``, ``0``, ``[]``) would otherwise skip validation
+    # AND skip assignment, so the key would be present in the request -- which
+    # carry-forward reads as "the user authored this" -- while absent from the
+    # built spec, erasing the stored value and returning 200.
+    for scalar in ("description", "model", "prompt"):
+        if scalar in body and not isinstance(body[scalar], str):
+            return {}, f"{scalar} must be a string"
+
+    # Description (optional)
+    description = body.get("description", "")
+    if description:
+        if len(description) > _TEMPLATE_MAX_DESCRIPTION_CHARS:
+            return {}, f"description exceeds {_TEMPLATE_MAX_DESCRIPTION_CHARS} characters"
+        spec["description"] = description
+
+    # Model (optional)
+    model = body.get("model", "")
+    if model:
+        # A spec naming a model the account cannot run is not a harmless
+        # aspiration: session startup withholds it and the agent silently runs the
+        # backend default, so the user believes the template pinned a model when
+        # it did not. Delegated to ``model_is_unusable`` rather than compared here,
+        # so this cannot become a second spelling of "can this account run it" and
+        # disagree with the picker or the wire. It fails OPEN on an unknown or
+        # empty advertised set, so a host that advertises nothing is unaffected.
+        if model_is_unusable(model, advertised):
+            return {}, (
+                f"model '{model}' is not available to this account; pick one the "
+                "picker offers, or leave it on auto"
+            )
+        spec["model"] = model
+
+    # Prompt (optional). kiro-cli validates these files with serde
+    # ``deny_unknown_fields`` and rejects the ENTIRE spec on any unknown key, then
+    # silently falls back to the default agent, so the key written is always the
+    # spec's own ``prompt``.
+    prompt = body.get("prompt", "")
+    if prompt:
+        if len(prompt) > _TEMPLATE_MAX_PROMPT_CHARS:
+            return {}, f"prompt exceeds {_TEMPLATE_MAX_PROMPT_CHARS} characters"
+        # ``prompt`` accepts a ``file://`` URI and kiro-cli READS it -- the repo's
+        # own docs document `"prompt": "file:///path/to/prompt.md"`, and Kiro Crew
+        # writes that form for its managed agents. So an unscreened prompt is the
+        # same credential-disclosure path as an unscreened resource, and gets the
+        # same screen.
+        if _resource_target_is_sensitive(prompt):
+            return {}, (
+                "prompt points at a credential or protected location and cannot "
+                "be attached to a template"
+            )
+        spec["prompt"] = prompt
+
+    # tools (list of tool URIs)
+    tools = body.get("tools")
+    if tools is not None:
+        if not isinstance(tools, list):
+            return {}, "tools must be a list"
+        if len(tools) > _TEMPLATE_MAX_TOOLS:
+            return {}, f"tools exceeds {_TEMPLATE_MAX_TOOLS} entries"
+        if not all(isinstance(t, str) for t in tools):
+            return {}, "tools entries must be strings"
+        spec["tools"] = tools
+
+    # allowedTools (list of tool name patterns)
+    allowed_tools = body.get("allowedTools")
+    if allowed_tools is not None:
+        if not isinstance(allowed_tools, list):
+            return {}, "allowedTools must be a list"
+        if len(allowed_tools) > _TEMPLATE_MAX_TOOLS:
+            return {}, f"allowedTools exceeds {_TEMPLATE_MAX_TOOLS} entries"
+        if not all(isinstance(t, str) for t in allowed_tools):
+            return {}, "allowedTools entries must be strings"
+        # A glob must not be auto-approvable. The governance sanitizer decides
+        # per entry via ``may_skip_gate_now``, which answers True for "*", "@*"
+        # and "@builtin/*" while answering False for the concrete tools those
+        # globs cover (measured: execute_bash and fs_write are both withheld).
+        # So a wildcard is a strictly BROADER grant that passes the gate the
+        # specific names fail, and it would auto-approve shell and filesystem
+        # tools with the sensitive-path and denied-command checks never running.
+        # Auto-approval is granted by exact tool name only.
+        for entry in allowed_tools:
+            if "*" in entry or "?" in entry:
+                return {}, (
+                    f"allowedTools entry '{entry}' is a wildcard. Auto-approval must "
+                    "name each tool exactly, so the governance ceiling can screen it"
+                )
+        spec["allowedTools"] = allowed_tools
+
+    # mcpServers
+    mcp_servers = body.get("mcpServers")
+    if mcp_servers is not None:
+        if not isinstance(mcp_servers, dict):
+            return {}, "mcpServers must be an object"
+        if len(mcp_servers) > _TEMPLATE_MAX_MCP_SERVERS:
+            return {}, f"mcpServers exceeds {_TEMPLATE_MAX_MCP_SERVERS} entries"
+        for srv_name, srv_spec in mcp_servers.items():
+            if not isinstance(srv_name, str):
+                return {}, "mcpServers keys must be strings"
+            if not isinstance(srv_spec, dict):
+                return {}, f"mcpServers.{srv_name} must be an object"
+            # The same server's stored entry, when this is an edit of a spec that
+            # already had one. None on create, and None for a server being added,
+            # so a new entry is screened in full.
+            stored_servers = stored.get("mcpServers") if isinstance(stored, dict) else None
+            stored_entry = (
+                stored_servers.get(srv_name) if isinstance(stored_servers, dict) else None
+            )
+            if not isinstance(stored_entry, dict):
+                stored_entry = None
+            # Validate the whole entry shape, not just the fields being screened.
+            # kiro-cli rejects the ENTIRE spec on a malformed server and falls the
+            # session back to the default agent, so persisting a non-string
+            # ``command`` or a non-list ``args`` breaks the template silently.
+            cmd_raw = srv_spec.get("command")
+            if cmd_raw is not None and not isinstance(cmd_raw, str):
+                return {}, f"mcpServers.{srv_name}.command must be a string"
+            url_raw = srv_spec.get("url")
+            if url_raw is not None and not isinstance(url_raw, str):
+                return {}, f"mcpServers.{srv_name}.url must be a string"
+            args_raw = srv_spec.get("args")
+            if args_raw is not None:
+                if not isinstance(args_raw, list) or not all(isinstance(a, str) for a in args_raw):
+                    return {}, f"mcpServers.{srv_name}.args must be a list of strings"
+            # A server needs EXACTLY ONE launchable transport. Neither means it cannot
+            # start; both means a shape the MCP schema rejects outright, since stdio
+            # and http are alternatives rather than a pair. Either way kiro-cli
+            # refuses the whole spec on an unusable server and silently falls the
+            # session back to the default agent. "At least one" was the earlier rule
+            # and let the both-set case through.
+            if bool(cmd_raw) == bool(url_raw):
+                return {}, (
+                    f"mcpServers.{srv_name} needs exactly one transport: a command "
+                    "(stdio) or a url (http), not both"
+                )
+            # Validate command path is not sensitive
+            cmd = srv_spec.get("command", "")
+            if cmd and isinstance(cmd, str) and is_sensitive_path(cmd):
+                return {}, f"mcpServers.{srv_name}.command: path is sensitive"
+            # Screen env whenever the key is PRESENT, not only when truthy: a
+            # falsy non-dict (``[]``, ``0``) would otherwise skip the type check
+            # and be persisted as an invalid block.
+            if "env" in srv_spec:
+                env = srv_spec.get("env")
+                if not isinstance(env, dict):
+                    return {}, f"mcpServers.{srv_name}.env must be an object"
+                err = _validate_mcp_env(env, srv_name, stored=stored_entry)
+                if err:
+                    return {}, err
+            # `headers` is the remote (http) transport's equivalent of `env`: it
+            # is where a bearer token or api key is passed, so it gets the SAME
+            # screen rather than a parallel one. Screened on presence for the same
+            # reason env is -- a falsy non-dict would otherwise skip the type
+            # check and be persisted as a block kiro-cli rejects.
+            if "headers" in srv_spec:
+                headers = srv_spec.get("headers")
+                if not isinstance(headers, dict):
+                    return {}, f"mcpServers.{srv_name}.headers must be an object"
+                err = _validate_mcp_env(
+                    headers,
+                    srv_name,
+                    field="headers",
+                    stored=stored_entry,
+                    exemptions=exemptions,
+                )
+                if err:
+                    return {}, err
+            # Whole-entry sweep, AFTER the per-field key screens. The key screens
+            # catch a credential named by its key (`env.GITHUB_TOKEN`); this
+            # catches one recognisable by its value in ANY field, including `url`
+            # and `args`, which had no screen at all.
+            err = _mcp_entry_credential_error(srv_name, srv_spec, stored_entry, exemptions)
+            if err:
+                return {}, err
+        spec["mcpServers"] = mcp_servers
+
+    # resources (list of resource URIs)
+    resources = body.get("resources")
+    if resources is not None:
+        if not isinstance(resources, list):
+            return {}, "resources must be a list"
+        if len(resources) > _TEMPLATE_MAX_RESOURCES:
+            return {}, f"resources exceeds {_TEMPLATE_MAX_RESOURCES} entries"
+        if not all(isinstance(r, str) for r in resources):
+            return {}, "resources entries must be strings"
+        for entry in resources:
+            if _resource_target_is_sensitive(entry):
+                return {}, (
+                    f"resources entry '{entry}' points at a credential or "
+                    "protected location and cannot be attached to a template"
+                )
+        spec["resources"] = resources
+
+    # deniedCommands is deliberately NOT accepted.
+    #
+    # Two independent reasons, either of which is disqualifying:
+    #
+    # 1. At the top level it is an unknown key, so kiro-cli's
+    #    ``deny_unknown_fields`` rejects the whole spec and falls back to the
+    #    default agent — the template would silently not exist.
+    # 2. Relocating it to ``toolsSettings.execute_bash.deniedCommands`` (the only
+    #    place kiro-cli reads it) would resurrect a RETIRED mechanism. Command
+    #    denial moved to Kiro Crew's own hooks.py PreToolUse gate, and
+    #    ``agent.py:_strip_legacy_denied_commands`` actively removes that key on
+    #    every refresh precisely so a stale spec rule cannot outrank the gate.
+    #    Offering it in an editor would let a user author a rule that either
+    #    disappears or shadows Settings > Security.
+    #
+    # A body carrying it is rejected loudly rather than ignored: silently
+    # dropping a field a user believes restricts the agent is the worse failure.
+    if body.get("deniedCommands") is not None:
+        return {}, (
+            "deniedCommands is not settable on an agent template. Command denial "
+            "is enforced by Kiro Crew's tool gate; configure it in Settings > Security"
+        )
+
+    return spec, None
+
+
+async def api_agents_installed_create(request: web.Request) -> web.Response:
+    """POST /api/agents/installed — create a new agent template (kiro-cli spec).
+
+    Writes ``~/.kiro/agents/<name>.json`` atomically. Rejects names that
+    collide with existing files.
+    """
+    # These handlers install agent tools and MCP server COMMANDS into
+    # ~/.kiro/agents, which every session on this machine resolves against, so the
+    # write surface is global even though the request is per-session. Identity comes
+    # from the token-auth middleware, never a client-set header. Refused before the
+    # body is parsed so a non-owner cannot even exercise the validators.
+    if not is_owner_dashboard_request(request):
+        _sel().log_api_access(
+            caller=str(request.get("user") or "unknown"),
+            operation="agent_template.create",
+            outcome="denied",
+            source="dashboard",
+            resources="non_owner_block",
+        )
+        return web.json_response(
+            {"error": "owner authorization required", "code": "owner_required"},
+            status=403,
+        )
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    # Valid JSON is not necessarily an object. A top-level array reaches
+    # ``body.get(...)`` as a list and raises AttributeError -> HTTP 500, so the
+    # shape is rejected once here rather than per field.
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+
+    # Off the loop: the builder screens resource, prompt and MCP command paths,
+    # and those screens resolve realpaths. On a network-backed home that is slow
+    # enough filesystem work to stall the loop and the heartbeat with it.
+    spec, err = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _build_template_spec, body, _live_advertised_model_ids(request)
+    )
+    if err:
+        # A validation refusal here is frequently a SECURITY decision -- a
+        # sensitive resource path, a literal credential in an MCP env block, a
+        # wildcard auto-approve grant. Those are exactly the denials the audit log
+        # exists to record, and they were previously invisible to it.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.validate",
+            outcome="denied",
+            source="dashboard",
+            resources=str(body.get("name") or "")[:120],
+            error=err[:200],
+        )
+        return web.json_response({"error": err, "code": "validation_failed"}, status=400)
+
+    name = spec["name"]
+
+    ns_err = _reserved_namespace_error(name)
+    if ns_err:
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.validate",
+            outcome="denied",
+            source="dashboard",
+            resources=name[:120],
+            error=ns_err[:200],
+        )
+        return web.json_response({"error": ns_err, "code": "agent_name_reserved"}, status=400)
+
+    if name in _reserved_template_names():
+        return web.json_response(
+            {"error": f"'{name}' is reserved", "code": "agent_name_reserved"}, status=400
+        )
+
+    skill_keys = body.get("skills")
+    if skill_keys is not None:
+        if not isinstance(skill_keys, list) or not all(isinstance(k, str) for k in skill_keys):
+            return web.json_response(
+                {"error": "skills must be a list of strings", "code": "invalid_skills"},
+                status=400,
+            )
+        if len(skill_keys) > MAX_AGENT_SKILLS:
+            return web.json_response(
+                {
+                    "error": f"skills exceeds {MAX_AGENT_SKILLS} entries",
+                    "code": "too_many_skills",
+                },
+                status=400,
+            )
+
+    agents_dir = kiro_agents_dir_path()
+    target = agents_dir / f"{name}.json"
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    def _prepare() -> tuple[list[str], str]:
+        """Collision scan + skill mapping. Both enumerate and READ the agents and
+        skill directories, which on a large or network-backed catalog is enough
+        filesystem work to stall the gateway loop -- the same reason
+        /api/agents/installed and /api/skills already run off it."""
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        if _name_already_claimed(agents_dir, name):
+            return [], "agent_template_exists"
+        if skill_keys is not None:
+            _applied, unknown = apply_skill_mapping(spec, target, state, list(skill_keys))
+            if unknown:
+                return list(unknown), "unknown_skills"
+        return [], ""
+
+    unknown_keys, prepare_err = await loop.run_in_executor(discovery_executor(), _prepare)
+    if prepare_err == "agent_template_exists":
+        return web.json_response(
+            {
+                "error": f"Agent template '{name}' already exists",
+                "code": "agent_template_exists",
+            },
+            status=409,
+        )
+    if prepare_err == "unknown_skills":
+        return web.json_response(
+            {
+                "error": f"unknown skill keys: {', '.join(unknown_keys[:20])}",
+                "code": "unknown_skills",
+            },
+            status=400,
+        )
+
+    write_err = await _persist_spec(spec, target, exclusive=True)
+    if write_err == "agent_template_exists":
+        # Lost the race against a concurrent create between the scan and the write.
+        return web.json_response(
+            {
+                "error": f"Agent template '{name}' already exists",
+                "code": "agent_template_exists",
+            },
+            status=409,
+        )
+    if write_err:
+        return web.json_response(
+            {"error": "could not write agent template", "code": write_err}, status=500
+        )
+
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="agent_template.create",
+        outcome="success",
+        source="dashboard",
+        resources=name,
+    )
+    return web.json_response({"ok": True, "name": name}, status=201)
+
+
+async def api_agents_installed_update(request: web.Request) -> web.Response:
+    """PUT /api/agents/installed/{name} — update an existing agent template.
+
+    Overwrites ``~/.kiro/agents/<name>.json`` atomically. Only user-owned
+    templates (not app-namespaced ``<app>--<agent>.json`` files) are writable.
+    """
+    # These handlers install agent tools and MCP server COMMANDS into
+    # ~/.kiro/agents, which every session on this machine resolves against, so the
+    # write surface is global even though the request is per-session. Identity comes
+    # from the token-auth middleware, never a client-set header. Refused before the
+    # body is parsed so a non-owner cannot even exercise the validators.
+    if not is_owner_dashboard_request(request):
+        _sel().log_api_access(
+            caller=str(request.get("user") or "unknown"),
+            operation="agent_template.update",
+            outcome="denied",
+            source="dashboard",
+            resources="non_owner_block",
+        )
+        return web.json_response(
+            {"error": "owner authorization required", "code": "owner_required"},
+            status=403,
+        )
+
+    url_name = request.match_info["name"]
+
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
+
+    # Body name must match URL name
+    body_name = body.get("name", "")
+    if body_name and body_name != url_name:
+        return web.json_response(
+            {
+                "error": "body.name must match the URL name",
+                "code": "name_mismatch",
+            },
+            status=400,
+        )
+    # Inject URL name if body omits it
+    body["name"] = url_name
+
+    # Resolved once per request: the screening read below and the authoritative
+    # read inside the lock must agree on which file they are talking about.
+    agents_dir = kiro_agents_dir_path()
+    target = agents_dir / f"{url_name}.json"
+
+    # Off the loop: the builder screens resource, prompt and MCP command paths,
+    # and those screens resolve realpaths. On a network-backed home that is slow
+    # enough filesystem work to stall the loop and the heartbeat with it.
+    #
+    # The stored spec is read here only to SCOPE the credential screen -- a value
+    # the request leaves byte-identical is not one this request introduces, and
+    # re-judging it made a template that already carries a literal token
+    # uneditable, description-only edits included. The AUTHORITATIVE read for
+    # carry-forward still happens inside the config lock in `_prepare`; this read
+    # is deliberately not load-bearing, so a concurrent write between the two
+    # cannot lose an update. A stale view can only exempt a value that was on disk
+    # when it was read, which is the value carry-forward would preserve anyway.
+    # Resolved HERE, on the loop. `_live_advertised_model_ids` walks the live
+    # session map, which the loop owns and mutates; iterating it from a worker
+    # thread races a concurrent session removal into a RuntimeError and a 500.
+    advertised_ids = _live_advertised_model_ids(request)
+
+    # The version of the file as read INSIDE the config lock. The write requires it
+    # to still match, so a save landing during the write window is refused rather
+    # than overwritten. Stamped in the lock, not at the earlier screening read:
+    # stamping the screening read would make two lock-serialized dashboard PUTs
+    # conflict with each other, when the lock plus the in-lock re-read is exactly
+    # what lets both of them survive. The earlier window is covered instead by
+    # re-validating the credential exemptions below, which is the only thing the
+    # older read is relied upon for.
+    read_version: list[tuple[int, int, str] | None] = [None]
+
+    # Credential values the pre-lock screen exempted as "already stored".
+    # `_prepare` re-checks each against the authoritative read before writing.
+    exemptions: list[tuple[tuple[str, ...], object]] = []
+
+    def _read_then_build() -> tuple[dict, str | None]:
+        stored = None if target.is_symlink() else _read_agent_spec(target)
+        return _build_template_spec(
+            body,
+            advertised_ids,
+            stored if isinstance(stored, dict) else None,
+            exemptions,
+        )
+
+    spec, err = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _read_then_build
+    )
+    if err:
+        # A validation refusal here is frequently a SECURITY decision -- a
+        # sensitive resource path, a literal credential in an MCP env block, a
+        # wildcard auto-approve grant. Those are exactly the denials the audit log
+        # exists to record, and they were previously invisible to it.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.validate",
+            outcome="denied",
+            source="dashboard",
+            resources=str(body.get("name") or "")[:120],
+            error=err[:200],
+        )
+        return web.json_response({"error": err, "code": "validation_failed"}, status=400)
+
+    skill_keys = body.get("skills")
+    if skill_keys is not None:
+        if not isinstance(skill_keys, list) or not all(isinstance(k, str) for k in skill_keys):
+            return web.json_response(
+                {"error": "skills must be a list of strings", "code": "invalid_skills"},
+                status=400,
+            )
+        if len(skill_keys) > MAX_AGENT_SKILLS:
+            return web.json_response(
+                {
+                    "error": f"skills exceeds {MAX_AGENT_SKILLS} entries",
+                    "code": "too_many_skills",
+                },
+                status=400,
+            )
+
+    state: DashboardState = request.app["state"]
+    loop = asyncio.get_running_loop()
+
+    def _prepare() -> tuple[list[str], str]:
+        """Read the existing spec, carry unowned keys forward, map skills. Reads
+        and enumerates the agents and skill directories, so it stays off the loop."""
+        # A spec that cannot be read or is not an object must NOT be treated as
+        # empty: carry-forward would then preserve nothing and the write would
+        # replace a file whose contents were never understood -- the same silent
+        # erase this handler exists to prevent, just triggered by a parse failure
+        # instead of a partial request. A symlink is refused for the same reason
+        # plus one more: following it would copy whatever it points at into a
+        # world-readable agent spec.
+        # Read through the shared hardened reader, not read_text: it caps the size,
+        # resolves the link and refuses a sensitive target, so an oversized or
+        # symlinked spec cannot become an unbounded allocation in the gateway. A
+        # None result covers every unusable case at once (missing, oversized,
+        # symlink to a sensitive target, non-UTF-8, or JSON that is not an object)
+        # and must be refused rather than treated as empty -- carry-forward would
+        # then preserve nothing and the write would replace a file whose contents
+        # were never understood.
+        if target.is_symlink():
+            return [], "spec_unreadable"
+        # Stamped here, inside the lock, immediately before the authoritative read,
+        # so a write landing between this and the rename is caught by the write's own
+        # comparison.
+        read_version[0] = _spec_version(target)
+        existing = _read_agent_spec(target)
+        if not isinstance(existing, dict):
+            return [], "spec_unreadable"
+
+        # The editor forces the spec's ``name`` to the URL stem, so a stored
+        # spec whose declared name differs would be silently renamed by an
+        # otherwise unrelated edit. kiro-cli resolves an agent by the name
+        # FIELD, so that rename unregisters the agent under the name every
+        # caller uses -- a package spec at <pkg>-reviewer.json declaring
+        # "reviewer" stops answering to "reviewer". The dialog cannot express
+        # the divergence, so refusing is the only non-destructive answer.
+        # Re-validate every credential value the pre-lock screen EXEMPTED against
+        # the authoritative read. The exemption means "identical to what is stored",
+        # and the screening read is older than this one, so a value that changed in
+        # between would otherwise be written unscreened. Only exempted values are
+        # re-checked: an edit that exempted nothing (a description change) cannot
+        # conflict, which is what keeps two serialized dashboard PUTs both working.
+        for path_parts, exempted_value in exemptions:
+            node: object = existing
+            for part in path_parts:
+                if isinstance(node, dict) and part in node:
+                    node = node[part]
+                else:
+                    node = _ABSENT
+                    break
+            if node != exempted_value:
+                return [], "agent_template_conflict"
+
+        declared = existing.get("name")
+        if isinstance(declared, str) and declared and declared != url_name:
+            return [declared], "declared_name_mismatch"
+        _carry_forward_unowned(spec, existing, body)
+        if skill_keys is not None:
+            _applied, unknown = apply_skill_mapping(spec, target, state, list(skill_keys))
+            if unknown:
+                return list(unknown), "unknown_skills"
+        return [], ""
+
+    async def _read_modify_write() -> tuple[list[str], str]:
+        """Existence check, read, carry-forward and write as ONE serialized step.
+
+        Held under the config lock because this is a read-modify-write: two
+        disjoint PUTs that each read the same version would both carry forward
+        that version's fields, and whichever wrote second would restore the
+        other's stale values -- silently losing an update that reported success.
+        The lock is an ``asyncio.Lock``, so awaiting the executor hops inside it
+        suspends this handler without blocking the event loop; only another
+        config writer waits.
+        """
+
+        # Both the existence stat and the writability check are filesystem work
+        # and belong off the loop with the read: on a network-backed or unavailable
+        # home a synchronous `is_file()` stat blocks every other gateway task,
+        # including the heartbeat. Folded into ONE executor hop rather than two so
+        # the round-trip cost does not double.
+        def _precheck() -> tuple[str | None, str]:
+            if not target.is_file():
+                return None, "not_found"
+            return _template_is_writable(target.name), ""
+
+        managed, pre_err = await loop.run_in_executor(discovery_executor(), _precheck)
+        if pre_err:
+            return [], pre_err
+        if managed:
+            return [managed], "managed"
+        keys, err = await loop.run_in_executor(discovery_executor(), _prepare)
+        if err:
+            return keys, err
+        return [], await _persist_spec(
+            spec, target, exclusive=False, expect_version=read_version[0]
+        ) or ""
+
+    async with _get_config_lock():
+        unknown_keys, prepare_err = await _read_modify_write()
+
+    if prepare_err == "not_found":
+        return web.json_response(
+            {"error": f"Agent template '{url_name}' not found", "code": "not_found"},
+            status=404,
+        )
+    if prepare_err == "managed":
+        # A managed-template refusal is a permission denial, so it belongs in the
+        # audit log for the same reason the validation refusals do. Fixing the
+        # validate branch last round and leaving this one is the same
+        # audit-every-path gap, one branch over.
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.update",
+            outcome="denied",
+            source="dashboard",
+            resources=url_name,
+            error="managed template is not editable",
+        )
+        return web.json_response(
+            {"error": unknown_keys[0], "code": "agent_template_managed"}, status=403
+        )
+    if prepare_err == "spec_unreadable":
+        return web.json_response(
+            {
+                "error": (
+                    f"'{url_name}.json' could not be read as an agent spec (unreadable, "
+                    "not valid JSON, not an object, or a symlink). Refusing to overwrite it"
+                ),
+                "code": "agent_template_unreadable",
+            },
+            status=409,
+        )
+    if prepare_err == "declared_name_mismatch":
+        declared = unknown_keys[0] if unknown_keys else ""
+        return web.json_response(
+            {
+                "error": (
+                    f"'{url_name}.json' declares the agent name '{declared}'. Editing it "
+                    f"here would rename it to '{url_name}' and unregister '{declared}'. "
+                    "Clone it to get an editable copy"
+                ),
+                "code": "agent_template_name_mismatch",
+            },
+            status=409,
+        )
+    if prepare_err == "unknown_skills":
+        return web.json_response(
+            {
+                "error": f"unknown skill keys: {', '.join(unknown_keys[:20])}",
+                "code": "unknown_skills",
+            },
+            status=400,
+        )
+
+    # A conflict is not a server fault: the file changed under us, and the caller
+    # can re-read and retry. 409 rather than 500 so a client can tell the two apart.
+    if prepare_err == "agent_template_conflict":
+        _sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="agent_template.update",
+            outcome="denied",
+            source="dashboard",
+            resources=url_name,
+            error="spec changed on disk between read and write",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "this template changed on disk while you were editing; "
+                    "reopen it to see the current version"
+                ),
+                "code": "agent_template_conflict",
+            },
+            status=409,
+        )
+
+    # Any remaining code is the write error surfaced by _read_modify_write, which
+    # performed the write itself under the lock.
+    if prepare_err:
+        return web.json_response(
+            {"error": "could not write agent template", "code": prepare_err}, status=500
+        )
+
+    clear_list_agents_cache()
+    state.push_refresh("agents")
+
+    _sel().log_api_access(
+        caller=request.get("user", "dashboard"),
+        operation="agent_template.update",
+        outcome="success",
+        source="dashboard",
+        resources=url_name,
+    )
+    return web.json_response({"ok": True, "name": url_name})
