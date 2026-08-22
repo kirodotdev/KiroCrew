@@ -113,6 +113,13 @@ let galleryOpenedCbs: Array<() => void> = []
 let galleryClosedCbs: Array<() => void> = []
 /** When true, the `since=0` re-read after a backend restart answers not-ok. */
 let sinceZeroFails = false
+/**
+ * What the main process answers when asked to surface the dashboard.
+ *
+ * False is the real refusal case — no dashboard window to raise — and it is the
+ * one the sticky bubble's survival depends on.
+ */
+let openSessionSucceeds = true
 
 /** The window-level preload bridge the overlay toggles window input through. */
 function installCrewCompanion() {
@@ -126,6 +133,7 @@ function installCrewCompanion() {
       return () => {}
     }),
     galleryOpen: vi.fn(),
+    openSession: vi.fn(async () => openSessionSucceeds),
     onGalleryOpened: vi.fn((cb: () => void) => {
       galleryOpenedCbs.push(cb)
       return () => {}
@@ -184,6 +192,7 @@ beforeEach(() => {
   galleryOpenedCbs = []
   galleryClosedCbs = []
   sinceZeroFails = false
+  openSessionSucceeds = true
   packDetail = null
   savedPos = { x: 300, y: 200 }
   config = { activeAppearance: 'kiro-ghost', sessionNotificationsEnabled: true }
@@ -474,6 +483,107 @@ describe('session signals from the gateway socket', () => {
     await mountPet()
     await waitFor(() => expect(watch).not.toBeNull())
     await waitFor(() => expect(watch!.isSilent()).toBe(true))
+  })
+})
+
+/**
+ * The "Open session" CTA — the one button a sticky bubble has.
+ *
+ * `approval` and `session-input` bubbles render no ✕ and ignore body clicks, so
+ * this button is their only exit. Two properties therefore have to hold together,
+ * and they pull in opposite directions: the click must actually take the user to
+ * the blocked session, and it must NOT clear the notification when it could not.
+ */
+describe('the "Open session" call to action', () => {
+  /** The CTA, which is the only button inside the bubble for a sticky kind. */
+  function cta(): HTMLElement | null {
+    return document.querySelector('.cc-bubble-cta')
+  }
+
+  it('opens the session an approval is about, then clears the notification', async () => {
+    await mountPet()
+    await waitFor(() => expect(watch).not.toBeNull())
+    watch!.onApproval!({ slot: 'chat-7-1785905004', title: 'Run the migration' })
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+
+    // The slot the gateway's approval frame named — not a title, not a guess.
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith('chat-7-1785905004'))
+    // And only then does the bubble go: the block has somewhere to be resolved.
+    await waitFor(() => expect(document.querySelector('.cc-bubble-text')).toBeNull())
+  })
+
+  it('keeps a sticky approval on screen when the dashboard could not be surfaced', async () => {
+    openSessionSucceeds = false
+    await mountPet()
+    await waitFor(() => expect(watch).not.toBeNull())
+    watch!.onApproval!({ slot: 'chat-7-1785905004', title: 'Run the migration' })
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+    // Longer than the 300ms exit animation, so a bubble still on screen after
+    // this was never asked to leave rather than being caught mid-animation.
+    await new Promise((r) => setTimeout(r, 500))
+
+    expect(document.querySelector('.cc-bubble-body')?.textContent).toBe('Run the migration')
+    expect(document.querySelector('.cc-bubble-wrap')?.className).not.toContain('cc-bubble-out')
+    // Still no ✕ — so had the CTA dismissed it, the only pointer to a session
+    // that is still blocked on the user would be gone for good.
+    expect(document.querySelector('.cc-bubble-x')).toBeNull()
+    expect(api.openSession).toHaveBeenCalledTimes(1)
+  })
+
+  it('raises the dashboard without routing when the approval owns no session', async () => {
+    await mountPet()
+    await waitFor(() => expect(watch).not.toBeNull())
+    // An approval with no owning conversation is broadcast with slot: "" and is
+    // surfaced on the dashboard's approvals feed instead.
+    watch!.onApproval!({ slot: '', title: 'Run the migration' })
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith(''))
+    await waitFor(() => expect(document.querySelector('.cc-bubble-text')).toBeNull())
+  })
+
+  it('opens the session a failed turn belongs to', async () => {
+    await mountPet()
+    await waitFor(() => expect(watch).not.toBeNull())
+    watch!.onDone({ slot: 'chat-9-42', title: 'Fix the parser', elapsedMs: 10, failed: true })
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith('chat-9-42'))
+  })
+
+  it('a queued approval names no session, so its CTA still leads to the dashboard', async () => {
+    // Fires drained from the companion's own backend carry a nudge key, never a
+    // slot. The CTA must not become a dead button on them — a sticky bubble whose
+    // only exit refuses is a notification that can never be cleared.
+    queue([fire({ seq: 1, kind: 'approval', text: 'needs your OK' })])
+    await mountPet()
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+
+    await waitFor(() => expect(api.openSession).toHaveBeenCalledWith(''))
+    await waitFor(() => expect(document.querySelector('.cc-bubble-text')).toBeNull())
+  })
+
+  it('leaves the breathing nudge alone — its CTA opens the panel, not a session', async () => {
+    queue([fire({ seq: 1, kind: 'break-breathe', text: 'Try a breath' })])
+    await mountPet()
+    await waitFor(() => expect(cta()).not.toBeNull())
+
+    fireEvent.click(cta()!)
+
+    await waitFor(() => expect(api.panelOpen).toHaveBeenCalled())
+    expect(api.openSession).not.toHaveBeenCalled()
+    // A local action cannot fail, so it clears the bubble exactly as it always has.
+    await waitFor(() => expect(document.querySelector('.cc-bubble-text')).toBeNull())
   })
 })
 

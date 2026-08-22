@@ -108,6 +108,13 @@ declare global {
        *  hold still while the user is browsing it. */
       onGalleryOpened?(cb: () => void): () => void
       onGalleryClosed?(cb: () => void): () => void
+      /**
+       * Surface the dashboard on a notification's session, answering whether it
+       * managed to. Optional for the same reason the rest of this bridge is: in a
+       * plain browser tab there is no main process, and then there is no dashboard
+       * window to raise — which is a refusal, not a silent success.
+       */
+      openSession?(slotKey: string): Promise<boolean>
     }
   }
 }
@@ -124,6 +131,15 @@ interface Bubble {
   seq: number
   kind: NotifKind
   text: string
+  /**
+   * The session this notification is about, when it names one.
+   *
+   * Carried so the "Open session" CTA has somewhere to go. Only the gateway
+   * socket supplies it — a fire drained from the companion's own backend
+   * describes a reminder or a break nudge, neither of which belongs to a
+   * session — so it is absent rather than empty-by-default on purpose.
+   */
+  slot?: string
 }
 
 /**
@@ -440,6 +456,31 @@ function Companion() {
   openPanelRef.current = openPanel
 
   /**
+   * Take the user to the work a waiting-on-you notification is about.
+   *
+   * Handed to the main process rather than done here, for the reason `openPanel`
+   * is: this overlay is a non-focusable full-display window with no handle on the
+   * dashboard, so raising and routing it is not something the renderer can do.
+   *
+   * The answer is returned to the bubble, which clears itself only on a success —
+   * an approval bubble has no ✕ and ignores body clicks, so a CTA that dismissed
+   * on a failed open would destroy the user's only pointer back to the blocked
+   * session. No bridge means no main process to ask (this page also opens in an
+   * ordinary browser), which is a refusal, not a quiet success.
+   */
+  const openSession = useCallback(async (slot?: string): Promise<boolean> => {
+    const bridge = window.crewCompanion
+    if (!bridge?.openSession) return false
+    try {
+      return await bridge.openSession(slot ?? '')
+    } catch {
+      // A rejected invoke is a main process that could not answer. Same verdict:
+      // the notification stays rather than being lost to an exception.
+      return false
+    }
+  }, [])
+
+  /**
    * Follow the panel window's own lifecycle.
    *
    * It closes on click-away, Escape and its ✕ without going through `closePanel`, so
@@ -580,7 +621,7 @@ function Companion() {
     isSilent: () => sessionAlertsRef.current === false,
     // The backend rang: drain now rather than at the next tick of the poll.
     onFireQueued: () => pollNowRef.current?.(),
-    onDone: ({ title, failed }) => {
+    onDone: ({ slot, title, failed }) => {
       /*
        * A failure is a DIFFERENT notification, not a finish with sad wording.
        *
@@ -621,6 +662,10 @@ function Companion() {
         seq: localSeqRef.current,
         kind: result.pending?.kind ?? kind,
         text: result.show,
+        // The session that just ended. When several completions collapse into one
+        // count the text stops naming a single session, but the CTA still has to
+        // lead somewhere, so it leads to the most recent one.
+        slot,
       })
       if (failed) {
         react('error', 2_000)
@@ -654,7 +699,7 @@ function Companion() {
      * own title is the body, reusing the existing state.approval_pending string so no
      * new copy is minted; an untitled session shows the label alone.
      */
-    onApproval: ({ title }) => {
+    onApproval: ({ slot, title }) => {
       const kind: NotifKind = 'approval'
       const label = i18nT('apps.crewCompanion.state.approval_pending')
       const named = title.trim()
@@ -676,6 +721,10 @@ function Companion() {
         seq: localSeqRef.current,
         kind: result.pending?.kind ?? kind,
         text: result.show,
+        // The blocked session, so the CTA can take the user to the tool call that
+        // is waiting on them. An approval raised with no owning conversation
+        // carries '' here and is surfaced on the dashboard's own approvals feed.
+        slot,
       })
       // Curious, not alarmed: activeAnimFor turns a curious mood into the head-cock.
       bumpReaction()
@@ -1064,7 +1113,11 @@ function Companion() {
               // reason that bubble carries one.
               // The exercise lives in the panel window, so the CTA opens the panel
               // and the window starts it from there.
-              if (action === 'breathe') openPanel()
+              if (action === 'breathe') {
+                openPanel()
+                return
+              }
+              return openSession(bubble.slot)
             }}
           />
         </div>

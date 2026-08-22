@@ -6,7 +6,7 @@ import {
   type PopoutMsg,
   type NavIntent,
 } from '../utils/popoutController'
-import { applyNavIntentInMain, writePrefill, PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { applyNavIntentInMain, chatDeepLinkSlot, writePrefill, PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 /**
  * Navigation-intent forwarding tests (popout navigation containment).
@@ -224,6 +224,27 @@ describe('applyNavIntentInMain', () => {
     applyNavIntentInMain({ path: '/artifacts' }, { navigate, switchSlot })
     expect(switchSlot).not.toHaveBeenCalled()
     expect(navigate).toHaveBeenCalledWith('/artifacts')
+  })
+})
+
+describe('chatDeepLinkSlot', () => {
+  it('reads the session out of the dashboard session deep link', () => {
+    expect(chatDeepLinkSlot('/chat?sid=chat-69-1785905004')).toBe('chat-69-1785905004')
+    // The slug is decorative — ChatPage writes it from the session title.
+    expect(chatDeepLinkSlot('/chat/fix-the-parser?sid=chat-1')).toBe('chat-1')
+    // `?slot=` is the legacy spelling ChatPage still accepts.
+    expect(chatDeepLinkSlot('/chat?slot=chat-2')).toBe('chat-2')
+    expect(chatDeepLinkSlot('/chat?sid=chat%20a%2Fb')).toBe('chat a/b')
+  })
+
+  it('names no session for a path that is not one', () => {
+    // Each of these must fall through to a plain navigate: routing them as a
+    // session link would dispatch a switchSlot for a session that was never named.
+    expect(chatDeepLinkSlot('/chat')).toBe('')
+    expect(chatDeepLinkSlot('/settings?tab=about')).toBe('')
+    expect(chatDeepLinkSlot('/chats?sid=chat-1')).toBe('')
+    expect(chatDeepLinkSlot('/logs?sid=chat-1')).toBe('')
+    expect(chatDeepLinkSlot('')).toBe('')
   })
 })
 

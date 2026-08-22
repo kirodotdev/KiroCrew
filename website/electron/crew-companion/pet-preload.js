@@ -103,6 +103,26 @@ contextBridge.exposeInMainWorld("crewCompanion", {
   },
 
   /**
+   * Open the session a waiting-on-you notification is about.
+   *
+   * Must go through the main process for the same reason `panelOpen` does: this
+   * overlay is a non-focusable full-display window with no handle on the
+   * dashboard, so raising and routing the dashboard is not something it can do
+   * for itself.
+   *
+   * `invoke`, not `send`, because the renderer needs the ANSWER: the CTA is the
+   * only exit a sticky approval bubble has, so it clears the notification only
+   * once the dashboard has actually been surfaced.
+   *
+   * @param {string} slotKey dashboard slot key, or "" when the notification
+   *   names no session — the dashboard is raised, nothing is routed.
+   * @returns {Promise<boolean>} whether the dashboard was surfaced.
+   */
+  openSession(slotKey) {
+    return ipcRenderer.invoke("crew-companion:open-session", String(slotKey || ""));
+  },
+
+  /**
    * Open a link in the user's real browser.
    *
    * Must go through the main process: `window.open` from here opens another Electron
