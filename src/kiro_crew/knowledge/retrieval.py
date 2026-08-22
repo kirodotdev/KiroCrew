@@ -7,6 +7,7 @@ import logging
 import math
 import struct
 from collections import defaultdict
+from typing import Any
 
 try:
     import pysqlite3 as sqlite3
@@ -32,6 +33,22 @@ _STOPWORDS = frozenset({
 # Weight applied to the vector leg in RRF fusion so semantically-strong matches
 # dominate when the keyword leg returns weak/literal junk.
 VECTOR_RRF_WEIGHT = 2.0
+
+
+def _stored_item_ids(raw: str | bytes | None) -> Any:
+    """A state row's ``item_ids`` JSON column, decoded as stored.
+
+    An empty column, or one whose value ``json`` reports as malformed, yields
+    ``[]`` so a single bad row costs its own citation locator rather than the
+    whole enrichment pass. The decoded value is handed back unchecked -- callers
+    only iterate it.
+    """
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
 
 
 class HybridRetriever:
@@ -60,7 +77,8 @@ class HybridRetriever:
         # with (kw, gr, vec).
         fused = self._rrf_fuse(kw, gr, vec, weights=(1.0, 1.0, VECTOR_RRF_WEIGHT))
 
-        # Batch-fetch all candidate items once
+        # Resolve every fused candidate up front: both the recency tie-break below
+        # and the result rows read the same item, so one lookup per id serves both.
         all_ids = [item_id for item_id, _ in fused]
         items_cache: dict[str, dict] = {}
         for item_id in all_ids:
@@ -175,15 +193,10 @@ class HybridRetriever:
         except sqlite3.OperationalError:
             return
 
-        folder_sids = [
-            sid for sid in sid_list
-            if meta.get(sid) is not None
-            and meta[sid]["source_type"] in ("local_folder", "obsidian_vault")
-        ]
-        artifact_sids = [
-            sid for sid in sid_list
-            if meta.get(sid) is not None and meta[sid]["source_type"] == "artifact"
-        ]
+        folder_sids = [sid for sid in sid_list if sid in meta
+                       and meta[sid]["source_type"] in ("local_folder", "obsidian_vault")]
+        artifact_sids = [sid for sid in sid_list if sid in meta
+                         and meta[sid]["source_type"] == "artifact"]
 
         item_to_file: dict[str, str] = {}
         for sid in folder_sids:
@@ -191,11 +204,7 @@ class HybridRetriever:
                 "SELECT file_path, item_ids FROM folder_file_state WHERE source_id = ?",
                 (sid,),
             ).fetchall():
-                try:
-                    ids = json.loads(row["item_ids"]) if row["item_ids"] else []
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                for item_id in ids:
+                for item_id in _stored_item_ids(row["item_ids"]):
                     item_to_file[item_id] = row["file_path"]
 
         item_to_artifact: dict[str, tuple] = {}
@@ -204,11 +213,7 @@ class HybridRetriever:
                 "SELECT slug, name, item_ids FROM artifact_item_state WHERE source_id = ?",
                 (sid,),
             ).fetchall():
-                try:
-                    ids = json.loads(row["item_ids"]) if row["item_ids"] else []
-                except (json.JSONDecodeError, TypeError):
-                    continue
-                for item_id in ids:
+                for item_id in _stored_item_ids(row["item_ids"]):
                     item_to_artifact[item_id] = (row["slug"], row["name"])
 
         for result in results:

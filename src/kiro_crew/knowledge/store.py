@@ -486,115 +486,69 @@ class KnowledgeStore:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_topic TEXT")
         if "summary_themes" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_themes TEXT")
-        # Migrate: folder_file_state table
-        tables = {r[0] for r in self.db.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "folder_file_state" not in tables:
-            self.db.execute("""
-                CREATE TABLE IF NOT EXISTS folder_file_state (
-                    source_id TEXT NOT NULL REFERENCES sources(id),
-                    file_path TEXT NOT NULL,
-                    content_hash TEXT,
-                    text_hash TEXT,
-                    mtime REAL,
-                    item_ids TEXT DEFAULT '[]',
-                    last_seen TEXT NOT NULL,
-                    status TEXT DEFAULT 'pending',
-                    error_message TEXT,
-                    merged_into_source_id TEXT,
-                    attempts INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (source_id, file_path)
-                )
-            """)
-        else:
-            ffs_cols = {r[1] for r in self.db.execute("PRAGMA table_info(folder_file_state)").fetchall()}
-            if "status" not in ffs_cols:
-                self.db.execute("ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'")
-            if "error_message" not in ffs_cols:
-                self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
-            if "merged_into_source_id" not in ffs_cols:
-                self.db.execute(
-                    "ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
-            # The extracted-text hash, in the same domain as items.content_hash --
-            # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
-            # derived from a row's own items, and a legacy row that owns nothing has
-            # nothing to derive it from. Left NULL, such a row behaves exactly as it
-            # does today (its ownership lookups match nothing) and is populated the
-            # next time the file is scanned. A backfill that guessed instead would be
-            # the data-loss shape this feature already had to remove once.
-            if "text_hash" not in ffs_cols:
-                self.db.execute("ALTER TABLE folder_file_state ADD COLUMN text_hash TEXT")
-            # Consecutive non-terminal attempt count, the bound on crash recovery --
-            # see the CREATE TABLE comment. Existing rows start at 0, including any
-            # already stuck in 'scanning': that is deliberate, so a database carrying
-            # a file that cannot be ingested spends the same small retry budget as a
-            # fresh one and then retires the row, instead of re-ingesting it (and
-            # paying for its extraction calls) on every sweep for as long as the
-            # source exists.
-            if "attempts" not in ffs_cols:
-                self.db.execute(
-                    "ALTER TABLE folder_file_state "
-                    "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
-        # Migrate: artifact_item_state table -- per-artifact item-group tracking
-        # for the aggregate "Artifacts" KB source, keyed by artifact slug.
-        if "artifact_item_state" not in tables:
-            self.db.execute("""
-                CREATE TABLE IF NOT EXISTS artifact_item_state (
-                    source_id TEXT NOT NULL REFERENCES sources(id),
-                    slug TEXT NOT NULL,
-                    content_hash TEXT,
-                    item_ids TEXT DEFAULT '[]',
-                    updated_at TEXT NOT NULL,
-                    name TEXT,
-                    merged_into_source_id TEXT,
-                    kind TEXT,
-                    PRIMARY KEY (source_id, slug)
-                )
-            """)
-        else:
-            ais_cols = {r[1] for r in self.db.execute(
-                "PRAGMA table_info(artifact_item_state)").fetchall()}
-            if "name" not in ais_cols:
-                self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
-            if "status" not in ais_cols:
-                self.db.execute(
-                    "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
-            if "merged_into_source_id" not in ais_cols:
-                self.db.execute(
-                    "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
-            # The artifact kind AS INGESTED. Reconcile needs it to tell an
-            # artifact whose kind changed while sync was off (stale chunks, must
-            # be reaped) from one the user merely excluded by narrowing
-            # `auto_ingest_artifact_kinds` (still live, must NOT be reaped).
-            # Legacy rows carry NULL, which reconcile treats as "cannot tell"
-            # and leaves alone; the next ingest of that artifact backfills it.
-            if "kind" not in ais_cols:
-                self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
-        # Migrate: agent_item_state table -- per-document item-group tracking for
-        # the aggregate "Auto-added" KB source the agent writes to.
-        if "agent_item_state" not in tables:
-            self.db.execute("""
-                CREATE TABLE IF NOT EXISTS agent_item_state (
-                    source_id TEXT NOT NULL REFERENCES sources(id),
-                    slug TEXT NOT NULL,
-                    content_hash TEXT,
-                    item_ids TEXT DEFAULT '[]',
-                    updated_at TEXT NOT NULL,
-                    name TEXT,
-                    status TEXT DEFAULT 'active',
-                    merged_into_source_id TEXT,
-                    PRIMARY KEY (source_id, slug)
-                )
-            """)
-        else:
-            agent_cols = {r[1] for r in self.db.execute(
-                "PRAGMA table_info(agent_item_state)").fetchall()}
-            if "status" not in agent_cols:
-                self.db.execute(
-                    "ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
-            if "merged_into_source_id" not in agent_cols:
-                self.db.execute(
-                    "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
+        # Backfill columns on the document-state tables. Each table itself is
+        # created by ``_init_schema``, which runs first on every construction, so
+        # only the per-column ALTERs belong here.
+        ffs_cols = {r[1] for r in self.db.execute(
+            "PRAGMA table_info(folder_file_state)").fetchall()}
+        if "status" not in ffs_cols:
+            self.db.execute(
+                "ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'")
+        if "error_message" not in ffs_cols:
+            self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
+        if "merged_into_source_id" not in ffs_cols:
+            self.db.execute(
+                "ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
+        # The extracted-text hash, in the same domain as items.content_hash --
+        # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
+        # derived from a row's own items, and a legacy row that owns nothing has
+        # nothing to derive it from. Left NULL, such a row behaves exactly as it
+        # does today (its ownership lookups match nothing) and is populated the
+        # next time the file is scanned. A backfill that guessed instead would be
+        # the data-loss shape this feature already had to remove once.
+        if "text_hash" not in ffs_cols:
+            self.db.execute("ALTER TABLE folder_file_state ADD COLUMN text_hash TEXT")
+        # Consecutive non-terminal attempt count, the bound on crash recovery --
+        # see the CREATE TABLE comment. Existing rows start at 0, including any
+        # already stuck in 'scanning': that is deliberate, so a database carrying
+        # a file that cannot be ingested spends the same small retry budget as a
+        # fresh one and then retires the row, instead of re-ingesting it (and
+        # paying for its extraction calls) on every sweep for as long as the
+        # source exists.
+        if "attempts" not in ffs_cols:
+            self.db.execute(
+                "ALTER TABLE folder_file_state "
+                "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+        # artifact_item_state -- per-artifact item-group tracking for the
+        # aggregate "Artifacts" KB source, keyed by artifact slug.
+        ais_cols = {r[1] for r in self.db.execute(
+            "PRAGMA table_info(artifact_item_state)").fetchall()}
+        if "name" not in ais_cols:
+            self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
+        if "status" not in ais_cols:
+            self.db.execute(
+                "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+        if "merged_into_source_id" not in ais_cols:
+            self.db.execute(
+                "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+        # The artifact kind AS INGESTED. Reconcile needs it to tell an
+        # artifact whose kind changed while sync was off (stale chunks, must
+        # be reaped) from one the user merely excluded by narrowing
+        # `auto_ingest_artifact_kinds` (still live, must NOT be reaped).
+        # Legacy rows carry NULL, which reconcile treats as "cannot tell"
+        # and leaves alone; the next ingest of that artifact backfills it.
+        if "kind" not in ais_cols:
+            self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
+        # agent_item_state -- per-document item-group tracking for the aggregate
+        # "Auto-added" KB source the agent writes to.
+        agent_cols = {r[1] for r in self.db.execute(
+            "PRAGMA table_info(agent_item_state)").fetchall()}
+        if "status" not in agent_cols:
+            self.db.execute(
+                "ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+        if "merged_into_source_id" not in agent_cols:
+            self.db.execute(
+                "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
         # Clean orphan sources (no items), entities (no mentions/relations), and stale relations
         #
         # Folder sources are EXCLUDED: a watched folder with zero discovered
@@ -622,15 +576,27 @@ class KnowledgeStore:
             self.db.execute(f"DELETE FROM ingestion_jobs WHERE source_id IN ({orphan_sources_q})")
             self.db.execute(f"DELETE FROM sources WHERE id IN ({orphan_sources_q})")
             self.db.execute("DELETE FROM entity_relations WHERE source_id NOT IN (SELECT id FROM entities) OR target_id NOT IN (SELECT id FROM entities)")
-            self.db.execute("""
-                DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
-                AND id NOT IN (SELECT source_id FROM entity_relations)
-                AND id NOT IN (SELECT target_id FROM entity_relations)
-            """)
+            self._prune_orphan_entities()
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
             raise
+
+    def _prune_orphan_entities(self) -> None:
+        """Delete entities nothing references any more -- no mention, no relation.
+
+        Every path that removes items or a source has to run this, because an
+        entity is only reachable through the rows those paths delete. It takes no
+        transaction of its own -- each call site is already inside an open write
+        transaction -- and it does not reload the in-memory graph, which the sweep
+        can leave holding dropped entities; that stays with whoever owns the
+        transaction.
+        """
+        self.db.execute("""
+            DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
+            AND id NOT IN (SELECT source_id FROM entity_relations)
+            AND id NOT IN (SELECT target_id FROM entity_relations)
+        """)
 
     def find_doc_by_content_hash(
         self, content_hash: str, exclude_source_id: str | None = None
@@ -750,12 +716,7 @@ class KnowledgeStore:
         self.db.execute("BEGIN")
         try:
             self._delete_item_cascade(item_id)
-            # Remove orphan entities (no mentions and no relations)
-            self.db.execute("""
-                DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
-                AND id NOT IN (SELECT source_id FROM entity_relations)
-                AND id NOT IN (SELECT target_id FROM entity_relations)
-            """)
+            self._prune_orphan_entities()
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -938,11 +899,7 @@ class KnowledgeStore:
                         (item_id, owner_source_id))
                     continue
             self._delete_item_cascade(item_id)
-        self.db.execute("""
-            DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
-            AND id NOT IN (SELECT source_id FROM entity_relations)
-            AND id NOT IN (SELECT target_id FROM entity_relations)
-        """)
+        self._prune_orphan_entities()
 
     def reload_graph(self) -> None:
         """Rebuild the in-memory entity graph from the tables.
@@ -1197,12 +1154,7 @@ class KnowledgeStore:
             self.db.execute("DELETE FROM artifact_item_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM agent_item_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM sources WHERE id = ?", (source_id,))
-            # Remove orphan entities
-            self.db.execute("""
-                DELETE FROM entities WHERE id NOT IN (SELECT entity_id FROM mentions)
-                AND id NOT IN (SELECT source_id FROM entity_relations)
-                AND id NOT IN (SELECT target_id FROM entity_relations)
-            """)
+            self._prune_orphan_entities()
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -1362,13 +1314,9 @@ class KnowledgeStore:
         exists is a no-op. Attaching a second source is what keeps the item alive when
         the first is deleted -- see ``sources_holding_item``.
         """
-        lid = str(uuid4())
-        now = datetime.now().isoformat()
-        self.db.execute(
-            "INSERT OR IGNORE INTO source_locations "
-            "(id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (lid, item_id, source_id, chunk_range, section_title, anchor, now))
+        self.add_source_location_in_txn(
+            item_id, source_id, chunk_range=chunk_range,
+            section_title=section_title, anchor=anchor)
         self.db.commit()
 
     def add_source_location_in_txn(self, item_id, source_id, chunk_range=None,
