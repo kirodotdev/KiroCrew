@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
@@ -11,8 +11,16 @@ import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { setActiveSlot, switchSlot, createSlot } from '../store/chatSlice'
-import dashboardReducer from '../store/dashboardSlice'
+import dashboardReducer, { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
+import {
+  consumeChatHandoff,
+  handoffToChat,
+  installSoftNavigate,
+  sendErrorToChat,
+  __resetNavSeamForTests,
+} from '../utils/errorReport'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -112,8 +120,282 @@ async function renderAndWaitForInput(store: ReturnType<typeof makeStore>, mode?:
 }
 
 beforeEach(() => {
+  vi.clearAllMocks()
   sessionStorage.clear()
   localStorage.clear()
+  __resetNavSeamForTests()
+  installSoftNavigate(() => {})
+})
+
+afterEach(() => {
+  __resetNavSeamForTests()
+  vi.restoreAllMocks()
+})
+
+describe('ChatPage error handoff', { timeout: 15_000 }, () => {
+  it('opens a staged hard-reload handoff in a fresh seeded session', async () => {
+    const prompt = 'Diagnose the browser installation failure'
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-a': 'keep this draft' }))
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    const originalMessages = store.getState().chat.messages
+    handoffToChat(prompt)
+
+    await renderAndWaitForInput(store)
+
+    const { api } = await import('../api/client')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+    })
+    expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('keep this draft')
+    expect(store.getState().chat.slotMessages['slot-a']).toEqual(originalMessages)
+  })
+
+  it('opens an already-mounted handoff in a fresh session without changing the current draft', async () => {
+    const prompt = 'Diagnose the failed PR action'
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'question in progress' } })
+
+    act(() => { sendErrorToChat(prompt) })
+
+    const { api } = await import('../api/client')
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+    })
+    expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('question in progress')
+  })
+
+  it('re-stages a failed handoff without retrying against the mounted subscriber', async () => {
+    const prompt = 'Diagnose the persistent session creation failure'
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    vi.mocked(api.createChatSlot).mockRejectedValueOnce(new Error('gateway unavailable'))
+
+    act(() => { sendErrorToChat(prompt) })
+
+    await waitFor(() => {
+      expect(store.getState().notifications.items).toEqual([
+        expect.objectContaining({
+          kind: 'agent',
+          priority: 'critical',
+          body: expect.stringContaining('Your message was restored'),
+        }),
+      ])
+    })
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+    expect(consumeChatHandoff()).toBe(prompt)
+  })
+
+  it('re-stages the full FIFO when keyed prefill persistence fails', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    vi.mocked(api.createChatSlot).mockResolvedValueOnce({
+      key: 'unseeded-slot', title: 'unseeded-slot', messages: 0, running: false,
+    })
+    const originalSetItem = Storage.prototype.setItem
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (key, value) {
+      if (this === sessionStorage && key === PREFILL_STORAGE_KEY) {
+        throw new DOMException('quota exceeded', 'QuotaExceededError')
+      }
+      return originalSetItem.call(this, key, value)
+    })
+
+    act(() => {
+      sendErrorToChat('failed prefill diagnostic')
+      sendErrorToChat('queued successor')
+    })
+
+    await waitFor(() => expect(store.getState().notifications.items).toHaveLength(1))
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+    expect(consumeChatHandoff()).toBe('failed prefill diagnostic')
+    expect(consumeChatHandoff()).toBe('queued successor')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('opens rapid handoffs sequentially and keeps each prompt with its fresh slot', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    vi.mocked(api.createChatSlot)
+      .mockResolvedValueOnce({ key: 'error-one', title: 'error-one', messages: 0, running: false })
+      .mockResolvedValueOnce({ key: 'error-two', title: 'error-two', messages: 0, running: false })
+
+    act(() => {
+      sendErrorToChat('first diagnostic')
+      sendErrorToChat('second diagnostic')
+    })
+
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('error-two'))
+    await waitFor(() => {
+      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('second diagnostic')
+    })
+    await waitFor(() => {
+      const drafts = JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')
+      expect(drafts['error-one']).toBe('first diagnostic')
+    })
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('does not overwrite edits typed while the fresh slot detail is loading', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    let resolveDetail!: (detail: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    const pendingDetail = new Promise<Awaited<ReturnType<typeof api.chatSlotDetail>>>(resolve => {
+      resolveDetail = resolve
+    })
+    vi.mocked(api.createChatSlot).mockResolvedValueOnce({
+      key: 'slow-error-slot', title: 'slow-error-slot', messages: 0, running: false,
+    })
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => pendingDetail)
+
+    act(() => { sendErrorToChat('original diagnostic') })
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('slow-error-slot'))
+    await waitFor(() => {
+      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('original diagnostic')
+    })
+    fireEvent.change(screen.getByLabelText('Message input'), {
+      target: { value: 'original diagnostic with user edits' },
+    })
+
+    await act(async () => {
+      resolveDetail({ messages: [], running: false, has_more: false, total: 0 })
+      await pendingDetail
+    })
+
+    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value)
+      .toBe('original diagnostic with user edits')
+  })
+
+  it('re-stages the full FIFO after the first create failure and stops processing', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    let rejectFirst!: (reason?: unknown) => void
+    const firstCreate = new Promise<Awaited<ReturnType<typeof api.createChatSlot>>>((_, reject) => {
+      rejectFirst = reject
+    })
+    vi.mocked(api.createChatSlot).mockImplementationOnce(() => firstCreate)
+
+    act(() => {
+      sendErrorToChat('first diagnostic')
+      sendErrorToChat('second diagnostic')
+    })
+
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(1))
+    await act(async () => {
+      rejectFirst(new Error('first gateway failure'))
+      await firstCreate.catch(() => undefined)
+    })
+    await waitFor(() => expect(store.getState().notifications.items).toHaveLength(1))
+    // The successor stays behind the failed head in one ingress FIFO, and the
+    // mounted processor does not immediately retry either item.
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    expect(consumeChatHandoff()).toBe('first diagnostic')
+    expect(consumeChatHandoff()).toBe('second diagnostic')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('prevents an unmounted processor from clearing a remounted FIFO or stealing focus', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    const firstPage = await renderAndWaitForInput(store)
+    const { api } = await import('../api/client')
+    let resolveAbandoned!: (slot: Awaited<ReturnType<typeof api.createChatSlot>>) => void
+    const abandonedCreate = new Promise<Awaited<ReturnType<typeof api.createChatSlot>>>(resolve => {
+      resolveAbandoned = resolve
+    })
+    vi.mocked(api.createChatSlot).mockImplementationOnce(() => abandonedCreate)
+
+    act(() => {
+      sendErrorToChat('active diagnostic')
+      sendErrorToChat('queued diagnostic')
+    })
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(1))
+
+    firstPage.unmount()
+
+    let resolveReplacement!: (slot: Awaited<ReturnType<typeof api.createChatSlot>>) => void
+    const replacementCreate = new Promise<Awaited<ReturnType<typeof api.createChatSlot>>>(resolve => {
+      resolveReplacement = resolve
+    })
+    vi.mocked(api.createChatSlot).mockImplementationOnce(() => replacementCreate)
+    const replacementPage = await renderAndWaitForInput(store)
+    await waitFor(() => expect(api.createChatSlot).toHaveBeenCalledTimes(2))
+
+    await act(async () => {
+      resolveAbandoned({ key: 'abandoned-slot', title: 'abandoned-slot', messages: 0, running: false })
+      await abandonedCreate
+    })
+
+    // The stale processor neither switches the live view nor erases the newer
+    // component's active + queued crash snapshot.
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+    expect(JSON.parse(sessionStorage.getItem('kirocrew_error_handoff_claimed') || '[]'))
+      .toEqual([{ prompt: 'active diagnostic' }, { prompt: 'queued diagnostic' }])
+
+    replacementPage.unmount()
+    expect(consumeChatHandoff()).toBe('active diagnostic')
+    expect(consumeChatHandoff()).toBe('queued diagnostic')
+    expect(consumeChatHandoff()).toBeNull()
+
+    await act(async () => {
+      resolveReplacement({ key: 'replacement-slot', title: 'replacement-slot', messages: 0, running: false })
+      await replacementCreate
+    })
+    expect(store.getState().chat.activeSlot).toBe('slot-a')
+  })
+
+  it('re-stages locally claimed handoffs if ChatPage unmounts before reconnect', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    store.dispatch(sseDisconnected())
+    handoffToChat('first disconnected diagnostic')
+    handoffToChat('second disconnected diagnostic')
+
+    const page = await renderAndWaitForInput(store)
+    expect(consumeChatHandoff()).toBeNull()
+
+    page.unmount()
+
+    expect(consumeChatHandoff()).toBe('first disconnected diagnostic')
+    expect(consumeChatHandoff()).toBe('second disconnected diagnostic')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('claims a disconnected handoff before its storage TTL and opens it after reconnect', async () => {
+    const prompt = 'Diagnose a gateway connection failure'
+    const now = Date.now()
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now)
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    store.dispatch(sseDisconnected())
+    handoffToChat(prompt)
+
+    await renderAndWaitForInput(store)
+
+    const { api } = await import('../api/client')
+    expect(api.createChatSlot).not.toHaveBeenCalled()
+    // Claimed into ChatPage's local FIFO: it is no longer aging in storage.
+    expect(consumeChatHandoff()).toBeNull()
+    nowSpy.mockReturnValue(now + 10 * 60_000)
+
+    act(() => { store.dispatch(sseConnected()) })
+
+    await waitFor(() => expect(store.getState().chat.activeSlot).toBe('new-slot'))
+    expect(api.createChatSlot).toHaveBeenCalledTimes(1)
+    await waitFor(() => {
+      expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
+    })
+  })
 })
 
 // the per-slot draft fix relies on a load-bearing effect ORDER --

@@ -5,7 +5,7 @@
  *  1. the transport journals every API failure with its full context, so a UI
  *     holding only `e.message` can recover it (the zero-migration path);
  *  2. nothing credential-shaped reaches the prompt (it is fed to an LLM);
- *  3. the button lands the prompt in the chat composer.
+ *  3. the button stages the diagnostic for a fresh chat session.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { readFileSync } from 'node:fs'
@@ -26,8 +26,10 @@ import {
   handoffToChat,
   installSoftNavigate,
   parseErrorCode,
+  persistClaimedChatHandoffs,
   recentErrors,
   recordError,
+  recoverClaimedChatHandoffs,
   redactSecrets,
   requestPath,
   sendErrorToChat,
@@ -328,6 +330,45 @@ describe('chat hand-off channel', () => {
     expect(consumeChatHandoff()).toBeNull()
   })
 
+  it('queues concurrent hand-offs without overwriting either diagnostic', () => {
+    handoffToChat('first diagnostic')
+    handoffToChat('second diagnostic')
+
+    expect(consumeChatHandoff()).toBe('first diagnostic')
+    expect(consumeChatHandoff()).toBe('second diagnostic')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('handoffToChat appends a whole batch behind existing ingress, in order', () => {
+    // The failed-create path re-stages [failed head, ...queued successors] as
+    // one atomic write; a reload must then replay them in original FIFO order.
+    handoffToChat('already staged diagnostic')
+    expect(handoffToChat(['failed head', 'queued successor'])).toBe(true)
+
+    expect(consumeChatHandoff()).toBe('already staged diagnostic')
+    expect(consumeChatHandoff()).toBe('failed head')
+    expect(consumeChatHandoff()).toBe('queued successor')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('handoffToChat with no prompts reports success and stages nothing', () => {
+    expect(handoffToChat([])).toBe(true)
+    expect(sessionStorage.getItem(ERROR_HANDOFF_KEY)).toBeNull()
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('recovers a claimed FIFO ahead of newer ingress after a reload', () => {
+    expect(persistClaimedChatHandoffs(['active diagnostic', 'locally queued diagnostic'])).toBe(true)
+    handoffToChat('newer ingress diagnostic')
+
+    recoverClaimedChatHandoffs()
+
+    expect(consumeChatHandoff()).toBe('active diagnostic')
+    expect(consumeChatHandoff()).toBe('locally queued diagnostic')
+    expect(consumeChatHandoff()).toBe('newer ingress diagnostic')
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
   it('drops a stale hand-off instead of ambushing a later visit', () => {
     sessionStorage.setItem(ERROR_HANDOFF_KEY, JSON.stringify({ prompt: 'old', ts: Date.now() - 600_000 }))
     expect(consumeChatHandoff()).toBeNull()
@@ -345,21 +386,6 @@ describe('chat hand-off channel', () => {
     off()
     expect(seen).toEqual(['please fix'])
     expect(navigated).toEqual(['/chat'])
-  })
-
-  it('a subscriber can append the prompt to an in-progress draft', () => {
-    // Pins the ChatPage drain contract: the hand-off fires with no route change
-    // while the composer may hold unsent text, and the pending-input consumer
-    // REPLACES + persists the draft. A drain that plain-sets destroys the
-    // user's typing unrecoverably, so it must append via mergeIntoDraft.
-    let delivered = ''
-    const off = subscribeChatHandoff(() => {
-      const prompt = consumeChatHandoff()
-      if (prompt) delivered = mergeIntoDraft('half-typed question  ', prompt)
-    })
-    sendErrorToChat('- Message: save failed')
-    off()
-    expect(delivered).toBe('half-typed question\n\n- Message: save failed')
   })
 
   it('mergeIntoDraft leaves a draft untouched when there is nothing to append', () => {

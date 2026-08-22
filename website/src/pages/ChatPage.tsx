@@ -80,7 +80,12 @@ const SCROLL_AFTER_RENDER_MS = 100
 // applier); re-exported here for this page's historical importers.
 export { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
-import { consumeChatHandoff, subscribeChatHandoff } from '../utils/errorReport'
+import {
+  consumeChatHandoff,
+  handoffToChat,
+  persistClaimedChatHandoffs,
+  subscribeChatHandoff,
+} from '../utils/errorReport'
 import WelcomeView from '../components/WelcomeView'
 import { usePanelTabs, openPanelView, clearInlineDraft, getInlineDraft, claimAppAutoOpen, useAnyLiveAppTab } from '../hooks/usePanelTabs'
 import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
@@ -1235,6 +1240,31 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // companion panel mounts ChatPage fresh, so it hits this double-invoke every
   // first open. See the draft-restore effect below.
   const consumedPrefillRef = useRef<string | null>(null)
+  // Error hand-offs are claimed into a component-owned FIFO immediately, even
+  // while disconnected. That removes the sessionStorage TTL from the reconnect
+  // wait, while the processing flag guarantees only one create/switch sequence
+  // can run at a time.
+  const errorHandoffQueueRef = useRef<string[]>([])
+  const errorHandoffActiveRef = useRef<string | null>(null)
+  const errorHandoffActiveDurableRef = useRef(false)
+  const errorHandoffProcessingRef = useRef(false)
+  const errorHandoffConnectedRef = useRef(connected)
+  const errorHandoffModeRef = useRef(mode)
+  const errorHandoffMountedRef = useRef(false)
+  // Invalidates async processors when this effect lifecycle ends. Mounted alone
+  // is insufficient because StrictMode can clean up and re-run effects on the
+  // same component instance, reusing every ref while an old create is pending.
+  const errorHandoffLifecycleRef = useRef(0)
+  const processErrorHandoffsRef = useRef<() => void>(() => {})
+  const persistErrorHandoffClaims = useCallback(() => {
+    const active = errorHandoffActiveRef.current
+    persistClaimedChatHandoffs([
+      ...(active && !errorHandoffActiveDurableRef.current ? [active] : []),
+      ...errorHandoffQueueRef.current,
+    ])
+  }, [])
+  errorHandoffConnectedRef.current = connected
+  errorHandoffModeRef.current = mode
 
   // Auto-dismiss prefill hint after 10 seconds
   useEffect(() => {
@@ -1243,46 +1273,194 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     return () => clearTimeout(t)
   }, [prefillHint])
 
+  const processErrorHandoffs = useCallback(async () => {
+    if (
+      errorHandoffProcessingRef.current
+      || !errorHandoffMountedRef.current
+      || !errorHandoffConnectedRef.current
+    ) return
+    const prompt = errorHandoffQueueRef.current[0]
+    if (!prompt) return
+
+    const lifecycle = errorHandoffLifecycleRef.current
+    const ownsLifecycle = () => (
+      errorHandoffMountedRef.current
+      && errorHandoffLifecycleRef.current === lifecycle
+    )
+    let failureRestageAttempted = false
+    const restageFailure = (error: unknown) => {
+      failureRestageAttempted = true
+      const queued = errorHandoffQueueRef.current
+      const restaged = handoffToChat([prompt, ...queued])
+      if (restaged) {
+        queued.splice(0)
+        // Ingress now owns the entire FIFO in one atomic write. Clear the
+        // claimed copy only after that write succeeds.
+        persistClaimedChatHandoffs([])
+      } else {
+        // Keep a same-document retry path as well as the unchanged claimed
+        // crash copy when sessionStorage rejected the ingress write.
+        queued.unshift(prompt)
+      }
+      dispatch(addNotification({
+        ts: uniqueNotificationTs(),
+        kind: 'agent',
+        priority: 'critical',
+        title: i18nT('pages.chatPage.could_not_start_a_new_session'),
+        body: i18nT('pages.chatPage.could_not_start_session_message_restored', {
+          error: createFailReason(error),
+        }),
+      }))
+    }
+    errorHandoffProcessingRef.current = true
+    errorHandoffActiveRef.current = prompt
+    errorHandoffActiveDurableRef.current = false
+    // Persist the complete local FIFO before removing its head. A reload can
+    // now recover both the active diagnostic and every prompt waiting behind it.
+    persistClaimedChatHandoffs(errorHandoffQueueRef.current)
+    errorHandoffQueueRef.current.shift()
+    try {
+      let slotKey: string
+      try {
+        const slot = await dispatch(createSlot({ mode: errorHandoffModeRef.current, activate: false })).unwrap()
+        if (!slot?.key) throw new Error('the server returned no session')
+        slotKey = slot.key
+      } catch (e) {
+        // Cleanup may already have handed this FIFO to a newer ChatPage. An old
+        // rejection must not append a duplicate batch or clear its replacement's
+        // crash snapshot.
+        if (!ownsLifecycle()) return
+        restageFailure(e)
+        return
+      }
+
+      // A route remount may have re-staged this prompt while createSlot was in
+      // flight. The abandoned request may leave an unused server slot, but it
+      // must not write shared recovery state or steal focus from its successor.
+      if (!ownsLifecycle()) return
+      // Seed before switching: the draft-restore effect runs in the same commit
+      // as switchSlot.pending and would otherwise overwrite pendingInput with
+      // the new slot's empty draft. The keyed prefill survives that race.
+      if (!writePrefill(slotKey, prompt)) {
+        // Do not acknowledge durability or activate an empty session when the
+        // keyed prompt was rejected. Preserve active + queued work together.
+        restageFailure(new Error('browser storage is unavailable'))
+        return
+      }
+      // The keyed target-slot prefill is now the durable owner. A reload no
+      // longer needs to replay this active prompt, but queued prompts still do.
+      errorHandoffActiveDurableRef.current = true
+      persistErrorHandoffClaims()
+      try {
+        await dispatch(switchSlot(slotKey)).unwrap()
+      } catch {
+        // switchSlot.pending already activated the fresh slot. Its detail fetch
+        // may fail independently; keep the seeded composer usable in that slot.
+      }
+      // Do not dispatch pendingInput after the detail fetch. The keyed prefill
+      // seeded the composer when switchSlot.pending activated the slot; a late
+      // second write would overwrite anything the user typed during the fetch.
+      //
+      // The prefill channel is single-slot and the seeded prompt only becomes
+      // durable-in-slot when the input commit's persist effect records it under
+      // the fresh slot's draft key. Hold this turn (bounded well inside the
+      // prefill's 30s staleness window) until one of those in-component signals
+      // confirms the seed landed: yielding a single task is not enough — the
+      // next handoff's slot switch can outrun the consuming commit, and its
+      // outgoing-slot save would then overwrite this slot's draft with the
+      // stale empty composer, silently dropping the diagnostic.
+      for (let i = 0; i < 300 && ownsLifecycle(); i++) {
+        // Seed committed: the persist effect keyed a draft to the fresh slot,
+        // or the composer already holds exactly this prompt (a same-text
+        // setInput bails out of re-rendering, so no draft write follows).
+        if (Object.prototype.hasOwnProperty.call(drafts.current, slotKey)) break
+        if (inputRef.current === prompt) break
+        // User deliberately moved on; the keyed prefill stays staged for the
+        // fresh slot and expires on its own clock.
+        if (activeSlotRef.current !== slotKey) break
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+    } finally {
+      // A newer lifecycle owns the shared claim key after unmount/remount. The
+      // stale processor may clean up only its abandoned local promise state.
+      if (!ownsLifecycle()) return
+      errorHandoffActiveRef.current = null
+      errorHandoffActiveDurableRef.current = false
+      errorHandoffProcessingRef.current = false
+      if (!failureRestageAttempted) persistErrorHandoffClaims()
+      // Yield a task between sessions. React gets a commit in which the current
+      // slot consumes its keyed prefill before another handoff can replace the
+      // single prefill channel and activate the next fresh slot. A create failure
+      // deliberately stops here: the atomically re-staged FIFO waits for a later
+      // user handoff/remount instead of entering an immediate retry loop.
+      if (
+        !failureRestageAttempted
+        && errorHandoffConnectedRef.current
+        && errorHandoffQueueRef.current.length
+      ) {
+        setTimeout(() => processErrorHandoffsRef.current(), 0)
+      }
+    }
+  }, [dispatch, persistErrorHandoffClaims])
+  processErrorHandoffsRef.current = () => { void processErrorHandoffs() }
+
   // Drain the error hand-off channel ("Ask the agent" on an error surface).
   // sessionStorage rather than Redux because the root ErrorBoundary's button has
   // to work after a hard reload, when the store it would have dispatched to is
-  // gone. Feeding pendingInput keeps a single downstream prefill path.
+  // gone. Claim every prompt synchronously into the local FIFO; processing waits
+  // for connection and opens one fresh slot at a time.
   //
   // Two triggers: on mount (arriving from another route, or a full reload) and on
   // the subscription (an error surface inside chat hands off with no route
   // change, so nothing remounts).
   useEffect(() => {
     if (embedded) return
-    // Wait for a slot before consuming. The channel is SINGLE-USE, and on the
-    // hard-nav path (the root ErrorBoundary reloads the page) this effect runs
-    // with activeSlot still null: the pending-input consumer then cannot persist
-    // the prompt as a draft, and the slot-restore that follows overwrites the
-    // composer — losing the prompt for good. The 60s hand-off TTL covers the wait,
-    // and this effect re-runs once the slot appears.
-    if (!activeSlot) return
+    errorHandoffLifecycleRef.current += 1
+    errorHandoffMountedRef.current = true
+    const handoffQueue = errorHandoffQueueRef.current
     const drain = () => {
-      const prompt = consumeChatHandoff()
-      if (!prompt) return
-      // APPEND when the composer already holds unsent text — same hazard, and
-      // same helper, as `followupAddToSession` below: the pending-input consumer
-      // replaces the draft AND persists it, so a plain set would silently
-      // destroy whatever the user was mid-way through typing. This is reachable
-      // precisely because the subscription fires with no route change, while
-      // error surfaces INSIDE chat (a failed PR action, a message that failed to
-      // render) hand off from under a composer in use.
-      // Merge against the text that actually belongs to `activeSlot`. On the
-      // hard-nav path the composer may not have adopted this slot's stored draft
-      // yet — `composerSlotRef` lags `activeSlot` — and merging against an empty
-      // composer would make the pending-input consumer persist the prompt OVER
-      // the stored draft. When they agree, the live composer value is the truth.
-      const base = composerSlotRef.current === activeSlot
-        ? inputRef.current
-        : drafts.current[activeSlot] ?? ''
-      dispatch(setPendingInput(mergeIntoDraft(base, prompt)))
+      let prompt: string | null
+      while ((prompt = consumeChatHandoff()) !== null) {
+        // A repeated click while the same diagnostic is creating/retrying is one
+        // retry request, not a request for a duplicate session.
+        if (
+          prompt !== errorHandoffActiveRef.current
+          && !handoffQueue.includes(prompt)
+        ) handoffQueue.push(prompt)
+      }
+      persistErrorHandoffClaims()
+      processErrorHandoffsRef.current()
     }
     drain()
-    return subscribeChatHandoff(drain)
-  }, [dispatch, embedded, activeSlot])
+    const unsubscribe = subscribeChatHandoff(drain)
+    return () => {
+      errorHandoffMountedRef.current = false
+      errorHandoffLifecycleRef.current += 1
+      unsubscribe()
+      // Atomically return every nondurable item in original FIFO order. The
+      // lifecycle token prevents the abandoned processor from later clearing a
+      // newer component's claim or switching its active slot.
+      const active = errorHandoffActiveRef.current
+      const restaged = [
+        ...(active && !errorHandoffActiveDurableRef.current ? [active] : []),
+        ...handoffQueue,
+      ]
+      if (handoffToChat(restaged)) {
+        handoffQueue.splice(0)
+        errorHandoffActiveRef.current = null
+        errorHandoffActiveDurableRef.current = false
+        errorHandoffProcessingRef.current = false
+        persistClaimedChatHandoffs([])
+      }
+    }
+  }, [embedded, persistErrorHandoffClaims])
+
+  // A disconnected mount still CLAIMS the handoff above. Reconnection only
+  // starts its queued network work, so waiting longer than the storage TTL cannot
+  // discard the diagnostic.
+  useEffect(() => {
+    if (!embedded && connected) processErrorHandoffsRef.current()
+  }, [embedded, connected, mode])
 
   // Consume pendingInput from Redux (e.g. from "Chat" button on Projects page)
   useEffect(() => {

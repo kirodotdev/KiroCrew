@@ -280,38 +280,157 @@ export function __resetErrorJournalForTests(): void {
 // close the import graph into a runtime cycle. Import it from
 // `./errorReport.prompt` directly.
 
+type ChatHandoffEntry = { prompt: string; ts: number }
+type ClaimedChatHandoffEntry = { prompt: string }
+
 /**
- * Stage a prompt for the chat composer.
+ * Locally claimed hand-offs awaiting a durable target-slot prefill.
+ *
+ * This is separate from {@link ERROR_HANDOFF_KEY}: subscribers may append and
+ * drain that ingress queue while a session request is pending. Keeping the
+ * claimed FIFO under its own key prevents a later diagnostic from consuming
+ * the active diagnostic's crash-recovery copy.
+ */
+const ERROR_HANDOFF_CLAIMED_KEY = 'kirocrew_error_handoff_claimed'
+
+/** Decode both the original single entry and the queued wire shape. */
+function decodeChatHandoffs(raw: string | null): ChatHandoffEntry[] {
+  if (!raw) return []
+  try {
+    const decoded: unknown = JSON.parse(raw)
+    const entries = Array.isArray(decoded) ? decoded : [decoded]
+    const now = Date.now()
+    return entries.flatMap((entry): ChatHandoffEntry[] => {
+      if (!entry || typeof entry !== 'object') return []
+      const { prompt, ts } = entry as { prompt?: unknown; ts?: unknown }
+      if (typeof prompt !== 'string' || !prompt) return []
+      if (typeof ts !== 'number' || now - ts > HANDOFF_TTL_MS) return []
+      return [{ prompt, ts }]
+    })
+  } catch {
+    return []
+  }
+}
+
+function decodeClaimedChatHandoffs(raw: string | null): ClaimedChatHandoffEntry[] {
+  if (!raw) return []
+  try {
+    const decoded: unknown = JSON.parse(raw)
+    const entries = Array.isArray(decoded) ? decoded : [decoded]
+    return entries.flatMap((entry): ClaimedChatHandoffEntry[] => {
+      if (!entry || typeof entry !== 'object') return []
+      const { prompt } = entry as { prompt?: unknown }
+      return typeof prompt === 'string' && prompt ? [{ prompt }] : []
+    })
+  } catch {
+    return []
+  }
+}
+
+/**
+ * Mirror ChatPage's active + local FIFO while durable ingress storage is empty.
+ * Claimed entries deliberately do not age out: ChatPage may own them while
+ * disconnected for longer than the ingress TTL, and ownership must not turn a
+ * saved diagnostic into an expiring one.
+ */
+export function persistClaimedChatHandoffs(prompts: readonly string[]): boolean {
+  if (!prompts.length) {
+    try {
+      sessionStorage.removeItem(ERROR_HANDOFF_CLAIMED_KEY)
+      return true
+    } catch {
+      return false
+    }
+  }
+  return safeSetSessionItem(
+    ERROR_HANDOFF_CLAIMED_KEY,
+    JSON.stringify(prompts.map(prompt => ({ prompt }))),
+  )
+}
+
+/**
+ * Recover a prior page's claimed FIFO ahead of newer ingress entries.
+ *
+ * This runs once when this module loads. A same-document ChatPage remount does
+ * not replay an active request that the old component instance still owns, but
+ * a reload gets a new module instance and atomically promotes the crash copy
+ * back to the normal ingress queue. Write before delete: a failed promotion
+ * leaves the claimed copy available for the next reload rather than losing it.
+ */
+export function recoverClaimedChatHandoffs(): void {
+  let claimedRaw: string | null
+  try {
+    claimedRaw = sessionStorage.getItem(ERROR_HANDOFF_CLAIMED_KEY)
+  } catch {
+    return
+  }
+  if (claimedRaw === null) return
+
+  const claimed = decodeClaimedChatHandoffs(claimedRaw)
+  if (!claimed.length) {
+    try { sessionStorage.removeItem(ERROR_HANDOFF_CLAIMED_KEY) } catch { /* best effort */ }
+    return
+  }
+
+  let queued: ChatHandoffEntry[] = []
+  try {
+    queued = decodeChatHandoffs(sessionStorage.getItem(ERROR_HANDOFF_KEY))
+  } catch { /* best-effort storage: safeSetSessionItem handles the write */ }
+  const now = Date.now()
+  const recovered = [
+    ...claimed.map(({ prompt }) => ({ prompt, ts: now })),
+    ...queued,
+  ]
+  if (!safeSetSessionItem(ERROR_HANDOFF_KEY, JSON.stringify(recovered))) return
+  try { sessionStorage.removeItem(ERROR_HANDOFF_CLAIMED_KEY) } catch { /* duplicate-safe on retry */ }
+}
+
+/**
+ * Stage a prompt for a fresh chat session.
  *
  * sessionStorage rather than a Redux dispatch because the most valuable caller
  * is the root ErrorBoundary: when the React tree has already thrown, the store
  * and router may be exactly what is broken, so the hand-off has to survive a
  * hard `location.assign`. Same channel serves the healthy in-app path, so there
  * is one code path to reason about instead of two.
+ *
+ * The stored value is a queue. Two error surfaces can hand off before the first
+ * session request settles, and replacing a single entry would silently discard
+ * one diagnostic if both requests later needed to be re-staged.
  */
-export function handoffToChat(prompt: string): void {
-  safeSetSessionItem(ERROR_HANDOFF_KEY, JSON.stringify({ prompt, ts: Date.now() }))
+export function handoffToChat(prompt: string | readonly string[]): boolean {
+  const prompts = typeof prompt === 'string' ? [prompt] : prompt
+  if (!prompts.length) return true
+  let queued: ChatHandoffEntry[] = []
+  try {
+    queued = decodeChatHandoffs(sessionStorage.getItem(ERROR_HANDOFF_KEY))
+  } catch { /* best-effort storage: safeSetSessionItem handles the write */ }
+  const now = Date.now()
+  queued.push(...prompts.map(item => ({ prompt: item, ts: now })))
+  return safeSetSessionItem(ERROR_HANDOFF_KEY, JSON.stringify(queued))
 }
 
-/** Drain the hand-off channel. Returns the prompt, or null when absent/stale. */
+/** Drain one queued hand-off. Returns the oldest prompt, or null when absent/stale. */
 export function consumeChatHandoff(): string | null {
   let raw: string | null = null
   try {
     raw = sessionStorage.getItem(ERROR_HANDOFF_KEY)
+    // Claim the snapshot before decoding it. If rewriting the remainder fails,
+    // a consumed prompt still cannot be delivered twice.
     if (raw !== null) sessionStorage.removeItem(ERROR_HANDOFF_KEY)
   } catch {
     return null
   }
-  if (!raw) return null
-  try {
-    const { prompt, ts } = JSON.parse(raw) as { prompt?: unknown; ts?: unknown }
-    if (typeof prompt !== 'string' || !prompt) return null
-    if (typeof ts !== 'number' || Date.now() - ts > HANDOFF_TTL_MS) return null
-    return prompt
-  } catch {
-    return null
-  }
+  const queued = decodeChatHandoffs(raw)
+  const next = queued.shift()
+  if (!next) return null
+  if (queued.length) safeSetSessionItem(ERROR_HANDOFF_KEY, JSON.stringify(queued))
+  return next.prompt
 }
+
+// Module evaluation is the page-lifetime boundary: it repeats on reload but not
+// on a same-document React remount, which is exactly when claimed work is orphaned.
+recoverClaimedChatHandoffs()
 
 // ── Soft-navigation seam ─────────────────────────────────────────────────────
 //
@@ -345,7 +464,7 @@ export function subscribeChatHandoff(fn: () => void): () => void {
 }
 
 /**
- * Stage the prompt and get the user to the composer.
+ * Stage the prompt and get the user to a fresh chat session.
  *
  * `hard: true` forces a full page load — for the root ErrorBoundary, where a
  * soft navigation would re-render the very tree that just threw.

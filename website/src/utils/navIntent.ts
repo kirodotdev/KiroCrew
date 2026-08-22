@@ -12,9 +12,9 @@ import { safeSetSessionItem } from './safeStorage'
  */
 export const PREFILL_STORAGE_KEY = 'kirocrew_prefill'
 
-/** Seed the composer prefill for a slot (consumed by ChatPage when that slot activates). */
-export function writePrefill(slotKey: string, prompt: string): void {
-  safeSetSessionItem(PREFILL_STORAGE_KEY, JSON.stringify({ slotKey, prompt, ts: Date.now() }))
+/** Seed the composer prefill for a slot. Returns whether sessionStorage accepted it. */
+export function writePrefill(slotKey: string, prompt: string): boolean {
+  return safeSetSessionItem(PREFILL_STORAGE_KEY, JSON.stringify({ slotKey, prompt, ts: Date.now() }))
 }
 
 /**
