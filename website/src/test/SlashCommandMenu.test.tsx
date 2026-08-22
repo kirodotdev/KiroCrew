@@ -19,8 +19,8 @@ const CMDS = [
   { name: '/kb', description: 'Search knowledge library' },
 ]
 
-function Harness({ input, onSelect = vi.fn(), onClose = vi.fn() }: {
-  input: string; onSelect?: (c: string) => void; onClose?: () => void
+function Harness({ input, onSelect = vi.fn(), onClose = vi.fn(), sendOnEnter }: {
+  input: string; onSelect?: (c: string) => void; onClose?: () => void; sendOnEnter?: 'enter' | 'ctrl-enter' | 'enter-ctrl-newline'
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -28,7 +28,7 @@ function Harness({ input, onSelect = vi.fn(), onClose = vi.fn() }: {
     <QueryClientProvider client={qc}>
       <div>
         <div ref={ref} data-testid="anchor">anchor</div>
-        <SlashCommandMenu input={input} anchorRef={ref} onSelect={onSelect} onClose={onClose} />
+        <SlashCommandMenu input={input} anchorRef={ref} onSelect={onSelect} onClose={onClose} sendOnEnter={sendOnEnter} />
       </div>
     </QueryClientProvider>
   )
@@ -108,12 +108,75 @@ describe('SlashCommandMenu offline fallback (blocked commands hidden)', () => {
     }
   })
 
-  it('filtering to /tan yields no rows (menu closes, no inert /tangent)', async () => {
+  it('filtering to /tan renders the announcing empty state, never an inert /tangent', async () => {
     mockApi.slashCommands.mockRejectedValue(new Error('offline'))
     render(<Harness input="/tan" />)
-    // Nothing in the fallback matches the /tan prefix, so the menu renders
-    // nothing at all rather than an inert /tangent suggestion.
-    await waitFor(() => expect(screen.queryByRole('listbox')).not.toBeInTheDocument())
+    // Nothing in the fallback matches the /tan prefix. Once the query settles
+    // (error counts as settled), the menu shows the zero-match empty state —
+    // announcing that Enter now sends — rather than an inert /tangent row.
+    expect(await screen.findByText(/No matching commands — Enter sends the message/)).toBeInTheDocument()
     expect(screen.queryByText('/tangent')).not.toBeInTheDocument()
+    expect(screen.queryByRole('option')).not.toBeInTheDocument()
+  })
+})
+
+// Regression for #5041 (sibling of #5029): with zero matches the menu used to
+// render null while `visible` stayed true, so an INVISIBLE keyboard listener
+// swallowed Enter on unmatched slash input like "/xyz" — the message could not
+// be sent, with nothing on screen to explain why. Now the settled zero-match
+// state announces the mode flip and releases the keys.
+describe('SlashCommandMenu zero-match key release', () => {
+  it('with zero matches, Enter passes through un-prevented and closes the menu', async () => {
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(<Harness input="/xyz" onSelect={onSelect} onClose={onClose} />)
+    // The settled-empty state announces the mode flip (Enter now sends);
+    // waiting for it also waits out the in-flight swallow window.
+    await screen.findByText(/No matching commands — Enter sends the message/)
+    // fireEvent returns false when preventDefault was called; the composer's
+    // own Enter-to-send only fires when the keystroke is NOT prevented.
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true)
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('with zero matches, Tab passes through un-prevented and closes the menu', async () => {
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(<Harness input="/xyz" onSelect={onSelect} onClose={onClose} />)
+    await screen.findByText(/No matching commands — Enter sends the message/)
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('while the commands fetch is in flight, Enter stays swallowed and no empty state shows yet', async () => {
+    // Before the remote list replaces the synchronous fallback, a
+    // server-only command like "/xyz" is transiently a zero-match; releasing
+    // there would send the half-typed command as a chat message.
+    mockApi.slashCommands.mockImplementation(() => new Promise(() => {}))
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    render(<Harness input="/xyz" onSelect={onSelect} onClose={onClose} />)
+    await waitFor(() => expect(mockApi.slashCommands).toHaveBeenCalled())
+    expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('with matches, Enter is still consumed by the menu (not released)', async () => {
+    const onSelect = vi.fn()
+    render(<Harness input="/a" onSelect={onSelect} />)
+    await screen.findByText('/aa')
+    // The inverse of the zero-match release: a populated menu keeps its claim.
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    expect(onSelect).toHaveBeenCalledWith('/aa ')
+  })
+
+  it('in ctrl-enter send mode, the settled-empty copy names Ctrl+Enter (bare Enter is a newline there)', async () => {
+    render(<Harness input="/xyz" sendOnEnter="ctrl-enter" />)
+    expect(await screen.findByText(/Ctrl\+Enter sends the message/)).toBeInTheDocument()
+    expect(screen.queryByText(/— Enter sends the message/)).not.toBeInTheDocument()
   })
 })

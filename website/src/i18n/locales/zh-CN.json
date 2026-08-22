@@ -6249,7 +6249,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
-      "no_matching_skills": "无匹配的技能"
+      "no_matching_skills": "无匹配的技能",
+      "no_matching_skills_ctrl_enter_sends": "无匹配的技能 —— 按 Ctrl+Enter 直接发送消息",
+      "no_matching_skills_enter_sends": "无匹配的技能 —— 按 Enter 直接发送消息"
     },
     "slashCommandMenu": {
       "desc_agent": "切换或管理当前代理",
@@ -6278,7 +6280,9 @@
       "desc_tangent": "开始一段支线对话",
       "desc_todos": "显示或管理任务清单",
       "desc_tools": "显示可用工具",
-      "desc_usage": "显示计费和用量信息"
+      "desc_usage": "显示计费和用量信息",
+      "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
+      "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息"
     },
     "slotTagPopover": {
       "assign_tags": "分配标签",

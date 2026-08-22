@@ -6427,7 +6427,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
-      "no_matching_skills": "No hay skills coincidentes"
+      "no_matching_skills": "No hay skills coincidentes",
+      "no_matching_skills_ctrl_enter_sends": "No hay skills coincidentes: Ctrl+Enter envía el mensaje",
+      "no_matching_skills_enter_sends": "No hay skills coincidentes: Enter envía el mensaje"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",
@@ -6456,7 +6458,9 @@
       "desc_tangent": "Iniciar una conversación tangencial",
       "desc_todos": "Mostrar o gestionar la lista de tareas",
       "desc_tools": "Mostrar las herramientas disponibles",
-      "desc_usage": "Mostrar la información de facturación y de uso"
+      "desc_usage": "Mostrar la información de facturación y de uso",
+      "no_matching_commands_ctrl_enter_sends": "No hay comandos coincidentes: Ctrl+Enter envía el mensaje",
+      "no_matching_commands_enter_sends": "No hay comandos coincidentes: Enter envía el mensaje"
     },
     "slotTagPopover": {
       "assign_tags": "Asignar etiquetas",

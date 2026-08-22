@@ -2023,6 +2023,10 @@
       "open": "Open {{path}}",
       "root": "(root)"
     },
+    "skillPickerMenu": {
+      "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
+      "no_matching_skills_enter_sends": "No matching skills — Enter sends the message"
+    },
     "snipOverlay": {
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
     },
@@ -2243,7 +2247,9 @@
       "desc_tangent": "Start a tangent conversation",
       "desc_todos": "Show or manage the task list",
       "desc_tools": "Show available tools",
-      "desc_usage": "Show billing and usage information"
+      "desc_usage": "Show billing and usage information",
+      "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
+      "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },
     "privacyChapter": {
       "continue": "Continue",

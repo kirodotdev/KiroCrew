@@ -6338,7 +6338,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Skills werden geladen…",
-      "no_matching_skills": "Keine passenden Skills"
+      "no_matching_skills": "Keine passenden Skills",
+      "no_matching_skills_ctrl_enter_sends": "Keine passenden Skills — Ctrl+Enter sendet die Nachricht",
+      "no_matching_skills_enter_sends": "Keine passenden Skills — Enter sendet die Nachricht"
     },
     "slashCommandMenu": {
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",
@@ -6367,7 +6369,9 @@
       "desc_tangent": "Eine Nebenunterhaltung starten",
       "desc_todos": "Aufgabenliste anzeigen oder verwalten",
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
-      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen"
+      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen",
+      "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
+      "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht"
     },
     "slotTagPopover": {
       "assign_tags": "Tags zuweisen",

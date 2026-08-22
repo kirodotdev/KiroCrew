@@ -6516,7 +6516,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Загрузка навыков…",
-      "no_matching_skills": "Нет подходящих навыков"
+      "no_matching_skills": "Нет подходящих навыков",
+      "no_matching_skills_ctrl_enter_sends": "Нет подходящих навыков — Ctrl+Enter отправит сообщение",
+      "no_matching_skills_enter_sends": "Нет подходящих навыков — Enter отправит сообщение"
     },
     "slashCommandMenu": {
       "desc_agent": "Переключить активного агента или управлять им",
@@ -6545,7 +6547,9 @@
       "desc_tangent": "Начать ответвление переписки",
       "desc_todos": "Показать список задач или управлять им",
       "desc_tools": "Показать доступные инструменты",
-      "desc_usage": "Показать сведения о биллинге и расходе"
+      "desc_usage": "Показать сведения о биллинге и расходе",
+      "no_matching_commands_ctrl_enter_sends": "Нет подходящих команд — Ctrl+Enter отправит сообщение",
+      "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение"
     },
     "slotTagPopover": {
       "assign_tags": "Назначить теги",

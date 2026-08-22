@@ -6427,7 +6427,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Chargement des compétences…",
-      "no_matching_skills": "Aucune compétence correspondante"
+      "no_matching_skills": "Aucune compétence correspondante",
+      "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
+      "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message"
     },
     "slashCommandMenu": {
       "desc_agent": "Changer ou gérer l’agent actif",
@@ -6456,7 +6458,9 @@
       "desc_tangent": "Démarrer une conversation en aparté",
       "desc_todos": "Afficher ou gérer la liste des tâches",
       "desc_tools": "Afficher les outils disponibles",
-      "desc_usage": "Afficher les informations de facturation et d’utilisation"
+      "desc_usage": "Afficher les informations de facturation et d’utilisation",
+      "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
+      "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
     },
     "slotTagPopover": {
       "assign_tags": "Attribuer des étiquettes",

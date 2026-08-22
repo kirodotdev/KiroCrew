@@ -6427,7 +6427,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Caricamento delle skill…",
-      "no_matching_skills": "Nessuna skill corrispondente"
+      "no_matching_skills": "Nessuna skill corrispondente",
+      "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
+      "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambia o gestisci l’agente attivo",
@@ -6456,7 +6458,9 @@
       "desc_tangent": "Avvia una conversazione tangente",
       "desc_todos": "Mostra o gestisci l’elenco delle attività",
       "desc_tools": "Mostra gli strumenti disponibili",
-      "desc_usage": "Mostra informazioni su fatturazione e utilizzo"
+      "desc_usage": "Mostra informazioni su fatturazione e utilizzo",
+      "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
+      "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
     },
     "slotTagPopover": {
       "assign_tags": "Assegna tag",

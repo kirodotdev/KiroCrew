@@ -6338,7 +6338,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "স্কিল লোড হচ্ছে…",
-      "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই"
+      "no_matching_skills": "মিলে যাওয়া কোনো স্কিল নেই",
+      "no_matching_skills_ctrl_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Ctrl+Enter বার্তা পাঠাবে",
+      "no_matching_skills_enter_sends": "মিলে যাওয়া কোনো স্কিল নেই — Enter বার্তা পাঠাবে"
     },
     "slashCommandMenu": {
       "desc_agent": "সক্রিয় এজেন্ট বদলাও বা পরিচালনা করো",
@@ -6367,7 +6369,9 @@
       "desc_tangent": "একটি ট্যানজেন্ট কথাবার্তা শুরু করো",
       "desc_todos": "টাস্কের তালিকা দেখাও বা পরিচালনা করো",
       "desc_tools": "যে টুলগুলো আছে তা দেখাও",
-      "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও"
+      "desc_usage": "বিলিং আর ব্যবহারের তথ্য দেখাও",
+      "no_matching_commands_ctrl_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Ctrl+Enter বার্তা পাঠাবে",
+      "no_matching_commands_enter_sends": "কোনো মিলে যাওয়া কমান্ড নেই — Enter বার্তা পাঠাবে"
     },
     "slotTagPopover": {
       "assign_tags": "ট্যাগ নির্ধারণ করুন",

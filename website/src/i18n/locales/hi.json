@@ -6338,7 +6338,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "स्किल लोड हो रही हैं…",
-      "no_matching_skills": "कोई मेल खाती स्किल नहीं"
+      "no_matching_skills": "कोई मेल खाती स्किल नहीं",
+      "no_matching_skills_ctrl_enter_sends": "कोई मेल खाती स्किल नहीं — Ctrl+Enter संदेश भेज देगा",
+      "no_matching_skills_enter_sends": "कोई मेल खाती स्किल नहीं — Enter संदेश भेज देगा"
     },
     "slashCommandMenu": {
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
@@ -6367,7 +6369,9 @@
       "desc_tangent": "टैंजेंट बातचीत शुरू करें",
       "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
       "desc_tools": "उपलब्ध टूल दिखाएँ",
-      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ"
+      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ",
+      "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
+      "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
     },
     "slotTagPopover": {
       "assign_tags": "टैग असाइन करें",

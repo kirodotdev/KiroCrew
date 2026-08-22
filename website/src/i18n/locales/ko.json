@@ -6249,7 +6249,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "스킬을 불러오는 중…",
-      "no_matching_skills": "일치하는 스킬 없음"
+      "no_matching_skills": "일치하는 스킬 없음",
+      "no_matching_skills_ctrl_enter_sends": "일치하는 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_matching_skills_enter_sends": "일치하는 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },
     "slashCommandMenu": {
       "desc_agent": "활성 에이전트를 전환하거나 관리합니다",
@@ -6278,7 +6280,9 @@
       "desc_tangent": "곁가지 대화를 시작합니다",
       "desc_todos": "작업 목록을 표시하거나 관리합니다",
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
-      "desc_usage": "청구 및 사용량 정보를 표시합니다"
+      "desc_usage": "청구 및 사용량 정보를 표시합니다",
+      "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },
     "slotTagPopover": {
       "assign_tags": "태그 지정",

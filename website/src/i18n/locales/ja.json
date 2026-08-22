@@ -6249,7 +6249,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "スキルを読み込み中…",
-      "no_matching_skills": "一致するスキルがありません"
+      "no_matching_skills": "一致するスキルがありません",
+      "no_matching_skills_ctrl_enter_sends": "一致するスキルがありません — Ctrl+Enter でメッセージを送信します",
+      "no_matching_skills_enter_sends": "一致するスキルがありません — Enter でメッセージを送信します"
     },
     "slashCommandMenu": {
       "desc_agent": "アクティブなエージェントを切り替えるか管理する",
@@ -6278,7 +6280,9 @@
       "desc_tangent": "接線会話を開始する",
       "desc_todos": "タスクリストを表示または管理する",
       "desc_tools": "利用可能なツールを表示する",
-      "desc_usage": "課金と使用情報を表示する"
+      "desc_usage": "課金と使用情報を表示する",
+      "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
+      "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します"
     },
     "slotTagPopover": {
       "assign_tags": "タグを割り当てる",

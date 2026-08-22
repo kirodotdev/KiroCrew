@@ -6427,7 +6427,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Carregando habilidades…",
-      "no_matching_skills": "Nenhuma habilidade correspondente"
+      "no_matching_skills": "Nenhuma habilidade correspondente",
+      "no_matching_skills_ctrl_enter_sends": "Nenhuma habilidade correspondente — Ctrl+Enter envia a mensagem",
+      "no_matching_skills_enter_sends": "Nenhuma habilidade correspondente — Enter envia a mensagem"
     },
     "slashCommandMenu": {
       "desc_agent": "Alternar ou gerenciar o agente ativo",
@@ -6456,7 +6458,9 @@
       "desc_tangent": "Iniciar uma conversa tangente",
       "desc_todos": "Mostrar ou gerenciar a lista de tarefas",
       "desc_tools": "Mostrar as ferramentas disponíveis",
-      "desc_usage": "Mostrar informações de cobrança e uso"
+      "desc_usage": "Mostrar informações de cobrança e uso",
+      "no_matching_commands_ctrl_enter_sends": "Nenhum comando correspondente — Ctrl+Enter envia a mensagem",
+      "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem"
     },
     "slotTagPopover": {
       "assign_tags": "Atribuir etiquetas",

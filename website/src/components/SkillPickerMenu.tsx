@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Sparkles } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 // — $skill inline trigger autocomplete.
@@ -27,6 +28,12 @@ interface Props {
   // Receives the leaf token to insert (e.g. "oncall-handover") plus the full key.
   onSelect: (info: { leaf: string; key: string }) => void
   onClose: () => void
+  /**
+   * The composer's effective send binding (see ChatInput's SendMode). Only
+   * read by the settled-empty copy: in 'ctrl-enter' mode a released bare
+   * Enter is a newline, so the announcement must name Ctrl+Enter instead.
+   */
+  sendOnEnter?: SendMode
 }
 
 // Last path segment of a skill key — this is what `$token` matches against.
@@ -35,7 +42,7 @@ function leafOf(key: string): string {
   return i === -1 ? key : key.slice(i + 1)
 }
 
-export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onClose }: Props) {
+export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onClose, sendOnEnter = 'enter' }: Props) {
   const [results, setResults] = useState<SkillItem[]>([])
   const resultsRef = useRef<SkillItem[]>([])
 
@@ -44,7 +51,7 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
   // list was already fetched. staleTime is long because skills change rarely
   // (added via setup/AIM sync). `enabled: open` keeps the menu lazy: no fetch
   // until it's actually shown (the focus-prefetch warms the cache separately).
-  const { data, isLoading } = useQuery<SkillItem[]>({
+  const { data, isLoading, isFetching, isError } = useQuery<SkillItem[]>({
     queryKey: ['skills'],
     queryFn: () => api.skills(),
     enabled: open,
@@ -59,43 +66,63 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
     if (s) onSelect({ leaf: leafOf(s.key || s.name), key: s.key || s.name })
   }, [onSelect])
 
+  // Filter by leaf-name substring (case-insensitive). Empty query lists all,
+  // capped for menu height. Dedupe by leaf so the same $token isn't ambiguous
+  // (mirrors the backend's leaf-addressed resolution). Memoized (not computed
+  // in the ordering effect below) so the keyboard-release gate reads the SAME
+  // render's match set — a gate derived from the `results` state would lag one
+  // effect flush behind and could release Enter while matches exist.
+  const matched = useMemo(() => {
+    const list = Array.isArray(data) ? data : []
+    const q = query.toLowerCase()
+    const seen = new Set<string>()
+    const out: SkillItem[] = []
+    for (const s of list) {
+      const leaf = leafOf(s.key || s.name).toLowerCase()
+      if (q && !leaf.includes(q)) continue
+      if (seen.has(leaf)) continue
+      seen.add(leaf)
+      out.push(s)
+    }
+    return out.slice(0, 50)
+  }, [data, query])
+
+  // "Settled and genuinely empty": only then does the menu have no claim on
+  // Enter/Tab — release them so the composer's own Enter action still works
+  // (the #5029 trap, deferred to the sibling pickers by #5041). There is no
+  // debounce here (the list filters an already-loaded in-memory array), but
+  // settled-ness still matters: on the render where `enabled: open` flips, or
+  // during a background refetch over a cached empty list, matches are
+  // transiently unknowable and releasing Enter would irreversibly send a
+  // draft whose $token the user was still completing. A settled ERROR counts
+  // as settled-empty — the menu shows the same empty state and has nothing to
+  // offer, so keeping the swallow there would recreate the trap on a failed
+  // fetch. Same gate shape as FilePickerMenu's.
+  const releaseKeysWhenEmpty = !isFetching && (data !== undefined || isError) && matched.length === 0
+
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
     onClose,
+    releaseKeysWhenEmpty,
   })
 
-  // Filter by leaf-name substring (case-insensitive). Empty query lists all,
-  // capped for menu height. Dedupe by leaf so the same $token isn't ambiguous
-  // (mirrors the backend's leaf-addressed resolution).
+  // Populate bottom-up when the menu opens above the input (shared helper —
+  // same geometry the render uses for positioning, and the same reversal the
+  // @file and /command pickers use): the first row sits at the bottom nearest
+  // the cursor with the initial selection on it; when it flips below, keep it
+  // at the top.
   useEffect(() => {
     if (!open) return
-    const list = Array.isArray(data) ? data : []
-    const q = query.toLowerCase()
-    const seen = new Set<string>()
-    const matched: SkillItem[] = []
-    for (const s of list) {
-      const leaf = leafOf(s.key || s.name).toLowerCase()
-      if (q && !leaf.includes(q)) continue
-      if (seen.has(leaf)) continue
-      seen.add(leaf)
-      matched.push(s)
-    }
-    const top = matched.slice(0, 50)
-    // Populate bottom-up when the menu opens above the input (shared helper —
-    // same geometry the render uses for positioning, and the same reversal the
-    // @file and /command pickers use): the first row sits at the bottom nearest
-    // the cursor with the initial selection on it; when it flips below, keep it
-    // at the top.
-    const above = anchorRef.current ? menuGeometry(anchorRef.current, top.length, 48).above : false
-    const { ordered, initialIndex } = bottomUpOrder(top, above)
+    const above = anchorRef.current ? menuGeometry(anchorRef.current, matched.length, 48).above : false
+    const { ordered, initialIndex } = bottomUpOrder(matched, above)
     setResults(ordered); resultsRef.current = ordered
     // setSelected is the hook's synced setter (keeps selectedRef in lockstep),
     // so Enter-before-arrow dispatches on this row.
     setSelected(initialIndex)
-  }, [query, open, data, anchorRef, setSelected])
+  }, [matched, open, anchorRef, setSelected])
 
   // Scroll the selected row into view once results actually render. The filter
   // effect sets the selection (often the bottom row when the menu opens above)
@@ -116,7 +143,14 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
 
   const empty = loading
     ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.loading_skills')}</div>
-    : <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.skillPickerMenu.no_matching_skills')}</div>
+    // Enter's meaning flips with the release gate (pick → send), so the copy
+    // must announce it at the point of action rather than silently sending.
+    // Named per the composer's send binding: in 'ctrl-enter' mode a bare
+    // Enter is a newline, so promising "Enter sends" there would be false.
+    // role="status": the flip is otherwise announced only visually, and a
+    // screen-reader user would hit the very silent-send surprise this copy
+    // exists to prevent.
+    : <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(!releaseKeysWhenEmpty ? 'components.skillPickerMenu.no_matching_skills' : sendOnEnter === 'ctrl-enter' ? 'components.skillPickerMenu.no_matching_skills_ctrl_enter_sends' : 'components.skillPickerMenu.no_matching_skills_enter_sends')}</div>
 
   return createPortal(
     <div
