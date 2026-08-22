@@ -2067,6 +2067,192 @@ class TestRotationIsSerializedAcrossProcesses:
         assert log._last_hash == fresh_tip, "kept a chain tip from a closed segment"
 
 
+class TestSegmentDirIsPinnedOnRead:
+    """The segment DIRECTORY is pinned for the duration of a read (#4999).
+
+    #4998 validated the descriptor of each file the readers open, which closes
+    the FINAL path component; the directory itself was still walked BY NAME.
+    A ``security_events.d`` replaced with a link (planted before this release,
+    or swapped while a read is in flight) therefore redirected enumeration —
+    and every per-file open — into another tree, whose segment-shaped REGULAR
+    files pass every per-file check, because they are regular files. The read
+    paths now pin the directory itself first and refuse a linked one, so a
+    swapped dir fails closed instead of feeding another tree's files to
+    ``recent()`` / ``verify_integrity()``. The rotation-time repair
+    (``_ensure_segment_dir``) remains the write-side guard, and the live log
+    is unchanged: its writer follows an operator's symlink, so its readers
+    must too.
+    """
+
+    def test_a_swapped_segment_dir_is_not_read_through(self, sel_dir, small_segments):
+        """A linked ``security_events.d`` must fail closed, not follow.
+
+        The observable is ``verify_integrity()``'s totals: without the pin, the
+        decoy's unsigned lines inflate ``total`` while ``valid`` stays flat —
+        the false tamper alarm of #4999 — so ``total == valid`` here is exactly
+        the property that must hold. Built with ``symlink_or_junction`` so the
+        same attack runs on Windows junctions, which need no elevation.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        segment_dir = sel_dir / "security_events.d"
+        decoy = sel_dir / "decoy.d"
+        decoy.mkdir()
+        (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
+            '{"planted": true}\n' * 3, encoding="utf-8"
+        )
+        os.rename(segment_dir, sel_dir / "aside.d")
+        platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
+
+        total, valid = log.verify_integrity()
+        assert total == valid, (
+            f"a swapped segment dir surfaced {total - valid} decoy lines as "
+            "audit history (false tamper alarm)"
+        )
+        live_lines = (
+            (sel_dir / "security_events.jsonl")
+            .read_text(encoding="utf-8")
+            .strip()
+            .splitlines()
+        )
+        assert total == len(live_lines), "records beyond the live log were counted"
+        # The swap is itself tampering, so the detailed result must not call
+        # this run verifiable over the live log alone (#5051 review).
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False
+        assert "refused" in result.reason
+
+    def test_a_refusal_is_not_reclassified_by_a_later_repair(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """The refusal verdict must come from pin time, not a re-stat.
+
+        A linked segment dir is refused, and rotation's repair concurrently
+        removes the link before verify classifies the outcome: re-deriving
+        the answer from the path would now see a real directory again and
+        report the run verifiable while the rotated history went unchecked.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        segment_dir = sel_dir / "security_events.d"
+        decoy = sel_dir / "decoy.d"
+        decoy.mkdir()
+        os.rename(segment_dir, sel_dir / "aside.d")
+        platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
+
+        real_open = sel_mod._open_segment_dir
+
+        def repairing_open(path):
+            pin, absent = real_open(path)
+            if pin is None and not absent and not segment_dir.exists():
+                # The repair races in behind the refusal: the real directory
+                # is back by the time verify would have re-stat'ed the path.
+                # The exists() guard makes the race idempotent — the repair
+                # fires exactly once, whatever later pin attempt arrives.
+                os.rename(sel_dir / "aside.d", segment_dir)
+            return pin, absent
+
+        monkeypatch.setattr(sel_mod, "_open_segment_dir", repairing_open)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False, (
+            "a concurrent repair reclassified the refusal as verifiable"
+        )
+
+    def test_a_fresh_install_stays_verifiable(self, sel_dir):
+        """No segment dir yet is not tampering — nothing to vouch for."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 3)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is True
+        assert result.reason == ""
+        assert result.total == result.valid
+
+    def test_a_healthy_rotation_is_verifiable(self, sel_dir, small_segments):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is True
+        assert result.reason == ""
+        assert result.total == result.valid
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+    def test_an_unreadable_segment_dir_is_not_verifiable(self, sel_dir, small_segments):
+        """A real directory the pin could not open is still unchecked history.
+
+        Permissions changed under us, or the platform refused the open for
+        any other reason: the rotated segments were skipped either way, and
+        reporting the run as intact over the live log alone is the false
+        negative the third outcome exists to prevent.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segment_dir = sel_dir / "security_events.d"
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        before = segment_dir.stat().st_mode
+        segment_dir.chmod(0o000)
+        try:
+            result = log.verify_integrity(detailed=True)
+        finally:
+            segment_dir.chmod(before)
+        assert result.history_verifiable is False
+        assert "refused" in result.reason
+
+    def test_a_mid_verification_swap_is_not_verifiable(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """A directory replaced mid-run leaves totals from the pinned tree,
+        but the tree on disk no longer is it — the detail must say so."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        monkeypatch.setattr(sel_mod._SegmentDirPin, "matches", lambda self, path: False)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False
+        assert "replaced during verification" in result.reason
+
+    @pytest.mark.skipif(os.name == "nt", reason="dir-fd pinning is POSIX-only")
+    def test_a_mid_read_swap_fails_closed_and_cannot_redirect_opens(
+        self, sel_dir, small_segments
+    ):
+        """POSIX: a mid-read swap fails closed, and opens stay pinned.
+
+        The per-file descriptor is immune to a later swap by construction, so
+        a segment open a read has already validated keeps resolving through
+        the pin. Enumeration walks by name (bounded by the scan cap on every
+        platform), so a swap mid-walk is caught by the post-walk identity
+        revalidation and the whole listing fails closed — the decoy's names
+        never surface, with or without the descriptor.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segment_dir = sel_dir / "security_events.d"
+        real_names = {p.name for p in log._segments_oldest_first()}
+        assert real_names, "precondition: rotation happened"
+        pin, absent = sel_mod._open_segment_dir(segment_dir)
+        assert pin is not None, "the real segment dir must pin"
+        assert absent is False, "a real segment dir is not absence"
+        assert pin.fd is not None, "POSIX must pin by descriptor, not identity"
+        try:
+            decoy = sel_dir / "decoy.d"
+            decoy.mkdir()
+            (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
+                "", encoding="utf-8"
+            )
+            os.rename(segment_dir, sel_dir / "aside.d")
+            (sel_dir / "security_events.d").symlink_to(decoy)
+            assert (
+                log._segments_oldest_first(pin=pin) == []
+            ), "enumeration surfaced names from a swapped segment dir"
+            fd = sel_mod._open_segment(segment_dir / sorted(real_names)[0], pin=pin)
+            assert fd is not None, "the pinned descriptor refused a real segment after the swap"
+            os.close(fd)
+        finally:
+            pin.close()
+
+
 class TestAppendValidatesTheFileByFd:
     """A lock-free append must notice a rotation that lands under it.
 
@@ -2556,7 +2742,12 @@ class TestBackwardReadBufferIsBounded:
         assert yielded == [], "an unterminated file yielded a line"
         # Admission must simply fail, not blow up.
         assert log._segment_is_signed_by_us(planted) is False
-        assert planted not in list(log._read_sources_newest_first())
+        pin, _absent = sel_mod._open_segment_dir(segment_dir)
+        assert pin is not None, "the real segment dir must pin"
+        try:
+            assert planted not in list(log._read_sources_newest_first(pin=pin))
+        finally:
+            pin.close()
 
     def test_a_normal_log_is_read_completely(self, sel_dir, small_segments):
         """The cap must not truncate ordinary records."""
@@ -3028,7 +3219,12 @@ class TestSegmentOpensValidateTheDescriptor:
 
         listed = log._segments_oldest_first()
         assert newest in listed, "the real newest segment was displaced by its alias"
-        order = list(log._read_sources_newest_first())
+        alias_pin, _absent = sel_mod._open_segment_dir(sel_dir / "security_events.d")
+        assert alias_pin is not None, "the real segment dir must pin"
+        try:
+            order = list(log._read_sources_newest_first(pin=alias_pin))
+        finally:
+            alias_pin.close()
         assert newest in order, "the real newest segment vanished from the read order"
         assert order.index(newest) < order.index(alias), (
             "the alias outranked the real newest segment in newest-first reads"

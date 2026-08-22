@@ -43,7 +43,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, Literal, overload
+from typing import IO, Literal, NamedTuple, overload
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
@@ -1240,7 +1240,7 @@ class SecurityEventLog:
         )
         return None
 
-    def _segments_oldest_first(self) -> list[Path]:
+    def _segments_oldest_first(self, *, pin: _SegmentDirPin | None = None) -> list[Path]:
         """Closed segments in rotation order (oldest first).
 
         Only files matching ``_SEGMENT_NAME_RE`` in full are returned, so an
@@ -1279,6 +1279,20 @@ class SecurityEventLog:
         (``no-blocking-call-on-event-loop``), so the scan stops at the cap and
         works with what it has: rotation then simply does not find the segments
         beyond it, which leaves the log over budget rather than blocking a write.
+
+        *pin* is the read-side directory pin (#4999). The walk itself stays
+        the same bounded, BY-NAME scan on every platform — the cap above is
+        the memory bound, and materializing an unbounded listing first (as an
+        fd-relative ``os.listdir`` would) would spend unbounded memory just to
+        refuse it afterwards. The pin closes the redirect the name allows:
+        after the walk, the path must still name the directory the read
+        pinned (any swap — planted link, or a different real directory, whose
+        identity also differs — fails closed to no segments), and on
+        descriptor platforms the per-file opens that follow resolve RELATIVE
+        to the pinned descriptor, so a swap after the revalidation still
+        cannot redirect a read. Rotation calls this UNPINNED: it repairs the
+        directory itself first (:meth:`_ensure_segment_dir`), and its callers
+        are not read paths.
         """
         try:
             scanner = os.scandir(self._segment_dir)
@@ -1318,7 +1332,7 @@ class SecurityEventLog:
                         entry.name,
                     )
                     continue
-                named.append(Path(entry.path))
+                named.append(self._segment_dir / entry.name)
         if truncated:
             logger.warning(
                 "SEL segment dir %s holds more than %d entries; scan stopped there. "
@@ -1328,6 +1342,17 @@ class SecurityEventLog:
                 _SEGMENT_SCAN_CAP,
                 _SEGMENT_KEEP + 1,
             )
+        if pin is not None and not pin.matches(self._segment_dir):
+            # The walk above was by NAME, so a directory swapped in mid-walk
+            # would have been followed. The identity the read pinned and the
+            # identity the path names NOW differ, so fail closed rather than
+            # return entries from a tree the pin never covered.
+            logger.warning(
+                "SEL segment dir %s was replaced during enumeration (planted "
+                "link?); its entries are not audit history",
+                self._segment_dir,
+            )
+            return []
         return sorted(named, key=_segment_seq)
 
     def _enforce_segment_retention_locked(self) -> int:
@@ -1720,7 +1745,13 @@ class SecurityEventLog:
             critical=critical,
         )
 
-    def verify_integrity(self) -> tuple[int, int]:
+    @overload
+    def verify_integrity(self) -> tuple[int, int]: ...
+
+    @overload
+    def verify_integrity(self, *, detailed: Literal[True]) -> SelVerification: ...
+
+    def verify_integrity(self, *, detailed: bool = False) -> tuple[int, int] | SelVerification:
         """Verify the HMAC chains. Returns (total_entries, valid_entries).
 
         Every rotated segment (oldest first) is verified BEFORE the live log.
@@ -1736,25 +1767,70 @@ class SecurityEventLog:
         :meth:`_rotation_event` for why that claim cannot be made true without
         serializing every append, and why a check that can fire on a benign cause
         is worse than no check.
+
+        Segments are enumerated under a read-side directory pin (#4999): the
+        segment dir that refused to pin (a planted link, or not a directory)
+        contributes NOTHING here rather than being walked by name — which is
+        what makes a swapped ``security_events.d`` fail closed instead of
+        inflating ``total`` with another tree's files (a false tamper alarm).
+
+        ``detailed=True`` adds the third outcome that refusal needs (#5051
+        review): ``history_verifiable=False`` with a ``reason`` when the
+        directory refused to pin or was replaced mid-verification, because
+        the rotated segments were not checked and "intact over the live log
+        alone" must not be able to hide that. A directory that simply does
+        not exist yet stays verifiable — a fresh install has no history to
+        vouch for.
         """
         self.flush()  # ensure all queued events are on disk before verifying
         total = 0
         valid = 0
-        for path in self._segments_oldest_first() + [self._path]:
-            if not path.exists():
-                continue
-            file_total, file_valid = self._verify_file(path)
-            total += file_total
-            valid += file_valid
-        return total, valid
+        pin, absent = _open_segment_dir(self._segment_dir)
+        try:
+            # Enumerate INSIDE the try: a mid-readdir I/O error must still
+            # unwind through the finally that releases the pin, not strand
+            # the descriptor on every failed request.
+            segments = self._segments_oldest_first(pin=pin) if pin is not None else []
+            for path in segments + [self._path]:
+                if not path.exists():
+                    continue
+                file_total, file_valid = self._verify_file(path, pin=pin)
+                total += file_total
+                valid += file_valid
+        finally:
+            if pin is not None:
+                pin.close()
+        if not detailed:
+            return total, valid
+        reason = ""
+        if pin is None:
+            if not absent:
+                # absent is what the PIN itself observed, so a concurrent
+                # repair removing a refused link cannot reclassify the
+                # refusal as benign absence after the fact.
+                reason = "segment directory refused to pin (planted link?)"
+        elif not pin.matches(self._segment_dir):
+            # matches() is lstat-based, so it still answers after close();
+            # a mid-verification swap leaves the totals computed from the
+            # pinned directory but the tree on disk no longer is it.
+            reason = "segment directory was replaced during verification"
+        return SelVerification(
+            total=total, valid=valid, history_verifiable=not reason, reason=reason
+        )
 
     @overload
-    def _reader_handle(self, path: Path, *, binary: Literal[True]) -> IO[bytes] | None: ...
+    def _reader_handle(
+        self, path: Path, *, binary: Literal[True], pin: _SegmentDirPin | None = ...
+    ) -> IO[bytes] | None: ...
 
     @overload
-    def _reader_handle(self, path: Path, *, binary: Literal[False]) -> IO[str] | None: ...
+    def _reader_handle(
+        self, path: Path, *, binary: Literal[False], pin: _SegmentDirPin | None = ...
+    ) -> IO[str] | None: ...
 
-    def _reader_handle(self, path: Path, *, binary: bool) -> IO[str] | IO[bytes] | None:
+    def _reader_handle(
+        self, path: Path, *, binary: bool, pin: _SegmentDirPin | None = None
+    ) -> IO[str] | IO[bytes] | None:
         """Reader-side open policy, shared by both readers.
 
         The LIVE log opens with ordinary ``open()``: it is a fixed
@@ -1764,7 +1840,9 @@ class SecurityEventLog:
         while every read reports empty and ``verify_integrity`` counts a
         clean ``(0, 0)``. Rotated segments ARE enumerated, attacker-nameable
         entries, and take the descriptor-validating funnel
-        (:func:`_open_segment`).
+        (:func:`_open_segment`), which resolves them relative to *pin* when
+        the read holds one (#4999) — a segment dir swapped after the pin
+        cannot redirect the open.
         """
         if path == self._path:
             try:
@@ -1774,14 +1852,14 @@ class SecurityEventLog:
             except OSError:
                 logger.warning("SEL could not open the live log %s", path.name, exc_info=True)
                 return None
-        fd = _open_segment(path)
+        fd = _open_segment(path, pin=pin)
         if fd is None:
             return None
         if binary:
             return os.fdopen(fd, "rb")
         return os.fdopen(fd, encoding="utf-8")
 
-    def _verify_file(self, path: Path) -> tuple[int, int]:
+    def _verify_file(self, path: Path, *, pin: _SegmentDirPin | None = None) -> tuple[int, int]:
         """Verify one log file's chain. Returns (total, valid).
 
         Streamed line by line so a capped-but-large segment is never loaded whole.
@@ -1792,7 +1870,7 @@ class SecurityEventLog:
         total = 0
         valid = 0
         prev_hash = ""
-        handle = self._reader_handle(path, binary=False)
+        handle = self._reader_handle(path, binary=False, pin=pin)
         if handle is None:
             return 0, 0
         with handle:
@@ -1850,31 +1928,39 @@ class SecurityEventLog:
         # Newest first: the live log, then rotated segments newest to oldest.
         # Segments are discovered LAZILY (only if the live log has not already
         # satisfied the request), so the common tail read touches one file.
-        for path in self._read_sources_newest_first():
-            if not path.exists():
-                continue
-            for line in self._iter_lines_backward(path):
-                try:
-                    data = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+        # The segment dir is PINNED for the whole walk (#4999) so a directory
+        # swapped mid-read cannot redirect later opens; the early returns below
+        # all unwind through the finally that releases the pin.
+        pin, _absent = _open_segment_dir(self._segment_dir)
+        try:
+            for path in self._read_sources_newest_first(pin=pin):
+                if not path.exists():
                     continue
-                if not isinstance(data, dict):
-                    continue
-                if windowed:
-                    ts = _parse_timestamp(data.get("timestamp", ""))
-                    if ts is None:
+                for line in self._iter_lines_backward(path, pin=pin):
+                    try:
+                        data = json.loads(line)
+                    except (json.JSONDecodeError, ValueError):
                         continue
-                    if until is not None and ts >= until:
+                    if not isinstance(data, dict):
                         continue
-                    if since is not None and ts < since:
-                        # Append-ordered log: everything from here back is older.
+                    if windowed:
+                        ts = _parse_timestamp(data.get("timestamp", ""))
+                        if ts is None:
+                            continue
+                        if until is not None and ts >= until:
+                            continue
+                        if since is not None and ts < since:
+                            # Append-ordered log: everything from here back is older.
+                            return result
+                    result.append(data)
+                    if len(result) >= limit:
                         return result
-                result.append(data)
-                if len(result) >= limit:
-                    return result
+        finally:
+            if pin is not None:
+                pin.close()
         return result
 
-    def _read_sources_newest_first(self) -> Iterator[Path]:
+    def _read_sources_newest_first(self, *, pin: _SegmentDirPin | None) -> Iterator[Path]:
         """The live log, then ADMISSIBLE segments newest to oldest.
 
         A segment is only handed to the read path once one of its records
@@ -1896,10 +1982,22 @@ class SecurityEventLog:
 
         A generator so segments are neither listed nor opened when the live log
         already answered the caller.
+
+        *pin* is the caller's read-side directory pin (#4999), owned and
+        released by the caller. ``None`` means the directory refused to pin —
+        a planted link, or not a directory — and the response is to offer NO
+        segment sources rather than fall back to a by-name walk, which is
+        exactly what a swapped directory exploits.
         """
         yield self._path
-        for path in reversed(self._segments_oldest_first()):
-            if self._segment_is_signed_by_us(path):
+        if pin is None:
+            # _open_segment_dir already logged the refusal at the severity
+            # the cause deserves (a planted link warns; a directory that
+            # simply does not exist yet — a fresh install — stays quiet).
+            logger.debug("SEL offering no segment sources: the segment dir did not pin")
+            return
+        for path in reversed(self._segments_oldest_first(pin=pin)):
+            if self._segment_is_signed_by_us(path, pin=pin):
                 yield path
             else:
                 logger.warning(
@@ -1908,9 +2006,9 @@ class SecurityEventLog:
                     path.name,
                 )
 
-    def _segment_is_signed_by_us(self, path: Path) -> bool:
+    def _segment_is_signed_by_us(self, path: Path, *, pin: _SegmentDirPin | None = None) -> bool:
         """Whether *path* holds at least one record signed with our HMAC key."""
-        for line in self._iter_lines_backward(path):
+        for line in self._iter_lines_backward(path, pin=pin):
             try:
                 data = json.loads(line)
             except (json.JSONDecodeError, ValueError):
@@ -1932,7 +2030,9 @@ class SecurityEventLog:
         expected = hmac.new(self._hmac_key, payload, hashlib.sha256).hexdigest()
         return hmac.compare_digest(stored, expected)
 
-    def _iter_lines_backward(self, path: Path) -> Iterator[str]:
+    def _iter_lines_backward(
+        self, path: Path, *, pin: _SegmentDirPin | None = None
+    ) -> Iterator[str]:
         """Yield *path*'s non-empty lines from last to first, reading in chunks.
 
         Same backward scan as :meth:`_read_last_hash`: only the tail is touched
@@ -1952,9 +2052,10 @@ class SecurityEventLog:
         The handle comes from :meth:`_reader_handle`, so a symlink or FIFO
         planted under a segment name yields nothing here instead of being
         followed (or, for a FIFO, blocking the reader inside ``open``); the
-        live log itself opens ordinarily, matching its writer.
+        live log itself opens ordinarily, matching its writer. A read holding
+        a directory pin resolves segments relative to it (#4999).
         """
-        handle = self._reader_handle(path, binary=True)
+        handle = self._reader_handle(path, binary=True, pin=pin)
         if handle is None:
             return
         try:
@@ -2161,7 +2262,7 @@ def _segment_seq(path: Path) -> int:
     return int(match.group("seq")) if match else 0
 
 
-def _open_segment(path: Path) -> int | None:
+def _open_segment(path: Path, *, pin: _SegmentDirPin | None = None) -> int | None:
     """Open *path* read-only as a validated ROTATED SEGMENT, or ``None``.
 
     The dirent check in :meth:`SecurityEventLog._segments_oldest_first` judges
@@ -2171,6 +2272,14 @@ def _open_segment(path: Path) -> int | None:
     attacker-nameable surface; the LIVE log deliberately does not come here —
     its writer follows an operator's symlink, so its readers must too
     (:meth:`SecurityEventLog._reader_handle` owns that split).
+
+    With a *pin* (#4999) the final DIRECTORY hop is pinned too: the open (and
+    the identity check below) resolve RELATIVE to the pinned descriptor where
+    the platform has directory descriptors, so a ``security_events.d`` swapped
+    after the pin cannot redirect the open into another tree; where it does
+    not, the pin's directory identity is revalidated against the path first,
+    refusing a swapped parent mid-read. The per-file funnel below is otherwise
+    unchanged.
 
     Three layers, each covering what the previous one cannot:
 
@@ -2205,6 +2314,17 @@ def _open_segment(path: Path) -> int | None:
     passes to the caller. A refusal warns in the same "planted link?" style as
     the dirent filter, so the two layers read consistently in the log.
     """
+    rel_fd = pin.fd if pin is not None else None
+    if pin is not None and rel_fd is None and not pin.matches(path.parent):
+        # Identity pin (no directory descriptors on this platform): the parent
+        # no longer names the directory the read pinned, so the path may walk
+        # through a swapped-in link. Fail closed.
+        logger.warning(
+            "SEL refusing audit file %s: the segment dir was replaced mid-read "
+            "(planted link?); it is not audit history",
+            path.name,
+        )
+        return None
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -2212,7 +2332,10 @@ def _open_segment(path: Path) -> int | None:
         | getattr(os, "O_BINARY", 0)
     )
     try:
-        fd = os.open(path, flags)
+        if rel_fd is not None:
+            fd = os.open(path.name, flags, dir_fd=rel_fd)
+        else:
+            fd = os.open(path, flags)
     except OSError as exc:
         if exc.errno in (
             errno.ELOOP,
@@ -2233,7 +2356,10 @@ def _open_segment(path: Path) -> int | None:
         return None
     try:
         opened = os.fstat(fd)
-        named = os.lstat(path)
+        if rel_fd is not None:
+            named = os.stat(path.name, dir_fd=rel_fd, follow_symlinks=False)
+        else:
+            named = os.lstat(path)
     except OSError:
         os.close(fd)
         logger.warning("SEL could not stat opened audit file %s", path.name, exc_info=True)
@@ -2255,6 +2381,171 @@ def _open_segment(path: Path) -> int | None:
         )
         return None
     return fd
+
+
+#: Whether this platform can pin a directory BY DESCRIPTOR: ``O_DIRECTORY``
+#: plus ``dir_fd``-relative open and no-follow stat. Where those hold,
+#: fd-taking ``os.listdir`` holds too (same fdopendir capability), so it is
+#: not probed separately. The POSIX branch of the read-side pin below is
+#: built on this; Windows has none of it, so its pin carries identity
+#: revalidation instead (see ``_SegmentDirPin``).
+# supports_dir_fd holds FUNCTION OBJECTS — a string membership test is always
+# False, which would silently strand every platform on the identity pin. And
+# the no-follow lstat flavor is NOT a member even where it works: its
+# dir_fd-relative spelling is stat(follow_symlinks=False), so THAT is what
+# both the gate and the call sites use.
+_PIN_BY_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+)
+
+
+@dataclass
+class _SegmentDirPin:
+    """A read-side pin on the segment directory (#4999).
+
+    ``fd`` is the strong form — an open directory descriptor nothing can swap
+    afterwards — and every per-file OPEN held by the read resolves RELATIVE
+    to it, immune to a later swap of the path. On every platform the pin also
+    carries the directory's ``identity`` (the fd's ``fstat`` where there is
+    one, the ``lstat`` otherwise), revalidated after enumeration and before
+    each child open, so a directory swapped for a link — or for a different
+    real directory, whose identity also differs — is refused mid-read. The
+    residual is the gap between one revalidation and the next resolution
+    through the name, which on fd platforms the descriptor-relative opens
+    close and elsewhere the rotation-time repair (``_ensure_segment_dir``)
+    bounds; the same ``st_ino == 0`` degradation note as
+    :func:`_open_segment` applies.
+    """
+
+    fd: int | None
+    identity: tuple[int, int]
+
+    def close(self) -> None:
+        """Release the descriptor, if this pin holds one."""
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def matches(self, path: Path) -> bool:
+        """Whether *path* still names the pinned directory (False on any error)."""
+        try:
+            current = os.lstat(path)
+        except OSError:
+            return False
+        return (current.st_dev, current.st_ino) == self.identity
+
+
+def _open_segment_dir(path: Path) -> tuple[_SegmentDirPin | None, bool]:
+    """Pin the segment DIRECTORY a read is about to walk (#4999).
+
+    The directory-level analog of :func:`_open_segment`: that function pins
+    the final component, this one pins the hop above it. Without it, a
+    ``security_events.d`` replaced with a link (planted before this release,
+    or swapped while a read is in flight) redirected enumeration AND every
+    per-file open into another tree — whose segment-shaped regular files pass
+    every per-file check, because they are regular files.
+
+    Returns ``(pin, absent)``. ``pin is None`` is a REFUSAL, not a fallback:
+    callers treat it as "no segments are readable" and fail closed, because
+    walking the path anyway is exactly what a swapped directory exploits.
+    *absent* is CONFIRMED absence (ENOENT) as the pin itself observed it —
+    the one benign shape, a fresh install, which yields the same empty
+    outcome the unpinned scan always produced. A caller reporting on the
+    read must keep THAT classification instead of re-stating the path: a
+    concurrent repair can remove a refused link before anyone looks again,
+    and the refusal would silently reclassify as absence (#5051 review).
+    Judged, in the same three-layer spirit:
+
+    - ``lstat`` + ``is_link_or_junction`` (junction-aware on Windows) refuses
+      a linked directory outright, and ``S_ISDIR`` refuses a non-directory.
+    - On a descriptor-capable platform the directory is then opened with
+      ``O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK``, so a link swapped in after
+      the ``lstat`` fails the open itself.
+    - The descriptor's ``fstat`` identity must equal what the name's ``lstat``
+      said — the same mid-swap mismatch refusal as the per-file funnel.
+    """
+    try:
+        named = os.lstat(path)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            # No segment dir yet: nothing was ever rotated, which the callers
+            # already treat as "no segments".
+            logger.debug("SEL segment dir %s does not exist yet", path)
+            return None, True
+        logger.warning("SEL could not stat the segment dir %s", path, exc_info=True)
+        return None, False
+    if platform_compat.is_link_or_junction(path):
+        logger.warning(
+            "SEL refusing the segment dir %s: it is a link (planted link?); "
+            "it is not audit history",
+            path,
+        )
+        return None, False
+    if not stat.S_ISDIR(named.st_mode):
+        logger.warning("SEL refusing the segment dir %s: it is not a directory", path)
+        return None, False
+    if not _PIN_BY_FD_SUPPORTED:
+        return _SegmentDirPin(fd=None, identity=(named.st_dev, named.st_ino)), False
+    # O_DIRECTORY types as POSIX-only; the capability constant above already
+    # gated this branch to platforms that have it.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1), getattr(errno, "EFTYPE", -1)):
+            logger.warning(
+                "SEL refusing the segment dir %s: it is a link (planted link?); "
+                "it is not audit history",
+                path,
+            )
+        elif exc.errno == errno.ENOENT:
+            logger.debug("SEL segment dir %s vanished before the read pinned it", path)
+            return None, True
+        else:
+            logger.warning("SEL could not pin the segment dir %s", path, exc_info=True)
+        return None, False
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        logger.warning("SEL could not stat the pinned segment dir %s", path, exc_info=True)
+        return None, False
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(fd)
+        logger.warning("SEL refusing the segment dir %s: it is not a directory", path)
+        return None, False
+    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(fd)
+        logger.warning(
+            "SEL refusing the segment dir %s: it is not the directory its name "
+            "points at (planted link?); it is not audit history",
+            path,
+        )
+        return None, False
+    return _SegmentDirPin(fd=fd, identity=(opened.st_dev, opened.st_ino)), False
+
+
+class SelVerification(NamedTuple):
+    """``verify_integrity(detailed=True)``'s result (#5051 review).
+
+    ``total``/``valid`` keep the plain two-number contract; the added pair
+    states whether the audit HISTORY was verifiable at all. A segment
+    directory that refused to pin (a planted link) or was replaced
+    mid-verification leaves the rotated segments UNCHECKED, and a caller
+    whose job is to surface tampering must not report that run as "intact"
+    over the live log alone. A directory that simply does not exist yet
+    stays verifiable — a fresh install has no history to vouch for.
+    """
+
+    total: int
+    valid: int
+    history_verifiable: bool
+    reason: str
 
 
 def _parse_timestamp(raw: object) -> datetime | None:

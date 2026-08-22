@@ -28,6 +28,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew import cli_commands as cc
+from kiro_crew import sel as sel_mod
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
 from kiro_crew.cron import CronSchedule
 from kiro_crew.eval.scenario import AssertionType
@@ -960,18 +961,36 @@ class TestSecurityCli:
         assert "cron.add → allowed" in out and "error: boom" in out and "slack" in out
 
     @pytest.mark.parametrize(
-        ("total", "valid", "expected"),
+        ("total", "valid", "verifiable", "expected"),
         [
-            (0, 0, "No security events to verify."),
-            (3, 3, "HMAC chain intact"),
-            (3, 1, "HMAC chain COMPROMISED"),
+            (0, 0, True, "No security events to verify."),
+            (3, 3, True, "HMAC chain intact"),
+            (3, 1, True, "HMAC chain COMPROMISED"),
+            (
+                5,
+                5,
+                False,
+                "Audit history UNVERIFIABLE: segment directory refused to pin",
+            ),
+            (0, 0, False, "Audit history UNVERIFIABLE"),
         ],
     )
     def test_verify_reports_chain_state(
-        self, total: int, valid: int, expected: str, capsys: pytest.CaptureFixture[str]
+        self,
+        total: int,
+        valid: int,
+        verifiable: bool,
+        expected: str,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
+        outcome = sel_mod.SelVerification(
+            total=total,
+            valid=valid,
+            history_verifiable=verifiable,
+            reason="" if verifiable else "segment directory refused to pin (planted link?)",
+        )
         with patch("kiro_crew.cli_commands.sel") as sel:
-            sel.return_value.verify_integrity.return_value = (total, valid)
+            sel.return_value.verify_integrity.return_value = outcome
             cc._security(_ns(sec_action="verify"))
         assert expected in capsys.readouterr().out
 

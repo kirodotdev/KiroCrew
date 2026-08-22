@@ -1391,14 +1391,29 @@ def _security(args: argparse.Namespace) -> None:
                 print(f"    downstream: {e['downstream_service']}")
     elif action == "verify":
 
-        total, valid = sel().verify_integrity()
-        if total == 0:
+        # detailed=True: a segment dir that refused to pin (or was swapped
+        # mid-verification) leaves the ROTATED segments unchecked, and the
+        # command whose job is to surface tampering must not call that run
+        # "intact" over the live log alone (#5051 review).
+        result = sel().verify_integrity(detailed=True)
+        if not result.history_verifiable:
+            live = (
+                f"the live log verified intact: {result.valid}/{result.total} entries"
+                if result.total
+                else "no events to verify"
+            )
+            print(
+                f"⚠️  Audit history UNVERIFIABLE: {result.reason}. "
+                f"Rotated segments were not checked — {live}."
+            )
+        elif result.total == 0:
             print("No security events to verify.")
-        elif total == valid:
-            print(f"✅ HMAC chain intact: {total} entries verified.")
+        elif result.total == result.valid:
+            print(f"✅ HMAC chain intact: {result.total} entries verified.")
         else:
             print(
-                f"⚠️  HMAC chain COMPROMISED: {valid}/{total} entries valid, {total - valid} tampered."
+                f"⚠️  HMAC chain COMPROMISED: {result.valid}/{result.total} entries "
+                f"valid, {result.total - result.valid} tampered."
             )
     else:
         print("Usage: kirocrew security {audit|deny-list|events|verify}")

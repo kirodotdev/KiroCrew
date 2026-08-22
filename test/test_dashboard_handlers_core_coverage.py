@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.dashboard.handlers import core as core_mod
+from kiro_crew.sel import SelVerification as _SelVerification
 
 # ── shared helpers ───────────────────────────────────────────────────────
 
@@ -890,16 +891,32 @@ class TestSelEndpoints:
 
     @pytest.mark.asyncio
     async def test_verify_reports_intact_chain(self, fake_sel) -> None:
-        fake_sel.verify_integrity.return_value = (7, 7)
+        fake_sel.verify_integrity.return_value = _SelVerification(7, 7, True, "")
         body = json.loads((await core_mod.api_sel_verify(_req())).body)
-        assert body == {"total": 7, "valid": 7, "integrity": "ok", "tampered": 0}
+        assert body == {
+            "total": 7,
+            "valid": 7,
+            "integrity": "ok",
+            "tampered": 0,
+            "detail": "",
+        }
 
     @pytest.mark.asyncio
     async def test_verify_reports_tampering(self, fake_sel) -> None:
-        fake_sel.verify_integrity.return_value = (7, 5)
+        fake_sel.verify_integrity.return_value = _SelVerification(7, 5, True, "")
         body = json.loads((await core_mod.api_sel_verify(_req())).body)
         assert body["integrity"] == "compromised"
         assert body["tampered"] == 2
+
+    @pytest.mark.asyncio
+    async def test_verify_reports_unverifiable_history(self, fake_sel) -> None:
+        """A refused pin must not answer ``ok`` over the live log alone."""
+        fake_sel.verify_integrity.return_value = _SelVerification(
+            7, 7, False, "segment directory refused to pin (planted link?)"
+        )
+        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        assert body["integrity"] == "unverifiable"
+        assert "refused" in body["detail"]
 
 
 class TestSecurityStats:

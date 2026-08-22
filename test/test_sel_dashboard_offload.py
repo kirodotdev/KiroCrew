@@ -30,6 +30,7 @@ from unittest.mock import MagicMock
 import pytest
 
 import kiro_crew.dashboard.handlers.core as core_mod
+from kiro_crew import sel as sel_mod
 
 
 class _FakeLoop:
@@ -92,7 +93,7 @@ class TestSelHandlerOffload:
         captured: dict = {}
         order: list[str] = []
         fake_sel = MagicMock()
-        fake_sel.verify_integrity.return_value = (5, 5)
+        fake_sel.verify_integrity.return_value = sel_mod.SelVerification(5, 5, True, "")
         sentinel_pool = object()
         monkeypatch.setattr(core_mod, "_sel", _tracking_sel(fake_sel, order))
         monkeypatch.setattr(core_mod, "discovery_executor", lambda: sentinel_pool)
@@ -104,7 +105,7 @@ class TestSelHandlerOffload:
 
         assert captured["pool"] is sentinel_pool
         assert order == ["submitted", "sel"]
-        fake_sel.verify_integrity.assert_called_once_with()
+        fake_sel.verify_integrity.assert_called_once_with(detailed=True)
         assert resp.status == 200
 
 
@@ -153,7 +154,7 @@ class TestSelConstructionRunsOffTheLoop:
     ) -> None:
         seen: dict = {}
         fake_sel = MagicMock()
-        fake_sel.verify_integrity.return_value = (2, 2)
+        fake_sel.verify_integrity.return_value = sel_mod.SelVerification(2, 2, True, "")
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="test-disc")
         monkeypatch.setattr(core_mod, "_sel", self._recording_sel(fake_sel, seen))
         monkeypatch.setattr(core_mod, "discovery_executor", lambda: pool)
