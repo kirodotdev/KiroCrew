@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
+import zlib
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -58,12 +60,73 @@ def _resolve_for_write(root: Path, *rel: str) -> Path:
     return resolved
 
 
+#: Geometry and palette of the scaffolded placeholder icon: a plate inset in a
+#: darker field, at the size the publishing guide asks for and neutral enough to
+#: read on both a light and a dark card.
+_ICON_PX = 512
+_ICON_INSET = 128
+_ICON_FIELD = (46, 52, 64)
+_ICON_PLATE = (67, 76, 94)
+
+
+def _placeholder_icon_png() -> bytes:
+    """Encode the placeholder store icon, standard library only.
+
+    Pillow is not a dependency of this path, and taking one on so that
+    ``app init`` can draw a rectangle would be a poor trade: a PNG is a signature
+    followed by length-tag-payload-CRC chunks, so emitting one directly is
+    shorter than the argument for the dependency would be.
+
+    Truecolor (colour type 2), not RGBA. The publishing guide requires an opaque
+    icon -- an opaque tile carries its own background, which is what makes the
+    dark variant optional rather than a latent bug -- so carrying an alpha
+    channel would model a degree of freedom the icon is not allowed to use.
+
+    The bytes are identical for every app, which is deliberate: a single known
+    digest stays recognisable as "still the placeholder", which a per-app colour
+    would trade away for nothing.
+    """
+    field = bytes(_ICON_FIELD) * _ICON_PX
+    margin = bytes(_ICON_FIELD) * _ICON_INSET
+    plate = bytes(_ICON_PLATE) * (_ICON_PX - 2 * _ICON_INSET)
+    raw = bytearray()
+    for y in range(_ICON_PX):
+        # Leading byte is the scanline filter type: 0, meaning the row is stored
+        # as-is. Every row is a run of at most two colours, which deflate folds
+        # down to well under a kilobyte.
+        inside = _ICON_INSET <= y < _ICON_PX - _ICON_INSET
+        raw += b"\x00" + (margin + plate + margin if inside else field)
+
+    def chunk(tag: bytes, payload: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(payload))
+            + tag
+            + payload
+            + struct.pack(">I", zlib.crc32(tag + payload) & 0xFFFFFFFF)
+        )
+
+    # width, height, bit depth, colour type, compression, filter, interlace
+    ihdr = struct.pack(">IIBBBBB", _ICON_PX, _ICON_PX, 8, 2, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+        + chunk(b"IEND", b"")
+    )
+
+
 _MANIFEST_TEMPLATE = {
     "name": "",
     "version": "0.1.0",
     "displayName": "",
     "description": "",
     "author": "",
+    # The store's card and row icon, repo-relative. Scaffolded rather than left
+    # to the publishing guide: a field nobody knows exists is a field nobody
+    # fills, and an entry that reaches the catalog without one renders as a
+    # generated placeholder that looks like a store bug rather than an
+    # incomplete manifest.
+    "iconPath": "assets/icon.png",
     "agents": ["agents/sample-agent.json"],
     "skills": ["skills/sample-skill"],
     "tags": [],
@@ -244,6 +307,8 @@ take effect on next agent invocation. Backend changes require restart.
 ```
 {name}/
 ├── app.json              ← manifest
+├── assets/
+│   └── icon.png          ← store icon; replace this placeholder
 ├── agents/               ← agent definitions
 │   └── sample-agent.json
 ├── skills/               ← skill files
@@ -254,6 +319,100 @@ take effect on next agent invocation. Backend changes require restart.
 └── README.md
 ```
 """
+
+
+def _write_sites(
+    *, include_backend: bool, include_ui: bool
+) -> tuple[tuple[tuple[str, ...], ...], tuple[tuple[str, ...], ...]]:
+    """The directories and files a scaffold run creates, in creation order.
+
+    The single source of truth for what `scaffold_app` touches: it validates
+    this list before its first write, and the test suite drives its containment
+    cases from the same list, so a newly added write site cannot be covered by
+    one and missed by the other.
+
+    Each site is a tuple of path COMPONENTS relative to the app directory, not a
+    joined string. Components are what `Path.joinpath` and `_resolve_for_write`
+    both take, so the separator is never chosen here -- a joined form would have
+    to be split back apart, and that round-trip is where a hardcoded '/' becomes
+    a real path on Windows.
+    """
+    dirs = [("assets",), ("agents",), ("skills",), ("skills", "sample-skill")]
+    files = [
+        ("app.json",),
+        ("assets", "icon.png"),
+        ("agents", "sample-agent.json"),
+        ("skills", "sample-skill", "SKILL.md"),
+    ]
+    if include_backend:
+        dirs.append(("backend",))
+        files.append(("backend", "server.py"))
+    if include_ui:
+        dirs += [("ui",), ("ui", "src")]
+        files += [
+            ("ui", "package.json"),
+            ("ui", "vite.config.ts"),
+            ("ui", "src", "App.tsx"),
+            ("ui", ".gitignore"),
+        ]
+    files.append(("README.md",))
+    return tuple(dirs), tuple(files)
+
+
+def _validate_write_sites(
+    app_dir: Path, *, include_backend: bool, include_ui: bool
+) -> None:
+    """Prove every path the scaffold will write is writable, BEFORE writing any.
+
+    Ordering is half the point. `app.json` is the first file written and the
+    optional trees are written last, so a refusal raised AT a write site aborts a
+    run that has already overwritten the manifest of an existing app -- turning a
+    refused path into lost data. Deciding up front makes the run all-or-nothing:
+    either nothing on disk is touched, or every path was already proven writable.
+
+    Two independent properties, and containment alone is not enough. A site can
+    resolve squarely inside the app directory and still be unwritable because it
+    is there as the WRONG KIND: `mkdir(exist_ok=True)` raises `FileExistsError`
+    when the path is a regular file (exist_ok only forgives an existing
+    DIRECTORY), and `write_text` raises `IsADirectoryError` against a directory.
+    Neither is a `ValueError`, so both escape the caller's error contract as a
+    raw traceback on top of the lost manifest.
+
+    So each site is checked for both:
+
+    * every site resolves to its own lexical path inside `app_dir`
+      (`_resolve_for_write` -- refuses traversal, escaping and in-root symlinks);
+    * a directory site is absent or already a directory, and a file site is not
+      an existing directory.
+
+    `exists()`/`is_dir()` are unambiguous here precisely because containment ran
+    first: it refuses every symlink beneath the root, so there is no link left
+    for these to follow somewhere else.
+
+    Not a substitute for the per-site `_resolve_for_write` calls, because
+    validation and use are separate moments: a path swapped in between is still
+    refused at the write. Both layers refuse it; only this one refuses it while
+    the app is still exactly as it was found.
+    """
+    dirs, files = _write_sites(
+        include_backend=include_backend, include_ui=include_ui
+    )
+    for rel in dirs:
+        target = _resolve_for_write(app_dir, *rel)
+        if target.exists() and not target.is_dir():
+            raise ValueError(
+                f"refusing to scaffold {app_dir}: {Path(*rel)} exists and is not a "
+                "directory, so it cannot hold the scaffolded files. Remove or "
+                "rename it and retry."
+            )
+    for rel in files:
+        target = _resolve_for_write(app_dir, *rel)
+        if target.is_dir():
+            raise ValueError(
+                f"refusing to scaffold {app_dir}: {Path(*rel)} exists and is a "
+                "directory, so it cannot be written as a file. Remove or rename "
+                "it and retry."
+            )
 
 
 def scaffold_app(
@@ -284,6 +443,13 @@ def scaffold_app(
     # output_dir/name that would relocate every write outside the output dir.
     _resolve_for_write(output_dir, name)
     app_dir.mkdir(parents=True, exist_ok=True)
+
+    # Every write path is decided here, while nothing has been written yet: the
+    # manifest below overwrites an existing app's app.json, so a refusal raised
+    # later would cost the developer that file.
+    _validate_write_sites(
+        app_dir, include_backend=include_backend, include_ui=include_ui
+    )
 
     # Manifest
     manifest: dict[str, object] = {**_MANIFEST_TEMPLATE}
@@ -319,6 +485,31 @@ def scaffold_app(
     _resolve_for_write(app_dir, "app.json").write_text(
         json.dumps(manifest, indent=2) + "\n", encoding="utf-8"
     )
+
+    # Store icon. Real bytes, not just the manifest key: an `iconPath` naming a
+    # file that does not exist publishes worse than naming nothing, because the
+    # store's fallback is identical either way and the developer gets a broken
+    # reference instead of a working default. Shipping a valid opaque square
+    # makes an iconless app a state someone has to CREATE by deleting this, not
+    # one they fall into by never reading the publishing guide.
+    #
+    # Written only when absent, unlike every other file here. The rest are
+    # GENERATED -- re-running `app init` reproduces them from the same arguments,
+    # so overwriting costs nothing. This one is the developer's ARTWORK the moment
+    # they replace it, which is the entire point of scaffolding it, so an
+    # unconditional write would make a second `app init` destroy the icon.
+    #
+    # Contained by the up-front pass like every other site here, which is what
+    # makes the escapes this write went through unreachable: a symlinked
+    # `assets`, a dangling `icon.png` link (`exists()` reads False for one, so an
+    # unresolved existence test falls through to a write that follows it), an
+    # in-root alias, and `assets` present as a regular file. The `exists()` test
+    # below is a keep-the-artwork check on a path already proven both contained
+    # and of the right kind, not a containment check.
+    _resolve_for_write(app_dir, "assets").mkdir(exist_ok=True)
+    icon = _resolve_for_write(app_dir, "assets", "icon.png")
+    if not icon.exists():
+        icon.write_bytes(_placeholder_icon_png())
 
     # Agent
     _resolve_for_write(app_dir, "agents").mkdir(exist_ok=True)

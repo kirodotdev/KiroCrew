@@ -2,37 +2,72 @@
 from __future__ import annotations
 
 import json
+import struct
+import zlib
+from pathlib import Path
 
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.manifest import AppManifest
-from kiro_crew.apps.scaffold import scaffold_app
+from kiro_crew.apps.scaffold import (
+    _placeholder_icon_png,
+    _write_sites,
+    scaffold_app,
+)
 
-# Every file scaffold_app writes and every directory it creates (all options
-# on), relative to the app dir. The containment tests parameterize over these,
-# and test_site_list_matches_what_scaffold_creates pins the list against what
-# scaffold_app actually produces — so a newly added write site that is not
-# also added here (and thereby covered by the symlink cases) fails the suite.
-_SCAFFOLD_FILES = [
-    "app.json",
-    "agents/sample-agent.json",
-    "skills/sample-skill/SKILL.md",
-    "backend/server.py",
-    "ui/package.json",
-    "ui/vite.config.ts",
-    "ui/src/App.tsx",
-    "ui/.gitignore",
-    "README.md",
-]
-_SCAFFOLD_DIRS = [
-    "agents",
-    "skills",
-    "skills/sample-skill",
-    "backend",
-    "ui",
-    "ui/src",
-]
+
+class TestPlaceholderIcon:
+    """The scaffolded store icon, pinned against the publishing guide's spec.
+
+    A scaffolded app that reaches the App Store catalog with no icon publishes a
+    generated placeholder card, indistinguishable from an icon the publish
+    pipeline dropped -- so it reads as a store bug rather than an incomplete
+    manifest. These pin the shape the guide actually requires, so a change here
+    cannot silently produce an icon the store rejects.
+    """
+
+    def test_is_a_png(self):
+        assert _placeholder_icon_png()[:8] == b"\x89PNG\r\n\x1a\n"
+
+    def test_is_the_square_512_the_guide_asks_for(self):
+        width, height = struct.unpack(">II", _placeholder_icon_png()[16:24])
+        assert width == height == 512
+
+    def test_carries_no_alpha_channel(self):
+        """Colour type 2 is truecolor RGB. The guide requires an opaque icon, so
+        an alpha channel would model a freedom the icon cannot use."""
+        assert _placeholder_icon_png()[25] == 2
+
+    def test_stays_small(self):
+        """Two flat colours should compress to nothing; a regression that
+        inflates this would otherwise be silent."""
+        assert len(_placeholder_icon_png()) < 8 * 1024
+
+    def test_is_byte_identical_across_calls(self):
+        """One known digest stays recognisable as 'still the placeholder'."""
+        assert _placeholder_icon_png() == _placeholder_icon_png()
+
+    def test_pixels_decode_to_the_intended_plate(self):
+        """Cheap proof the scanline filter byte and row stride are right: a wrong
+        stride still produces a file every header check above accepts."""
+        data = _placeholder_icon_png()
+        raw = zlib.decompress(data[data.index(b"IDAT") + 4 : -12])
+        stride = 1 + 512 * 3
+        assert len(raw) == 512 * stride
+        middle = raw[256 * stride : 257 * stride]
+        assert middle[0] == 0, "scanline filter type must be None"
+        assert tuple(middle[1:4]) == (46, 52, 64), "row starts in the field"
+        centre = 1 + 256 * 3
+        assert tuple(middle[centre : centre + 3]) == (67, 76, 94), "plate inside"
+
+
+# Derived from scaffold.py, not restated here: the module owns the list its own
+# up-front validation walks, so a newly added write site is picked up by the
+# containment cases below without anyone remembering to add it twice.
+_SCAFFOLD_DIRS, _SCAFFOLD_FILES = _write_sites(
+    include_backend=True, include_ui=True
+)
 
 
 def _scaffold_all(output_dir, name):
@@ -55,12 +90,13 @@ class TestWriteContainment:
 
     def test_site_list_matches_what_scaffold_creates(self, tmp_path):
         app_dir = _scaffold_all(tmp_path, "probe")
-        # as_posix(): the pinned lists use forward slashes; str() of a relative
-        # WindowsPath yields backslashes and fails the comparison on Windows.
-        files = {p.relative_to(app_dir).as_posix() for p in app_dir.rglob("*") if p.is_file()}
-        dirs = {p.relative_to(app_dir).as_posix() for p in app_dir.rglob("*") if p.is_dir()}
-        assert files == set(_SCAFFOLD_FILES)
-        assert dirs == set(_SCAFFOLD_DIRS)
+        # Compared as Path objects built from the same components the module
+        # ships, so there is no separator to agree on and no posix/Windows
+        # string form to normalize.
+        files = {p.relative_to(app_dir) for p in app_dir.rglob("*") if p.is_file()}
+        dirs = {p.relative_to(app_dir) for p in app_dir.rglob("*") if p.is_dir()}
+        assert files == {Path(*parts) for parts in _SCAFFOLD_FILES}
+        assert dirs == {Path(*parts) for parts in _SCAFFOLD_DIRS}
 
     @requires_symlinks
     @pytest.mark.parametrize("relpath", _SCAFFOLD_FILES)
@@ -69,7 +105,7 @@ class TestWriteContainment:
         # (junctions target existing directories), so unelevated Windows skips.
         outside = tmp_path / "outside-target"
         out = tmp_path / "out"
-        link = out / "victim" / relpath
+        link = out.joinpath("victim", *relpath)
         link.parent.mkdir(parents=True, exist_ok=True)
         link.symlink_to(outside)
 
@@ -77,13 +113,28 @@ class TestWriteContainment:
             _scaffold_all(out, "victim")
 
         assert not outside.exists(), f"{relpath} wrote through a dangling symlink"
+        self._assert_nothing_was_written(out / "victim", relpath)
+
+    @staticmethod
+    def _assert_nothing_was_written(app_dir, site):
+        """A refusal must abort BEFORE the first write, not part-way through.
+
+        app.json is written first, so a run that refuses at a later site would
+        already have overwritten the manifest of an existing app -- the refusal
+        would cost the developer that file. Asserting the manifest is absent is
+        what pins the ordering: it can only hold if validation precedes writing.
+        """
+        for name in ("app.json", "README.md"):
+            assert not (app_dir / name).exists(), (
+                f"refusing {site} left {name} behind -- validation ran after a write"
+            )
 
     @pytest.mark.parametrize("reldir", _SCAFFOLD_DIRS)
     def test_mkdir_refuses_an_escaping_dir_symlink(self, tmp_path, reldir):
         outside = tmp_path / "outside-dir"
         outside.mkdir()
         out = tmp_path / "out"
-        link = out / "victim" / reldir
+        link = out.joinpath("victim", *reldir)
         link.parent.mkdir(parents=True, exist_ok=True)
         # make_dir_link: a junction on Windows needs no privilege and resolves
         # through the same reparse machinery, so this stays exercised there.
@@ -94,6 +145,82 @@ class TestWriteContainment:
 
         assert list(outside.iterdir()) == [], (
             f"{reldir} let writes land outside the app dir"
+        )
+        self._assert_nothing_was_written(out / "victim", reldir)
+
+    @pytest.mark.parametrize("reldir", _SCAFFOLD_DIRS)
+    def test_a_dir_site_occupied_by_a_regular_file_is_refused(self, tmp_path, reldir):
+        """Contained but the wrong KIND -- the half containment cannot see.
+
+        A plain file at a directory site resolves squarely inside the app dir, so
+        every containment check passes, and then `mkdir(exist_ok=True)` raises
+        `FileExistsError` (exist_ok forgives an existing DIRECTORY, not a file).
+        That is not a ValueError, so it escapes the CLI's error contract as a raw
+        traceback -- on top of the manifest the run had already overwritten.
+        """
+        out = tmp_path / "out"
+        app_dir = out / "victim"
+        squatter = app_dir.joinpath(*reldir)
+        squatter.parent.mkdir(parents=True, exist_ok=True)
+        squatter.write_text("not a directory", encoding="utf-8")
+
+        original = '{"name": "victim", "version": "9.9.9"}\n'
+        (app_dir / "app.json").write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="not a directory"):
+            _scaffold_all(out, "victim")
+
+        assert (app_dir / "app.json").read_text(encoding="utf-8") == original
+        assert squatter.read_text(encoding="utf-8") == "not a directory"
+
+    @pytest.mark.parametrize("relpath", _SCAFFOLD_FILES)
+    def test_a_file_site_occupied_by_a_directory_is_refused(self, tmp_path, relpath):
+        """The mirror case: `write_text` raises IsADirectoryError, also not a
+        ValueError, so it escapes the same way with the same lost manifest."""
+        out = tmp_path / "out"
+        app_dir = out / "victim"
+        squatter = app_dir.joinpath(*relpath)
+        squatter.mkdir(parents=True, exist_ok=True)
+
+        # app.json is itself a site here, so only seed the manifest when the
+        # squatter is not standing on it.
+        manifest = app_dir / "app.json"
+        original = '{"name": "victim", "version": "9.9.9"}\n'
+        seeded = squatter != manifest
+        if seeded:
+            manifest.write_text(original, encoding="utf-8")
+
+        with pytest.raises(ValueError, match="is a directory"):
+            _scaffold_all(out, "victim")
+
+        if seeded:
+            assert manifest.read_text(encoding="utf-8") == original
+        assert squatter.is_dir(), "the refused run replaced the occupied site"
+
+    def test_a_refusal_leaves_an_existing_apps_manifest_untouched(self, tmp_path):
+        """Re-running `app init` over an existing app must not cost it app.json.
+
+        `app_dir.mkdir(exist_ok=True)` does not refuse an app that already exists,
+        so this path is reachable in normal use: a developer re-runs `app init` in
+        a tree where `assets` is a symlink pointing out of the app. Validating at
+        the write sites alone overwrote the manifest first and refused second,
+        destroying data the run had no business touching.
+        """
+        outside = tmp_path / "outside-dir"
+        outside.mkdir()
+        out = tmp_path / "out"
+        app_dir = out / "victim"
+        app_dir.mkdir(parents=True)
+
+        original = '{"name": "victim", "version": "9.9.9"}\n'
+        (app_dir / "app.json").write_text(original, encoding="utf-8")
+        make_dir_link(app_dir / "assets", outside)
+
+        with pytest.raises(ValueError):
+            _scaffold_all(out, "victim")
+
+        assert (app_dir / "app.json").read_text(encoding="utf-8") == original, (
+            "the refused run overwrote the existing manifest"
         )
 
     def test_app_dir_symlink_escaping_output_dir_is_refused(self, tmp_path):
@@ -204,6 +331,52 @@ class TestScaffold:
         m = AppManifest.from_json_file(app_dir / "app.json")
         assert m.name == "my-test-app"
         assert m.validate() == []
+
+    def test_store_icon_exists_and_is_declared(self, tmp_path):
+        """Both halves together. The bytes without the manifest key are an unused
+        file; the key without the bytes is a broken reference, which publishes
+        worse than declaring nothing at all."""
+        app_dir = scaffold_app(tmp_path, "icon-app")
+        icon = app_dir / "assets" / "icon.png"
+        assert icon.is_file()
+        assert icon.read_bytes() == _placeholder_icon_png()
+        manifest = json.loads((app_dir / "app.json").read_text(encoding="utf-8"))
+        assert manifest["iconPath"] == "assets/icon.png"
+
+    def test_icon_path_resolves_from_the_app_root(self, tmp_path):
+        """`iconPath` is repo-relative, so it must resolve against the app
+        directory exactly as written -- no leading slash, no `ui/` prefix."""
+        app_dir = scaffold_app(tmp_path, "resolve-app")
+        declared = json.loads((app_dir / "app.json").read_text(encoding="utf-8"))
+        assert (app_dir / declared["iconPath"]).is_file()
+
+    def test_rerun_does_not_destroy_a_replaced_icon(self, tmp_path):
+        """Every other scaffolded file is GENERATED and reproduced from the same
+        arguments, so overwriting costs nothing. This one becomes the developer's
+        artwork the moment they replace it -- which is the point of scaffolding it
+        -- so a second `app init` must not overwrite their icon."""
+        app_dir = scaffold_app(tmp_path, "rerun-app")
+        icon = app_dir / "assets" / "icon.png"
+        icon.write_bytes(b"\x89PNG\r\n\x1a\nnot-the-placeholder")
+
+        scaffold_app(tmp_path, "rerun-app")
+        assert icon.read_bytes() == b"\x89PNG\r\n\x1a\nnot-the-placeholder"
+
+    def test_icon_ships_without_the_optional_ui(self, tmp_path):
+        """The store icon is about being LISTED, not about having a UI, so it
+        must not ride along on `include_ui`."""
+        app_dir = scaffold_app(tmp_path, "headless-app")
+        assert not (app_dir / "ui").exists()
+        assert (app_dir / "assets" / "icon.png").is_file()
+
+    def test_readme_points_at_the_placeholder(self, tmp_path):
+        """The generated tree is where a developer learns the file is theirs to
+        replace; a placeholder nobody knows to replace ships as the real icon."""
+        readme = (scaffold_app(tmp_path, "tree-app") / "README.md").read_text(
+            encoding="utf-8"
+        )
+        assert "assets/" in readme
+        assert "replace this placeholder" in readme
 
     def test_scaffold_with_backend(self, tmp_path):
         app_dir = scaffold_app(tmp_path, "backend-app", include_backend=True)
