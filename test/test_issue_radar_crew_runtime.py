@@ -1053,15 +1053,24 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         state = _FakeState()
         slot = _FakeSlot()
         ran: list[str] = []
+        origins: list[bool | None] = []
 
-        async def _turn(_state: Any, _slot: Any, prompt: str) -> None:
+        async def _turn(
+            _state: Any,
+            _slot: Any,
+            prompt: str,
+            *,
+            _directive_user_origin: bool | None = None,
+        ) -> None:
             ran.append(prompt)
+            origins.append(_directive_user_origin)
 
         with mock.patch.object(cr, "_run_chat", _turn):
             self.assertTrue(cr.dispatch_crew_turn(state, slot, "advance one item"))
             await slot.runners[-1](state, slot, slot.prompts[-1])
         self.assertEqual(state.capped, [slot.key])
         self.assertEqual(ran, ["advance one item"])
+        self.assertEqual(origins, [False])
 
     async def test_a_turn_that_never_got_a_permit_says_so_in_the_transcript(self):
         """A refused turn and a finished one must not look the same.
@@ -1074,7 +1083,13 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         state.permit_timeout = True
         slot = _FakeSlot()
 
-        async def _turn(_state: Any, _slot: Any, prompt: str) -> None:
+        async def _turn(
+            _state: Any,
+            _slot: Any,
+            prompt: str,
+            *,
+            _directive_user_origin: bool | None = None,
+        ) -> None:
             raise AssertionError("the turn must not run without a permit")
 
         with mock.patch.object(cr, "_run_chat", _turn):

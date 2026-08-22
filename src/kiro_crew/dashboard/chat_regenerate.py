@@ -95,7 +95,15 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
-        task = asyncio.create_task(_run_chat(state, slot, user_msg, regenerate_hint=hint))
+        task = asyncio.create_task(
+            _run_chat(
+                state,
+                slot,
+                user_msg,
+                regenerate_hint=hint,
+                _directive_user_origin=not bool(request.get("app", "")),
+            )
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -253,7 +261,14 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             resources=slot.key,
         )
 
-        task = asyncio.create_task(_run_chat(state, slot, _bc))
+        task = asyncio.create_task(
+            _run_chat(
+                state,
+                slot,
+                _bc,
+                _directive_user_origin=not bool(request.get("app", "")),
+            )
+        )
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)

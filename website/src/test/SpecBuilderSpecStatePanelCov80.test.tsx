@@ -12,12 +12,12 @@ function detail(over: Partial<SpecDetail> = {}): SpecDetail {
 
 describe('SpecStatePanel', () => {
   it('renders nothing when there is no state and no context', () => {
-    const { container } = render(<SpecStatePanel detail={detail()} sendMessage={vi.fn()} />)
+    const { container } = render(<SpecStatePanel detail={detail()} answerDecision={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
   })
 
   it('renders nothing for a missing detail', () => {
-    const { container } = render(<SpecStatePanel detail={null} sendMessage={vi.fn()} />)
+    const { container } = render(<SpecStatePanel detail={null} answerDecision={vi.fn()} />)
     expect(container).toBeEmptyDOMElement()
   })
 
@@ -31,7 +31,7 @@ describe('SpecStatePanel', () => {
             }],
           },
         })}
-        sendMessage={vi.fn()}
+        answerDecision={vi.fn()}
       />,
     )
     expect(screen.getByText('zz-decision')).toBeInTheDocument()
@@ -46,7 +46,7 @@ describe('SpecStatePanel', () => {
         detail={detail({
           state: { decisions: [{ id: 'd1', title: 'zz-decision', options: ['zz-opt-a'], answer: 'zz-opt-a' }] },
         })}
-        sendMessage={vi.fn()}
+        answerDecision={vi.fn()}
       />,
     )
     expect(screen.getByText('answered')).toBeInTheDocument()
@@ -58,32 +58,36 @@ describe('SpecStatePanel', () => {
     render(
       <SpecStatePanel
         detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-decision' }] } })}
-        sendMessage={vi.fn()}
+        answerDecision={vi.fn()}
       />,
     )
     expect(screen.getByRole('group')).toBeEmptyDOMElement()
   })
 
   it('posts the chosen option through the parent mutation', async () => {
-    const sendMessage = vi.fn().mockResolvedValue(undefined)
+    const answerDecision = vi.fn().mockResolvedValue(undefined)
     render(
       <SpecStatePanel
         detail={detail({
           state: { decisions: [{ id: 'd1', title: 'zz-decision', options: ['zz-opt-a'] }] },
         })}
-        sendMessage={sendMessage}
+        answerDecision={answerDecision}
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
-    await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
-    const sent = String(sendMessage.mock.calls[0][0])
-    expect(sent).toContain('zz-decision')
-    expect(sent.endsWith(': zz-opt-a')).toBe(true)
+    await waitFor(() => expect(answerDecision).toHaveBeenCalledTimes(1))
+    // The id and the bare option ride alongside the prose: the backend records those two
+    // and refuses a second answer for the same id.
+    const [id, option, msg] = answerDecision.mock.calls[0]
+    expect(id).toBe('d1')
+    expect(option).toBe('zz-opt-a')
+    expect(String(msg)).toContain('zz-decision')
+    expect(String(msg).endsWith(': zz-opt-a')).toBe(true)
   })
 
   it('blocks a second answer while one is in flight, then re-enables', async () => {
     let release: (() => void) | undefined
-    const sendMessage = vi.fn(() => new Promise<void>(res => { release = () => res() }))
+    const answerDecision = vi.fn(() => new Promise<void>(res => { release = () => res() }))
     render(
       <SpecStatePanel
         detail={detail({
@@ -94,7 +98,7 @@ describe('SpecStatePanel', () => {
             ],
           },
         })}
-        sendMessage={sendMessage}
+        answerDecision={answerDecision}
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
@@ -106,20 +110,26 @@ describe('SpecStatePanel', () => {
     // The unrelated decision stays rendered but dimmed and inert while the
     // answer is in flight.
     fireEvent.click(screen.getByText('zz-opt-c'))
-    expect(sendMessage).toHaveBeenCalledTimes(1)
+    expect(answerDecision).toHaveBeenCalledTimes(1)
     expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '0.5' })
     release?.()
     await waitFor(() => expect(screen.getByText('zz-opt-c').closest('[aria-label]')).toHaveStyle({ opacity: '1' }))
     fireEvent.click(screen.getByText('zz-opt-c'))
-    expect(sendMessage).toHaveBeenCalledTimes(2)
+    expect(answerDecision).toHaveBeenCalledTimes(2)
   })
 
-  it('swallows a send failure and re-enables the options', async () => {
-    const sendMessage = vi.fn().mockRejectedValue(new Error('zz-send-failed'))
+  it('swallows a NAMED refusal and re-enables the options', async () => {
+    // A refusal the backend named is emitted BEFORE anything is recorded, so the card
+    // re-opens. A codeless failure is ambiguous (the write may have committed on the way
+    // out) and deliberately keeps the card locked instead -- covered in
+    // SpecBuilderDecisionLock.test.tsx.
+    const answerDecision = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('zz-send-failed'), { code: 'decision_agent_busy' }))
     render(
       <SpecStatePanel
         detail={detail({ state: { decisions: [{ id: 'd1', title: 'zz-one', options: ['zz-opt-a'] }] } })}
-        sendMessage={sendMessage}
+        answerDecision={answerDecision}
       />,
     )
     fireEvent.click(screen.getByText('zz-opt-a'))
@@ -127,7 +137,7 @@ describe('SpecStatePanel', () => {
   })
 
   it('surfaces a blocking note on its own', () => {
-    render(<SpecStatePanel detail={detail({ state: { blocking: 'zz-blocked-on' } })} sendMessage={vi.fn()} />)
+    render(<SpecStatePanel detail={detail({ state: { blocking: 'zz-blocked-on' } })} answerDecision={vi.fn()} />)
     expect(screen.getByText('BLOCKING')).toBeInTheDocument()
     expect(screen.getByText('zz-blocked-on')).toBeInTheDocument()
   })
@@ -139,7 +149,7 @@ describe('SpecStatePanel', () => {
           state: { context: { template: 'zz-template' } },
           context: { worktree_branch: 'zz-branch', turns: 4, tool_calls: 7 },
         })}
-        sendMessage={vi.fn()}
+        answerDecision={vi.fn()}
       />,
     )
     expect(screen.getByText('zz-branch')).toBeInTheDocument()
@@ -149,7 +159,7 @@ describe('SpecStatePanel', () => {
   })
 
   it('defaults the counters to zero and omits the optional rows', () => {
-    render(<SpecStatePanel detail={detail({ context: {} })} sendMessage={vi.fn()} />)
+    render(<SpecStatePanel detail={detail({ context: {} })} answerDecision={vi.fn()} />)
     expect(screen.getByText('CONTEXT')).toBeInTheDocument()
     expect(screen.getAllByText('0')).toHaveLength(2)
     expect(screen.queryByText('zz-branch')).not.toBeInTheDocument()

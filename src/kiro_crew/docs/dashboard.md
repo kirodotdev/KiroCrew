@@ -45,7 +45,7 @@ opens the file at that line instead of navigating the browser back to Chat.
 - **Tool purpose pills**: tool call labels show purpose text, persisted across reloads
 - **Batch tool rejection**: reject multiple pending tool approvals at once
 - **Cancel queued messages**: cancel button for messages waiting in the queue
-- **Edit queued messages**: edit a message waiting in the queue in place before it runs (order preserved)
+- **Edit queued messages**: edit a message waiting in the queue in place before it runs (order preserved); automatic recovery entries stay immutable so their delivery receipts remain bound to the original message
 - **iOS-style queue stack**: queued messages displayed as a visual stack
 - **Streaming transcription**: live speech-to-text partials via WebSocket
 - **Weighted content search**: session content search with weighted ranking

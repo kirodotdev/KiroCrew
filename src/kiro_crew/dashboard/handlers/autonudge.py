@@ -135,7 +135,7 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         caller=request.remote or "",
     )
     if error is not None:
-        return web.json_response({"error": error}, status=status)
+        return web.json_response({"error": error, "code": "autonudge_not_armed"}, status=status)
     return web.json_response({"ok": True, "loop": _serialize(loop)})
 
 

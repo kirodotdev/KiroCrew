@@ -1298,6 +1298,7 @@ class TestHTTPHandlers:
             slot_key = f"research-{cid}"
             slot = SimpleNamespace(key=slot_key)
             state.get_or_create_slot.return_value = slot
+            state.get_slot.return_value = slot
             old_loop = await svc.add(slot_key=slot_key, message="old run", idle_secs=60)
             await svc.update(
                 old_loop.id,
@@ -2586,7 +2587,11 @@ class TestWatchdogStopTombstone:
 
         assert removal_attempts == h._TERMINAL_LOOP_REMOVAL_ATTEMPTS
         assert get_campaign(cid)["status"] == CampaignStatus.STOPPED
-        assert svc.get_by_slot(f"research-{cid}") is None
+        retained = svc.get_by_slot(f"research-{cid}")
+        assert retained is not None
+        assert retained.id == loop.id
+        assert retained.active is False
+        assert retained.id not in svc._timers
         assert last_counts == {}
         assert last_ts == {}
         svc.stop()

@@ -209,7 +209,10 @@ async def test_start_surfaces_the_authorizer_refusal(monkeypatch: pytest.MonkeyP
     request = _mk("POST", "/api/autonudge", body={"slot_key": "chat-1-111", "message": "go"})
     response = await h.api_autonudge_start(request)
     assert response.status == 403
-    assert _body(response) == {"error": "slot not yours"}
+    assert _body(response) == {
+        "error": "slot not yours",
+        "code": "autonudge_not_armed",
+    }
 
 
 # --- PATCH /api/autonudge/{loop_id} ------------------------------------------

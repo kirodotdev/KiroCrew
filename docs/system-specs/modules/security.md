@@ -179,6 +179,136 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Bash gate**: the marker leaf is also in `_WRITE_PROTECTED_BASH_LEAVES`, and `is_sensitive_bash_command` matches it **verb-independently** (any command naming the home-anchored marker path, including a trailing-`/` subpath so `mkdir -p …/.data-home-ready/x` — which also materializes it — is caught). This mirrors the verb-independent backstop the sensitive-dir matcher uses, so quoted redirects / `cp` / `python open()` / novel write verbs cannot bypass an enumerated allowlist. Bash *reads* are incidentally blocked too — harmless, since the marker holds no secret (it is deliberately NOT in `_SENSITIVE_HOME_DIRS`, so file-read tools and `is_sensitive_path` are unaffected) and the only legitimate readers (`kirocrew doctor`, the migration code) use Python `os` calls, not bash.
 - The migration code stamps the marker directly in Python (not via a tool/bash), so legitimate stamping is unaffected. As with credential paths, the bash gate is home-anchored, defense-in-depth. A `cd`-into-home + bare-relative-leaf write is no longer a blind spot for a POSIX-spelled path: `is_sensitive_bash_command`'s second pass tracks the working directory across `&&` / `;` / newlines / subshells, resolves relative operands against the directory a preceding change-directory verb moved to, and recognises that verb in every shell's spelling (`cd`, `pushd`, `chdir`, `sl`, `Set-Location`, `Push-Location`) with cmd.exe and PowerShell home anchors (`%USERPROFILE%`, `$env:USERPROFILE`) folded to `~`. A separate monotone taint pass then denies any read that follows entry into a fenced directory, and no later token can clear that taint — `popd` / `Pop-Location` are deliberately not modelled, so undoing the move does not walk the denial back. What the walk still cannot see is a relative leaf spelled with NATIVE WINDOWS SYNTAX: the tokenizer runs in POSIX mode, where a backslash is an escape and a single `&` backgrounds rather than sequences, so `cd ~ & type .aws\credentials` reads as neither a separator nor a boundary. A third pass answers that without modelling any grammar at all, the same move the monotone taint pass makes for a sensitive target: it asks whether an entry into the HOME directory was seen anywhere in the raw command, and whether a fenced path spelled RELATIVE to it appears after that. It answers both by CUTTING the command into words, NORMALISING each word as a path, and comparing the result — not by matching spellings. That distinction is the whole design: `%USERPROFILE%\.`, `~/`, `C:.aws`, `C:/` versus `C:\`, `a\..\`, `a\b\..\..\` and `.aw^s` all name one file, and path identity is a computation (collapse `.`, net `..` against depth, unify separators, apply cmd.exe's `^` escape) that a pattern can only ever approximate one enumerated spelling at a time. Normalising instead closes the cmd.exe `&` sequencer, its `^` escape at every position, its glued `/D` switch, delayed expansion (`!USERPROFILE!`), drive-relative prefixes, no-op `.` and cancelling `..` chains, and a PowerShell pipeline (which, unlike a bash one, does not fork the directory) with one bounded function. The escape is applied per WORD, never to the whole command, which is what makes it safe: a word is what the shell hands the program as a single argument, so removing an escape from it cannot rewrite an unrelated argument — while `^^` still collapses to one literal caret, so `.a^^ws` stays the distinct file it is. A `..` that climbs above the starting directory marks the path as having escaped and is excluded, because it names a different file than the fenced one. It stays grammar-free because a word ends at an operator but WHICH operator is never asked; only target selection stays inside one operator-delimited run, while the fenced-path search crosses every boundary, since a monotone scan may only widen. Cost: naming a fenced relative path after entering the home directory is denied even when the command would not have read it, which is the posture the absolute-path pass already takes.
 
+**Spec Builder's decision record** (`trust/spec-builder-decisions.json`) — the app
+refuses a second answer for the same normalized question. Each record is bound to a
+fingerprint of the rendered id, title, and order-independent option set, so reordering the
+same choices cannot reopen a settled question while an agent reusing an id for a new question
+does not inherit the old answer. A claim is first persisted as a pending outbox
+entry and is marked final only when the chat runner reports that the model consumed the
+prompt. Immediately before model dispatch, the row moves durably from `pending` to
+`relayed`; a failure to persist that boundary refuses dispatch. A crash before consumption
+leaves either state for the recovery flow; an already-persisted chat row is
+reused rather than appended twice, but is not itself mistaken for proof of model
+consumption. The detail GET reports `decision_recovery_pending` for either durable
+outbox state; it never dispatches an agent turn. The SPA follows that signal with the CSRF-protected
+`POST /api/apps/spec-builder/specs/{name}/recover-decision`, which performs the
+replay and lets the next detail poll observe the running turn. Immediately before
+any replay, the backend revalidates the question fingerprint and offered option
+against the normalized current state. A mismatched
+`pending` row with no chat marker is removed rather than relayed or finalized. A
+`relayed` or chat-marked row is retained fail-closed because a crash after model
+consumption but before ledger finalization is indistinguishable from a pre-model crash.
+Recovery skips a retained `relayed` row once its question is provably stale so that the
+ambiguity marker cannot permanently starve a newer current answer behind it.
+If a failed turn requeues the delivery with consumption callbacks, the generic queue
+editor refuses to replace that entry: those callbacks can settle only their original text.
+App tokens cannot send or recover these human-authored turns; each denial is recorded in SEL.
+The durable prompt is rebuilt from the backend-validated title and selected option; its
+bound includes both normalized fields so replay cannot truncate the immutable answer.
+Every Spec Builder dispatch boundary (decision answer, ordinary message, and execution
+handoff) also re-reads each indexed name for the spec directory after its last await and
+compares every live slot's task identity and monotonic turn generation with the initial
+busy scan. The generation survives normal teardown clearing `slot.task` back to idle, so
+this catches an alias turn that starts and finishes during validation as well as an alias
+the agent adds mid-turn; the synchronous final check and task publication are one
+event-loop step. Create registration uses the same normalized directory identity while
+holding that directory's turn lock and refuses an index entry for any second name that
+already points at it. Filesystem equivalence is checked by directory identity, so Windows
+and case-insensitive macOS variants must not mint two slots that dispatch agents into the
+same files; macOS arbitration folds case conservatively before the index transaction so a
+create cannot race delete cleanup. An upgrade-state alias, agent-written alias, or sole
+index path rewritten to a filesystem-equivalent spelling fails closed when it differs
+from an immutable lexical key already present in the protected ledger. Detail reads,
+new-spec registration, decision claims, and deletion can therefore neither mint a second
+answer record nor strand the first one under an unreadable spelling. Decision claims
+validate aliases and persist the answer from one protected-ledger snapshot, and refuse an
+unreadable snapshot rather than retrying the write from different state. A handoff that
+already armed its bounded nudge loop unwinds that loop and its execution claim when the
+final alias check refuses dispatch. A process-owned generation, rather than agent-writable
+index status or timestamps, authenticates the handoff's pre-dispatch claim. Handoff checks
+that generation inside the directory turn lock before making the durable `executing` claim,
+after authorization, and again after its final alias scan. Stop revokes the generation before
+waiting for the lock and refuses new handoffs for that creation until it commits, so a Stop
+that overlaps startup prevents the older request from dispatching or a newer request from
+restarting behind it. Revocation remains provisional while Stop or Delete validates and
+tears down the captured creation: both execution and ordinary-turn tokens are removed only
+by a successful authoritative commit. A stale or failed control restores them; if a handoff
+already observed the provisional revocation and unwound, a supervised settlement restores
+its durable status to planning rather than leaving a dead `executing` claim. Rollback also
+reconciles ordinary published turns whose completion callback fired while their token was
+provisionally revoked, so an already-idle slot cannot retain an exclusive claim indefinitely.
+The client creation claim is validated before that barrier is published, and the barrier
+only revokes the matching verified name/slot creation, independent of its mutable directory
+spelling, so a stale control cannot cancel replacement startup while a valid Stop cannot
+miss it after a rewrite. The final alias scan also requires the current slot entry to retain
+its captured slot identity and original lexical directory, whether the rewritten path is
+equivalent or different. Every turn awaiting that scan also holds a process-owned
+pre-publication token; Stop and Delete provisionally revoke matching tokens by normalized
+directory, verified name, or slot before waiting for any directory spelling, so a control
+that completes through a rewritten entry cannot be followed by an older task publication.
+Pending tokens and handoff execution claims also exclude a different identity view by
+normalized directory, verified slot, or name, so
+rewriting the index during either request's final scan cannot start a second generation under
+a different lock. An exact published identity still accepts established same-slot queuing.
+Ownership transfers to the published slot task and follows queued successor turns until
+the slot is idle, and an autonomous handoff retains ownership across idle gaps for the
+lifetime of its armed nudge loop. Stop and Delete capture both the claimed slot and its
+loop identity before revoking them, so an index rewrite cannot make a running turn or a
+later nudge unreachable through the new slot key. The process retains the creation's first
+authenticated directory as well as its slot key, so a generic embedded-chat turn is still
+reachable when the agent rewrites its name, directory, and slot together. An observed creation
+with no remaining valid index binding is included in dispatch admission and every authenticated
+Stop/Delete teardown; a successful Delete releases every captured slot witness across old names,
+not only the name on the current row. A surviving observed name remains its creation's control
+endpoint even when the raw row removes, corrupts, or replaces its slot key, so an unrelated teardown
+cannot misclassify and archive it as a global orphan. Index workers publish observed-name and
+observed-directory witness maps by whole-map replacement; event-loop admission and teardown
+readers therefore traverse stable snapshots rather than dictionaries a worker thread can resize.
+Durable nudge loops participate in
+dispatch admission after restart and are matched by verified name ownership or their original
+sentinel directory; cold-start name and directory witnesses survive a missing or invalid raw
+slot key, and an empty global scan never treats an unrelated empty sentinel as a direct match.
+A loop whose name, directory, and slot no longer match any valid index
+entry is treated as an orphan: dispatch fails closed and Stop/Delete captures it, because no
+replacement entry can safely claim exclusive ownership of that unattended run. When no index
+entry remains to provide a Stop/Delete URL, Create opens a service-owned maintenance transaction
+even when AutoNudge is disabled. The transaction is serialized with service startup and peer
+cleanup, persistently pauses each orphan, waits for both the captured firing callback and a timer
+replacement installed during that pause, then re-reads and archives its worker before any
+worktree, spec-directory, or index side effect. The inactive loop
+remains as a restart-durable recovery marker until every worker archive succeeds, so a timeout or
+crash cannot make a retry forget the old turn. A failed final loop-store removal restores the
+in-memory marker and emits no removal event, so the next cleanup can retry the durable delete.
+This also covers a direct embedded-chat turn with no loop. Cleanup or transcript-archive failure refuses Create so the old worker cannot overlap the
+replacement, and successful recovery removes the loop and releases the old process witness before
+the new creation mints its slot key. Detail status also follows a restored
+loop by its sentinel
+directory, keeping Pause visible when the current row carries a rewritten slot key. Once a
+process observes a per-creation slot key, an agent-written different key for that name cannot
+change the live slot resolver. Detail and destructive controls use that authenticated key for
+the worker while retaining the raw key only as the compare-and-swap identity of the mutable
+index row. App-owned deletion or create rollback releases every captured spelling so a
+same-name recreation can mint a new worker. A legacy entry
+without `slot_key` is upgraded
+atomically to its name-derived identity only when this process has not already observed a
+per-creation key for that name; removing a live worker's key therefore fails closed instead of
+being misread as an upgrade.
+New-spec registration also returns 503 before mutation or seed dispatch when the protected
+decision ledger cannot be read, because transient unreadability cannot prove an alias safe.
+Pre-consumption automatic retries carry
+the settlement callback on their process-local queue entry, including across repeated
+retries; a gateway restart drops that callback deliberately and the durable pending entry
+re-arms it on replay. This file is therefore an **input to the
+refusal and recovery path**, not a setting. An agent able to write it could erase an entry
+to make a settled decision answerable again, forge one to lock a decision the user never
+answered, or plant a pending prompt for the backend to relay. It lives under the
+whole-directory `trust` entry rather than getting a leaf of its own, because gating the
+leaf alone left its parent replaceable: a directory under `workspace/` is not itself a
+sensitive path, so one `ln -s` naming it redirected every read and write — the app opens
+the path directly, as keystone writers must, so it would have followed the link. It is
+also deliberately NOT a field on the app's `index.json`, which is agent-writable by
+design.
+
 **Ops Mission Control authorization inputs** (`apps/ops-mission-control/data/rotation.yaml`,
 `apps/ops-mission-control/data/incidents/index.json`) — two app-owned files that are
 write-protected on both layers for the same reason as the marker above, and with the same

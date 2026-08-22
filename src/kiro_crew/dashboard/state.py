@@ -20,7 +20,7 @@ import uuid
 from collections.abc import Coroutine, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, NamedTuple, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, NamedTuple, TypeVar
 
 from aiohttp import web
 
@@ -2984,7 +2984,8 @@ class _ChatSlot:
         "created_at",
         "messages",
         "total_messages",
-        "task",
+        "_task",
+        "_turn_generation",
         "event",
         "_pending",
         "_pending_consumers",
@@ -3143,7 +3144,11 @@ class _ChatSlot:
         self._source_links_revision = 0
         self._source_links_cache: tuple[tuple[int, int], list[dict]] | None = None
         self.total_messages: int = 0  # lifetime count (survives trimming)
-        self.task: asyncio.Task | None = None  # type: ignore[type-arg]
+        self._task: asyncio.Task[Any] | None = None
+        # Monotonic publication history for turn ownership. ``task`` returns to
+        # None after teardown, so consumers that span awaits cannot distinguish
+        # "stayed idle" from "ran and finished" by comparing task references.
+        self._turn_generation: int = 0
         self.event = asyncio.Event()
         self._pending: list[dict[str, str]] = []
         # Number of readers currently treating ``_pending`` as their delivery
@@ -3155,7 +3160,7 @@ class _ChatSlot:
         # purge never runs again for that slot, so the rows it declined to drop
         # outlive every consumer and the leak survives its own fix.
         self._pending_release_deferred: bool = False
-        self._queue: list[dict[str, str]] = []  # [{"id": uuid, "content": str}, ...]
+        self._queue: list[dict[str, Any]] = []  # [{"id": uuid, "content": str}, ...]
         # Newest enqueue instant, read only while ``_queue`` is non-empty — see
         # ``_note_enqueue``.
         self._last_enqueue_ts: str = ""
@@ -4281,7 +4286,14 @@ class _ChatSlot:
 
     # ── Queue helpers (dict-based queue items) ──
 
-    def queue_append(self, content: str, kind: str = "", meta: dict | None = None) -> str:
+    def queue_append(
+        self,
+        content: str,
+        kind: str = "",
+        meta: dict | None = None,
+        *,
+        directive_user_origin: bool = False,
+    ) -> str:
         """Append a message to the queue. Returns the generated queue ID.
 
         ``kind`` is a structural origin tag (e.g. ``"synthetic_recovery"`` for
@@ -4294,6 +4306,10 @@ class _ChatSlot:
         row whose facts were computed at enqueue time (a sub-agent completion's
         structured header — see gateway ``_subagent_done``) keeps them instead of
         forcing the drain to re-derive them from the prose.
+
+        ``directive_user_origin`` is fail-closed provenance for effects that may
+        mutate the owning session. Only authenticated human entry points set it;
+        absent and automation-created entries remain false through queue merges.
         """
         qid = uuid.uuid4().hex[:12]
         # dict[str, Any]: the base entry is all strings, but ``meta`` adds a dict
@@ -4301,6 +4317,8 @@ class _ChatSlot:
         item: dict[str, Any] = {"id": qid, "content": content, "kind": kind}
         if meta:
             item["meta"] = meta
+        if directive_user_origin:
+            item["_directive_user_origin"] = True
         self._queue.append(item)
         self._note_enqueue()
         return qid
@@ -4327,6 +4345,9 @@ class _ChatSlot:
         kind: str = "",
         payload: str = "",
         meta: dict | None = None,
+        on_consumed: Callable[[bool], None] | None = None,
+        on_irreversibly_consumed: Callable[[], Awaitable[None] | None] | None = None,
+        directive_user_origin: bool = False,
     ) -> str:
         """Insert a message at a specific queue position. Returns the queue ID.
 
@@ -4334,16 +4355,33 @@ class _ChatSlot:
         is the orthogonal question of whether the TEXT is runner-authored, read by
         ``is_synthetic_payload_item``; a recovery entry that replays the user's own
         message shares the recovery kind but is not machine speech.
+
+        The consumption callbacks and directive provenance are process-local state
+        for an automatic retry. They follow the exact queue entry through reordering
+        and repeated retries, but queue snapshots expose only id/content and gateway
+        restart deliberately drops them so the durable producer can recover the
+        still-pending delivery.
         """
         qid = uuid.uuid4().hex[:12]
-        entry: dict[str, Any] = {"id": qid, "content": content, "kind": kind, "payload": payload}
+        item: dict[str, Any] = {
+            "id": qid,
+            "content": content,
+            "kind": kind,
+            "payload": payload,
+        }
         if meta:
-            entry["meta"] = dict(meta)
-        self._queue.insert(index, entry)
+            item["meta"] = dict(meta)
+        if on_consumed is not None:
+            item["_on_consumed"] = on_consumed
+        if on_irreversibly_consumed is not None:
+            item["_on_irreversibly_consumed"] = on_irreversibly_consumed
+        if directive_user_origin:
+            item["_directive_user_origin"] = True
+        self._queue.insert(index, item)
         self._note_enqueue()
         return qid
 
-    def queue_pop(self, index: int = 0) -> dict[str, str]:
+    def queue_pop(self, index: int = 0) -> dict[str, Any]:
         """Pop a queue item by index. Returns {"id": ..., "content": ...}."""
         return self._queue.pop(index)
 
@@ -4414,14 +4452,30 @@ class _ChatSlot:
                 return item["content"]
         return None
 
-    def queue_edit_by_id(self, queue_id: str, content: str) -> bool:
+    def queue_edit_by_id(
+        self,
+        queue_id: str,
+        content: str,
+        *,
+        directive_user_origin: bool = False,
+    ) -> bool:
         """Replace the content of a queue item by ID. Returns True if found.
 
-        Order is preserved — only the content of the matching item changes.
+        Order and identity are preserved. Directive provenance follows the
+        editor because replacement text may contain a directive that the
+        original author never supplied. Automatic recovery entries are immutable:
+        their consumption callbacks settle the exact content that failed, so moving
+        those callbacks onto replacement text would settle the wrong delivery.
         """
         for item in self._queue:
             if item["id"] == queue_id:
+                if "_on_consumed" in item or "_on_irreversibly_consumed" in item:
+                    return False
                 item["content"] = content
+                if directive_user_origin:
+                    item["_directive_user_origin"] = True
+                else:
+                    item.pop("_directive_user_origin", None)
                 return True
         return False
 
@@ -4439,6 +4493,16 @@ class _ChatSlot:
                 self._queue.insert(0, self._queue.pop(i))
                 return True
         return False
+
+    @property
+    def task(self) -> asyncio.Task[Any] | None:
+        return self._task
+
+    @task.setter
+    def task(self, value: asyncio.Task[Any] | None) -> None:
+        if value is not None and value is not self._task:
+            self._turn_generation += 1
+        self._task = value
 
     @property
     def running(self) -> bool:
@@ -5155,6 +5219,13 @@ class DashboardState:
         # lifecycle matches the gateway instance.
         self.resource_pressure_notifier = ResourcePressureNotifier(self.notification_bus)
         self._slots: dict[str, _ChatSlot] = {}
+        # Process-local Spec Builder outbox claims, keyed by directory + delivery.
+        # Directory scope matters because aliases use different slots for the same
+        # files; durable status remains owned by the app's decision ledger.
+        self._spec_decision_deliveries_inflight: set[tuple[str, str]] = set()
+        # Consumed claims whose durable finalization failed remain blocked from
+        # redispatch while a later Spec Builder detail poll retries the ledger write.
+        self._spec_decision_deliveries_consumed: set[tuple[str, str]] = set()
         # Slot keys that EXIST but are deliberately absent from ``_slots`` while
         # they are being built (see ``session_transfer``'s import path, which
         # retracts a slot so it is unreachable until its transcript and context

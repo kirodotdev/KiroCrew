@@ -304,6 +304,40 @@ async def test_add_denies_a_webex_key_that_is_not_the_users_current_session(
     assert svc.added == []
 
 
+async def test_add_webex_rechecks_session_ownership_at_commit_time(
+    audits: list[dict], tmp_path: Path
+) -> None:
+    """An allow-listed Webex session removed during cleanup must not be
+    recreated by an arm request that passed the initial authorization check."""
+    slot_key = "webex:kirocrew:direct:user@example.com"
+    dispatcher = SimpleNamespace(current_session_key=lambda _email: slot_key)
+    transport = SimpleNamespace(
+        dispatcher=dispatcher,
+        is_authorized=lambda _email: True,
+    )
+    state = _state(transports={"webex": transport})
+    svc = RecordingSvc()
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=state,
+        slot_key=slot_key,
+        message="watch",
+        stop_sentinel_path=str(tmp_path / "stop-webex"),
+        source="dashboard",
+    )
+
+    assert error is None and status == 200 and loop is not None
+    admission_check = svc.added[0]["admission_check"]
+    assert admission_check()
+
+    state.channel_transports["webex"] = SimpleNamespace(
+        dispatcher=dispatcher,
+        is_authorized=lambda _email: True,
+    )
+    assert not admission_check()
+
+
 async def test_add_denies_a_non_dm_discord_session(audits: list[dict]) -> None:
     """Only DM sessions are nudge-able; a guild/channel-shaped key must be
     refused before the allowlist check so it can never reach a public channel."""

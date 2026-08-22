@@ -2109,7 +2109,16 @@ async def api_send_message(request: web.Request) -> web.Response:
                             inject_cls,
                             meta={"injectKind": "cron", "cronLabel": label},
                         )
-                        task = spawn_guarded_turn(state, slot, _run_chat(state, slot, wrapped))
+                        task = spawn_guarded_turn(
+                            state,
+                            slot,
+                            _run_chat(
+                                state,
+                                slot,
+                                wrapped,
+                                _directive_user_origin=False,
+                            ),
+                        )
                         slot.task = task
                         state.push_slots_update()
                     sent_session = True

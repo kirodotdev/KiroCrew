@@ -221,7 +221,13 @@ class TestLinkedThreadIntercept:
         type(slot).running = PropertyMock(return_value=True)
         slot.key = "slot1"
         slot._queue = []
-        slot.queue_append = lambda content: (slot._queue.append({"id": "test", "content": content}) or "test")
+
+        def queue_append(content, *, directive_user_origin):
+            assert directive_user_origin is True
+            slot._queue.append({"id": "test", "content": content})
+            return "test"
+
+        slot.queue_append = queue_append
         ds = MagicMock()
         ds.get_linked_slot = MagicMock(return_value=slot)
         ds.broadcast_ws = MagicMock()

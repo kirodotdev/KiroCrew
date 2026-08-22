@@ -1757,6 +1757,7 @@ async def _launch_loop(request: web.Request, cid: str, *, prepared: bool = False
         idle_secs=int(row["idle_secs"] or DEFAULT_IDLE_SECS),
         max_cycles=int(row["max_cycles"] or 0),
         stop_sentinel_path=str(_campaign_dir(cid) / "STOP"),
+        admission_check=lambda: state.get_slot(slot.key) is slot,
     )
 
 

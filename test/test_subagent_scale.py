@@ -670,7 +670,8 @@ class TestWaveDigest:
         total = 12  # chunk size 10 -> chunks of 10 + 2
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -732,7 +733,8 @@ class TestWaveDigest:
         total = 12  # chunk size 10 -> chunk 1/2 at member 10, final 2/2 on close
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         hop_calls: list[int] = []
@@ -911,7 +913,8 @@ class TestWaveDigest:
         total = 12
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -956,7 +959,8 @@ class TestWaveDigest:
         total = 3
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         with patch("kiro_crew.slack.gateway._run_chat", side_effect=_fake_run_chat), \
@@ -995,7 +999,8 @@ class TestWaveDigest:
         mgr.running_agents_for = MagicMock(return_value=[])
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         solo = SubagentInfo(
@@ -1189,7 +1194,8 @@ class TestDigestHoldDeadline:
         gw_mgr.batch_members_pending = MagicMock(return_value=True)  # straggler alive
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         # Real manager for the sweep, wired to the gateway's own consumer.
@@ -1258,7 +1264,8 @@ class TestDigestHoldDeadline:
         mgr, on_done = TestWaveDigest()._capture_on_done(orch)
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         members = [
@@ -1333,7 +1340,8 @@ class TestDigestHoldDeadline:
         _mgr, on_done = TestWaveDigest()._capture_on_done(orch)
         injected: list[str] = []
 
-        async def _fake_run_chat(_state, _slot, text):
+        async def _fake_run_chat(_state, _slot, text, *, _directive_user_origin):
+            assert _directive_user_origin is False
             injected.append(text)
 
         flush = SubagentInfo(

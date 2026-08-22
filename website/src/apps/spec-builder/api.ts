@@ -62,6 +62,10 @@ export interface SpecDecision {
   options?: string[]
   recommended?: string
   answer?: string
+  /** Set by the backend for a decision whose answer it has already dispatched.
+   *  Such a decision is settled for good: the card must never render options for
+   *  it again, even if the agent's own state file re-emits it as pending. */
+  locked?: boolean
 }
 
 /** Phase-2 structured state the agent maintains in .spec-state.json. */
@@ -108,6 +112,9 @@ export interface SpecDetail {
   state?: SpecState
   context?: SpecContextStats
   running?: boolean
+  /** A crash left an accepted answer waiting for relay. The detail GET reports
+   *  this only; the client requests recovery through a CSRF-protected POST. */
+  decision_recovery_pending?: boolean
 }
 
 /** Directory listing for the project folder picker (GET /browse?path=). */
@@ -172,6 +179,13 @@ export class SpecApiError extends Error {
   }
 }
 
+/** An error carrying the backend's machine-readable `code`, when it sent one.
+ *  Callers use it to tell a definite refusal ("nothing was recorded") apart from an
+ *  ambiguous failure (the write may have committed and the response was lost). */
+export interface ApiError extends Error {
+  code?: string
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(API + path, {
     credentials: 'same-origin',
@@ -207,7 +221,20 @@ export const specApi = {
   // One response carries both sets; the rail already groups on `archived`.
   list: (signal?: AbortSignal) => req<SpecListResponse>('/specs', { signal }),
   create: (body: CreateSpecBody) => req<{ name?: string }>('/specs', { method: 'POST', body: JSON.stringify(body) }),
-  get: (name: string, signal?: AbortSignal) => req<SpecDetail>('/specs/' + enc(name), { signal }),
+  get: async (name: string, signal?: AbortSignal) => {
+    const detail = await req<SpecDetail>('/specs/' + enc(name), { signal })
+    if (detail.decision_recovery_pending && detail.spec_dir && detail.slot_key) {
+      const recovered = await req<{ ok: boolean }>(
+        '/specs/' + enc(name) + '/recover-decision',
+        {
+          method: 'POST',
+          body: JSON.stringify(identity(detail)),
+        },
+      )
+      if (recovered.ok) detail.running = true
+    }
+    return detail
+  },
   // specDir is the identity the CLIENT rendered: the backend compares it against
   // the live index so a stale tab cannot drive a same-name spec that was deleted
   // and recreated pointing somewhere else.
@@ -219,6 +246,18 @@ export const specApi = {
     req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
       body: JSON.stringify({ text, ...identity(id) }),
+    }),
+  // A decision card's answer, sent with the decision's id so the backend can
+  // record it and refuse a second answer for the same decision. Same endpoint as
+  // `message` — the id is what makes the write one-way.
+  //
+  // `option` is the bare choice and `text` the composed prompt the agent reads.
+  // They are separate fields because the backend records the OPTION: recording the
+  // prompt would render the whole localized sentence back as the answer.
+  answerDecision: (name: string, decisionId: string, option: string, text: string, id?: SpecIdentity) =>
+    req<void>('/specs/' + enc(name) + '/message', {
+      method: 'POST',
+      body: JSON.stringify({ text, decision_id: decisionId, decision_option: option, ...identity(id) }),
     }),
   execute: (name: string, id?: SpecIdentity) =>
     req<void>('/specs/' + enc(name) + '/execute', {

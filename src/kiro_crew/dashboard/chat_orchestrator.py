@@ -355,9 +355,22 @@ async def _stage_loop(
                 # passing 0, which would cut every stage instantly.
                 _turn_timeout = tracker.stage_timeout_seconds
                 if _turn_timeout:
-                    await _bounded_turn(_run_chat(state, slot, context), _turn_timeout)
+                    await _bounded_turn(
+                        _run_chat(
+                            state,
+                            slot,
+                            context,
+                            _directive_user_origin=False,
+                        ),
+                        _turn_timeout,
+                    )
                 else:
-                    await _run_chat(state, slot, context)
+                    await _run_chat(
+                        state,
+                        slot,
+                        context,
+                        _directive_user_origin=False,
+                    )
             except (asyncio.TimeoutError, TimeoutError):
                 # `_bounded_turn` raises builtin TimeoutError; on 3.10
                 # asyncio.TimeoutError is a DIFFERENT class, so catch both (the

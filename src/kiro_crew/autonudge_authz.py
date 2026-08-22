@@ -23,9 +23,9 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
-from kiro_crew.autonudge import is_channel_key
+from kiro_crew.autonudge import NudgeAdmissionRefused, is_channel_key
 from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.security import (
     is_sensitive_path,
@@ -288,13 +288,22 @@ async def authorize_and_add_nudge(
         return _deny(
             f"max_runtime_secs must be between 0 and {MAX_RUNTIME_SECS_CEILING} (7 days)", 400
         )
+    admission_check: Callable[[], bool]
     if is_channel_key(slot_key):
         # Channel-bound loop (Slack / Discord ...). Validate the session is
         # routable so a nudge fired later has somewhere to reply.
         if slot_key.startswith("slack:"):
             sessions = getattr(state, "sessions", None)
-            if sessions is None or not sessions.get_channel(slot_key):
+            if sessions is None:
                 return _deny(f"unknown slack session {slot_key}", 404)
+            channel = sessions.get_channel(slot_key)
+            if channel is None:
+                return _deny(f"unknown slack session {slot_key}", 404)
+
+            def _slack_admission() -> bool:
+                return sessions.get_channel(slot_key) is channel
+
+            admission_check = _slack_admission
         elif slot_key.startswith("discord:"):
             # Deny-by-default (mirrors the Discord inbound allowlist): only DM
             # sessions of ALLOWLISTED users, and only the user's CURRENT
@@ -318,6 +327,21 @@ async def authorize_and_add_nudge(
                 current_key = ""
             if slot_key != current_key:
                 return _deny("discord session key does not match the user's current session", 404)
+            authorized_transport = transport
+            authorized_dispatcher = dispatcher
+
+            def _discord_admission() -> bool:
+                try:
+                    return (
+                        (getattr(state, "channel_transports", None) or {}).get("discord")
+                        is authorized_transport
+                        and authorized_dispatcher.is_authorized(user_id)
+                        and authorized_dispatcher.current_session_key(user_id) == slot_key
+                    )
+                except Exception:
+                    return False
+
+            admission_check = _discord_admission
         elif slot_key.startswith("webex:"):
             # Deny-by-default, mirroring the Discord branch and for the same
             # reason: an authenticated caller must not be able to mint a loop that
@@ -341,10 +365,32 @@ async def authorize_and_add_nudge(
                 current_key = ""
             if slot_key != current_key:
                 return _deny("webex session key does not match the user's current session", 404)
+            authorized_transport = transport
+            authorized_dispatcher = dispatcher
+
+            def _webex_admission() -> bool:
+                try:
+                    return (
+                        (getattr(state, "channel_transports", None) or {}).get("webex")
+                        is authorized_transport
+                        and authorized_transport.is_authorized(email)
+                        and authorized_dispatcher.current_session_key(email) == slot_key
+                    )
+                except Exception:
+                    return False
+
+            admission_check = _webex_admission
         else:
             return _deny(f"unsupported channel session {slot_key}", 400)
-    elif slot_key not in state._slots:
-        return _deny(f"unknown slot {slot_key}", 404)
+    else:
+        if slot_key not in state._slots:
+            return _deny(f"unknown slot {slot_key}", 404)
+        authorized_slot = state._slots.get(slot_key)
+
+        def _dashboard_admission() -> bool:
+            return slot_key in state._slots and state._slots.get(slot_key) is authorized_slot
+
+        admission_check = _dashboard_admission
     if len(message) > 8000:
         return _deny("message too long (max 8000 chars)", 400)
     stop_sentinel_path = (stop_sentinel_path or "").strip()
@@ -407,7 +453,10 @@ async def authorize_and_add_nudge(
             max_cycles=int(max_cycles),
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=int(max_runtime_secs),
+            admission_check=admission_check,
         )
+    except NudgeAdmissionRefused:
+        return _deny("session changed before nudge arm committed", 409)
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.add failed: {type(exc).__name__}")
         raise
@@ -425,6 +474,7 @@ async def authorize_and_add_nudge(
             },
         )
     except Exception:  # noqa: BLE001 - armed loop already covered by ``invoked``
-        logger.warning("autonudge success audit failed (invoked event covers the arm)",
-                       exc_info=True)
+        logger.warning(
+            "autonudge success audit failed (invoked event covers the arm)", exc_info=True
+        )
     return loop, None, 200
