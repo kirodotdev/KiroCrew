@@ -1941,7 +1941,15 @@ export const api = {
   setWebhooksEnabled: (enabled: boolean) => post('/api/webhooks/switch', { enabled }).then(j),
   // Prompts (Agent SOPs)
   prompts: () => fetch('/api/prompts').then(j),
-  promptDetail: (name: string) => fetch('/api/prompts/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
+  promptDetail: (name: string, scope?: 'global' | 'local') =>
+    fetch('/api/prompts/' + name.split('/').map(encodeURIComponent).join('/')
+      + (scope ? '?scope=' + scope : '')).then(j),
+  createPrompt: (name: string, content: string, scope: 'global' | 'local') =>
+    post('/api/prompts', { name, content, scope }).then(j),
+  updatePrompt: (name: string, scope: 'global' | 'local', content: string, baseHash: string) =>
+    put('/api/prompts/' + encodeURIComponent(name) + '?scope=' + scope, { content, base_hash: baseHash }).then(j),
+  deletePrompt: (name: string, scope: 'global' | 'local') =>
+    del('/api/prompts/' + encodeURIComponent(name) + '?scope=' + scope).then(j),
   // Skills
   skills: () => fetch('/api/skills').then(j),
   skill: (name: string) => fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),

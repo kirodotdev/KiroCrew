@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import errno
+import hashlib
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
 
 from aiohttp import web
 
+from kiro_crew import agent as _agent
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
+from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink, safe_write_file_nolink
+from kiro_crew.platform_compat import is_link_or_junction
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 from ._shared import (
@@ -47,25 +54,44 @@ def _sel():
 # ── Prompts (Agent SOPs) ──
 
 
-def _extract_sop_description(path: Path) -> str:
-    """Extract description from SOP frontmatter or first heading."""
-    from kiro_crew.skills import SkillsLoader
+def _description_from_text(text: str) -> str:
+    """Description from a prompt's CONTENT: frontmatter first, first heading next.
 
+    Text-based on purpose. The scoped read validates an inode and hands back
+    that inode's bytes; re-opening the path afterwards to read metadata would
+    reintroduce exactly the check-to-use window that read closes, and let a
+    swapped entry answer through ``description``. Callers that already hold the
+    validated bytes pass them here.
+
+    Uses the same ``SKILL_LOADER`` grammar ``SkillsLoader._parse_frontmatter``
+    uses — that method is a one-line path wrapper over this parser — so a
+    block-scalar description resolves identically on both paths.
+    """
     try:
-        meta = SkillsLoader._parse_frontmatter(path)
-    except (OSError, ValueError):
-        return ""
+        meta = parse_frontmatter(text, SKILL_LOADER)
+    except ValueError:
+        meta = {}
     if meta.get("description"):
         return meta["description"]
-    # Fall back to first heading
-    try:
-        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-            stripped = line.strip()
-            if stripped.startswith("#"):
-                return re.sub(r"^#+\s*", "", stripped).strip()
-    except OSError:
-        pass
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            return re.sub(r"^#+\s*", "", stripped).strip()
     return ""
+
+
+def _extract_sop_description(path: Path) -> str:
+    """Description for a path the caller has NOT already read — the listing walk.
+
+    The scoped detail read must use :func:`_description_from_text` instead, on
+    the bytes its read gate validated.
+    """
+    # Strict decode: a file that is not UTF-8 has no description we can trust,
+    # and replacement characters would put mojibake in the list.
+    try:
+        return _description_from_text(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return ""
 
 
 def _redact_prompt(p: dict[str, Any]) -> None:
@@ -112,8 +138,22 @@ def _find_prompt(raw_name: str) -> dict[str, Any] | None:
 
 
 async def api_prompt_detail(request: web.Request) -> web.Response:
-    """GET /api/prompts/{name} — read a prompt/SOP file."""
+    """GET/PUT/DELETE /api/prompts/{name} — read, update, or delete a prompt.
+
+    GET resolves across all sources (package SOPs + user prompts). PUT and
+    DELETE address user prompts only: bare file stem plus an explicit
+    ``?scope=`` query (see the authoring section below).
+    """
+    if request.method in ("PUT", "DELETE"):
+        return await _api_prompt_write(request)
     raw = request.match_info["name"]
+    # An explicit ?scope= resolves the file directly, the same way a write does.
+    # Without it this falls back to first-match across every source, so a global
+    # and a project prompt sharing a stem are indistinguishable — and an editor
+    # seeded from the wrong one would save it under the other's scope.
+    scope = request.query.get("scope", "")
+    if scope in _PROMPT_SCOPES:
+        return await _api_user_prompt_detail(request, raw, scope)
     # _find_prompt() → _list_aim_prompts() does an rglob('*.sop.md') walk over the
     # (possibly large / edition-provided) prompt roots on a cold/expired cache;
     # offload it so a slow FS can't stall the event loop.
@@ -157,13 +197,751 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
         tool_name='api_prompt_detail', tool_kind='prompt', outcome='ok',
         metadata={'name': name, 'path': p['path']},
     )
-    content, _ = redact_credentials(content)
-    content, _ = redact_exfiltration_urls(content)
+    # Report whether this copy was transformed. The editor writes what it was
+    # given, so a redacted copy must never be offered as an edit base: saving it
+    # would replace the real token with the redaction marker. The write path
+    # cannot detect that after the fact, so the read path says so here.
+    content, cred_hits = redact_credentials(content)
+    content, url_hits = redact_exfiltration_urls(content)
     out = dict(p)
     _redact_prompt(out)
     # Strip full filesystem path — return display-only relative path
     out["path"] = out["path"].replace(str(Path.home()), "~")
-    return web.json_response({**out, "name": name, "content": content})
+    return web.json_response({
+        **out, "name": name, "content": content,
+        "redacted": bool(cred_hits or url_hits),
+    })
+
+
+# ── Prompt authoring (user-sourced prompts only) ──
+#
+# Writes address their target by explicit ``scope`` (``global``/``local``) plus
+# file stem — never by list-order resolution — so a name that exists in both
+# user directories can never be written through the wrong one. Package SOPs are
+# not addressable here at all: every write path is confined to the two user
+# prompt directories, so "edit a package prompt" is unrepresentable rather than
+# merely rejected.
+
+_PROMPT_SCOPES = ("global", "local")
+
+#: Filename byte budget for ``<name>.md``. Every mainstream filesystem caps a
+#: single path component at 255 bytes; staying under it turns a would-be
+#: ENAMETOOLONG (an unaudited 500 from deep in the executor) into a coded 400.
+MAX_PROMPT_NAME_BYTES = 200
+
+
+def _linked_prompt_root(d: Path) -> bool:
+    """True when the prompt directory itself is a link, so writes would land
+    outside the tree the caller named.
+
+    Confinement compares the target against the RESOLVED scope directory, which
+    is the right test for an entry inside that directory but says nothing about
+    the directory itself: if ``~/.kiro/prompts`` is a symlink, both sides resolve
+    into the link's destination and every path looks confined.
+
+    Delegates to ``platform_compat.is_link_or_junction`` rather than testing
+    ``is_symlink()`` here: ``islink`` is FALSE for a Windows directory junction,
+    and that helper already carries the reparse-tag fallback for interpreters
+    without ``os.path.isjunction``. A local probe would have to re-derive that,
+    and ``stat.IO_REPARSE_TAG_MOUNT_POINT`` is not exported off Windows, so a
+    hand-rolled version fails open on exactly the platform it is meant to cover.
+
+    Deliberately only the leaf: an ANCESTOR symlink is normal (``/home/<user>``
+    is itself a link on many hosts) and redirects nothing the user did not
+    already choose, so testing ``resolve() != absolute()`` would refuse every
+    write on those machines.
+    """
+    try:
+        return is_link_or_junction(d)
+    except OSError:
+        return True  # unreadable root: refuse rather than guess
+
+
+#: True when this platform can perform an operation RELATIVE to an open
+#: directory descriptor. POSIX has ``openat``/``unlinkat`` behind these; Windows
+#: has neither ``O_DIRECTORY`` nor ``dir_fd`` support, so there the by-name
+#: operation plus the junction check on the root is all that is available.
+_DIR_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY")
+    and {os.open, os.unlink, os.mkdir}.issubset(os.supports_dir_fd)
+)
+
+
+def _pin_prompt_dir(d: Path, *, create: bool = False) -> int:
+    """Return a descriptor pinning the prompt directory *d*, walked component by
+    component so nothing can be swapped once the walk has begun.
+
+    This is what closes the check-to-use window the by-name paths leave open.
+    ``_resolve_prompt_dir`` validates a PATH; an operation that then names
+    ``<dir>/<stem>.md`` re-resolves every component afresh, so replacing a
+    directory in between makes it land somewhere the check never saw. Operations
+    performed relative to this descriptor reach the inode the walk pinned, no
+    matter what the names mean by then.
+
+    Opening ``d`` in ONE call would not be enough: ``O_NOFOLLOW`` constrains only
+    the final component, and a probe confirms that swapping ``.kiro`` for a
+    symlink redirects a single ``O_DIRECTORY|O_NOFOLLOW`` open of the leaf. So
+    each component is opened relative to its parent's descriptor, which pins
+    every level rather than only the last.
+
+    Which links are REFUSED deliberately matches ``_linked_prompt_root`` rather
+    than being stricter: the leaf is opened with ``O_NOFOLLOW``, and the base and
+    ``.kiro`` are not. An already-existing ancestor link is a location the user
+    chose — ``/home/<user>`` is a link on many hosts and dotfile managers
+    routinely symlink ``~/.kiro`` — and refusing it here would make create and
+    delete reject configurations that the read and update paths accept. The
+    guarantee this pin adds is therefore about ATOMICITY, not about reaching
+    fewer directories: it reaches exactly the same directory the old by-name code
+    would have, and it can no longer be redirected mid-operation.
+
+    The base is ``d.parent.parent``, since both scopes have the shape
+    ``<base>/.kiro/prompts``. With *create*, each component below the base is
+    created if absent — the descriptor-relative ``mkdir(parents=True,
+    exist_ok=True)``.
+
+    Raises ``OSError``; callers classify ``ELOOP``/``ENOTDIR`` as a linked root
+    and let anything else reach the generic write-failure path.
+    """
+    fd = os.open(d.parent.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        # (component, refuse a link at it) — the leaf rule, one level down.
+        for part, nofollow in ((d.parent.name, False), (d.name, True)):
+            if create:
+                try:
+                    os.mkdir(part, 0o777, dir_fd=fd)
+                except FileExistsError:
+                    pass
+            flags = os.O_RDONLY | os.O_DIRECTORY | (os.O_NOFOLLOW if nofollow else 0)
+            nxt = os.open(part, flags, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _pin_refusal(exc: OSError) -> str | None:
+    """The coded refusal for a failed pin, or None to let it escape as a 500.
+
+    Only a link (``ELOOP``) or a non-directory component (``ENOTDIR``) is the
+    condition ``linked_prompt_root`` describes. Mapping every ``OSError`` there
+    would answer 403 "prompt directory is a link" for a permission denial, an
+    exhausted descriptor table, or an I/O error — a wrong diagnosis in the
+    response and a wrong reason in the audit trail.
+    """
+    return "linked_prompt_root" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else None
+
+
+def _invalidate_prompt_cache() -> None:
+    """Late-binding into the parent package, where the cache globals live."""
+    # circular import: the parent package imports this module, so a top-level
+    # import here would not resolve.
+    import kiro_crew.dashboard.handlers as _pkg
+    _pkg._invalidate_prompt_cache()
+
+
+def _resolve_prompt_dir(scope: str) -> tuple[Path | None, str | None]:
+    """Resolve and validate the prompt directory for *scope*, OFF the loop.
+
+    Returns ``(dir, None)`` or ``(None, error_code)``.
+
+    Both halves touch the filesystem: resolving "local" reads the active
+    project, and the link check ``lstat``s the directory. On a network-mounted
+    home or project that is a multi-second stall, so every caller runs this
+    inside its own executor job rather than on the event loop — the gateway
+    serves other requests and the heartbeat keeps ticking meanwhile.
+    """
+    d = _user_prompt_dir(scope)
+    if d is None:
+        return None, "no_active_project"
+    if _linked_prompt_root(d):
+        return None, "linked_prompt_root"
+    return d, None
+
+
+def _user_prompt_dir(scope: str) -> Path | None:
+    """Resolve the user prompt directory for *scope*.
+
+    Deliberately the same resolver ``_list_aim_prompts`` uses (the
+    gateway-global project dir): create and list must agree on where "local"
+    is, or a created prompt would never appear in the listing. Moving both
+    sides to per-chat-slot project resolution is a coordinated change to both.
+    """
+    if scope == "global":
+        return Path.home() / ".kiro" / "prompts"
+    # Called through the module rather than imported by name so that patching
+    # ``kiro_crew.agent._project_dir`` (as the tests do) is still observed here.
+    proj = _agent._project_dir()
+    return proj / ".kiro" / "prompts" if proj else None
+
+
+def _plain_stem_ok(stem: str) -> bool:
+    """True when *stem* is a plain path component that cannot leave its
+    directory — no traversal, no separator, no dotfile.
+
+    Shared by the pending-skill slug check and the prompt-name check: both need
+    exactly this predicate, and two spellings of it would drift.
+    """
+    return (
+        bool(stem)
+        and stem not in (".", "..")
+        and not stem.startswith(".")
+        and "/" not in stem
+        and "\\" not in stem
+        and ".." not in stem
+    )
+
+
+def _utf8_or_none(text: str) -> bytes | None:
+    """UTF-8 bytes for *text*, or None when it has no UTF-8 form.
+
+    JSON permits lone surrogates (``"\\ud800"``), and `json.loads` hands them
+    back as a `str` that `str.encode("utf-8")` refuses. So a syntactically valid
+    request body can carry content that cannot be written at all, and the size
+    check — the first thing that encodes it — is where that surfaces. Returning
+    None keeps it on the coded, audited 400 path; letting `UnicodeEncodeError`
+    escape made it a bare 500 with no audit line, which is the one thing these
+    handlers promise not to do.
+    """
+    try:
+        return text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+
+
+def _prompt_audit(op: str, outcome: str, **meta: Any) -> None:
+    """Audit a prompt write — every outcome, rejections included (a refused write
+    can be filesystem probing)."""
+    _sel().log_tool_invocation(
+        session_key='', agent='api', source='dashboard',
+        tool_name=op, tool_kind='prompt', outcome=outcome, metadata=meta,
+    )
+
+
+def _refuse(op: str, outcome: str, code: str, **meta: Any) -> None:
+    """Audit a refused prompt write under the same identifier the response carries.
+
+    The caller answers with a literal status and the same ``code`` (the contract
+    the dashboard localizes on; ``error`` prose is advisory, RFC 9457 3.1.3).
+    Passing ``code`` as the audited reason is what keeps "what was logged" and
+    "what was answered" the same word.
+    """
+    _prompt_audit(op, outcome, reason=code, **meta)
+
+
+async def api_prompts_create(request: web.Request) -> web.Response:
+    """POST /api/prompts — create a user prompt. Body ``{name, content, scope}``.
+
+    The name is sanitized to the skills rule minus ``/``: prompts are FLAT
+    ``*.md`` files (the lister globs, it does not rglob), so a nested name
+    would create a file the Prompts tab never shows.
+    """
+    op = 'api_prompts_create'
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if not isinstance(body, dict):
+        _refuse(op, 'bad_request', 'invalid_json')
+        return web.json_response(
+            {"error": "invalid JSON body", "code": "invalid_json"}, status=400)
+    raw_name = str(body.get("name", "")).strip()
+    content = body.get("content")
+    scope = str(body.get("scope", "global"))
+    if not isinstance(content, str) or not content.strip():
+        _refuse(op, 'bad_request', 'content_required', name=raw_name)
+        return web.json_response(
+            {"error": "content is required", "code": "content_required"}, status=400)
+    if scope not in _PROMPT_SCOPES:
+        _refuse(op, 'bad_request', 'bad_scope', scope=scope)
+        return web.json_response(
+            {"error": "scope must be 'global' or 'local'", "code": "bad_scope"}, status=400)
+    encoded = _utf8_or_none(content)
+    if encoded is None:
+        _refuse(op, 'bad_request', 'content_not_encodable', name=raw_name)
+        return web.json_response(
+            {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+            status=400)
+    if len(encoded) > MAX_PROMPT_BYTES:
+        _refuse(op, 'too_large', 'content_too_large', name=raw_name)
+        return web.json_response(
+            {"error": "content exceeds size limit", "code": "content_too_large"}, status=413)
+    safe_name = re.sub(r"[^a-z0-9\-]", "-", raw_name.lower()).strip("-")
+    if not safe_name:
+        _refuse(op, 'bad_request', 'invalid_name', name=raw_name)
+        return web.json_response(
+            {"error": "invalid prompt name", "code": "invalid_name"}, status=400)
+    if len(f"{safe_name}.md".encode("utf-8")) > MAX_PROMPT_NAME_BYTES:
+        _refuse(op, 'bad_request', 'name_too_long', name=safe_name, scope=scope)
+        return web.json_response(
+            {"error": "prompt name is too long", "code": "name_too_long"}, status=400)
+
+    def _write() -> str | None:
+        target_dir, err = _resolve_prompt_dir(scope)
+        if target_dir is None:
+            return err
+        filename = f"{safe_name}.md"
+        if not _DIR_FD_SUPPORTED:
+            # No openat: the by-name create is the only option, so this platform
+            # keeps the narrower guarantee of the junction check alone.
+            target_dir.mkdir(parents=True, exist_ok=True)
+            path = target_dir / filename
+            try:
+                # "x" mode makes create-if-absent atomic — no exists()/write race.
+                # newline="" keeps the bytes byte-exact, as the update path does:
+                # without it Windows expands every LF to CRLF, so a body just under
+                # MAX_PROMPT_BYTES becomes a file over it — created successfully,
+                # then rejected by its own read with 413.
+                with path.open("x", encoding="utf-8", newline="") as f:
+                    f.write(content)
+            except FileExistsError:
+                return "exists"
+            except OSError:
+                # The file now exists but holds a partial body, and O_EXCL would
+                # answer the retry with 409 forever. Remove it so the caller's next
+                # attempt is a clean create rather than a permanent conflict.
+                path.unlink(missing_ok=True)
+                raise
+            return None
+        try:
+            # The base is opened, not created, by the walk, so a missing project
+            # directory would answer 500 where the old mkdir(parents=True) made
+            # the whole chain. Created here to keep that contract; the walk still
+            # owns everything below it.
+            base = target_dir.parent.parent
+            if not base.is_dir():
+                base.mkdir(parents=True, exist_ok=True)
+            # Creates .kiro/ and prompts/ as it walks, so the by-name mkdir the
+            # fallback still needs is not wanted here — it would resolve the very
+            # names the walk exists to pin.
+            dir_fd = _pin_prompt_dir(target_dir, create=True)
+        except OSError as exc:
+            refusal = _pin_refusal(exc)
+            if refusal is None:
+                raise
+            return refusal
+        try:
+            # O_EXCL keeps create-if-absent atomic; O_NOFOLLOW refuses an
+            # existing symlink at the name rather than writing through it. Both
+            # resolve relative to the pinned directory, so a swap after the
+            # check cannot redirect this write. Mode matches what open("x")
+            # would have produced (0o666 & ~umask).
+            # No newline translation exists on this path at all: the descriptor
+            # is opened binary (O_BINARY matters only on Windows, where os.open
+            # defaults to text mode and os.write would expand every \n to
+            # \r\n) and handed the encoded bytes, so the file holds exactly what
+            # was posted. Unreachable on Windows today — that platform has no
+            # openat and takes the by-name branch above — but the flag belongs
+            # on any os.open this code owns, not just the reachable ones.
+            try:
+                fd = os.open(
+                    filename,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+                    | getattr(os, "O_BINARY", 0),
+                    0o666,
+                    dir_fd=dir_fd,
+                )
+            except FileExistsError:
+                return "exists"
+            try:
+                # Written on the raw descriptor rather than through os.fdopen,
+                # so ownership is unambiguous. fdopen's failure behaviour is
+                # split: an argument error raises BEFORE wrapping and leaves the
+                # descriptor open, while a late failure (a MemoryError building
+                # the buffer) runs io.open's error path, which closes it. Both
+                # are reachable — probed on CPython 3.12 — so a caller either
+                # leaks a descriptor or double-closes one, and a double close in
+                # this thread pool can shut a descriptor another worker just
+                # opened. Owning the fd here makes the close exactly once.
+                data = content.encode("utf-8")
+                written = 0
+                while written < len(data):
+                    written += os.write(fd, data[written:])
+            except BaseException:
+                # Partial body written under an O_EXCL name: remove it, or every
+                # retry answers 409 forever. Caught broadly rather than on
+                # OSError, because the leftover is just as fatal to the retry
+                # when the write fails for a non-OS reason (a MemoryError, an
+                # interrupt): the file exists either way. Unlinked relative to
+                # the same descriptor, so the cleanup cannot reach a different
+                # file.
+                try:
+                    os.unlink(filename, dir_fd=dir_fd)
+                except OSError:
+                    pass
+                raise
+            finally:
+                os.close(fd)
+        finally:
+            os.close(dir_fd)
+        return None
+
+    # A filesystem refusal (EACCES, ENOSPC, a name the FS still rejects) must
+    # leave an audit trail and a coded answer, not escape as a bare 500 from
+    # inside the executor. Caught on Exception rather than OSError — as the
+    # skill handlers in this file already do — because the property claimed
+    # here is that EVERY outcome is audited, and a non-OS failure inside the
+    # job (a MemoryError on the encoded body, a bug in a helper) would
+    # otherwise answer 500 with no audit line at all. CancelledError is a
+    # BaseException, so a cancelled request still propagates.
+    try:
+        err = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _write)
+    except Exception:
+        _refuse(op, 'error', 'write_failed', name=safe_name, scope=scope)
+        return web.json_response(
+            {"error": "could not write the prompt", "code": "write_failed"}, status=500)
+    if err == "no_active_project":
+        _refuse(op, 'bad_request', 'no_active_project', scope=scope)
+        return web.json_response(
+            {"error": "no active project for local scope", "code": "no_active_project"}, status=400)
+    if err == "linked_prompt_root":
+        _refuse(op, 'blocked', 'linked_prompt_root', scope=scope)
+        return web.json_response(
+            {"error": "prompt directory is a link", "code": "linked_prompt_root"}, status=403)
+    if err == "exists":
+        _refuse(op, 'conflict', 'prompt_exists', name=safe_name, scope=scope)
+        return web.json_response(
+            {"error": f"prompt '{safe_name}' already exists", "code": "prompt_exists"}, status=409)
+    _invalidate_prompt_cache()
+    _prompt_audit(op, 'ok', name=safe_name, scope=scope)
+    return web.json_response({"ok": True, "name": safe_name, "scope": scope}, status=201)
+
+
+async def _api_user_prompt_detail(request: web.Request, name: str, scope: str) -> web.Response:
+    """GET /api/prompts/{name}?scope= — read ONE user prompt, by scope and stem.
+
+    Addressed exactly like a write, so the bytes the editor is seeded from are
+    the bytes a following PUT would replace. ``redacted`` reports whether this
+    copy was transformed on the way out; see the unscoped branch for why.
+    """
+    op = 'api_prompt_detail'
+    if not _plain_stem_ok(name):
+        _refuse(op, 'rejected', 'invalid_name', name=name)
+        return web.json_response({"error": "invalid prompt name", "code": "invalid_name"}, status=400)
+
+    def _read() -> tuple[str | None, str, str | None, str, bool, str]:
+        # Directory resolution, the link check, and description extraction all
+        # touch the filesystem, so they share this one executor job rather than
+        # running on the loop.
+        target_dir, derr = _resolve_prompt_dir(scope)
+        if target_dir is None:
+            return None, "", derr, "", False, ""
+        target = target_dir / f"{name}.md"
+        # Link check FIRST, and without following: ``is_file()`` follows a
+        # symlink, so putting it first would answer 404 for a dangling link and
+        # 403 for a live one — a per-path existence oracle for anything the
+        # link's author cares to point at. Refusing every link with the same
+        # code, before anything dereferences it, makes the two indistinguishable.
+        # ``is_link_or_junction`` is lstat-based (False for a missing entry) and
+        # covers Windows junctions, which ``is_symlink()`` does not.
+        try:
+            if is_link_or_junction(target):
+                return None, "", "access denied", "", False, ""
+        except OSError:
+            return None, "", "access denied", "", False, ""
+        if not target.is_file():
+            return None, "", "not found", "", False, ""
+        if target.resolve().parent != target_dir.resolve():
+            return None, "", "access denied", "", False, ""
+        if target.stat().st_size > MAX_PROMPT_BYTES:
+            # Checked separately from the read's own cap so an oversized prompt
+            # still answers with its own 413 code rather than a flat refusal.
+            return None, "", "too large", "", False, ""
+        # Read through the hardlink-rejecting gate rather than open()ing by
+        # name: it opens with O_NOFOLLOW and validates the inode it actually
+        # read (st_nlink > 1, non-regular, or a real path outside the root is
+        # refused), so a sensitive file hardlinked into the prompt dir cannot
+        # be served through this endpoint. It also enforces the size cap, so
+        # the separate stat() that used to do that is gone.
+        # The stat above is a separate syscall from the gate's own open, so a
+        # prompt that grows past the cap in between would make the gate raise.
+        # FileTooLargeError is not an OSError, so catching it here is what keeps
+        # that race on the coded 413 path instead of an unaudited 500.
+        try:
+            raw = safe_read_file_bytes_nolink(
+                str(target), within_root=str(target_dir), max_bytes=MAX_PROMPT_BYTES)
+        except FileTooLargeError:
+            return None, "", "too large", "", False, ""
+        if raw is None:
+            return None, "", "access denied", "", False, ""
+        # Content tolerates undecodable bytes (the pane shows what is there),
+        # but the description does not: strict-decode for metadata so a file
+        # that is not UTF-8 yields no description rather than mojibake, which
+        # is what the listing path does too.
+        lossy = False
+        try:
+            description = _description_from_text(raw.decode("utf-8"))
+        except UnicodeDecodeError:
+            # The content copy below substitutes U+FFFD for the bytes it could
+            # not decode. That copy is a TRANSFORMATION of the file, so it must
+            # not become an edit base: saving it would write the replacement
+            # characters over bytes that are still perfectly good on disk.
+            # Reported to the caller, which refuses editing exactly as it does
+            # for a redacted copy.
+            lossy = True
+            description = ""
+        return (
+            raw.decode("utf-8", errors="replace"),
+            # From the validated bytes, NOT by reopening the path: the gate
+            # above pinned an inode, and a second open could land on another.
+            description,
+            None,
+            str(target),
+            lossy,
+            # Edit base for compare-and-swap: a later PUT presents this hash and
+            # the writer refuses when the file no longer matches it. Hashed from
+            # the same validated bytes the content copy came from, so the pair
+            # cannot disagree about which file state they describe.
+            hashlib.sha256(raw).hexdigest(),
+        )
+
+    try:
+        content, description, err, target_path, lossy, content_hash = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), _read)
+    except Exception:
+        _refuse(op, 'error', 'read_failed', name=name, scope=scope)
+        return web.json_response(
+            {"error": "could not read the prompt", "code": "read_failed"}, status=500)
+    if err == "no_active_project":
+        _refuse(op, 'bad_request', 'no_active_project', name=name, scope=scope)
+        return web.json_response(
+            {"error": "no active project for local scope", "code": "no_active_project"}, status=400)
+    if err == "linked_prompt_root":
+        _refuse(op, 'blocked', 'linked_prompt_root', name=name, scope=scope)
+        return web.json_response(
+            {"error": "prompt directory is a link", "code": "linked_prompt_root"}, status=403)
+    if err == "not found":
+        _refuse(op, 'not_found', 'prompt_not_found', name=name, scope=scope)
+        return web.json_response({"error": "not found", "code": "prompt_not_found"}, status=404)
+    if err == "access denied":
+        _refuse(op, 'blocked', 'access_denied', name=name, scope=scope)
+        return web.json_response({"error": "access denied", "code": "access_denied"}, status=403)
+    if err == "too large":
+        _refuse(op, 'too_large', 'content_too_large', name=name, scope=scope)
+        return web.json_response(
+            {"error": "file too large", "code": "content_too_large"}, status=413)
+    body = content or ""
+    body, cred_hits = redact_credentials(body)
+    body, url_hits = redact_exfiltration_urls(body)
+    # Metadata gets the same treatment as the unscoped branch: a description read
+    # out of frontmatter is file content too, and can carry a token.
+    out = {
+        "name": name, "fullName": name, "package": "", "source": scope,
+        "description": description,
+        "path": target_path.replace(str(Path.home()), "~"),
+    }
+    _redact_prompt(out)
+    _prompt_audit(op, 'ok', name=name, scope=scope)
+    return web.json_response({
+        **out, "content": body,
+        "redacted": bool(cred_hits or url_hits),
+        # Separate from `redacted` so the UI can say WHICH transformation
+        # happened: "filtered for safety" and "not valid UTF-8" are different
+        # facts about the file, and only one of them implies a credential.
+        "lossy": lossy,
+        # The edit base a PUT presents back — of the RAW file bytes, since it
+        # names the file state the compare-and-swap checks against. Withheld
+        # when the copy is redacted or lossy: editing is refused for those, so
+        # the hash serves no caller — and for a redacted copy it would be an
+        # offline verification oracle for the very content the redaction hides
+        # (hash a guess, compare). No edit base for a copy that must not be one.
+        "hash": "" if (cred_hits or url_hits or lossy) else content_hash,
+    })
+
+
+async def _api_prompt_write(request: web.Request) -> web.Response:
+    """PUT/DELETE /api/prompts/{name}?scope= — update or delete a user prompt.
+
+    Unlike create, the name is validated but NOT rewritten: it must identify an
+    existing file, including one whose stem the sanitizer would not have
+    produced (e.g. a hand-created ``My_Prompt.md``).
+    """
+    name = request.match_info["name"]
+    scope = request.query.get("scope", "")
+    op = 'api_prompt_update' if request.method == "PUT" else 'api_prompt_delete'
+    if scope not in _PROMPT_SCOPES:
+        _refuse(op, 'bad_request', 'bad_scope', name=name, scope=scope)
+        return web.json_response(
+            {"error": "scope query param must be 'global' or 'local'", "code": "bad_scope"}, status=400)
+    if not _plain_stem_ok(name):
+        _refuse(op, 'bad_request', 'invalid_name', name=name)
+        return web.json_response(
+            {"error": "invalid prompt name", "code": "invalid_name"}, status=400)
+
+    content: str | None = None
+    base_hash: str | None = None
+    if request.method == "PUT":
+        try:
+            body = await request.json()
+        except Exception:
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("content"), str) \
+                or not body["content"].strip():
+            _refuse(op, 'bad_request', 'content_required', name=name)
+            return web.json_response(
+                {"error": "content is required", "code": "content_required"}, status=400)
+        new_content: str = body["content"]
+        encoded = _utf8_or_none(new_content)
+        if encoded is None:
+            _refuse(op, 'bad_request', 'content_not_encodable', name=name)
+            return web.json_response(
+                {"error": "content is not valid UTF-8 text", "code": "content_not_encodable"},
+                status=400)
+        if len(encoded) > MAX_PROMPT_BYTES:
+            _refuse(op, 'too_large', 'content_too_large', name=name)
+            return web.json_response(
+                {"error": "content exceeds size limit", "code": "content_too_large"}, status=413)
+        # An update REQUIRES the edit base it was made against. The scoped GET
+        # hands out the file's hash; a PUT that cannot present one was seeded
+        # from something other than the file — exactly the copies (stale cache,
+        # redacted, lossy) this feature refuses as edit bases everywhere else.
+        # The API is new in this change, so requiring it breaks no caller.
+        # Checked LAST among the body checks so each earlier refusal keeps its
+        # own code: a caller fixing an oversize body should hear "too large",
+        # not "missing hash".
+        raw_hash = body.get("base_hash")
+        if not isinstance(raw_hash, str) or not re.fullmatch(r"[0-9a-f]{64}", raw_hash):
+            _refuse(op, 'bad_request', 'base_hash_required', name=name)
+            return web.json_response(
+                {"error": "base_hash (sha256 of the content the edit was based on) is required",
+                 "code": "base_hash_required"}, status=400)
+        base_hash = raw_hash
+        content = new_content
+
+    def _apply() -> str | None:
+        target_dir, derr = _resolve_prompt_dir(scope)
+        if target_dir is None:
+            return derr
+        target = target_dir / f"{name}.md"
+        # Confinement: the file must LIVE in the scope directory, not merely be
+        # named under it — a symlinked entry resolving elsewhere is refused,
+        # not written through. The link check runs FIRST and never follows:
+        # ``is_file()`` follows, so checking it first would answer 404 for a
+        # dangling link and 403 for a live one — an existence oracle for the
+        # link's target. Every link gets the same refusal, dangling or not.
+        try:
+            if is_link_or_junction(target):
+                return "access denied"
+        except OSError:
+            return "access denied"
+        if not target.is_file():
+            return "not found"
+        if target.resolve().parent != target_dir.resolve():
+            return "access denied"
+        if content is not None:
+            # Compare-and-swap: the PUT names the file state the edit was based
+            # on, and a file that no longer matches it means someone else wrote
+            # in between — replacing it would silently discard their work. Read
+            # through the same hardlink-rejecting gate the GET used, so the
+            # bytes being compared are the bytes an editor was seeded from.
+            # This narrows the lost-update window from the length of an editing
+            # session to the gap between this read and the write below; closing
+            # that residue needs a write primitive that verifies under its own
+            # descriptor, which is #5028's territory.
+            try:
+                current = safe_read_file_bytes_nolink(
+                    str(target), within_root=str(target_dir), max_bytes=MAX_PROMPT_BYTES)
+            except FileTooLargeError:
+                # Grew past the cap since the edit base was read: by definition
+                # not the state the edit was made against.
+                return "conflict"
+            if current is None:
+                return "write refused"
+            if hashlib.sha256(current).hexdigest() != base_hash:
+                return "conflict"
+        if content is None:
+            if not _DIR_FD_SUPPORTED:
+                target.unlink()
+            else:
+                # Removed relative to a descriptor pinning the validated
+                # directory, so swapping the root (or an ancestor) for a link
+                # after the confinement check cannot redirect the unlink to a
+                # file outside the tree the caller named. ``unlinkat`` never
+                # follows a symlink at the final component, so a linked entry
+                # still loses only the link — the property the confinement
+                # check above already refuses to reach.
+                try:
+                    dir_fd = _pin_prompt_dir(target_dir)
+                except FileNotFoundError:
+                    # The directory went away under us; the file the caller named
+                    # is gone with it, which is the 404 the by-name check would
+                    # have answered a moment earlier.
+                    return "not found"
+                except OSError as exc:
+                    refusal = _pin_refusal(exc)
+                    if refusal is None:
+                        raise
+                    return refusal
+                try:
+                    os.unlink(f"{name}.md", dir_fd=dir_fd)
+                except FileNotFoundError:
+                    return "not found"
+                finally:
+                    os.close(dir_fd)
+        else:
+            # The repo's descriptor-pinned writer, not a bare atomic_write:
+            # both replace the inode atomically (so a failure partway leaves the
+            # original untouched), but only this one carries the source's
+            # ACCESS-CONTROL metadata across the replace. `atomic_write(mode=)`
+            # copies the permission bits alone, which silently drops a named
+            # POSIX ACL (`system.posix_acl_access`) — an edit would hand back a
+            # file the owner had protected more than the one it replaced. This
+            # writer captures xattrs from the validated descriptor and refuses
+            # the write outright if an access-control attribute cannot be
+            # carried. It also opens without O_CREAT, which is right for an
+            # update: a prompt that vanished must not be recreated here.
+            if not safe_write_file_nolink(
+                    str(target), content, within_root=str(target_dir)):
+                return "write refused"
+        return None
+
+    try:
+        err = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _apply)
+    except Exception:
+        _refuse(op, 'error', 'write_failed', name=name, scope=scope)
+        return web.json_response(
+            {"error": "could not write the prompt", "code": "write_failed"}, status=500)
+    if err == "no_active_project":
+        _refuse(op, 'bad_request', 'no_active_project', name=name, scope=scope)
+        return web.json_response(
+            {"error": "no active project for local scope", "code": "no_active_project"}, status=400)
+    if err == "linked_prompt_root":
+        _refuse(op, 'blocked', 'linked_prompt_root', name=name, scope=scope)
+        return web.json_response(
+            {"error": "prompt directory is a link", "code": "linked_prompt_root"}, status=403)
+    if err == "not found":
+        _refuse(op, 'not_found', 'prompt_not_found', name=name, scope=scope)
+        return web.json_response(
+            {"error": "not found", "code": "prompt_not_found"}, status=404)
+    if err == "access denied":
+        _refuse(op, 'blocked', 'access_denied', name=name, scope=scope)
+        return web.json_response(
+            {"error": "access denied", "code": "access_denied"}, status=403)
+    if err == "conflict":
+        _refuse(op, 'conflict', 'content_conflict', name=name, scope=scope)
+        return web.json_response(
+            {"error": "the prompt changed on disk after the edit was started",
+             "code": "content_conflict"}, status=409)
+    if err == "write refused":
+        # The writer failed closed — a hardlink, a non-regular file, an escape
+        # from the scope dir, or access-control metadata it could not carry.
+        # Answered HERE, in the write dispatch, because this is the only place
+        # that produces it: an unhandled value falls through to the success
+        # response, which tells the caller their edit was saved while the file
+        # on disk still holds the original.
+        _refuse(op, 'blocked', 'write_refused', name=name, scope=scope)
+        return web.json_response(
+            {"error": "could not write the prompt safely", "code": "write_refused"}, status=403)
+    _invalidate_prompt_cache()
+    _prompt_audit(op, 'ok', name=name, scope=scope)
+    if content is not None:
+        # The edit base for the NEXT save without a fresh GET: hashed from the
+        # exact bytes this handler validated and wrote, so a client that saves
+        # twice in a row presents the state it actually created.
+        encoded_now = content.encode("utf-8")
+        return web.json_response({"ok": True, "hash": hashlib.sha256(encoded_now).hexdigest()})
+    return web.json_response({"ok": True})
 
 
 # ── Skills ──
@@ -318,17 +1096,6 @@ async def api_skill_file(request: web.Request) -> web.Response:
 # ── Auto-skill pending-approval queue (v2) ──
 
 
-def _pending_slug_ok(slug: str) -> bool:
-    return (
-        bool(slug)
-        and slug not in (".", "..")
-        and not slug.startswith(".")
-        and "/" not in slug
-        and "\\" not in slug
-        and ".." not in slug
-    )
-
-
 async def api_skills_pending(request: web.Request) -> web.Response:
     """GET /api/skills/-/pending — list staged auto-skill candidates."""
     state: DashboardState = request.app["state"]
@@ -363,7 +1130,7 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
-    if not _pending_slug_ok(slug):
+    if not _plain_stem_ok(slug):
         _sel().log_tool_invocation(
             session_key='', agent='api', source='dashboard',
             tool_name='api_skill_pending_detail', tool_kind='skill',
@@ -425,7 +1192,7 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
-    if not _pending_slug_ok(slug):
+    if not _plain_stem_ok(slug):
         _sel().log_tool_invocation(
             session_key='', agent='api', source='dashboard',
             tool_name='api_skill_pending_approve', tool_kind='skill',
@@ -499,7 +1266,7 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     skills = _get_skills(state)
     slug = request.match_info["slug"]
-    if not _pending_slug_ok(slug):
+    if not _plain_stem_ok(slug):
         _sel().log_tool_invocation(
             session_key='', agent='api', source='dashboard',
             tool_name='api_skill_pending_dismiss', tool_kind='skill',

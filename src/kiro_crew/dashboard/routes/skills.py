@@ -23,7 +23,10 @@ def register(app: web.Application) -> None:
     """Register the skills routes on *app*."""
     # Prompts (Agent SOPs)
     app.router.add_get("/api/prompts", handlers.api_prompts)
+    app.router.add_post("/api/prompts", handlers.api_prompts_create)
     app.router.add_get("/api/prompts/{name:.+}", handlers.api_prompt_detail)
+    app.router.add_put("/api/prompts/{name:.+}", handlers.api_prompt_detail)
+    app.router.add_delete("/api/prompts/{name:.+}", handlers.api_prompt_detail)
 
     # Skills (CRUD + directory browser).  The browser routes use a ``/-/``
     # separator (GitLab-style) before tree/file so they can't collide with a
