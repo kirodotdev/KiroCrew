@@ -38,6 +38,7 @@ from kiro_crew.apps.manager import (
     get_app,
     install_app,
     list_apps,
+    recipes_provider_hint,
     trust_grant_removal_blocked,
     uninstall_app,
 )
@@ -624,7 +625,30 @@ def _handle_app(args: argparse.Namespace) -> None:
         return
 
     if action == "install":
-        result = install_app(args.source)
+        source = str(args.source)
+        if source.startswith("registry:"):
+            # Registry install: clone from the configured registry, then install.
+            # `install_app` only accepts a local directory, so the registry path
+            # (which clones first) is a different entrypoint.
+            from kiro_crew.apps.registry import install_from_registry
+
+            entry_name = source[len("registry:"):].strip()
+            if not entry_name:
+                print("❌ registry install needs a name: registry:<app>", file=sys.stderr)
+                sys.exit(1)
+            reg_result = asyncio.run(install_from_registry(entry_name))
+            if not reg_result.get("ok"):
+                print(f"❌ {reg_result.get('error', 'registry install failed')}", file=sys.stderr)
+                sys.exit(1)
+            installed_name = str(reg_result.get("name") or entry_name)
+            print(f"✅ installed {installed_name} from registry")
+            hint = recipes_provider_hint(installed_name)
+            if hint:
+                print(f"   ℹ️  {hint}")
+            print(f"\n   Run: kirocrew app enable {installed_name}")
+            return
+
+        result = install_app(source)
         if result.ok:
             print(f"✅ {result.message}")
             reg = register_app(result.name)
@@ -637,6 +661,11 @@ def _handle_app(args: argparse.Namespace) -> None:
             if reg.errors:
                 for e in reg.errors:
                     print(f"   ⚠️  {e}")
+            # An app can declare recipes that nothing here can install; say so
+            # rather than letting the block sit inert and silent.
+            hint = recipes_provider_hint(result.name)
+            if hint:
+                print(f"   ℹ️  {hint}")
             print(f"\n   Run: kirocrew app enable {result.name}")
         else:
             print(f"❌ {result.error}", file=sys.stderr)

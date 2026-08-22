@@ -93,6 +93,9 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     notif_d = manifest.notifications.to_dict()
     if notif_d:
         d["notifications"] = notif_d
+    recipes_d = manifest.recipes.to_dict()
+    if recipes_d:
+        d["recipes"] = recipes_d
     platform_d = manifest.platform.to_dict() if manifest.platform else {}
     if platform_d:
         d["platform"] = platform_d
