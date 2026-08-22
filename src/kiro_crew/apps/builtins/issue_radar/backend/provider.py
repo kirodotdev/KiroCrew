@@ -1,15 +1,16 @@
 """Provider identity and dispatch for Issue Radar.
 
-A connected repo on GitHub is fully identified by ``(owner, repo)``. GitLab adds
-two dimensions:
+A connected repo on GitHub is fully identified by ``(owner, repo)``. GitLab and
+Azure DevOps add two dimensions:
 
 ``provider``
-    ``"github"`` or ``"gitlab"``. Decides which client module runs.
+    ``"github"``, ``"gitlab"`` or ``"azure"``. Decides which client module runs.
 ``host``
-    ``github.com``, ``gitlab.com``, or an allowlisted self-managed GitLab
-    ``host[:port]``. A self-managed instance is a genuinely different universe:
-    the same ``group/project`` path exists on gitlab.com and on every private
-    instance, so the host is part of the identity, not decoration.
+    ``github.com``, ``dev.azure.com``, ``gitlab.com``, or an allowlisted
+    self-managed GitLab ``host[:port]``. A self-managed instance is a genuinely
+    different universe: the same ``group/project`` path exists on gitlab.com and
+    on every private instance, so the host is part of the identity, not
+    decoration.
 
 Both default to GitHub everywhere -- on the wire, in ``config.json``, in cache
 paths, and in every function signature, so the additive design holds: an install
@@ -17,26 +18,49 @@ that has been triaging GitHub issues for months keeps its connected repos, its
 caches, and its investigation ledger untouched, and a frontend that never sends
 ``provider`` keeps working.
 
-``owner`` carries GitLab's full namespace, which may be nested
-(``group/subgroup``). It is not split further because GitLab treats the whole
-``namespace/project`` path as the project's address.
+``owner`` carries the whole namespace above the repository, which may be nested.
+On GitLab that is the group path (``group/subgroup``); on Azure DevOps it is
+``organization/project``. It is not split further because both providers treat
+the whole path as the project's address, and keeping one field means the storage
+layout, the connected-repo gate and every route signature stay unchanged.
+
+Azure DevOps differs from both in a way no amount of field-shuffling hides:
+**work items are project-scoped and carry no repository dimension at all**. There
+is no "issues in this repository" question to ask, so an Azure repo's issue list
+is its PROJECT's work item list, and two repositories in one project legitimately
+show the same items. The UI says so rather than implying a per-repo list. Pull
+requests have no such problem -- they are repository-scoped like everywhere else.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Protocol, cast
 from urllib.parse import urlparse
 
-from . import github_client, gitlab_client
+from . import azure_client, github_client, gitlab_client
 from .errors import RepoUrlError
 
 GITHUB = "github"
 GITLAB = "gitlab"
-PROVIDERS = (GITHUB, GITLAB)
+AZURE = "azure"
+PROVIDERS = (GITHUB, GITLAB, AZURE)
 
 DEFAULT_PROVIDER = GITHUB
 DEFAULT_HOST = "github.com"
+AZURE_HOST = "dev.azure.com"
+
+# Hosts that are a fixed property of the provider rather than operator input.
+# A pinned host cannot be influenced by a request, which matters because the host
+# becomes part of a cache path and part of the identity a repo is looked up by.
+# GitHub Enterprise and on-premises Azure DevOps Server are both unsupported, and
+# both are unsupported for the same reason: their client would need a different
+# credential path than the vendor CLI provides.
+_PINNED_HOSTS = {
+    GITHUB: DEFAULT_HOST,
+    AZURE: AZURE_HOST,
+}
 
 
 @dataclass(frozen=True)
@@ -63,12 +87,24 @@ class RepoKey:
         return self.provider == GITHUB
 
     @property
+    def is_azure(self) -> bool:
+        return self.provider == AZURE
+
+    @property
     def is_default_host(self) -> bool:
         """Whether this is public GitHub, which owns the legacy storage layout."""
         return self.provider == GITHUB and self.host == DEFAULT_HOST
 
     def web_url(self) -> str:
-        """The project's page on its host."""
+        """The project's page on its host.
+
+        Azure DevOps puts a literal ``_git`` between the project and the
+        repository, because a project holds repositories alongside boards,
+        pipelines and artifacts and the segment is what disambiguates them. Every
+        other provider's repository page is just the namespace path.
+        """
+        if self.provider == AZURE:
+            return f"https://{self.host}/{self.owner}/_git/{self.repo}"
         return f"https://{self.host}/{self.owner}/{self.repo}"
 
 
@@ -87,9 +123,14 @@ def normalize_provider(raw: object) -> str:
 def normalize_host(raw: object, provider: str) -> str:
     """Coerce a client-supplied host, defaulting per provider.
 
-    GitHub Enterprise is NOT supported, so a GitHub key's host is pinned to
-    ``github.com`` regardless of what the client sent -- otherwise a crafted host
-    would become part of a cache path and of the identity used to look a repo up.
+    A provider in ``_PINNED_HOSTS`` has its host replaced by that constant
+    regardless of what the client sent -- otherwise a crafted host would become
+    part of a cache path and of the identity used to look a repo up. GitHub
+    Enterprise and on-premises Azure DevOps Server are both out of scope, so both
+    providers are pinned to their public host. Azure's legacy
+    ``{org}.visualstudio.com`` form is accepted when PARSING a pasted URL and
+    canonicalized to ``dev.azure.com`` here, so one organization cannot end up
+    with two identities and two cache trees.
 
     A GitLab host is lowercased and trailing-dot-stripped to match the allowlist's
     canonical form, but a MISSING one stays empty rather than becoming
@@ -103,8 +144,9 @@ def normalize_host(raw: object, provider: str) -> str:
     true. It is NOT authorized here: authorization happens at the spawn boundary,
     so every call re-checks it.
     """
-    if provider == GITHUB:
-        return DEFAULT_HOST
+    pinned = _PINNED_HOSTS.get(provider)
+    if pinned is not None:
+        return pinned
     return str(raw or "").strip().lower().rstrip(".")
 
 
@@ -119,14 +161,36 @@ def key_from_parts(owner: str, repo: str, provider: object = None, host: object 
     )
 
 
+_GITHUB_URL_HOSTS = frozenset({"github.com", "www.github.com"})
+_AZURE_URL_HOSTS = frozenset({"dev.azure.com"})
+# Azure's legacy per-organization form. Matched as a HOST SUFFIX on the parsed
+# hostname (never as a substring of the URL), so ``myorg.visualstudio.com``
+# resolves while a path or query bearing the same text does not.
+_AZURE_LEGACY_HOST_SUFFIX = ".visualstudio.com"
+
+
+def _provider_for_url_host(host: str) -> str:
+    """Which provider owns a parsed URL hostname.
+
+    GitLab is the fallback rather than an entry here: its hosts are operator
+    configuration, so it is the only provider that cannot be recognized from a
+    fixed table. Keeping it last also preserves the error a user sees for a
+    malformed github.com URL, which stays GitHub-specific instead of becoming a
+    confusing "not a GitLab host".
+    """
+    if host in _GITHUB_URL_HOSTS:
+        return GITHUB
+    if host in _AZURE_URL_HOSTS or host.endswith(_AZURE_LEGACY_HOST_SUFFIX):
+        return AZURE
+    return GITLAB
+
+
 def parse_repo_url(link: str) -> RepoKey:
     """Parse any supported repository URL into a :class:`RepoKey`.
 
-    Dispatches on the URL's PARSED HOST: github.com goes to
-    ``github_client.parse_github_repo_url``, everything else is offered to
-    ``gitlab_client.parse_gitlab_repo_url`` with the operator's allowlist. Both
-    raise :class:`RepoUrlError` on rejection, which the connect route maps to a
-    400.
+    Dispatches on the URL's PARSED HOST via :func:`_provider_for_url_host`, then
+    hands the link to that provider's own parser. Each raises
+    :class:`RepoUrlError` on rejection, which the connect route maps to a 400.
 
     The host is compared exactly, never matched as a substring. A substring test
     (``"://github.com/" in url``) routes on text that can appear ANYWHERE in the
@@ -137,10 +201,6 @@ def parse_repo_url(link: str) -> RepoKey:
     is refused with a GitHub-specific error instead of being parsed as GitLab.
     Parsing once and comparing the host is both correct and what every other
     host check in this app already does.
-
-    GitLab is tried second and only for non-github.com hosts, so a GitHub URL can
-    never be mis-attributed, and the error a user sees for a bad github.com URL
-    stays GitHub-specific rather than becoming a confusing "not a GitLab host".
     """
     if not link or not isinstance(link, str):
         raise RepoUrlError("repo link is empty")
@@ -150,9 +210,16 @@ def parse_repo_url(link: str) -> RepoKey:
         host = (urlparse(link.strip()).hostname or "").lower().rstrip(".")
     except ValueError as exc:
         raise RepoUrlError(f"unparseable URL: {link!r}") from exc
-    if host in {"github.com", "www.github.com"}:
+    resolved = _provider_for_url_host(host)
+    if resolved == GITHUB:
         owner, repo = github_client.parse_github_repo_url(link)
         return RepoKey(provider=GITHUB, host=DEFAULT_HOST, owner=owner, repo=repo)
+    if resolved == AZURE:
+        # The organization is canonicalized into ``owner`` and the host into
+        # ``dev.azure.com``, so the legacy visualstudio.com form and the modern
+        # one are the same identity rather than two cache trees.
+        namespace, project_repo = azure_client.parse_azure_repo_url(link)
+        return RepoKey(provider=AZURE, host=AZURE_HOST, owner=namespace, repo=project_repo)
     namespace_host, namespace, project = gitlab_client.parse_gitlab_repo_url(
         link, allowed_hosts=gitlab_client.allowed_hosts()
     )
@@ -162,15 +229,18 @@ def parse_repo_url(link: str) -> RepoKey:
 class ProviderClient(Protocol):
     """The read/write surface Issue Radar's routes require of a provider.
 
-    Both ``github_client`` and ``gitlab_client`` satisfy this as MODULES, so the
-    dispatch below is a module lookup rather than an object graph -- there is no
-    state to hold, and keeping the clients as plain modules means each one stays
-    independently readable and testable.
+    ``github_client``, ``gitlab_client`` and ``azure_client`` each satisfy this as
+    a MODULE, so the dispatch below is a module lookup rather than an object graph
+    -- there is no state to hold, and keeping the clients as plain modules means
+    each one stays independently readable and testable.
 
     Because a module cannot be statically checked against a Protocol, conformance
-    is asserted by a test that compares every member's signature across both
-    modules (``test_provider_parity``). That test is the real gate; this Protocol
-    is what it checks against and what call sites are type-checked against.
+    is asserted by a test that compares every member's signature across every
+    registered client (``TestClientParity``, which measures each module against
+    GitHub as the reference and additionally pins its own table against
+    ``PROVIDERS``, so a provider cannot join the dispatch without joining the
+    gate). That test is the real gate; this Protocol is what it checks against and
+    what call sites are type-checked against.
     """
 
     # Reads
@@ -200,7 +270,7 @@ class ProviderClient(Protocol):
     def list_open_pulls(self, owner: str, repo: str, **kwargs: object) -> list[dict]: ...
     def list_open_pulls_first_page(self, owner: str, repo: str, **kwargs: object) -> list[dict]: ...
     def list_closed_pulls(self, owner: str, repo: str, **kwargs: object) -> list[dict]: ...
-    # Both clients also accept a keyword-only ``resolve_mergeable: bool = True``;
+    # Every client also accepts a keyword-only ``resolve_mergeable: bool = True``;
     # ``False`` skips GitHub's lazy-mergeability retry+sleep for a caller that reads
     # only an eager field (head_sha), and is a no-op on GitLab. It is left inside
     # ``**kwargs`` here — exactly as provider-specific kwargs like ``host`` are —
@@ -253,16 +323,21 @@ class ProviderClient(Protocol):
 
     # Pull-request actions. Every one is a WRITE and is gated on the same
     # triage/push access as the issue writes above. The providers differ in what
-    # they can express (GitLab has no "request changes" verb; its auto-merge is
-    # "merge when pipeline succeeds"), and each client REFUSES what it cannot
-    # honour rather than approximating it -- see the sections in both clients.
+    # they can express, and each client REFUSES what it cannot honour rather than
+    # approximating it: GitLab has no "request changes" verb and no reversible
+    # auto-merge arming (its flag rides the merge call as "merge when pipeline
+    # succeeds"), so both raise there. Azure DevOps has a genuinely reversible
+    # arming verb, so it implements that one, but refuses BOTH review verdicts --
+    # its reviewer vote attaches to the pull request rather than to a revision, so
+    # a verdict cannot be bound to the commit it was formed on. Each client's
+    # ``PR_REVIEW_EVENTS`` is the authority on what it accepts.
     def set_pr_state(
         self, owner: str, repo: str, number: int, state: str, **kwargs: object
     ) -> dict: ...
 
-    # ``head_sha`` is REQUIRED in practice (both clients refuse an empty one) for the
-    # same reason merge_pull_request needs it: a verdict must name the revision it
-    # was formed on. It has a default only so the two module signatures stay
+    # ``head_sha`` is REQUIRED in practice (every client refuses an empty one) for
+    # the same reason merge_pull_request needs it: a verdict must name the revision
+    # it was formed on. It has a default only so the module signatures stay
     # identical for the parity gate.
     def submit_pr_review(
         self, owner: str, repo: str, number: int, event: str, body: str = ...,
@@ -273,8 +348,9 @@ class ProviderClient(Protocol):
         self, owner: str, repo: str, number: int, body: str, **kwargs: object
     ) -> dict: ...
 
-    # Separate from add_issue_comment because GitLab numbers issues and merge
-    # requests independently -- see both clients' add_pr_comment.
+    # Separate from add_issue_comment because GitLab and Azure DevOps both number
+    # their tracked items and their change requests independently -- see each
+    # client's add_pr_comment.
     def add_pr_comment(
         self, owner: str, repo: str, number: int, body: str, **kwargs: object
     ) -> dict: ...
@@ -282,8 +358,8 @@ class ProviderClient(Protocol):
     # Merging comes in two forms and NEITHER can bypass a gate: the provider
     # adjudicates branch protection / approval rules on both endpoints. See
     # github_client.merge_pull_request.
-    # ``head_sha`` is REQUIRED in practice (both clients refuse an empty one); it has
-    # a default only so the two module signatures stay identical for the parity gate.
+    # ``head_sha`` is REQUIRED in practice (every client refuses an empty one); it has
+    # a default only so the module signatures stay identical for the parity gate.
     def merge_pull_request(
         self, owner: str, repo: str, number: int, method: str = ..., head_sha: str = ...,
         **kwargs: object
@@ -313,6 +389,7 @@ class ProviderClient(Protocol):
 _CLIENTS: dict[str, ProviderClient] = {
     GITHUB: cast(ProviderClient, github_client),
     GITLAB: cast(ProviderClient, gitlab_client),
+    AZURE: cast(ProviderClient, azure_client),
 }
 
 
@@ -327,30 +404,42 @@ def client_for(key: RepoKey) -> ProviderClient:
     return _CLIENTS.get(key.provider, _CLIENTS[GITHUB])
 
 
+# Providers whose client needs the target host on every call. GitHub is pinned to
+# github.com inside its own runner and takes none.
+_HOST_BEARING_PROVIDERS = frozenset({GITLAB, AZURE})
+
+
 def call_kwargs(key: RepoKey) -> dict[str, str]:
     """Provider-specific keyword arguments for a client call.
 
-    GitLab needs ``host`` on every call (it is required, never defaulted -- see
-    ``gitlab_client``'s module docstring); GitHub takes none. Centralizing this
-    means a route never has to remember which provider needs what, and a future
-    provider adds its own parameters here rather than in 38 handlers.
+    GitLab and Azure DevOps both take ``host`` on every call (for GitLab it is
+    required and never defaulted -- see ``gitlab_client``'s module docstring;
+    for Azure it is pinned but still re-checked at the spawn boundary, so that a
+    corrupted config entry fails closed instead of reaching another host).
+    GitHub takes none. Centralizing this means a route never has to remember which
+    provider needs what, and a future provider adds its own parameters here rather
+    than in 38 handlers.
     """
-    if key.provider == GITLAB:
+    if key.provider in _HOST_BEARING_PROVIDERS:
         return {"host": key.host}
     return {}
 
 
 # ── display vocabulary ───────────────────────────────────────────────────────
 #
-# "Pull request" is GitHub's term; GitLab says "merge request". The UI reads
-# these so a GitLab project's tabs, empty states, and AI prose say the right
-# thing instead of calling everything a PR. Exposed from the backend (rather than
-# hard-coded in the frontend) so the AI prompts and the components agree.
+# "Pull request" is GitHub's term; GitLab says "merge request". The tracked-item
+# noun diverges too: Azure DevOps has no "issue" primitive at all, only work
+# items. The UI reads these so a project's tabs, empty states, and AI prose say
+# the right thing instead of calling everything a PR or an issue. Exposed from the
+# backend (rather than hard-coded in the frontend) so the AI prompts and the
+# components agree.
 _TERMS = {
     GITHUB: {
         "change_request": "pull request",
         "change_request_short": "PR",
         "change_request_sigil": "#",
+        "tracked_item": "issue",
+        "tracked_item_plural": "issues",
         "provider_name": "GitHub",
         "cli": "gh",
     },
@@ -359,8 +448,25 @@ _TERMS = {
         "change_request_short": "MR",
         # GitLab addresses merge requests with "!" and issues with "#".
         "change_request_sigil": "!",
+        "tracked_item": "issue",
+        "tracked_item_plural": "issues",
         "provider_name": "GitLab",
         "cli": "glab",
+    },
+    AZURE: {
+        "change_request": "pull request",
+        "change_request_short": "PR",
+        # Azure DevOps markdown addresses pull requests with "!" and work items
+        # with "#", the same split as GitLab and for the same reason: the two
+        # sequences are independent.
+        "change_request_sigil": "!",
+        # "Issue" is one work item TYPE in some process templates, not the
+        # category, so using it for the category would name a filter the user did
+        # not apply.
+        "tracked_item": "work item",
+        "tracked_item_plural": "work items",
+        "provider_name": "Azure DevOps",
+        "cli": "az",
     },
 }
 
@@ -370,9 +476,47 @@ def terms(key: RepoKey) -> dict[str, str]:
     return _TERMS.get(key.provider, _TERMS[GITHUB])
 
 
+# The page that lists a project's TRACKED ITEMS, per provider. A table rather
+# than a branch, because the three shapes have nothing in common to fall back
+# between: GitHub hangs the list off the repository path, GitLab inserts its
+# ``/-/`` route separator, and Azure DevOps has no repository dimension in the
+# address at all -- work items belong to the PROJECT, which ``owner`` already
+# carries as ``{org}/{project}``, so ``repo`` does not appear in the URL and
+# ``web_url()`` (which ends in ``_git/{repo}``) is not its prefix.
+#
+# The previous binary ``"/-/issues" if not is_github else "/issues"`` is exactly
+# what a table prevents: it has no third branch to take, so a provider that is
+# not GitHub silently inherits GitLab's URL shape and the notification links
+# somewhere that does not exist.
+_TRACKED_ITEMS_URL: dict[str, Callable[[RepoKey], str]] = {
+    GITHUB: lambda key: f"{key.web_url()}/issues",
+    GITLAB: lambda key: f"{key.web_url()}/-/issues",
+    AZURE: lambda key: f"https://{key.host}/{key.owner}/_workitems/",
+}
+
+
+def tracked_items_url(key: RepoKey) -> str:
+    """The web page listing ``key``'s issues / work items.
+
+    Used as the fallback link on a notification that names more items than it can
+    link individually. Falls back to GitHub's shape for an unknown provider, for
+    the same reason :func:`client_for` does: a corrupted config entry should
+    degrade to a wrong-looking link, not to another provider's URL layout.
+    """
+    return _TRACKED_ITEMS_URL.get(key.provider, _TRACKED_ITEMS_URL[GITHUB])(key)
+
+
 # ── investigation record namespace ───────────────────────────────────────────
 
 ITEM_KINDS = frozenset({"issue", "pull"})
+
+# The namespace a provider's CHANGE REQUESTS are recorded under. GitHub is absent
+# because it draws issues and pull requests from one sequence, so its pull
+# requests keep the historical "issue" namespace and no record moves.
+_CHANGE_REQUEST_KINDS = {
+    GITLAB: "mr",
+    AZURE: "pr",
+}
 
 
 def investigation_kind(key: RepoKey, item_kind: str) -> str:
@@ -380,15 +524,17 @@ def investigation_kind(key: RepoKey, item_kind: str) -> str:
 
     A number alone does not always identify an item. GitHub draws issues and pull
     requests from ONE sequence, so ``#5`` is unambiguous and every existing record
-    is correctly keyed by number alone. GitLab keeps two sequences: issue ``#5``
-    and merge request ``!5`` are unrelated items, so sharing one record would make
-    "Review MR !5" resume issue #5's chat session and overwrite its findings.
+    is correctly keyed by number alone. GitLab and Azure DevOps each keep two
+    independent sequences -- issue ``#5`` and merge request ``!5`` are unrelated
+    items, and an Azure work item and pull request numbered the same are allocated
+    by different services entirely -- so sharing one record would make
+    "Review !5" resume issue #5's chat session and overwrite its findings.
 
     Returns ``"issue"`` -- the historical namespace, and therefore the historical
-    filename -- for everything on GitHub and for GitLab issues, and ``"mr"`` for a
-    GitLab merge request. Nothing needs migrating, because the only namespace that
-    changes is one no record has ever been written under.
+    filename -- for everything on GitHub and for the tracked items of every
+    provider. Nothing needs migrating, because the only namespaces that change are
+    ones no record has ever been written under.
     """
-    if key.provider == GITLAB and item_kind == "pull":
-        return "mr"
+    if item_kind == "pull":
+        return _CHANGE_REQUEST_KINDS.get(key.provider, "issue")
     return "issue"

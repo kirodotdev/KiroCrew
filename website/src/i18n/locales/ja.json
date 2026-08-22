@@ -1645,12 +1645,12 @@
           "issue_other": "{{count}}個のIssue",
           "issues": "Issue",
           "loading_the_rest": "残りを読み込んでいます…",
-          "re_fetch_issues_labels_from_github": "GitHub からIssue+ラベルを再取得",
           "refresh_issues": "Issueを更新",
           "search_issues": "Issue を検索…",
           "search_issues_2": "Issueを検索",
-          "time_since_the_issue_list_was_last_fetched_from": "Issueリストが最後に GitHub から取得されてからの時間",
-          "updated": "更新"
+          "updated": "更新",
+          "re_fetch_issues_and_labels_from": "{{provider}} からIssue+ラベルを再取得",
+          "time_since_issue_list_last_fetched_from": "Issueリストが最後に {{provider}} から取得されてからの時間"
         },
         "labelPalette": {
           "close_label_search": "ラベル検索を閉じる",
@@ -1864,8 +1864,8 @@
           "search": "{{label}} を検索…",
           "search_2": "{{label}} を検索",
           "select_for_bulk": "一括操作の{{subject}} #{{number}}を選択",
-          "time_since_the_pr_list_was_last_fetched_from_git": "PRリストが GitHub から最後に取得されてからの時間",
-          "updated": "更新"
+          "updated": "更新",
+          "time_since_list_last_fetched_from": "{{label}}リストが {{provider}} から最後に取得されてからの時間"
         },
         "prRunActions": {
           "cancel_run": "{{name}}実行をキャンセル",
@@ -1937,7 +1937,8 @@
         "session_install_and_sign_in_to": "セッション。\n        インストールしてサインインしてください:",
         "then": "、その後",
         "through_your_own": "あなた自身の",
-        "you_contributed_to": "コントリビューションしたリポジトリ:"
+        "you_contributed_to": "コントリビューションしたリポジトリ:",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "クローズ",
@@ -1958,7 +1959,7 @@
         }
       },
       "manifest": {
-        "description": "覚えているIssueトリアージアシスタント。AIが提案するラベルと問題ごとの調査ノートを使用して、GitHub および GitLab のIssueをブラウズ、フィルター、トリアージします。ローカル台帳で調査結果を保持するため、何度も調査されることはありません。",
+        "description": "覚えているIssueトリアージアシスタント。AIが提案するラベルと項目ごとの調査ノートを使用して、GitHub のIssue、GitLab のIssue、Azure DevOps の作業項目をブラウズ、フィルター、トリアージします。ローカル台帳で調査結果を保持するため、何度も調査されることはありません。",
         "display_name": "Issue Radar",
         "highlight_1": "Issue とプルリクエストのAI要約と推奨ラベル、それぞれの根拠を表示",
         "highlight_2": "Issue ごとの調査ノートをローカル台帳に保持するため、何度も調査されることはありません",
@@ -1968,7 +1969,7 @@
         "highlight_6": "すべての書き込みはリポジトリへのトリアージまたはプッシュアクセスが必要です。読み取り専用接続は提案のみです",
         "highlight_7": "最近コントリビューションしたリポジトリをサーフェスするため、1つを接続するのはクリックです",
         "highlight_8": "Issue、ラベル、メンバーをローカルにキャッシュし、オンデマンドで更新",
-        "highlight_9": "GitHub で動作します。ゲートウェイホストに認証済みの`gh` CLIが必要です",
+        "highlight_9": "GitHub、GitLab、Azure DevOps で動作します。接続するプロバイダー用の認証済み CLI（`gh`、`glab`、`az`）がゲートウェイホストに必要です。インストール時に特定のプロバイダーの CLI は不要です",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2156,14 +2157,14 @@
           "no_reply": "返信なし",
           "nothing_needs_attention": "注意が必要なものはありません",
           "open_issues": "オープンIssue",
-          "re_fetch_issues_labels_from_github": "GitHub からIssue + ラベルを再取得",
           "recently_updated": "最近更新されたもの",
           "refresh_issues": "Issueを更新",
           "stale": "古い",
           "unanswered": "未回答",
           "unassigned": "割り当てられていない",
           "untriaged": "トリアージされていない",
-          "untriaged_2": "トリアージされていない"
+          "untriaged_2": "トリアージされていない",
+          "re_fetch_issues_and_labels_from": "{{provider}} からIssue + ラベルを再取得"
         },
         "registry": {
           "overview": "概要",
@@ -2283,11 +2284,11 @@
             "looking_for_labels_this_repo_is_missing": "このリポジトリにないラベルを検索中…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "なし。リポジトリのタクソノミーは、オープン Issue が必要とするものをすでにカバーしています。",
             "propose_labels_this_repo_is_missing_from_its_ope": "リポジトリがオープン Issue から取得する必要があるラベルを提案",
-            "re_fetch_this_repo_s_labels_from_github": "GitHub からこのリポジトリのラベルを再取得",
             "read_only_repo_needs_triage_push_access": "読み取り専用リポジトリ。トリアージ/プッシュアクセスが必要です",
             "suggest_again": "もう一度提案",
             "suggest_new_labels": "新しいラベルを提案",
-            "suggested_new_labels_not_created_until_you_say_s": "提案された新しいラベル。実際に作成するまでは作成されません"
+            "suggested_new_labels_not_created_until_you_say_s": "提案された新しいラベル。実際に作成するまでは作成されません",
+            "re_fetch_this_repo_s_labels_from": "{{provider}} からこのリポジトリのラベルを再取得"
           },
           "untaggedIssueCard": {
             "add": "追加",

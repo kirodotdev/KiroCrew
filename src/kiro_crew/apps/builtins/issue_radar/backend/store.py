@@ -631,7 +631,31 @@ def add_connected_repo(
 # on the server. Any provider not listed here is matched case-SENSITIVELY -- the
 # fail-safe default for an authorization gate, so an unknown/self-managed
 # provider never silently widens the allowlist to case-variants.
+#
+# Azure DevOps is deliberately ABSENT. Its documented uniqueness rule for both
+# project names and Git repository names is "must not be identical", which does
+# not state a case-folding rule; the naming-restrictions page states one
+# explicitly only for Artifacts FEED names ("can't differ from another feed name
+# only by capitalization"), and that explicit contrast is evidence against
+# assuming the same for projects and repos. Listing it on an unverified
+# assumption is the one direction that fails unsafely: it would merge two
+# distinct projects' caches and admit a case-variant through the gate. It can be
+# added once the behaviour is confirmed against a real organization.
 _CASE_INSENSITIVE_NAME_PROVIDERS = frozenset({"github"})
+
+
+def name_compare_key(name: str, provider: str) -> str:
+    """``name`` reduced to the form ``provider``'s case semantics compare on.
+
+    The ONE definition of "same name" for a provider. A caller that needs a dict
+    or set key rather than a pairwise comparison -- a probe memo, a
+    connected-repo membership test -- goes through this instead of hand-rolling a
+    ``.casefold()``, so it cannot drift from :func:`_name_matches` and start
+    disagreeing with the authorization gate about which names are the same.
+    """
+    if provider.lower() in _CASE_INSENSITIVE_NAME_PROVIDERS:
+        return name.casefold()
+    return name
 
 
 def _name_matches(a: str, b: str, provider: str) -> bool:
@@ -644,9 +668,7 @@ def _name_matches(a: str, b: str, provider: str) -> bool:
     case-variant of a connected GitLab project pass the gate and then resolve to
     a DIFFERENT project under the owner's credentials.
     """
-    if provider.lower() in _CASE_INSENSITIVE_NAME_PROVIDERS:
-        return a.casefold() == b.casefold()
-    return a == b
+    return name_compare_key(a, provider) == name_compare_key(b, provider)
 
 
 def _same_repo(

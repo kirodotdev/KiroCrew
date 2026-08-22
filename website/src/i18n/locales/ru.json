@@ -1703,12 +1703,12 @@
           "issue_other": "{{count}} задачи",
           "issues": "Задачи",
           "loading_the_rest": "Загрузка остального…",
-          "re_fetch_issues_labels_from_github": "Заново загрузить задачи и метки из GitHub",
           "refresh_issues": "Обновить задачи",
           "search_issues": "Поиск задач…",
           "search_issues_2": "Поиск задач",
-          "time_since_the_issue_list_was_last_fetched_from": "Время с последней загрузки списка задач из GitHub",
-          "updated": "Обновлено"
+          "updated": "Обновлено",
+          "re_fetch_issues_and_labels_from": "Заново загрузить задачи и метки из {{provider}}",
+          "time_since_issue_list_last_fetched_from": "Время с последней загрузки списка задач из {{provider}}"
         },
         "labelPalette": {
           "close_label_search": "Закрыть поиск меток",
@@ -1952,8 +1952,8 @@
           "search": "Искать {{label}}...",
           "search_2": "Искать {{label}}",
           "select_for_bulk": "Выбрать {{subject}} #{{number}} для массового действия",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Время с момента последней загрузки списка PR из GitHub",
-          "updated": "Обновлено"
+          "updated": "Обновлено",
+          "time_since_list_last_fetched_from": "Время с момента последней загрузки списка {{label}} из {{provider}}"
         },
         "prRunActions": {
           "cancel_run": "Отменить запуск {{name}}",
@@ -2025,7 +2025,8 @@
         "session_install_and_sign_in_to": "сеанс.\n        Установите и войдите в",
         "then": ", затем",
         "through_your_own": "через ваш собственный",
-        "you_contributed_to": "Вы участвовали в"
+        "you_contributed_to": "Вы участвовали в",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Закрыть",
@@ -2046,7 +2047,7 @@
         }
       },
       "manifest": {
-        "description": "Помощник по разбору задач, который помнит. Просматривай, фильтруй и разбирай задачи GitHub и задачи GitLab с метками, предложенными ИИ, и заметками по разбору каждой задачи — выводы хранятся в локальном журнале, чтобы ничего не приходилось разбирать заново.",
+        "description": "Помощник по разбору задач, который помнит. Просматривай, фильтруй и разбирай задачи GitHub, задачи GitLab и рабочие элементы Azure DevOps с метками, предложенными ИИ, и заметками по разбору каждого элемента — выводы хранятся в локальном журнале, чтобы ничего не приходилось разбирать заново.",
         "display_name": "Issue Radar",
         "highlight_1": "ИИ-сводки и предложенные метки для задач и пул-реквестов, каждая с обоснованием",
         "highlight_2": "Заметки по разбору каждой задачи хранятся в локальном журнале, чтобы ничего не разбирать заново",
@@ -2056,7 +2057,7 @@
         "highlight_6": "Для любой записи нужен доступ triage или push к репозиторию; подключение только для чтения остаётся в режиме подсказок",
         "highlight_7": "Показывает репозитории с твоим недавним вкладом, так что подключение — один клик",
         "highlight_8": "Кэширует задачи, метки и участников локально, обновляя по запросу",
-        "highlight_9": "Работает с GitHub; нужен аутентифицированный `gh` CLI на хосте шлюза",
+        "highlight_9": "Работает с GitHub, GitLab и Azure DevOps; на хосте шлюза нужен аутентифицированный CLI того провайдера, который вы подключаете (`gh`, `glab` или `az`) — для установки не требуется CLI какого-то одного провайдера",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2250,14 +2251,14 @@
           "no_reply": "нет ответов",
           "nothing_needs_attention": "Ничего не требует внимания",
           "open_issues": "Открытые задачи",
-          "re_fetch_issues_labels_from_github": "Заново загрузить задачи и метки из GitHub",
           "recently_updated": "Недавно обновлённые",
           "refresh_issues": "Обновить задачи",
           "stale": "Устаревшие",
           "unanswered": "Без ответа",
           "unassigned": "Без исполнителя",
           "untriaged": "Без разбора",
-          "untriaged_2": "без разбора"
+          "untriaged_2": "без разбора",
+          "re_fetch_issues_and_labels_from": "Заново загрузить задачи и метки из {{provider}}"
         },
         "registry": {
           "overview": "Обзор",
@@ -2377,11 +2378,11 @@
             "looking_for_labels_this_repo_is_missing": "Поиск меток, которых не хватает этому репозиторию…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Ничего — таксономия репозитория уже покрывает потребности его открытых задач.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Предложить метки, которых не хватает репозиторию, на основе его открытых задач",
-            "re_fetch_this_repo_s_labels_from_github": "Заново загрузить метки этого репозитория из GitHub",
             "read_only_repo_needs_triage_push_access": "Репозиторий только для чтения — нужен доступ triage/push",
             "suggest_again": "Предложить снова",
             "suggest_new_labels": "Предложить новые метки",
-            "suggested_new_labels_not_created_until_you_say_s": "Предложенные новые метки — не создаются без вашего согласия"
+            "suggested_new_labels_not_created_until_you_say_s": "Предложенные новые метки — не создаются без вашего согласия",
+            "re_fetch_this_repo_s_labels_from": "Заново загрузить метки этого репозитория из {{provider}}"
           },
           "untaggedIssueCard": {
             "add": "Добавить",

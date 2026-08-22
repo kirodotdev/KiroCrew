@@ -5,89 +5,81 @@
  * not simultaneously lose the ability to build a URL. Keeping them here means
  * `vi.mock('../api')` stubs the transport and nothing else.
  *
- * The whole point of routing every link through here is that GitHub and GitLab
- * do NOT share a URL grammar — GitLab nests a project's own pages under `/-/`,
- * and a self-managed instance is not even on the same host. Concatenating onto
+ * The whole point of routing every link through here is that the providers do
+ * NOT share a URL grammar — GitLab nests a project's own pages under `/-/`,
+ * Azure DevOps puts a literal `_git` between the project and the repository and
+ * addresses work items off the PROJECT with no repository dimension at all, and
+ * a self-managed instance is not even on the same host. Concatenating onto
  * `https://github.com/…` produces a link that silently points at a stranger's
  * repo on the public site.
+ *
+ * ## Why a descriptor TABLE and not a boolean
+ *
+ * Every builder below used to branch on `isGitlab(ref)`. A boolean has exactly
+ * two arms, so the moment a third provider exists it cannot express it: Azure
+ * DevOps would take whichever arm it is not, inheriting GitHub's URL shape (no
+ * `_git`, work items under `/issues/`) with no error to notice — a link that
+ * resolves to a 404, or worse to somebody else's page. The table has one row per
+ * provider id, so adding a provider is a row rather than an edit to ~10 branches,
+ * and a row that forgets a field fails to compile.
  */
 
 import { type ItemKind, type RepoRef } from '../api'
 
-/** True when a ref points at GitLab (drives MR-vs-PR wording and link shape).
+/** Provider ids this module knows how to build links for.
  *
- * Accepts `undefined` deliberately. `provider` is optional on a ref, so "absent"
- * already means public GitHub here — and treating an absent REF the same way
- * removes a crash for callers that render before the active repo resolves (and
- * for tests whose context fixtures build only the fields they exercise). The URL
- * builders below do NOT get this leniency: a link built from nothing would be a
- * wrong link, which is worse than a type error. */
-export function isGitlab(ref?: Pick<RepoRef, 'provider'>): boolean {
-  return ref?.provider === 'gitlab'
-}
+ * Narrower than `SourceProvider` only in that it is the KEY SET of the table
+ * below — `providerKeyOf` maps anything else (an absent provider on a legacy
+ * record, a corrupted config entry) onto `github`, which is what such a record
+ * actually is. */
+type ProviderKey = 'github' | 'gitlab' | 'azure'
 
-/** The ref's host, defaulting to public GitHub for legacy records. */
-function hostOf(ref: RepoRef): string {
-  return ref.host || 'github.com'
-}
-
-/** The repo's landing page on its own host. */
-export function repoWebUrl(ref: RepoRef): string {
-  return `https://${hostOf(ref)}/${ref.owner}/${ref.repo}`
-}
-
-/** GitLab nests project pages under `/-/`; GitHub does not. */
-function repoPagePath(ref: RepoRef, page: string): string {
-  return isGitlab(ref) ? `${repoWebUrl(ref)}/-/${page}` : `${repoWebUrl(ref)}/${page}`
-}
-
-/** Link to one commit. */
-export function commitUrlFor(ref: RepoRef, sha: string): string {
-  return repoPagePath(ref, `commit/${sha}`)
-}
-
-/** Link to one issue. */
-export function issueUrlFor(ref: RepoRef, number: number): string {
-  return repoPagePath(ref, `issues/${number}`)
-}
-
-/** Link to the repo's issue list. */
-export function issuesUrlFor(ref: RepoRef): string {
-  return repoPagePath(ref, 'issues')
-}
-
-/** Link to one pull/merge request.
+/** Which provider's grammar a ref follows.
  *
- * The path noun differs, not just the host: GitHub serves `/pull/<n>`, GitLab
- * `/-/merge_requests/<n>`. */
-export function changeUrlFor(ref: RepoRef, number: number): string {
-  return repoPagePath(ref, isGitlab(ref) ? `merge_requests/${number}` : `pull/${number}`)
+ * Exported because `refLinks` PARSES the same three grammars and must dispatch on
+ * exactly the same answer this module builds with — two independent notions of
+ * "is this Azure" would let a link be built in one shape and parsed in another. */
+export function providerKeyOf(ref?: Pick<RepoRef, 'provider'>): ProviderKey {
+  const p = ref?.provider
+  return p === 'gitlab' || p === 'azure' ? p : 'github'
 }
 
-/** Link to a user's profile on the repo's host.
+/** Where a page hangs off: the repository's own path, or the account/project
+ * path one level up.
  *
- * Host-scoped, not github.com: on a self-managed GitLab the author of an issue
- * is a user of THAT instance and may not exist on any public site.
- */
-export function userUrlFor(ref: RepoRef, login: string): string {
-  return `https://${hostOf(ref)}/${login}`
-}
+ * Azure DevOps needs the distinction. Its work items belong to the PROJECT —
+ * `owner` already carries `{org}/{project}` — so their URL does not mention the
+ * repository at all and the repo page's own path (which ends in `_git/{repo}`)
+ * is not a prefix of it. On GitHub and GitLab every page is repo-scoped, so the
+ * field is uniformly `'repo'` there. */
+type PageScope = 'repo' | 'project'
 
-/** Link to the page where repo access is administered. */
-export function membersUrlFor(ref: RepoRef): string {
-  return isGitlab(ref)
-    ? `${repoWebUrl(ref)}/-/project_members`
-    : `${repoWebUrl(ref)}/settings/access`
-}
-
-/** A single react-query cache-key fragment identifying one repo.
- *
- * A bare `owner, repo` pair does not identify a repo: `acme/widget` on GitHub and
- * `acme/widget` on gitlab.com would share one cache entry, so switching between
- * them would render the other one's issues, labels and settings until something
- * invalidated. Including provider + host makes that collision impossible. */
-export function repoScopeKey(ref: RepoRef): string {
-  return `${ref.provider || 'github'}:${ref.host || 'github.com'}:${ref.owner}/${ref.repo}`
+/** One provider's URL grammar and vocabulary. */
+interface ProviderDescriptor {
+  /** Public host used when a ref carries none. */
+  defaultHost: string
+  /** The repository's own path from the host root, as a template over `{owner}`
+   * and `{repo}`. Azure DevOps' literal `_git` segment lives here — it is the
+   * one piece a shared `${owner}/${repo}` builder cannot express. */
+  repoPath: string
+  /** Segment a provider inserts before a project's OWN pages (`-` on GitLab),
+   * or null when pages hang directly off the repo path. */
+  pageNest: string | null
+  /** Path segment addressing one change request. */
+  changeSegment: string
+  /** Path segment addressing the tracked-item list. */
+  issuesSegment: string
+  /** What `issuesSegment` hangs off — see {@link PageScope}. */
+  issuesScope: PageScope
+  /** Extra segment between `issuesSegment` and the item number, or null. Azure
+   * DevOps addresses a single work item as `_workitems/edit/<id>`. */
+  itemSegment: string | null
+  /** Path of the page where repo/project access is administered. */
+  membersPath: string
+  /** What `membersPath` hangs off. Azure DevOps administers access per PROJECT. */
+  membersScope: PageScope
+  /** The CLI subcommand noun for a change request (`pr` / `mr`). */
+  cliChangeNoun: string
 }
 
 export interface ProviderTerms {
@@ -105,20 +97,236 @@ export interface ProviderTerms {
   changeRequestPluralTitle: string
   /** "PR" / "MR". */
   changeRequestShort: string
-  /** The sigil the provider uses to reference one: `#` on GitHub, `!` on GitLab. */
+  /** The sigil the provider uses to reference one: `#` on GitHub, `!` on GitLab
+   * and on Azure DevOps (whose markdown splits `!` for pull requests from `#`
+   * for work items, the same way and for the same reason GitLab does). */
   sigil: string
-  /** "GitHub" / "GitLab". */
+  /** "GitHub" / "GitLab" / "Azure DevOps". */
   providerName: string
-  /** The CLI that owns the credentials: `gh` / `glab`. */
+  /** The CLI that owns the credentials: `gh` / `glab` / `az`. */
   cli: string
+}
+
+/** URL grammar per provider id.
+ *
+ * Mirrors `backend/provider.py:_TRACKED_ITEMS_URL` for the work-item shape, so
+ * the UI, the notifications and the AI prompts all link to the same page.
+ *
+ * Grammar only — the display VOCABULARY stays in `providerTerms` below, because
+ * Azure DevOps reuses GitHub's change-request nouns verbatim and a per-row copy
+ * of them would be two spellings of one truth.
+ */
+const PROVIDERS: Record<ProviderKey, ProviderDescriptor> = {
+  github: {
+    defaultHost: 'github.com',
+    repoPath: '{owner}/{repo}',
+    pageNest: null,
+    changeSegment: 'pull',
+    issuesSegment: 'issues',
+    issuesScope: 'repo',
+    itemSegment: null,
+    membersPath: 'settings/access',
+    membersScope: 'repo',
+    cliChangeNoun: 'pr',
+  },
+  gitlab: {
+    defaultHost: 'gitlab.com',
+    repoPath: '{owner}/{repo}',
+    pageNest: '-',
+    changeSegment: 'merge_requests',
+    issuesSegment: 'issues',
+    issuesScope: 'repo',
+    itemSegment: null,
+    membersPath: 'project_members',
+    membersScope: 'repo',
+    cliChangeNoun: 'mr',
+  },
+  azure: {
+    // Always dev.azure.com. Azure DevOps has no self-managed form on this host
+    // (Azure DevOps Server is a different product with a different URL shape),
+    // so the backend canonicalizes the host and there is nothing to configure.
+    defaultHost: 'dev.azure.com',
+    // `owner` is `{organization}/{project}`, so this expands to the real
+    // three-level path `{org}/{project}/_git/{repo}`.
+    repoPath: '{owner}/_git/{repo}',
+    pageNest: null,
+    changeSegment: 'pullrequest',
+    issuesSegment: '_workitems',
+    // Work items belong to the project, not the repository — see PageScope.
+    issuesScope: 'project',
+    itemSegment: 'edit',
+    membersPath: '_settings/permissions',
+    membersScope: 'project',
+    cliChangeNoun: 'pr',
+  },
+}
+
+/** The table row for a ref's provider.
+ *
+ * An unknown or absent provider resolves to GitHub, which is what a record
+ * persisted before multi-provider support actually is. Falling back cannot leak
+ * across providers: a GitHub-shaped link on a corrupted entry is a wrong-looking
+ * link, not another provider's page. */
+function descriptorOf(ref?: Pick<RepoRef, 'provider'>): ProviderDescriptor {
+  return PROVIDERS[providerKeyOf(ref)]
+}
+
+/** True when a ref points at GitLab.
+ *
+ * Kept as a thin helper for the handful of call sites that genuinely ask about
+ * GitLab specifically, but it is NO LONGER the dispatch mechanism — see the
+ * table's header comment for why a boolean cannot express three providers.
+ *
+ * Accepts `undefined` deliberately. `provider` is optional on a ref, so "absent"
+ * already means public GitHub here — and treating an absent REF the same way
+ * removes a crash for callers that render before the active repo resolves (and
+ * for tests whose context fixtures build only the fields they exercise). The URL
+ * builders below do NOT get this leniency: a link built from nothing would be a
+ * wrong link, which is worse than a type error. */
+export function isGitlab(ref?: Pick<RepoRef, 'provider'>): boolean {
+  return providerKeyOf(ref) === 'gitlab'
+}
+
+/** The ref's host, defaulting to the provider's public host for legacy records. */
+function hostOf(ref: RepoRef): string {
+  return ref.host || descriptorOf(ref).defaultHost
+}
+
+/** A provider's PUBLIC host — what a hostless shorthand resolves against, and the
+ * host the connect dialog builds a canonical URL on.
+ *
+ * Exported so the connect flow reads the host out of the same table the link
+ * builders use: a second copy would let the dialog connect `github.com` while
+ * every later link pointed at `dev.azure.com`. */
+export function providerDefaultHost(ref?: Pick<RepoRef, 'provider'>): string {
+  return descriptorOf(ref).defaultHost
+}
+
+/** The organization half of an Azure DevOps `owner` (`{org}/{project}`).
+ *
+ * A malformed single-segment owner yields the whole string rather than an empty
+ * one, so a bad config entry still produces an addressable organization instead
+ * of `https://dev.azure.com//…`. */
+function azureOrg(ref: RepoRef): string {
+  const slash = ref.owner.indexOf('/')
+  return slash < 0 ? ref.owner : ref.owner.slice(0, slash)
+}
+
+/** The project half of an Azure DevOps `owner`, or '' when there is none. */
+function azureProject(ref: RepoRef): string {
+  const slash = ref.owner.indexOf('/')
+  return slash < 0 ? '' : ref.owner.slice(slash + 1)
+}
+
+/** The repo's landing page on its own host. */
+export function repoWebUrl(ref: RepoRef): string {
+  const path = descriptorOf(ref).repoPath
+    .replace('{owner}', ref.owner)
+    .replace('{repo}', ref.repo)
+  return `https://${hostOf(ref)}/${path}`
+}
+
+/** The account/project path one level up from the repo — the root Azure DevOps
+ * hangs its project-scoped pages (work items, permissions) off. */
+function projectWebUrl(ref: RepoRef): string {
+  return `https://${hostOf(ref)}/${ref.owner}`
+}
+
+/** `page` resolved against the scope it belongs to, with the provider's own
+ * page-nesting marker applied for repo-scoped pages.
+ *
+ * The marker is deliberately NOT applied to a project-scoped page: GitLab's
+ * `/-/` routes a page within a PROJECT, and there is no provider that nests its
+ * account-level pages the same way. */
+function scopedPath(ref: RepoRef, scope: PageScope, page: string): string {
+  if (scope === 'project') return `${projectWebUrl(ref)}/${page}`
+  const nest = descriptorOf(ref).pageNest
+  return nest ? `${repoWebUrl(ref)}/${nest}/${page}` : `${repoWebUrl(ref)}/${page}`
+}
+
+/** A repo-scoped page: GitLab nests project pages under `/-/`, the others do not. */
+function repoPagePath(ref: RepoRef, page: string): string {
+  return scopedPath(ref, 'repo', page)
+}
+
+/** Link to one commit. */
+export function commitUrlFor(ref: RepoRef, sha: string): string {
+  return repoPagePath(ref, `commit/${sha}`)
+}
+
+/** Link to one issue / work item.
+ *
+ * Azure DevOps addresses a work item off the PROJECT and through an extra `edit`
+ * segment (`_workitems/edit/<id>`), so both the scope and the path shape come
+ * from the table rather than from a suffix appended to the repo URL. */
+export function issueUrlFor(ref: RepoRef, number: number): string {
+  const d = descriptorOf(ref)
+  const tail = d.itemSegment ? `${d.itemSegment}/${number}` : `${number}`
+  return scopedPath(ref, d.issuesScope, `${d.issuesSegment}/${tail}`)
+}
+
+/** Link to the repo's issue / work-item list. */
+export function issuesUrlFor(ref: RepoRef): string {
+  const d = descriptorOf(ref)
+  return scopedPath(ref, d.issuesScope, d.issuesSegment)
+}
+
+/** Link to one pull/merge request.
+ *
+ * The path noun differs, not just the host: GitHub serves `/pull/<n>`, GitLab
+ * `/-/merge_requests/<n>`, Azure DevOps `/_git/<repo>/pullrequest/<n>`. */
+export function changeUrlFor(ref: RepoRef, number: number): string {
+  return repoPagePath(ref, `${descriptorOf(ref).changeSegment}/${number}`)
+}
+
+/** Link to a user's profile on the repo's host.
+ *
+ * Host-scoped, not github.com: on a self-managed GitLab the author of an issue
+ * is a user of THAT instance and may not exist on any public site.
+ */
+export function userUrlFor(ref: RepoRef, login: string): string {
+  return `https://${hostOf(ref)}/${login}`
+}
+
+/** Link to the page where repo access is administered. */
+export function membersUrlFor(ref: RepoRef): string {
+  const d = descriptorOf(ref)
+  return scopedPath(ref, d.membersScope, d.membersPath)
+}
+
+/** A single react-query cache-key fragment identifying one repo.
+ *
+ * A bare `owner, repo` pair does not identify a repo: `acme/widget` on GitHub and
+ * `acme/widget` on gitlab.com would share one cache entry, so switching between
+ * them would render the other one's issues, labels and settings until something
+ * invalidated. Including provider + host makes that collision impossible. */
+export function repoScopeKey(ref: RepoRef): string {
+  return `${ref.provider || 'github'}:${ref.host || 'github.com'}:${ref.owner}/${ref.repo}`
 }
 
 /** Display vocabulary for a ref's provider.
  *
  * Mirrors `backend/provider.py:_TERMS`, so the UI, the notifications, and the AI
  * prompts all call a merge request the same thing.
+ *
+ * Azure DevOps SPREADS the GitHub vocabulary rather than restating it: it calls a
+ * change request a pull request in exactly the words GitHub does, and only the
+ * reference sigil, the brand and the CLI differ. Retyping the four nouns into a
+ * third arm would put two spellings of one truth in one file, which is how
+ * "Pull request" and "Pull Request" end up on adjacent screens.
  */
 export function providerTerms(ref?: Pick<RepoRef, 'provider'>): ProviderTerms {
+  if (providerKeyOf(ref) === 'azure') {
+    return {
+      ...providerTerms(),
+      // Azure DevOps markdown addresses pull requests with `!` and work items
+      // with `#` — the same split as GitLab, because the two sequences are
+      // independent.
+      sigil: '!',
+      providerName: 'Azure DevOps',
+      cli: 'az',
+    }
+  }
   return isGitlab(ref)
     ? {
         changeRequest: 'merge request',
@@ -151,7 +359,7 @@ export function providerTerms(ref?: Pick<RepoRef, 'provider'>): ProviderTerms {
 //
 // See `repoArg` for why GitLab gets a full URL and GitHub keeps `owner/repo`.
 
-/** The CLI that owns credentials for this ref (`gh` / `glab`). */
+/** The CLI that owns credentials for this ref (`gh` / `glab` / `az`). */
 function cliFor(ref: RepoRef): string {
   return providerTerms(ref).cli
 }
@@ -168,8 +376,24 @@ function repoArg(ref: RepoRef): string {
   return isGitlab(ref) ? repoWebUrl(ref) : `${ref.owner}/${ref.repo}`
 }
 
-/** Command that prints one issue with its full comment thread. */
+/** The `--org`/`--project` pair every `az` invocation needs.
+ *
+ * `az` has no `--repo owner/repo` form: an organization is addressed as a URL and
+ * the project is a separate flag, which is exactly the identity Azure DevOps
+ * splits `owner` into. `--detect false` stops `az` from inferring an
+ * organization from the shell's current git remote — the agent may be standing in
+ * an unrelated checkout, and inference there reads the WRONG project silently. */
+function azureScopeArgs(ref: RepoRef): string {
+  return `--org https://${hostOf(ref)}/${azureOrg(ref)} --project ${azureProject(ref)} --detect false`
+}
+
+/** Command that prints one issue / work item with its full comment thread. */
 export function issueViewCommand(ref: RepoRef, number: number): string {
+  if (providerKeyOf(ref) === 'azure') {
+    // `az boards work-item show --expand all` is what carries the discussion; the
+    // `--comments` flag `gh`/`glab` use does not exist here.
+    return `az boards work-item show --id ${number} ${azureScopeArgs(ref)} --expand all`
+  }
   return `${cliFor(ref)} issue view ${number} --repo ${repoArg(ref)} --comments`
 }
 
@@ -178,14 +402,26 @@ export function issueViewCommand(ref: RepoRef, number: number): string {
  * GitHub calls the noun `pr`, GitLab calls it `mr` -- so the SUBCOMMAND differs,
  * not just the binary. */
 export function changeViewCommand(ref: RepoRef, number: number): string {
-  const noun = isGitlab(ref) ? 'mr' : 'pr'
-  return `${cliFor(ref)} ${noun} view ${number} --repo ${repoArg(ref)} --comments`
+  const d = descriptorOf(ref)
+  if (providerKeyOf(ref) === 'azure') {
+    return `az repos pr show --id ${number} ${azureScopeArgs(ref)}`
+  }
+  return `${cliFor(ref)} ${d.cliChangeNoun} view ${number} --repo ${repoArg(ref)} --comments`
 }
 
-/** Command that prints one pull/merge request's diff. */
+/** Command that prints one pull/merge request's diff.
+ *
+ * Azure DevOps' CLI has no diff subcommand, so the closest honest answer is the
+ * PR payload — which carries its source/target refs and its iterations, enough
+ * for an agent to fetch the diff itself. Inventing an `az repos pr diff` would
+ * hand the agent a command that fails, which is worse than a narrower one that
+ * works. */
 export function changeDiffCommand(ref: RepoRef, number: number): string {
-  const noun = isGitlab(ref) ? 'mr' : 'pr'
-  return `${cliFor(ref)} ${noun} diff ${number} --repo ${repoArg(ref)}`
+  const d = descriptorOf(ref)
+  if (providerKeyOf(ref) === 'azure') {
+    return `az repos pr show --id ${number} ${azureScopeArgs(ref)}`
+  }
+  return `${cliFor(ref)} ${d.cliChangeNoun} diff ${number} --repo ${repoArg(ref)}`
 }
 
 /** The identity fields an agent must echo back when recording an investigation.

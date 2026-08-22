@@ -1,13 +1,14 @@
-"""Issue Radar — in-process watcher: new issues, and the crews' unblock signals.
+"""Issue Radar — in-process watcher: new tracked items, and the crews' unblock signals.
 
 A single asyncio background loop, started from ``register_routes(app)`` via
 ``app.on_startup`` and cancelled on ``app.on_cleanup``. Every
 :data:`POLL_INTERVAL_SEC` seconds it makes two passes over the connected repos:
 
-  1. **new-issue notification** — each repo that has opted in (per-repo setting
-     ``notify_on_new_issue``) is checked for issues created since the last check,
-     and a Kiro Crew dashboard notification is pushed (``state.notify`` — the bell,
-     persisted to the notification history) when new ones appear;
+  1. **new-item notification** — each repo that has opted in (per-repo setting
+     ``notify_on_new_issue``) is checked for tracked items (GitHub/GitLab issues,
+     Azure DevOps work items) created since the last check, and a Kiro Crew
+     dashboard notification is pushed (``state.notify`` — the bell, persisted to
+     the notification history) when new ones appear;
   2. **crew sweep** (:func:`crew_runtime.sweep_repo`) — every repo with a live crew
      has its crews' open work items compared against the six unblock signals, and
      the owning crew is woken when one moves.
@@ -18,20 +19,27 @@ probe-coalescing and every cache refresh — is driven by a frontend HTTP reques
 with no dashboard tab open none of it runs and none of its caches are fresh. A crew
 must keep working with the browser closed.
 
+EVERY PASS IS PROVIDER-DISPATCHED. Each connected repo carries its own
+``provider``/``host``, so a mixed install polls each one against the right server
+through ``provider.client_for`` / ``provider.call_kwargs``, and the notification's
+fallback link comes from ``provider.tracked_items_url``. Nothing here assumes
+GitHub: this module names no client directly.
+
 This is NOT a cron job: it lives entirely inside the gateway process and only
 runs while KiroCrew is running (and the machine is awake). It is also
-zero-LLM/zero-token — it shells out to the user's existing ``gh`` session
-(``github_client.list_recent_open_issues``) and compares issue numbers against a
-per-repo high-water mark stored in ``watch-state.json``.
+zero-LLM/zero-token — it shells out to the user's existing provider CLI session
+(``gh`` / ``glab`` / ``az``, via the dispatched client's
+``list_recent_open_issues``) and compares item numbers against a per-repo
+high-water mark stored in ``watch-state.json``.
 
 Fail-safe / best-effort by design:
   * a disabled app is silent, crews included — revoked inside the disable request
     by ``crew_runtime.on_app_disabled``, with the ``is_app_enabled`` gate below as
     the backstop for a disable this process was never told about;
-  * only repos with ``notify_on_new_issue`` set are polled for NEW ISSUES — the
+  * only repos with ``notify_on_new_issue`` set are polled for NEW ITEMS — the
     crew sweep deliberately does not inherit that gate (see :func:`_poll_once`);
-  * any ``gh``/network error skips that repo for the cycle and leaves its mark
-    untouched, so nothing is missed and nothing is double-reported;
+  * any provider-CLI/network error skips that repo for the cycle and leaves its
+    mark untouched, so nothing is missed and nothing is double-reported;
   * one bad cycle never kills the loop.
 """
 
@@ -51,9 +59,9 @@ logger = logging.getLogger("kirocrew.app.issue-radar")
 
 APP_NAME = "issue-radar"
 
-# How often to poll. The user asked for ~1 minute; GitHub's authenticated rate
-# limit (5000/hr) leaves ample headroom for a handful of opted-in repos at one
-# cheap single-page call each per minute.
+# How often to poll. The user asked for ~1 minute; the tightest provider budget
+# (GitHub's authenticated 5000/hr) leaves ample headroom for a handful of
+# opted-in repos at one cheap single-page call each per minute.
 POLL_INTERVAL_SEC = 60
 
 # Most-recently-created open issues pulled per poll. Issue creation almost never
@@ -189,8 +197,9 @@ async def _poll_once(app: web.Application) -> None:
         repo = entry.get("repo")
         if not owner or not repo:
             continue
-        # Each entry carries its own provider+host, so a mixed GitHub/GitLab
-        # install polls every repo against the right server.
+        # Each entry carries its own provider+host, so a mixed
+        # GitHub/GitLab/Azure DevOps install polls every repo against the right
+        # server.
         key = provider.key_from_parts(
             str(owner), str(repo), entry.get("provider"), entry.get("host")
         )
@@ -244,8 +253,10 @@ async def _poll_repo(app: web.Application, key: provider.RepoKey) -> None:
         )
         return
 
-    # Issue numbers are monotonic per repo on GitHub and per project on GitLab
-    # (the ``iid``), so anything above the mark was created since the last poll.
+    # Item numbers are monotonic within the scope the provider allocates them in
+    # — per repo on GitHub, per project on GitLab (the ``iid``) and on Azure
+    # DevOps (work-item ids, allocated per organization and so also increasing) —
+    # so anything above the mark was created since the last poll.
     new_issues = [i for i in recent if int(i["number"]) > last_seen]
     if not new_issues:
         return
@@ -263,11 +274,11 @@ def _notify_new_issues(
 ) -> None:
     """Push one dashboard notification summarizing the new issues for a repo."""
     owner, repo = key.owner, key.repo
-    # GitLab issue pages live under /-/issues, GitHub's under /issues, so the
-    # fallback link is built from the key rather than hard-coded to github.com.
-    issues_url = (
-        f"{key.web_url()}/-/issues" if not key.is_github else f"{key.web_url()}/issues"
-    )
+    # Each provider addresses its tracked-item list differently (GitHub hangs it
+    # off the repository, GitLab inserts /-/, Azure DevOps scopes work items to
+    # the project and drops the repository entirely), so the link comes from
+    # provider.tracked_items_url rather than from a branch here.
+    issues_url = provider.tracked_items_url(key)
     state = app.get("state")
     if state is None:  # gateway state not attached (shouldn't happen post-startup)
         return

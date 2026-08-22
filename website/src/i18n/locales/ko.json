@@ -1645,12 +1645,12 @@
           "issue_other": "이슈 {{count}}개",
           "issues": "이슈",
           "loading_the_rest": "나머지를 불러오고 있습니다…",
-          "re_fetch_issues_labels_from_github": "GitHub에서 이슈와 라벨 다시 가져오기",
           "refresh_issues": "이슈 새로 고침",
           "search_issues": "이슈 검색…",
           "search_issues_2": "이슈 검색",
-          "time_since_the_issue_list_was_last_fetched_from": "이슈 목록을 GitHub에서 마지막으로 가져온 이후 경과 시간",
-          "updated": "업데이트"
+          "updated": "업데이트",
+          "re_fetch_issues_and_labels_from": "{{provider}}에서 이슈와 라벨 다시 가져오기",
+          "time_since_issue_list_last_fetched_from": "이슈 목록을 {{provider}}에서 마지막으로 가져온 이후 경과 시간"
         },
         "labelPalette": {
           "close_label_search": "라벨 검색 닫기",
@@ -1864,8 +1864,8 @@
           "search": "{{label}} 검색…",
           "search_2": "{{label}} 검색",
           "select_for_bulk": "일괄 작업을 위해 {{subject}} #{{number}} 선택",
-          "time_since_the_pr_list_was_last_fetched_from_git": "PR 목록을 GitHub에서 마지막으로 가져온 후 경과한 시간",
-          "updated": "업데이트됨"
+          "updated": "업데이트됨",
+          "time_since_list_last_fetched_from": "{{label}} 목록을 {{provider}}에서 마지막으로 가져온 후 경과한 시간"
         },
         "prRunActions": {
           "cancel_run": "{{name}} 실행 취소",
@@ -1937,7 +1937,8 @@
         "session_install_and_sign_in_to": "세션.\n 설치하고 로그인하세요:",
         "then": ", 그런 다음",
         "through_your_own": "본인의",
-        "you_contributed_to": "기여한 저장소:"
+        "you_contributed_to": "기여한 저장소:",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "닫기",
@@ -1958,7 +1959,7 @@
         }
       },
       "manifest": {
-        "description": "기억하는 이슈 트리아지 어시스턴트입니다. AI가 제안하는 레이블과 이슈별 조사 노트로 GitHub 및 GitLab 이슈를 살펴보고 필터링하고 트리아지하세요 — 조사 결과는 로컬 원장에 보관되므로 같은 내용을 다시 조사하지 않습니다.",
+        "description": "기억하는 이슈 트리아지 어시스턴트입니다. AI가 제안하는 레이블과 항목별 조사 노트로 GitHub 이슈, GitLab 이슈, Azure DevOps 작업 항목을 살펴보고 필터링하고 트리아지하세요 — 조사 결과는 로컬 원장에 보관되므로 같은 내용을 다시 조사하지 않습니다.",
         "display_name": "Issue Radar",
         "highlight_1": "이슈와 풀 리퀘스트에 대한 AI 요약과 추천 레이블, 각각의 근거 제공",
         "highlight_2": "이슈별 조사 노트를 로컬 원장에 보관해 같은 내용을 다시 조사하지 않음",
@@ -1968,7 +1969,7 @@
         "highlight_6": "모든 쓰기에는 저장소의 트리아지 또는 푸시 권한이 필요하며, 읽기 전용 연결은 제안만 가능합니다",
         "highlight_7": "최근 기여한 저장소를 보여 주므로 클릭 한 번으로 연결할 수 있습니다",
         "highlight_8": "이슈·레이블·멤버를 로컬에 캐시하고 필요할 때 새로 고침",
-        "highlight_9": "GitHub에서 동작하며, 게이트웨이 호스트에 인증된 `gh` CLI가 필요합니다",
+        "highlight_9": "GitHub, GitLab, Azure DevOps에서 동작하며, 연결하는 제공자에 맞는 인증된 CLI(`gh`, `glab` 또는 `az`)가 게이트웨이 호스트에 필요합니다 — 설치할 때 특정 제공자의 CLI가 반드시 있어야 하는 것은 아닙니다",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2156,14 +2157,14 @@
           "no_reply": "답변 없음",
           "nothing_needs_attention": "확인이 필요한 항목 없음",
           "open_issues": "열린 이슈",
-          "re_fetch_issues_labels_from_github": "GitHub에서 이슈 + 레이블 다시 가져오기",
           "recently_updated": "최근 업데이트됨",
           "refresh_issues": "이슈 새로 고침",
           "stale": "오래됨",
           "unanswered": "답변 없음",
           "unassigned": "할당 안 됨",
           "untriaged": "트리아지 안 됨",
-          "untriaged_2": "트리아지 안 됨"
+          "untriaged_2": "트리아지 안 됨",
+          "re_fetch_issues_and_labels_from": "{{provider}}에서 이슈 + 레이블 다시 가져오기"
         },
         "registry": {
           "overview": "개요",
@@ -2283,11 +2284,11 @@
             "looking_for_labels_this_repo_is_missing": "이 저장소에 없는 레이블을 찾는 중…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "없음 — 저장소의 분류 체계가 열린 이슈에 필요한 것을 이미 모두 담고 있습니다.",
             "propose_labels_this_repo_is_missing_from_its_ope": "열린 이슈를 바탕으로 이 저장소에 없는 레이블 제안",
-            "re_fetch_this_repo_s_labels_from_github": "이 저장소의 레이블을 GitHub에서 다시 가져오기",
             "read_only_repo_needs_triage_push_access": "읽기 전용 저장소 — 트리아지·푸시 권한이 필요합니다",
             "suggest_again": "다시 제안",
             "suggest_new_labels": "새 레이블 제안",
-            "suggested_new_labels_not_created_until_you_say_s": "제안된 새 레이블 — 승인하기 전까지는 생성되지 않습니다"
+            "suggested_new_labels_not_created_until_you_say_s": "제안된 새 레이블 — 승인하기 전까지는 생성되지 않습니다",
+            "re_fetch_this_repo_s_labels_from": "이 저장소의 레이블을 {{provider}}에서 다시 가져오기"
           },
           "untaggedIssueCard": {
             "add": "레이블 추가",

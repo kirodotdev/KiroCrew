@@ -96,7 +96,7 @@ PROVIDER_EXECUTABLE_CANDIDATES = {
     executable: tuple(
         f"{directory}/{executable}" for directory in PROVIDER_EXECUTABLE_DIRS
     )
-    for executable in ("gh", "glab")
+    for executable in ("gh", "glab", "az")
 }
 
 # Windows equivalents of the well-known dirs above, as the *subdirectory* each

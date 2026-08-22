@@ -2,11 +2,12 @@
   "name": "issue-radar",
   "version": "0.1.0",
   "displayName": "Issue Radar",
-  "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues and GitLab issues with AI-suggested labels and per-issue investigation notes — with findings kept in a local ledger so nothing gets re-investigated.",
+  "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues, GitLab issues, and Azure DevOps work items with AI-suggested labels and per-item investigation notes — with findings kept in a local ledger so nothing gets re-investigated.",
   "author": "kirocrew",
   "tags": [
     "github",
     "gitlab",
+    "azure",
     "issue-triage",
     "open-source",
     "developer-tools"
@@ -20,7 +21,7 @@
     "Every write needs triage or push access on the repo; a read-only connection stays suggest-only",
     "Surfaces repositories you have recently contributed to, so connecting one is a click",
     "Caches issues, labels, and members locally, refreshed on demand",
-    "Works with GitHub; needs an authenticated `gh` CLI on the gateway host"
+    "Works with GitHub, GitLab, and Azure DevOps; needs an authenticated CLI for the provider you connect (`gh`, `glab`, or `az`) on the gateway host — no single provider's CLI is required to install"
   ],
   "defaultEnabled": false,
   "permissions": {
@@ -32,11 +33,10 @@
     "storage": true
   },
   "dependencies": {
-    "commands": [
-      "gh"
-    ],
     "optionalCommands": [
-      "glab"
+      "gh",
+      "glab",
+      "az"
     ]
   },
   "backend": {

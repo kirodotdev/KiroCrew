@@ -2,11 +2,13 @@
 
 ## Overview
 
-Issue Radar is an opt-in (`defaultEnabled: false`) built-in app for GitHub
-issue and pull-request triage. It connects one or more repos via the user's own
-`gh` CLI session (no GitHub App, no PAT management) and provides a 3-column
-workbench: browse/filter issues, view AI-summarized detail + timeline, apply
-triage actions (label, close/reopen), and record per-issue investigation findings
+Issue Radar is an opt-in (`defaultEnabled: false`) built-in app for tracked-item
+and change-request triage across THREE providers — GitHub, GitLab and Azure
+DevOps (see [Providers](#providers)). It connects one or more repos via the
+user's own vendor CLI session (`gh`, `glab` or `az` — no OAuth app, no PAT held
+by Kiro Crew) and provides a 3-column workbench: browse/filter issues (work
+items on Azure DevOps), view AI-summarized detail + timeline, apply triage
+actions (label, close/reopen), and record per-issue investigation findings
 in a local ledger. A parallel PULL REQUESTS section reuses the same shape —
 filter by lifecycle (open / merged / closed-unmerged), person, draft and label;
 read an AI summary of the description plus the whole review conversation; see
@@ -15,6 +17,162 @@ leaving for the provider's web UI — approve / request changes, comment, close 
 reopen, merge or arm the provider's own auto-merge, and cancel or re-run CI, per-PR
 or in bulk across a selection (see Pull-Request Actions). A background watcher
 optionally notifies on new issues.
+
+## Providers
+
+Three providers are supported, and each is a plain MODULE that mirrors the others
+function-for-function (`github_client`, `gitlab_client`, `azure_client`).
+`provider.py` owns the identity type (`RepoKey`), the dispatch table and the
+display vocabulary; `ProviderClient` is the protocol the routes require, and
+because a module cannot be statically checked against a Protocol, conformance is
+enforced by `TestClientParity`, which compares every member's signature against
+GitHub's — GitHub is the REFERENCE rather than one peer among three, since the
+routes, caches and components were all written to its names, so a disagreement is
+always the other client drifting and the failure names which one. That class also
+asserts its own table covers every entry in `provider.PROVIDERS`, so a fourth
+provider cannot be registered while the gate silently keeps comparing three.
+
+| | GitHub | GitLab | Azure DevOps |
+|---|---|---|---|
+| Provider id | `github` | `gitlab` | `azure` |
+| CLI that owns the credential | `gh api` | `glab api` | `az devops invoke` |
+| Host | `github.com` (pinned) | `gitlab.com`, or an allowlisted self-managed `host[:port]` | `dev.azure.com` (pinned) |
+| `RepoKey.owner` carries | owner | group path (`group/subgroup`) | `{organization}/{project}` |
+| Tracked item | issue | issue | work item (**project-scoped**) |
+| Change request | pull request, `#` | merge request, `!` | pull request, `!` |
+| Review verbs | approve / request changes / comment | approve / comment (request changes REFUSED) | comment only (**both verdicts REFUSED** — see below) |
+| Merge methods | `MERGE` / `SQUASH` / `REBASE` | `MERGE` / `SQUASH` (`REBASE` refused) | `MERGE` / `SQUASH` / `REBASE` |
+| Auto-merge | `enablePullRequestAutoMerge` | REFUSED (see below) | `autoCompleteSetBy` |
+| Assignees | a set, capped at 10 | a set (Free keeps only the first) | exactly ONE (`System.AssignedTo`); more than one is REFUSED |
+
+**Every provider is reached by shelling out to its vendor CLI as a raw REST
+passthrough, and Kiro Crew stores NO credential of its own.** `gh api`, `glab api`
+and `az devops invoke` are each the vendor's own generic REST verb, so the client
+modules speak the provider's REST API directly while the CLI owns the token — an
+authenticated `gh`/`glab` session, an `az login` session, or `AZURE_DEVOPS_EXT_PAT`.
+This is a deliberate security posture rather than an implementation shortcut: there
+is no OAuth app, no hosted backend, no PAT in `config.json`, and no token in the
+gateway process, so the app's blast radius is whatever the user's own terminal
+already had. Each client runs its CLI with a list argv (never `shell=True`) and a
+minimal environment, so there is no shell-injection surface either. The cost of the
+posture is that a provider install the vendor CLI cannot reach is not supported at
+all — see "On-premises is out of scope" below.
+
+**Identity is three-level on Azure DevOps, using the overloading GitLab already
+needs.** A GitHub repo is `(owner, repo)`; the other two add `provider` and `host`,
+and `RepoKey.owner` carries the whole namespace ABOVE the repository however deeply
+nested it is. On GitLab that is the group path; on Azure DevOps it is
+`{organization}/{project}`, with `repo` the git repository inside that project. The
+field is not split further because both providers treat the whole path as the
+project's address, so one field keeps the storage layout, the connected-repo gate
+and all ~38 route signatures unchanged. Azure's web address inserts a literal
+`_git` between project and repository (`RepoKey.web_url`), because a project holds
+repositories alongside boards, pipelines and artifacts and that segment is what
+disambiguates them.
+
+**The Azure host is PINNED and the legacy URL form is canonicalized.**
+`normalize_host` replaces whatever a client sent with `dev.azure.com` for Azure
+(and `github.com` for GitHub), because the host becomes part of a cache path and
+part of the identity a repo is looked up by, so it must not be request-influenced.
+The legacy `{organization}.visualstudio.com` form is still accepted when PARSING a
+pasted URL — matched as a host SUFFIX on the parsed hostname, never as a substring
+of the URL — and canonicalized to `dev.azure.com` there, so one organization cannot
+acquire two identities and two cache trees by being connected from two URL shapes.
+
+**The significant semantic limitation: Azure work items are PROJECT-scoped and
+carry no repository dimension at all.** There is no "issues in this repository"
+question to ask Azure DevOps, so `list_open_issues` ignores `repo` and returns the
+PROJECT's work items — which means two repositories connected from one project
+legitimately show the same tracked-item list. That is not a bug and not a cache
+collision; it is the shape of the platform, and the UI says so rather than implying
+a per-repo list. Pull requests have no such problem: they are repository-scoped
+like everywhere else. Two consequences follow:
+
+- **Listing is always two calls.** Azure has no filtered work-item list endpoint,
+  so every listing is a WIQL query that returns ids (`_WIQL_TOP`) followed by a
+  batched hydrate of those ids (`_BATCH_MAX_IDS` per call, chunked and stitched).
+  Both legs run under the paginating timeout budget and the result is cached, so
+  the cost is paid per refresh rather than per view.
+- **No state vocabulary is assumed.** A work item's `System.State` values belong to
+  the project's PROCESS TEMPLATE (Agile, Basic, Scrum, CMMI), where "Closed",
+  "Done", "Completed" and "Resolved" are all real closing states. Nothing
+  hard-codes a state name: the closing states are read from the work item type's
+  own state definitions and the open filter is built from that.
+
+**Azure DevOps is READ-ONLY through this app's own controls.** `get_repo_permissions`
+reports `push`/`triage` as false, and `routes._repo_can_write` consults that before
+admitting any mutation, so labelling, commenting, state changes, merging and
+auto-merge all refuse for an Azure repo even though the client implements them.
+
+This is not an oversight, and the reason is worth recording. The only authorization
+signal reachable through the `az devops invoke` passthrough is project TEAM
+MEMBERSHIP, and membership does not imply repository write: Azure's permissions are
+per-repository ACLs a project can override, so a team member can have Git
+"Contribute" denied while still editing work items, or the reverse. Inferring
+`push` from membership therefore over-grants — it offers controls the repository
+will refuse — and it does so through a gate whose answer is cached. Azure exposes no
+effective-permission read this transport can address (only namespace ACL bitmasks).
+A user who holds the rights still acts in Azure DevOps directly, where the
+permission is evaluated against their real identity.
+
+The write implementations are kept, tested and refused at the gate rather than
+deleted, so restoring them needs only an authorization source worth trusting.
+
+**Azure DevOps reaches GitHub's parity on merging, but NOT on review verdicts.**
+It expresses all three merge strategies
+(`noFastForward` / `squash` / `rebase` — `REBASE` maps to the linear `rebase`, never
+to `rebaseMerge`, because the caller asking for a rebase means the linear history),
+and a genuine reversible auto-merge: patching `autoCompleteSetBy` to an identity
+arms the PR and patching it to the empty GUID disarms it, which is a real armed
+STATE rather than a modifier on the merge call.
+
+Review verdicts are the exception, and the reason is worth recording because it is
+not a gap in the API surface but in what the API can *promise*. Azure's reviewer
+vote attaches to the PULL REQUEST, not to a commit: there is no revision parameter
+to send. So between the route's head-moved check and the vote, a push can land and
+the verdict then records against code nobody read. Azure resetting votes on push
+does not close that ordering — the reset fires with the push, before the vote
+arrives — and no compensating fix works either, since withdrawing a vote after
+re-reading the head is itself a write whose failure would leave an approval
+standing on unreviewed code. `PR_REVIEW_EVENTS` is therefore `("COMMENT",)` and
+`APPROVE` / `REQUEST_CHANGES` are refused with an explanation, which is the same
+choice GitLab makes for the verdict it cannot express. A human can still vote in
+Azure DevOps' own UI, where they see the head they are voting on.
+
+Azure's
+`mergeable_state` resolves to `mergeable` (the value `_MERGE_ALLOWED_STATES`
+admits) only when every BLOCKING policy evaluation is approved, so unlike GitLab's
+legacy `can_be_merged` it is a real "protections satisfied" reading rather than
+"no conflicts"; a policy read that fails returns `unknown`, because a gate that
+cannot read the policies must not claim they are satisfied.
+
+**Labels are TWO unrelated systems on Azure DevOps.** A pull request's labels are
+tag definitions attached to the PR. A work item's are `System.Tags`, a single
+delimited STRING field on the item — so every mutation is a read-modify-write of
+the whole field (Azure has no add-one-tag operation), tag names are case
+SENSITIVE, and a name containing `,` or `;` is rejected because the delimiter
+cannot survive the round trip. Azure tags carry neither colour nor description, so
+the colour every tag renders in is SYNTHETIC (`_SYNTHETIC_LABEL_COLOR`, the same
+neutral fallback the other two clients use for an uncoloured label) and
+`create_label` returns that synthetic colour rather than the caller's — the caller
+is not told a colour was saved when none was.
+
+**On-premises is out of scope, for both providers that have such an edition, and
+for the same reason.** GitHub Enterprise Server and Azure DevOps Server are both
+unsupported because neither has a credential path this app's transport can use. For
+Azure the reason is concrete: the `azure-devops` CLI extension does not support
+Azure DevOps Server at all, so a CLI-passthrough client cannot serve it. Supporting
+it would mean raw REST plus a credential Kiro Crew stores itself, which is exactly
+the posture stated above. Both providers are therefore listed in
+`_PINNED_HOSTS`, and `azure_client._resolve_host` refuses every host but
+`dev.azure.com` — including an EMPTY one, rather than defaulting, so a call site
+that forgot the host fails loudly instead of silently targeting a host the caller
+never named.
+
+**No provider's CLI is a hard dependency.** `app.json` lists `gh`, `glab` and `az`
+under `dependencies.optionalCommands`, so a shop that uses one provider installs
+the app without the other two CLIs on the host. A missing CLI surfaces as a setup
+error on the first call to THAT provider, not as an install-time refusal.
 
 ## Routes
 
@@ -50,10 +208,10 @@ wrapped in `_require_enabled` (returns 403 when the app is disabled).
 | POST | `/tagging` | Generate per-issue label suggestions with ONE batched model call (`_TAG_BATCH_MAX` = 50 issues). Without `numbers` it takes the next un-analysed slice, so repeated calls walk a long backlog without re-paying; with `numbers` it re-analyses specific issues. Proposals are intersected with the repo's real label set AND with the batch that was shown, so injected issue text can neither invent a label nor reach an issue outside the batch |
 | POST | `/labels/apply-bulk` | Apply label ADDITIONS to many issues at once (add-only — removal stays a per-issue action). Unknown labels are rejected before any write, so a typo cannot half-apply the batch; per-issue failures are reported rather than swallowed, and only the issues that actually got labelled leave the queue |
 | POST | `/pull/state` | Close or reopen a PR. Routed through the provider's PULL endpoint, not the issue endpoint — a merged PR's un-reopenability then comes from the provider instead of silently succeeding against the issue shadow |
-| POST | `/pull/review` | Submit a review (`approve` / `request_changes` / `comment`). Requires `head_sha` — a review is a verdict on a REVISION, so it rides as GitHub's `commit_id` / GitLab's `sha` and a force-push between render and click is refused rather than recorded. A body is required for the latter two (the provider rejects them bodyless). GitLab has no "request changes" verb and the client REFUSES rather than degrading it to a comment |
+| POST | `/pull/review` | Submit a review (`approve` / `request_changes` / `comment`). Requires `head_sha` — a review is a verdict on a REVISION, so it rides as GitHub's `commit_id` / GitLab's `sha` and a force-push between render and click is refused rather than recorded. A body is required for the latter two (the provider rejects them bodyless). GitLab has no "request changes" verb, and Azure DevOps can bind NEITHER verdict to a revision, so each client REFUSES rather than degrading a verdict to a comment |
 | POST | `/pull/comment` | Post a conversation comment on a PR |
 | POST | `/pull/merge` | Merge a PR now. Per-PR only — never bulk. Requires `head_sha`, sent as the provider's `sha` precondition so the merge is pinned to the reviewed commit. Cannot bypass a gate: the provider enforces branch protection on its own endpoint, and a 405 refusal is mapped to a readable message |
-| POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there. Callers must send only rows that are not landable yet — the provider refuses an already-clean or already-merged PR, and the list row carries `mergeable_state` so the bulk bar can tell (see "Merge readiness is on the LIST row") |
+| POST | `/pull/auto-merge` | Arm or disarm the PROVIDER's own auto-merge, for a PR that is not mergeable yet. **GitHub and Azure DevOps only** — REFUSED on GitLab, where `merge_when_pipeline_succeeds` is a deferral modifier on the merge endpoint rather than an arm verb (see "GitLab auto-merge is REFUSED outright" below); the UI hides both controls there. Callers must send only rows that are not landable yet — the provider refuses an already-clean or already-merged PR, and the list row carries `mergeable_state` so the bulk bar can tell (see "Merge readiness is on the LIST row") |
 | GET | `/pull/runs` | The CI runs on a PR's head commit, each with its id plus server-computed `cancellable`/`rerunnable`, so the UI never offers an action the provider will refuse |
 | POST | `/pull/run` | Cancel or re-run one CI run (`failed_only` re-runs just the failed jobs) |
 | POST | `/pulls/bulk` | Apply ONE action to many PRs (`_BULK_PR_ACTIONS`: close, reopen, approve, comment, auto_merge, cancel_auto_merge; max `_BULK_PR_MAX` = 50). `approve` additionally requires a `head_shas` map keyed by PR number, covering EVERY number in the request (see rule 2). Sequential, because the PRs share one provider rate limit. Partial failure is reported per PR rather than failing the batch |
@@ -126,6 +284,21 @@ repos/<owner>/<repo>/
   watch-state.json                  # Watcher high-water mark
 ```
 
+That tree is PUBLIC GITHUB's, and it keeps the original layout so an install that
+has been triaging GitHub issues keeps every cache, setting and investigation note
+exactly where it already is. Every other provider+host pair is rooted under a
+reserved segment first — `@providers/<provider>/<host>/repos/<owner>/<repo>/`, via
+`store.provider_root` passed as the `root=` argument the ~40 per-repo store
+functions already accept, so none of their bodies change. The segment is reserved
+rather than merely conventional: a GitHub owner is constrained to
+`[A-Za-z0-9._-]+`, so no real owner can produce `@providers` and collide with the
+subtree. The host is part of the path because `group/project` on gitlab.com is a
+different project from the same path on a private instance; for Azure DevOps the
+host is pinned and the legacy `visualstudio.com` form is canonicalized before it
+gets here, which is what keeps one organization from occupying two of these trees.
+`<owner>` is the whole namespace, so an Azure repo's data lands under
+`@providers/azure/dev.azure.com/repos/<organization>/<project>/<repo>/`.
+
 `config.json` RMW operations are serialized via a cross-process file lock
 (`platform_compat.file_lock` on `config.json.lock`). `tagging-cache.json` holds
 the same lock discipline on its own `.lock` sidecar: every mutation is a merge
@@ -168,7 +341,7 @@ deliberate narrowing:
    `mergeable: true` with `mergeable_state: "blocked"`. Gating on it therefore offered
    the most privileged account a one-click way to land a PR its own rules had rejected.
    So the route re-reads the PR and refuses anything outside `_MERGE_ALLOWED_STATES`
-   (`clean` / `has_hooks` on GitHub, `mergeable` on GitLab) with a
+   (`clean` / `has_hooks` on GitHub, `mergeable` on GitLab and on Azure DevOps) with a
    **409 `merge_not_ready`**, and the UI mirrors the same set so the button never appears
    where it would only be refused. Two exclusions are load-bearing:
    - `unstable` is often described as "only non-required checks are failing", but the
@@ -211,6 +384,9 @@ deliberate narrowing:
    request for it is a 400 `invalid_merge_method` — the same refuse-rather-than-
    approximate rule the client follows for "request changes" and a full CI re-run.
    (GitLab's separate `/rebase` endpoint does not merge, so it is not a substitute.)
+   Azure DevOps sits with GitHub rather than GitLab here: all three shapes are a
+   per-request `completionOptions.mergeStrategy`, so `azure_client.PR_MERGE_METHODS`
+   is the full tuple and nothing has to be refused.
    There is deliberately **no "override and merge"**: an override is a governance
    decision recorded ON the provider (this repo does it with a reviewed
    `/ai-review override` comment), and shedding a
@@ -324,8 +500,11 @@ deliberate narrowing:
 verb (the closest thing, unapproving, is not a verdict on a revision) and its
 `/retry` only retries failed and canceled jobs — so `submit_pr_review` raises for
 `REQUEST_CHANGES` and `rerun_workflow_run` reports `failed_only: true` regardless of
-what was asked. Reporting a verdict the platform never recorded, or a full re-run
-that did not happen, would be worse than the error.
+what was asked. Azure DevOps refuses BOTH verdicts, for the ordering reason under
+[Providers](#providers): its vote cannot be bound to the revision it was formed on.
+Reporting a verdict the platform never recorded, or a full re-run that did not
+happen, would be worse than the error. GitHub is the only provider that expresses
+this whole surface natively.
 
 **The sharpest instance, because it is a security property rather than a cosmetic
 one: GitLab auto-merge is REFUSED outright.** GitLab has no independent "arm" verb —
@@ -344,6 +523,10 @@ case. An MR armed on GitLab still *displays* as armed, since the read-side
 On GitHub, where `enablePullRequestAutoMerge` is a real, separate mutation, arming is
 offered normally — and `auto_merge` is derived from the returned `autoMergeRequest`
 rather than asserted, because a hardcoded `True` is a claim rather than an observation.
+Azure DevOps is in the same position for the same reason: `autoCompleteSetBy` is an
+armed STATE on the pull request, set to an identity to arm and to the empty GUID to
+disarm, so arming there is genuinely reversible and is read back off the returned
+field rather than assumed.
 
 **Merge readiness is on the LIST row, because a BULK action is what needs it.**
 `enablePullRequestAutoMerge` is only valid for a PR that is *not landable yet*: GitHub
@@ -605,8 +788,9 @@ render late rather than never opening it, which is why the placeholder itself is
 
 `add_pr_comment` is a separate function from `add_issue_comment` even though the two
 coincide on GitHub (one number sequence per repo): GitLab numbers issues and merge
-requests INDEPENDENTLY, so a single shared entry point would be a silent way to
-comment on an unrelated item. The `ProviderClient` protocol and the
+requests INDEPENDENTLY, and on Azure DevOps a work item and a pull request are
+allocated by different services entirely, so a single shared entry point would be a
+silent way to comment on an unrelated item. The `ProviderClient` protocol and the
 `TestClientParity` surface list both.
 
 The UI reads the PR detail's `auto_merge` field to decide whether it offers "enable"
@@ -640,19 +824,50 @@ the parent RUN and needs its id.
   historical root-owned, symlink-free requirement. The runner passes a minimal
   env (`github_runner.gh_env` — the safe-key base plus gh-scoped
   auth/network/TLS vars, with ambient ssh-agent/git-ssh identity stripped; no
-  unrelated gateway secrets) and pins `GH_HOST=github.com`, because Issue
-  Radar is github.com-only by design and its bare API paths never pass
+  unrelated gateway secrets) and pins `GH_HOST=github.com`, because the GitHub
+  client is github.com-only by design (GitHub Enterprise is unsupported for the
+  same reason on-premises Azure DevOps Server is — see
+  [Providers](#providers)) and its bare API paths never pass
   `--hostname`, so an ambient enterprise `GH_HOST` must not steer them. The runner is benign-allowlisted in the spawn
   audit once (`github_runner.py::run_gh`), covering every caller.
+- **Every provider has the same chokepoint, one per CLI.** `gitlab_client._glab_run`
+  and `azure_client._az_run` mirror `_gh_run`: one function every spawn passes
+  through, argv[0] replaced with the validated canonical binary (resolved through
+  the shared `source_providers.provider_executable_candidates` +
+  `_validate_provider_executable` policy, with `KIROCREW_ISSUE_RADAR_GLAB` /
+  `KIROCREW_ISSUE_RADAR_AZ` as the override), a list argv rather than `shell=True`,
+  and a minimal environment instead of the gateway's. `_az_env` passes only az's own
+  auth roots (`AZURE_CONFIG_DIR`, `AZURE_EXTENSION_DIR`) plus proxy/TLS vars, and
+  forwards `AZURE_DEVOPS_EXT_PAT` **only** for the pinned cloud host — it is a single
+  ambient credential with no host binding, so sending it anywhere else would hand a
+  dev.azure.com token to that server. It also sets
+  `AZURE_EXTENSION_USE_DYNAMIC_INSTALL=no`, which is a security setting rather than a
+  convenience one: with dynamic install on, a call naming an unknown command group
+  makes `az` download and execute an extension wheel, and an automated spawn must
+  never install code — a missing `azure-devops` extension has to surface as an error
+  the user resolves themselves.
+- **The host is re-checked at the spawn boundary, not only at the edge.**
+  `gitlab_client._resolve_host` and `azure_client._resolve_host` each re-validate the
+  target before the process starts (Azure: `dev.azure.com` and nothing else, an empty
+  host refused rather than defaulted), so a corrupted `config.json` entry or a future
+  code path that skipped `provider.normalize_host` fails closed instead of pointing a
+  credential-bearing CLI at a server the caller never named.
 - **SEL audit**: Every `_gh_run` invocation is audit-or-deny: the shared
   runner writes a fail-closed `invoked` event before the spawn (SEL storage
   unusable ⇒ the gh call is refused, surfaced as a retryable `GhCliError`),
   then a best-effort outcome event on success/failure/timeout — emitted inside
-  the shared runner so no gh caller can drift out of the audit. Write handlers additionally emit
+  the shared runner so no gh caller can drift out of the audit. The GitLab and
+  Azure runners audit their own spawns the same way (`azure_client._audit`, one
+  `issue_radar.*` access event per `az` call, reads included). Write handlers additionally emit
   denied/ok/failure events around the permission check and mutation.
-- **Input validation**: Owner/repo are charset-restricted + github.com host
-  allowlisted (SSRF guard). Numbers are `int()`-coerced. Write bodies go via
-  JSON stdin, never argv. Request bodies validated as `dict` before `.get()`.
+- **Input validation**: Owner/repo are charset-restricted and the host is checked
+  against the provider's own rule — allowlisted exactly for GitHub and Azure
+  (`_PINNED_HOSTS`), and against the operator's `dashboard.gitlab_hosts` allowlist
+  for a self-managed GitLab (SSRF guard). A pasted URL is dispatched on its PARSED
+  hostname, never on a substring of the URL, so text appearing in a path or query
+  cannot route it to another provider's parser. Numbers are `int()`-coerced. Write
+  bodies go via JSON stdin, never argv. Request bodies validated as `dict` before
+  `.get()`.
 - **Enabled-state guard**: All handlers wrapped in `_require_enabled`; returns 403
   when the app is disabled.
 - **Prompt-injection containment**: The AI routes feed UNTRUSTED repo text to the
@@ -725,7 +940,9 @@ gate both key off that, and a partial page must not satisfy "the repo's issues a
 loaded". The list footer shows an `issuesPartial` "loading the rest" hint so the count
 does not read as the whole repo. Net cost: exactly one extra single-page request per
 cold repo-open. `list_open_issues_first_page` is on the `ProviderClient` protocol, so
-GitLab implements the symmetric single-page variant and `test_provider_parity` holds.
+GitLab and Azure DevOps each implement the symmetric single-page variant (Azure's is
+one WIQL+hydrate pair capped at `_PAGE_SIZE`, in the same changed-date order as the
+full list) and `test_provider_parity` holds.
 
 `GET /pulls?first_page=1` (open state only) is the PR twin, handled by
 `_handle_pulls_first_page` with one added rule: the first page is returned
@@ -742,8 +959,9 @@ PR surface actually in use (same gate as `pullsQuery`, so no request is spent on
 unopened pane), and `pullsQuery.data === undefined`. Its rows feed `pulls` and clear the
 skeleton until the full list lands; the footer shows a `pullsPartial` "loading the rest"
 hint. `list_open_pulls_first_page` is on the `ProviderClient` protocol (GitLab's variant
-is card-complete already, since it inlines `head_pipeline`), and `test_provider_parity`
-holds.
+is card-complete already, since it inlines `head_pipeline`; Azure's is un-enriched like
+GitHub's, because its check state is a per-PR policy-evaluation call), and
+`test_provider_parity` holds.
 
 `enrich_pulls` runs its two INDEPENDENT GraphQL families — card summaries and merge
 readiness — **concurrently** on a two-worker `ThreadPoolExecutor` rather than
@@ -948,16 +1166,40 @@ the list, the filters, the selected item — is untouched.
 
 ## Platform Requirements
 
-- Works on macOS, Linux **and Windows**. The `gh` trust check is answered from
-  POSIX ownership (`st_uid` + the group/other write bits) or, on Windows, from
-  the object's ACL — see `github_runner.check_provider_path_component_windows`
-  and `kiro_crew.windows_acl`. An **elevated** Windows gateway is refused for the
-  same reason a root POSIX one is: its children would be elevated too, which
-  makes the ownership walk vacuous.
-- `gh` CLI authenticated on the host.
-- Any `gh` the user can run from their terminal is accepted: the well-known dirs
+- **GitHub and GitLab work on macOS, Linux and Windows.** The provider-CLI trust
+  check is answered from POSIX ownership (`st_uid` + the group/other write bits)
+  or, on Windows, from the object's ACL — see
+  `github_runner.check_provider_path_component_windows` and
+  `kiro_crew.windows_acl`. An **elevated** Windows gateway is refused for the same
+  reason a root POSIX one is: its children would be elevated too, which makes the
+  ownership walk vacuous.
+- **Azure DevOps is POSIX only (macOS/Linux).** `azure_client._az_bin` refuses
+  `win32` before it resolves anything, and raises `ProviderCliError` rather than
+  `ProviderSetupError` so the connect dialog does not offer an install that would
+  not help. This is a scope statement, not a platform limit inherited from the
+  other two: nothing here has been exercised against `az` on Windows, and the
+  shared candidate table carries no well-known-directory entries for `az`, so the
+  only Windows resolution path would be the untested override. Use WSL to run the
+  Kiro Crew gateway against Azure DevOps.
+- An authenticated CLI for each provider you actually connect: `gh`, `glab`, or
+  `az` with the `azure-devops` extension (`az extension add --name azure-devops`)
+  and an `az login` session or `AZURE_DEVOPS_EXT_PAT`. **None of the three is a
+  hard dependency** — `app.json` lists all of them under
+  `dependencies.optionalCommands`, so a shop using one provider installs without
+  the other two. A missing CLI is a `ProviderSetupError` on the first call to that
+  provider (`reason: "not_installed"`), not an install-time refusal.
+- Any CLI the user can run from their terminal is accepted: the well-known dirs
   (`/opt/homebrew/bin`, `/usr/local/bin`, `/usr/bin`, `/home/linuxbrew/…`, the
   managed `libexec/kirocrew` dirs, and on Windows the `GitHub CLI` subdirectory
   of each Program Files root) are searched first, then `PATH`. No `sudo`
-  copy is required. Override with `KIROCREW_ISSUE_RADAR_GH`; harden with
-  `KIROCREW_PROVIDER_BIN_STRICT=1`.
+  copy is required. Override with `KIROCREW_ISSUE_RADAR_GH` /
+  `KIROCREW_ISSUE_RADAR_GLAB` / `KIROCREW_ISSUE_RADAR_AZ`; harden with
+  `KIROCREW_PROVIDER_BIN_STRICT=1`. Note that the shared candidate table has
+  well-known-directory entries only for `gh` and `glab`, so under strict mode `az`
+  resolves solely through its override, and the setup error says so rather than
+  reporting a missing install.
+- Reachable hosts: `github.com`, `dev.azure.com`, `gitlab.com`, and any
+  self-managed GitLab in the operator's `dashboard.gitlab_hosts` allowlist. GitHub
+  Enterprise Server and Azure DevOps Server (on-premises) are **not supported** —
+  see [Providers](#providers) for why the CLI-passthrough transport cannot serve
+  them.

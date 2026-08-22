@@ -367,7 +367,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
         )}
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
-            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.prList.time_since_the_pr_list_was_last_fetched_from_git')}>
+            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.prList.time_since_list_last_fetched_from', { label: terms.changeRequestShort, provider: terms.providerName })}>
               {i18nT('apps.issueRadar.components.prList.updated')} {lastUpdated}
             </span>
           )}

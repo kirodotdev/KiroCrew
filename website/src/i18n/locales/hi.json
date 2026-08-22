@@ -1643,12 +1643,12 @@
           "issue_other": "{{count}} इश्यू",
           "issues": "इश्यू",
           "loading_the_rest": "बाकी लोड हो रहा है…",
-          "re_fetch_issues_labels_from_github": "GitHub से इश्यू + लेबल फिर से लाएँ",
           "refresh_issues": "इश्यू रीफ़्रेश करें",
           "search_issues": "इश्यू खोजें…",
           "search_issues_2": "इश्यू खोजें",
-          "time_since_the_issue_list_was_last_fetched_from": "GitHub से इश्यू सूची पिछली बार लाए जाने के बाद बीता समय",
-          "updated": "अपडेट किया गया"
+          "updated": "अपडेट किया गया",
+          "re_fetch_issues_and_labels_from": "{{provider}} से इश्यू + लेबल फिर से लाएँ",
+          "time_since_issue_list_last_fetched_from": "{{provider}} से इश्यू सूची पिछली बार लाए जाने के बाद बीता समय"
         },
         "labelPalette": {
           "close_label_search": "लेबल खोज बंद करें",
@@ -1872,8 +1872,8 @@
           "search": "{{label}} खोजो…",
           "search_2": "{{label}} खोजो",
           "select_for_bulk": "थोक कार्रवाई के लिए {{subject}} #{{number}} चुनें",
-          "time_since_the_pr_list_was_last_fetched_from_git": "GitHub से PR सूची अंतिम बार लाए जाने के बाद बीता समय",
-          "updated": "अपडेट किया गया"
+          "updated": "अपडेट किया गया",
+          "time_since_list_last_fetched_from": "{{provider}} से {{label}} सूची अंतिम बार लाए जाने के बाद बीता समय"
         },
         "prRunActions": {
           "cancel_run": "{{name}} रन रद्द करें",
@@ -1945,7 +1945,8 @@
         "session_install_and_sign_in_to": "सेशन।\n        इंस्टॉल करें और साइन इन करें",
         "then": ", फिर",
         "through_your_own": "आपके अपने",
-        "you_contributed_to": "आपने योगदान दिया"
+        "you_contributed_to": "आपने योगदान दिया",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "बंद करें",
@@ -1966,7 +1967,7 @@
         }
       },
       "manifest": {
-        "description": "याद रखने वाला इशू ट्रायाज सहायक। GitHub इशू और GitLab इशू को AI-सुझाए लेबल और हर इशू के जाँच नोट्स के साथ ब्राउज़ करो, फ़िल्टर करो और ट्रायाज करो — नतीजे लोकल लेजर में रखे जाते हैं ताकि किसी की दोबारा जाँच न हो।",
+        "description": "याद रखने वाला इशू ट्रायाज सहायक। GitHub इशू, GitLab इशू और Azure DevOps वर्क आइटम को AI-सुझाए लेबल और हर आइटम के जाँच नोट्स के साथ ब्राउज़ करो, फ़िल्टर करो और ट्रायाज करो — नतीजे लोकल लेजर में रखे जाते हैं ताकि किसी की दोबारा जाँच न हो।",
         "display_name": "Issue Radar",
         "highlight_1": "इशू और पुल रिक्वेस्ट के लिए AI सारांश और सुझाए लेबल, हर एक के साथ उसकी वजह",
         "highlight_2": "हर इशू के जाँच नोट्स लोकल लेजर में रखे जाते हैं ताकि किसी की दोबारा जाँच न हो",
@@ -1976,7 +1977,7 @@
         "highlight_6": "हर राइट के लिए रिपो पर ट्रायाज या पुश ऐक्सेस चाहिए; रीड-ओनली कनेक्शन सिर्फ़ सुझाव तक सीमित रहता है",
         "highlight_7": "जिन रिपॉज़िटरी में तुमने हाल में योगदान दिया है उन्हें सामने रखता है, ताकि जोड़ना एक क्लिक भर हो",
         "highlight_8": "इशू, लेबल और मेंबर लोकल में कैश करता है, ज़रूरत पर ताज़ा हो जाते हैं",
-        "highlight_9": "GitHub के साथ काम करता है; गेटवे होस्ट पर प्रमाणित `gh` CLI चाहिए",
+        "highlight_9": "GitHub, GitLab और Azure DevOps के साथ काम करता है; गेटवे होस्ट पर उस प्रोवाइडर के लिए प्रमाणित CLI (`gh`, `glab` या `az`) चाहिए जिसे तुम जोड़ते हो — इंस्टॉल करने के लिए किसी एक प्रोवाइडर की CLI ज़रूरी नहीं है",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2012,14 +2013,14 @@
           "no_reply": "कोई जवाब नहीं",
           "nothing_needs_attention": "किसी चीज़ को ध्यान की ज़रूरत नहीं",
           "open_issues": "खुले इश्यू",
-          "re_fetch_issues_labels_from_github": "GitHub से इश्यू + लेबल फिर लाएँ",
           "recently_updated": "हाल ही में अपडेट किया गया",
           "refresh_issues": "इश्यू रिफ़्रेश करें",
           "stale": "निष्क्रिय",
           "unanswered": "अनुत्तरित",
           "unassigned": "बिना असाइनी",
           "untriaged": "अनट्राइएज्ड",
-          "untriaged_2": "अनट्राइएज्ड"
+          "untriaged_2": "अनट्राइएज्ड",
+          "re_fetch_issues_and_labels_from": "{{provider}} से इश्यू + लेबल फिर लाएँ"
         },
         "registry": {
           "overview": "अवलोकन",
@@ -2139,11 +2140,11 @@
             "looking_for_labels_this_repo_is_missing": "इस रिपो में जो लेबल नहीं हैं, उन्हें खोजा जा रहा है…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "कोई नहीं — रिपो की टैक्सोनॉमी पहले से ही उसके खुले इश्यू की ज़रूरतें पूरी करती है।",
             "propose_labels_this_repo_is_missing_from_its_ope": "इस रिपो के खुले इश्यू से, जो लेबल इसमें नहीं हैं उन्हें प्रस्तावित करें",
-            "re_fetch_this_repo_s_labels_from_github": "इस रिपो के लेबल GitHub से फिर लाएँ",
             "read_only_repo_needs_triage_push_access": "केवल पढ़ने वाला रिपो — triage/push एक्सेस चाहिए",
             "suggest_again": "फिर सुझाएँ",
             "suggest_new_labels": "नए लेबल सुझाएँ",
-            "suggested_new_labels_not_created_until_you_say_s": "सुझाए गए नए लेबल — आपके कहने तक नहीं बनाए जाते"
+            "suggested_new_labels_not_created_until_you_say_s": "सुझाए गए नए लेबल — आपके कहने तक नहीं बनाए जाते",
+            "re_fetch_this_repo_s_labels_from": "इस रिपो के लेबल {{provider}} से फिर लाएँ"
           },
           "untaggedIssueCard": {
             "add": "जोड़ें",

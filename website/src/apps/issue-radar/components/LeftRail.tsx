@@ -1,8 +1,8 @@
 import { LayoutDashboard, CircleDot, Settings, Radar, GitPullRequest, Users, ArrowUp, ArrowDown, ArrowUpDown, ListFilter, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
-import GithubLogo from '../../../components/icons/GithubLogo'
 import Clickable from '../../../components/Clickable'
 import { fmtNumber } from '../../../i18n/format'
 import { useIssueRadar } from '../context'
+import type { RepoRef } from '../api'
 import { APP_VERSION, CREW_SORT_FIELDS, DEFAULT_RAIL_WIDTH } from '../lib/format'
 import { CREW_FILTERS, type CrewFilter } from '../lib/types'
 import AccordionSection from './Accordion'
@@ -10,6 +10,7 @@ import { IconButton } from '../../../components/ui'
 import DashboardsSection from './DashboardsSection'
 import FiltersSection from './FiltersSection'
 import PrFiltersSection from './PrFiltersSection'
+import { ProviderLogo } from './ProviderBadge'
 import SettingsSection from './SettingsSection'
 import ReadOnlyTag, { isReadOnly } from './ReadOnlyTag'
 import RepoSwitcher from './RepoSwitcher'
@@ -65,6 +66,10 @@ export default function LeftRail({
         width={width}
         owner={active.owner}
         repo={active.repo}
+        // The mark has to say which provider this repo is on for the same reason
+        // the open rail's switcher does: `owner/repo` alone is identical across
+        // providers, so a hard-coded GitHub logo mislabels every other one.
+        repoRef={active}
         readOnly={isReadOnly(activeEntry?.permissions)}
         onExpand={onExpand}
         horizontal={horizontal}
@@ -266,7 +271,7 @@ function CrewsSection({ onNavigate }: { onNavigate?: () => void }) {
  * card rotates the repo label clockwise (top-to-bottom reading) so it starts
  * next to the logo; the bar just truncates it. */
 function CollapsedRail({
-  width, owner, repo, readOnly, onExpand, horizontal = false,
+  width, owner, repo, repoRef, readOnly, onExpand, horizontal = false,
 }: {
   // Shares LeftRail's pass-through prop, so it takes the same CSS-length type.
   // In practice this is always the numeric strip width: the string form is only
@@ -274,6 +279,8 @@ function CollapsedRail({
   width: number | string
   owner: string
   repo: string
+  /** The active repo's identity — only its provider is read, to pick the mark. */
+  repoRef?: Pick<RepoRef, 'provider'>
   readOnly: boolean
   onExpand?: () => void
   /** Lay the collapsed rail across the TOP instead of down the left edge. Set
@@ -294,7 +301,7 @@ function CollapsedRail({
             aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
             className="flex-1 min-w-0 flex items-center gap-2 px-3 py-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
           >
-            <GithubLogo size={16} className="flex-shrink-0 text-text" />
+            <ProviderLogo repoRef={repoRef} size={16} className="flex-shrink-0 text-text" />
             {/* Truncates from the tail: the repo half of `owner/repo` is what
                 tells two workspaces apart, and it survives longest that way. */}
             <span className="min-w-0 truncate text-[13px] font-medium tracking-[.02em] text-text">
@@ -328,7 +335,7 @@ function CollapsedRail({
           aria-label={i18nT('apps.issueRadar.components.leftRail.expand_sidebar')}
           className="flex-1 min-h-0 w-full flex flex-col items-center gap-3 pt-3.5 pb-2 cursor-pointer text-muted hover:text-text hover:bg-bg-hover transition-colors focus-ring"
         >
-          <GithubLogo size={18} className="flex-shrink-0 text-text" />
+          <ProviderLogo repoRef={repoRef} size={18} className="flex-shrink-0 text-text" />
           <div className="min-h-0 flex flex-col items-center gap-2">
             {/* Rotated CLOCKWISE (writing-mode alone, no counter-rotation) so the
                 string reads top-to-bottom, starting right under the logo — the

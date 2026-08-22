@@ -127,3 +127,64 @@ describe('parseRepoRef — connect-dialog shorthand', () => {
       .toEqual({ owner: 'g', repo: 'p' })
   })
 })
+
+/** Azure DevOps is the case a boolean could not express: with
+ * `isGitlab ? GitlabLogo : GithubLogo` it rendered under the GitHub mark, and
+ * because `dev.azure.com` was not a known public host every row also grew a
+ * self-managed-instance chip for a host that is the only one Azure DevOps has. */
+const AZ = {
+  owner: 'contoso/Payments',
+  repo: 'ledger',
+  provider: 'azure' as const,
+  host: 'dev.azure.com',
+}
+
+describe('Azure DevOps identity', () => {
+  it('renders its own mark rather than falling back to GitHub’s', () => {
+    const { container } = render(<ProviderLogo repoRef={AZ} />)
+    expect(markOf(container)).toBe('azure')
+  })
+
+  it('names Azure DevOps for assistive tech', () => {
+    render(<ProviderLogo repoRef={AZ} />)
+    expect(screen.getByRole('img', { name: 'Azure DevOps' })).toBeInTheDocument()
+  })
+
+  it('grows no host chip, because dev.azure.com is not a self-managed instance', () => {
+    expect(hasCustomHost(AZ)).toBe(false)
+    const { container } = render(<ProviderHostTag repoRef={AZ} />)
+    expect(container).toBeEmptyDOMElement()
+  })
+
+  it('parses the three-level connect URL, keeping org/project as the owner', () => {
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger', 'azure'))
+      .toEqual({ owner: 'contoso/Payments', repo: 'ledger' })
+  })
+
+  it('reads a project-only URL as the project’s default repository', () => {
+    // Azure DevOps names a new project's first repository after the project, and
+    // the project link is what a user has to hand.
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments', 'azure'))
+      .toEqual({ owner: 'contoso/Payments', repo: 'Payments' })
+    expect(parseRepoRef('contoso/Payments', 'azure'))
+      .toEqual({ owner: 'contoso/Payments', repo: 'Payments' })
+  })
+
+  it('strips a pasted project page down to the project', () => {
+    for (const suffix of ['/_workitems', '/_git/ledger/pullrequest/7', '/_settings/permissions']) {
+      const parsed = parseRepoRef(`https://dev.azure.com/contoso/Payments${suffix}`, 'azure')
+      expect(parsed?.owner).toBe('contoso/Payments')
+    }
+  })
+
+  it('refuses the other providers’ hosts, and they refuse its', () => {
+    expect(parseRepoRef('https://github.com/o/r', 'azure')).toBeNull()
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger', 'github')).toBeNull()
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger', 'gitlab')).toBeNull()
+  })
+
+  it('drops a .git suffix and trailing slashes here too', () => {
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger.git/', 'azure'))
+      .toEqual({ owner: 'contoso/Payments', repo: 'ledger' })
+  })
+})

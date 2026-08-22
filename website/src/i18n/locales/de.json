@@ -1675,12 +1675,12 @@
           "issue_other": "{{count}} Issues",
           "issues": "Issues",
           "loading_the_rest": "Rest wird geladen…",
-          "re_fetch_issues_labels_from_github": "Issues + Labels erneut von GitHub abrufen",
           "refresh_issues": "Issues aktualisieren",
           "search_issues": "Issues suchen…",
           "search_issues_2": "Issues suchen",
-          "time_since_the_issue_list_was_last_fetched_from": "Zeit seit dem letzten Abruf der Issue-Liste von GitHub",
-          "updated": "Aktualisiert"
+          "updated": "Aktualisiert",
+          "re_fetch_issues_and_labels_from": "Issues + Labels erneut von {{provider}} abrufen",
+          "time_since_issue_list_last_fetched_from": "Zeit seit dem letzten Abruf der Issue-Liste von {{provider}}"
         },
         "labelPalette": {
           "close_label_search": "Label-Suche schließen",
@@ -1904,8 +1904,8 @@
           "search": "{{label}} durchsuchen…",
           "search_2": "{{label}} durchsuchen",
           "select_for_bulk": "{{subject}} #{{number}} für eine Sammelaktion auswählen",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Zeit seit dem letzten Abruf der PR-Liste von GitHub",
-          "updated": "Aktualisiert"
+          "updated": "Aktualisiert",
+          "time_since_list_last_fetched_from": "Zeit seit dem letzten Abruf der {{label}}-Liste von {{provider}}"
         },
         "prRunActions": {
           "cancel_run": "Den Lauf {{name}} abbrechen",
@@ -1977,7 +1977,8 @@
         "session_install_and_sign_in_to": "Sitzung.\n        Installieren Sie und melden Sie sich an bei",
         "then": ", dann",
         "through_your_own": "über Ihr eigenes",
-        "you_contributed_to": "Sie haben beigetragen zu"
+        "you_contributed_to": "Sie haben beigetragen zu",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Schließen",
@@ -1998,7 +1999,7 @@
         }
       },
       "manifest": {
-        "description": "Ein Triage-Assistent für Issues, der sich erinnert. Durchsuche, filtere und triagiere Issues auf GitHub und GitLab mit KI-vorgeschlagenen Labels und Untersuchungsnotizen pro Issue — die Ergebnisse liegen in einem lokalen Register, damit nichts zweimal untersucht wird.",
+        "description": "Ein Triage-Assistent für Issues, der sich erinnert. Durchsuche, filtere und triagiere GitHub-Issues, GitLab-Issues und Azure DevOps Work Items mit KI-vorgeschlagenen Labels und Untersuchungsnotizen pro Element — die Ergebnisse liegen in einem lokalen Register, damit nichts zweimal untersucht wird.",
         "display_name": "Issue Radar",
         "highlight_1": "KI-Zusammenfassungen und Label-Vorschläge für Issues und Pull Requests, jeweils mit Begründung",
         "highlight_2": "Untersuchungsnotizen pro Issue in einem lokalen Register, damit nichts zweimal untersucht wird",
@@ -2008,7 +2009,7 @@
         "highlight_6": "Jeder Schreibvorgang braucht Triage- oder Push-Zugriff auf das Repository; eine nur lesende Verbindung bleibt bei Vorschlägen",
         "highlight_7": "Zeigt Repositorys, zu denen du kürzlich beigetragen hast, sodass das Verbinden ein Klick ist",
         "highlight_8": "Speichert Issues, Labels und Mitglieder lokal im Cache, auf Anforderung aktualisiert",
-        "highlight_9": "Funktioniert mit GitHub; benötigt eine authentifizierte `gh` CLI auf dem Gateway-Host",
+        "highlight_9": "Funktioniert mit GitHub, GitLab und Azure DevOps; benötigt auf dem Gateway-Host eine authentifizierte CLI für den verbundenen Anbieter (`gh`, `glab` oder `az`) — für die Installation ist keine bestimmte CLI erforderlich",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2198,14 +2199,14 @@
           "no_reply": "keine Antwort",
           "nothing_needs_attention": "Nichts benötigt Aufmerksamkeit",
           "open_issues": "Offene Issues",
-          "re_fetch_issues_labels_from_github": "Issues + Labels erneut von GitHub abrufen",
           "recently_updated": "Kürzlich aktualisiert",
           "refresh_issues": "Issues aktualisieren",
           "stale": "Veraltet",
           "unanswered": "Unbeantwortet",
           "unassigned": "Nicht zugewiesen",
           "untriaged": "Nicht triagiert",
-          "untriaged_2": "nicht triagiert"
+          "untriaged_2": "nicht triagiert",
+          "re_fetch_issues_and_labels_from": "Issues + Labels erneut von {{provider}} abrufen"
         },
         "registry": {
           "overview": "Übersicht",
@@ -2325,11 +2326,11 @@
             "looking_for_labels_this_repo_is_missing": "Es wird nach Labels gesucht, die diesem Repo fehlen…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Keine — die Taxonomie des Repos deckt bereits ab, was seine offenen Issues benötigen.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Labels vorschlagen, die diesem Repo fehlen, basierend auf seinen offenen Issues",
-            "re_fetch_this_repo_s_labels_from_github": "Labels dieses Repos erneut von GitHub abrufen",
             "read_only_repo_needs_triage_push_access": "Repo nur mit Lesezugriff — benötigt Triage-/Push-Rechte",
             "suggest_again": "Erneut vorschlagen",
             "suggest_new_labels": "Neue Labels vorschlagen",
-            "suggested_new_labels_not_created_until_you_say_s": "Vorgeschlagene neue Labels — werden erst erstellt, wenn Sie es sagen"
+            "suggested_new_labels_not_created_until_you_say_s": "Vorgeschlagene neue Labels — werden erst erstellt, wenn Sie es sagen",
+            "re_fetch_this_repo_s_labels_from": "Labels dieses Repos erneut von {{provider}} abrufen"
           },
           "untaggedIssueCard": {
             "add": "Hinzufügen",

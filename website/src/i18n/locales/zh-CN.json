@@ -1613,12 +1613,12 @@
           "issue_other": "{{count}} 个 issue",
           "issues": "Issues",
           "loading_the_rest": "正在加载其余内容…",
-          "re_fetch_issues_labels_from_github": "从 GitHub 重新获取 issue 与标签",
           "refresh_issues": "刷新 issues",
           "search_issues": "搜索 issues…",
           "search_issues_2": "搜索 issues",
-          "time_since_the_issue_list_was_last_fetched_from": "距上次从 GitHub 获取 issue 列表的时间",
-          "updated": "更新时间"
+          "updated": "更新时间",
+          "re_fetch_issues_and_labels_from": "从 {{provider}} 重新获取 issue 与标签",
+          "time_since_issue_list_last_fetched_from": "距上次从 {{provider}} 获取 issue 列表的时间"
         },
         "labelPalette": {
           "close_label_search": "关闭标签搜索",
@@ -1832,8 +1832,8 @@
           "search": "搜索 {{label}}…",
           "search_2": "搜索 {{label}}",
           "select_for_bulk": "选择 {{subject}} #{{number}} 以执行批量操作",
-          "time_since_the_pr_list_was_last_fetched_from_git": "距上次从 GitHub 获取 PR 列表的时间",
-          "updated": "更新时间"
+          "updated": "更新时间",
+          "time_since_list_last_fetched_from": "距上次从 {{provider}} 获取 {{label}} 列表的时间"
         },
         "prRunActions": {
           "cancel_run": "取消 {{name}} 运行",
@@ -1905,7 +1905,8 @@
         "session_install_and_sign_in_to": "会话。请安装并登录",
         "then": "，然后",
         "through_your_own": "读取",
-        "you_contributed_to": "你参与贡献过"
+        "you_contributed_to": "你参与贡献过",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "关闭",
@@ -1926,7 +1927,7 @@
         }
       },
       "manifest": {
-        "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 和 GitLab 的 issue，用 AI 建议标签，为每个 issue 留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
+        "description": "一个记得住事的 issue 分类助手。浏览、筛选并分类 GitHub 与 GitLab 的 issue，以及 Azure DevOps 工作项，用 AI 建议标签，为每个条目留调查笔记 — 发现都记在本地账本里，同一件事不会被重复调查。",
         "display_name": "Issue Radar",
         "highlight_1": "为 issue 和拉取请求生成 AI 摘要与建议标签，每条都附上理由",
         "highlight_2": "每个 issue 的调查笔记都存在本地账本里，同一件事不会被重复调查",
@@ -1936,7 +1937,7 @@
         "highlight_6": "任何写操作都需要仓库的 triage 或 push 权限；只读连接只能给建议",
         "highlight_7": "列出你最近贡献过的仓库，连接一个只需点一下",
         "highlight_8": "在本地缓存 issue、标签和成员，按需刷新",
-        "highlight_9": "支持 GitHub；需要网关主机上有已认证的 `gh` CLI",
+        "highlight_9": "支持 GitHub、GitLab 和 Azure DevOps；需要网关主机上有所连接服务商的已认证 CLI（`gh`、`glab` 或 `az`）— 安装时并不要求某一家服务商的 CLI",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2124,14 +2125,14 @@
           "no_reply": "无回复",
           "nothing_needs_attention": "没有需要关注的事项",
           "open_issues": "待处理 issue",
-          "re_fetch_issues_labels_from_github": "从 GitHub 重新获取 issue 与标签",
           "recently_updated": "最近更新",
           "refresh_issues": "刷新 issues",
           "stale": "已停滞",
           "unanswered": "未回复",
           "unassigned": "未分配",
           "untriaged": "未分类",
-          "untriaged_2": "未分类"
+          "untriaged_2": "未分类",
+          "re_fetch_issues_and_labels_from": "从 {{provider}} 重新获取 issue 与标签"
         },
         "registry": {
           "overview": "概览",
@@ -2251,11 +2252,11 @@
             "looking_for_labels_this_repo_is_missing": "正在查找此仓库缺失的标签…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "无 — 此仓库的分类体系已覆盖其待处理 issue 的需要。",
             "propose_labels_this_repo_is_missing_from_its_ope": "根据待处理 issue 提出此仓库缺失的标签",
-            "re_fetch_this_repo_s_labels_from_github": "从 GitHub 重新获取此仓库的标签",
             "read_only_repo_needs_triage_push_access": "仓库只读 — 需要 triage/push 权限",
             "suggest_again": "再次建议",
             "suggest_new_labels": "建议新标签",
-            "suggested_new_labels_not_created_until_you_say_s": "建议的新标签 — 未经你确认不会创建"
+            "suggested_new_labels_not_created_until_you_say_s": "建议的新标签 — 未经你确认不会创建",
+            "re_fetch_this_repo_s_labels_from": "从 {{provider}} 重新获取此仓库的标签"
           },
           "untaggedIssueCard": {
             "add": "添加",

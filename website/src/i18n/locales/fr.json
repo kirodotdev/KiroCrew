@@ -1705,12 +1705,12 @@
           "issue_other": "{{count}} issues",
           "issues": "Issues",
           "loading_the_rest": "Chargement du reste…",
-          "re_fetch_issues_labels_from_github": "Récupérer à nouveau les tickets et étiquettes depuis GitHub",
           "refresh_issues": "Actualiser les tickets",
           "search_issues": "Rechercher des tickets…",
           "search_issues_2": "Rechercher des tickets",
-          "time_since_the_issue_list_was_last_fetched_from": "Temps écoulé depuis la dernière récupération de la liste des tickets depuis GitHub",
-          "updated": "Mis à jour"
+          "updated": "Mis à jour",
+          "re_fetch_issues_and_labels_from": "Récupérer à nouveau les tickets et étiquettes depuis {{provider}}",
+          "time_since_issue_list_last_fetched_from": "Temps écoulé depuis la dernière récupération de la liste des tickets depuis {{provider}}"
         },
         "labelPalette": {
           "close_label_search": "Fermer la recherche d'étiquettes",
@@ -1944,8 +1944,8 @@
           "search": "Rechercher dans {{label}}…",
           "search_2": "Rechercher dans {{label}}",
           "select_for_bulk": "Sélectionner {{subject}} #{{number}} pour une action groupée",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Temps écoulé depuis la dernière récupération de la liste des PR depuis GitHub",
-          "updated": "Mis à jour"
+          "updated": "Mis à jour",
+          "time_since_list_last_fetched_from": "Temps écoulé depuis la dernière récupération de la liste des {{label}} depuis {{provider}}"
         },
         "prRunActions": {
           "cancel_run": "Annuler l'exécution {{name}}",
@@ -2017,7 +2017,8 @@
         "session_install_and_sign_in_to": "session.\n        Installez et connectez-vous à",
         "then": ", puis",
         "through_your_own": "via votre propre",
-        "you_contributed_to": "Vous avez contribué à"
+        "you_contributed_to": "Vous avez contribué à",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Fermer",
@@ -2038,7 +2039,7 @@
         }
       },
       "manifest": {
-        "description": "Un assistant de tri des tickets qui a de la mémoire. Parcours, filtre et trie les tickets GitHub et GitLab avec des étiquettes suggérées par l’IA et des notes d’investigation par ticket — les conclusions restant dans un registre local pour que rien ne soit examiné deux fois.",
+        "description": "Un assistant de tri des tickets qui a de la mémoire. Parcours, filtre et trie les tickets GitHub, les tickets GitLab et les éléments de travail Azure DevOps avec des étiquettes suggérées par l’IA et des notes d’investigation par élément — les conclusions restant dans un registre local pour que rien ne soit examiné deux fois.",
         "display_name": "Issue Radar",
         "highlight_1": "Résumés et étiquettes suggérés par l’IA pour les tickets et les pull requests, chacun avec son raisonnement",
         "highlight_2": "Des notes d’investigation par ticket conservées dans un registre local, pour que rien ne soit examiné deux fois",
@@ -2048,7 +2049,7 @@
         "highlight_6": "Chaque écriture exige un accès triage ou push sur le dépôt ; une connexion en lecture seule se limite aux suggestions",
         "highlight_7": "Fait remonter les dépôts auxquels tu as contribué récemment, pour en connecter un en un clic",
         "highlight_8": "Met en cache localement les tickets, les étiquettes et les membres, actualisés à la demande",
-        "highlight_9": "Fonctionne avec GitHub ; nécessite une CLI `gh` authentifiée sur l’hôte du gateway",
+        "highlight_9": "Fonctionne avec GitHub, GitLab et Azure DevOps; nécessite sur l’hôte du gateway une CLI authentifiée pour le fournisseur que tu connectes (`gh`, `glab` ou `az`) — aucune CLI particulière n’est requise pour l’installation",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2240,14 +2241,14 @@
           "no_reply": "sans réponse",
           "nothing_needs_attention": "Rien ne nécessite d’attention",
           "open_issues": "Tickets ouverts",
-          "re_fetch_issues_labels_from_github": "Récupérer à nouveau les tickets + étiquettes depuis GitHub",
           "recently_updated": "Récemment mis à jour",
           "refresh_issues": "Actualiser les tickets",
           "stale": "Inactifs",
           "unanswered": "Sans réponse",
           "unassigned": "Non assignés",
           "untriaged": "Non triés",
-          "untriaged_2": "non trié"
+          "untriaged_2": "non trié",
+          "re_fetch_issues_and_labels_from": "Récupérer à nouveau les tickets + étiquettes depuis {{provider}}"
         },
         "registry": {
           "overview": "Vue d’ensemble",
@@ -2367,11 +2368,11 @@
             "looking_for_labels_this_repo_is_missing": "Recherche des étiquettes manquantes dans ce dépôt…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Aucune — la taxonomie du dépôt couvre déjà les besoins de ses tickets ouverts.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Proposer les étiquettes manquantes de ce dépôt, à partir de ses tickets ouverts",
-            "re_fetch_this_repo_s_labels_from_github": "Récupérer à nouveau les étiquettes de ce dépôt depuis GitHub",
             "read_only_repo_needs_triage_push_access": "Dépôt en lecture seule — nécessite un accès triage/push",
             "suggest_again": "Suggérer à nouveau",
             "suggest_new_labels": "Suggérer de nouvelles étiquettes",
-            "suggested_new_labels_not_created_until_you_say_s": "Nouvelles étiquettes suggérées — créées uniquement si vous le demandez"
+            "suggested_new_labels_not_created_until_you_say_s": "Nouvelles étiquettes suggérées — créées uniquement si vous le demandez",
+            "re_fetch_this_repo_s_labels_from": "Récupérer à nouveau les étiquettes de ce dépôt depuis {{provider}}"
           },
           "untaggedIssueCard": {
             "add": "Ajouter",

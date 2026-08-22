@@ -130,6 +130,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Azure DevOps comment bodies",
+        "apps/builtins/issue_radar/backend/azure_client.py",
+        "The text Issue Radar posts as a work-item or pull-request comment on Azure "
+        "DevOps. A comment body is frequently model-authored -- a crew's reply, or an "
+        "AI summary the user accepted -- and publishing it is irreversible: it lands "
+        "somewhere public and permanent on the customer's own organization, so a "
+        "credential or an exfiltration URL cannot be walked back. `_comment_text` "
+        "therefore runs the two-pass chain at the client, immediately before the body "
+        "reaches `az devops invoke`, rather than trusting each caller to have "
+        "redacted; the crew path already redacts and loses nothing, because both "
+        "passes are idempotent.",
+    ),
+    (
         "Session intent summaries",
         "session_summary.py",
         "Intent-summary payloads persisted to the `.intents` sidecar and served by "

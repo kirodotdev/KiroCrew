@@ -602,6 +602,38 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         #     body (--input -), never argv.
         # No binary or cwd is agent-selected.
         "apps/builtins/issue_radar/backend/gitlab_client.py::_glab_run",
+        # Issue Radar Azure DevOps access — the az counterpart of _gh_run and
+        # _glab_run, benign for the same reasons, differing from both in WHERE a
+        # request body travels and from glab in how the host is constrained.
+        # ALL az calls funnel through ONE chokepoint, _az_run: a fixed
+        # `az devops invoke` list-argv (never shell=True). az supplies the host's
+        # OWN authenticated session, so it CANNOT be sandbox-routed (the sandbox
+        # would hide ~/.azure and break auth). As defense-in-depth WITHIN this
+        # benign classification, _az_run resolves az through the shared provider
+        # policy (refusing a binary owned by another user, a world-writable one,
+        # or one inside the agent-writable project tree) and passes a MINIMAL env.
+        # The agent-reachable inputs:
+        #   • the HOST — unlike glab's operator-configurable allowlist there is
+        #     exactly ONE legal value, the module constant dev.azure.com, because
+        #     on-premises Server is out of scope. It is re-resolved inside _az_run
+        #     on every call and anything else (including empty) is refused, so a
+        #     corrupted config entry cannot retarget the spawn;
+        #   • organization / project / repository — charset-validated per segment
+        #     by azure_client.parse_azure_repo_url at /connect, then passed as the
+        #     --org URL and as --route-parameters values; read routes additionally
+        #     gate on store.is_repo_connected, which matches on provider+host too.
+        #     `--detect false` is passed so az cannot instead infer an
+        #     organization from the cwd's git remote;
+        #   • the work item / pull request id — coerced via int() before the path;
+        #   • --area / --resource / --api-version — module constants selected by
+        #     the calling function, never caller-supplied text;
+        #   • write bodies AND every WIQL query string — sent as a request-body
+        #     FILE (--in-file), never on argv, because az devops invoke has no
+        #     stdin body option the way gh and glab do. The file is uniquely
+        #     named, created 0600, and unlinked in a finally, so a body is neither
+        #     visible in the process table nor left behind.
+        # No binary or cwd is agent-selected.
+        "apps/builtins/issue_radar/backend/azure_client.py::_az_run",
         "apps/builtins/design_tweak/backend/server.py::_h_pick_folder",
         "apps/builtins/design_tweak/backend/server.py::_lsof_fields",
         "apps/builtins/design_tweak/backend/server.py::_start_dev_proc",

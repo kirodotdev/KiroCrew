@@ -79,9 +79,17 @@ logger = logging.getLogger("kirocrew.app.issue-radar")
 # Re-exported so the module's own `except GhCliError` clauses read
 # as provider-neutral, which they now are: both clients raise these exact classes
 # (see backend/errors.py — they are aliases, not parallel hierarchies).
+#
+# PrSearchError is listed for the same reason, and ONLY for that reason: it was
+# already caught as `github_client.PrSearchError`, which is not a bug — it is
+# literally the same class object every client raises (`errors.PrSearchError`,
+# re-exported by name), so the clause already caught GitLab's and will catch
+# Azure's. Reading it off one provider's module only made a provider-neutral catch
+# look provider-specific.
 GhCliError = github_client.GhCliError
 GhPermissionError = github_client.GhPermissionError
 GhSetupError = github_client.GhSetupError
+PrSearchError = github_client.PrSearchError
 # The provider rejected a VALUE in the request (an unassignable login). A subclass
 # of GhCliError, so it must be caught BEFORE the generic clause or it lands in the
 # 502 branch it exists to avoid.
@@ -428,13 +436,20 @@ async def _coalesced_probe(repo_key: provider.RepoKey, kind: str) -> dict:
     be served as another's and a list be declared unchanged on the strength of a
     different server's answer.
 
+    The name segments are folded to the PROVIDER's own case semantics
+    (``store.name_compare_key``) rather than lowercased outright. Lowercasing is
+    the same confusion one level down: on a case-sensitive provider
+    ``group/Project`` and ``group/project`` are different projects, and a shared
+    memo key would answer one of them with the other's probe -- declaring a list
+    unchanged on a reading that was never taken of it.
+
     Raises :class:`GhCliError` like the underlying call.
     """
     key = (
         repo_key.provider,
         repo_key.host,
-        repo_key.owner.lower(),
-        repo_key.repo.lower(),
+        store.name_compare_key(repo_key.owner, repo_key.provider),
+        store.name_compare_key(repo_key.repo, repo_key.provider),
         kind,
     )
     async with _probe_lock:
@@ -786,18 +801,24 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
     key = _account_key(request)
     client = provider.client_for(key)
     pkw = provider.call_kwargs(key)
+    # Both windows come off the DISPATCHED client, not github_client: they are that
+    # provider's own bounds (its feed horizon, its accepted range), and reading
+    # GitHub's would apply one provider's limits to another's request. Same
+    # reasoning as _pr_merge_method_field.
+    contrib_window_days = client.CONTRIB_WINDOW_DAYS  # type: ignore[attr-defined]
+    max_window_days = client.MAX_WINDOW_DAYS  # type: ignore[attr-defined]
     raw_days = (request.query.get("days") or "").strip()
     try:
-        days = int(raw_days) if raw_days else github_client.CONTRIB_WINDOW_DAYS
+        days = int(raw_days) if raw_days else contrib_window_days
     except ValueError:
         return web.json_response({"error": "days must be an integer"}, status=400)
     # Bounded before it reaches timedelta(days=...): an arbitrarily large value
     # raises OverflowError there, which would surface as a 500. 0 stays legal
     # (it disables the window); MAX_WINDOW_DAYS is far beyond the event feed's
     # own ~90-day horizon, so the cap costs nothing in practice.
-    if not 0 <= days <= github_client.MAX_WINDOW_DAYS:
+    if not 0 <= days <= max_window_days:
         return web.json_response(
-            {"error": f"days must be between 0 and {github_client.MAX_WINDOW_DAYS}"},
+            {"error": f"days must be between 0 and {max_window_days}"},
             status=400,
         )
 
@@ -828,13 +849,20 @@ async def _handle_recent_repos(request: web.Request) -> web.Response:
     except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    # Case-INSENSITIVE identity: GitHub owner/repo names are case-preserving
-    # but not case-sensitive, and the event feed can spell a repo differently
-    # from the stored config (`Owner/Repo` vs `owner/repo`). A case-sensitive
-    # compare would mark an already-connected repo as connectable and let the
-    # user create a duplicate config + cache entry for the same repo.
+    # Name identity follows the PROVIDER's case semantics, via the same helper the
+    # authorization gate uses (store._name_matches is defined in terms of it). On
+    # GitHub the names are case-preserving but not case-sensitive, and the event
+    # feed can spell a repo differently from the stored config (`Owner/Repo` vs
+    # `owner/repo`); a case-sensitive compare there would mark an
+    # already-connected repo as connectable and let the user create a duplicate
+    # config + cache entry for the same repo. Casefolding UNCONDITIONALLY has the
+    # opposite failure on a case-sensitive provider: two genuinely distinct
+    # projects collapse, and one is shown as already connected when it is not.
     def _key(owner: object, repo: object) -> tuple[str, str]:
-        return (str(owner or "").casefold(), str(repo or "").casefold())
+        return (
+            store.name_compare_key(str(owner or ""), key.provider),
+            store.name_compare_key(str(repo or ""), key.provider),
+        )
 
     connected = {
         _key(r.get("owner"), r.get("repo"))
@@ -1168,6 +1196,11 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
             {"error": f"{owner}/{repo} is not connected — call /connect first"}, status=404
         )
 
+    # The search cap is the DISPATCHED client's own (it is that CLI's paging
+    # ceiling), not GitHub's — see _pr_merge_method_field for the same reasoning.
+    # It is read once and reused, so the ceiling requested, the truncation test
+    # and the number reported to the UI cannot disagree.
+    search_max = client.PR_SEARCH_MAX  # type: ignore[attr-defined]
     try:
         pulls = await asyncio.to_thread(
             partial(client.search_pulls, owner, repo, **pkw), state=state, author=author,
@@ -1175,16 +1208,16 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
             # One MORE than we will return, so "was anything left out?" is answered
             # by fact rather than by `len(rows) == cap` — a person with exactly the
             # cap's worth of matches omits nothing and must not be labelled capped.
-            limit=github_client.PR_SEARCH_MAX + 1,
+            limit=search_max + 1,
         )
-    except github_client.PrSearchError as exc:
+    except PrSearchError as exc:
         # Bad state / invalid login / no person qualifier — a client input error.
         return web.json_response({"error": str(exc)}, status=400)
     except GhCliError as exc:
         return web.json_response({"error": str(exc)}, status=502)
 
-    truncated = len(pulls) > github_client.PR_SEARCH_MAX
-    pulls = pulls[:github_client.PR_SEARCH_MAX]
+    truncated = len(pulls) > search_max
+    pulls = pulls[:search_max]
 
     # Search rows carry no diff size or check state, so the cards would lose their
     # bottom row the moment a person filter is on. Enrich BY NUMBER (not by state)
@@ -1201,7 +1234,7 @@ async def _handle_pulls_search(request: web.Request) -> web.Response:
         # the whole point of this route is escaping the list's page cap, so
         # silently imposing another one would undo that claim.
         "truncated": truncated,
-        "limit": github_client.PR_SEARCH_MAX,
+        "limit": search_max,
     })
 
 

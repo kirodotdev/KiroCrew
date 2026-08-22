@@ -993,11 +993,9 @@
           "issue_one": "{{count}} issue",
           "issue_other": "{{count}} issues",
           "issues": "Issues",
-          "re_fetch_issues_labels_from_github": "Re-fetch issues + labels from GitHub",
           "refresh_issues": "Refresh issues",
           "search_issues": "Search Issues…",
           "search_issues_2": "Search issues",
-          "time_since_the_issue_list_was_last_fetched_from": "Time since the issue list was last fetched from GitHub",
           "updated": "Updated"
         },
         "labelPalette": {
@@ -1168,7 +1166,6 @@
           "pr_one": "{{count}} PR",
           "pr_other": "{{count}} PRs",
           "select_for_bulk": "Select {{subject}} #{{number}} for a bulk action",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Time since the PR list was last fetched from GitHub",
           "updated": "Updated"
         },
         "prRunActions": {
@@ -1225,7 +1222,8 @@
         "session_install_and_sign_in_to": "session.\n        Install and sign in to",
         "then": ", then",
         "through_your_own": "through your own",
-        "you_contributed_to": "You contributed to"
+        "you_contributed_to": "You contributed to",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Close",
@@ -1236,7 +1234,7 @@
         "loading": "Loading…"
       },
       "manifest": {
-        "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues and GitLab issues with AI-suggested labels and per-issue investigation notes — with findings kept in a local ledger so nothing gets re-investigated.",
+        "description": "An issue triage assistant that remembers. Browse, filter, and triage GitHub issues, GitLab issues, and Azure DevOps work items with AI-suggested labels and per-item investigation notes — with findings kept in a local ledger so nothing gets re-investigated.",
         "display_name": "Issue Radar",
         "highlight_1": "AI summaries and suggested labels for issues and pull requests, each with its reasoning",
         "highlight_2": "Per-issue investigation notes kept in a local ledger so nothing gets re-investigated",
@@ -1246,7 +1244,7 @@
         "highlight_6": "Every write needs triage or push access on the repo; a read-only connection stays suggest-only",
         "highlight_7": "Surfaces repositories you have recently contributed to, so connecting one is a click",
         "highlight_8": "Caches issues, labels, and members locally, refreshed on demand",
-        "highlight_9": "Works with GitHub; needs an authenticated `gh` CLI on the gateway host",
+        "highlight_9": "Works with GitHub, GitLab, and Azure DevOps; needs an authenticated CLI for the provider you connect (`gh`, `glab`, or `az`) on the gateway host — no single provider's CLI is required to install",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -1268,7 +1266,6 @@
           "no_discussion_yet": "No discussion yet.",
           "no_labels_in_use": "No labels in use.",
           "nothing_needs_attention": "Nothing needs attention",
-          "re_fetch_issues_labels_from_github": "Re-fetch issues + labels from GitHub",
           "recently_updated": "Recently updated",
           "refresh_issues": "Refresh issues"
         },
@@ -1340,7 +1337,6 @@
             "looking_for_labels_this_repo_is_missing": "Looking for labels this repo is missing…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "None — the repo’s taxonomy already covers what its open issues need.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Propose labels this repo is missing, from its open issues",
-            "re_fetch_this_repo_s_labels_from_github": "Re-fetch this repo's labels from GitHub",
             "suggested_new_labels_not_created_until_you_say_s": "Suggested new labels — not created until you say so"
           },
           "untaggedIssueCard": {

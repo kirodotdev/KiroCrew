@@ -855,8 +855,12 @@ export interface RepoRef {
   host?: string
 }
 
-/** Which forge a repo lives on. */
-export type SourceProvider = 'github' | 'gitlab'
+/** Which forge a repo lives on.
+ *
+ * `azure` is Azure DevOps on `dev.azure.com`, where `owner` carries
+ * `{organization}/{project}` — a slash-joined pair, the same way `owner` carries a
+ * nested group path on GitLab. */
+export type SourceProvider = 'github' | 'gitlab' | 'azure'
 
 /** Which provider account an account-scoped endpoint should ask about.
  *

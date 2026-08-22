@@ -4,7 +4,7 @@ import { Check, Plus, RefreshCw, Wand2 } from 'lucide-react'
 import {
   issueRadarApi, type LabelRecommendation, type RepoLabel, type RepoSettings, type RepoRef,
 } from '../../api'
-import { issueUrlFor, repoScopeKey } from '../../lib/links'
+import { issueUrlFor, providerTerms, repoScopeKey } from '../../lib/links'
 import { asArray, readableText, hexToRgba } from '../../lib/format'
 import ReadOnlyTag from '../../components/ReadOnlyTag'
 import ShimmerLine from '../../components/ShimmerLine'
@@ -47,6 +47,9 @@ export default function LabelsPanel({
   const qc = useQueryClient()
   const { owner, repo } = repoRef
   const scopeKey = repoScopeKey(repoRef)
+  // The refresh control names where the labels come from, and that is not always
+  // GitHub.
+  const terms = providerTerms(repoRef)
   const key = ['issue-radar', 'recommendations', scopeKey]
 
   const ranked = useMemo(
@@ -115,8 +118,8 @@ export default function LabelsPanel({
           <button
             onClick={() => refreshLabels.mutate()}
             disabled={refreshLabels.isPending}
-            aria-label={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from_github')}
-            title={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from_github')}
+            aria-label={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from', { provider: terms.providerName })}
+            title={i18nT('apps.issueRadar.views.tagging.labelsPanel.re_fetch_this_repo_s_labels_from', { provider: terms.providerName })}
             className="inline-flex items-center justify-center h-7 w-7 rounded-md border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
           >
             <RefreshCw size={12} className={refreshLabels.isPending ? 'animate-spin' : ''} />

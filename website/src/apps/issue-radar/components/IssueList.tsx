@@ -4,6 +4,7 @@ import { Virtuoso } from 'react-virtuoso'
 import { RefreshCw, Search, X } from 'lucide-react'
 import { useIssueRadar } from '../context'
 import { relativeTimeOrDate, relativeTime } from '../lib/format'
+import { providerTerms } from '../lib/links'
 import type { Issue } from '../api'
 import LabelChip from './LabelChip'
 import ListSkeleton from './ListSkeleton'
@@ -33,8 +34,12 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
     filteredIssues, sortedIssues, issuesLoading, issuesError, issuesPartial,
     stateFilter, issues, colorByName,
     selectedIssue, setSelectedIssue, refresh, refreshing, listDetail,
-    query, setQuery, issuesUpdatedAt,
+    query, setQuery, issuesUpdatedAt, active,
   } = useIssueRadar()
+  // The refresh controls name where the data comes FROM, and that is not always
+  // GitHub — a GitLab or Azure DevOps workspace being told its issues came from
+  // GitHub is simply wrong copy.
+  const terms = providerTerms(active)
 
   const reduce = useReducedMotion()
   const animate = !reduce && sortedIssues.length <= ANIM_CAP
@@ -199,14 +204,14 @@ export default function IssueList({ resizing = false }: { resizing?: boolean }) 
         )}
         <span className="ml-auto flex items-center gap-2">
           {lastUpdated && (
-            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.issueList.time_since_the_issue_list_was_last_fetched_from')}>
+            <span className="tabular-nums" title={i18nT('apps.issueRadar.components.issueList.time_since_issue_list_last_fetched_from', { provider: terms.providerName })}>
               {i18nT('apps.issueRadar.components.issueList.updated')} {lastUpdated}
             </span>
           )}
           <button
             onClick={refresh}
             disabled={refreshing}
-            title={i18nT('apps.issueRadar.components.issueList.re_fetch_issues_labels_from_github')}
+            title={i18nT('apps.issueRadar.components.issueList.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
             aria-label={i18nT('apps.issueRadar.components.issueList.refresh_issues')}
             className="inline-flex items-center cursor-pointer bg-transparent text-muted hover:text-text disabled:opacity-30"
           >

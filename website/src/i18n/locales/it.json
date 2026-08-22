@@ -1673,12 +1673,12 @@
           "issue_other": "{{count}} issue",
           "issues": "Issue",
           "loading_the_rest": "Caricamento del resto…",
-          "re_fetch_issues_labels_from_github": "Recupera di nuovo issue ed etichette da GitHub",
           "refresh_issues": "Aggiorna le issue",
           "search_issues": "Cerca tra le issue…",
           "search_issues_2": "Cerca tra le issue",
-          "time_since_the_issue_list_was_last_fetched_from": "Tempo trascorso dall'ultimo recupero dell'elenco delle issue da GitHub",
-          "updated": "Aggiornato"
+          "updated": "Aggiornato",
+          "re_fetch_issues_and_labels_from": "Recupera di nuovo issue ed etichette da {{provider}}",
+          "time_since_issue_list_last_fetched_from": "Tempo trascorso dall'ultimo recupero dell'elenco delle issue da {{provider}}"
         },
         "labelPalette": {
           "close_label_search": "Chiudi la ricerca etichette",
@@ -1912,8 +1912,8 @@
           "search": "Cerca {{label}}…",
           "search_2": "Cerca {{label}}",
           "select_for_bulk": "Seleziona {{subject}} #{{number}} per un'azione in blocco",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Tempo trascorso dall'ultimo recupero dell'elenco delle PR da GitHub",
-          "updated": "Aggiornato"
+          "updated": "Aggiornato",
+          "time_since_list_last_fetched_from": "Tempo trascorso dall'ultimo recupero dell'elenco delle {{label}} da {{provider}}"
         },
         "prRunActions": {
           "cancel_run": "Annulla l'esecuzione di {{name}}",
@@ -1985,7 +1985,8 @@
         "session_install_and_sign_in_to": "sessione.\n        Installa ed effettua l'accesso a",
         "then": ", poi",
         "through_your_own": "tramite il tuo",
-        "you_contributed_to": "Hai contribuito a"
+        "you_contributed_to": "Hai contribuito a",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Chiudi",
@@ -2006,7 +2007,7 @@
         }
       },
       "manifest": {
-        "description": "Un assistente per il triage delle issue che si ricorda le cose. Sfoglia, filtra e smista le issue di GitHub e di GitLab con etichette suggerite dall’AI e note di indagine per ogni issue — i risultati restano in un registro locale, così nulla viene indagato due volte.",
+        "description": "Un assistente per il triage delle issue che si ricorda le cose. Sfoglia, filtra e smista le issue di GitHub, le issue di GitLab e i work item di Azure DevOps con etichette suggerite dall’AI e note di indagine per ogni elemento — i risultati restano in un registro locale, così nulla viene indagato due volte.",
         "display_name": "Issue Radar",
         "highlight_1": "Riepiloghi AI ed etichette suggerite per issue e pull request, ognuno con il proprio ragionamento",
         "highlight_2": "Note di indagine per ogni issue conservate in un registro locale, così nulla viene indagato due volte",
@@ -2016,7 +2017,7 @@
         "highlight_6": "Ogni scrittura richiede accesso di triage o di push sul repo; una connessione di sola lettura resta limitata ai suggerimenti",
         "highlight_7": "Mette in evidenza i repository a cui hai contribuito di recente, così collegarne uno è questione di un clic",
         "highlight_8": "Mette in cache in locale issue, etichette e membri, aggiornandoli su richiesta",
-        "highlight_9": "Funziona con GitHub; richiede una CLI `gh` autenticata sull’host del gateway",
+        "highlight_9": "Funziona con GitHub, GitLab e Azure DevOps; richiede sull’host del gateway una CLI autenticata per il provider che colleghi (`gh`, `glab` o `az`) — per l’installazione non serve la CLI di un provider specifico",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2208,14 +2209,14 @@
           "no_reply": "senza risposta",
           "nothing_needs_attention": "Nulla richiede attenzione",
           "open_issues": "Issue aperte",
-          "re_fetch_issues_labels_from_github": "Recupera di nuovo issue ed etichette da GitHub",
           "recently_updated": "Aggiornati di recente",
           "refresh_issues": "Aggiorna le issue",
           "stale": "Inattive",
           "unanswered": "Senza risposta",
           "unassigned": "Non assegnate",
           "untriaged": "Senza triage",
-          "untriaged_2": "senza triage"
+          "untriaged_2": "senza triage",
+          "re_fetch_issues_and_labels_from": "Recupera di nuovo issue ed etichette da {{provider}}"
         },
         "registry": {
           "overview": "Panoramica",
@@ -2335,11 +2336,11 @@
             "looking_for_labels_this_repo_is_missing": "Ricerca delle etichette mancanti in questo repo…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Nessuna — la tassonomia del repo copre già ciò che serve alle sue issue aperte.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Proponi le etichette mancanti in questo repo, a partire dalle sue issue aperte",
-            "re_fetch_this_repo_s_labels_from_github": "Recupera di nuovo le etichette di questo repo da GitHub",
             "read_only_repo_needs_triage_push_access": "Repo in sola lettura — serve accesso di triage/push",
             "suggest_again": "Suggerisci di nuovo",
             "suggest_new_labels": "Suggerisci nuove etichette",
-            "suggested_new_labels_not_created_until_you_say_s": "Nuove etichette suggerite — non vengono create finché non lo confermi"
+            "suggested_new_labels_not_created_until_you_say_s": "Nuove etichette suggerite — non vengono create finché non lo confermi",
+            "re_fetch_this_repo_s_labels_from": "Recupera di nuovo le etichette di questo repo da {{provider}}"
           },
           "untaggedIssueCard": {
             "add": "Aggiungi",

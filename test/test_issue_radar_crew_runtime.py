@@ -21,6 +21,7 @@ with nobody watching:
     trace, which is exactly what the sweep exists to prevent.
 """
 
+import ast
 import asyncio
 import contextlib
 import inspect
@@ -35,6 +36,7 @@ from unittest import mock
 from kiro_crew.apps.builtins.issue_radar.backend import crew_runtime as cr
 from kiro_crew.apps.builtins.issue_radar.backend import crew_store as cs
 from kiro_crew.apps.builtins.issue_radar.backend import provider
+from kiro_crew.apps.builtins.issue_radar.backend import store as store_mod
 from kiro_crew.apps.builtins.issue_radar.backend import watch as watch_mod
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.safety_override import reset_singleton, safety_override
@@ -403,6 +405,202 @@ class TestNudge(unittest.TestCase):
         _item(self.root, crew["id"], 7, phase="claimed")
         nudge = cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, self.root))
         self.assertIn("no next step recorded", nudge)
+
+
+# ── provider vocabulary in the prompt ───────────────────────────────────────
+
+
+class TestProviderVocabulary(unittest.TestCase):
+    """The nudge and the Never block must speak the repo's forge, not GitHub's.
+
+    ``provider.terms`` existed with no callers, so every crew on every provider was
+    told GitHub's vocabulary. Two of those are not cosmetic:
+
+      * ``#12`` and ``!12`` address DIFFERENT items on GitLab and Azure DevOps, so a
+        crew that quotes the nudge back into a comment points at an unrelated item.
+      * "Never merge a PR" is the prohibition a crew is most likely to reason
+        around, and one phrased in a vocabulary its forge does not use reads as
+        being about something else.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def _nudge(self, provider_name: str) -> str:
+        key = provider.key_from_parts(OWNER, REPO, provider_name, "gitlab.example")
+        # Crew names are unique per repo, and these fixtures share one root.
+        crew = _crew(self.root, name=f"Andromeda-{provider_name}-{len(self.root.name)}", labels=[])
+        _item(self.root, crew["id"], 2201, phase="awaiting-ci", pr_number=88, next="round 3")
+        return cr.compose_nudge(cr.build_snapshot(OWNER, REPO, crew, self.root, key))
+
+    def test_github_rendering_is_unchanged(self):
+        nudge = self._nudge("github")
+        self.assertIn("(PR #88)", nudge)
+        self.assertIn("merge a PR yourself", nudge)
+        self.assertIn("every open issue", nudge)
+
+    def test_gitlab_says_merge_request_with_its_own_sigil(self):
+        nudge = self._nudge("gitlab")
+        self.assertIn("(MR !88)", nudge)
+        self.assertIn("merge a MR yourself", nudge)
+        self.assertNotIn("(PR #88)", nudge)
+        # The tracked item keeps `#` on every provider — only the change-request
+        # sequence diverges — so the item's own number must NOT gain a `!`.
+        self.assertIn("- #2201 awaiting-ci", nudge)
+
+    def test_azure_says_work_item_and_uses_its_pull_request_sigil(self):
+        nudge = self._nudge("azure")
+        self.assertIn("(PR !88)", nudge)
+        self.assertIn("every open work item", nudge)
+        # Azure DevOps has no `issue` primitive, so naming one sends the crew
+        # looking for a work item TYPE it was never told to filter on.
+        self.assertNotIn("every open issue", nudge)
+        self.assertIn("- #2201 awaiting-ci", nudge)
+
+    def test_the_ci_clause_names_no_provider_path(self):
+        """``.github/`` was wrong on two of three providers, and a per-provider path
+        would still be wrong: a GitHub repo can be gated from outside ``.github/``
+        and an Azure pipeline file can be named anything. The prohibition is about
+        the files the gates run from, not a location."""
+        for name in ("github", "gitlab", "azure"):
+            nudge = self._nudge(name)
+            self.assertIn("CI or gate configuration", nudge)
+            self.assertNotIn(".github", nudge)
+            self.assertNotIn("azure-pipelines", nudge)
+            self.assertNotIn(".gitlab-ci", nudge)
+
+    def test_an_unknown_or_absent_provider_falls_back_to_github(self):
+        """A snapshot built before this field existed, or a corrupted record, must
+        still render a complete prompt rather than raising mid-turn."""
+        self.assertEqual(cr.vocabulary(), provider.terms(provider.RepoKey()))
+        crew = _crew(self.root)
+        snapshot = cr.build_snapshot(OWNER, REPO, crew, self.root)
+        snapshot.pop("provider")
+        self.assertIn("merge a PR yourself", cr.compose_nudge(snapshot))
+
+    def test_the_snapshot_carries_the_provider(self):
+        crew = _crew(self.root)
+        key = provider.key_from_parts(OWNER, REPO, "azure")
+        self.assertEqual(
+            cr.build_snapshot(OWNER, REPO, crew, self.root, key)["provider"], "azure"
+        )
+
+    def test_every_prompt_path_forwards_the_key(self):
+        """A path that drops ``key`` silently renders GitHub's vocabulary, which is
+        indistinguishable from a correctly-rendered GitHub repo — so the seam is
+        pinned by signature rather than by output."""
+        for fn in (
+            cr.build_snapshot,
+            cr.compose_turn_prompt,
+            cr.compose_turn_prompt_async,
+            cr.launch_crew,
+            cr.wake_crew,
+            cr.watchdog_cycle,
+        ):
+            self.assertIn("key", inspect.signature(fn).parameters, fn.__name__)
+        # The sweep is the only production caller, and it holds the real key.
+        source = inspect.getsource(cr.sweep_repo)
+        self.assertIn("watchdog_cycle(state, key.owner, key.repo, crews, scope, key)", source)
+        self.assertRegex(source, r"wake_crew\(\s*state,\s*key\.owner,\s*key\.repo,[\s\S]*?\bkey,")
+
+
+# ── provider scoping of the crew ledger ─────────────────────────────────────
+
+
+class TestCrewStoreScoping(unittest.TestCase):
+    """Every crew-ledger path is provider-separated ONLY by its ``root=``.
+
+    ``crew_store.crews_dir(owner, repo, root)`` is the base of the crew records, the
+    events log and the repo-wide shared skip index, and no signature in that module
+    carries a provider or a host. So the separation is entirely a CALLER discipline:
+    a call that forgets the scoped root writes one provider's skip decisions into
+    another's index, and ``crew_store`` cannot detect it — on public GitHub the
+    scoped root IS the base data dir (``store.provider_root`` returns it unchanged
+    for the legacy layout), so "unscoped" and "correctly scoped for GitHub" are the
+    same value.
+
+    That is why the guard lives here, at the call sites, where the question is
+    decidable, rather than inside the store where it is not.
+    """
+
+    #: ``crew_store`` members that are not per-repo and take no ``root``.
+    _ROOTLESS = frozenset({"is_crew_id"})
+
+    def _offenders(self, module: Any) -> list[str]:
+        tree = ast.parse(Path(inspect.getfile(module)).read_text(encoding="utf-8"))
+        bad: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            if not (
+                isinstance(fn, ast.Attribute)
+                and isinstance(fn.value, ast.Name)
+                and fn.value.id == "crew_store"
+            ):
+                continue
+            if fn.attr in self._ROOTLESS:
+                continue
+            scoped = any(
+                self._is_scope(arg) for arg in node.args
+            ) or any(
+                kw.arg in {"root", "scope"} for kw in node.keywords
+            )
+            if not scoped:
+                bad.append(f"{fn.attr} at line {node.lineno}")
+        return bad
+
+    @staticmethod
+    def _is_scope(arg: Any) -> bool:
+        """Whether an argument is plausibly the provider-scoped root.
+
+        A NAME (``root`` / ``scope``) or a call to the scope helper. Deliberately
+        syntactic: what this gate can prove is that the scope was passed at all,
+        which is the mistake with no symptom. Whether the name holds the right value
+        is what ``routes._scope`` and ``store.provider_root`` are tested for.
+        """
+        if isinstance(arg, ast.Name):
+            return arg.id in {"root", "scope"}
+        if isinstance(arg, ast.Attribute):
+            return arg.attr in {"root", "scope"}
+        if isinstance(arg, ast.Call):
+            fn = arg.func
+            return isinstance(fn, ast.Attribute) and fn.attr in {"_scope", "provider_root"}
+        return False
+
+    def test_no_unscoped_crew_store_call_survives(self):
+        from kiro_crew.apps.builtins.issue_radar.backend import crew_routes
+
+        for module in (crew_routes, cr):
+            offenders = self._offenders(module)
+            self.assertEqual(
+                offenders, [], f"unscoped crew_store calls in {module.__name__}: {offenders}"
+            )
+
+    def test_the_skip_index_is_separated_only_by_the_scoped_root(self):
+        """The property the gate protects, demonstrated rather than asserted about.
+
+        Two providers, same ``owner/repo`` — which is entirely ordinary, the same
+        slug exists on github.com and on a self-managed GitLab. Scoped, their skip
+        indexes are independent; handed the same root they are ONE index, and the
+        second crew reads the first's decision as its own repository's.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            gh = store_mod.provider_root(root=base, provider="github", host="github.com")
+            gl = store_mod.provider_root(root=base, provider="gitlab", host="gitlab.example")
+            self.assertNotEqual(cs.skips_path(OWNER, REPO, gh), cs.skips_path(OWNER, REPO, gl))
+
+            cs.record_skip(OWNER, REPO, 7, "architecture call", "architecture", "c_11111111", gh)
+            self.assertEqual(cs.read_skips(OWNER, REPO, gl), {})
+            self.assertIn("7", cs.read_skips(OWNER, REPO, gh))
+
+            # The same call with the scope forgotten. It cannot raise and cannot be
+            # detected downstream: for public GitHub the scoped root and the base
+            # data dir are the same path.
+            self.assertEqual(cs.skips_path(OWNER, REPO, base), cs.skips_path(OWNER, REPO, gh))
 
 
 # ── session launch / trust ──────────────────────────────────────────────────
