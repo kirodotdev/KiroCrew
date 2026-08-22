@@ -4929,7 +4929,8 @@
       "devcontainer_trusted_not_running": "La configuration Dev Container de ce projet est approuvée. Aucun conteneur n'est actif pour le moment.",
       "withdraw_trust": "Retirer ma confiance",
       "could_not_withdraw_trust": "Impossible de retirer la confiance",
-      "withdrawing_stops_future_sessions": "Une fois la confiance retirée, les prochaines sessions n'utilisent plus le conteneur. La session en cours y reste jusqu'à son redémarrage."
+      "withdrawing_stops_future_sessions": "Une fois la confiance retirée, les prochaines sessions n'utilisent plus le conteneur. La session en cours y reste jusqu'à son redémarrage.",
+      "trust_again": "Faire de nouveau confiance"
     },
     "chatPane": {
       "agent_list": "Liste des agents",
@@ -6924,7 +6925,10 @@
       "trust_applies_to_this_exact_configuration": "La confiance s'applique exactement à cette configuration — si elle change, la question vous sera posée à nouveau. Vous pouvez retirer votre confiance depuis la puce Dev Container.",
       "trusting": "Confiance en cours…",
       "trusting_runs_the_setup_commands_in_this_file": "Ceci n’est pas un environnement isolé. Accorder votre confiance exécute les commandes d’installation de ce fichier et donne au conteneur les montages hôte et les arguments d’exécution qu’il déclare. N’accordez votre confiance qu’aux projets que vous connaissez.",
-      "while_a_session_runs_in_the_container": "Pendant qu'une session s'exécute dans le conteneur, les tâches planifiées, les sous-agents et les leçons enregistrées ne sont pas disponibles."
+      "while_a_session_runs_in_the_container": "Faire confiance ne déplace pas cette session. Démarrez-en une nouvelle ensuite pour l’exécuter dans le conteneur.",
+      "start_a_new_session": "Démarrer une nouvelle session",
+      "could_not_load_this_configuration": "Impossible de charger cette configuration",
+      "try_again": "Réessayer"
     },
     "devcontainerExecutionChip": {
       "in_container": "Dans le conteneur",

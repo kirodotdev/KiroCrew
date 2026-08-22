@@ -403,6 +403,14 @@ interface ChatInputProps {
   /** Refetch Dev Container status after trust was withdrawn. */
   onDevcontainerUntrust?: () => void | Promise<unknown>
   /**
+   * True after an explicit refusal (Not now or Withdraw) for this config.
+   * Keeps the chip mounted so "Trust again" has somewhere to live — without
+   * it a withdrawn grant plus a stopped container leaves no way back.
+   */
+  devcontainerDismissed?: boolean
+  /** Clear the refusal so the trust card can ask again. */
+  onDevcontainerTrustAgain?: () => void
+  /**
    * Where the active session's turns actually execute. Absent when the work dir
    * ships no Dev Container config. Independent of `devcontainerRunning`, which
    * is project-level polled state: a session can have fallen back to the host
@@ -705,6 +713,8 @@ function ChatInput({
   devcontainerTrusted,
   devcontainerProject,
   onDevcontainerUntrust,
+  devcontainerDismissed,
+  onDevcontainerTrustAgain,
   execution,
   memoryMode,
   cleanMode,
@@ -3129,9 +3139,9 @@ function ChatInput({
           Gated on the same predicate the execution chip uses internally, so a
           session with no Dev Container lays out no empty row. */}
       {!showGhost &&
-        (devcontainerTrusted || devcontainerRunning || showsExecution(execution)) && (
+        (devcontainerTrusted || devcontainerRunning || devcontainerDismissed || showsExecution(execution)) && (
         <div className="pt-1 flex items-center gap-2 min-w-0">
-          {(devcontainerTrusted || devcontainerRunning) && (
+          {(devcontainerTrusted || devcontainerRunning || devcontainerDismissed) && (
             /* A control, not a static badge: the chip owns the only exit from
                trust, so it mounts as soon as trust is held rather than waiting
                for a container to be up -- otherwise the trust card's "you can
@@ -3187,6 +3197,7 @@ function ChatInput({
                     bottom: window.innerHeight - devcMenuRect.top + 6,
                   }}
                 >
+                  {devcontainerTrusted ? (
                   <button
                     type="button"
                     role="menuitem"
@@ -3197,12 +3208,25 @@ function ChatInput({
                   >
                     {i18nT('components.chatInput.withdraw_trust')}
                   </button>
-                  {/* Visible, not a tooltip: withdrawing does NOT evict the
-                      container this turn runs in, and a user who expects it to
-                      would otherwise read the unchanged chip as a failure. */}
+                  ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={devcBusy}
+                    onClick={() => {
+                      onDevcontainerTrustAgain?.()
+                      setDevcOpen(false)
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-[12px] text-text bg-transparent border-none cursor-pointer transition-colors hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {i18nT('components.chatInput.trust_again')}
+                  </button>
+                  )}
+                  {devcontainerTrusted && (
                   <div id={devcNoteId} className="px-3 pb-1.5 text-[11px] text-muted leading-snug max-w-[240px]">
                     {i18nT('components.chatInput.withdrawing_stops_future_sessions')}
                   </div>
+                  )}
                   {devcError && (
                     <div role="alert" className="px-3 pb-1.5 text-[11px] text-danger leading-snug max-w-[240px]">
                       {devcError}

@@ -23,7 +23,10 @@ canonicalized into that class. A `runArgs` flag that is not in one of those
 classes is the human's grant. The gateway does **not** otherwise strip
 security-posture properties.
 
-The user guide is [docs/devcontainers.md](../../devcontainers.md).
+The user guide is [docs/devcontainers.md](../../devcontainers.md). The
+near-production opt-in plan (what an enabled trusted session must do, and what
+stays out of scope for a prod default) is
+[docs/design/devcontainer-product-readiness.md](../../design/devcontainer-product-readiness.md).
 
 ## Architecture
 
@@ -32,14 +35,17 @@ gateway (host)                          container (project toolchain)
   AcpRuntime.spawn / AcpClient._spawn
     resolve_for_work_dir() ─────────┐
       config off?           → None  │  trust-gated
-      non-Linux?            → None  │  devcontainer up
+      docker missing?       → None  │  devcontainer up
       no config in workdir? → None  ├──────────────────────►  kiro-cli acp
-      docker missing?       → None  │   docker exec -i        (shell + file
-      untrusted?            → None  │   -u remoteUser          tools run here)
-      up() failed?          → None  │   -w remoteWorkspace
-                                    │   -e KIROCREW_*
+      untrusted?            → None  │   docker exec -i        (shell + file
+      up() failed?          → None  │   -u remoteUser          tools run here)
+                                    │   -w remoteWorkspace
+                                    │   -e KIRO_API_KEY, XDG_DATA_HOME
     containerize_spawn(...) ────────┘
     session/new cwd = info.remote_workspace_folder
+    mcpServers → python3 client.py <unix-socket | tcp host.docker.internal port>
+    host accept loop (AF_UNIX on native Linux, 127.0.0.1 TCP on Desktop)
+      spawns kirocrew mcp-core/cron/computer
 ```
 
 **Two live spawn paths, one implementation.** `AcpRuntime.spawn()` carries every
@@ -63,8 +69,9 @@ capabilities, so there is no interception seam. Verified by spike, not assumed.
 ## Key Invariants
 
 1. **Fail to host, never fail the spawn.** `resolve_for_work_dir()` returns
-   `None` for every negative case (feature off, non-Linux, no config, docker
-   missing, untrusted, `up()` raised). Spawn must not block on a human decision;
+   `None` for every negative case (feature off, no config, docker missing,
+   untrusted, `up()` raised). Linux and Docker Desktop (macOS / Windows) are
+   eligible when Docker is present. Spawn must not block on a human decision;
    the trust prompt is surfaced out of band. Untrusted and failed cases log
    loudly.
 2. **No trust, no build.** `DevcontainerManager.up()` raises
@@ -302,16 +309,61 @@ are called optionally because many test suites mock `../api/client` partially.
 `ChatInput` renders a static Dev Container chip (a `<span>`, deliberately outside
 the shelf's tab order) while a container is running.
 
-## Known v1 limitations
+## Managed MCP bridge
 
-- Kiro Crew's managed MCP servers (`mcp-core`, `mcp-cron`, `mcp-computer`) are not
-  reachable from inside the container: their REST callbacks target the gateway's
-  host loopback. `kiro-cli` reports `mcp_server_init_failure` and the session
-  continues with the project toolchain fully functional.
+kiro-cli inside the container cannot spawn `kirocrew mcp-core` / `mcp-cron` /
+`mcp-computer`: those processes callback to the gateway on `127.0.0.1` (the
+container) and the image does not ship `kiro_crew`. Pooling stubs have the
+same problem (host-only unix socket + a `kiro_crew` import).
+
+`write_build_config()` injects a bind of a gateway-owned directory onto
+`/tmp/kirocrew-mcp-bridge` **after** the sensitive-path screen — a bind we
+created, not a project-declared mount of the data home. Do not re-screen it.
+The host path is `/tmp/kirocrew-mcp/<token>/` on POSIX (`gettempdir()` on
+Windows). A data-home path is both a sensitive-path hit and too long for
+`AF_UNIX`; macOS `gettempdir()` (`/var/folders/...`) is also too long.
+
+Transport is dual because bind-mounted `AF_UNIX` sockets do not survive
+Docker Desktop's VM file share:
+
+- **Native Linux:** `asyncio.start_unix_server` and
+  `python3 /tmp/kirocrew-mcp-bridge/client.py <socket>`. After the screen,
+  `--add-host=host.docker.internal:host-gateway` is injected so a TCP client
+  can still reach host loopback. This is not `--network=host` and does not
+  grow the closed screen.
+- **Docker Desktop (macOS / Windows):** `asyncio.start_server` on
+  `127.0.0.1` with an ephemeral port (never `0.0.0.0`) and
+  `python3 client.py tcp host.docker.internal <port>`.
+
+Same-name override shadows the spec. The client is stdlib-only (no
+`kiro_crew` imports). The directory is `0755` and unix sockets are `0666`
+because `remoteUser` is routinely a different uid than the gateway. The host
+MCP child keeps `KIROCREW_HOME` and `KIROCREW_SESSION_KEY`. Teardown closes
+the listeners; `down()` reaps the directory.
+
+## Auth and the selected agent file
+
+Host spawn injects `KIRO_API_KEY` on the process environment *after*
+`containerize_spawn` builds the `docker exec -e` list, so the same inject
+runs on `devc_env` itself. The host kiro-cli login store (`data.sqlite3`
+from `kiro_cli_state_dbs()`) is **copied** — not live-bound — into
+`/tmp/kirocrew-auth/<token>/kiro-cli/` and bound onto `/tmp/kirocrew-auth`.
+`docker exec` forwards `XDG_DATA_HOME=/tmp/kirocrew-auth` so in-container
+kiro-cli reads the Linux-shaped path. Dir `0755`, db `0644`. Refresh when
+the host file is newer. One-way: a login inside the container does not write
+back. Never mount `~/.aws`, `~/.ssh`, `KIROCREW_HOME`, or the rest of
+`~/.kiro`.
+
+Project `.kiro/agents/<name>.json` still wins (workspace bind). If the
+probe misses, only `~/.kiro/agents/<name>.json` is copied into
+`/tmp/kirocrew-kiro-home/<token>/agents/` and that directory is bound onto
+`<remoteUserHome>/.kiro/agents`. The whole host agents directory is never
+mounted.
+
+## Known v1 limitations
 - `/proc`-based liveness observes the host-side `docker exec` client proxy. Death
   detection works (pipe close); wedge heuristics degrade.
-- Linux hosts only. On macOS, Docker Desktop is a VM; the existing Seatbelt
-  sandbox path is unchanged.
+- The host Seatbelt / Job-object path is skipped on a containerized spawn.
 - **One runtime, one container.** `AcpRuntime` multiplexes many ACP sessions over
   one kiro-cli process, so it resolves its container from its own `work_dir`.
   `_session_cwd()` maps a session's cwd to `remoteWorkspaceFolder` when it
@@ -321,14 +373,17 @@ the shelf's tab order) while a container is running.
   keeps project-scoped sessions off shared runtimes, so the guard enforces that
   invariant rather than assuming it.
 - Warm-pool runtimes are spawned with `default_project_dir()` as `work_dir`
-  before any project is known, so they containerize only if that directory has a
-  trusted config; a session for another project cannot claim one.
+  before any project is known. A session whose work dir has a trusted
+  config must not claim a host warm-pool runtime
+  (`bypass_devcontainer`). Default `session.pool_size` is `0`.
 
 ## Source Files
 
 | File | Purpose |
 |---|---|
-| `devcontainer.py` | Trust store, `DevcontainerManager` (up/down/status/alive), `exec_argv`, `kill_exec`, module singleton. |
+| `devcontainer.py` | Trust store, `DevcontainerManager` (up/down/status/alive), `exec_argv`, `kill_exec`, auth/agent injects, module singleton. |
+| `devcontainer_mcp.py` | Host accept loop (unix or 127.0.0.1 TCP), mount and host-gateway injection, ACP `mcpServers` entries. |
+| `devcontainer_mcp_client.py` | Stdlib-only stdio/socket pipe copied into the bind (unix path or `tcp host port`). |
 | `acp/runtime.py` | **The active path.** `_maybe_devcontainer_info()` (eligibility), the spawn branch that replaces argv with `docker exec`, `_session_cwd()` (container path + one-container invariant), in-container kill on teardown. Every non-claude session reaches here via `AcpProvider.start()` -> `_start_kiro_runtime()`. |
 | `acp/client.py` | The same branch on the legacy client path, which serves the dormant claude backend (`AcpProvider.__init__`'s client is "never spawned — just used for config storage"). Kept so both spawn paths behave alike. |
 | `dashboard/handlers/devcontainer.py` | The five endpoints, the slot-project barrier, SEL audit. |
@@ -338,3 +393,4 @@ the shelf's tab order) while a container is running.
 | `website/src/pages/ChatPage.tsx` | Status query, card gating, dismissal keying. |
 | `website/src/components/ChatInput.tsx` | The Dev Container status chip. |
 | `test/test_devcontainer.py` | Config lookup order, digest binding and invalidation, trust-store atomicity, preview capping, `exec_argv` shape, `up` output parsing, the `up` trust gate, and the project-resolution barrier. |
+| `test/test_devcontainer_mcp.py` | Bridge client has no `kiro_crew` imports, mount is injected after the screen, unix and TCP session-server shape, both accept loops spawn the host child with session env. |

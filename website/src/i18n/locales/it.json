@@ -4929,7 +4929,8 @@
       "devcontainer_trusted_not_running": "La configurazione del Dev Container di questo progetto è approvata. Nessun container è in esecuzione in questo momento.",
       "withdraw_trust": "Revoca la fiducia",
       "could_not_withdraw_trust": "Non è stato possibile revocare la fiducia",
-      "withdrawing_stops_future_sessions": "Con la revoca le sessioni successive non usano più il container. Questa sessione vi rimane finché non viene riavviata."
+      "withdrawing_stops_future_sessions": "Con la revoca le sessioni successive non usano più il container. Questa sessione vi rimane finché non viene riavviata.",
+      "trust_again": "Fidati di nuovo"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",
@@ -6924,7 +6925,10 @@
       "trust_applies_to_this_exact_configuration": "La fiducia si applica esattamente a questa configurazione: se cambia, ti verrà chiesto di nuovo. Puoi revocare la fiducia dal chip Dev Container.",
       "trusting": "Concessione della fiducia…",
       "trusting_runs_the_setup_commands_in_this_file": "Questo non è un ambiente isolato. Concedere la fiducia esegue i comandi di configurazione contenuti in questo file e assegna al contenitore i mount host e gli argomenti di esecuzione che dichiara. Concedi fiducia solo ai progetti che riconosci.",
-      "while_a_session_runs_in_the_container": "Mentre una sessione è in esecuzione nel contenitore, i processi pianificati, i subagenti e le lezioni salvate non sono disponibili."
+      "while_a_session_runs_in_the_container": "Fidarsi non sposta questa sessione. Avviane una nuova dopo per eseguirla nel contenitore.",
+      "start_a_new_session": "Avvia una nuova sessione",
+      "could_not_load_this_configuration": "Impossibile caricare questa configurazione",
+      "try_again": "Riprova"
     },
     "devcontainerExecutionChip": {
       "in_container": "Nel container",

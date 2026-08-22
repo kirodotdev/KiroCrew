@@ -66,10 +66,10 @@ describe('DevcontainerTrustCard', () => {
     expect(screen.getByText(/only trust projects you recognize/i)).toBeInTheDocument()
   })
 
-  it('states what stops working while the session runs in the container', () => {
+  it('says trusting does not move this session', () => {
     setup()
     expect(
-      screen.getByText(/scheduled jobs, subagents, and saved lessons are unavailable/i),
+      screen.getByText(/trusting does not move this session/i),
     ).toBeInTheDocument()
   })
 
@@ -174,12 +174,25 @@ describe('DevcontainerTrustCard', () => {
     // decision (and the path) so the user understands why it is unavailable.
     const loadConfig = vi.fn().mockRejectedValue(new Error('gone'))
     const { onTrust } = setup({ loadConfig })
-    await waitFor(() => expect(loadConfig).toHaveBeenCalled())
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent(/could not load this configuration/i)
     const button = screen.getByRole('button', { name: /^trust$/i })
     expect(button).toBeDisabled()
     fireEvent.click(button)
     expect(onTrust).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /show what this will run/i })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /try again/i })).toBeInTheDocument()
+  })
+
+  it('retries a failed preview', async () => {
+    const loadConfig = vi.fn()
+      .mockRejectedValueOnce(new Error('gone'))
+      .mockResolvedValueOnce(config())
+    setup({ loadConfig })
+    const retry = await screen.findByRole('button', { name: /try again/i })
+    fireEvent.click(retry)
+    await waitFor(() => expect(screen.getByRole('button', { name: /^trust$/i })).toBeEnabled())
+    expect(loadConfig).toHaveBeenCalledTimes(2)
   })
 
   it('drops a preview that resolves after the project changed', async () => {
@@ -286,6 +299,17 @@ describe('DevcontainerTrustCard', () => {
       // Acknowledging is what takes the card down — the page owns the unmount.
       fireEvent.click(screen.getByRole('button', { name: /got it/i }))
       expect(onDismiss).toHaveBeenCalledTimes(1)
+    })
+
+    it('offers to start a new session so the grant is used now', async () => {
+      const onStartNewSession = vi.fn()
+      setup({ onStartNewSession })
+      const button = await screen.findByRole('button', { name: /^trust$/i })
+      await waitFor(() => expect(button).toBeEnabled())
+      fireEvent.click(button)
+      const start = await screen.findByRole('button', { name: /start a new session/i })
+      fireEvent.click(start)
+      expect(onStartNewSession).toHaveBeenCalledTimes(1)
     })
 
     it('announces the confirmation through a region that was already mounted', async () => {

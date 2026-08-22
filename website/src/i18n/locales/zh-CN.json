@@ -4783,7 +4783,8 @@
       "devcontainer_trusted_not_running": "此项目的 Dev Container 配置已获授权。当前没有容器在运行。",
       "withdraw_trust": "撤销信任",
       "could_not_withdraw_trust": "无法撤销信任",
-      "withdrawing_stops_future_sessions": "撤销后，后续会话将不再使用该容器。当前会话会留在其中，直到重启为止。"
+      "withdrawing_stops_future_sessions": "撤销后，后续会话将不再使用该容器。当前会话会留在其中，直到重启为止。",
+      "trust_again": "再次信任"
     },
     "chatPane": {
       "agent_list": "代理列表",
@@ -6746,7 +6747,10 @@
       "trust_applies_to_this_exact_configuration": "信任仅适用于当前这份配置——配置一旦变更，系统会再次询问你。你可以通过 Dev Container 标记撤销信任。",
       "trusting": "正在授予信任…",
       "trusting_runs_the_setup_commands_in_this_file": "这不是沙箱。信任会运行此文件中的安装命令，并授予容器它所声明的主机挂载与运行参数。请仅信任你认识的项目。",
-      "while_a_session_runs_in_the_container": "会话在容器中运行期间，定时任务、子代理和已保存的经验均不可用。"
+      "while_a_session_runs_in_the_container": "信任不会移动当前会话。之后请新开一个会话，才会在容器中运行。",
+      "start_a_new_session": "开始新会话",
+      "could_not_load_this_configuration": "无法加载此配置",
+      "try_again": "重试"
     },
     "devcontainerExecutionChip": {
       "in_container": "在容器中",

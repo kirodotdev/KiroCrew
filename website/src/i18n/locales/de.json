@@ -4856,7 +4856,8 @@
       "devcontainer_trusted_not_running": "Die Dev Container-Konfiguration dieses Projekts ist freigegeben. Derzeit läuft kein Container.",
       "withdraw_trust": "Vertrauen widerrufen",
       "could_not_withdraw_trust": "Vertrauen konnte nicht widerrufen werden",
-      "withdrawing_stops_future_sessions": "Nach dem Widerruf nutzen künftige Sitzungen den Container nicht mehr. Diese Sitzung bleibt darin, bis sie neu gestartet wird."
+      "withdrawing_stops_future_sessions": "Nach dem Widerruf nutzen künftige Sitzungen den Container nicht mehr. Diese Sitzung bleibt darin, bis sie neu gestartet wird.",
+      "trust_again": "Erneut vertrauen"
     },
     "chatPane": {
       "agent_list": "Agenten-Liste",
@@ -6835,7 +6836,10 @@
       "trust_applies_to_this_exact_configuration": "Das Vertrauen gilt genau für diese Konfiguration — ändert sie sich, werden Sie erneut gefragt. Über den Dev Container-Chip können Sie das Vertrauen widerrufen.",
       "trusting": "Vertrauen wird erteilt …",
       "trusting_runs_the_setup_commands_in_this_file": "Dies ist keine abgeschottete Umgebung. Mit dem Vertrauen werden die Einrichtungsbefehle in dieser Datei ausgeführt und der Container erhält die Host-Mounts und Run-Argumente, die er deklariert. Vertrauen Sie nur Projekten, die Sie kennen.",
-      "while_a_session_runs_in_the_container": "Während eine Sitzung im Container läuft, sind geplante Aufträge, Subagenten und gespeicherte Lektionen nicht verfügbar."
+      "while_a_session_runs_in_the_container": "Vertrauen verschiebt diese Sitzung nicht. Starten Sie danach eine neue, damit sie im Container läuft.",
+      "start_a_new_session": "Neue Sitzung starten",
+      "could_not_load_this_configuration": "Diese Konfiguration konnte nicht geladen werden",
+      "try_again": "Erneut versuchen"
     },
     "devcontainerExecutionChip": {
       "in_container": "Im Container",

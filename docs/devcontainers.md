@@ -8,13 +8,10 @@
 > a project that ships a `devcontainer.json`.
 >
 > The second lock is deliberate rather than belt-and-braces. A config key is
-> reachable by anyone following these docs, and while a session runs in the
-> container the MCP-backed capabilities — scheduled jobs, subagents, saved
-> lessons — are unavailable (see [Known limitations](#known-v1-limitations)).
-> That is too sharp an edge to hand a user who only flipped a documented
-> setting, so enabling it takes a deliberate act by someone who accepts an
-> unfinished feature. It also keeps CI, which carries no such variable, on the
-> host path.
+> reachable by anyone following these docs, and the preview still has sharp
+> edges (`python3` required in the image, host isolation wrappers skipped).
+> Enabling it takes a deliberate act by someone who accepts that.
+> It also keeps CI, which carries no such variable, on the host path.
 
 Run a session's agent inside the project's own Dev Container, so it builds and
 tests against the project's toolchain instead of whatever the gateway host
@@ -64,13 +61,14 @@ against the same bytes through the bind mount.
 
 | Requirement | Detail |
 |---|---|
-| Linux host | On macOS, Docker Desktop is a VM and the parity path is not used; the existing Seatbelt sandbox path stays in effect. |
+| Linux, or Docker Desktop on macOS / Windows | Native Linux talks to managed MCP over a bind-mounted unix socket. Docker Desktop is a VM, so that path uses TCP to `host.docker.internal` instead. Without a usable Docker the session runs on the host (`docker_unavailable`). The host Seatbelt / Job-object path is skipped on a containerized spawn. |
 | Docker | `docker` must be on the gateway's `PATH`. If it is missing, the session runs on the host and a warning is logged. |
 | devcontainer CLI | A real `devcontainer` binary is preferred: `npm i -g @devcontainers/cli`. Without one, `npx --yes @devcontainers/cli` is used, which downloads on first use — install it globally for deterministic session startup. |
 | `kiro-cli` inside the container | The inner command is resolved against the **container's** `PATH`, not the host's. `kiro-cli` must be in the image or installed by a lifecycle hook such as `postCreateCommand`. A `features` block is refused in this preview, so it cannot be the install path. |
 | glibc >= 2.34 in the image | `kiro-cli` is dynamically linked against glibc 2.34 or newer. Debian bookworm (2.36) and Ubuntu 22.04 (2.35) satisfy this; Debian bullseye (2.31) and Alpine (musl) do not. |
-| A signed-in `kiro-cli` inside the container | Host credentials are not forwarded. Only `KIROCREW_SESSION_KEY`, `KIROCREW_CHANNEL_ID`, and the spawned-process marker are passed with `-e`. Either run `kiro-cli login` inside the container, or mount the host credential directory from your `devcontainer.json` — the latter is your decision to make, and it removes the host/container separation for those credentials. |
-| A container-visible agent definition | `kiro-cli` resolves `--agent <name>` by reading a **file**, checking `$PWD/.kiro/agents/` before `~/.kiro/agents/`. The project is bind-mounted, so a **project-scoped** `.kiro/agents/<name>.json` is visible inside the container and works unchanged. A **global** `~/.kiro/agents/<name>.json` is host-only state that no ordinary image carries, and the host's `~/.kiro/agents` is deliberately **not** mounted — those definitions can carry MCP server credentials in `env`, and mounting them would hand every one to the container. Commit the definition to the project, or install it into the image. A session refuses to start with a message naming the file to add rather than falling back to the host, so you are never left believing a session is containerized when it is not. |
+| A signed-in `kiro-cli` inside the container | `KIRO_API_KEY` is forwarded on `docker exec`. The host kiro-cli login store (`data.sqlite3`) is **copied** into a gateway-owned bind (not a live mount of Application Support) and exposed as `XDG_DATA_HOME=/tmp/kirocrew-auth`. A login inside the container does not write back to the host. `~/.aws`, `~/.ssh`, `KIROCREW_HOME`, and the rest of `~/.kiro` are never mounted. |
+| `python3` in the image | Managed MCP (scheduled jobs, subagents, saved lessons) stays on the host. kiro-cli inside the container talks to a small stdio client that needs `python3` on the image `PATH`. Without it those tools fail to start and the session continues with the project toolchain only. |
+| A container-visible agent definition | `kiro-cli` resolves `--agent <name>` by reading a **file**, checking `$PWD/.kiro/agents/` before `~/.kiro/agents/`. The project is bind-mounted, so a **project-scoped** `.kiro/agents/<name>.json` is visible inside the container and works unchanged. If that file is missing, the **selected** host `~/.kiro/agents/<name>.json` is copied into a bound `~/.kiro/agents` — never the whole agents directory, because those definitions can carry MCP credentials in `env`. A session refuses to start only when the host also has no file, rather than falling back to the host spawn. |
 
 ## Enabling it
 
@@ -412,13 +410,11 @@ token to generic wording rather than showing a raw identifier.
 
 ## Known v1 limitations
 
-- Kiro Crew's own managed MCP servers (`mcp-core`, `mcp-cron`, `mcp-computer`)
-  are not reachable from inside the container, because their REST callback
-  targets the gateway's host loopback. `kiro-cli` reports
-  `mcp_server_init_failure` and the session continues with the project toolchain
-  fully functional. Cron, subagent spawning, learning, and the other MCP-backed
-  capabilities are unavailable to a containerized session; foreign MCP servers
-  declared inside the container still work.
+- Managed MCP runs on the host and is bridged into the container: unix
+  sockets on native Linux, TCP to `host.docker.internal` on Docker Desktop.
+  The host listener binds `127.0.0.1` only. The image must have `python3`.
+  Foreign MCP servers declared in the project still start inside the
+  container as usual. The dashboard is not opened on the LAN.
 - `/proc`-based liveness observes the host-side `docker exec` client proxy.
   Death detection still works, because the pipe closes; the wedge heuristics
   degrade.
@@ -434,8 +430,7 @@ token to generic wording rather than showing a raw identifier.
   create neither without the privileged access this feature refuses. Sweeping every
   process in the container would reach it, but a container can serve more than one
   session and killing another session's agent is a worse failure than a survivor.
-- Linux hosts only. On macOS, Docker Desktop is a VM; the existing Seatbelt
-  sandbox path is unchanged.
+- The host Seatbelt / Job-object path is skipped on a containerized spawn.
 - **One runtime hosts one container.** A kiro-cli runtime can host several ACP
   sessions (session sharing) but is containerized for exactly one project, so a
   session whose cwd is not that runtime's working directory is refused and must
@@ -444,10 +439,8 @@ token to generic wording rather than showing a raw identifier.
   runtime whose working directory is its own project.
 - Warm-pool runtimes follow the same rule as any other. They are pre-spawned
   with the default workspace directory as their working directory, before any
-  project is known — so they are containerized only if *that* directory carries
-  a trusted config, and a session for a different project cannot claim one. Set
-  `session.pool_size` to `0` if you want every session to resolve its container
-  at start.
+  project is known. A session whose work dir has a trusted config does not
+  claim a host warm-pool runtime. Default `session.pool_size` is `0`.
 
 ## Example `devcontainer.json`
 
@@ -503,14 +496,17 @@ spawns — an edit invalidates any earlier grant.
 | Session runs on the host with no error | One of the five `auto` preconditions failed. Check the gateway log for the untrusted-config, docker-missing, or `devcontainer up failed` warning. |
 | `devcontainer CLI not found` | Neither `devcontainer` nor `npx` is on the gateway's `PATH`. Install with `npm i -g @devcontainers/cli`. |
 | `kiro-cli not found` inside the container | The image or its lifecycle hooks do not provide `kiro-cli` on the container's `PATH`, or it is installed somewhere `remoteUser`'s `PATH` does not cover. |
-| `kiro-cli` starts but is not logged in | Host credentials are not forwarded. Sign in inside the container, or mount the credential directory from your config. |
+| `kiro-cli` starts but is not logged in | Confirm `KIRO_API_KEY` is set for the gateway, or that the host `data.sqlite3` exists and was copied (gateway log / `/tmp/kirocrew-auth`). A login inside the container does not write back. |
+| `--agent` fails after trust | Add `.kiro/agents/<name>.json` to the project, or install that one file under `~/.kiro/agents` on the host so it can be copied in. The whole agents directory is never mounted. |
 | Trust prompt returns after a `git pull` | Expected. The pull changed the config bytes and therefore the digest. |
-| MCP tool calls fail in a containerized session | Expected in v1. See the limitations above. |
+| Managed MCP (cron / subagents / lessons) fails to start | The image has no `python3`, or the host bridge failed to listen. On Docker Desktop the client must reach `host.docker.internal`. Check the gateway log for `devcontainer mcp-bridge`. Foreign project MCP servers still start inside the container. |
+| Docker Desktop session still runs on the host | Docker must be on the gateway `PATH`. `unsupported_platform` is only for a host with no usable Docker; a missing binary is `docker_unavailable`. |
 | `devcontainer up timed out` | The build exceeded 15 minutes. Prebuild the image, or move heavy work out of `postCreateCommand`. |
 
 ## Related
 
 - [Config schema](system-specs/modules/config.md) — where `agent.devcontainer` lives.
 - [Module spec](system-specs/modules/devcontainers.md) — the technical contract.
+- [Near-production opt-in plan](design/devcontainer-product-readiness.md) — Docker Desktop, dual MCP transport, auth copy, one-file agent inject, and what is still not a prod default.
 - [ACP client](system-specs/modules/acp-client.md) — the spawn path this hooks into.
 - [Security](system-specs/modules/security.md) — the host sandbox a containerized session is mutually exclusive with. This feature is not a substitute for that sandbox.

@@ -37,6 +37,7 @@ import pytest
 
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError
+from kiro_crew.constants import DEVCONTAINER_ENV_VAR
 from kiro_crew.devcontainer import DevcontainerError
 
 
@@ -557,17 +558,33 @@ class TestMaybeDevcontainerInfoGuards:
         assert up_called["n"] == 0
 
     @pytest.mark.asyncio
-    async def test_non_linux_host_runs_on_the_host(self, tmp_path, monkeypatch):
-        """Docker Desktop is a VM, so the parity path is Linux-only in v1."""
+    async def test_desktop_host_without_docker_runs_on_the_host(self, tmp_path, monkeypatch):
+        """Docker Desktop is eligible; missing docker still fails to the host."""
         cfg = MagicMock()
         cfg.agent.devcontainer = "auto"
         monkeypatch.setattr(
             "kiro_crew.config.loader.KiroCrewConfig.load", lambda: cfg, raising=False
         )
+        monkeypatch.setenv(DEVCONTAINER_ENV_VAR, "1")
         monkeypatch.setattr(runtime_mod.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            "kiro_crew.devcontainer.find_devcontainer_config",
+            lambda p: Path(p) / ".devcontainer" / "devcontainer.json",
+            raising=False,
+        )
+        monkeypatch.setattr("kiro_crew.devcontainer.docker_available", lambda: False, raising=False)
+        up_called = {"n": 0}
+        mgr = MagicMock()
+
+        async def _up(*a, **k):
+            up_called["n"] += 1
+
+        mgr.up = _up
+        monkeypatch.setattr("kiro_crew.devcontainer.get_manager", lambda: mgr, raising=False)
 
         rt = AcpRuntime(work_dir=tmp_path)
         assert await rt._maybe_devcontainer_info() is None
+        assert up_called["n"] == 0
 
     @pytest.mark.asyncio
     async def test_up_failure_degrades_to_the_host(self, tmp_path, monkeypatch):

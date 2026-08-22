@@ -1405,10 +1405,10 @@ class AgentConfig:
             "that a dashboard user has trusted, the agent process is executed "
             "inside a container built by the @devcontainers/cli, with the "
             "project's own toolchain. 'off' (default): agent runs on the host as "
-            "before. Requires Docker and the devcontainer CLI on a Linux host; "
-            "trust is granted per config file content and re-prompted on any "
-            "edit. While a session runs in the container, scheduled jobs, "
-            "subagents and saved lessons are unavailable.",
+            "before. Requires Docker and the devcontainer CLI (Linux, or "
+            "Docker Desktop on macOS / Windows); trust is granted per config "
+            "file content and re-prompted on any edit. Managed MCP stays on "
+            "the host and is bridged into the container.",
             enum=["auto", "off"],
         ),
     )

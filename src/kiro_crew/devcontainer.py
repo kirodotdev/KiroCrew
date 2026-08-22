@@ -36,15 +36,21 @@ Container reuse: one container per project directory, keyed by an id-label,
 reused across sessions and gateway restarts (``devcontainer up`` is
 idempotent for an unchanged config).
 
+Managed MCP (cron, subagents, lessons) stays on the host. kiro-cli inside
+the container talks to a stdio-to-unix-socket client bind-mounted at
+``/tmp/kirocrew-mcp-bridge``; the host accept loop spawns ``kirocrew
+mcp-core`` / ``mcp-cron`` / ``mcp-computer`` with the session's env so
+their REST callbacks still hit gateway loopback. The image needs
+``python3``. Pooling stubs are not injected on this path: they dial a
+host-only socket and import ``kiro_crew``.
+
 Known v1 limitations (documented in docs/devcontainers.md):
-  - Kiro Crew's own managed MCP servers (mcp-core/cron/computer) are not
-    reachable from inside the container (their REST callback targets the
-    gateway's host loopback). kiro-cli reports mcp_server_init_failure and
-    the session continues with the project toolchain fully functional.
   - /proc-based liveness observes the host-side ``docker exec`` client
     proxy: death detection works (pipe close), wedge heuristics degrade.
-  - Linux hosts only. On macOS, Docker Desktop is a VM; the existing
-    Seatbelt sandbox path is unchanged.
+  - Docker Desktop (macOS / Windows) is a VM: managed MCP uses TCP to
+    ``host.docker.internal`` rather than a bind-mounted unix socket. The
+    host Seatbelt / Job-object path is skipped on a containerized spawn,
+    same as on native Linux.
 """
 
 from __future__ import annotations
@@ -60,17 +66,19 @@ import shlex
 import shutil
 import stat
 import sys
+import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import config_dir
+from kiro_crew.config.loader import config_dir, inject_kiro_cli_api_key
 from kiro_crew.constants import DEVCONTAINER_ENV_VAR as _DEVCONTAINER_ENV_VAR
 from kiro_crew.constants import ENV_TRUTHY, KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 
@@ -2162,6 +2170,189 @@ def _project_token(project_dir: str | Path) -> str:
     return _project_token_from_canonical(os.path.realpath(str(project_dir)))
 
 
+#: Gateway-owned copies projected into a trusted container. Live under ``/tmp``
+#: (same AF_UNIX-length reason as the MCP bridge). Never the data home.
+AUTH_CONTAINER_DIR = "/tmp/kirocrew-auth"
+_SAFE_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def _gateway_tmp_root() -> Path:
+    if sys.platform != "win32" and os.path.isdir("/tmp"):
+        return Path("/tmp")
+    return Path(tempfile.gettempdir())
+
+
+def _gateway_tmp(kind: str, project_dir: str | Path) -> Path:
+    return _gateway_tmp_root() / f"kirocrew-{kind}" / _project_token(project_dir)
+
+
+def host_auth_dir(project_dir: str | Path) -> Path:
+    return _gateway_tmp("auth", project_dir)
+
+
+def host_agents_inject_dir(project_dir: str | Path) -> Path:
+    return _gateway_tmp("kiro-home", project_dir) / "agents"
+
+
+def remote_user_home(remote_user: str | None) -> str:
+    """Linux-shaped home for ``remoteUser``. ``root`` and empty → ``/root``."""
+    if not remote_user or remote_user == "root":
+        return "/root"
+    if not _SAFE_NAME.match(remote_user):
+        return "/root"
+    return f"/home/{remote_user}"
+
+
+def _append_config_list(
+    parsed: dict, key: str, entry: object, already: Callable[[object], bool]
+) -> None:
+    raw = parsed.get(key)
+    items: list[Any] = list(raw) if isinstance(raw, list) else []
+    if any(already(x) for x in items):
+        parsed[key] = items
+        return
+    items.append(entry)
+    parsed[key] = items
+
+
+def refresh_auth_copy(project_dir: str | Path) -> Path:
+    """Copy the host kiro-cli login store into a gateway-owned bind source.
+
+    Live-binding ``~/Library/Application Support`` fails across Docker Desktop
+    (SQLite locking + the VM file share). One-way: a login inside the container
+    does not write back. Refresh when the host file is newer. ``remoteUser`` is
+    a different uid, so the dir is 0755 and the db is 0644.
+    """
+    dest_root = host_auth_dir(project_dir)
+    dest_cli = dest_root / "kiro-cli"
+    dest_cli.mkdir(parents=True, exist_ok=True)
+    os.chmod(dest_root, 0o755)
+    os.chmod(dest_cli, 0o755)
+    dest_db = dest_cli / "data.sqlite3"
+    from kiro_crew.kiro_cli import kiro_cli_state_dbs
+
+    newest: Path | None = None
+    newest_mtime = -1.0
+    for db in kiro_cli_state_dbs(sys.platform, Path.home(), os.environ):
+        try:
+            if db.is_file():
+                mtime = db.stat().st_mtime
+                if mtime > newest_mtime:
+                    newest = db
+                    newest_mtime = mtime
+        except OSError:
+            continue
+    if newest is None:
+        return dest_root
+    try:
+        if dest_db.is_file() and dest_db.stat().st_mtime >= newest_mtime:
+            return dest_root
+    except OSError:
+        pass
+    tmp = dest_db.with_suffix(".tmp")
+    shutil.copy2(newest, tmp)
+    os.replace(tmp, dest_db)
+    os.chmod(dest_db, 0o644)
+    return dest_root
+
+
+def try_inject_host_agent(
+    project_dir: str | Path, agent: str, remote_user: str | None = None
+) -> bool:
+    """Copy one selected host agent JSON into the bound ``~/.kiro/agents``.
+
+    Never the whole agents directory. Returns True when a file was placed (or
+    already matched). ``remote_user`` is unused for the copy itself — the bind
+    target was chosen at ``write_build_config`` from the parsed config.
+    """
+    del remote_user
+    if not agent or not _SAFE_NAME.match(agent):
+        return False
+    from kiro_crew.config.paths import kiro_agents_dir
+
+    src = kiro_agents_dir() / f"{agent}.json"
+    try:
+        if not src.is_file():
+            return False
+        data = src.read_bytes()
+    except OSError:
+        return False
+    dest_dir = host_agents_inject_dir(project_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest_dir.parent, 0o755)
+        os.chmod(dest_dir, 0o755)
+    except OSError:
+        pass
+    dest = dest_dir / f"{agent}.json"
+    try:
+        if dest.is_file() and dest.read_bytes() == data:
+            return True
+        tmp = dest.with_suffix(".tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, dest)
+        os.chmod(dest, 0o644)
+    except OSError:
+        return False
+    return True
+
+
+def inject_auth_mount(parsed: dict, project_dir: str | Path) -> None:
+    """Bind the copied login store after the sensitive-path screen."""
+    host = str(refresh_auth_copy(project_dir))
+    entry = f"source={host},target={AUTH_CONTAINER_DIR},type=bind"
+    _append_config_list(parsed, "mounts", entry, lambda m: AUTH_CONTAINER_DIR in str(m))
+
+
+def inject_agents_mount(parsed: dict, project_dir: str | Path) -> None:
+    """Bind a gateway-owned agents dir onto the container user's ``~/.kiro/agents``."""
+    dest_dir = host_agents_inject_dir(project_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(dest_dir.parent, 0o755)
+        os.chmod(dest_dir, 0o755)
+    except OSError:
+        pass
+    user = parsed.get("remoteUser")
+    user_s = user if isinstance(user, str) else None
+    if user_s and user_s != "root" and not _SAFE_NAME.match(user_s):
+        return
+    target = f"{remote_user_home(user_s)}/.kiro/agents"
+    host = str(dest_dir)
+    entry = f"source={host},target={target},type=bind"
+    _append_config_list(parsed, "mounts", entry, lambda m: "/.kiro/agents" in str(m))
+
+
+def remove_gateway_tmp(kind: str, project_dir: str | Path) -> None:
+    """Best-effort teardown of one project's ``/tmp/kirocrew-<kind>/<token>``."""
+    root = _gateway_tmp(kind, project_dir)
+    try:
+        if root.is_symlink():
+            root.unlink()
+            return
+        if not root.is_dir():
+            if root.exists():
+                root.unlink()
+            return
+    except OSError:
+        return
+    try:
+        for child in list(root.rglob("*")):
+            try:
+                if child.is_symlink() or child.is_file():
+                    child.unlink()
+            except OSError:
+                logger.debug("devcontainer: could not reap %s", child, exc_info=True)
+        shutil.rmtree(root, ignore_errors=True)
+    except OSError:
+        logger.debug("devcontainer: could not reap %s", root, exc_info=True)
+
+
+def remove_runtime_injects(project_dir: str | Path) -> None:
+    remove_gateway_tmp("auth", project_dir)
+    remove_gateway_tmp("kiro-home", project_dir)
+
+
 def _build_root(project_dir: str | Path) -> Path:
     """Directory holding one project's sanitized build configs.
 
@@ -2311,6 +2502,15 @@ def write_build_config(project_dir: str, digest: str) -> Path:
         parsed, entries, out_dir, _compose_base_dir(parsed, _project_root_of(cfg))
     )
     _apply_default_resource_caps(parsed)
+    # After the sensitive-path screen, same as the DoS ceilings: binds we
+    # created, not a project-declared mount of the data home. Do not
+    # re-screen: the host paths are gateway-owned under /tmp.
+    from kiro_crew.devcontainer_mcp import inject_bridge_mount, inject_host_gateway
+
+    inject_bridge_mount(parsed, project_dir)
+    inject_host_gateway(parsed)
+    inject_auth_mount(parsed, project_dir)
+    inject_agents_mount(parsed, project_dir)
     out = out_dir / "devcontainer.json"
     tmp = out.with_suffix(".tmp")
     tmp.write_text(json.dumps(parsed, indent=2) + "\n", encoding="utf-8")
@@ -3509,6 +3709,10 @@ class DevcontainerManager:
         # otherwise leave the artifacts with no later teardown to collect them.
         # Off-loop: the walk and the unlinks are blocking I/O.
         await asyncio.to_thread(_remove_project_build_configs, key)
+        from kiro_crew.devcontainer_mcp import remove_bridge_dir
+
+        await asyncio.to_thread(remove_bridge_dir, key)
+        await asyncio.to_thread(remove_runtime_injects, key)
         if not container_id:
             return False
         proc = await asyncio.create_subprocess_exec(
@@ -3674,12 +3878,6 @@ async def _resolve_with_locus_inner(
     # session-start hot path, so they stay off the event loop.
     if await asyncio.to_thread(find_devcontainer_config, work) is None:
         return None, None
-    # Ordered AFTER the config probe so a project with no devcontainer at all
-    # reports nothing rather than an "unsupported platform" the user cannot act
-    # on and did not ask about.
-    if sys.platform != "linux":
-        # Docker Desktop is a VM; the parity path is Linux-only in v1.
-        return None, ExecutionLocus("host", reason=HOST_REASON_UNSUPPORTED_PLATFORM)
     # An enterprise sandbox floor outranks this feature. The floor is enforced
     # inside wrap_argv, which a containerized spawn skips, so containerizing here
     # would leave a policy the operator set silently inert -- worse than not
@@ -3752,35 +3950,8 @@ class ContainerizedSpawn:
     exec_id: str
 
 
-async def ensure_agent_definition_available(info: DevcontainerInfo, agent: str) -> None:
-    """Verify the container can resolve ``--agent <agent>``, or refuse.
-
-    Moving kiro-cli into the container moves it away from the Kiro home state it
-    needs. Agent definitions are looked up as FILES, and kiro-cli resolves
-    ``--agent`` against ``$PWD/.kiro/agents`` before ``~/.kiro/agents``, so the two
-    locations differ sharply once containerized:
-
-    * a **project-scoped** definition (``<project>/.kiro/agents/<name>.json``) sits
-      inside the bind-mounted workspace, so the container sees it and it works
-      unchanged;
-    * a **global** one (``~/.kiro/agents/<name>.json``) is host-only machine state
-      that no ordinary image carries, so startup would fail as a generic ACP init
-      error with no hint that a missing agent file was the cause.
-
-    Refusing here with the fix in the message mirrors the kiro-cli preflight
-    rather than silently falling back to the host: an invisible fallback leaves the
-    operator believing a session is containerized when it is not, and a wrong
-    belief about where code runs is worse than a clear refusal.
-
-    The host's ``~/.kiro/agents`` is deliberately NOT bind-mounted to paper over
-    this. Those definitions carry MCP server configuration including credentials
-    in ``env``, so mounting them would hand every one of them to the very
-    container this feature exists to confine.
-    """
-    if not agent:
-        return
-    # The name reaches a shell, so it is quoted rather than interpolated -- it
-    # comes from configuration, which agent-run code can propose edits to.
+async def _agent_definition_probe(info: DevcontainerInfo, agent: str) -> int:
+    """Return the probe's exit status. Raises on a hung exec."""
     quoted = shlex.quote(f"{agent}.json")
     script = f"test -f .kiro/agents/{quoted} || test -f ~/.kiro/agents/{quoted}"
     argv = [await _docker_bin_async(), "exec"]
@@ -3799,15 +3970,49 @@ async def ensure_agent_definition_available(info: DevcontainerInfo, agent: str) 
         raise DevcontainerError(
             f"devcontainer for {info.project_dir} is unresponsive to exec probes"
         )
-    if probe.returncode != 0:
-        raise DevcontainerError(
-            f"agent {agent!r} has no definition inside the devcontainer, so "
-            f"kiro-cli cannot start with it. Add .kiro/agents/{agent}.json to the "
-            f"project — it is inside the mounted workspace, so the container sees "
-            f"it — or install it into the image; see docs/devcontainers.md. The "
-            f"host's ~/.kiro/agents is not mounted because those definitions can "
-            f"carry MCP credentials."
-        )
+    return int(probe.returncode or 0)
+
+
+async def ensure_agent_definition_available(info: DevcontainerInfo, agent: str) -> None:
+    """Verify the container can resolve ``--agent <agent>``, or refuse.
+
+    Moving kiro-cli into the container moves it away from the Kiro home state it
+    needs. Agent definitions are looked up as FILES, and kiro-cli resolves
+    ``--agent`` against ``$PWD/.kiro/agents`` before ``~/.kiro/agents``, so the two
+    locations differ sharply once containerized:
+
+    * a **project-scoped** definition (``<project>/.kiro/agents/<name>.json``) sits
+      inside the bind-mounted workspace, so the container sees it and it works
+      unchanged;
+    * a **global** one (``~/.kiro/agents/<name>.json``) is host-only. The whole
+      host agents directory is never mounted (those files carry MCP credentials
+      in ``env``). Instead, when the probe misses, the selected host file is
+      copied into a gateway-owned bind on ``~/.kiro/agents`` and the probe
+      runs again.
+
+    Fail only when the host also has no file. A silent fallback to a host
+    spawn would leave the operator believing the session is containerized.
+    """
+    if not agent:
+        return
+    # The name reaches a shell, so it is quoted rather than interpolated -- it
+    # comes from configuration, which agent-run code can propose edits to.
+    if await _agent_definition_probe(info, agent) == 0:
+        return
+    injected = await asyncio.to_thread(
+        try_inject_host_agent, info.project_dir, agent, info.remote_user
+    )
+    if injected and await _agent_definition_probe(info, agent) == 0:
+        return
+    raise DevcontainerError(
+        f"agent {agent!r} has no definition inside the devcontainer and none "
+        f"could be copied from the host, so kiro-cli cannot start with it. "
+        f"Add .kiro/agents/{agent}.json to the project — it is inside the "
+        f"mounted workspace — or install {agent}.json under ~/.kiro/agents on "
+        f"the host; see docs/devcontainers.md. The host's ~/.kiro/agents is "
+        f"not mounted wholesale because those definitions can carry MCP "
+        f"credentials."
+    )
 
 
 def containerize_spawn(
@@ -3829,6 +4034,11 @@ def containerize_spawn(
     exec_id = uuid.uuid4().hex
     fwd = dict(env or {})
     fwd[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+    # Host spawn injects the API key on the process env AFTER this function
+    # builds docker-exec ``-e`` pairs, so the container would never see it.
+    inject_kiro_cli_api_key(fwd)
+    fwd.setdefault("XDG_DATA_HOME", AUTH_CONTAINER_DIR)
+    refresh_auth_copy(info.project_dir)
     argv = get_manager().exec_argv(info, inner_argv, env=fwd, exec_id=exec_id)
     return ContainerizedSpawn(argv=argv, info=info, exec_id=exec_id)
 

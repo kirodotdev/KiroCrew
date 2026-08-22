@@ -4929,7 +4929,8 @@
       "devcontainer_trusted_not_running": "A configuração do Dev Container deste projeto está autorizada. Nenhum contêiner em execução no momento.",
       "withdraw_trust": "Retirar a confiança",
       "could_not_withdraw_trust": "Não foi possível retirar a confiança",
-      "withdrawing_stops_future_sessions": "Ao retirá-la, as próximas sessões deixam de usar o contêiner. Esta sessão permanece nele até ser reiniciada."
+      "withdrawing_stops_future_sessions": "Ao retirá-la, as próximas sessões deixam de usar o contêiner. Esta sessão permanece nele até ser reiniciada.",
+      "trust_again": "Confiar novamente"
     },
     "chatPane": {
       "agent_list": "Lista de agentes",
@@ -6924,7 +6925,10 @@
       "trust_applies_to_this_exact_configuration": "A confiança se aplica exatamente a esta configuração — se ela mudar, você será perguntado novamente. Você pode retirar a confiança pelo chip Dev Container.",
       "trusting": "A conceder confiança…",
       "trusting_runs_the_setup_commands_in_this_file": "Isto não é um ambiente isolado. Confiar executa os comandos de configuração deste arquivo e concede ao contêiner as montagens de host e os argumentos de execução que ele declara. Confie apenas em projetos que você reconhece.",
-      "while_a_session_runs_in_the_container": "Enquanto uma sessão é executada no contêiner, as tarefas agendadas, os subagentes e as lições salvas ficam indisponíveis."
+      "while_a_session_runs_in_the_container": "Confiar não move esta sessão. Inicie uma nova depois para executá-la no contêiner.",
+      "start_a_new_session": "Iniciar uma nova sessão",
+      "could_not_load_this_configuration": "Não foi possível carregar esta configuração",
+      "try_again": "Tentar novamente"
     },
     "devcontainerExecutionChip": {
       "in_container": "No contêiner",

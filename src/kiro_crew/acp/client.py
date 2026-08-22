@@ -616,9 +616,7 @@ class OversizeLineUnrecoverable(Exception):
     """An oversize stdout line exceeded the drain budget without terminating."""
 
 
-async def _drain_oversize_line(
-    reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError
-) -> int:
+async def _drain_oversize_line(reader: asyncio.StreamReader, exc: asyncio.LimitOverrunError) -> int:
     """Discard one oversize line ENTIRELY, leaving the stream on a frame boundary.
 
     Called after ``readuntil(b"\\n")`` raised ``LimitOverrunError``, which consumes
@@ -661,6 +659,7 @@ async def _drain_oversize_line(
         except asyncio.LimitOverrunError as again:
             exc = again
 
+
 # Max consecutive empty reads before checking if process is alive
 _MAX_CONSECUTIVE_EMPTY = 5
 
@@ -697,9 +696,7 @@ def _mentions_skill_file(raw_params: dict | None, command: str | None) -> bool:
             if _SKILL_FILE_BASENAME in value:
                 return True
         elif isinstance(value, (list, tuple)):
-            if any(
-                isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value
-            ):
+            if any(isinstance(v, str) and _SKILL_FILE_BASENAME in v for v in value):
                 return True
     return False
 
@@ -1157,9 +1154,7 @@ def _model_is_unentitled(data: str, available_models: Sequence[str] | None) -> s
     return rejected
 
 
-def _is_transient_raw_error(
-    error: object, available_models: Sequence[str] | None = None
-) -> bool:
+def _is_transient_raw_error(error: object, available_models: Sequence[str] | None = None) -> bool:
     """True iff a raw ACP JSON-RPC ``error`` is a retryable transient backend
     failure (Bedrock 5xx / throttle / model-unavailable rollout) rather than an
     auth/validation/unknown error that a retry cannot fix.
@@ -2071,6 +2066,8 @@ class AcpClient:
         # the in-container pidfile that _kill_process signals through.
         self._devcontainer_info: Any = None
         self._devcontainer_exec_id: str | None = None
+        self._execution_locus: Any = None
+        self._mcp_bridge: Any = None
         self._process: asyncio.subprocess.Process | None = None
         self._pid: int | None = None
         self._start_time: int | None = None  # process start time for PID recycling detection
@@ -2245,9 +2242,21 @@ class AcpClient:
         servers — nothing is written to the user's project or to
         ``~/.kiro/agents/``. Empty when the shared gateway is disabled.
         """
-        return pooled_session_servers(
-            self._mcp_gateway_overlay, self._agent, self._channel_id
-        )
+        return pooled_session_servers(self._mcp_gateway_overlay, self._agent, self._channel_id)
+
+    def _session_mcp_servers(self) -> list[dict[str, Any]]:
+        """``session/new`` / ``session/load`` MCP entries for this client.
+
+        A containerized client uses the host stdio bridge instead of pooling
+        stubs: those dial a host-only socket and import ``kiro_crew``.
+        """
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
+            return [*self._claude_session_mcp_servers(), *bridge.session_servers()]
+        return [
+            *self._claude_session_mcp_servers(),
+            *self._pooled_mcp_servers(),
+        ]
 
     def _claude_session_mcp_servers(self) -> list:
         """MCP server array passed to a claude ``session/new`` / ``session/load``.
@@ -2522,9 +2531,7 @@ class AcpClient:
         # backend never loaded (would fault with "Mode '<agent>' not found").
         # Assigned unconditionally so a re-init that omits `modes` clears any
         # stale state rather than guarding on it.
-        self._available_mode_ids, _current_mode, self._modes_advertised = (
-            parse_session_modes(resp)
-        )
+        self._available_mode_ids, _current_mode, self._modes_advertised = parse_session_modes(resp)
 
     def _handle_config_option_update(self, msg: JsonRpcMessage) -> None:
         """Process a config_option_update session notification.
@@ -2731,9 +2738,7 @@ class AcpClient:
             # walks PATH stat-ing every candidate and its ancestors, so a
             # stale network-mounted entry would stall the gateway heartbeat
             # here -- during a session spawn, on every containerized turn.
-            spawned = await asyncio.to_thread(
-                containerize_spawn, devc_info, inner, env=devc_env
-            )
+            spawned = await asyncio.to_thread(containerize_spawn, devc_info, inner, env=devc_env)
             argv = spawned.argv
             self._devcontainer_exec_id = spawned.exec_id
             self._devcontainer_info = spawned.info
@@ -2859,6 +2864,40 @@ class AcpClient:
             profile=RLIMIT_PROFILE_SESSION_HOST,
         )
         self._pid = self._process.pid
+        if (
+            getattr(self, "_devcontainer_info", None) is not None
+            and getattr(self, "_devcontainer_exec_id", None)
+            and getattr(self, "_mcp_bridge", None) is None
+        ):
+            from kiro_crew.devcontainer_mcp import start_bridge
+
+            try:
+                self._mcp_bridge = await start_bridge(
+                    self._devcontainer_info.project_dir,
+                    self._devcontainer_exec_id,
+                    session_env=scrub_agent_denied_env(
+                        {
+                            **dict(self._extra_env or {}),
+                            **(
+                                {"KIROCREW_SESSION_KEY": self._session_key}
+                                if self._session_key
+                                else {}
+                            ),
+                            **(
+                                {"KIROCREW_CHANNEL_ID": self._channel_id}
+                                if self._channel_id
+                                else {}
+                            ),
+                        }
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "devcontainer mcp-bridge failed to start for %s; "
+                    "managed MCP will be unavailable in this session",
+                    self._devcontainer_info.project_dir,
+                )
+                self._mcp_bridge = None
         _spawn_label = (
             "claude-agent-acp" if self._is_claude else f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
         )
@@ -2870,9 +2909,7 @@ class AcpClient:
         # skip.
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
-            functools.partial(
-                finish_suspended_spawn, self._process, self._pid, label=_spawn_label
-            ),
+            functools.partial(finish_suspended_spawn, self._process, self._pid, label=_spawn_label),
         )
         self._start_time = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _get_start_time, self._pid
@@ -3012,7 +3049,8 @@ class AcpClient:
             return None
         from kiro_crew.devcontainer import resolve_with_locus
 
-        info, _locus = await resolve_with_locus(self._work_dir)
+        info, locus = await resolve_with_locus(self._work_dir)
+        self._execution_locus = locus
         return info
 
     async def _kill_process(self, *, force: bool = False) -> None:
@@ -3041,6 +3079,13 @@ class AcpClient:
             getattr(self, "_devcontainer_info", None),
             getattr(self, "_devcontainer_exec_id", None),
         )
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
+            try:
+                await bridge.close()
+            except Exception:
+                logger.debug("devcontainer mcp-bridge close failed", exc_info=True)
+            self._mcp_bridge = None
         if not self._process or self._process.returncode is not None:
             return
         pid = self._pid
@@ -3269,10 +3314,7 @@ class AcpClient:
             # Pooled broker stubs are appended for kiro-cli: a session-injected
             # server outranks the same-named entry in the agent spec, which is
             # how pooling takes effect without writing a spec anywhere.
-            "mcpServers": [
-                *self._claude_session_mcp_servers(),
-                *(await asyncio.to_thread(self._pooled_mcp_servers)),
-            ],
+            "mcpServers": await asyncio.to_thread(self._session_mcp_servers),
         }
         if self._is_claude:
             new_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -3380,10 +3422,7 @@ class AcpClient:
                         # unchanged; a companion overrides the hook (see
                         # session/new above). Pooled stubs are re-declared so a
                         # resumed session keeps talking to the broker.
-                        "mcpServers": [
-                            *self._claude_session_mcp_servers(),
-                            *(await asyncio.to_thread(self._pooled_mcp_servers)),
-                        ],
+                        "mcpServers": await asyncio.to_thread(self._session_mcp_servers),
                     }
                     if self._is_claude:
                         load_params["_meta"] = {"claudeCode": {"options": {}}}
@@ -5822,9 +5861,7 @@ class AcpClient:
         lives on ``AcpPromptStats.backfill_context_window`` (the AcpSessionHandle
         path delegates to the same method, so the two can no longer drift).
         """
-        self.last_prompt_stats.backfill_context_window(
-            pct, self._resolved_model_id or self._model
-        )
+        self.last_prompt_stats.backfill_context_window(pct, self._resolved_model_id or self._model)
 
     def _track_metadata(self, msg: JsonRpcMessage) -> None:
         params = msg.params or {}

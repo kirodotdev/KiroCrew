@@ -4950,6 +4950,15 @@ async def _run_chat(
         # (the dashboard steer handler) can reach the running session's client
         # to inject a mid-turn steer. Cleared in the finally below.
         slot._acp_client = getattr(client, "client", None)
+        # Snapshot the spawn verdict onto THIS slot. The work-dir table is
+        # shared by every session on the project; the payload must not be.
+        inner = getattr(client, "client", None) or getattr(client, "_client", None) or client
+        runtime = getattr(inner, "_runtime", None) or inner
+        locus = getattr(runtime, "_execution_locus", None)
+        if locus is None:
+            locus = getattr(inner, "_execution_locus", None)
+        if locus is not None:
+            slot._execution_locus = locus
         # This consumer implements the low-fidelity child downgrade (the
         # interactive card) — opt in so the handle-level fail-close gate
         # yields those events here instead of rejecting them itself.

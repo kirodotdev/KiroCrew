@@ -3564,6 +3564,7 @@
       "devcontainer_running_for_project_id": "A Dev Container is running for this project ({{id}})",
       "devcontainer_trusted_not_running": "This project's Dev Container setup is trusted. No container is running right now.",
       "withdraw_trust": "Withdraw trust",
+      "trust_again": "Trust again",
       "could_not_withdraw_trust": "Could not withdraw trust",
       "withdrawing_stops_future_sessions": "Withdrawing stops future sessions from using the container. This session stays in it until it restarts."
     },
@@ -4690,7 +4691,10 @@
       "trust_applies_to_this_exact_configuration": "Trust applies to this exact configuration — if it changes, you will be asked again. You can withdraw trust from the Dev Container chip.",
       "trusting": "Trusting…",
       "trusting_runs_the_setup_commands_in_this_file": "This is not a sandbox. Trusting runs the setup commands in this file and gives the container the host mounts and run arguments it declares. Only trust projects you recognize.",
-      "while_a_session_runs_in_the_container": "While a session runs in the container, scheduled jobs, subagents, and saved lessons are unavailable."
+      "while_a_session_runs_in_the_container": "Trusting does not move this session. Start a new one afterwards to run inside the container.",
+      "start_a_new_session": "Start a new session",
+      "could_not_load_this_configuration": "Could not load this configuration",
+      "try_again": "Try again"
     },
     "devcontainerExecutionChip": {
       "in_container": "In container",

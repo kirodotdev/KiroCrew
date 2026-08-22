@@ -5087,6 +5087,23 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     setDevcontainerGranted('')
     await refetchDevcontainer()
   }, [devcontainerPromptKey, refetchDevcontainer])
+  const trustAgainDevcontainer = useCallback(() => {
+    if (!devcontainerPromptKey) return
+    setDevcontainerDismissed(prev => {
+      const next = { ...prev }
+      delete next[devcontainerPromptKey]
+      return next
+    })
+  }, [devcontainerPromptKey])
+  const startDevcontainerSession = useCallback(() => {
+    setDevcontainerGranted('')
+    void dispatch(createSlot({
+      agent: pendingAgent || defaultAgent || undefined,
+      model: pendingModel || undefined,
+      mode,
+      project: _slotProject || undefined,
+    }))
+  }, [dispatch, pendingAgent, defaultAgent, pendingModel, mode, _slotProject])
   const [sidebarPinned, setSidebarPinned] = useState(() => localStorage.getItem('mc-sidebar-pinned') !== 'false')
   const sidebarPinnedRef = useRef(sidebarPinned)
   sidebarPinnedRef.current = sidebarPinned
@@ -7227,6 +7244,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                     configPath={devcontainer?.config_path}
                     onTrust={trustDevcontainer}
                     onDismiss={dismissDevcontainer}
+                    onStartNewSession={startDevcontainerSession}
                   />
                 </div>
               )}
@@ -7326,7 +7344,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               devcontainerId={devcontainer?.container_id || undefined}
               devcontainerProject={devcontainer?.project_dir || _slotProject}
               devcontainerTrusted={!!devcontainer?.enabled && !!devcontainer?.trusted}
+              devcontainerDismissed={!!devcontainerPromptKey && !!devcontainerDismissed[devcontainerPromptKey]}
               onDevcontainerUntrust={untrustDevcontainer}
+              onDevcontainerTrustAgain={trustAgainDevcontainer}
               /* Session-scoped, unlike the three props above: those come from the
                  project-level status poll, while this is what the backend recorded
                  for THIS slot when it spawned. Absent for a project with no Dev

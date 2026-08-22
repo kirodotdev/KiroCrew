@@ -27,6 +27,13 @@ export interface DevcontainerTrustCardProps {
    */
   onDismiss: () => void
   /**
+   * Start a new session scoped to this project so the grant is used now,
+   * rather than leaving the user on the host session the card just said
+   * would not move. Optional: tests and surfaces without a session factory
+   * still get Got it.
+   */
+  onStartNewSession?: () => void
+  /**
    * Config loader, injected for tests. Defaults to the api client, called
    * optionally because many test suites mock `../api/client` partially and
    * would otherwise see `undefined` here on mount.
@@ -46,9 +53,10 @@ export interface DevcontainerTrustCardProps {
  * The copy carries five things a first-time reader needs and cannot infer from
  * the word "trust": what a Dev Container IS, that this is not a sandbox, what
  * trusting actually executes (setup commands plus the host mounts and run
- * arguments the file declares), what stops working while a session runs inside
- * one, and how to undo it. They are separate lines rather than one paragraph
- * so the consequence line can be weighted differently from the explanation.
+ * arguments the file declares), that this session stays on the host until a
+ * new one starts, and how to undo it. They are separate lines rather than one
+ * paragraph so the consequence line can be weighted differently from the
+ * explanation.
  *
  * Both answers state their outcome in VISIBLE text rather than a `title`
  * tooltip: a tooltip is unreachable by touch and by keyboard, and "Not now"
@@ -64,6 +72,7 @@ function DevcontainerTrustCard({
   configPath,
   onTrust,
   onDismiss,
+  onStartNewSession,
   loadConfig,
 }: DevcontainerTrustCardProps) {
   const [expanded, setExpanded] = useState(false)
@@ -105,17 +114,28 @@ function DevcontainerTrustCard({
   // A preview that cannot be read is not a blocker: `config` stays null and the
   // card still offers the decision, minus the fingerprint and the raw text.
   // Called through `?.` because test suites mock the api client partially.
-  const { data: config = null, refetch: refetchConfig } = useQuery({
+  const {
+    data: config = null,
+    refetch: refetchConfig,
+    isError: previewFailed,
+    isFetching: previewLoading,
+  } = useQuery({
     queryKey: ['devcontainer-config', projectDir],
     queryFn: () => {
       const load = loadConfig || ((p: string) => api.devcontainerConfig?.(p))
-      return Promise.resolve(load(projectDir)).catch(() => null)
+      const result = load(projectDir)
+      // A missing client method is a failed preview, not an empty grant.
+      if (result == null) {
+        return Promise.reject(new Error('unavailable'))
+      }
+      return Promise.resolve(result)
     },
     enabled: !!projectDir,
     // The preview is a consent surface: it must reflect the file as it is now,
     // not a cached copy from an earlier visit that the user would then be
     // granting trust against.
     staleTime: 0,
+    retry: false,
   })
 
   const trust = useCallback(async () => {
@@ -177,10 +197,20 @@ function DevcontainerTrustCard({
           <div className="text-[12px] text-muted leading-relaxed">
             {i18nT('components.devcontainerTrustCard.the_next_session_for_this_project')}
           </div>
-          <div className="flex mt-2.5">
+          <div className="flex flex-wrap items-center gap-2 mt-2.5">
+            {onStartNewSession && (
+              <button
+                onClick={onStartNewSession}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all bg-accent text-accent-fg hover:bg-accent-hover border-none"
+              >
+                {i18nT('components.devcontainerTrustCard.start_a_new_session')}
+              </button>
+            )}
             <button
               onClick={onDismiss}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all bg-accent text-accent-fg hover:bg-accent-hover border-none"
+              className={onStartNewSession
+                ? 'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] cursor-pointer transition-all border border-transparent text-muted hover:text-text bg-transparent'
+                : 'inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium cursor-pointer transition-all bg-accent text-accent-fg hover:bg-accent-hover border-none'}
             >
               {i18nT('components.devcontainerTrustCard.got_it')}
             </button>
@@ -304,6 +334,19 @@ function DevcontainerTrustCard({
           </div>
         </div>
 
+        {previewFailed && !config && (
+          <div role="alert" className="text-[12px] text-danger mt-2 flex flex-wrap items-center gap-2">
+            <span>{i18nT('components.devcontainerTrustCard.could_not_load_this_configuration')}</span>
+            <button
+              type="button"
+              onClick={() => { void refetchConfig() }}
+              disabled={previewLoading}
+              className="inline-flex items-center px-2 py-0.5 rounded-md text-[12px] cursor-pointer transition-all disabled:opacity-40 disabled:cursor-not-allowed border border-border text-text bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]"
+            >
+              {i18nT('components.devcontainerTrustCard.try_again')}
+            </button>
+          </div>
+        )}
         {error && (
           <div role="alert" className="text-[12px] text-danger mt-2">
             {error}

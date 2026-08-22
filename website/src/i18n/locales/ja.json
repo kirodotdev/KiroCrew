@@ -4783,7 +4783,8 @@
       "devcontainer_running_for_project_id": "このプロジェクトで Dev Container が実行中です ({{id}})",
       "devcontainer_trusted_not_running": "このプロジェクトの Dev Container 設定は承認済みです。現在、実行中のコンテナはありません。",
       "withdraw_trust": "信頼を取り消す",
-      "withdrawing_stops_future_sessions": "取り消すと、以降のセッションはコンテナを使用しなくなります。このセッションは再起動するまでコンテナ内で実行されたままです。"
+      "withdrawing_stops_future_sessions": "取り消すと、以降のセッションはコンテナを使用しなくなります。このセッションは再起動するまでコンテナ内で実行されたままです。",
+      "trust_again": "もう一度信頼する"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",
@@ -6746,7 +6747,10 @@
       "trust_applies_to_this_exact_configuration": "信頼はこの設定そのものにのみ適用されます — 設定が変更された場合は再度確認されます。信頼は Dev Container チップから取り消せます。",
       "trusting": "信頼を付与中…",
       "trusting_runs_the_setup_commands_in_this_file": "これはサンドボックスではありません。信頼すると、このファイル内のセットアップコマンドが実行され、コンテナが宣言したホストマウントと実行引数が付与されます。心当たりのあるプロジェクトだけを信頼してください。",
-      "while_a_session_runs_in_the_container": "セッションがコンテナ内で実行されている間、スケジュール済みジョブ、サブエージェント、保存された学習内容は利用できません。"
+      "while_a_session_runs_in_the_container": "信頼してもこのセッションは移動しません。コンテナ内で実行するには、その後に新しいセッションを開始してください。",
+      "start_a_new_session": "新しいセッションを開始",
+      "could_not_load_this_configuration": "この構成を読み込めませんでした",
+      "try_again": "再試行"
     },
     "devcontainerExecutionChip": {
       "in_container": "コンテナ内",

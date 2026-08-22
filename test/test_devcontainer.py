@@ -91,12 +91,23 @@ def _stable_docker_bin(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture
-def trust_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+def trust_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Redirect the trust store into an isolated data home."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(devc, "config_dir", lambda: home)
-    return home
+    # The MCP bridge bind lives under /tmp (AF_UNIX path length). Keep that
+    # directory short and reap it so tests do not leave residue.
+    from kiro_crew import devcontainer_mcp as mcp
+
+    short = Path("/tmp") / "kc-mb" / home.name[:12]
+    short.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(mcp, "host_bridge_dir", lambda _p: short)
+    gtmp = tmp_path / "gtmp"
+    gtmp.mkdir()
+    monkeypatch.setattr(devc, "_gateway_tmp_root", lambda: gtmp)
+    yield home
+    shutil.rmtree(short, ignore_errors=True)
 
 
 @pytest.fixture
@@ -1308,8 +1319,13 @@ class TestWriteBuildConfig:
         # own flags must survive ahead of them.
         assert written["runArgs"][: len(expected["runArgs"])] == expected["runArgs"]
         assert "--pids-limit" in written["runArgs"]
-        assert {k: v for k, v in written.items() if k != "runArgs"} == {
-            k: v for k, v in expected.items() if k != "runArgs"
+        assert written["mounts"][: len(expected["mounts"])] == expected["mounts"]
+        assert any("/tmp/kirocrew-mcp-bridge" in str(m) for m in written["mounts"])
+        assert any(devc.AUTH_CONTAINER_DIR in str(m) for m in written["mounts"])
+        assert any("/.kiro/agents" in str(m) for m in written["mounts"])
+        skip = {"runArgs", "mounts"}
+        assert {k: v for k, v in written.items() if k not in skip} == {
+            k: v for k, v in expected.items() if k not in skip
         }
 
     def test_config_without_the_hook_round_trips_unchanged(
@@ -1329,8 +1345,11 @@ class TestWriteBuildConfig:
         written = json.loads(out.read_text(encoding="utf-8"))
         for key, value in original.items():
             assert written[key] == value
-        assert set(written) - set(original) == {"runArgs"}
+        assert set(written) - set(original) == {"runArgs", "mounts"}
         assert "--pids-limit" in written["runArgs"]
+        assert any("/tmp/kirocrew-mcp-bridge" in str(m) for m in written["mounts"])
+        assert any(devc.AUTH_CONTAINER_DIR in str(m) for m in written["mounts"])
+        assert any("/.kiro/agents" in str(m) for m in written["mounts"])
 
     def test_output_lives_under_the_gateway_data_home_keyed_by_digest(
         self, tmp_path: Path, trust_home: Path
@@ -4915,11 +4934,9 @@ class TestExecutionLocus:
             def load() -> type:
                 return _Cfg
 
-        # The reason vocabulary is platform-independent logic, but the resolver
-        # short-circuits to "unsupported_platform" off Linux -- which would make
-        # every case below assert that one value on the Windows and macOS shards
-        # instead of the mapping under test. Pinned to linux so the mapping is
-        # actually exercised everywhere; the off-Linux branch has its own test.
+        # Reason mapping is platform-independent once Docker is available.
+        # Pinned to linux so a stray docker-desktop probe cannot change
+        # which gate fires on the Windows and macOS shards.
         monkeypatch.setattr(devc.sys, "platform", "linux")
         # Dev opt-in open: these tests are about WHICH reason the resolver
         # reports, which only happens once the feature is admitted at all. The
@@ -4947,15 +4964,12 @@ class TestExecutionLocus:
         assert locus is None
 
     @pytest.mark.asyncio
-    async def test_a_non_linux_host_is_named_but_only_with_a_config_present(
+    async def test_a_desktop_host_is_eligible_and_names_missing_docker(
         self, tmp_path: Path, auto_mode: None, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The off-Linux branch, and its ordering.
-
-        ``unsupported_platform`` is reported only when a devcontainer config
-        actually exists. Checking the platform first would be cheaper but would
-        tell a macOS user with no devcontainer about a fallback they never asked
-        for and cannot act on.
+        """Docker Desktop is a supported host. A project with no config still
+        reports nothing; a project with a config and no docker names that,
+        not an "unsupported platform" the operator cannot act on.
         """
         monkeypatch.setattr(devc.sys, "platform", "darwin")
 
@@ -4965,10 +4979,11 @@ class TestExecutionLocus:
         assert locus is None, "a project with no config must report nothing"
 
         project = self._project(tmp_path)
-        info, locus = await devc.resolve_with_locus(project)
+        with patch.object(devc, "docker_available", return_value=False):
+            info, locus = await devc.resolve_with_locus(project)
         assert info is None
         assert locus is not None
-        assert locus.reason == "unsupported_platform"
+        assert locus.reason == "docker_unavailable"
 
     @pytest.mark.asyncio
     async def test_docker_missing_is_named(self, tmp_path: Path, auto_mode: None) -> None:
@@ -5081,16 +5096,13 @@ class TestExecutionLocus:
 
 
 class TestSlotPayloadWithholdsAnUnattributableVerdict:
-    """The slot reports nothing while the verdict cannot be tied to a session.
+    """The slot reports nothing from the work-dir table.
 
     The recorded verdict is keyed by WORK DIR, and several sessions can share a
     project. A host-fallback session followed by a containerized session on the
     same project would read the newer verdict and claim "in container" -- the
-    exact false reassurance the indicator exists to prevent. Over-warning would
-    be acceptable; under-warning is not, so nothing is reported at all.
-
-    These tests pin the WITHHOLDING, not the shape: they must fail the day
-    someone reintroduces work-dir-keyed reporting without session attribution.
+    exact false reassurance the indicator exists to prevent. The slot reports
+    only a verdict snapshotted onto itself.
     """
 
     @staticmethod
@@ -5153,6 +5165,33 @@ class TestSlotPayloadWithholdsAnUnattributableVerdict:
             assert recorded.reason == "build_failed"
         finally:
             devc.record_execution_locus(str(tmp_path), None)
+
+
+class TestSlotPayloadReportsASnapshottedVerdict:
+    """A locus stored on the slot itself is attributable and is reported."""
+
+    @staticmethod
+    def _slot(project: str, locus: object | None = None) -> object:
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        slot = _ChatSlot.__new__(_ChatSlot)
+        slot.project = project
+        slot._execution_locus = locus
+        return slot
+
+    def test_a_slot_owned_container_verdict_is_reported(self) -> None:
+        locus = devc.ExecutionLocus("container", container_name="c1")
+        assert self._slot("/p", locus)._execution_payload() == {
+            "mode": "container",
+            "container_name": "c1",
+            "reason": None,
+        }
+
+    def test_two_slots_keep_independent_verdicts(self) -> None:
+        host = self._slot("/p", devc.ExecutionLocus("host", reason=devc.HOST_REASON_UNTRUSTED))
+        container = self._slot("/p", devc.ExecutionLocus("container", container_name="c2"))
+        assert host._execution_payload()["mode"] == "host"
+        assert container._execution_payload()["mode"] == "container"
 
 
 class TestComposeEnvFileIsScreened:
@@ -6032,13 +6071,10 @@ class TestAgentDefinitionMustBeContainerVisible:
     no ordinary image carries, so ``--agent <name>`` had nothing to load and
     startup failed as a generic ACP init error naming no cause.
 
-    Refused rather than silently falling back to the host: a fallback nobody can
-    see leaves the operator believing a session is containerized when it is not,
-    and a wrong belief about where code runs is worse than a clear refusal.
-
-    The host's ``~/.kiro/agents`` is deliberately not bind-mounted to close this,
-    because those definitions carry MCP server configuration including
-    credentials in ``env``.
+    A missing project file is not an immediate refuse: the selected host
+    ``~/.kiro/agents/<name>.json`` is copied into a gateway-owned bind and the
+    probe runs again. The whole host agents directory is still not mounted,
+    because those definitions carry MCP credentials in ``env``.
     """
 
     @staticmethod
@@ -6107,8 +6143,25 @@ class TestAgentDefinitionMustBeContainerVisible:
     ) -> None:
         sink: list[list[str]] = []
         monkeypatch.setattr(devc.asyncio, "create_subprocess_exec", self._fake_exec(1, sink))
+        monkeypatch.setattr(devc, "try_inject_host_agent", lambda *a, **k: False)
         with pytest.raises(devc.DevcontainerError, match=r"\.kiro/agents/kirocrew\.json"):
             await devc.ensure_agent_definition_available(self._info(), "kirocrew")
+
+    @pytest.mark.asyncio
+    async def test_a_host_global_definition_is_injected_then_reprobed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sink: list[list[str]] = []
+        codes = [1, 0]
+
+        async def _inner(*argv: str, **kw: object):
+            sink.append(list(argv))
+            return self._Proc(codes.pop(0) if codes else 0)
+
+        monkeypatch.setattr(devc.asyncio, "create_subprocess_exec", _inner)
+        monkeypatch.setattr(devc, "try_inject_host_agent", lambda *a, **k: True)
+        await devc.ensure_agent_definition_available(self._info(), "kirocrew")
+        assert len(sink) == 2
 
     @pytest.mark.asyncio
     async def test_the_agent_name_is_shell_quoted(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -6138,6 +6191,115 @@ class TestAgentDefinitionMustBeContainerVisible:
                 # matches the import above the preflight.
                 "containerize_spawn, devc_info"
             ), f"{rel}: preflight must run BEFORE the spawn"
+
+
+class TestAuthAndSelectedAgentInject:
+    def test_refresh_auth_copy_is_one_way_and_mode_644(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(devc, "_gateway_tmp_root", lambda: tmp_path / "gtmp")
+        host_db = tmp_path / "host" / "kiro-cli" / "data.sqlite3"
+        host_db.parent.mkdir(parents=True)
+        host_db.write_bytes(b"sqlite")
+        monkeypatch.setattr(
+            "kiro_crew.kiro_cli.kiro_cli_state_dbs",
+            lambda *_a, **_k: (host_db,),
+        )
+        root = devc.refresh_auth_copy(tmp_path / "proj")
+        dest = root / "kiro-cli" / "data.sqlite3"
+        assert dest.read_bytes() == b"sqlite"
+        assert dest.stat().st_mode & 0o777 == 0o644
+        dest.write_bytes(b"container-wrote")
+        # Host is older than dest — do not write back, do not overwrite.
+        devc.refresh_auth_copy(tmp_path / "proj")
+        assert dest.read_bytes() == b"container-wrote"
+        host_db.write_bytes(b"newer")
+        later = time.time() + 10
+        os.utime(host_db, (later, later))
+        devc.refresh_auth_copy(tmp_path / "proj")
+        assert dest.read_bytes() == b"newer"
+
+    def test_try_inject_copies_only_the_named_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(devc, "_gateway_tmp_root", lambda: tmp_path / "gtmp")
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "kirocrew.json").write_text('{"name":"kirocrew"}', encoding="utf-8")
+        (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
+        monkeypatch.setattr("kiro_crew.config.paths.kiro_agents_dir", lambda: agents)
+        assert devc.try_inject_host_agent(tmp_path / "proj", "kirocrew")
+        dest = devc.host_agents_inject_dir(tmp_path / "proj")
+        assert (dest / "kirocrew.json").is_file()
+        assert not (dest / "other.json").exists()
+        assert not devc.try_inject_host_agent(tmp_path / "proj", "evil;rm")
+
+    def test_containerize_spawn_forwards_api_key_and_xdg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(devc, "refresh_auth_copy", lambda _p: tmp_path)
+        captured: dict[str, dict[str, str]] = {}
+
+        def fake_exec(
+            self: object,
+            info: object,
+            inner: list[str],
+            *,
+            env: dict[str, str],
+            exec_id: str,
+            workdir: str | None = None,
+        ) -> list[str]:
+            captured["env"] = dict(env)
+            return ["docker", "exec", "x"]
+
+        monkeypatch.setattr(devc.DevcontainerManager, "exec_argv", fake_exec)
+        monkeypatch.setattr(
+            devc,
+            "inject_kiro_cli_api_key",
+            lambda env: env.__setitem__("KIRO_API_KEY", "secret") or env,
+        )
+        info = TestAgentDefinitionMustBeContainerVisible._info()
+        spawn = devc.containerize_spawn(info, ["kiro-cli"], env={"FOO": "1"})
+        assert spawn.argv == ["docker", "exec", "x"]
+        assert captured["env"]["KIRO_API_KEY"] == "secret"
+        assert captured["env"]["XDG_DATA_HOME"] == devc.AUTH_CONTAINER_DIR
+        assert captured["env"]["FOO"] == "1"
+
+    def test_remote_user_home_is_linux_shaped(self) -> None:
+        assert devc.remote_user_home(None) == "/root"
+        assert devc.remote_user_home("root") == "/root"
+        assert devc.remote_user_home("vscode") == "/home/vscode"
+        assert devc.remote_user_home("../etc") == "/root"
+
+
+class TestWarmPoolSkipsTrustedDevcontainer:
+    @pytest.mark.asyncio
+    async def test_trusted_config_is_a_pool_bypass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from kiro_crew.session import SessionManager
+
+        project = tmp_path / "proj"
+        project.mkdir()
+        (project / ".devcontainer").mkdir()
+        (project / ".devcontainer" / "devcontainer.json").write_text(
+            '{"image":"ubuntu:24.04"}', encoding="utf-8"
+        )
+        monkeypatch.setattr(devc, "devcontainers_enabled", lambda: True)
+        monkeypatch.setattr(devc, "is_trusted", lambda path: path == str(project))
+        mgr = SessionManager.__new__(SessionManager)
+        assert await mgr._cwd_has_trusted_devcontainer(str(project)) is True
+        monkeypatch.setattr(devc, "devcontainers_enabled", lambda: False)
+        assert await mgr._cwd_has_trusted_devcontainer(str(project)) is False
+
+    def test_get_or_create_consults_the_trusted_check_before_claim(self) -> None:
+        from kiro_crew import session as session_mod
+
+        src = Path(session_mod.__file__).read_text(encoding="utf-8")
+        assert "bypass_devcontainer" in session_mod.POOL_DECISIONS
+        decision = src.index('pool_decision = "bypass_devcontainer"')
+        claim = src.index("await self._drain_and_claim(agent)")
+        assert decision < claim
 
 
 class TestComposeSurfacesFoundAfterTheFirstPass:
@@ -6506,8 +6668,6 @@ class TestBlockingProbesAreOffTheEventLoop:
         def docker_available() -> bool:
             return False
 
-        # Past the platform gate: without this the resolver returns
-        # unsupported_platform on Windows and neither probe is ever reached.
         monkeypatch.setattr(devc.sys, "platform", "linux")
         monkeypatch.setattr(devc, "devcontainers_enabled", devcontainers_enabled)
         monkeypatch.setattr(devc, "docker_available", docker_available)
@@ -7260,9 +7420,8 @@ class TestGovernanceFloorOutranksTheContainer:
     where the floor is actually implemented, is the conservative reading: the
     container is a different mechanism, not a tier the floor names.
 
-    Every case forces ``sys.platform`` to linux: the resolver returns
-    ``unsupported_platform`` before reaching the floor gate on any other OS, so
-    without this the assertions below never execute on the Windows shard.
+    Every case forces ``sys.platform`` to linux so a Desktop-specific extra_hosts
+    injection cannot change which gate this class is measuring.
     """
 
     @staticmethod
