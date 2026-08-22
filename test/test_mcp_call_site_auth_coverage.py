@@ -72,7 +72,7 @@ from kiro_crew.dashboard.server import (
     _MIXED_INTERNAL_API_PATHS,
     _STRICT_INTERNAL_API_PATHS,
 )
-from kiro_crew.dashboard.token_auth import _BYPASS_EXACT
+from kiro_crew.dashboard.token_auth import _BYPASS_EXACT, internal_path_matches
 
 _SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 _CORE = _SRC / "mcp_core.py"
@@ -468,9 +468,9 @@ def _unresolved_sites() -> set[str]:
 
 
 def _is_allowlisted(path: str) -> bool:
-    """Mirror the middleware's prefix-or-exact match over both internal sets."""
+    """Use the middleware's prefix-or-exact match over both internal sets."""
     allow = _STRICT_INTERNAL_API_PATHS | _MIXED_INTERNAL_API_PATHS
-    return any(path == entry or path.startswith(entry + "/") for entry in allow)
+    return internal_path_matches(path, allow)
 
 
 def _is_reachable(path: str) -> bool:
