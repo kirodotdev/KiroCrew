@@ -38,6 +38,8 @@ export interface StatusData {
    * diverge between a channel switch and the new lane's build landing.
    */
   update_channel?: string
+  update_last_checked_at?: number | null
+  update_check_interval_secs?: number
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**

@@ -10452,7 +10452,9 @@
         "you_are_on_the_latest_version": "Sie verwenden die neueste Version.",
         "you_re_on_the_latest_version": "Sie verwenden die neueste Version.",
         "restart_confirm": "Zum Neustarten erneut klicken",
-        "restart_row_note": "Startet den Gateway-Prozess neu, ohne zu aktualisieren. Aktive Sitzungen trennen sich kurz."
+        "restart_row_note": "Startet den Gateway-Prozess neu, ohne zu aktualisieren. Aktive Sitzungen trennen sich kurz.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

@@ -15,7 +15,7 @@ import { api, ApiError } from '../../api/client'
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
 
 /** Human-readable transfer rate for the progress label. */
@@ -282,6 +282,8 @@ export function AboutPanel() {
     s => s.dashboard.status?.update_check_status
   ) === 'succeeded'
   const statusCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  const lastCheckedAt = useAppSelector(s => s.dashboard.status?.update_last_checked_at) ?? null
+  const checkIntervalSecs = useAppSelector(s => s.dashboard.status?.update_check_interval_secs) ?? 43200
   const queryClient = useQueryClient()
   const desktopApi = getUpdateApi()
   const isDesktop = !!desktopApi
@@ -1086,7 +1088,15 @@ export function AboutPanel() {
             ) : (
               <>
                 <p className="text-sm text-muted">
-                  {botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}
+                  {lastCheckedAt
+                    ? i18nT('pages.settings.aboutPanel.checks_for_updates_with_timing', {
+                        name: botName || 'Kiro Crew',
+                        timing: i18nT('pages.settings.aboutPanel.last_checked_ago_next_check_in', {
+                          ago: fmtRelative(lastCheckedAt * 1000),
+                          next: fmtRelative((lastCheckedAt + checkIntervalSecs) * 1000),
+                        }),
+                      })
+                    : <>{botName || 'Kiro Crew'} {i18nT('pages.settings.aboutPanel.checks_for_updates_automatically_you_can_also_ch')}</>}
                 </p>
                 <div>
                   <Btn onClick={() => gwCheck.mutate()} disabled={gwCheck.isPending}>

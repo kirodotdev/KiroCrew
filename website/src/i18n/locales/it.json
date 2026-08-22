@@ -10576,7 +10576,9 @@
         "you_are_on_the_latest_version": "Stai usando la versione più recente.",
         "you_re_on_the_latest_version": "Stai usando la versione più recente.",
         "restart_confirm": "Clicca di nuovo per riavviare",
-        "restart_row_note": "Riavvia il processo del gateway senza aggiornare. Le sessioni attive si disconnettono per un istante."
+        "restart_row_note": "Riavvia il processo del gateway senza aggiornare. Le sessioni attive si disconnettono per un istante.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

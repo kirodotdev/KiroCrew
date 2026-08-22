@@ -10453,7 +10453,9 @@
         "you_are_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
         "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
         "restart_confirm": "पुनरारंभ के लिए पुनः क्लिक करें",
-        "restart_row_note": "अपडेट के बिना गेटवे प्रक्रिया पुनरारंभ करें। सक्रिय सेशन थोड़ी देर डिस्कनेक्ट होंगे।"
+        "restart_row_note": "अपडेट के बिना गेटवे प्रक्रिया पुनरारंभ करें। सक्रिय सेशन थोड़ी देर डिस्कनेक्ट होंगे।",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "अनुमत उपयोगकर्ता ID",

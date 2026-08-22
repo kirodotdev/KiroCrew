@@ -10328,7 +10328,9 @@
         "you_are_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
         "you_re_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
         "restart_confirm": "한 번 더 클릭해 다시 시작",
-        "restart_row_note": "업데이트 없이 게이트웨이 프로서스를 다시 시작합니다. 활성 세션은 잠시 연결이 끊긝니다."
+        "restart_row_note": "업데이트 없이 게이트웨이 프로서스를 다시 시작합니다. 활성 세션은 잠시 연결이 끊긝니다.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",

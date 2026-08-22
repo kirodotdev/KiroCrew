@@ -10577,7 +10577,9 @@
         "you_are_on_the_latest_version": "Vous utilisez la dernière version.",
         "you_re_on_the_latest_version": "Vous utilisez la dernière version.",
         "restart_confirm": "Cliquez à nouveau pour redémarrer",
-        "restart_row_note": "Redémarre le processus de la passerelle sans mise à jour. Les sessions actives seront brièvement déconnectées."
+        "restart_row_note": "Redémarre le processus de la passerelle sans mise à jour. Les sessions actives seront brièvement déconnectées.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID d'utilisateurs autorisés",

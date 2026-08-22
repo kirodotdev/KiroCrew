@@ -6765,6 +6765,8 @@
         "check_for_updates": "Check for updates",
         "checking_for_updates": "Checking for updates...",
         "checks_for_updates_automatically_you_can_also_ch": "checks for updates automatically. You can also check now.",
+        "checks_for_updates_with_timing": "{{name}} checks for updates automatically. {{timing}} You can also check now.",
+        "last_checked_ago_next_check_in": "Last checked {{ago}}, next automatic check {{next}}.",
         "close": "Close",
         "couldn_t_check_for_updates": "Couldn't check for updates",
         "couldn_t_check_for_updates_2": "Couldn't check for updates.",

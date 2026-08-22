@@ -204,6 +204,8 @@ def status_update_fields() -> dict[str, object]:
         "update_check_status": str(_update_info.get("check_status") or CHECK_UNCHECKED),
         "update_command": remediation_command(_update_info),
         "update_channel": str(_update_info.get("channel") or ""),
+        "update_last_checked_at": _last_update_check or None,
+        "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
     }
 
 
