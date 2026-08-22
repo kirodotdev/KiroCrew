@@ -156,7 +156,7 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
   return (
     <div className={`flex-1 min-h-0 flex overflow-hidden ${isMobile ? 'flex-col' : ''}`}>
       {isMobile ? (
-        <div className="shrink-0 border-b border-border bg-bg px-4 pt-3 pb-0">
+        <div data-testid="side-panel-mobile-header" className="shrink-0 border-b border-border bg-bg px-4 pt-3 pb-0">
           <div className="flex items-center justify-between mb-2">
             <div className="text-lg font-bold text-text-strong">{title}</div>
             {headerRight}
@@ -193,7 +193,6 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
               <div aria-hidden="true" data-testid="tab-strip-cue-right" className="pointer-events-none absolute right-0 top-0 bottom-2 w-6 bg-gradient-to-l from-bg to-transparent" />
             )}
           </div>
-          {footer && <div className="pt-2 pb-2">{footer}</div>}
         </div>
       ) : (
         <nav className="w-[200px] shrink-0 border-r border-border bg-bg overflow-y-auto pt-1 pb-3 px-3 flex flex-col gap-0.5">
@@ -246,6 +245,18 @@ export default function SidePanelLayout({ title, tabs, defaultTab, rememberKey, 
         <div data-testid="side-panel-pane" className={`${isMobile ? 'px-4 pt-3' : 'px-6'} ${fixed ? 'flex-1 min-h-0 flex flex-col' : 'flex-1 pb-8'}`}>
           {children(tab)}
         </div>
+        {/* The footer sits at the BOTTOM on both layouts, which on a phone means
+          * the end of the scrolling content rather than the header block it used
+          * to share with the tab strip — up there it read as a subtitle of the
+          * strip, and a reader looking for the version where desktop puts it
+          * (`mt-auto`, foot of the nav rail) concluded the phone did not show one.
+          * Deliberately in the content flow and not `position: fixed`: a fixed bar
+          * would spend a phone's vertical space on a version string, and in this
+          * shell it resolves against a transformed ancestor rather than the
+          * viewport, so it would need a portal to land where it claims to. */}
+        {isMobile && footer && (
+          <div data-testid="side-panel-footer" className="shrink-0 px-4 pt-3 pb-5">{footer}</div>
+        )}
       </div>
     </div>
   )
