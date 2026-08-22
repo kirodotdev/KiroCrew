@@ -49,6 +49,7 @@ from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_gateway import credwatch, hazards, socketsec, transport
 from kiro_crew.mcp_gateway.apps import sweep_spool as apps_sweep_spool
 from kiro_crew.mcp_gateway.backend import Backend, BackendGone, spawn_backend
+from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp
 from kiro_crew.mcp_gateway.breaker import CircuitBreaker
 from kiro_crew.mcp_gateway.hashing import hash_effective_env, non_secret_env
 from kiro_crew.mcp_gateway.manager import _scrub_sensitive_env, is_credential_env_key
@@ -436,6 +437,7 @@ async def run_gatewayd(
     # a dangling socket that confuses the next startup probe.
     server: Optional[transport.TransportServer] = None
     sweeper: Optional[asyncio.Task[None]] = None
+    tmp_sweeper: Optional[asyncio.Task[None]] = None
     socket_liveness: Optional[asyncio.Task[None]] = None
     diagnostic: Optional[asyncio.Task[None]] = None
     heartbeat: Optional[asyncio.Task[None]] = None
@@ -484,6 +486,22 @@ async def run_gatewayd(
             _idle_sweeper(pool, idle_timeout_secs, sweep_interval, stop_event),
             name="mcp-gateway-idle-sweeper",
         )
+
+        # Backend temp containment (#5064): reclaim per-process temp dirs
+        # whose owner is dead AND whose content is idle (see backend_tmp --
+        # deletion deliberately lives ONLY here, never on a shutdown path,
+        # because a launcher's exit is not proof its process tree is gone).
+        # First pass at task start (same boot posture as the spool sweep),
+        # then hourly; offloaded and best-effort.
+        async def _backend_tmp_sweeper() -> None:
+            while True:
+                try:
+                    await asyncio.to_thread(sweep_all_backend_tmp)
+                except Exception:
+                    logger.debug("backend-tmp: sweep failed", exc_info=True)
+                await asyncio.sleep(3600)
+
+        tmp_sweeper = asyncio.create_task(_backend_tmp_sweeper(), name="mcp-gateway-tmp-sweeper")
 
         # Socket-liveness self-exit: the daemon is its own session/group
         # leader, so a launcher that dies without signalling it (pytest
@@ -692,6 +710,11 @@ async def run_gatewayd(
             sweeper.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await sweeper
+
+        if tmp_sweeper is not None:
+            tmp_sweeper.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await tmp_sweeper
 
         if socket_liveness is not None:
             socket_liveness.cancel()
@@ -2831,6 +2854,17 @@ async def _acquire_backend(
             args=list(args),
             env=spawn_env,
             work_dir=work_dir,
+            # Containment yields ONLY to a spec-declared temp. ``spawn_env``
+            # also carries the daemon's ambient TMPDIR/TMP/TEMP (macOS and
+            # Windows always export one), so spawn_backend cannot infer
+            # declaration from env membership -- this closure is the one
+            # place that still knows the declared set. Key NAMES are passed
+            # (matched case-insensitively inside; Windows env keys are
+            # case-insensitive) so spawn_backend can also prune the ambient
+            # keys the operator did NOT declare.
+            declared_temp_keys=tuple(
+                key for key in declared if key.upper() in ("TMPDIR", "TMP", "TEMP")
+            ),
         )
         # Security note: resolved secrets exist ONLY in the local spawn_env
         # dict passed to the child via Popen(env=...).  They are NEVER written

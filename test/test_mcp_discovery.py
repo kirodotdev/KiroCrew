@@ -1997,6 +1997,198 @@ class TestProbeServerConsentGate:
         assert result.error == ""
 
 
+class TestProbeTempContainment:
+    """#5064 probe wiring: spec-declared temp yields; Windows defers cleanup.
+
+    Both tests assert ONLY on the containment calls and tolerate any probe
+    outcome -- the probe command is a real interpreter that exits instantly,
+    so the handshake fails, which is irrelevant to the temp lifecycle.
+    """
+
+    def setup_method(self) -> None:
+        _probe_cache.clear()
+
+    @pytest.mark.asyncio
+    async def test_spec_declared_temp_suppresses_probe_containment(self, tmp_path) -> None:
+        # Mirror of the backend chokepoint: an operator-declared temp key in
+        # the SPEC (any casing -- Windows env keys are case-insensitive)
+        # means no allocation at all, so a storage-heavy probe honors the
+        # configured volume instead of ENOSPC-ing the data home.
+        import sys
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        server = McpServerInfo(
+            name="declared-temp",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"tmpdir": str(tmp_path / "chosen")},
+        )
+        alloc_spy = MagicMock(side_effect=AssertionError("must not allocate"))
+        with patch.object(bt, "allocate_probe_tmp", alloc_spy):
+            await probe_server(server)
+        alloc_spy.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_windows_probe_cleanup_defers_to_daemon_sweep(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # On Windows tree death is unprovable (taskkill /T loses orphaned
+        # children), so the probe's finally must NOT delete -- the daemon's
+        # dual-condition sweep is the single deletion authority there. The
+        # probe command exits on its own, so skipping the POSIX reap branch
+        # (a side effect of patching IS_POSIX) leaks nothing.
+        import sys
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        # The IS_POSIX patch also flips restrict_dir_to_owner onto its icacls
+        # branch, which cannot run on the POSIX host executing this test --
+        # shim it to POSIX behavior so ALLOCATION survives and the test
+        # exercises the logic it targets.
+        monkeypatch.setattr(
+            platform_compat,
+            "restrict_dir_to_owner",
+            # 0o700 is the RESTRICTIVE mode for a directory (see the identical
+            # suppression in platform_compat.restrict_dir_to_owner itself).
+            # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
+            lambda p: os.chmod(p, 0o700),
+        )
+
+        # Pre-seed a PRIOR probe's dead+idle dir: the deferral path must run
+        # the root-wide dual-condition sweep from THIS (gateway) process, so
+        # reclamation exists even in a topology that never starts the mcp-tmp
+        # daemon (no stub servers). Owner pid 2**22+5 is far above any live
+        # pid on CI runners; mtimes aged beyond the grace window.
+        stale = bt.backend_tmp_root() / "probe-deadbeef-old"
+        stale.mkdir(parents=True)
+        (stale / bt.OWNER_FILENAME).write_text(str(2**22 + 5), encoding="utf-8")
+        old = time.time() - 7200
+        os.utime(stale / bt.OWNER_FILENAME, (old, old))
+        os.utime(stale, (old, old))
+        os.utime(bt.backend_tmp_root(), (old, old))
+
+        server = McpServerInfo(name="win-probe", command=sys.executable, args=["-c", "pass"])
+        await probe_server(server)
+
+        # The prior dead dir was reclaimed by the probe-side sweep...
+        assert not stale.exists()
+        # ...while the fresh probe's own dir (seconds-old tree) was kept.
+        root = home / "run" / "mcp-tmp"
+        assert root.exists() and any(root.iterdir())
+        owners = [
+            int((child / bt.OWNER_FILENAME).read_text(encoding="utf-8").strip())
+            for child in root.iterdir()
+            if (child / bt.OWNER_FILENAME).is_file()
+        ]
+        assert owners and all(pid != os.getpid() for pid in owners)
+
+    @pytest.mark.asyncio
+    async def test_probe_spawn_failure_reclaims_the_fresh_dir(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A dir whose probe never existed has no dead-owner future: the sweeps
+        # never delete provisional/ownerless dirs, so the spawn-failure path
+        # is its only reclamation point (mirrors spawn_backend). Exercised on
+        # the WINDOWS path (IS_POSIX=False) where the finally-sweep defers to
+        # the daemon -- there the except-block reclamation is the ONLY one;
+        # on POSIX the finally would double-cover it and mask a regression.
+        import sys
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(platform_compat, "IS_POSIX", False)
+        # The IS_POSIX patch also flips restrict_dir_to_owner onto its icacls
+        # branch, which cannot run on the POSIX host executing this test --
+        # shim it to POSIX behavior so ALLOCATION survives and the test
+        # exercises the logic it targets.
+        monkeypatch.setattr(
+            platform_compat,
+            "restrict_dir_to_owner",
+            # 0o700 is the RESTRICTIVE mode for a directory (see the identical
+            # suppression in platform_compat.restrict_dir_to_owner itself).
+            # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
+            lambda p: os.chmod(p, 0o700),
+        )
+
+        server = McpServerInfo(name="spawnfail", command=sys.executable, args=["-c", "pass"])
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("spawn failed"),
+        ):
+            result = await probe_server(server)
+
+        assert result.status == "error"
+        root = home / "run" / "mcp-tmp"
+        assert not root.exists() or not any(root.iterdir())
+
+    @pytest.mark.asyncio
+    async def test_partial_spec_declaration_strips_ambient_tmpdir(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # Spec declares only TMP: the probe env must not keep the ambient
+        # TMPDIR (tempfile consults it first), and no managed dir may be
+        # allocated. Mirrors the backend chokepoint's pruning.
+        import sys
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setenv("TMPDIR", str(tmp_path / "ambient"))
+
+        server = McpServerInfo(
+            name="partial-temp",
+            command=sys.executable,
+            args=["-c", "pass"],
+            env={"TMP": str(tmp_path / "chosen")},
+        )
+        with patch(
+            "kiro_crew.mcp_discovery.create_subprocess_limited",
+            new_callable=AsyncMock,
+            side_effect=OSError("stop after env capture"),
+        ) as spawn_mock:
+            await probe_server(server)
+
+        captured = spawn_mock.call_args.kwargs["env"]
+        assert "TMPDIR" not in captured
+        assert captured["TMP"] == str(tmp_path / "chosen")
+        root = home / "run" / "mcp-tmp"
+        assert not root.exists() or not any(root.iterdir())
+
+    @pytest.mark.skipif(
+        not platform_compat.IS_POSIX,
+        reason="POSIX-only control: on Windows the finally-path deferral to the "
+        "daemon sweep is the designed behavior (see the deferral test above)",
+    )
+    @pytest.mark.asyncio
+    async def test_posix_probe_cleanup_sweeps_its_own_dir(self, tmp_path, monkeypatch) -> None:
+        # Control for the Windows deferral: on POSIX the group reap is
+        # tree-faithful, so the probe's finally DOES reclaim its private dir.
+        import sys
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        server = McpServerInfo(name="posix-probe", command=sys.executable, args=["-c", "pass"])
+        await probe_server(server)
+
+        root = home / "run" / "mcp-tmp"
+        assert not root.exists() or not any(root.iterdir())
+
+
 class TestProbeServerProcessCleanup:
     """Tests for the finally block that tears down the probed subprocess."""
 
