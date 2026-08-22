@@ -143,6 +143,11 @@ class FakeClient:
         self.frames.append({"sid": sid, "content": content, "finish": finish})
         return True
 
+    def stream_is_dead(self, stream_id) -> bool:
+        # The renderer checks bubble liveness before every frame; bubbles stay
+        # live here, so dispatch tests exercise the ordinary path.
+        return False
+
     async def send_reply(self, url, content) -> None:
         self.replies.append((url, content))
 

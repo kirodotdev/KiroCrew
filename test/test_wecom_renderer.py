@@ -44,12 +44,21 @@ class FakeClient:
         self.frames: list[dict] = []
         self.replies: list[tuple[str, str]] = []
         self._stream_ok = stream_ok
+        self.dead_streams: set[str] = set()
 
-    async def send_stream(
-        self, req_id: str, stream_id: str, content: str, *, finish: bool
-    ) -> bool:
-        self.frames.append({"req_id": req_id, "content": content, "finish": finish})
+    async def send_stream(self, req_id: str, stream_id: str, content: str, *, finish: bool) -> bool:
+        self.frames.append(
+            {"req_id": req_id, "stream_id": stream_id, "content": content, "finish": finish}
+        )
         return self._stream_ok
+
+    def stream_is_dead(self, stream_id: str) -> bool:
+        """The renderer consults this before every frame, so the fake owes it.
+
+        Bubbles are live unless a test says otherwise; sealing behaviour has its
+        own coverage in test_wecom_wire_reliability.py.
+        """
+        return stream_id in self.dead_streams
 
     async def send_reply(self, url: str, content: str) -> None:
         self.replies.append((url, content))

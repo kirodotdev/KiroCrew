@@ -480,7 +480,8 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **A queued burst drains as ONE turn**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact.
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
 - **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
-- **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session.
+- **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session; `WeComClient.close()` owns the same one for its turn tasks, which borrow the client's `aiohttp` session for the `response_url` fallback.
+- **An at-least-once inbound callback is deduped before it drives a turn**: a protocol that documents redelivery (WeCom's `msgid`) needs a bounded suppression window, because a repeat costs a second provider round-trip and repeats every tool side effect. The window is consulted AFTER authorization so unauthorized traffic cannot evict genuine entries, and a frame with no id is never suppressed — no id is no evidence of a duplicate, and dropping it would lose a real message.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, or Weixin-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
@@ -734,6 +735,94 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   crash between the two cannot resurrect the plaintext copy). Writes are
   serialized under the repo-wide config lock. All fields are boot-read, so
   `restart_required` is true on any actual change.
+
+## WeCom channel
+
+**Transport (`kiro_crew/wecom/`).** A concrete `MessagingTransport` over WeCom's
+AI-bot **long connection** (`client.py`): one outbound WebSocket to
+`wss://openws.work.weixin.qq.com`, authorized with a bot id + secret via an
+`aibot_subscribe` frame. Inbound user messages arrive as `aibot_msg_callback`
+frames carrying a server-assigned `headers.req_id`; the bot replies by echoing
+that `req_id` back on `aibot_respond_msg` frames whose `body.stream.content` is
+the **full accumulated text**, so each frame REPLACES the bubble rather than
+appending to it. A `stream.id` groups the frames of one bubble and `finish=true`
+seals it. Each inbound frame is fast-acked into its own turn task so the single
+socket keeps serving pongs during a long streaming turn. Turns ride the shared
+`TurnDriver` through `drive_turn`, so WeCom inherits redaction, the approval
+ladder, `SilentRenderer` muting and `publish_turn_identity` rather than
+re-deriving them.
+
+**Reply-ACK semantics are the load-bearing detail.** `send_stream` returning True
+means the frame reached the socket, never that WeCom accepted it. Acceptance
+arrives later, on a **cmd-less** frame carrying `headers.req_id` plus an
+`errcode` — the same envelope shape as a pong ack and as the subscribe ack, so
+the three are told apart by id, not by shape:
+
+- The **ping** ids are tracked in a set as they are sent.
+- The **subscribe** id carries a fixed prefix (`_SUBSCRIBE_REQ_PREFIX`), which is
+  what makes a rejected credential detectable at all. Without it the only signal
+  is the server closing the connection immediately, which is also what an
+  anti-kick looks like — so an operator with a wrong secret was pointed at the
+  wrong cause. A rejected subscribe reports not-healthy on the settings badge
+  (the documented compensating control for skipping save-time verification) and
+  does **not** stop reconnecting, because a secret can be corrected while the
+  gateway runs.
+- Anything else is a **reply** ack. `846605` (unroutable `req_id`) and `846608`
+  (bubble past the platform's 10-minute stream lifetime) are terminal for that
+  `stream_id`, so the client records it and `stream_is_dead()` reports it.
+
+Neither the `errcode` nor the `errmsg` is ever logged or put on the badge:
+`errmsg` can echo the rejected payload. Only the classification is surfaced.
+
+**A sealed bubble rolls, it does not swallow the answer.** An agentic turn doing
+tool work routinely runs past ten minutes, and the refusal is asynchronous, so
+without this the renderer keeps "succeeding" into a sealed bubble and the rest of
+the answer — including the final frame — is never seen. `renderer.py` therefore
+consults `stream_is_dead()` before each frame and at `on_done`, and on a seal
+mints a fresh `stream_id` and continues there. Because content is cumulative, the
+continuation sends only the part the earlier bubble does not already carry.
+Where it resumes from is deliberately conservative: the refusal is observed on a
+LATER push, so the most recent frame is exactly the one that may have been
+rejected, and the continuation resumes from the frame **before** it. One frame's
+worth of text can therefore appear twice; a visible repeat is a better failure
+than a silent hole. `on_done` rolls only when something is left to deliver, so a
+sealed bubble that already holds the whole answer is left unsealed rather than
+followed by an empty bubble.
+
+**Security model.** `authorize` is deny-by-default and owner-only: an empty
+allow-list authorizes nobody, and the only route to "everybody" is the explicit
+`wecom.allow_all_users` opt-in, which still denies a frame with no userid. Two
+further gates run in `receive`, both before a turn is dispatched:
+
+- **1:1 chats only.** Group traffic (`chattype` other than `single`) is refused
+  and SEL-audited (`denied_group_chat`). A WeCom group is a shared disclosure
+  boundary, and sessions are keyed on `userid` alone, so a group message would
+  ALSO run inside that user's private DM session — publishing its history and
+  tool output into the room, and letting the room steer a session the user
+  believes is private. The userid allow-list does not help: the sender is
+  allow-listed, the audience is not. Same posture, and the same reasoning, as
+  Webex's direct-rooms-only gate and iMessage's group fail-closed. Per-group
+  sessions plus a group allow-list are the prerequisite for lifting this.
+- **Redelivery suppression.** WeCom names `msgid` as the dedupe key and documents
+  that a callback may be repeated, and each repeat would run the whole turn
+  again — a second provider round-trip, a second set of tool side effects, two
+  answers in the bubble. A bounded, TTL'd window suppresses the repeat. It is
+  consulted AFTER authorization, so unauthorized traffic cannot evict genuine
+  entries and reopen the gap; an absent `msgid` is never suppressed, because no
+  id is no evidence of a duplicate.
+
+`WECOM_SECRET` / `WECOM_BOT_ID` are on the sandbox agent env denylist, and
+`pod/runtime.py` forces the channel off in a sanitized pod seed.
+
+**Deliberately not yet implemented**, and each is a follow-up rather than a
+platform limit — the long-connection protocol supports all of them:
+`aibot_send_msg` proactive push (which is what keeps `supports_proactive_send`
+False, and with it the dashboard mirror and cron delivery), interactive
+`template_card` buttons and their `template_card_event` callbacks (which keeps
+`max_buttons` at 0), inbound media, outbound media upload, and the `enter_chat` /
+`feedback_event` events. `_handle_event` recognizes those event types and drops
+them deliberately: each owes a reply inside a 5-second single-delivery window, so
+answering one is a feature with its own design.
 
 ## WeCom settings API
 
