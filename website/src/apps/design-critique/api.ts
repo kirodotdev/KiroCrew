@@ -41,14 +41,18 @@ export const designCritiqueApi = {
     jsonFetch<void>('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // memory_mode must be repeated here, not only at slot creation. POST
-      // /api/chat auto-creates a missing slot, and with no memory_mode in the body
-      // it falls back to the persistent default — so if the gateway restarts
-      // mid-run (the slot is in memory, not on disk) the next send would silently
-      // recreate this critique slot with memory reads and writes ENABLED. Passing
-      // it is also safe when the slot exists: get_or_create_slot only raises on a
-      // mismatch, and this matches what openSlot() asked for.
-      body: JSON.stringify({ message, slot: slotKey, agent: AGENT, memory_mode: 'temporary' }),
+      // memory_mode AND mode must be repeated here, not only at slot creation.
+      // POST /api/chat auto-creates a missing slot, and with neither in the body
+      // it falls back to the persistent default with surface '' — so if the
+      // gateway restarts mid-run (the slot is in memory, not on disk) the next
+      // send would silently recreate this critique slot with memory reads and
+      // writes ENABLED and visible in the chat sidebar (whose allowlist admits
+      // surface ''). Passing them is also safe when the slot exists:
+      // get_or_create_slot only raises on a memory_mode mismatch and ignores
+      // mode for existing slots, and both match what openSlot() asked for.
+      body: JSON.stringify({
+        message, slot: slotKey, agent: AGENT, memory_mode: 'temporary', mode: 'design-critique',
+      }),
     }).catch((e: unknown) => {
       if (e instanceof SyntaxError) return
       throw e

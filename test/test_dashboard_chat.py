@@ -866,6 +866,119 @@ class TestApiChatMemoryModeForwarding:
 
 
 @pytest.mark.asyncio
+class TestApiChatModeForwarding:
+    """api_chat propagates a validated body.mode to the auto-created slot.
+
+    The Design Critique app's worker slot (mode="design-critique") lives only
+    in gateway memory. After a gateway restart the app's next send() recreates
+    the slot through this auto-create path; without mode forwarding the slot
+    is reborn with mode="" — it then serializes surface="" and passes the chat
+    sidebar's surface allowlist, leaking the throwaway worker session into the
+    user's chat list. Mirrors TestApiChatMemoryModeForwarding above.
+    """
+
+    async def _post_chat(self, state, body):
+        async def fake_run_chat(st, sl, msg):
+            sl.append("chunk", "ack", "chunk")
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post("/api/chat", json=body, timeout=None)
+                assert resp.status == 200
+                async for _chunk in resp.content.iter_any():
+                    break  # only need to drive slot creation
+                resp.close()
+                await asyncio.sleep(0.05)
+
+    async def test_design_critique_mode_propagates_to_new_slot(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        await self._post_chat(
+            state,
+            {
+                "message": "critique this",
+                "slot": "dc-12345",
+                "memory_mode": "temporary",
+                "mode": "design-critique",
+            },
+        )
+
+        slot = state._slots.get("dc-12345")
+        assert slot is not None
+        assert slot.mode == "design-critique"
+        # The leak this guards against: the sidebar allowlist admits surfaces
+        # "", "orchestrator" and "crew" — the recreated worker must not
+        # serialize one of those.
+        assert slot.mode not in ("", "orchestrator", "crew")
+
+    async def test_bogus_mode_is_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        await self._post_chat(
+            state,
+            {"message": "hello", "slot": "bogus-mode-slot", "mode": "not-a-mode"},
+        )
+
+        slot = state._slots.get("bogus-mode-slot")
+        assert slot is not None
+        assert slot.mode == ""
+
+    async def test_non_string_mode_is_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        await self._post_chat(
+            state,
+            {"message": "hello", "slot": "nonstring-mode-slot", "mode": 42},
+        )
+
+        slot = state._slots.get("nonstring-mode-slot")
+        assert slot is not None
+        assert slot.mode == ""
+
+    async def test_crew_mode_dropped_for_crew_incapable_name(self, tmp_path, monkeypatch):
+        """Same boundary api_chat_slot_create enforces with a 400: a name whose
+        normalized key cannot host a crew store (e.g. a Win32 device basename)
+        must not become a crew slot via auto-create. Here it is dropped, not
+        refused — the slot is created with the default mode instead."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+
+        await self._post_chat(
+            state,
+            {"message": "hello", "slot": "CON", "mode": "crew"},
+        )
+
+        created = [s for k, s in state._slots.items() if k.lower() == "con"]
+        assert created, "slot should still be created, just without crew mode"
+        assert created[0].mode == ""
+
+    async def test_mode_ignored_for_existing_slot(self, tmp_path, monkeypatch):
+        """Repeating mode on send() must be safe when the slot survived: an
+        existing slot keeps its stored mode and no error is raised."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.get_or_create_slot("dc-alive", mode="design-critique", memory_mode="temporary")
+
+        await self._post_chat(
+            state,
+            {
+                "message": "hello again",
+                "slot": "dc-alive",
+                "memory_mode": "temporary",
+                "mode": "design-critique",
+            },
+        )
+
+        slot = state._slots.get("dc-alive")
+        assert slot is not None
+        assert slot.mode == "design-critique"
+
+
+@pytest.mark.asyncio
 class TestApiChatNoBrowseMarker:
     """Browse is gated by tool AVAILABILITY, not a per-message marker: the chat
     handler injects nothing into the user message, and the agent itself decides

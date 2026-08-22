@@ -204,11 +204,33 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if requested_memory_mode not in ("persistent", "incognito", "temporary"):
         requested_memory_mode = None
 
+    # Honor mode from the body when auto-creating a slot, mirroring memory_mode
+    # above: an app whose worker slot lives only in gateway memory (e.g. Design
+    # Critique) repeats mode on send(), so a slot recreated here after a
+    # gateway restart keeps its non-"" surface and stays out of the chat
+    # sidebar's surface allowlist. Only creation-allowlisted values pass;
+    # anything else is dropped so get_or_create_slot uses its default. Unlike
+    # memory_mode there is no mismatch error: get_or_create_slot ignores mode
+    # for an already-existing slot.
+    requested_mode = body.get("mode")
+    if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
+        requested_mode = ""
+    if requested_mode == "crew" and slot_name:
+        # Same boundary as api_chat_slot_create: a caller-supplied name whose
+        # normalized key cannot host a crew store must not become a crew slot
+        # (its first crew message would 500). Dropped rather than refused —
+        # auto-create is a convenience path, not the crew entry point.
+        from kiro_crew.crew_chat import is_crew_capable_slot_key
+
+        if not is_crew_capable_slot_key(_normalize_slot_key(slot_name)):
+            requested_mode = ""
+
     try:
         slot = state.get_or_create_slot(
             slot_name,
             app=request.get("app", ""),
             origin=request_slot_origin(request.get("app", "")),
+            mode=requested_mode,
             memory_mode=requested_memory_mode,
         )
     except ValueError as exc:
