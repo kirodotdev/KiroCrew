@@ -10508,6 +10508,18 @@
       "uptime": "Tempo ativo"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Entrar no celular",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Crie um link de login de curta duração para celular ou outro navegador. Ele expira em 5 minutos.",
+        "creating_link": "Criando link…",
+        "create_mobile_sign_in_link": "Criar link de login para celular",
+        "mobile_sign_in_link": "Link de login para celular",
+        "copy_sign_in_link": "Copiar link de login",
+        "link_copied": "Link copiado",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Envie o link copiado ao seu celular e abra-o lá.",
+        "could_not_create_a_sign_in_link_try_again": "Não foi possível criar um link de login. Tente novamente.",
+        "copy_failed_select_the_link_and_copy_it_manually": "Falha ao copiar. Selecione o link e copie-o manualmente."
+      },
       "aboutPanel": {
         "a_new_version": "Uma nova versão",
         "a_newer_version_is_available": "Uma versão mais recente está disponível.",

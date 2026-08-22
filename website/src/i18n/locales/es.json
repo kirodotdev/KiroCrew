@@ -10509,6 +10509,18 @@
       "uptime": "Tiempo activo"
     },
     "settings": {
+      "mobileLoginCard": {
+        "sign_in_on_mobile": "Iniciar sesión en móvil",
+        "create_a_one_time_link_for_mobile_or_another_browser": "Crea un enlace de inicio de sesión de corta duración para móvil u otro navegador. Caduca en 5 minutos.",
+        "creating_link": "Creando enlace…",
+        "create_mobile_sign_in_link": "Crear enlace de inicio de sesión móvil",
+        "mobile_sign_in_link": "Enlace de inicio de sesión móvil",
+        "copy_sign_in_link": "Copiar enlace de inicio de sesión",
+        "link_copied": "Enlace copiado",
+        "send_the_copied_link_to_your_mobile_device_then_open_it": "Envía el enlace copiado a tu dispositivo móvil y ábrelo allí.",
+        "could_not_create_a_sign_in_link_try_again": "No se pudo crear un enlace de inicio de sesión. Inténtalo de nuevo.",
+        "copy_failed_select_the_link_and_copy_it_manually": "No se pudo copiar. Selecciona el enlace y cópialo manualmente."
+      },
       "aboutPanel": {
         "a_new_version": "Una nueva versión",
         "a_newer_version_is_available": "Hay una versión más reciente disponible.",
