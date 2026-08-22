@@ -5950,7 +5950,10 @@
         "nodes": "nodes,",
         "all_sources": "All sources",
         "filter_by_source": "Filter by source",
-        "recenter": "Recenter"
+        "recenter": "Recenter",
+        "start_physics": "Physics",
+        "pause_physics": "Pause",
+        "graph_region_label": "Knowledge entity graph"
       },
       "sourceGroup": {
         "next": "Next →",

@@ -8981,7 +8981,10 @@
         "nodes": "노드,",
         "all_sources": "모든 소스",
         "filter_by_source": "소스별 필터",
-        "recenter": "다시 가운데로"
+        "recenter": "다시 가운데로",
+        "start_physics": "물리 시뮬레이션",
+        "pause_physics": "일시정지",
+        "graph_region_label": "지식 엔티티 그래프"
       },
       "sourceGroup": {
         "items_added_directly": "직접 추가한 항목",

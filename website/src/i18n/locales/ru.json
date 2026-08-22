@@ -9314,7 +9314,10 @@
         "nodes": "узлов,",
         "all_sources": "Все источники",
         "filter_by_source": "Фильтр по источнику",
-        "recenter": "Центрировать"
+        "recenter": "Центрировать",
+        "start_physics": "Физика",
+        "pause_physics": "Пауза",
+        "graph_region_label": "Граф сущностей знаний"
       },
       "sourceGroup": {
         "items_added_directly": "Добавлено напрямую",

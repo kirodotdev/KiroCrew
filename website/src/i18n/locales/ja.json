@@ -8981,7 +8981,10 @@
         "nodes": "ノード、",
         "all_sources": "すべてのソース",
         "filter_by_source": "ソースでフィルター",
-        "recenter": "中央に戻す"
+        "recenter": "中央に戻す",
+        "start_physics": "物理演算",
+        "pause_physics": "一時停止",
+        "graph_region_label": "ナレッジエンティティグラフ"
       },
       "sourceGroup": {
         "items_added_directly": "直接追加されたアイテム",

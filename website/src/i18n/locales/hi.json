@@ -9092,7 +9092,10 @@
         "nodes": "नोड,",
         "all_sources": "सभी स्रोत",
         "filter_by_source": "स्रोत द्वारा फ़िल्टर करें",
-        "recenter": "फिर केंद्र में लाएं"
+        "recenter": "फिर केंद्र में लाएं",
+        "start_physics": "फ़िज़िक्स",
+        "pause_physics": "रोकें",
+        "graph_region_label": "नॉलेज एंटिटी ग्राफ़"
       },
       "sourceGroup": {
         "items_added_directly": "सीधे जोड़े गए आइटम",

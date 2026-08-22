@@ -8981,7 +8981,10 @@
         "nodes": "个节点，",
         "all_sources": "所有来源",
         "filter_by_source": "按来源筛选",
-        "recenter": "重新居中"
+        "recenter": "重新居中",
+        "start_physics": "物理模拟",
+        "pause_physics": "暂停",
+        "graph_region_label": "知识实体图谱"
       },
       "sourceGroup": {
         "items_added_directly": "直接添加的条目",

@@ -9203,7 +9203,10 @@
         "nodes": "nœuds,",
         "all_sources": "Toutes les sources",
         "filter_by_source": "Filtrer par source",
-        "recenter": "Recentrer"
+        "recenter": "Recentrer",
+        "start_physics": "Physique",
+        "pause_physics": "Pause",
+        "graph_region_label": "Graphe d'entités de connaissances"
       },
       "sourceGroup": {
         "items_added_directly": "Éléments ajoutés directement",

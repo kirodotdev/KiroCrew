@@ -9203,7 +9203,10 @@
         "nodes": "nós,",
         "all_sources": "Todas as fontes",
         "filter_by_source": "Filtrar por fonte",
-        "recenter": "Recentralizar"
+        "recenter": "Recentralizar",
+        "start_physics": "Física",
+        "pause_physics": "Pausar",
+        "graph_region_label": "Grafo de entidades de conhecimento"
       },
       "sourceGroup": {
         "items_added_directly": "Itens adicionados diretamente",

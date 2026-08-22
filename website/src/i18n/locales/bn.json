@@ -9092,7 +9092,10 @@
         "nodes": "নোড,",
         "all_sources": "সকল উৎস",
         "filter_by_source": "উৎস অনুযায়ী ফিল্টার করুন",
-        "recenter": "পুনরায় কেন্দ্রে আনুন"
+        "recenter": "পুনরায় কেন্দ্রে আনুন",
+        "start_physics": "ফিজিক্স",
+        "pause_physics": "বিরতি",
+        "graph_region_label": "নলেজ এনটিটি গ্রাফ"
       },
       "sourceGroup": {
         "items_added_directly": "সরাসরি যোগ করা আইটেম",

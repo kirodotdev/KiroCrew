@@ -722,6 +722,16 @@ export default defineConfig({
           if (/[\\/]node_modules[\\/](d3|d3-[^\\/]+|internmap|delaunator|robust-predicates)[\\/]/.test(id)) {
             return 'vendor-d3'
           }
+          // ForceAtlas2 + Louvain are physics-only: KnowledgeGraph defers both
+          // with `import('graphology-layout-forceatlas2')` / `.../worker` and
+          // `import('graphology-communities-louvain')`, reached only when physics
+          // is toggled on or the one-shot mount layout runs. Route them to their
+          // OWN lazy chunk ahead of the broad graphology rule below, so the eager
+          // vendor-graph chunk (sigma + core graphology, loaded for every graph
+          // view) does not carry code the default physics-off view never touches.
+          if (/[\\/]node_modules[\\/](graphology-layout-forceatlas2|graphology-communities-louvain)[\\/]/.test(id)) {
+            return 'vendor-graph-physics'
+          }
           // Graph/network visualization stack (vis-network, vis-data, sigma,
           // graphology, cytoscape) — large and only used by graph views.
           if (/[\\/]node_modules[\\/](vis-network|vis-data|vis-util|sigma|graphology|graphology-[^\\/]+|cytoscape)[\\/]/.test(id)) {

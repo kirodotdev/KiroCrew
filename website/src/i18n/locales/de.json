@@ -9092,7 +9092,10 @@
         "nodes": "Knoten,",
         "all_sources": "Alle Quellen",
         "filter_by_source": "Nach Quelle filtern",
-        "recenter": "Neu zentrieren"
+        "recenter": "Neu zentrieren",
+        "start_physics": "Physik",
+        "pause_physics": "Pause",
+        "graph_region_label": "Wissens-Entitätsgraph"
       },
       "sourceGroup": {
         "items_added_directly": "Direkt hinzugefügte Elemente",

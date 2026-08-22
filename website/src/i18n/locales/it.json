@@ -9203,7 +9203,10 @@
         "nodes": "nodi,",
         "all_sources": "Tutte le fonti",
         "filter_by_source": "Filtra per fonte",
-        "recenter": "Ricentra"
+        "recenter": "Ricentra",
+        "start_physics": "Fisica",
+        "pause_physics": "Pausa",
+        "graph_region_label": "Grafo delle entità di conoscenza"
       },
       "sourceGroup": {
         "items_added_directly": "Elementi aggiunti direttamente",
