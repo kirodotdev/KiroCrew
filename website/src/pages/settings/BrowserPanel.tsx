@@ -327,6 +327,15 @@ export function BrowserPanel() {
                     autoComplete="off"
                     value={token}
                     onChange={(e) => setToken(e.target.value)}
+                    onKeyDown={(e) => {
+                      // Enter submits like a form would. The same guard the Save
+                      // button uses (pending / empty) applies here so a stray
+                      // Enter cannot fire a mutation the button itself would
+                      // have refused.
+                      if (e.key === 'Enter' && !tokenMut.isPending && token.trim()) {
+                        tokenMut.mutate(token)
+                      }
+                    }}
                     placeholder={
                       data.token
                         ? i18nT('pages.settings.browserPanel.token_set')
