@@ -12,9 +12,14 @@ validator for the JSON-Schema **subset** the workflow DSL actually uses
     array:  items
     any:    enum
 
-Leaf module (no intra-package imports) so it sits at the bottom of the layering
-(GATE F1); ``runner`` imports it. Pure functions + one async retry helper, all
-unit-testable against a stub text producer (never a real agent).
+Leaf module within the workflows package (no intra-package sibling imports) so
+it sits at the bottom of the layering (GATE F1); ``runner`` imports it. Prose
+recovery is delegated to the shared ``kiro_crew.llm_helpers`` extractor — an
+external import, like the optional adapters' — the same scanner the spine and
+task-planner call sites use (a few bespoke span-scans remain elsewhere, e.g.
+dashboard/chat_summary and knowledge/extractor; consolidating them is tracked
+separately). Pure functions + one async retry helper, all unit-testable against
+a stub text producer (never a real agent).
 
 Gates: C1 valid object returned · C2 malformed→retry→success, all-malformed→None ·
 C3 schema-violating object rejected. See ``docs/system-specs/modules/workflow-gates.md``.
@@ -24,6 +29,8 @@ from __future__ import annotations
 
 import json
 from typing import Any, Awaitable, Callable, Optional
+
+from kiro_crew.llm_helpers import _extract_json_of_type
 
 # Bounded retries before ``ctx.agent(schema=)`` gives up and returns None
 # (matches ``_SCHEMA_RETRIES`` in the module spec).
@@ -71,34 +78,47 @@ def validate_against_schema(value: Any, schema: dict, *, path: str = "$") -> lis
     if "enum" in schema and value not in schema["enum"]:
         errors.append(f"{path}: {value!r} not in enum {schema['enum']}")
 
-    if expected_type == "object" or (expected_type is None and isinstance(value, dict)):
-        if isinstance(value, dict):
-            for key in schema.get("required", []):
-                if key not in value:
-                    errors.append(f"{path}: missing required property '{key}'")
-            props = schema.get("properties", {})
-            for key, subschema in props.items():
-                if key in value:
-                    errors.extend(
-                        validate_against_schema(value[key], subschema, path=f"{path}.{key}")
-                    )
+    # Container sub-checks key on the VALUE's runtime type, not the ``type``
+    # spelling: any type mismatch already early-returned above, so a dict here
+    # is schema-admissible whether ``type`` said "object", a union list
+    # admitting object, or nothing. Keying on ``expected_type == "object"``
+    # missed the union spelling, so ``["object", "null"]`` skipped
+    # ``required``/``properties`` entirely and an invalid object validated
+    # (GPT review, #4974 round 2).
+    if isinstance(value, dict):
+        for key in schema.get("required", []):
+            if key not in value:
+                errors.append(f"{path}: missing required property '{key}'")
+        props = schema.get("properties", {})
+        for key, subschema in props.items():
+            if key in value:
+                errors.extend(validate_against_schema(value[key], subschema, path=f"{path}.{key}"))
 
-    if expected_type == "array" or (expected_type is None and isinstance(value, list)):
-        if isinstance(value, list):
-            item_schema = schema.get("items")
-            if isinstance(item_schema, dict):
-                for i, item in enumerate(value):
-                    errors.extend(validate_against_schema(item, item_schema, path=f"{path}[{i}]"))
+    if isinstance(value, list):
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for i, item in enumerate(value):
+                errors.extend(validate_against_schema(item, item_schema, path=f"{path}[{i}]"))
 
     return errors
 
 
-def parse_json(text: str) -> Any:
+def parse_json(text: str, *, prefer: Callable[[Any], bool] | None = None) -> Any:
     """Tolerantly parse model output as JSON; raises ``ValueError`` if not JSON.
 
-    Handles the common cases of a fenced ```json block or surrounding prose by
-    extracting the outermost ``{...}`` / ``[...]`` span. Never executes anything
-    (no ``eval``).
+    Handles the common cases of a fenced ```json block or surrounding prose.
+    Prose recovery delegates to the shared ``llm_helpers._extract_json_of_type``
+    scanner (stdlib ``raw_decode`` over successive ``{`` / ``[`` offsets), which
+    skips stray braces/brackets in the prose — the previous outermost-span
+    (``find``/``rfind``) approach corrupted the whole span on any stray
+    delimiter. Positional scanning preserves the old guarantee that a
+    prose-wrapped array yields the outer array, not an inner object.
+
+    *prefer* narrows prose recovery when the caller knows the expected shape
+    (see ``coerce_and_validate``); it is a disambiguator among prose-embedded
+    candidates, not a validator — the strict whole-text parse ignores it, and
+    schema validation stays the caller's job. Never executes anything (no
+    ``eval``).
     """
     if not isinstance(text, str):
         raise ValueError("model output is not text")
@@ -113,30 +133,59 @@ def parse_json(text: str) -> Any:
     try:
         return json.loads(stripped)
     except json.JSONDecodeError:
-        # Fall back to the outermost object/array span. Try whichever delimiter
-        # appears first so a prose-wrapped array containing an object yields the
-        # outer array, not the inner object.
-        candidates = []
-        for open_c, close_c in (("{", "}"), ("[", "]")):
-            start, end = stripped.find(open_c), stripped.rfind(close_c)
-            if 0 <= start < end:
-                candidates.append((start, end))
-        for start, end in sorted(candidates):
-            try:
-                return json.loads(stripped[start : end + 1])
-            except json.JSONDecodeError:
-                continue
-        raise ValueError("model output is not valid JSON")
+        result = _extract_json_of_type(stripped, (dict, list), prefer=prefer)
+        if result is None:
+            raise ValueError("model output is not valid JSON")
+        return result
+
+
+def _prefer_dict(value: Any) -> bool:
+    """Prefer predicate for ``schema.type == "object"``: select the dict."""
+    return isinstance(value, dict)
+
+
+def _prefer_list(value: Any) -> bool:
+    """Prefer predicate for ``schema.type == "array"``: select the list."""
+    return isinstance(value, list)
+
+
+# Schema ``type`` → prefer predicate for prose recovery. Only the two container
+# shapes matter: scalars never survive prose recovery anyway (the scanner only
+# decodes at ``{`` / ``[``).
+_SHAPE_PREFERENCE: dict[str, Callable[[Any], bool]] = {
+    "object": _prefer_dict,
+    "array": _prefer_list,
+}
+
+
+def _shape_preference(expected: Any) -> Callable[[Any], bool] | None:
+    """The prefer predicate a schema ``type`` implies: the single container shape
+    it admits. A union list counts only its container members — ``"null"`` and
+    scalar members add no prose-recoverable shape, so ``["object", "null"]``
+    still prefers the object (GPT review: routing unions to no-preference let a
+    worked example win first-match instead of triggering ambiguity refusal). A
+    union admitting BOTH containers has no single shape to prefer."""
+    if isinstance(expected, str):
+        return _SHAPE_PREFERENCE.get(expected)
+    if isinstance(expected, list):
+        containers = {t for t in expected if isinstance(t, str) and t in _SHAPE_PREFERENCE}
+        if len(containers) == 1:
+            return _SHAPE_PREFERENCE[containers.pop()]
+    return None
 
 
 def coerce_and_validate(text: str, schema: dict) -> tuple[Optional[Any], list[str]]:
     """Parse ``text`` as JSON and validate against ``schema``.
 
     Returns ``(value, [])`` on success or ``(None, errors)`` when parsing fails or
-    the value violates the schema.
+    the value violates the schema. When the schema names a container ``type``,
+    prose recovery prefers a value of that shape, so an object schema selects the
+    object even when stray prose parses as an array first (and vice versa).
     """
+    expected = schema.get("type")
+    prefer = _shape_preference(expected)
     try:
-        value = parse_json(text)
+        value = parse_json(text, prefer=prefer)
     except ValueError as exc:
         return None, [str(exc)]
     errors = validate_against_schema(value, schema)

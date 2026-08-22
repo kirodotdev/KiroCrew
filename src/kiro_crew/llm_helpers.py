@@ -1377,6 +1377,20 @@ def _extract_json_of_type(
             continue
         try:
             data, end = _JSON_DECODER.raw_decode(text, i)
+        except RecursionError:
+            # Adversarially deep nesting (e.g. "[" * 100_000 in prose): the
+            # stdlib decoder recurses per nesting level and overflows long
+            # before any structural bound. This text is untrusted model output,
+            # and callers handle only JSONDecodeError (parse_json's ValueError
+            # contract, the spine extractor's never-raises contract) — so the
+            # error must not escape. Fail the WHOLE scan closed: a truncated
+            # scan cannot certify a preferred match as unambiguous, so keeping
+            # candidates collected before the bomb would let a worked example
+            # launder past the ambiguity refusal (GPT review, #4974 round 4).
+            # Callers already have recovery paths for None (schema retry loop,
+            # the spine's forcing re-emit); salvaging a prefix of a reply that
+            # contains a nesting bomb is not worth defeating them.
+            return None
         except json.JSONDecodeError:
             i += 1
             continue

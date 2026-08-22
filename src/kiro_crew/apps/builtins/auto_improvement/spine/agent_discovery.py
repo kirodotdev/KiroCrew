@@ -55,6 +55,8 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.llm_helpers import _extract_json_of_type
+
 from .git_safety import GIT_SAFE_CONFIG, require_pinned
 
 # How many agent-discovered surfaces to keep per cycle. The agent is asked for a small,
@@ -275,97 +277,66 @@ def _git_grep_imports(clone: Path, leaf: str) -> list[str]:
     return [ln.strip() for ln in out.splitlines() if ln.strip().endswith(".py")]
 
 
-def _iter_json_arrays(text: str):
-    """Yield every BALANCED JSON array (in source order) that parses to a ``list``.
+def _array_of_objects(value: Any) -> bool:
+    """Prefer predicate: a JSON array that carries at least one object record.
 
-    A bracket-matching scan that is aware of string literals (so a ``]`` inside a string
-    value does not close the span). This is robust to leading/trailing bracketed PROSE
-    (e.g. a trailing "see line [12]." note, or a leading "item [1]:"), which the old
-    ``text.find('[') .. text.rfind(']')`` span got wrong: any stray ``[``/``]`` in prose
-    corrupted the span, json.loads failed, and a perfectly good array was silently lost."""
-    n = len(text)
-    i = 0
-    while i < n:
-        if text[i] != "[":
-            i += 1
-            continue
-        depth = 0
-        in_str = False
-        esc = False
-        for j in range(i, n):
-            c = text[j]
-            if in_str:
-                if esc:
-                    esc = False
-                elif c == "\\":
-                    esc = True
-                elif c == '"':
-                    in_str = False
-                continue
-            if c == '"':
-                in_str = True
-            elif c == "[":
-                depth += 1
-            elif c == "]":
-                depth -= 1
-                if depth == 0:
-                    try:
-                        data = json.loads(text[i : j + 1])
-                    except json.JSONDecodeError:
-                        data = None
-                    if isinstance(data, list):
-                        yield data
-                    break
-        # Advance past this '[' (balanced or not) so a later valid array is still found.
-        i += 1
+    Disambiguates the findings payload from stray bracketed PROSE that also
+    parses as an array (a trailing "see line [12]." note, a leading "item [1]:"
+    marker) — those decode to arrays of scalars and are never preferred."""
+    return isinstance(value, list) and any(isinstance(item, dict) for item in value)
 
 
 def _extract_json_array(text: str) -> list[dict]:
     """Pull the first JSON array of objects out of an agent reply. The agent is asked to
-    emit ONLY a JSON array, but models often wrap it in prose or a ```json fence — so we
-    locate a balanced ``[ ... ]`` and parse that. Returns [] on any parse failure
-    (a malformed reply yields no surfaces, never an exception)."""
+    emit ONLY a JSON array, but models often wrap it in prose or a ```json fence —
+    extraction delegates to the shared ``llm_helpers._extract_json_of_type`` scanner
+    (fence markers are just prose to it), preferring an array that actually contains
+    object records. Returns [] on any parse failure, on an object-wrapped reply (the
+    tool-side forcing re-emit recovers those), or when two DIFFERENT object-bearing
+    arrays make the choice ambiguous (the shared contract refuses to guess — e.g.
+    a worked example preceding the real payload). Never raises."""
     if not text:
         return []
-    # Prefer a fenced block if present (```json ... ``` or ``` ... ```).
-    fence = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
-    if fence:
-        try:
-            data = json.loads(fence.group(1))
-        except json.JSONDecodeError:
-            data = None
-        if isinstance(data, list):
-            return [d for d in data if isinstance(d, dict)]
-    # Fall back to a balanced-bracket scan (string-literal aware) — prefer the first array
-    # that actually contains object records, but accept the first list otherwise.
-    first_list: list | None = None
-    for arr in _iter_json_arrays(text):
-        if first_list is None:
-            first_list = arr
-        if any(isinstance(d, dict) for d in arr):
-            return [d for d in arr if isinstance(d, dict)]
-    if first_list is not None:
-        return [d for d in first_list if isinstance(d, dict)]
-    return []
+    arr = _extract_json_of_type(text, list, prefer=_array_of_objects)
+    if not isinstance(arr, list):
+        return []
+    return [item for item in arr if isinstance(item, dict)]
+
+
+def _whole_reply_array(text: str) -> list | None:
+    """The reply parsed as a JSON array when the ENTIRE (fence-stripped) reply is
+    one. This is the only form in which an empty ``[]`` counts as the no-findings
+    answer: the agent is instructed to emit ONLY the array, so a conforming empty
+    answer is the whole reply — an ``[]`` embedded in prose ("Use [] when none")
+    is instruction-echo, not an answer, and must not suppress recovery."""
+    stripped = text.strip()
+    if stripped.startswith("```"):
+        parts = stripped.split("```", 2)
+        stripped = parts[1] if len(parts) >= 2 else ""
+        if stripped.startswith("json"):
+            stripped = stripped[4:]
+        stripped = stripped.strip()
+    try:
+        data = json.loads(stripped)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+    return data if isinstance(data, list) else None
 
 
 def _has_json_array(text: str) -> bool:
-    """True iff the reply CONTAINS a parseable JSON array (even an empty ``[]``). Used to
-    distinguish "the agent answered (possibly with no findings)" from "the agent never
-    emitted an array" — only the latter triggers the tool-side forcing re-emit. Without
-    this, a valid empty-result answer (``[]``) would wrongly trigger a second call."""
+    """True iff the reply carries an ANSWER: it IS a JSON array (bare or fenced —
+    covering the legitimate empty ``[]`` no-findings reply, which must not trigger
+    a second call), or prose scanning finds a top-level object-bearing array.
+    Position/form decides, not value shape: scalar prose fragments (``[12]``),
+    instruction-echo (``Use [] when none``), and object-wrapped replies all read
+    as unanswered, so the tool-side forcing re-emit fires and demands the bare
+    array (GPT review rounds 1-3, #4974)."""
     if not text:
         return False
-    fence = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", text, re.DOTALL)
-    if fence:
-        try:
-            if isinstance(json.loads(fence.group(1)), list):
-                return True
-        except json.JSONDecodeError:
-            pass
-    for _arr in _iter_json_arrays(text):
+    if _whole_reply_array(text) is not None:
         return True
-    return False
+    found = _extract_json_of_type(text, list, prefer=_array_of_objects)
+    return _array_of_objects(found)
 
 
 def _normalize_surface(
