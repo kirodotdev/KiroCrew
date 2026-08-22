@@ -98,6 +98,46 @@ def _fill(log: SecurityEventLog, count: int, *, start: int = 0, step_secs: int =
         )
 
 
+#: Iteration cap for the bounded poll loops below. Generous against a healthy
+#: writer (the rotation loop needs 1-2 batches; a healthy top-up usually needs
+#: zero), tight enough that a genuinely broken one fails fast without flooding
+#: the shared session dir -- that dir lives under pytest's basetemp, which is
+#: retained across runs, so an unbounded failure loop would persist tens of MB
+#: per red run.
+_POLL_ITERATION_CAP = 40
+
+
+def _fill_until_over_cap(log: SecurityEventLog, *, deadline: float, start: int) -> int:
+    """Top up through the async writer until the live log is over the size cap.
+
+    Two mechanisms can leave the live log BELOW the cap after a large fill even
+    with a perfectly healthy writer: ``flush()`` waits on the pending-event
+    counter with a bounded timeout and RETURNS on expiry, so under runner load
+    the tail of the fill may not be on disk yet; and a mid-fill batch boundary
+    can itself enter the rotation window and rotate, resetting the live log to
+    nearly empty. Both are harness properties, not defects, so the over-the-cap
+    precondition is established by topping up in small batches rather than
+    asserted after one fixed fill (#5017). Bounded by *deadline* and by
+    ``_POLL_ITERATION_CAP``; the diagnostic reports the pending-queue depth so
+    a wedged writer is distinguishable from a rotation problem.
+
+    Returns the next unused ``seq=`` number for the caller's own fills.
+    """
+    seq = start
+    iterations = 0
+    while log._live_size() <= sel_mod._SEGMENT_MAX_BYTES:
+        iterations += 1
+        assert iterations <= _POLL_ITERATION_CAP and time.monotonic() < deadline, (
+            f"precondition never reached: live log stayed at {log._live_size()} "
+            f"bytes (cap {sel_mod._SEGMENT_MAX_BYTES}) after {iterations - 1} "
+            f"top-up batches, {log._pending} events still pending in the writer"
+        )
+        _fill(log, 5, start=seq)
+        seq += 5
+        log.flush()
+    return seq
+
+
 class TestHmacKeyManagement:
     def test_creates_key_file_on_first_init(self, sel_dir):
         SecurityEventLog(base_dir=sel_dir, sync=True)
@@ -2427,20 +2467,55 @@ class TestCriticalWritesDoNotRotateInline:
     def test_the_background_writer_still_rotates(self, small_segments):
         """Deferring must not mean never.
 
-        Two batches, because the window is entered once per batch and reads the
-        size ALREADY on disk -- the first batch sees a file below the cap and
-        correctly does not rotate, which is the documented one-batch overshoot.
+        Batches, not one shot, for two reasons that are both harness properties
+        of the async writer: the window is entered once per batch and reads the
+        size ALREADY on disk -- a batch sees the file below the cap and correctly
+        does not rotate, which is the documented one-batch overshoot -- and
+        ``flush()`` waits on the pending counter with a bounded timeout and
+        returns on expiry, so under load a batch may not be on disk when the
+        test looks. The test therefore polls for the condition with a bounded
+        budget instead of asserting after a fixed number of batches
+        (testing-conventions § Determinism).
+
+        The observable is the highest segment SEQUENCE NUMBER, not the segment
+        count. Rotation ends with a retention sweep, and this class runs against
+        the shared session dir, so how many segments it already holds depends on
+        which tests ran earlier on this worker: at ``_SEGMENT_KEEP`` segments a
+        successful rotation adds one and the sweep deletes the oldest in the same
+        breath, leaving the COUNT flat -- a real rotation that a count comparison
+        calls "never rotated" (#5017). The sequence only ever rises
+        (``_next_segment_path`` continues from the highest segment still on
+        disk, precisely so retention cannot make it go backwards), so it
+        observes the rotation no matter what the sweep did.
         """
         log = SecurityEventLog(sync=False)
         _fill(log, 200)
         log.flush()
-        assert log._live_size() > sel_mod._SEGMENT_MAX_BYTES, "precondition: over the cap"
-        before = log._segments_oldest_first()
-        _fill(log, 5, start=500)
-        log.flush()
-        assert len(log._segments_oldest_first()) > len(before), (
-            "background writer never rotated"
-        )
+
+        def highest_seq() -> int:
+            segments = log._segments_oldest_first()
+            return sel_mod._segment_seq(segments[-1]) if segments else 0
+
+        seq = _fill_until_over_cap(log, deadline=time.monotonic() + 30.0, start=500)
+
+        # Fresh budget for the phase actually under test, so a slow precondition
+        # cannot eat the writer's rotation window and misattribute the failure.
+        deadline = time.monotonic() + 30.0
+        before = highest_seq()
+        iterations = 0
+        while highest_seq() <= before:
+            iterations += 1
+            assert iterations <= _POLL_ITERATION_CAP and time.monotonic() < deadline, (
+                f"background writer never rotated: highest segment sequence "
+                f"stayed at {before} after {iterations - 1} batches, with the "
+                f"live log at {log._live_size()} bytes (cap "
+                f"{sel_mod._SEGMENT_MAX_BYTES}), "
+                f"{len(log._segments_oldest_first())} segments on disk, "
+                f"{log._pending} events still pending in the writer"
+            )
+            _fill(log, 5, start=seq)
+            seq += 5
+            log.flush()
 
     def test_a_critical_write_still_fails_closed(self, sel_dir, small_segments):
         """Skipping rotation must not weaken audit-or-deny.
@@ -2649,11 +2724,15 @@ class TestOnlyTheWriterThreadRotates:
         to whatever the shared directory already holds.
         """
         log = SecurityEventLog(sync=False)
-        # Get the log over the cap first, through a path that is allowed to rotate.
+        # Get the log over the cap first, through a path that is allowed to
+        # rotate. Topped up rather than asserted after one fixed fill: the same
+        # two harness properties that broke the rotation test (#5017) -- a
+        # bounded flush() and a mid-fill batch-boundary rotation -- can leave
+        # the live log below the cap here too.
         _fill(log, 200)
         log.flush()
+        _fill_until_over_cap(log, deadline=time.monotonic() + 30.0, start=700)
         before = log._segments_oldest_first()
-        assert log._live_size() > sel_mod._SEGMENT_MAX_BYTES, "precondition: over the cap"
 
         entered: list[str] = []
         real_window = SecurityEventLog._rotation_window
