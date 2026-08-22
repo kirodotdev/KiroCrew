@@ -1241,10 +1241,14 @@ class TestTheStoredPushDestinationIsValidated:
             "https://attacker.example.com/exfil.git",
             "https://evilgithub.com/o/r.git",  # suffix confusion
             "https://github.com.attacker.net/o/r.git",  # subdomain confusion
+            "https://evil-gitlab.com/g/p.git",  # gitlab suffix confusion
+            "https://gitlab.com.attacker.net/g/p.git",  # gitlab subdomain confusion
             "git@evil.com:o/r.git",
+            "git@gitlab.com.attacker.net:g/p.git",
             "http://github.com/o/r.git",  # cleartext is never our transport
             "git://github.com/o/r.git",
             "https://github.com/",  # no repo path
+            "https://github.com/onlyowner",  # one segment: nothing pinnable
             clone_setup.DISABLED_NO_PUSH,  # a marker, not a destination
         ],
     )
@@ -1280,6 +1284,45 @@ class TestTheStoredPushDestinationIsValidated:
         if clone_setup._remote_slug(url):
             cfg["target_url"] = "https://github.com/owner/repo"
         assert clone_setup.resolve_origin_url(cfg) == url
+
+
+class TestGitLabRemotesFollowTheSameDiscipline:
+    """A GitLab target goes through the same host allowlist and identity pin as GitHub.
+
+    The identity is the FULL project path: GitLab nests groups, so truncating the
+    slug to two segments would let a sibling-group swap pass the pin.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _offline(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(clone_setup, "_host_is_blocked", lambda host: False)
+        monkeypatch.setattr(clone_setup, "_glab_prefers_ssh", lambda host: False)
+
+    def test_a_gitlab_origin_resolves_when_pinned_to_the_same_project(self) -> None:
+        cfg = {
+            "origin_url": "git@gitlab.com:group/sub/proj.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == "git@gitlab.com:group/sub/proj.git"
+
+    def test_a_sibling_group_swap_is_refused(self) -> None:
+        cfg = {
+            "origin_url": "https://gitlab.com/group/sub/other.git",
+            "target_url": "https://gitlab.com/group/sub/proj",
+        }
+        assert clone_setup.resolve_origin_url(cfg) == ""
+
+    def test_a_self_managed_origin_needs_the_allowlist(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg = {
+            "origin_url": "git@gl.corp.example:g/s/p.git",
+            "target_url": "https://gl.corp.example/g/s/p",
+        }
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset())
+        assert clone_setup.resolve_origin_url(cfg) == ""
+        monkeypatch.setattr(clone_setup, "_gitlab_hosts", lambda: frozenset({"gl.corp.example"}))
+        assert clone_setup.resolve_origin_url(cfg) == "git@gl.corp.example:g/s/p.git"
 
 
 class TestApprovalIsOneShotNotPersistent:

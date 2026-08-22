@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "Mede um repositório do GitHub antes de alterá-lo. Projeta uma métrica de desempenho calibrada (a régua), prova que a métrica é confiável diante de um ganho conhecido e então executa ciclos de manter ou reverter: cada correção candidata é escrita em um worktree isolado, filtrada por uma lista de permissões de edição e pelos testes do próprio repositório, e mantida apenas quando o ganho medido supera a faixa de ruído. As sobreviventes são redigidas como pull requests do GitHub em rascunho, que você revisa e publica.",
+        "description": "Mede um repositório do GitHub ou do GitLab antes de alterá-lo. Projeta uma métrica de desempenho calibrada (a régua), prova que a métrica é confiável diante de um ganho conhecido e então executa ciclos de manter ou reverter: cada correção candidata é escrita em um worktree isolado, filtrada por uma lista de permissões de edição e pelos testes do próprio repositório, e mantida apenas quando o ganho medido supera a faixa de ruído. As sobreviventes são redigidas como pull requests do GitHub ou merge requests do GitLab em rascunho, que você revisa e publica.",
         "display_name": "Auto-Improvement",
         "highlight_1": "Prova primeiro a própria métrica — uma execução se recusa a começar com uma régua não confiável",
         "highlight_2": "Cada candidato é medido em A/B, ou RED/GREEN para correções de bugs, nunca apenas “parece certo”",
         "highlight_3": "Mantém uma mudança só quando o ganho supera a faixa de ruído medida",
-        "highlight_4": "Redige pull requests do GitHub — apenas rascunhos, nunca publicados nem mesclados por você",
+        "highlight_4": "Redige pull requests do GitHub e merge requests do GitLab — apenas rascunhos, nunca publicados nem mesclados por você",
         "highlight_5": "Funciona em um clone sem push, então nada escapa da sandbox sem revisão",
-        "highlight_6": "Uma sessão de conversa retomável por pull request, achado e execução",
+        "highlight_6": "Uma sessão de conversa retomável por pull request ou merge request, achado e execução",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo ou https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

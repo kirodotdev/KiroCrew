@@ -5,7 +5,8 @@ through a cycle wastes the whole cycle, so the UI asks this up front and can sho
 what to install.
 
 Reports rather than repairs. The upstream version could install its internal
-toolchain packages itself; here the two hard dependencies (``git``, ``gh``) are
+toolchain packages itself; here the hard dependencies (``git`` plus the forge CLI
+matching the configured target — ``gh`` for GitHub, ``glab`` for GitLab) are
 things a user installs and authenticates deliberately — silently installing an
 authenticated CLI on someone's behalf is not this app's business. Only the
 optional linter, which is a plain pip package in the app's own environment, is
@@ -20,6 +21,9 @@ import subprocess
 import sys
 from typing import Any
 
+from .clone_setup import PROVIDER_GITHUB, PROVIDER_GITLAB, provider_for_url
+from .store import config_path, read_json
+
 logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_S = 15.0
@@ -29,36 +33,60 @@ def _which(binary: str) -> str:
     return shutil.which(binary) or ""
 
 
-def _gh_authenticated() -> tuple[bool, str]:
-    """Whether ``gh`` has a live login.
+def _forge_cli_authenticated(binary: str) -> tuple[bool, str]:
+    """Whether a forge CLI (``gh``/``glab``) has a live login.
 
-    Presence on PATH is not enough: an unauthenticated ``gh`` fails only when a
-    pull request is drafted, which is the worst moment to find out.
+    Presence on PATH is not enough: an unauthenticated CLI fails only when a
+    pull/merge request is drafted, which is the worst moment to find out.
     """
-    if not _which("gh"):
-        return False, "gh is not on PATH"
+    if not _which(binary):
+        return False, f"{binary} is not on PATH"
     try:
         proc = subprocess.run(
-            ["gh", "auth", "status"],
+            [binary, "auth", "status"],
             capture_output=True,
             text=True,
             timeout=_PROBE_TIMEOUT_S,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        return False, f"could not run gh auth status: {exc}"
+        return False, f"could not run {binary} auth status: {exc}"
     if proc.returncode != 0:
-        return False, "gh is present but not logged in — run `gh auth login`"
+        return False, f"{binary} is present but not logged in — run `{binary} auth login`"
     return True, "authenticated"
+
+
+def _gh_authenticated() -> tuple[bool, str]:
+    return _forge_cli_authenticated("gh")
+
+
+def _glab_authenticated() -> tuple[bool, str]:
+    return _forge_cli_authenticated("glab")
+
+
+def _configured_provider() -> str:
+    """The persisted target's forge, or ``""`` when no target is configured yet.
+
+    Prefers the ``provider`` key setup persists; falls back to deriving it from
+    ``target_url`` so a config written before the key existed still dispatches.
+    """
+    cfg = read_json(config_path(), {}) or {}
+    persisted = str(cfg.get("provider") or "").strip().lower()
+    if persisted in (PROVIDER_GITHUB, PROVIDER_GITLAB):
+        return persisted
+    return provider_for_url(str(cfg.get("target_url") or ""))
 
 
 def check_deps() -> dict[str, Any]:
     """Report every dependency, whether it is satisfied, and how to fix it.
 
     ``required`` entries block a run; an unsatisfied optional entry only narrows
-    what discovery can find.
+    what discovery can find. Only the forge CLI matching the configured target is
+    required — with no target configured yet, neither CLI can block setup.
     """
+    provider = _configured_provider()
     git_path = _which("git")
     gh_ok, gh_detail = _gh_authenticated()
+    glab_ok, glab_detail = _glab_authenticated()
     ruff_path = _which("ruff")
 
     deps: list[dict[str, Any]] = [
@@ -74,10 +102,19 @@ def check_deps() -> dict[str, Any]:
         {
             "id": "gh",
             "name": "GitHub CLI (gh)",
-            "required": True,
+            "required": provider == PROVIDER_GITHUB,
             "ok": gh_ok,
             "detail": gh_detail,
             "fix": "install the GitHub CLI, then run `gh auth login`",
+            "installable": False,
+        },
+        {
+            "id": "glab",
+            "name": "GitLab CLI (glab)",
+            "required": provider == PROVIDER_GITLAB,
+            "ok": glab_ok,
+            "detail": glab_detail,
+            "fix": "install the GitLab CLI, then run `glab auth login`",
             "installable": False,
         },
         {

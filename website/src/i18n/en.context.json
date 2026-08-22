@@ -6,6 +6,7 @@
     "app.mem": "Abbreviation for \"memory\" (RAM) in the dashboard header's resource strip, followed by a percentage. Width-constrained: keep it as short as the target language allows.",
     "app.v": "The \"v\" that prefixes a version number, rendered immediately before the digits with no space (`v1.2.3`). Most languages leave this untranslated.",
     "apps.autoImprovement.findingDetail.red": "The gate stage named \"RED\": the reproducing test FAILS on unmodified code, which is what proves the defect is real. A protocol token the app also prints in logs and commit notes, so keep the Latin form; it is not the colour.",
+    "apps.autoImprovement.setupPanel.repo_url_placeholder": "Placeholder in the repository-URL input, showing one example URL per supported host. The two URLs are examples and must stay verbatim; only the connecting word (\"or\") is translatable.",
     "apps.autoResearch.researchLabPage.30s": "A preset duration of 30 seconds. The number is data; only the unit letter is translatable, and most locales keep `s`.",
     "apps.autoResearch.researchLabPage.60s": "A preset duration of 60 seconds. The number is data; only the unit letter is translatable, and most locales keep `s`.",
     "apps.autoResearch.researchLabPage.add": "Verb on the button that adds the typed sub-question to the research list beside it. If the target language needs an object, name the sub-question. Distinct from the \"Add\" on the Code Review Sage page, which adds a review pattern.",
