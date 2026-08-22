@@ -1382,132 +1382,185 @@ async def api_kirocrew_config(request: web.Request) -> web.Response:
         agent_settings = body.get("agent")
         if not isinstance(agent_settings, dict):
             return _deny("agent must be an object")
-        path = config_path()
+        cfg_path = config_path()
+        # Validate-only (CPU-bound) before acquiring the lock — fail fast on
+        # obviously-bad input so the lock hold is as short as possible.
+        # The actual read-modify-write is serialised under _get_config_lock and
+        # offloaded to a thread so it neither races concurrent writers (lost-write
+        # bug) nor blocks the event loop (event-loop-stall bug).  This mirrors the
+        # pattern used by the sibling PATCH handler (~line 2031).
+        from kiro_crew.config.loader import ConfigReadError, update_config_locked  # noqa: F811
+        from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
+
+        # Carry the validation error and result out of the mutate callback.
+        # Validation that depends on the *persisted* ceiling (max_subagents bound)
+        # runs inside the callback where it can read the current config; the
+        # callback also emits the "no recognized settings provided" 400, so no
+        # pre-lock key-recognition check is needed.
+        _validation_error: list[tuple[str, int]] = []
+        _result: dict[str, object] = {}
+
+        def _mutate_config_put(data: dict) -> dict | None:
+            if not isinstance(data.get("agent"), dict):
+                data["agent"] = {}
+            agent = data["agent"]
+            # Snapshot BEFORE mutation for the restart-hint truthfulness guard.
+            # The dashboard sends all settings on every save so "was applied" !=
+            # "was changed" — see the no-op-save comments in messaging.py.
+            before = dict(agent)
+
+            limits = {"subagent_max_turns": SUBAGENT_MAX_TURNS_CEILING}
+            applied: list[str] = []
+            for key, upper in limits.items():
+                if key in agent_settings:
+                    val = agent_settings[key]
+                    if isinstance(val, bool) or not isinstance(val, int) or val < 1 or val > upper:
+                        _validation_error.append(
+                            (f"{key} must be an integer between 1 and {upper}", 400)
+                        )
+                        return None
+                    agent[key] = val
+                    applied.append(key)
+
+            # Capture the hard cap from the *persisted* config BEFORE applying any
+            # subagent_auto_max from this request — deny-by-default prevents a
+            # same-request ceiling-raise+spend.
+            persisted_hard_cap = agent.get("subagent_auto_max", 16)
+            if (
+                not isinstance(persisted_hard_cap, int)
+                or isinstance(persisted_hard_cap, bool)
+                or persisted_hard_cap < 3
+            ):
+                persisted_hard_cap = 16
+            persisted_hard_cap = min(persisted_hard_cap, SUBAGENT_AUTO_MAX_CEILING)
+
+            if "subagent_auto_max" in agent_settings:
+                val = agent_settings["subagent_auto_max"]
+                if (
+                    isinstance(val, bool)
+                    or not isinstance(val, int)
+                    or val < 3
+                    or val > SUBAGENT_AUTO_MAX_CEILING
+                ):
+                    _validation_error.append(
+                        (
+                            "subagent_auto_max must be an integer between 3 and "
+                            f"{SUBAGENT_AUTO_MAX_CEILING}",
+                            400,
+                        )
+                    )
+                    return None
+                agent["subagent_auto_max"] = val
+                applied.append("subagent_auto_max")
+
+            if "max_subagents" in agent_settings:
+                val = agent_settings["max_subagents"]
+                hard_cap = persisted_hard_cap
+                if (
+                    isinstance(val, bool)
+                    or not isinstance(val, int)
+                    or (val != 0 and not (MAX_SUBAGENTS_FIXED_FLOOR <= val <= hard_cap))
+                ):
+                    _validation_error.append(
+                        (
+                            f"max_subagents must be 0 (auto) or an integer between "
+                            f"{MAX_SUBAGENTS_FIXED_FLOOR} and {hard_cap}",
+                            400,
+                        )
+                    )
+                    return None
+                agent["max_subagents"] = val
+                applied.append("max_subagents")
+
+            for key in ("conductor_skill",):
+                if key in agent_settings:
+                    val = agent_settings[key]
+                    if not isinstance(val, bool):
+                        _validation_error.append((f"{key} must be a boolean", 400))
+                        return None
+                    agent[key] = val
+                    applied.append(key)
+
+            if not applied:
+                _validation_error.append(("no recognized settings provided", 400))
+                return None
+
+            restart_required = any(
+                key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key)
+                for key in applied
+            )
+            _result["applied"] = applied
+            _result["restart_required"] = restart_required
+            return data
+
         try:
-            data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-        except Exception:
+            async with _get_config_lock():
+                try:
+                    # update_config_locked returns the final config dict (after
+                    # mutation); use it directly rather than re-reading from disk
+                    # (a blocking read on the loop, and it writes the callback's
+                    # output verbatim — there is no concurrent merge to observe).
+                    final = await asyncio.to_thread(
+                        update_config_locked, cfg_path, mutate=_mutate_config_put
+                    )
+                except ConfigReadError:
+                    _sel().log_api_access(
+                        caller=caller,
+                        operation="config.update",
+                        outcome="error",
+                        error="config.json is corrupt",
+                    )
+                    return web.json_response(
+                        {"error": "config.json is corrupt", "code": "config_corrupt"},
+                        status=500,
+                    )
+
+                if _validation_error:
+                    msg, status = _validation_error[0]
+                    return _deny(msg, status)
+
+                applied: list[str] = _result["applied"]  # type: ignore[assignment]
+                agent = final.get("agent") or {}
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="config.update",
+                    outcome="ok",
+                    resources=",".join(applied),
+                )
+                # Regenerate or clean up conductor skill on toggle. Held INSIDE
+                # the lock so a concurrent enable/disable cannot interleave and
+                # leave the persisted flag disagreeing with the skill file on
+                # disk (config says enabled while SKILL.md is absent, or vice
+                # versa).
+                if "conductor_skill" in applied:
+                    if agent.get("conductor_skill"):
+                        from kiro_crew.dashboard.handlers.agents import (  # noqa: F811
+                            _regen_conductor,
+                        )
+
+                        _regen_conductor()
+                    else:
+                        try:
+                            from kiro_crew.skills import SkillsLoader  # noqa: F811
+
+                            p = SkillsLoader()._dir / "conductor" / "SKILL.md"
+                            if p.exists():
+                                p.unlink()
+                        except Exception:
+                            logger.exception("Failed to clean up conductor skill")
+        except OSError:
             _sel().log_api_access(
                 caller=caller,
                 operation="config.update",
                 outcome="error",
-                error="config.json is corrupt",
+                error="config.json write failed",
             )
-            return web.json_response({"error": "config.json is corrupt"}, status=500)
-        if not isinstance(data.get("agent"), dict):
-            data["agent"] = {}
-        agent = data["agent"]
-        # Snapshot the persisted values BEFORE any mutation. The dashboard sends
-        # all four settings on every save and enables Save whenever any one is
-        # dirty, so "was applied" is not "was changed" -- keying the restart hint
-        # off the raw applied list would flag a restart for a conductor-only save.
-        # Same truthfulness guard as handlers/messaging.py (see its no-op-save
-        # comments) so the flag stays trustworthy enough to act on.
-        before = dict(agent)
-        # subagent_max_turns keeps the generic 1..N validation; max_subagents is
-        # special — 0 is the "auto-size" sentinel and its upper bound is the
-        # configured hard cap (dynamic-subagent-sizing.md §5.5/§6).
-        limits = {"subagent_max_turns": SUBAGENT_MAX_TURNS_CEILING}
-        applied: list[str] = []
-        for key, upper in limits.items():
-            if key in agent_settings:
-                val = agent_settings[key]
-                if isinstance(val, bool) or not isinstance(val, int) or val < 1 or val > upper:
-                    return _deny(f"{key} must be an integer between 1 and {upper}")
-                agent[key] = val
-                applied.append(key)
-        # Capture the hard cap from the *persisted* config BEFORE applying any
-        # subagent_auto_max from this request. max_subagents is bounded by this
-        # persisted value only: a same-request raise of subagent_auto_max must NOT
-        # widen the bound (deny-by-default — prevents
-        # {subagent_auto_max: 9999, max_subagents: 9999} bypass). A higher ceiling
-        # only takes effect for max_subagents on a *subsequent* request.
-        persisted_hard_cap = agent.get("subagent_auto_max", 16)
-        if (
-            not isinstance(persisted_hard_cap, int)
-            or isinstance(persisted_hard_cap, bool)
-            or persisted_hard_cap < 3
-        ):
-            persisted_hard_cap = 16
-        # Clamp to the absolute ceiling even when read from persisted config: a
-        # corrupt or hand-edited config (e.g. {"subagent_auto_max": 9999}) must not
-        # be trusted to widen the concurrency bound (deny-by-default).
-        persisted_hard_cap = min(persisted_hard_cap, SUBAGENT_AUTO_MAX_CEILING)
-        # subagent_auto_max is now persistable (so the dashboard can raise/lower the
-        # auto-size ceiling), but carries its own absolute upper bound
-        # (SUBAGENT_AUTO_MAX_CEILING) so it can never be set arbitrarily high.
-        if "subagent_auto_max" in agent_settings:
-            val = agent_settings["subagent_auto_max"]
-            if (
-                isinstance(val, bool)
-                or not isinstance(val, int)
-                or val < 3
-                or val > SUBAGENT_AUTO_MAX_CEILING
-            ):
-                return _deny(
-                    "subagent_auto_max must be an integer between 3 and "
-                    f"{SUBAGENT_AUTO_MAX_CEILING}"
-                )
-            agent["subagent_auto_max"] = val
-            applied.append("subagent_auto_max")
-        # max_subagents: 0 = auto-size; otherwise a fixed pin in
-        # [MAX_SUBAGENTS_FIXED_FLOOR, persisted_hard_cap]. The bound is the
-        # persisted ceiling captured above, never this request's value. A pin of
-        # 1 or 2 is rejected — it would disable auto-sizing and run below the
-        # default (0 is the only way to request the host-safe auto cap).
-        if "max_subagents" in agent_settings:
-            val = agent_settings["max_subagents"]
-            hard_cap = persisted_hard_cap
-            if (
-                isinstance(val, bool)
-                or not isinstance(val, int)
-                or (val != 0 and not (MAX_SUBAGENTS_FIXED_FLOOR <= val <= hard_cap))
-            ):
-                return _deny(
-                    f"max_subagents must be 0 (auto) or an integer between "
-                    f"{MAX_SUBAGENTS_FIXED_FLOOR} and {hard_cap}"
-                )
-            agent["max_subagents"] = val
-            applied.append("max_subagents")
-        # Boolean toggles
-        for key in ("conductor_skill",):
-            if key in agent_settings:
-                val = agent_settings[key]
-                if not isinstance(val, bool):
-                    return _deny(f"{key} must be a boolean")
-                agent[key] = val
-                applied.append(key)
-        if not applied:
-            return _deny("no recognized settings provided")
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
-        os.replace(tmp, path)
-        _sel().log_api_access(
-            caller=caller,
-            operation="config.update",
-            outcome="ok",
-            resources=",".join(applied),
-        )
-        # Regenerate or clean up conductor skill on toggle.
-        if "conductor_skill" in applied:
-            if agent.get("conductor_skill"):
-                from kiro_crew.dashboard.handlers.agents import _regen_conductor  # noqa: F811
+            return web.json_response(
+                {"error": "failed to write config file", "code": "config_write_failed"},
+                status=500,
+            )
 
-                _regen_conductor()
-            else:
-                try:
-                    from kiro_crew.skills import SkillsLoader  # noqa: F811
-
-                    p = SkillsLoader()._dir / "conductor" / "SKILL.md"
-                    if p.exists():
-                        p.unlink()
-                except Exception:
-                    logger.exception("Failed to clean up conductor skill")
-        # A startup-read key that was merely re-sent with its existing value did
-        # not change the enforced cap, so it must not raise the hint.
-        restart_required = any(
-            key in _STARTUP_READ_AGENT_KEYS and agent.get(key) != before.get(key) for key in applied
-        )
+        restart_required: bool = _result["restart_required"]  # type: ignore[assignment]
         return web.json_response({"ok": True, "restart_required": restart_required})
 
     cfg = KiroCrewConfig.load()

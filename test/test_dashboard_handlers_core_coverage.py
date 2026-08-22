@@ -1127,6 +1127,67 @@ class TestAgentSettingsPut:
         assert "agent" in body
 
 
+class TestAgentSettingsPutLockOffload:
+    """Regression tests for the locked + offloaded read-modify-write path.
+
+    Before the fix the PUT handler called ``path.read_text`` / ``os.replace``
+    directly on the event loop, racing concurrent writers (lost-write) and
+    blocking the loop.  After the fix the write goes through
+    ``update_config_locked`` under ``_get_config_lock``, making two
+    concurrent PUTs serialize rather than clobber each other.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_puts_serialize_not_clobber(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Two concurrent PUTs must both land — neither write clobbers the other.
+
+        We fire two coroutines simultaneously: one sets ``subagent_max_turns=3``
+        and one sets ``max_subagents=4``.  Because the RMW is now serialized
+        under the config lock, the config file must end up with BOTH values
+        after both coroutines complete, not just the last one written.
+        """
+        async with TestClient(TestServer(_agent_cfg_app())) as client:
+            r1, r2 = await asyncio.gather(
+                _put_agent(client, {"subagent_max_turns": 3}),
+                _put_agent(client, {"max_subagents": 0}),
+            )
+        assert r1.status == 200
+        assert r2.status == 200
+        persisted = json.loads(seeded_config.read_text(encoding="utf-8"))["agent"]
+        # Both writes must have survived — a lost-write would drop one of them.
+        assert persisted.get("subagent_max_turns") == 3
+        assert persisted.get("max_subagents") == 0
+
+    @pytest.mark.asyncio
+    async def test_write_goes_through_atomic_helper(
+        self, seeded_config, fake_sel, monkeypatch
+    ) -> None:
+        """The write path must call ``update_config_locked``, not a bare
+        ``write_text`` / ``os.replace``.  Patching the helper to a spy lets us
+        assert it was invoked while still allowing the real write to complete."""
+        import kiro_crew.config.loader as _loader
+
+        calls: list[str] = []
+        _real = _loader.update_config_locked
+
+        def _spy(path=None, *, mutate, **kw):
+            calls.append("update_config_locked")
+            return _real(path, mutate=mutate, **kw)
+
+        monkeypatch.setattr(_loader, "update_config_locked", _spy)
+        async with TestClient(TestServer(_agent_cfg_app())) as client:
+            resp = await _put_agent(client, {"subagent_max_turns": 5})
+        assert resp.status == 200
+        assert calls == ["update_config_locked"], (
+            "PUT did not route through update_config_locked — lost-write race still present"
+        )
+        assert json.loads(seeded_config.read_text(encoding="utf-8"))["agent"][
+            "subagent_max_turns"
+        ] == 5
+
+
 # ── PATCH validators not reachable through the editable-field table ─────
 
 
