@@ -1431,6 +1431,7 @@ async def stream_and_collect(
     on_chunk: Callable[[str], None] | None = None,
     on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None,
     on_steer_consumed: Callable[[str], None] | None = None,
+    on_complete: Callable[[LLMEvent], None] | None = None,
     on_tool_gate: Callable[[str, bool, bool], None] | None = None,
     retry_transient: bool = True,
     max_turns: int | None = None,
@@ -1457,6 +1458,10 @@ async def stream_and_collect(
             fire-and-forget write, so this echo is the ONLY authoritative signal
             that the backend injected it; a caller that steers must observe this
             to know which of its steers to requeue when the turn ends.
+        on_complete: Optional callback invoked with the provider's raw
+            ``EVENT_COMPLETE``. It is not invoked when the stream exhausts or
+            the caller cancels before that event. Raising from the callback is
+            swallowed so observation cannot fail the completed turn.
         on_tool_gate: Optional callback invoked once per tool permission
             decision with ``(tool_title, approved, security_blocked)``. Lets a
             caller tell "the model did work" apart from "every tool the model
@@ -1627,6 +1632,11 @@ async def stream_and_collect(
                 elif event.kind == EVENT_STEER_CONSUMED:
                     consumed_this_attempt.append(event.text or "")
                 elif event.kind == EVENT_COMPLETE:
+                    if on_complete:
+                        try:
+                            on_complete(event)
+                        except Exception:
+                            logger.debug("on_complete callback failed", exc_info=True)
                     break
             return result_text
         except AcpError as exc:

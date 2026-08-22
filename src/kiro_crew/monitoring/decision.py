@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
+    MONITOR_STOP_AGENT_TURN_BUDGET,
+    MONITOR_STOP_RUNTIME_BUDGET,
+    MONITOR_STOP_TOKEN_BUDGET,
     MonitorBudgets,
     MonitorDecision,
     MonitorObservation,
@@ -36,7 +39,7 @@ def decide_monitor(
     terminal = _terminal_decision(state.outcome)
     if terminal is not None:
         return terminal
-    if _budget_exhausted(state, state.budgets, now=now):
+    if monitor_budget_reason(state, now=now):
         return MonitorDecision.STOP_BUDGET
     if observation.status is MonitorObservationStatus.PROVIDER_ERROR:
         return _provider_error_decision(state, observation, state.budgets)
@@ -63,12 +66,16 @@ def _terminal_decision(outcome: MonitorOutcome | None) -> MonitorDecision | None
     return None
 
 
-def _budget_exhausted(state: MonitorState, budgets: MonitorBudgets, *, now: float) -> bool:
-    return (
-        now - state.created_ts >= budgets.max_runtime_secs
-        or state.agent_turns >= budgets.max_agent_turns
-        or state.total_tokens >= budgets.max_tokens
-    )
+def monitor_budget_reason(state: MonitorState, *, now: float) -> str:
+    """Return the first exhausted hard bound in stable policy order."""
+    budgets = state.budgets
+    if now - state.created_ts >= budgets.max_runtime_secs:
+        return MONITOR_STOP_RUNTIME_BUDGET
+    if state.agent_turns >= budgets.max_agent_turns:
+        return MONITOR_STOP_AGENT_TURN_BUDGET
+    if state.total_tokens >= budgets.max_tokens:
+        return MONITOR_STOP_TOKEN_BUDGET
+    return ""
 
 
 def _provider_error_decision(

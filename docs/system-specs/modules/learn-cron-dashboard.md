@@ -992,9 +992,28 @@ strict-JSON monitor payload remains durable across unrelated store rewrites for
 inspection. A non-mapping payload is skipped because it has no preservable monitor
 identity. Structured cadence is typed state with a 300-second default;
 the legacy loop default remains 60 seconds. This substrate has no delivery
-controller: loading, generic updating, arming, or a pre-existing timer all fail
-closed without a model turn until a later slice wires typed decisions. The pure
-`decide_monitor` policy performs no I/O. It
+dispatcher: loading, generic updating, arming, or a pre-existing timer all fail
+closed without a model turn until the probe controller is wired. It does expose
+a dormant completed-turn controller seam. An actionable fingerprint is persisted
+in-flight before dispatch; dispatch failure clears that claim without spend; a
+correlated completion charges one agent turn exactly once, adds only reported
+non-negative token counts, and records token usage as unknown when authoritative
+counts are unavailable. Duplicate, removed, replaced, legacy, and mismatched
+callbacks are no-ops. Recovery of persisted in-flight state deactivates the
+record with `completion_evidence_unavailable` while retaining the acknowledged
+fingerprint, so restart cannot immediately duplicate the wake. Completion stops
+on the first exhausted runtime, turn, or token bound (in that precedence), and
+the completed-turn bound is validated against the universal eight-turn ceiling
+when constructed or loaded. Approval-stall completion is terminal and budget exhaustion takes
+precedence when both apply.
+
+Dashboard structured actions receive a runtime-only completion hook and report
+only from `_run_chat`'s raw `EVENT_COMPLETE` branch. That correlated completion
+is persisted before cancellable token-analytics I/O, so slot cleanup cannot lose
+provider completion evidence after the event has arrived. Legacy dashboard nudge
+scheduling still returns immediately and still rearms from the existing
+`notify_turn_complete` `finally`; the completion hook neither replaces nor moves
+that lifecycle call. The pure `decide_monitor` policy performs no I/O. It
 checks the non-zero runtime/turn/token budgets first, classifies provider errors
 without a model turn, suppresses an unchanged observation, and permits
 `wake_actionable` only when the actionable fingerprint differs from the last

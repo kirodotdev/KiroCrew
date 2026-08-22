@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -18,6 +20,7 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     AcpEvent,
+    TurnUsage,
 )
 from kiro_crew.messaging import (
     APPROVAL_AUTO,
@@ -26,6 +29,8 @@ from kiro_crew.messaging import (
     TurnDriver,
 )
 from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.monitoring.completion import MonitorCompletionHook
+from kiro_crew.monitoring.models import MonitorActionCompletion, MonitorActionDisposition
 
 
 class _RecordingRenderer(Renderer):
@@ -92,6 +97,88 @@ class TestTurnDriverTranslation:
         out = _run(p, r)
         assert out == "Hello world"
         assert [e[0] for e in r.events] == ["text_chunk", "text_chunk", "done"]
+
+    def test_raw_complete_reports_monitor_action_once(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                )
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        hook = MonitorCompletionHook("monitor1", "failure-a", _capture)
+        _run(p, r, monitor_completion=hook)
+
+        assert len(completions) == 1
+        assert completions[0].disposition is MonitorActionDisposition.SUCCESS
+        assert completions[0].input_tokens == 20
+        assert completions[0].output_tokens == 5
+
+    def test_raw_complete_reports_monitor_action_before_renderer_finalization(self):
+        class _CancellingDoneRenderer(_RecordingRenderer):
+            async def on_done(self, stop_reason=""):
+                await super().on_done(stop_reason)
+                raise asyncio.CancelledError
+
+        r = _CancellingDoneRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                )
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        hook = MonitorCompletionHook("monitor1", "failure-a", _capture)
+        with pytest.raises(asyncio.CancelledError):
+            _run(p, r, monitor_completion=hook)
+
+        assert len(completions) == 1
+        assert completions[0].input_tokens == 20
+        assert completions[0].output_tokens == 5
+
+    def test_raw_complete_reports_monitor_action_before_buffered_rendering(self):
+        class _FailingTextRenderer(_RecordingRenderer):
+            async def on_text_chunk(self, text):
+                raise RuntimeError("transport unavailable")
+
+        r = _FailingTextRenderer()
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
+                AcpEvent(
+                    kind=EVENT_COMPLETE,
+                    stop_reason="end_turn",
+                    usage=TurnUsage(input_tokens=20, output_tokens=5),
+                ),
+            ]
+        )
+        completions: list[MonitorActionCompletion] = []
+
+        async def _capture(completion: MonitorActionCompletion) -> None:
+            completions.append(completion)
+
+        hook = MonitorCompletionHook("monitor1", "failure-a", _capture)
+        with pytest.raises(RuntimeError, match="transport unavailable"):
+            _run(p, r, monitor_completion=hook)
+
+        assert len(completions) == 1
+        assert completions[0].input_tokens == 20
+        assert completions[0].output_tokens == 5
 
     def test_tool_calls_emit_uniform_tool_call(self):
         r = _RecordingRenderer()

@@ -32,6 +32,8 @@ import pytest
 from kiro_crew import subagent as _sa
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.monitoring.completion import MonitorCompletionHook
+from kiro_crew.monitoring.models import MonitorState
 from kiro_crew.slack import gateway as gw
 
 # ─── Helpers ─────────────────────────────────────────────────────────────
@@ -237,6 +239,30 @@ class TestFireDiscordNudge:
         assert kwargs["interpret_commands"] is False
 
     @pytest.mark.asyncio
+    async def test_structured_monitor_supplies_completion_hook(self):
+        """Only a structured synthetic turn carries monitor accounting state."""
+        transport = _discord_transport()
+        orch = _discord_orchestrator(transport)
+        structured = _loop(_DKEY)
+        structured.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+
+        assert await orch._fire_discord_nudge(structured) is True
+        _, structured_kwargs = _awaited(transport.dispatcher.handle_message)
+        assert isinstance(structured_kwargs["monitor_completion"], MonitorCompletionHook)
+
+        transport.dispatcher.handle_message.reset_mock()
+        assert await orch._fire_discord_nudge(_loop(_DKEY)) is True
+        _, legacy_kwargs = _awaited(transport.dispatcher.handle_message)
+        assert "monitor_completion" not in legacy_kwargs
+
+    @pytest.mark.asyncio
     async def test_dispatch_failure_returns_false(self):
         transport = _discord_transport()
         transport.dispatcher.handle_message.side_effect = RuntimeError("dispatch blew up")
@@ -341,6 +367,49 @@ class TestFireSlackNudgeGuards:
         orch.sessions.cancel_current.assert_awaited_once()
         orch.sessions.release.assert_called_once()
         orch.slack.post_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("times_out", [False, True])
+    async def test_raw_completion_is_recorded_before_cancellable_usage_persistence(
+        self, monkeypatch, times_out
+    ):
+        """A completed turn cannot remain in flight if analytics persistence is cancelled."""
+        orch = _slack_nudge_orchestrator()
+        orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=AsyncMock())
+        loop = _loop()
+        loop.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        order: list[str] = []
+
+        async def _stream(*_args, **kwargs):
+            kwargs["on_complete"](SimpleNamespace(stop_reason="end_turn"))
+            if times_out:
+                await asyncio.Event().wait()
+            return "reply body"
+
+        async def _report(*_args, **_kwargs):
+            order.append("completion")
+
+        async def _persist(*_args, **_kwargs):
+            order.append("persist")
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(gw, "stream_and_collect", _stream)
+        monkeypatch.setattr(gw, "_persist_turn_row", _persist)
+        monkeypatch.setattr(orch, "_report_monitor_completion", _report)
+        if times_out:
+            monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
+
+        with pytest.raises(asyncio.CancelledError):
+            await orch._fire_slack_nudge(loop)
+
+        assert order == ["completion", "persist"]
 
     @pytest.mark.asyncio
     async def test_cleanup_failures_do_not_mask_the_turn_result(self, monkeypatch):

@@ -1810,6 +1810,66 @@ class TestAutonudgeUpdateConcurrency:
             svc.stop()
 
     @pytest.mark.asyncio
+    async def test_repeated_cancellation_cannot_release_lock_during_snapshot(self, tmp_path):
+        """Every cancellation waits for the executor write before releasing the lock."""
+        entered = threading.Event()
+        gate = threading.Event()
+
+        svc = AutoNudgeService(base_dir=tmp_path)
+        await svc.start()
+        first: asyncio.Task | None = None
+        second: asyncio.Task | None = None
+        try:
+            loop_obj = await svc.add(slot_key="chat-9-4b", message="original", idle_secs=15)
+            svc._cancel_timer(loop_obj.id)
+            loop_obj.message = "first"
+            first_payload = svc._serialize_state()
+            loop_obj.message = "second"
+            second_payload = svc._serialize_state()
+            real_write = svc._write_state
+            calls = {"n": 0}
+
+            def _gated(payload):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    entered.set()
+                    gate.wait(5)
+                return real_write(payload)
+
+            svc._write_state = _gated  # type: ignore[method-assign]
+
+            async def _persist(payload):
+                async with svc._lock:
+                    await svc._write_monitor_snapshot_locked(payload)
+
+            first = asyncio.create_task(_persist(first_payload))
+            await asyncio.to_thread(entered.wait, 2)
+            first.cancel()
+            await asyncio.sleep(0)
+            assert not first.done(), "the first cancellation stopped draining the write"
+            first.cancel()
+            await asyncio.sleep(0)
+
+            second = asyncio.create_task(_persist(second_payload))
+            await asyncio.sleep(0.1)
+            assert not second.done(), "a repeated cancellation released the persistence lock"
+
+            gate.set()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            await asyncio.wait_for(second, timeout=5)
+            on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
+            stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
+            assert stored["message"] == "second", "a stale snapshot replaced the newer state"
+        finally:
+            gate.set()
+            await asyncio.gather(
+                *(task for task in (first, second) if task is not None),
+                return_exceptions=True,
+            )
+            svc.stop()
+
+    @pytest.mark.asyncio
     async def test_delivered_cycle_persistence_is_not_cancellable_by_update(self, tmp_path):
         """The fire window must cover bookkeeping, not just the callback.
 

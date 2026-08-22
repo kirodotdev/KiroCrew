@@ -78,6 +78,7 @@ from kiro_crew.messaging.link import (
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.messaging.upload_gate import live_dashboard_slot, uploads_restricted
+from kiro_crew.monitoring.completion import MonitorCompletionHook
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -262,6 +263,7 @@ class DiscordDispatcher:
         drain: bool = True,
         interpret_commands: bool = True,
         origin_tag: str = "",
+        monitor_completion: MonitorCompletionHook | None = None,
     ) -> None:
         """Drive one authorized inbound message through TurnDriver end-to-end.
 
@@ -720,6 +722,7 @@ class DiscordDispatcher:
                 audit_session_key=session_key,
                 audit_agent=agent or "kirocrew",
                 closing_gate=lambda: self.sessions.begin_turn(session_key),
+                monitor_completion=monitor_completion,
             )
             accumulated = await driver.run(full_message)
 

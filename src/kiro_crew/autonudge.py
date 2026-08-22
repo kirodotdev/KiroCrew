@@ -36,6 +36,7 @@ import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
+from copy import deepcopy
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
@@ -44,8 +45,14 @@ from kiro_crew import platform_compat, shutdown_event
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
+from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
+    MONITOR_STOP_APPROVAL_STALL,
+    MONITOR_STOP_COMPLETION_UNAVAILABLE,
+    MONITOR_STOP_UNSUPPORTED_VERSION,
+    MonitorActionCompletion,
+    MonitorActionDisposition,
     MonitorOutcome,
     MonitorState,
     monitor_state_from_dict,
@@ -580,7 +587,20 @@ class AutoNudgeService:
                         # policy. Runtime guards keep it inert without
                         # rewriting the active intent a newer gateway needs.
                         loop.monitor.outcome = MonitorOutcome.BLOCKED
-                        loop.monitor.stopped_reason = "unsupported_monitor_version"
+                        loop.monitor.stopped_reason = MONITOR_STOP_UNSUPPORTED_VERSION
+                    elif loop.monitor.wake_in_flight:
+                        # A persisted claim proves dispatch was acknowledged but
+                        # says nothing about whether the process died before or
+                        # after the turn completed. Retire it deterministically:
+                        # charging would invent work, while clearing the wake
+                        # fingerprint would permit an immediate duplicate.
+                        loop.monitor.wake_in_flight = False
+                        if loop.monitor.outcome is None:
+                            loop.monitor.outcome = MonitorOutcome.BLOCKED
+                            loop.monitor.stopped_reason = MONITOR_STOP_COMPLETION_UNAVAILABLE
+                        loop.active = False
+                        loop.next_due_ts = 0.0
+                        self._store_dirty = True
                     elif loop.active:
                         # Structured monitor delivery belongs to the controller,
                         # which is intentionally not wired in this substrate.
@@ -1343,6 +1363,209 @@ class AutoNudgeService:
 
     def list_all(self) -> list[NudgeLoop]:
         return list(self._loops.values())
+
+    def _monitor_snapshot_with_replacement(
+        self,
+        loop: NudgeLoop,
+        replacement: NudgeLoop,
+    ) -> dict:
+        """Serialize one staged monitor replacement without changing live state."""
+        return {
+            "version": _STORE_VERSION,
+            "loops": [
+                self._serialize_loop(replacement if candidate.id == loop.id else candidate)
+                for candidate in self._loops.values()
+            ],
+        }
+
+    def _apply_staged_monitor(self, loop: NudgeLoop, staged: NudgeLoop) -> None:
+        """Publish a durable staged transition while preserving live object identity."""
+        state = loop.monitor
+        staged_state = staged.monitor
+        if state is None or staged_state is None:
+            raise ValueError("structured monitor replacement requires monitor state")
+        for loop_field in fields(NudgeLoop):
+            if loop_field.name != "monitor":
+                setattr(loop, loop_field.name, deepcopy(getattr(staged, loop_field.name)))
+        for state_field in fields(MonitorState):
+            setattr(
+                state,
+                state_field.name,
+                deepcopy(getattr(staged_state, state_field.name)),
+            )
+
+    async def _persist_staged_monitor_locked(
+        self,
+        loop: NudgeLoop,
+        staged: NudgeLoop,
+    ) -> None:
+        """Persist a complete replacement before publishing it to live readers."""
+        payload = self._monitor_snapshot_with_replacement(loop, staged)
+        try:
+            await self._write_monitor_snapshot_locked(payload)
+        except asyncio.CancelledError:
+            # The snapshot writer propagates cancellation only after draining
+            # the executor write. Publish the state that is already durable
+            # before preserving the caller's cancellation.
+            self._apply_staged_monitor(loop, staged)
+            raise
+        self._apply_staged_monitor(loop, staged)
+
+    async def mark_monitor_action_in_flight(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Persist the dispatch claim for one actionable fingerprint."""
+        if not isinstance(fingerprint, str) or not fingerprint:
+            raise ValueError("fingerprint must be a non-empty string")
+        checked_at = time.time() if now is None else now
+        if (
+            isinstance(checked_at, bool)
+            or not isinstance(checked_at, (int, float))
+            or not math.isfinite(checked_at)
+            or checked_at < 0
+        ):
+            raise ValueError("now must be a finite non-negative number")
+        dispatched = False
+        async with self._lock:
+            loop = self._loops.get(monitor_id)
+            state = loop.monitor if loop is not None else None
+            if (
+                loop is None
+                or state is None
+                or not loop.active
+                or state.outcome is not None
+                or state.wake_in_flight
+                or state.last_wake_fingerprint == fingerprint
+            ):
+                return False
+            reason = monitor_budget_reason(state, now=checked_at)
+            if reason:
+                self._stop_monitor_for_budget(loop, reason, stopped_at=checked_at)
+            else:
+                state.last_wake_fingerprint = fingerprint
+                state.wake_in_flight = True
+                dispatched = True
+            await self._write_monitor_snapshot_locked()
+        self._emit("updated", loop)
+        return dispatched
+
+    async def record_monitor_turn_completion(
+        self,
+        completion: MonitorActionCompletion,
+    ) -> None:
+        """Charge one correlated, completed action turn exactly once."""
+        async with self._lock:
+            loop = self._loops.get(completion.monitor_id)
+            state = loop.monitor if loop is not None else None
+            if (
+                loop is None
+                or state is None
+                or not state.wake_in_flight
+                or state.last_wake_fingerprint != completion.fingerprint
+            ):
+                return
+            staged = deepcopy(loop)
+            staged_state = staged.monitor
+            assert staged_state is not None
+            disposition = (
+                MonitorActionDisposition.APPROVAL_STALL
+                if staged.approval_stalled
+                else completion.disposition
+            )
+            staged_state.wake_in_flight = False
+            staged_state.last_completion_fingerprint = completion.fingerprint
+            staged_state.last_completion_disposition = disposition
+            staged_state.last_completed_at = completion.completed_ts
+            staged_state.agent_turns += 1
+            if completion.input_tokens is None or completion.output_tokens is None:
+                staged_state.token_usage_known = False
+            if completion.input_tokens is not None:
+                staged_state.input_tokens += completion.input_tokens
+            if completion.output_tokens is not None:
+                staged_state.output_tokens += completion.output_tokens
+            reason = monitor_budget_reason(staged_state, now=completion.completed_ts)
+            if reason and staged_state.outcome is None:
+                staged.active = False
+                staged.next_due_ts = 0.0
+                staged_state.outcome = MonitorOutcome.BUDGET
+                staged_state.stopped_reason = reason
+                staged_state.stopped_at = completion.completed_ts
+            elif (
+                disposition is MonitorActionDisposition.APPROVAL_STALL
+                and staged_state.outcome is None
+            ):
+                staged.active = False
+                staged.next_due_ts = 0.0
+                staged_state.outcome = MonitorOutcome.BLOCKED
+                staged_state.stopped_reason = MONITOR_STOP_APPROVAL_STALL
+                staged_state.stopped_at = completion.completed_ts
+            await self._persist_staged_monitor_locked(loop, staged)
+            if not loop.active:
+                self._cancel_timer(loop.id)
+        self._emit("updated", loop)
+
+    def _stop_monitor_for_budget(
+        self,
+        loop: NudgeLoop,
+        reason: str,
+        *,
+        stopped_at: float,
+    ) -> None:
+        """Apply one structured-monitor budget stop under ``_lock``."""
+        state = loop.monitor
+        if state is None:
+            return
+        loop.active = False
+        loop.next_due_ts = 0.0
+        state.outcome = MonitorOutcome.BUDGET
+        state.stopped_reason = reason
+        state.stopped_at = stopped_at
+        self._cancel_timer(loop.id)
+
+    async def _write_monitor_snapshot_locked(self, payload: dict | None = None) -> None:
+        """Persist a monitor transition without releasing ``_lock`` mid-write."""
+        if payload is None:
+            payload = self._serialize_state()
+        future = asyncio.get_running_loop().run_in_executor(None, self._write_state, payload)
+        cancelled = False
+        while not future.done():
+            try:
+                await asyncio.shield(future)
+            except asyncio.CancelledError:
+                # Executor writes cannot be cancelled. Absorb every
+                # cancellation until the write settles so the caller's lock
+                # scope cannot release around an older snapshot.
+                cancelled = True
+        future.result()
+        if cancelled:
+            # Propagate cancellation only after the executor result has been
+            # observed while the caller still owns the lock.
+            raise asyncio.CancelledError
+
+    async def record_monitor_dispatch_failure(
+        self,
+        monitor_id: str,
+        fingerprint: str,
+    ) -> None:
+        """Release an unstarted dispatch claim without charging its budget."""
+        async with self._lock:
+            loop = self._loops.get(monitor_id)
+            state = loop.monitor if loop is not None else None
+            if (
+                loop is None
+                or state is None
+                or not state.wake_in_flight
+                or state.last_wake_fingerprint != fingerprint
+            ):
+                return
+            state.wake_in_flight = False
+            state.last_wake_fingerprint = ""
+            await self._write_monitor_snapshot_locked()
+        self._emit("updated", loop)
 
     def _find_by_slot(self, slot_key: str) -> NudgeLoop | None:
         """The loop bound to *slot_key*, which may be a binding key OR a tab name.

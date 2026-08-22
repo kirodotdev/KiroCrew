@@ -45,6 +45,10 @@ from kiro_crew.messaging.renderer import (
     OutputEvent,
     Renderer,
 )
+from kiro_crew.monitoring.completion import (
+    MonitorCompletionHook,
+    disposition_for_stop_reason,
+)
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -325,6 +329,7 @@ class TurnDriver:
         audit_session_key: str = "",
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
+        monitor_completion: MonitorCompletionHook | None = None,
     ) -> None:
         self.provider = provider
         self.renderer = renderer
@@ -351,6 +356,7 @@ class TurnDriver:
         # EVENT_TOOL_RESULT for a tool call whose trusted ``_meta.kiro``
         # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
         self.directive_consumer = directive_consumer
+        self.monitor_completion = monitor_completion
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
@@ -718,6 +724,17 @@ class TurnDriver:
                 # sent end_turn) and needs a session reset the driver cannot
                 # perform itself (it holds no session key).
                 self.last_stop_reason = event.stop_reason or ""
+                if self.monitor_completion is not None:
+                    try:
+                        await self.monitor_completion.complete(
+                            disposition_for_stop_reason(event.stop_reason),
+                            event.usage,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "monitor turn completion callback failed",
+                            exc_info=True,
+                        )
                 pending = compaction_filter.flush()
                 if pending:
                     await dispatch_frames(steering_filter.feed(pending))

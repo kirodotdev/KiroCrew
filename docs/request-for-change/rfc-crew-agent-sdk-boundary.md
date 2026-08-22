@@ -110,6 +110,11 @@ keys `slot._approval_futures` on `str(event.request_id)`, and
 `chat_runner.py:7487` ships `{"id": str(event.request_id)}` to the browser. A raw
 JSON-RPC id is part of the frontend contract.
 
+The first domain vocabulary now owned by `kiro_crew.agent_sdk` is the minimal
+completed-turn contract used by structured monitors: provider-neutral input and
+output token dimensions plus terminal stop reasons. Monitor accounting consumes
+that SDK surface instead of importing ACP's `TurnUsage` and constants directly.
+
 ### 2.2 The boundary is bypassed
 
 68 direct `kiro_crew.acp` import edges across 42 files. The heaviest:

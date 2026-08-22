@@ -298,6 +298,13 @@ next turn into the same slot:
 - Loops persist to `autonudge.json` under the data home and are re-armed on gateway
   restart. A slot that is unreachable (no history, deleted, or closed) has its loop
   removed.
+- Structured monitor action accounting is a separate internal completion
+  callback, not a new injected-message envelope. Until the probe dispatcher is
+  attached, structured records remain fail-closed. The dormant adapters do not
+  change the legacy `[auto-nudge cycle N]` body, delivered-cycle count, `fired`
+  event, or rearm timing. When attached, dashboard and Discord report only a raw
+  provider completion; Slack likewise requires the raw provider completion and
+  shares its one consumed usage result with telemetry.
 
 **How to treat it:** it is a self-prompt. Continue the work; the operator asked for
 the loop, but is not waiting on this specific message.

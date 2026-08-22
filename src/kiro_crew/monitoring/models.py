@@ -21,6 +21,12 @@ DEFAULT_MONITOR_TOKENS = 250_000
 DEFAULT_MONITOR_PROVIDER_ERRORS = 3
 DEFAULT_MONITOR_CADENCE_SECS = 300
 MONITOR_STOP_INVALID_RECORD = "invalid_monitor_record"
+MONITOR_STOP_RUNTIME_BUDGET = "runtime_budget"
+MONITOR_STOP_AGENT_TURN_BUDGET = "agent_turn_budget"
+MONITOR_STOP_TOKEN_BUDGET = "token_budget"
+MONITOR_STOP_APPROVAL_STALL = "approval_stall"
+MONITOR_STOP_COMPLETION_UNAVAILABLE = "completion_evidence_unavailable"
+MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
 
 
 def _is_finite_non_negative_number(value: object) -> bool:
@@ -75,6 +81,48 @@ class MonitorOutcome(str, Enum):
     TARGET_UNAVAILABLE = "target_unavailable"
 
 
+class MonitorActionDisposition(str, Enum):
+    """Terminal disposition reported by a started monitor action turn."""
+
+    SUCCESS = "success"
+    FAILURE = "failure"
+    CANCELLATION = "cancellation"
+    APPROVAL_STALL = "approval_stall"
+
+
+@dataclass(frozen=True)
+class MonitorActionCompletion:
+    """Authoritative evidence that one monitor action turn stopped running."""
+
+    monitor_id: str
+    fingerprint: str
+    disposition: MonitorActionDisposition
+    completed_ts: float
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for name in ("monitor_id", "fingerprint"):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{name} must be a non-empty string")
+        if not isinstance(self.disposition, MonitorActionDisposition):
+            raise ValueError("disposition must be a MonitorActionDisposition")
+        if (
+            isinstance(self.completed_ts, bool)
+            or not isinstance(self.completed_ts, (int, float))
+            or not math.isfinite(self.completed_ts)
+            or self.completed_ts < 0
+        ):
+            raise ValueError("completed_ts must be a finite non-negative number")
+        for name in ("input_tokens", "output_tokens"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool) or not isinstance(value, int) or value < 0
+            ):
+                raise ValueError(f"{name} must be a non-negative integer or None")
+
+
 @dataclass(frozen=True)
 class MonitorBudgets:
     """Hard bounds for a structured monitor.
@@ -97,6 +145,8 @@ class MonitorBudgets:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
+        if self.max_agent_turns > DEFAULT_MONITOR_AGENT_TURNS:
+            raise ValueError(f"max_agent_turns must be at most {DEFAULT_MONITOR_AGENT_TURNS}")
 
 
 @dataclass(frozen=True)
@@ -144,6 +194,10 @@ class MonitorState:
     last_observed_at: float = 0.0
     last_wake_fingerprint: str = ""
     wake_in_flight: bool = False
+    last_completion_fingerprint: str = ""
+    last_completion_disposition: MonitorActionDisposition | None = None
+    last_completed_at: float = 0.0
+    token_usage_known: bool = True
     agent_turns: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
@@ -162,7 +216,13 @@ class MonitorState:
                 raise ValueError(f"{name} must be a non-empty string")
         if isinstance(self.version, bool) or not isinstance(self.version, int) or self.version <= 0:
             raise ValueError("version must be a positive integer")
-        for name in ("created_ts", "last_observed_at", "next_probe_at", "stopped_at"):
+        for name in (
+            "created_ts",
+            "last_observed_at",
+            "last_completed_at",
+            "next_probe_at",
+            "stopped_at",
+        ):
             value = getattr(self, name)
             if not _is_finite_non_negative_number(value):
                 raise ValueError(f"{name} must be a finite non-negative number")
@@ -186,12 +246,23 @@ class MonitorState:
         if not isinstance(self.last_observation, dict):
             raise ValueError("last_observation must be an object")
         _validate_strict_json_object("last_observation", self.last_observation)
-        if not isinstance(self.last_fingerprint, str) or not isinstance(
-            self.last_wake_fingerprint, str
+        if any(
+            not isinstance(value, str)
+            for value in (
+                self.last_fingerprint,
+                self.last_wake_fingerprint,
+                self.last_completion_fingerprint,
+            )
         ):
             raise ValueError("monitor fingerprints must be strings")
         if not isinstance(self.wake_in_flight, bool):
             raise ValueError("wake_in_flight must be a boolean")
+        if self.last_completion_disposition is not None and not isinstance(
+            self.last_completion_disposition, MonitorActionDisposition
+        ):
+            raise ValueError("last_completion_disposition must be a MonitorActionDisposition")
+        if not isinstance(self.token_usage_known, bool):
+            raise ValueError("token_usage_known must be a boolean")
         if self.outcome is not None and not isinstance(self.outcome, MonitorOutcome):
             raise ValueError("outcome must be a MonitorOutcome")
         if not isinstance(self.stopped_reason, str):
@@ -255,6 +326,9 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
         values["outcome"] = MonitorOutcome(outcome)
     else:
         values["outcome"] = None
+    disposition = values.get("last_completion_disposition")
+    if disposition is not None:
+        values["last_completion_disposition"] = MonitorActionDisposition(disposition)
     return MonitorState(**values)
 
 

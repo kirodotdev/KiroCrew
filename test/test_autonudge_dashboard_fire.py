@@ -24,6 +24,8 @@ import pytest
 
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.monitoring.completion import MonitorCompletionHook
+from kiro_crew.monitoring.models import MonitorState
 from kiro_crew.slack import gateway as gw
 
 
@@ -179,6 +181,34 @@ class TestDashboardNudgeSlotResolution:
             assert await orch._fire_dashboard_nudge(_loop()) is True
         rehydrate.assert_not_awaited()
         assert spawn.calls == [live]
+
+    @pytest.mark.asyncio
+    async def test_structured_monitor_passes_completion_hook_only_to_its_turn(self) -> None:
+        """A dashboard action reports raw completion without changing legacy turns."""
+        orch = _orchestrator()
+        live = _slot()
+        orch.dashboard_state.get_slot = MagicMock(return_value=live)
+        structured = _loop()
+        structured.monitor = MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        )
+        spawn = _fake_spawn()
+        run_chat = AsyncMock()
+        with (
+            patch.object(gw, "spawn_guarded_turn", spawn),
+            patch("kiro_crew.dashboard.chat._run_chat", new=run_chat),
+        ):
+            assert await orch._fire_dashboard_nudge(structured) is True
+            assert await orch._fire_dashboard_nudge(_loop()) is True
+
+        first, second = run_chat.call_args_list
+        assert isinstance(first.kwargs["monitor_completion"], MonitorCompletionHook)
+        assert "monitor_completion" not in second.kwargs
 
     @pytest.mark.asyncio
     async def test_unreachable_session_retires_the_loop_once_with_a_reason(

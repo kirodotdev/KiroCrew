@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.acp.client import AcpError, AcpPromptBusy
+from kiro_crew.acp.types import STOP_REASON_CANCELLED, TurnUsage
 from kiro_crew.llm_helpers import (
     FALLBACK_CANDIDATE_ATTEMPTS,
     TURN_FALLBACK_ATTR,
@@ -335,6 +336,37 @@ class TestStreamAndCollectPromptBusy:
 
         assert result == "hello"
         provider.cancel.assert_not_awaited()
+
+
+class TestStreamAndCollectRawCompletion:
+    @pytest.mark.asyncio
+    async def test_callback_receives_the_raw_complete_event(self) -> None:
+        """Callers needing terminal evidence must see the provider event itself."""
+        complete = LLMEvent(
+            kind=EVENT_COMPLETE,
+            stop_reason=STOP_REASON_CANCELLED,
+            usage=TurnUsage(input_tokens=12, output_tokens=3),
+        )
+        provider = _make_provider(
+            events=[LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial"), complete]
+        )
+        observed: list[LLMEvent] = []
+
+        result = await stream_and_collect(provider, "test", on_complete=observed.append)
+
+        assert result == "partial"
+        assert observed == [complete]
+
+    @pytest.mark.asyncio
+    async def test_stream_exhaustion_does_not_invent_completion(self) -> None:
+        """A provider iterator ending without EVENT_COMPLETE is not a completed turn."""
+        provider = _make_provider(events=[LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial")])
+        observed: list[LLMEvent] = []
+
+        result = await stream_and_collect(provider, "test", on_complete=observed.append)
+
+        assert result == "partial"
+        assert observed == []
 
 
 # ── Transient backend (5xx / throttle / stream-reset) retry tests ──

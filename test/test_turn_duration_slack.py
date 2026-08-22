@@ -37,10 +37,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from kiro_crew.acp.types import TurnUsage
+from kiro_crew.acp.types import STOP_REASON_CANCELLED, STOP_REASON_END_TURN, TurnUsage
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.handlers.usage import _token_usage_dir
+from kiro_crew.monitoring.models import (
+    MonitorActionCompletion,
+    MonitorActionDisposition,
+    MonitorState,
+)
+from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
 from kiro_crew.slack import gateway as gw
 
 
@@ -227,3 +233,225 @@ def test_provider_duration_wins_over_local_clock(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["duration_ms"] == 5000  # provider wins
     assert rows[0]["duration_ms"] != 1234  # not the local-clock fallback
+
+
+@pytest.mark.parametrize(
+    ("stop_reason", "expected_disposition"),
+    [
+        (STOP_REASON_END_TURN, MonitorActionDisposition.SUCCESS),
+        (STOP_REASON_CANCELLED, MonitorActionDisposition.CANCELLATION),
+        ("max_tokens", MonitorActionDisposition.FAILURE),
+    ],
+)
+def test_structured_monitor_fans_out_usage_only_from_raw_completion(
+    monkeypatch,
+    stop_reason: str,
+    expected_disposition: MonitorActionDisposition,
+):
+    """One destructive usage read serves telemetry and the evidenced disposition."""
+    client = _fake_client()
+    orch = _build_orchestrator(client)
+    usage = TurnUsage(input_tokens=40, output_tokens=10, credits=0.25)
+    reads = 0
+
+    def _usage_once(_client):
+        nonlocal reads
+        reads += 1
+        return usage
+
+    completions: list[MonitorActionCompletion] = []
+
+    async def _capture(completion: MonitorActionCompletion) -> None:
+        completions.append(completion)
+
+    orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=_capture)
+    monkeypatch.setattr(gw, "provider_last_turn_usage", _usage_once)
+
+    async def _stream_ok(*_a, on_complete=None, **_k):
+        assert on_complete is not None
+        on_complete(LLMEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason))
+        return "done"
+
+    monkeypatch.setattr(gw, "stream_and_collect", _stream_ok)
+    loop = NudgeLoop(
+        id="loop-structured",
+        slot_key="slack:111.222",
+        message="check it",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        ),
+    )
+
+    assert asyncio.run(orch._fire_slack_nudge(loop)) is True
+
+    assert reads == 1
+    assert len(completions) == 1
+    assert completions[0].disposition is expected_disposition
+    assert completions[0].input_tokens == 40
+    assert completions[0].output_tokens == 10
+    rows = _monitor_rows()
+    assert len(rows) == 1
+    assert rows[0]["input"] == 40
+    assert rows[0]["output"] == 10
+
+
+def test_structured_monitor_stream_exhaustion_charges_no_completion(monkeypatch):
+    """A bare string return without EVENT_COMPLETE is not completion evidence."""
+    client = _fake_client()
+    orch = _build_orchestrator(client)
+    completions: list[MonitorActionCompletion] = []
+
+    async def _capture(completion: MonitorActionCompletion) -> None:
+        completions.append(completion)
+
+    orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=_capture)
+    monkeypatch.setattr(
+        gw,
+        "provider_last_turn_usage",
+        lambda _client: TurnUsage(input_tokens=40, output_tokens=10),
+    )
+
+    async def _stream_exhausted(*_a, **_k):
+        return "partial"
+
+    monkeypatch.setattr(gw, "stream_and_collect", _stream_exhausted)
+    loop = NudgeLoop(
+        id="loop-exhausted",
+        slot_key="slack:111.222",
+        message="check it",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        ),
+    )
+
+    assert asyncio.run(orch._fire_slack_nudge(loop)) is True
+    assert completions == []
+    assert len(_monitor_rows()) == 1
+
+
+def test_structured_monitor_synthetic_timeout_charges_no_completion(monkeypatch):
+    """A synthetic timeout event is not provider completion evidence."""
+    client = _fake_client()
+    orch = _build_orchestrator(client)
+    completions: list[MonitorActionCompletion] = []
+
+    async def _capture(completion: MonitorActionCompletion) -> None:
+        completions.append(completion)
+
+    orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=_capture)
+    monkeypatch.setattr(
+        gw,
+        "provider_last_turn_usage",
+        lambda _client: TurnUsage(input_tokens=40, output_tokens=10),
+    )
+
+    async def _stream_timeout(*_a, on_complete=None, **_k):
+        assert on_complete is not None
+        on_complete(LLMEvent(kind=EVENT_COMPLETE, stop_reason="timeout"))
+        return "partial"
+
+    monkeypatch.setattr(gw, "stream_and_collect", _stream_timeout)
+    loop = NudgeLoop(
+        id="loop-synthetic-timeout",
+        slot_key="slack:111.222",
+        message="check it",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        ),
+    )
+
+    assert asyncio.run(orch._fire_slack_nudge(loop)) is True
+    assert completions == []
+    assert len(_monitor_rows()) == 1
+
+
+def test_structured_monitor_timeout_before_complete_charges_no_completion(monkeypatch):
+    """Transport cancellation cannot stand in for a raw cancelled completion."""
+    client = _fake_client()
+    orch = _build_orchestrator(client)
+    completions: list[MonitorActionCompletion] = []
+
+    async def _capture(completion: MonitorActionCompletion) -> None:
+        completions.append(completion)
+
+    orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=_capture)
+    monkeypatch.setattr(gw, "provider_last_turn_usage", lambda _client: TurnUsage(credits=0.2))
+    monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
+
+    async def _stream_hang(*_a, **_k):
+        await asyncio.sleep(1.0)
+        return "unreachable"
+
+    monkeypatch.setattr(gw, "stream_and_collect", _stream_hang)
+    loop = NudgeLoop(
+        id="loop-timeout-structured",
+        slot_key="slack:111.222",
+        message="check it",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        ),
+    )
+
+    assert asyncio.run(orch._fire_slack_nudge(loop)) is False
+    assert completions == []
+    assert len(_monitor_rows()) == 1
+
+
+def test_structured_monitor_timeout_after_raw_completion_preserves_event(monkeypatch):
+    """A timeout does not replace raw cancellation evidence with inference."""
+    client = _fake_client()
+    orch = _build_orchestrator(client)
+    completions: list[MonitorActionCompletion] = []
+
+    async def _capture(completion: MonitorActionCompletion) -> None:
+        completions.append(completion)
+
+    orch.autonudge_svc = SimpleNamespace(record_monitor_turn_completion=_capture)
+    monkeypatch.setattr(gw, "provider_last_turn_usage", lambda _client: TurnUsage(credits=0.2))
+    monkeypatch.setattr(gw, "_NUDGE_TURN_TIMEOUT", 0.01)
+
+    async def _stream_complete_then_hang(*_a, on_complete=None, **_k):
+        assert on_complete is not None
+        on_complete(LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED))
+        await asyncio.sleep(1.0)
+        return "unreachable"
+
+    monkeypatch.setattr(gw, "stream_and_collect", _stream_complete_then_hang)
+    loop = NudgeLoop(
+        id="loop-timeout-after-complete",
+        slot_key="slack:111.222",
+        message="check it",
+        monitor=MonitorState(
+            kind="github_pull_request",
+            target="owner/repo#123",
+            objective="review_ready",
+            created_ts=1_000.0,
+            last_wake_fingerprint="failure-a",
+            wake_in_flight=True,
+        ),
+    )
+
+    assert asyncio.run(orch._fire_slack_nudge(loop)) is False
+    assert len(completions) == 1
+    assert completions[0].disposition is MonitorActionDisposition.CANCELLATION
+    assert len(_monitor_rows()) == 1

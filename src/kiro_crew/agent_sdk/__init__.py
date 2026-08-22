@@ -1,10 +1,9 @@
 """The one import surface between application code and an agent backend.
 
-This package was declared before it had contents, on purpose: the boundary it
-names is enforced from the moment it exists, by
-``scripts/check_agent_sdk_boundary.py`` and ``test/test_agent_sdk_boundary.py``,
-so the leak it is meant to drain cannot grow while the rest is still being
-designed.
+Provider-neutral turn usage and stop-reason vocabulary live here first. The
+boundary is enforced by ``scripts/check_agent_sdk_boundary.py`` and
+``test/test_agent_sdk_boundary.py``, so application code cannot introduce new
+direct dependencies on the backend packages while the rest of the SDK is built.
 
 The first capability to land is :mod:`kiro_crew.agent_sdk.backend_install` --
 whether each backend's harness is actually installed on THIS machine, as a
@@ -46,6 +45,8 @@ Design of record, including what each later phase moves in here:
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from kiro_crew.agent_sdk.backend_install import (
     CACHE_TTL_SECONDS,
     COMPONENT_CLAUDE_ACP_ADAPTER,
@@ -60,7 +61,19 @@ from kiro_crew.agent_sdk.backend_install import (
     probe_backends,
 )
 
+TURN_STOP_REASON_CANCELLED = "cancelled"
+TURN_STOP_REASON_END_TURN = "end_turn"
+
+
+class AgentTurnUsage(Protocol):
+    """Provider-neutral token dimensions reported for one completed turn."""
+
+    input_tokens: int
+    output_tokens: int
+
+
 __all__ = [
+    "AgentTurnUsage",
     "CACHE_TTL_SECONDS",
     "COMPONENT_CLAUDE_ACP_ADAPTER",
     "COMPONENT_CLAUDE_CODE_CLI",
@@ -72,4 +85,6 @@ __all__ = [
     "clear_probe_cache",
     "probe_backend",
     "probe_backends",
+    "TURN_STOP_REASON_CANCELLED",
+    "TURN_STOP_REASON_END_TURN",
 ]
