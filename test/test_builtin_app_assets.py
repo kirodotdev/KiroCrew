@@ -8,8 +8,10 @@ renders the ``<img onError>`` placeholder instead of the intended art — the ex
 failure mode this suite prevents (e.g. Agent Worlds shipping a lucide glyph with
 its ``icon.svg`` left unreferenced, or an iconUrl pointing at a missing file).
 """
+
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import kiro_crew.apps.manager as mgr
@@ -21,13 +23,28 @@ _APP_ASSETS_DIR = _REPO_ROOT / "website" / "public" / "app-assets"
 #: two detail banners were missing, so ten builtins referenced art this guard
 #: never checked — a typo in a ``heroImageDetail`` path would have shipped the
 #: broken-image placeholder on the app's own detail page with CI green.
+#: ``iconInactiveUrl`` is in the list for the same reason and not because a
+#: builtin uses it today: it is a real ``AppManifest`` field (manifest.py), so the
+#: first builtin to declare one must be covered by the guard already, rather than
+#: by whoever notices the omission after a dead ref ships.
 _ASSET_FIELDS = (
     "iconUrl",
+    "iconInactiveUrl",
     "heroImage",
     "heroImageDark",
     "heroImageDetail",
     "heroImageDetailDark",
 )
+
+#: A reference the client can serve AND the published catalog can carry.
+#: Deliberately stricter than "starts with /app-assets/": the store's catalog
+#: bakes a builtin's ``iconUrl`` verbatim into the published document's
+#: ``iconRef``, whose schema refuses a scheme, a protocol-relative ``//host``, a
+#: ``..`` segment and anything outside a conservative charset — and a value it
+#: refuses fails validation on the ASSEMBLED catalog, where the error withholds
+#: every OTHER app's release too. Existence alone cannot see that class: a
+#: traversal ref like ``/app-assets/../README.md`` resolves to a real file.
+_PUBLISHABLE_REF_RE = re.compile(r"^/app-assets/[A-Za-z0-9_-]+/[A-Za-z0-9_.-]+$")
 
 
 def _asset_refs(app: dict) -> list[tuple[str, str]]:
@@ -60,6 +77,60 @@ def test_all_builtin_app_assets_exist() -> None:
     assert not missing, "builtin app-asset references with no file:\n" + "\n".join(missing)
 
 
+def test_builtin_discovery_is_not_vacuous() -> None:
+    """A floor under every other test in this file.
+
+    All of them iterate ``_all_builtin_apps()`` and assert an empty problem list,
+    so a discovery path that returns nothing — a moved builtins directory, a
+    refactor of ``discover_builtin_apps()`` — makes the whole suite pass while
+    checking zero manifests. That is the one failure mode a guard cannot report on
+    itself, so it is pinned as a count.
+    """
+    apps = _all_builtin_apps()
+    with_icons = [a for a in apps if isinstance(a.get("iconUrl"), str) and a["iconUrl"]]
+    assert len(apps) >= 20, f"builtin discovery returned only {len(apps)} apps"
+    assert len(with_icons) >= 20, (
+        f"only {len(with_icons)} discovered builtins carry an iconUrl; the asset "
+        f"guards below would be near-vacuous"
+    )
+
+
+def test_builtin_app_assets_are_not_empty() -> None:
+    """A referenced file that is zero bytes is a dead ref that passes existence.
+
+    Separate from the existence guard because the cause is different and the fix
+    is different: the manifest is right and the ASSET is broken (a truncated
+    export, a git-lfs pointer that never resolved), and the store renders the same
+    nothing as a missing file.
+    """
+    empty: list[str] = []
+    for app in _all_builtin_apps():
+        for field, path in _asset_refs(app):
+            resolved = _resolve(path)
+            if resolved.is_file() and resolved.stat().st_size == 0:
+                empty.append(f"{app.get('name')}.{field} -> {path}")
+    assert not empty, "builtin app-asset references to an EMPTY file:\n" + "\n".join(empty)
+
+
+def test_builtin_asset_refs_are_publishable_paths() -> None:
+    """Every ref is a path the client can serve and the catalog can publish.
+
+    See ``_PUBLISHABLE_REF_RE``: the store's published catalog copies a builtin's
+    ``iconUrl`` into ``iconRef`` verbatim, and a value its schema rejects fails
+    validation on the assembled document — withholding every other app's release,
+    not just this one's icon. Caught here, the blast radius is one PR.
+    """
+    unpublishable: list[str] = []
+    for app in _all_builtin_apps():
+        for field, path in _asset_refs(app):
+            if not _PUBLISHABLE_REF_RE.match(path):
+                unpublishable.append(f"{app.get('name')}.{field} -> {path}")
+    assert not unpublishable, (
+        "builtin asset refs the published catalog schema would reject "
+        "(scheme, //host, .. segment, or an unexpected character):\n" + "\n".join(unpublishable)
+    )
+
+
 def test_every_builtin_declares_an_icon() -> None:
     """Every builtin names its own mark in ``iconUrl``.
 
@@ -74,7 +145,8 @@ def test_every_builtin_declares_an_icon() -> None:
     ``Package`` too.
     """
     iconless = [
-        a.get("name") for a in _all_builtin_apps()
+        a.get("name")
+        for a in _all_builtin_apps()
         if not isinstance(a.get("iconUrl"), str) or not a["iconUrl"]
     ]
     assert not iconless, (
@@ -102,9 +174,10 @@ def test_builtin_svg_icons_are_themeable() -> None:
             markup = _resolve(path).read_text(encoding="utf-8")
             if "--ico-a" not in markup and "--ico-b" not in markup:
                 unthemed.append(f"{app.get('name')} -> {path}")
-    assert not unthemed, (
-        "builtin SVG icons with hardcoded colours instead of --ico-a/--ico-b:\n"
-        + "\n".join(unthemed)
+    assert (
+        not unthemed
+    ), "builtin SVG icons with hardcoded colours instead of --ico-a/--ico-b:\n" + "\n".join(
+        unthemed
     )
 
 

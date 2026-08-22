@@ -596,7 +596,6 @@ test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
 test/test_build_desktop_launcher_symlink.py
 test/test_build_desktop_rm_resilient.py
-test/test_builtin_app_assets.py
 test/test_builtin_app_lifecycle.py
 test/test_builtin_app_optional_enable.py
 test/test_builtin_discovery.py
