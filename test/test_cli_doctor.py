@@ -501,6 +501,10 @@ class TestDoctorKas:
         self._patch_cfg(monkeypatch, "kas")
         from kiro_crew.acp import kas_assets, kas_auth
 
+        # Overrides select the direct-spawn path, whose diagnostics these
+        # assertions describe; without them doctor reports the cli-fronted
+        # branch instead.
+        monkeypatch.setenv(kas_assets.ENV_KAS_SCRIPT, "/nonexistent/acp-server.js")
         monkeypatch.setattr(kas_assets, "find_kas_node", lambda: None)
         monkeypatch.setattr(kas_assets, "find_kas_server_script", lambda: None)
 
@@ -521,6 +525,7 @@ class TestDoctorKas:
         self._patch_cfg(monkeypatch, "kas")
         from kiro_crew.acp import kas_assets, kas_auth
 
+        monkeypatch.setenv(kas_assets.ENV_KAS_SCRIPT, "/x/kas/9.9.9-hash/nm/acp-server.js")
         monkeypatch.setattr(kas_assets, "find_kas_node", lambda: Path("/x/node"))
         monkeypatch.setattr(
             kas_assets,
@@ -537,6 +542,45 @@ class TestDoctorKas:
         out = capsys.readouterr().out
         assert "9.9.9-hash" in out
         assert "2099-01-01T00:00:00Z" in out
+        assert "SECRET-DO-NOT-PRINT" not in out
+        assert issues == []
+
+    def test_cli_fronted_missing_kiro_cli_appends_issue(self, monkeypatch, capsys) -> None:
+        """Default (no override): readiness is kiro-cli itself being present."""
+        self._patch_cfg(monkeypatch, "kas")
+        from kiro_crew.acp import kas_assets, kas_auth
+
+        monkeypatch.delenv(kas_assets.ENV_KAS_NODE, raising=False)
+        monkeypatch.delenv(kas_assets.ENV_KAS_SCRIPT, raising=False)
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda _name: None)
+
+        async def _raise(*, timeout: float = 8.0):
+            raise kas_auth.KasAuthCallbackError("kiro-cli not found; cannot obtain a KAS token")
+
+        monkeypatch.setattr(kas_auth, "resolve_kas_access_token", _raise)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "kiro-cli acp --agent-engine v3" in out
+        assert "KAS backend selected but kiro-cli not found" in issues
+
+    def test_cli_fronted_ready_reports_engine_flag(self, monkeypatch, capsys) -> None:
+        self._patch_cfg(monkeypatch, "kas")
+        from kiro_crew.acp import kas_assets, kas_auth
+
+        monkeypatch.delenv(kas_assets.ENV_KAS_NODE, raising=False)
+        monkeypatch.delenv(kas_assets.ENV_KAS_SCRIPT, raising=False)
+        monkeypatch.setattr(cli_doctor.shutil, "which", lambda _name: "/usr/bin/kiro-cli")
+        monkeypatch.setattr(cli_doctor, "_kas_engine_flag_supported", lambda _bin: True)
+
+        async def _ok(*, timeout: float = 8.0):
+            return {"accessToken": "SECRET-DO-NOT-PRINT", "expiresAt": "2099-01-01T00:00:00Z"}
+
+        monkeypatch.setattr(kas_auth, "resolve_kas_access_token", _ok)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "engine flag" in out
         assert "SECRET-DO-NOT-PRINT" not in out
         assert issues == []
 
