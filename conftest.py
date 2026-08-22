@@ -1387,7 +1387,10 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     test would leak into every later test's port resolution on that worker.
     ``KIROCREW_DEV_MODE`` / ``KIROCREW_STRICT_ON_LOOP_PERSIST`` are cleared so a
     developer who exports them does not flip the off-loop-IO guards strict for the
-    whole suite.
+    whole suite. The ``KIROCREW_SEL_*`` rotation overrides are cleared for the same
+    reason: ``SecurityEventLog._init_locked`` reads them once at construction, so an
+    operator-exported value would silently move the rotation limits every SEL test
+    asserts against.
 
     ``KIRO_HOME`` is deliberately NOT pinned here, even though the lazy
     ``config.paths.kiro_home()`` does name the operator's real machine-wide kiro-cli
@@ -1403,6 +1406,9 @@ def _isolate_kirocrew_home(_isolation_dirs, monkeypatch):
     monkeypatch.delenv("KIROCREW_BOUND_PORT", raising=False)
     monkeypatch.delenv("KIROCREW_DEV_MODE", raising=False)
     monkeypatch.delenv("KIROCREW_STRICT_ON_LOOP_PERSIST", raising=False)
+    monkeypatch.delenv("KIROCREW_SEL_MAX_BYTES", raising=False)
+    monkeypatch.delenv("KIROCREW_SEL_KEEP", raising=False)
+    monkeypatch.delenv("KIROCREW_SEL_RETENTION_DAYS", raising=False)
     paths = sys.modules.get("kiro_crew.config.paths")
     if paths is not None:
         monkeypatch.setattr(paths, "_resolved_home", None, raising=False)

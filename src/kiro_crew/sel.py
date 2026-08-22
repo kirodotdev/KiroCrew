@@ -15,6 +15,13 @@ actor who can rewrite the log dir cannot also read the key and re-sign a
 clean-looking chain.
 Rotation: the live log is closed at ``_SEGMENT_MAX_BYTES`` and renamed into
 ``<config_dir>/security_events.d/``, keeping ``_SEGMENT_KEEP`` closed segments.
+Both limits, and the retention window, are operator-tunable via environment
+variables read once at construction (``KIROCREW_SEL_MAX_BYTES``,
+``KIROCREW_SEL_KEEP``, ``KIROCREW_SEL_RETENTION_DAYS``). The overrides are
+RAISE-ONLY — values below the compiled defaults clamp up — because the audited
+agent controls child-process environments and must not be able to narrow the
+protection of shared audit history. The module constants stay the single
+source of the defaults.
 Each segment is an INDEPENDENT HMAC chain (it starts from genesis), and the
 first record of every new live log is a ``sel_rotation`` event naming the
 segment just closed and its final ``entry_hash`` — so the boundary is auditable
@@ -77,6 +84,13 @@ _RETENTION_DAYS = 365
 # (_RETENTION_DAYS, swept by prune()) still applies on top and is unchanged;
 # size rotation is what bounds the log BETWEEN those daily sweeps, which is the
 # window the 4.09 GB was accumulated in.
+# All three limits are operator-tunable without editing source: a small-disk or
+# container install can lower the size ceiling, and a compliance install can
+# raise the keep-count to match its retention window (at the defaults the count
+# bound can discard history well inside _RETENTION_DAYS). The overrides
+# (KIROCREW_SEL_MAX_BYTES, KIROCREW_SEL_KEEP, KIROCREW_SEL_RETENTION_DAYS) are
+# read ONCE at construction via _env_int(); these constants remain the single
+# source of the defaults.
 # Closed segment: security_events-<6-digit sequence>-<UTC stamp>.jsonl. The
 # SEQUENCE, not the timestamp, orders segments: it is derived from the highest
 # one still on disk plus one, so it keeps increasing across retention deletions
@@ -112,6 +126,237 @@ _APPEND_RETRIES = 3
 # sometimes on the event loop), so a directory pre-filled with consecutive
 # segment names must not be able to make rotation stat its way through it.
 _SEGMENT_NAME_PROBES = 64
+# Bounds on the operator overrides (_env_int below). The overrides are
+# RAISE-ONLY: each floor is the compiled default, so the environment can widen
+# retention (the compliance case in issue #4993) but never narrow it. This is
+# a security bound, not a usability clamp — the audited agent controls the
+# environment of child processes it spawns, and a lowered cap in a child's env
+# would have the TRUSTED writer erase shared audit history as ordinary
+# housekeeping (rotation evicts protected segments, and per this module's own
+# contract the deletion leaves a clean chain — erasure without a forensic
+# marker). Raising is monotonically non-destructive: rotation happens later,
+# the sweep deletes no sooner, prune keeps more. The raise-only floor also
+# subsumes the mis-scaled-value hazard ("32" intended as MiB, read as bytes,
+# rotating per append on the hot path). The keep ceiling keeps the count bound
+# enforceable: _segments_oldest_first() examines at most _SEGMENT_SCAN_CAP
+# directory entries, so a keep-count at or above that can never produce
+# positive excess and retention would silently stop; -3 reserves room for the
+# transient not-yet-deleted segment, the rotation lock file, and the retention
+# floor marker. (Brief mkstemp temps also transit the directory; at the
+# extreme cap the scan warning, not this reserve, is the backstop.)
+_SEGMENT_KEEP_MAX = _SEGMENT_SCAN_CAP - 3
+# Process-shared floor for the two DELETION bounds (keep, retention_days),
+# stored INSIDE the segment directory. Env vars are per-process, so a child
+# spawned with a scrubbed environment would otherwise enforce the compiled
+# defaults on a directory whose operator raised the bounds — deleting
+# segments the operator's policy protects. The marker makes the deletion
+# bounds MONOTONE across every process sharing the directory: construction
+# takes max(own, persisted) and only ever RAISES the stored values. The
+# directory sits on the SEL sensitive-path floor, so the audited agent's file
+# tools cannot lower the marker; the trusted writer never lowers it. Size
+# (max-bytes) needs no marker: deletion is governed solely by keep/retention,
+# so a divergent smaller cap can only rotate earlier — never delete more.
+_RETENTION_FLOOR_FILE = "retention_floor.json"
+# A genuine marker is two small ints of JSON (~50 bytes). Anything larger is
+# not ours; bounding the read keeps a pre-planted oversized file from turning
+# the construction-path read into unbounded synchronous I/O.
+_FLOOR_MARKER_MAX_BYTES = 4096
+
+
+def _read_retention_floor(segment_dir: Path) -> tuple[int, int]:
+    """Best-effort read of the persisted ``(keep, retention_days)`` floor.
+
+    Fail-soft: a missing, unreadable, or malformed marker reads as ``(0, 0)``
+    — the audit logger must construct even when the marker is damaged, and a
+    zero floor simply means the env/default values apply unraised.
+
+    NOFOLLOW: a linked segment dir or a linked marker reads as no floor. The
+    agent could have pre-planted either as a link to a file it controls
+    (before this release ``security_events.d`` was not on the sensitive-path
+    floor); trusting planted HIGH values would suppress the operator's own
+    stamp — construction would see nothing to raise — and the agent could
+    then lower the link target, leaving future scrubbed-env processes on the
+    compiled defaults the operator meant to raise. Ignoring the link instead
+    means the raise IS detected, ``_ensure_segment_dir`` replaces the link,
+    and the stamp lands in the real directory. The open is additionally
+    fenced fd-side: only a regular, single-link file within a small size cap
+    is trusted — a planted FIFO or device, a hard link into an agent-writable
+    alias, or an oversized decoy reads as no floor (and the non-blocking open
+    means a FIFO cannot park the construction thread either way).
+    """
+    marker = segment_dir / _RETENTION_FLOOR_FILE
+    if platform_compat.is_link_or_junction(segment_dir) or platform_compat.is_link_or_junction(
+        marker
+    ):
+        return (0, 0)
+    # Fenced open: O_NONBLOCK so a pre-planted FIFO cannot park the caller
+    # (constructions run on event-loop threads), O_NOFOLLOW as a second
+    # symlink fence at the open itself; both are no-ops where unsupported.
+    # The fstat gate then accepts only a regular, single-link, small file —
+    # a FIFO/device is rejected by type, a hard link into an agent-writable
+    # alias by st_nlink (the alias would stay externally mutable after our
+    # os.replace, letting planted-high-then-lowered values defeat the
+    # monotone persist), and an oversized decoy by the size cap.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+    )
+    try:
+        fd = os.open(marker, flags)
+    except OSError:
+        return (0, 0)
+    try:
+        st = os.fstat(fd)
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_nlink != 1
+            or st.st_size > _FLOOR_MARKER_MAX_BYTES
+        ):
+            return (0, 0)
+        raw = json.loads(os.read(fd, _FLOOR_MARKER_MAX_BYTES).decode("utf-8"))
+        keep = int(raw.get("keep", 0))
+        days = int(raw.get("retention_days", 0))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return (0, 0)
+    finally:
+        os.close(fd)
+    return (max(keep, 0), max(days, 0))
+
+
+def _persist_retention_floor(segment_dir: Path, keep: int, days: int) -> None:
+    """Monotone, atomic, fail-soft persist of the deletion-bound floor.
+
+    MONOTONE BY CONSTRUCTION at the single write site: the stored floor is
+    re-read here and each field is written as ``max(stored, requested)``, all
+    under the EXISTING cross-process ROTATION lock — the same mutex every
+    deletion sweep holds — acquired with a NON-BLOCKING try. That one choice
+    kills three hazards at once: nothing on the construction path can ever
+    block (constructions happen on event-loop threads; a blocking acquire
+    would park the gateway on another process's rotation), a contended stamp
+    is DEFERRED outright rather than degraded to an unlocked racy write (no
+    fail-open), and stamps can never interleave with a deletion sweep because
+    both serialize on the same lock. Deferral is safe: this process enforces
+    its own values regardless, deletion re-reads the marker under the lock at
+    every sweep, and the stamp retries at every construction, directory
+    creation, rotation, and prune. All stamp call sites run BEFORE their
+    caller acquires the rotation lock, and a same-process re-try while the
+    lock is held simply returns busy — deferral again, never deadlock.
+
+    Written via ``mkstemp`` + ``os.replace`` so a concurrent reader never sees
+    a torn file; 0o600 like every other SEL artifact. ``os.replace`` replaces
+    a marker-shaped symlink itself (never writing through it); a directory
+    junction planted at the marker path makes the replace fail into the
+    fail-soft branch, and the fenced reader ignores such a marker anyway.
+    A planted link at the LOCK path defers the stamp (same nofollow rule as
+    ``_open_rotation_lock``: opening through it would write a byte into, and
+    chmod, the agent's target). NEVER creates the segment directory —
+    creation belongs exclusively to ``_ensure_segment_dir`` (the nofollow
+    fence that refuses planted links), so when the directory is absent, or
+    present but not a real directory, this DEFERS silently. A write failure
+    logs and moves on — only the propagation to future processes is lost, and
+    the next stamp opportunity retries.
+    """
+    if segment_dir.is_symlink() or not segment_dir.is_dir():
+        return
+    lock_path = segment_dir / _ROTATE_LOCK_FILE
+    if platform_compat.is_link_or_junction(lock_path):
+        return  # planted link: defer, never open through it
+    lock_fh = None
+    locked = False
+    try:
+        # Same open/prime shape as _open_rotation_lock ("a+b" + one byte:
+        # msvcrt.locking needs a writable fd on a non-empty file).
+        lock_fh = open(lock_path, "a+b")
+        lock_fh.seek(0, os.SEEK_END)
+        if lock_fh.tell() == 0:
+            lock_fh.write(b"\0")
+            lock_fh.flush()
+        os.chmod(lock_path, 0o600)
+        if not platform_compat.try_acquire_lock(lock_fh.fileno(), exclusive=True):
+            logger.debug(
+                "SEL floor stamp deferred: rotation lock busy; the next stamp "
+                "opportunity retries"
+            )
+            return
+        locked = True
+        stored_keep, stored_days = _read_retention_floor(segment_dir)
+        keep = max(keep, stored_keep)
+        days = max(days, stored_days)
+        if keep <= stored_keep and days <= stored_days:
+            return  # nothing raises: never rewrite (no churn, no lowering)
+        fd, tmp = tempfile.mkstemp(dir=str(segment_dir), prefix=".retention_floor.")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"keep": keep, "retention_days": days}, fh)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, segment_dir / _RETENTION_FLOOR_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        logger.warning(
+            "SEL could not persist the retention floor; this process still "
+            "enforces its own limits"
+        )
+    finally:
+        if lock_fh is not None:
+            if locked:
+                try:
+                    platform_compat.release_lock(lock_fh.fileno())
+                except OSError:
+                    pass
+            lock_fh.close()
+
+
+def _env_int(
+    name: str,
+    default: int,
+    minimum: int | None = None,
+    maximum: int | None = None,
+) -> int:
+    """Positive-integer override from the environment, else *default*.
+
+    Fail-soft by design: an audit logger that refuses to start converts an
+    operator typo into lost audit coverage, so a malformed value logs a warning
+    and keeps the default rather than raising. The warning names the VARIABLE
+    only, never the rejected value — a mis-pasted deployment value can contain
+    a secret, and this logger's output is itself a small exfiltration surface.
+    Zero and negative values clamp to the default for the same reason 0 must
+    not mean "never rotate": that reading would remove the disk bound this
+    subsystem exists to enforce.
+
+    A positive value outside ``minimum``/``maximum`` clamps to the nearest
+    bound (with a warning): the bound is the closest supportable reading of
+    the operator's intent, where falling back to the default would be the
+    opposite of what they asked for.
+
+    Reads ``os.environ`` directly on purpose — ``kiro_crew.config`` would be an
+    import cycle (the only config import here stays ``config_dir`` from
+    ``kiro_crew.config.paths``).
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("Ignoring %s: not an integer; using the default %d", name, default)
+        return default
+    if value <= 0:
+        logger.warning("Ignoring %s: not a positive integer; using the default %d", name, default)
+        return default
+    if minimum is not None and value < minimum:
+        logger.warning("Clamping %s to the supported minimum %d", name, minimum)
+        return minimum
+    if maximum is not None and value > maximum:
+        logger.warning("Clamping %s to the supported maximum %d", name, maximum)
+        return maximum
+    return value
 
 
 class _LiveLogReplaced(Exception):
@@ -278,6 +523,42 @@ class SecurityEventLog:
         self._dir = base_dir or _default_dir()
         self._path = self._dir / _SEL_FILE
         self._segment_dir = self._dir / _SEGMENT_SUBDIR
+        # Operator overrides, read ONCE here (never per append): the size check
+        # runs on the audit hot path, and a changed environment must not move
+        # the limits under a live instance mid-chain. RAISE-ONLY (floor = the
+        # compiled default): the audited agent controls child-process
+        # environments, so a lowerable limit would let it erase shared audit
+        # history through the trusted writer (see the bounds block above).
+        self._segment_max_bytes = _env_int(
+            "KIROCREW_SEL_MAX_BYTES", _SEGMENT_MAX_BYTES, minimum=_SEGMENT_MAX_BYTES
+        )
+        self._segment_keep = _env_int(
+            "KIROCREW_SEL_KEEP",
+            _SEGMENT_KEEP,
+            minimum=_SEGMENT_KEEP,
+            maximum=_SEGMENT_KEEP_MAX,
+        )
+        self._retention_days = _env_int(
+            "KIROCREW_SEL_RETENTION_DAYS", _RETENTION_DAYS, minimum=_RETENTION_DAYS
+        )
+        # Process-shared floor: never enforce lower deletion bounds than any
+        # process sharing this directory has ever declared (see the
+        # _RETENTION_FLOOR_FILE block above). Read, take max, persist raises.
+        floor_keep, floor_days = _read_retention_floor(self._segment_dir)
+        self._segment_keep = max(self._segment_keep, min(floor_keep, _SEGMENT_KEEP_MAX))
+        self._retention_days = max(self._retention_days, floor_days)
+        if self._segment_keep > floor_keep or self._retention_days > floor_days:
+            if self._segment_keep > _SEGMENT_KEEP or self._retention_days > _RETENTION_DAYS:
+                # The operator explicitly raised a deletion bound: create the
+                # fenced directory NOW (nofollow-safe) so the raise is visible
+                # to scrubbed-env siblings before any of them can prune —
+                # _ensure_segment_dir stamps the floor right after it creates
+                # the real directory. Lazy creation stays the default-env path.
+                self._ensure_segment_dir()
+            else:
+                _persist_retention_floor(
+                    self._segment_dir, self._segment_keep, self._retention_days
+                )
         # _lock guards _last_hash + the file append (held only inside the writer
         # thread and by synchronous fallbacks / prune, never by enqueuing callers).
         self._lock = threading.Lock()
@@ -899,7 +1180,10 @@ class SecurityEventLog:
         unopenable lock file -- yields WITHOUT rotating so the audit record still
         lands.
         """
-        if self._reanchor_if_replaced() < _SEGMENT_MAX_BYTES or not self._ensure_segment_dir():
+        if (
+            self._reanchor_if_replaced() < self._segment_max_bytes
+            or not self._ensure_segment_dir()
+        ):
             yield
             return
         lock_fh = self._open_rotation_lock()
@@ -1102,6 +1386,11 @@ class SecurityEventLog:
             logger.warning("SEL segment dir %s could not be created", self._segment_dir, exc_info=True)
             return False
         platform_compat.chmod_safe(self._segment_dir, 0o700)
+        # Self-heal for the process-shared deletion floor: construction defers
+        # the persist when this directory does not exist yet, so stamp it the
+        # moment the real directory is up. Monotone and internally deduped —
+        # once the marker holds values >= ours this never rewrites it.
+        _persist_retention_floor(self._segment_dir, self._segment_keep, self._retention_days)
         return True
 
     def _rotate_under_lock(self) -> None:
@@ -1126,7 +1415,7 @@ class SecurityEventLog:
         hash.
         """
         size = self._live_size()
-        if size < _SEGMENT_MAX_BYTES:
+        if size < self._segment_max_bytes:
             # A sibling process rotated while we waited for the lock. Our cached
             # chain tip now lives in a closed segment, so appending from it would
             # chain this process's next batch off a record in a different file.
@@ -1326,12 +1615,25 @@ class SecurityEventLog:
                 "it — retention will not see past the cap until they are removed",
                 self._segment_dir,
                 _SEGMENT_SCAN_CAP,
-                _SEGMENT_KEEP + 1,
+                self._segment_keep + 1,
             )
         return sorted(named, key=_segment_seq)
 
+    def _refresh_deletion_floor(self) -> None:
+        """Re-read the shared floor so DELETION uses the current raised bounds.
+
+        Construction propagates the floor to processes born later; this closes
+        the other ordering — a long-lived scrubbed-env process constructed
+        BEFORE an operator raised the bounds would otherwise keep its stale
+        in-memory values and prune with them forever. Raise-only, same clamp
+        as construction; one small read per sweep, and sweeps are rare.
+        """
+        floor_keep, floor_days = _read_retention_floor(self._segment_dir)
+        self._segment_keep = max(self._segment_keep, min(floor_keep, _SEGMENT_KEEP_MAX))
+        self._retention_days = max(self._retention_days, floor_days)
+
     def _enforce_segment_retention_locked(self) -> int:
-        """Delete the oldest closed segments beyond ``_SEGMENT_KEEP``.
+        """Delete the oldest closed segments beyond ``self._segment_keep``.
 
         Returns the number deleted. Caller holds ``_lock``.
 
@@ -1344,7 +1646,8 @@ class SecurityEventLog:
         :meth:`_prune_segments_locked`, which already stops for the same reason.
         """
         segments = self._segments_oldest_first()
-        excess = len(segments) - _SEGMENT_KEEP
+        self._refresh_deletion_floor()
+        excess = len(segments) - self._segment_keep
         if excess <= 0:
             return 0
         deleted = 0
@@ -1364,7 +1667,7 @@ class SecurityEventLog:
             logger.info(
                 "SEL retention deleted %d closed segment(s) beyond the %d kept",
                 deleted,
-                _SEGMENT_KEEP,
+                self._segment_keep,
             )
         return deleted
 
@@ -1991,8 +2294,12 @@ class SecurityEventLog:
         except OSError:
             logger.warning("SEL could not read %s", path, exc_info=True)
 
-    def prune(self, keep_days: int = _RETENTION_DAYS) -> int:
+    def prune(self, keep_days: int | None = None) -> int:
         """Remove entries older than keep_days. Returns count removed.
+
+        ``keep_days`` defaults to the instance retention window
+        (``KIROCREW_SEL_RETENTION_DAYS`` if set, else ``_RETENTION_DAYS``);
+        an explicit argument still wins.
 
         Streams the log line-by-line to bound memory usage, writes survivors
         to a temp file, then atomically replaces the original. The append lock
@@ -2027,23 +2334,41 @@ class SecurityEventLog:
         returned count.
         """
         self.flush()  # don't rewrite the file out from under queued appends
-        cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(days=keep_days)
-
         removed = 0
         with self._lock:
-            removed += self._prune_segments_locked(cutoff_dt)
-            if not self._path.exists():
-                return removed
             lock_fh = self._open_rotation_lock() if self._ensure_segment_dir() else None
             if lock_fh is None:
                 logger.warning(
-                    "SEL prune could not take the rotation lock; skipping the live-log "
-                    "sweep rather than risking a concurrent rotation's events"
+                    "SEL prune could not take the rotation lock; skipping the sweep "
+                    "rather than deleting against an unfenced floor"
                 )
-                return removed
+                return 0
             try:
                 with platform_compat.file_lock(lock_fh.fileno(), exclusive=True):
-                    removed += self._prune_live_locked(cutoff_dt, keep_days)
+                    # Refresh-and-delete under ONE cross-process lock: the floor
+                    # is re-read here, and no sibling's stamp (same lock, try-
+                    # acquire) can interleave with the deletions below.
+                    if keep_days is None:
+                        self._refresh_deletion_floor()
+                        keep_days = self._retention_days
+                    try:
+                        cutoff_dt = datetime.now(tz=timezone.utc) - timedelta(
+                            days=keep_days
+                        )
+                    except OverflowError:
+                        # A retention window longer than representable time means
+                        # "keep everything": prune nothing, rather than failing
+                        # the daily sweep (the fail-soft contract of the env
+                        # overrides extends here).
+                        logger.warning(
+                            "SEL prune: retention window of %d days exceeds the "
+                            "representable date range; nothing pruned",
+                            keep_days,
+                        )
+                        return 0
+                    removed += self._prune_segments_locked(cutoff_dt)
+                    if self._path.exists():
+                        removed += self._prune_live_locked(cutoff_dt, keep_days)
             except OSError:
                 logger.warning(
                     "SEL prune could not serialize the live-log sweep; skipped",

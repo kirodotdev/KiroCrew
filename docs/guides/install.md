@@ -505,6 +505,15 @@ drives your own running Chrome with the sessions you are already logged into.
 | `KIROCREW_PORT` | `5476` | Port the gateway / dashboard listens on |
 | `KIROCREW_EMBED_MODEL_URL` | CDN default | Mirror for the embedding model download |
 | `KIROCREW_EMBED_MODEL_PATH` | unset | Run a local GGUF instead of the bundled model |
+| `KIROCREW_SEL_MAX_BYTES` | `33554432` (32 MiB) | Security-audit-log segment size cap before rotation (raise-only) |
+| `KIROCREW_SEL_KEEP` | `7` | Closed audit-log segments retained, oldest deleted first (raise-only) |
+| `KIROCREW_SEL_RETENTION_DAYS` | `365` | Audit-log age retention window swept by the daily prune (raise-only) |
+
+The three `KIROCREW_SEL_*` variables are read once at startup, fail soft (a
+malformed value falls back to the default with a warning), and are
+**raise-only**: values below the compiled defaults clamp up, so the
+environment can widen audit retention but never narrow it. Rationale and
+bounds: `docs/system-specs/modules/sel.md`.
 
 `KIROCREW_PORT` is an environment variable validated at CLI entry, not a config
 key. `--port` on the CLI overrides it (`--port auto` binds an OS-assigned

@@ -83,6 +83,61 @@ registers an `atexit` flush.
 
 Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 
+Size rotation closes the live log at 32 MiB and keeps 7 closed segments
+(defaults). All three limits are operator-tunable via environment variables
+read once at `SecurityEventLog` construction: `KIROCREW_SEL_MAX_BYTES`,
+`KIROCREW_SEL_KEEP`, `KIROCREW_SEL_RETENTION_DAYS`. The overrides are
+**raise-only**: each variable's floor is its compiled default, so the
+environment can widen retention but never narrow it. The audited agent
+controls the environment of child processes it spawns; a lowerable limit
+would let it have the trusted writer erase shared audit history as ordinary
+rotation/retention housekeeping. Narrowing the limits requires editing the
+source constants — an operator-authenticated act the environment cannot
+reach. A non-integer, zero, or negative value falls back to the default with
+a warning that names the variable only (never the rejected value — it could
+contain a mis-pasted secret). `KIROCREW_SEL_KEEP` is additionally capped at
+4093 (the segment enumeration scan cap, less the rotation lock, the floor
+marker, and the transient segment); values outside the
+bounds clamp to the bound with a warning. The
+variables are per-process, like any environment variable: set them
+identically for every process that shares the log directory, or each process
+enforces its own limits (raise-only means a divergent process can at worst
+retain more, never delete more). Additionally the two **deletion** bounds
+(`KEEP`, `RETENTION_DAYS`) are protected by a process-shared high-water mark:
+`security_events.d/retention_floor.json` records the highest values any
+process has declared for this directory, and the marker is monotone by
+construction: the single write site re-reads the stored floor and writes
+`max(stored, requested)` per field under the existing cross-process
+**rotation lock** — the same mutex every deletion sweep holds — acquired
+with a **non-blocking try** (a contended stamp defers outright and retries
+at the next construction, rotation, or sweep; nothing on the construction
+path can ever block). Stamps and deletion sweeps therefore serialize on one
+lock, and concurrent processes raised via different variables can never
+publish a lower field over each other's raise. Reads are
+nofollow-fenced — a pre-planted link at the directory or marker path reads
+as no floor rather than as attacker-chosen values — and fd-fenced: only a
+regular, single-link file within a 4 KiB cap is trusted, opened
+non-blocking, so a planted FIFO, hard-linked alias, or oversized decoy
+reads as no floor and cannot stall construction.
+Construction takes `max(own, persisted)` (an instance that raises above the
+compiled defaults creates the fenced segment directory eagerly so the stamp
+lands before any sibling can prune), and every deletion decision that uses
+the instance window — the segment-count sweep and the default-argument age
+sweep — re-reads the marker first, so a process constructed before the
+raise picks it up at its next sweep; an explicit `keep_days` argument to
+`prune()` is a trusted in-process override and bypasses the floor. A child
+process with a scrubbed environment therefore cannot durably enforce lower
+deletion bounds than the operator's raised policy. One narrow window is
+deliberately accepted rather than closed with a blocking acquire: a raise
+whose first stamp is deferred by lock contention is not yet visible to
+siblings, so a default-bound sibling sweeping inside that gap still applies
+the unraised bounds once; the stamp retries at the next construction,
+rotation, and sweep, and the raised process itself never deletes below its
+own bounds. The marker sits inside the SEL
+sensitive-path floor, so the audited agent's file tools cannot lower it.
+These are plain `os.environ` reads, deliberately not `kiro_crew.config` keys
+(import cycle).
+
 ## Integration Points
 
 | Surface | What's Logged | Module |
