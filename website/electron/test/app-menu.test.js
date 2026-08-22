@@ -19,6 +19,7 @@ function makeDeps(overrides = {}) {
     zoomOut: record("zoomOut"),
     alwaysOnTop: false,
     toggleAlwaysOnTop: record("toggleAlwaysOnTop"),
+    openNewSessionWindow: record("openNewSessionWindow"),
     openNewConnectionWindow: record("openNewConnectionWindow"),
     renameCurrentWindow: record("renameCurrentWindow"),
     promptRemoteHost: record("promptRemoteHost"),
@@ -71,6 +72,15 @@ test("mac: no File or Help menus (their items live in the app menu)", () => {
   assert.ok(!labels.includes("Help"));
 });
 
+test("mac: Connection exposes New Window on Cmd+Shift+N", () => {
+  const { deps, calls } = makeDeps({ isMac: true });
+  const item = findItem(buildMenuTemplate(deps), (i) => i.label === "New Window");
+  assert.ok(item, "New Window present on macOS");
+  assert.strictEqual(item.accelerator, "Cmd+Shift+N");
+  item.click();
+  assert.deepStrictEqual(calls, ["openNewSessionWindow"]);
+});
+
 // ── Windows/Linux shape ──
 
 test("win/linux: File menu is first with Settings… and quit", () => {
@@ -107,6 +117,14 @@ test("win/linux: no macOS-only roles anywhere in the template", () => {
   for (const role of ["appMenu", "services", "hide", "hideOthers", "unhide"]) {
     assert.strictEqual(findItem(template, (i) => i.role === role), null, `no ${role} off darwin`);
   }
+});
+
+test("win/linux: New Window stays macOS-only", () => {
+  const { deps } = makeDeps({ isMac: false });
+  assert.strictEqual(
+    findItem(buildMenuTemplate(deps), (i) => i.label === "New Window"),
+    null,
+  );
 });
 
 // ── shared structure (both platforms) ──

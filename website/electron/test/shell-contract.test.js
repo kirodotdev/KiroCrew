@@ -20,6 +20,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const ROOT = path.join(__dirname, "..");
+const MAIN_SOURCE = fs.readFileSync(path.join(ROOT, "main.js"), "utf-8");
 
 /** Every shipped .js under electron/ (tests and deps excluded). */
 function sourceFiles() {
@@ -70,6 +71,24 @@ test("packaging allowlist has no stale entries", () => {
     [],
     `listed in build.files but does not exist (left behind by a rename?): ${stale.join(", ")}`,
   );
+});
+
+test("macOS New Window opens the blank-session route on the existing gateway", () => {
+  assert.match(
+    MAIN_SOURCE,
+    /createConnectionWindow\(BACKEND_URL, PORT, "\/chat\?new=1"\)/,
+  );
+  assert.match(
+    MAIN_SOURCE,
+    /showLoadingThenConnect\(win, BACKEND_URL, "\/chat\?new=1"\)/,
+  );
+});
+
+test("only the primary local window owns the gateway liveness monitor", () => {
+  const guardedStarts = MAIN_SOURCE.match(
+    /backendUrl === BACKEND_URL && win === mainWindow\) startLivenessMonitor\(win\)/g,
+  ) || [];
+  assert.strictEqual(guardedStarts.length, 2, "authenticated and unauthenticated handoffs stay guarded");
 });
 
 // ── IPC channel contract ──────────────────────────────────────────────────

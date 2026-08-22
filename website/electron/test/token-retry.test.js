@@ -1,6 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { createTokenRetryHandler } = require("../token-retry");
+const { createTokenRetryHandler, dashboardRetryPath } = require("../token-retry");
 
 describe("createTokenRetryHandler", () => {
   it("calls refreshFn on 403", async () => {
@@ -53,5 +53,42 @@ describe("createTokenRetryHandler", () => {
     await handler(404);
     await handler(500);
     assert.equal(called, 0);
+  });
+});
+
+describe("dashboardRetryPath", () => {
+  const BACKEND = "http://localhost:3113";
+
+  it("follows the window past a consumed ?new=1 intent", () => {
+    // The SPA replaced /chat?new=1 with the slot it minted. A retry must not
+    // re-run the intent, or it mints a second session over this one.
+    assert.equal(
+      dashboardRetryPath(`${BACKEND}/chat?sid=slot-abc&token=stale`, BACKEND, "/chat?new=1"),
+      "/chat?sid=slot-abc",
+    );
+  });
+
+  it("keeps an entry intent that has not been consumed yet", () => {
+    assert.equal(
+      dashboardRetryPath(`${BACKEND}/chat?new=1&token=stale`, BACKEND, "/chat?new=1"),
+      "/chat?new=1",
+    );
+  });
+
+  it("drops the stale token so the caller can append a fresh one", () => {
+    assert.equal(dashboardRetryPath(`${BACKEND}/?token=stale`, BACKEND, ""), "/");
+  });
+
+  it("keeps the fallback for a URL this gateway does not serve", () => {
+    // The splash screen is a local file:// load, and a second connection window
+    // points at a different port — neither should retarget this window.
+    assert.equal(dashboardRetryPath("file:///app/loading.html", BACKEND, "/chat?new=1"), "/chat?new=1");
+    assert.equal(dashboardRetryPath("about:blank", BACKEND, "/chat?new=1"), "/chat?new=1");
+    assert.equal(dashboardRetryPath("http://localhost:9999/chat", BACKEND, "/chat?new=1"), "/chat?new=1");
+  });
+
+  it("keeps the fallback for an unparseable URL", () => {
+    assert.equal(dashboardRetryPath("", BACKEND, "/chat?new=1"), "/chat?new=1");
+    assert.equal(dashboardRetryPath(undefined, BACKEND, "/chat?new=1"), "/chat?new=1");
   });
 });

@@ -184,6 +184,7 @@ each launch to get a fresh JWT — no manual paste required.
 
 | Location | Item | Action |
 |----------|------|--------|
+| Connection menu (macOS) | New Window (⌘⇧N) | Open another dashboard window with a new blank session on the existing local gateway |
 | Tab menu / tab bar right-click | Set Remote Host… | Configure hostname for the **focused tab's** port |
 | Tab menu / tab bar right-click | Refresh Token (⌘⇧T) | Fetch a fresh token for the **focused tab** |
 | Tab menu / tray | Open Config File | Open `config.json` in default editor |
@@ -229,6 +230,10 @@ Open via **Tab menu → Open Config File** or tray menu.
 
 ## Notes
 
+- On macOS, **Connection → New Window** (⌘⇧N) opens an independent
+  dashboard window and creates a blank session. It shares the running local
+  gateway and authentication origin, but does not copy the current session,
+  project, draft, or context.
 - Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
 - External links open in your default browser
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
