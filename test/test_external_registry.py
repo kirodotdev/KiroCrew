@@ -1156,55 +1156,15 @@ class TestRefreshRegistries:
 
 
 # ---------------------------------------------------------------------------
-# _registry_git_url — clone-URL resolution for the blob proxy
+# Clone-URL resolution for the blob proxy is no longer a standalone resolver.
+# ``handle_blob_proxy`` resolves the clone URL once (from the decided entry via
+# ``_entry_git_url`` for a bundled entry, or by an inline in-memory URL-form
+# check on the already-validated ``repo`` for the no-entry external/federated
+# branch) and threads it into ``_fetch_git_blob``; there is no
+# ``routes._registry_git_url`` helper to unit-test in isolation.  The URL-form /
+# no-bundled-entry resolution boundary this section used to cover is now
+# exercised through the handler in test_apps_routes_coverage.py.
 # ---------------------------------------------------------------------------
-
-
-class TestRegistryGitUrl:
-    """`_registry_git_url` must resolve URL-form repos even when the bundled
-    lookup (`get_registry_app_by_repo`) finds no entry.
-
-    Regression for the asymmetric-lookup boundary (GPT 5.6 MEDIUM): the PR
-    widened `_is_safe_repo_identifier` to admit full git URLs, but the resolver
-    used to early-return `None` whenever the bundled registry had no matching
-    entry — making external-registry blobs (whose `repo` IS a full git URL)
-    unreachable.
-    """
-
-    def test_url_repo_resolves_without_bundled_entry(self, monkeypatch):
-        from kiro_crew.apps import routes
-
-        # No bundled entry for this URL-form repo.
-        monkeypatch.setattr(routes, "get_registry_app_by_repo", lambda repo: None)
-
-        for url in (
-            "https://github.com/acme/apps",
-            "git@github.com:acme/apps.git",
-            "ssh://git@example.com:2222/org/app.git",
-            "https://gitlab.com/org/app.git",
-        ):
-            assert routes._registry_git_url(url) == url, url
-
-    def test_bare_name_without_entry_returns_none(self, monkeypatch):
-        from kiro_crew.apps import routes
-
-        monkeypatch.setattr(routes, "get_registry_app_by_repo", lambda repo: None)
-        # A bare (non-URL) token with no registry entry has no resolvable URL.
-        assert routes._registry_git_url("SomeBundledRepoName") is None
-
-    def test_entry_git_url_field_takes_precedence(self, monkeypatch):
-        from kiro_crew.apps import routes
-
-        monkeypatch.setattr(
-            routes,
-            "get_registry_app_by_repo",
-            lambda repo: {"repo": repo, "gitUrl": "https://github.com/acme/canonical"},
-        )
-        # Explicit gitUrl wins over treating the (URL-form) repo as the clone URL.
-        assert (
-            routes._registry_git_url("https://github.com/acme/apps")
-            == "https://github.com/acme/canonical"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1268,8 +1228,9 @@ class TestFetchGitBlobSsrfGate:
     async def test_untrusted_host_refused_without_spawning_git(self, tmp_path, monkeypatch):
         from kiro_crew.apps import routes
 
-        # A malicious external index resolved this repo to a loopback URL.
-        monkeypatch.setattr(routes, "_registry_git_url", lambda repo: "https://127.0.0.1:9/x")
+        # A malicious external index resolved this repo to a loopback URL; the
+        # caller threads that resolved clone URL in as ``git_url`` (the callee no
+        # longer resolves it from ``repo``).
         # Guard: if the gate failed, this would raise instead of returning False.
 
         def _boom(*a, **k):
@@ -1278,7 +1239,11 @@ class TestFetchGitBlobSsrfGate:
         monkeypatch.setattr(routes.asyncio, "create_subprocess_exec", _boom)
 
         ok = await routes._fetch_git_blob(
-            "https://127.0.0.1:9/x", "main", "icon.png", tmp_path / "out.png"
+            "https://127.0.0.1:9/x",
+            "main",
+            "icon.png",
+            tmp_path / "out.png",
+            git_url="https://127.0.0.1:9/x",
         )
         assert ok is False
 
