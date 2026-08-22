@@ -264,7 +264,13 @@ async def api_agent_config(request: web.Request) -> web.Response:
                     "Stripped Kiro Crew bookkeeping keys from a PUT to agent config for %r",
                     name,
                 )
-            installed_path.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+            # Offloaded + atomic: a crash or disk-full mid-write on a bare
+            # write_text would leave the spec truncated and break every
+            # subsequent session start (kiro-cli reads this file at spawn).
+            # write_config_atomically writes to a temp file then os.replace,
+            # matching the same pattern already used for the mc_cfg sidecar
+            # above (line 239) and the other config writes in this file.
+            await asyncio.to_thread(write_config_atomically, installed_path, config)
             # Restart kiro-cli sessions so new config takes effect
             await _h._reset_all_sessions(request)
             return web.json_response({"ok": True, "applied": True})

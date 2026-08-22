@@ -221,3 +221,73 @@ async def test_api_agent_config_put_does_not_clobber_sidecar(tmp_path):
     assert "cc_model" not in written
     assert agent_state.get_model_managed("kirocrew") is False
     assert agent_state.get_cc_model("kirocrew") == "test-model-stub"
+
+
+@pytest.mark.asyncio
+async def test_api_agent_config_put_uses_atomic_write(tmp_path):
+    """PUT must persist the installed spec via write_config_atomically, not a
+    bare write_text.
+
+    Regression for #5086: a truncating in-place write leaves the spec corrupt
+    on a mid-write crash or disk-full, breaking every subsequent session start
+    because kiro-cli reads the spec at spawn.  The fix routes the write through
+    write_config_atomically (temp-file + os.replace), matching the mc_cfg sidecar
+    write already in the same handler.
+
+    This test patches write_config_atomically at the site the handler imports it
+    from and asserts it is called exactly once with the right args; it also
+    patches Path.write_text to assert the handler never falls back to a bare,
+    non-atomic write on the installed-spec path.
+    """
+
+    installed = tmp_path / "kirocrew.json"
+    installed.write_text(json.dumps({"name": "kirocrew"}))
+    defaults = tmp_path / "defaults.json"
+    mc_cfg = tmp_path / "config.json"
+
+    request = MagicMock(spec=web.Request)
+    request.method = "PUT"
+    request.app = {"state": MagicMock()}
+
+    async def mock_json():
+        return {"config": {"name": "test", "tools": [], "allowedTools": []}}
+
+    request.json = mock_json
+
+    atomic_calls: list = []
+
+    def _fake_atomic(path, data, **kwargs):
+        atomic_calls.append((path, data))
+        # Actually write so downstream read-backs don't break.
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    with (
+        patch("kiro_crew.dashboard.handlers._installed_agent_config", return_value=installed),
+        patch("kiro_crew.dashboard.handlers._find_agent_config", return_value=defaults),
+        patch("kiro_crew.dashboard.handlers._reset_all_sessions", new_callable=AsyncMock),
+        patch("kiro_crew.dashboard.handlers.config_path", return_value=mc_cfg),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.get_shipped_tools",
+            return_value={"tools": [], "allowedTools": []},
+        ),
+        # Intercept write_config_atomically as imported into agents.py.
+        patch(
+            "kiro_crew.dashboard.handlers.agents.write_config_atomically",
+            side_effect=_fake_atomic,
+        ),
+    ):
+        response = await api_agent_config(request)
+
+    assert response.status == 200
+    # write_config_atomically must be called for the installed spec path.
+    # (It is also called for the mc_cfg sidecar on the same code path, so
+    # total call count may be > 1 — we care only that the installed spec write
+    # went through the atomic helper, not the total invocation count.)
+    installed_spec_calls = [(p, d) for p, d in atomic_calls if p == installed]
+    assert len(installed_spec_calls) == 1, (
+        f"Expected write_config_atomically to be called once with installed_path={installed!r}; "
+        f"got calls to: {[str(p) for p, _ in atomic_calls]}.  "
+        f"A bare write_text was likely used for the installed spec instead."
+    )
+    _, written_data = installed_spec_calls[0]
+    assert written_data.get("name") == "test"
