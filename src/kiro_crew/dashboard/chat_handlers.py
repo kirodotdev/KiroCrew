@@ -1762,6 +1762,17 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     return web.Response(text=body, content_type="application/json")
 
 
+# Modes a slot may be CREATED with. A deliberate superset of the mode-SWITCH
+# allowlist (chat_folders._VALID_MODES) and the fork override allowlist
+# (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
+# Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
+# slots off the chat sidebar, which renders only "", "orchestrator" and "crew"
+# (ChatPage.tsx filteredSlots). Switching an existing session INTO an app-worker
+# mode, or forking one with it as an override, is not a real flow, so those two
+# allowlists deliberately stay narrower — do not "sync" them to this one.
+_CREATABLE_MODES = ("", "orchestrator", "crew", "design-critique")
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -1830,7 +1841,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if memory_mode not in ("persistent", "incognito", "temporary"):
                 return web.json_response({"error": "invalid memory_mode"}, status=400)
             _mode = body.get("mode", "")
-            if _mode not in ("", "orchestrator", "crew"):
+            if _mode not in _CREATABLE_MODES:
                 return web.json_response(
                     {"error": "invalid mode", "code": "invalid_mode"}, status=400
                 )
