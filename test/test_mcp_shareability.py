@@ -802,6 +802,116 @@ class TestHazardLedger:
         assert "first" in on_disk
         assert "second" in on_disk, "the newer observation was reverted by an older flush"
 
+    def test_record_and_flush_interleave_repeatedly_without_crashing(self, tmp_path) -> None:
+        """``flush`` builds its JSON payload by iterating ``self._records``
+        (and each record's ``codes`` set) off-loop, in a real worker thread
+        (``asyncio.to_thread``), while ``record``/``clear`` run on gatewayd's
+        event loop thread -- genuinely concurrent OS threads, not just
+        interleaved coroutines. Without ``record``/``clear``'s copy-on-write
+        discipline (never mutating an existing dict/set in place, only ever
+        building new ones and swapping ``self._records`` in one atomic
+        assignment), a write landing mid-iteration on the flushing thread can
+        raise "dictionary/set changed size during iteration", crashing the
+        flush before its payload ever reaches ``atomic_write`` -- so even a
+        caller that catches the exception still silently loses the write.
+
+        Real, sustained thread contention (not a single synchronized
+        handoff): one thread continuously records under EVER-NEW identities
+        (so ``self._records`` keeps genuinely resizing, not just updating
+        existing entries) while another continuously flushes, for long
+        enough that the original bug reproduced the crash on every run
+        before the fix.
+        """
+        import threading
+        import time as _time
+
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        stop = threading.Event()
+        errors: list[BaseException] = []
+
+        def writer() -> None:
+            i = 0
+            while not stop.is_set():
+                led.record(f"server-{i % 5}", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST, identity=f"id-{i}")
+                i += 1
+
+        def flusher() -> None:
+            end = _time.monotonic() + 1.5
+            while _time.monotonic() < end:
+                try:
+                    led.flush()
+                except Exception as exc:  # noqa: BLE001 - capturing for the assertion below
+                    errors.append(exc)
+                    return
+
+        writer_thread = threading.Thread(target=writer, daemon=True)
+        flusher_thread = threading.Thread(target=flusher)
+        writer_thread.start()
+        flusher_thread.start()
+        flusher_thread.join(10)
+        stop.set()
+
+        assert errors == []
+
+    def test_record_does_not_block_while_a_flush_disk_write_is_in_progress(self, tmp_path) -> None:
+        """``record`` runs synchronously ON gatewayd's event loop -- it must
+        never wait on a lock that a concurrent ``flush`` holds across real
+        disk I/O (a slow or contended filesystem would stall the entire
+        event loop, not just this one call). ``record``/``clear`` take no
+        lock at all (copy-on-write; see the class docstring), so a flush
+        parked in ``atomic_write`` -- holding only ``_flush_lock``, which
+        neither of them ever touches -- cannot block a concurrent ``record``
+        for any duration. This asserts the actual mechanism, not just that
+        no exception happened to occur in one run.
+        """
+        import threading
+
+        led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
+        led.record("first", hazards.HAZARD_UNROUTABLE_SERVER_REQUEST)
+
+        real_write = hazards.atomic_write
+        entered = threading.Event()
+        release = threading.Event()
+
+        def slow_write(path, text):
+            entered.set()
+            release.wait(2)
+            return real_write(path, text)
+
+        hazards.atomic_write = slow_write  # type: ignore[assignment]
+        try:
+            flush_thread = threading.Thread(target=led.flush)
+            flush_thread.start()
+            assert entered.wait(2), "flush never reached the write"
+
+            record_done = threading.Event()
+
+            def do_record() -> None:
+                led.record("second", hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION)
+                record_done.set()
+
+            record_thread = threading.Thread(target=do_record)
+            record_thread.start()
+            # flush is parked inside slow_write (real disk I/O in production),
+            # holding only _flush_lock -- record() takes no lock at all, so
+            # it must complete promptly rather than waiting for the write.
+            assert record_done.wait(1), (
+                "record() blocked on a lock held across a flush's disk write"
+            )
+
+            release.set()
+            flush_thread.join(5)
+            record_thread.join(5)
+        finally:
+            hazards.atomic_write = real_write  # type: ignore[assignment]
+            release.set()
+
+        # Neither observation was lost across the interleaving.
+        led.flush()
+        on_disk = hazards.load_ledger(tmp_path).as_dict()
+        assert "first" in on_disk
+        assert "second" in on_disk
+
     def test_ledger_feeds_the_verdict(self, tmp_path) -> None:
         """End to end: what gatewayd observed withdraws the recommendation."""
         led = hazards.HazardLedger(hazards.ledger_path(tmp_path))
