@@ -5,9 +5,16 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Maximize2, Minimize2, Play, Pause, MessageSquare, X } from 'lucide-react'
+import {
+  Maximize2, Minimize2, Play, Pause, MessageSquare, X,
+  Check, AlertTriangle, Pencil, Archive, ArchiveRestore, Copy,
+} from 'lucide-react'
 import { ADVANCE_PROMPT } from '../prompts'
-import { specApi, LS, phaseLabel, PHASE_BUILDING_KEY, type SpecDetail as SpecDetailData } from '../api'
+import {
+  specApi, LS, phaseLabel, PHASE_BUILDING_KEY,
+  type SpecDetail as SpecDetailData, type SpecTask,
+} from '../api'
+import { Input } from '../../../components/ui'
 import { ACCENT, SEL_BG, SEL_BORDER, PULSE_MOTION, Btn } from './shared'
 import SegmentedControl, { type Segment } from '../../../components/SegmentedControl'
 import { useIsMobile } from '../../../hooks/useIsMobile'
@@ -94,7 +101,7 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
 
   const detailQuery = useQuery({
     queryKey: ['spec-builder', 'spec', name],
-    queryFn: () => specApi.get(name),
+    queryFn: ({ signal }) => specApi.get(name, signal),
     refetchInterval: (q) => {
       const d = q.state.data
       if (d?.running || d?.status === 'executing') return 2500
@@ -188,6 +195,65 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
     onSettled: invalidate,
   })
 
+  // ── direct authority over the artifacts ──
+  // Each of these changes server state without a model turn, which is the point:
+  // a typo, a phase sign-off, or filing a finished spec away used to cost one.
+  const saveDocMutation = useMutation({
+    mutationFn: (v: { file: string; content: string; baseHash: string }) =>
+      specApi.saveDoc(name, v.file, v.content, v.baseHash, specId()),
+    // No onError: DocView renders the failure inline next to the Save button,
+    // where the unsaved text still is. Routing it to the page-level banner would
+    // put the message far from the editor that has to act on it.
+    onSettled: invalidate,
+  })
+  const approveMutation = useMutation({
+    mutationFn: (v: { phase: string; hash: string }) =>
+      specApi.approve(name, v.phase, v.hash, specId()),
+    onError: (e) => setErr((e as Error).message),
+    onSettled: invalidate,
+  })
+  const runTaskMutation = useMutation({
+    mutationFn: (task: SpecTask) => specApi.runTask(name, task.index, task.hash, specId()),
+    onMutate: () => { lastSendAt.current = Date.now() },
+    onError: (e) => setErr((e as Error).message),
+    onSettled: invalidate,
+  })
+  const titleMutation = useMutation({
+    mutationFn: (title: string) => specApi.setTitle(name, title, specId()),
+    onError: (e) => setErr((e as Error).message),
+    onSettled: invalidate,
+  })
+  const archiveMutation = useMutation({
+    mutationFn: (archived: boolean) => specApi.setArchived(name, archived, specId()),
+    onError: (e) => setErr((e as Error).message),
+    onSettled: invalidate,
+  })
+  const duplicateMutation = useMutation({
+    mutationFn: (newName: string) => specApi.duplicate(name, newName, specId()),
+    onError: (e) => setErr((e as Error).message),
+    onSettled: invalidate,
+  })
+
+  // The task whose run is being dispatched, so the list can mark just that row.
+  const [pendingTask, setPendingTask] = useState<number | null>(null)
+  const runTask = (task: SpecTask) => {
+    setPendingTask(task.index)
+    runTaskMutation.mutate(task, { onSettled: () => setPendingTask(null) })
+  }
+
+  // Inline label editing. `null` = not editing; the NAME is never touched, only
+  // this label (see the backend's title handler for why the name is immutable).
+  const [titleDraft, setTitleDraft] = useState<string | null>(null)
+  // Duplicate asks for the copy's name inline. It has to be asked for rather than
+  // derived, because the name IS the new spec's directory and branch — the one
+  // field a copy cannot inherit.
+  const [dupDraft, setDupDraft] = useState<string | null>(null)
+  const commitTitle = () => {
+    const next = (titleDraft ?? '').trim()
+    setTitleDraft(null)
+    if (next !== (detail?.title ?? '')) titleMutation.mutate(next)
+  }
+
   // Whether the instruction currently in flight is THIS view's phase approval.
   // messageMutation is shared with the decision tray and the review-comment
   // tray, so keying the button's "Sending…" label on its isPending flag made the
@@ -217,6 +283,14 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
     if (!a || !phase) return
     setAdvancing(true)
     try {
+      // RECORD the approval before instructing the agent, and let a failure stop
+      // the instruction. Approval used to be nothing but this chat message, so the
+      // server never knew a phase had been signed off, by whom, or against which
+      // text — the only trace was a line in the transcript. Ordering matters: if
+      // the record fails the agent must not move on, otherwise the spec advances
+      // with no evidence anyone approved it.
+      const hash = detail?.docs?.[phase + '.md']?.hash
+      if (hash) await approveMutation.mutateAsync({ phase, hash })
       await messageMutation.mutateAsync(a.msg)
       setApproved(phase)
       // Switch to the document being written: DocView holds its shape with a
@@ -288,6 +362,37 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
         onChange={setTab}
         layoutId={fullscreen ? 'sb-doc-tabs-full' : 'sb-doc-tabs'}
       />
+      {/* Recorded approval for the document on screen. `stale` is derived by the
+          backend from the hash, so a document the agent rewrote after sign-off
+          says so instead of continuing to look approved — which is the whole
+          reason the approved VERSION is recorded rather than a bare flag. */}
+      {(() => {
+        const ap = detail?.approvals?.[tab]
+        if (!ap) return null
+        return ap.stale
+          ? (
+            <span
+              className="flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap shrink-0"
+              style={{ color: 'var(--warn)' }}
+              title={i18nT('apps.specBuilder.components.specDetail.this_document_changed_after_it_was_approved')}
+            >
+              <AlertTriangle size={12} strokeWidth={2} />
+              {i18nT('apps.specBuilder.components.specDetail.changed_since_approval')}
+            </span>
+          )
+          : (
+            <span
+              className="flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap shrink-0"
+              style={{ color: 'var(--ok)' }}
+              title={ap.user
+                ? i18nT('apps.specBuilder.components.specDetail.approved_by_user', { user: ap.user })
+                : i18nT('apps.specBuilder.components.specDetail.approved')}
+            >
+              <Check size={12} strokeWidth={2.5} />
+              {i18nT('apps.specBuilder.components.specDetail.approved')}
+            </span>
+          )
+      })()}
       <span className="flex-1" />
       <Btn
         onClick={() => setExpanded(!fullscreen)}
@@ -353,7 +458,39 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
           header, and the headers line up. */}
       <section className="flex-1 min-w-0 flex flex-col">
         <header className="shrink-0 h-[52px] px-4 border-b border-border flex items-center gap-2.5">
-          <span className="text-[15px] font-bold tracking-tight text-text-strong overflow-hidden text-ellipsis whitespace-nowrap">{name}</span>
+          {titleDraft !== null
+            ? (
+              <Input
+                autoFocus
+                value={titleDraft}
+                onChange={(e) => setTitleDraft(e.target.value)}
+                onBlur={commitTitle}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitTitle()
+                  if (e.key === 'Escape') setTitleDraft(null)
+                }}
+                maxLength={120}
+                placeholder={name}
+                aria-label={i18nT('apps.specBuilder.components.specDetail.spec_label')}
+                className="max-w-[260px]"
+              />
+            )
+            : (
+              // The label is what is shown; the NAME is the identity and stays put.
+              // A misnamed spec was previously unfixable without deleting it, which
+              // threw away the conversation along with the name.
+              <button
+                type="button"
+                onClick={() => setTitleDraft(detail?.title ?? '')}
+                title={i18nT('apps.specBuilder.components.specDetail.rename_this_spec_label_the_folder_name_stays')}
+                className="group flex items-center gap-1.5 min-w-0 bg-transparent border-none p-0 cursor-pointer focus-ring rounded"
+              >
+                <span className="text-[15px] font-bold tracking-tight text-text-strong overflow-hidden text-ellipsis whitespace-nowrap">
+                  {detail?.title || name}
+                </span>
+                <Pencil size={11} strokeWidth={2} className="text-muted opacity-0 group-hover:opacity-100 transition-opacity shrink-0" />
+              </button>
+            )}
           <span
             className="text-[12px] font-mono px-2.5 py-[3px] rounded-full whitespace-nowrap shrink-0"
             style={{ color: ACCENT, background: SEL_BG }}
@@ -382,6 +519,50 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
               label={<Maximize2 className="lucide-inline" />}
             />
           )}
+          {/* Lifecycle beyond create-and-delete. Delete used to be the only way to
+              get a spec out of the rail, so tidying up and destroying the work were
+              the same action. */}
+          {dupDraft !== null
+            ? (
+              <Input
+                autoFocus
+                value={dupDraft}
+                onChange={(e) => setDupDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && dupDraft.trim()) {
+                    duplicateMutation.mutate(dupDraft.trim())
+                    setDupDraft(null)
+                  }
+                  if (e.key === 'Escape') setDupDraft(null)
+                }}
+                maxLength={64}
+                placeholder={i18nT('apps.specBuilder.components.specDetail.name_for_the_copy')}
+                aria-label={i18nT('apps.specBuilder.components.specDetail.name_for_the_copy')}
+                className="max-w-[200px]"
+              />
+            )
+            : (
+              <Btn
+                label={<Copy className="lucide-inline" />}
+                ariaLabel={i18nT('apps.specBuilder.components.specDetail.duplicate_this_spec')}
+                title={i18nT('apps.specBuilder.components.specDetail.copy_the_documents_into_a_new_spec')}
+                disabled={duplicateMutation.isPending}
+                onClick={() => setDupDraft(name + '-copy')}
+              />
+            )}
+          <Btn
+            label={detail?.archived
+              ? <ArchiveRestore className="lucide-inline" />
+              : <Archive className="lucide-inline" />}
+            ariaLabel={detail?.archived
+              ? i18nT('apps.specBuilder.components.specDetail.restore_this_spec')
+              : i18nT('apps.specBuilder.components.specDetail.archive_this_spec')}
+            title={detail?.archived
+              ? i18nT('apps.specBuilder.components.specDetail.bring_this_spec_back_into_the_working_set')
+              : i18nT('apps.specBuilder.components.specDetail.hide_this_spec_without_deleting_anything')}
+            disabled={archiveMutation.isPending}
+            onClick={() => archiveMutation.mutate(!detail?.archived)}
+          />
           <span
             className="text-[11px] font-mono text-muted overflow-hidden text-ellipsis whitespace-nowrap max-w-[45%]"
             style={{ direction: 'rtl', textAlign: 'right' }}
@@ -472,7 +653,16 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
             {/* Body HIDDEN, not unmounted: the document itself moves to the
                 overlay, but DocView holds an in-progress comment draft. */}
             <div className={`flex-1 min-h-0 flex flex-col ${isMobile ? 'hidden' : ''}`}>
-              <DocView detail={detail} tab={tab} addComment={addComment} running={running} />
+              <DocView
+                detail={detail}
+                tab={tab}
+                addComment={addComment}
+                running={running}
+                saveDoc={(file, content, baseHash) =>
+                  saveDocMutation.mutateAsync({ file, content, baseHash }).then(() => undefined)}
+                runTask={runTask}
+                pendingTaskIndex={pendingTask}
+              />
             </div>
           </div>
           {/* Visible at every width. This is the only surface that shows a
@@ -553,7 +743,20 @@ export default function SpecDetail({ name, setErr }: SpecDetailProps) {
           </div>
           <div className="flex-1 min-h-0 flex justify-center">
             <div className="sb-doc flex flex-col border border-border rounded-lg bg-card overflow-hidden min-h-0" style={{ width: 'min(980px, 100%)' }}>
-              <DocView detail={detail} tab={tab} addComment={addComment} running={running} />
+              {/* The overlay is the review surface, so it carries the same editor
+                  and task controls. Omitting them here would mean the fullscreen
+                  view — the one with room to actually read a document — was the
+                  only place you could not act on it. */}
+              <DocView
+                detail={detail}
+                tab={tab}
+                addComment={addComment}
+                running={running}
+                saveDoc={(file, content, baseHash) =>
+                  saveDocMutation.mutateAsync({ file, content, baseHash }).then(() => undefined)}
+                runTask={runTask}
+                pendingTaskIndex={pendingTask}
+              />
             </div>
           </div>
         </div>

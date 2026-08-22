@@ -717,29 +717,45 @@ class TestDerivePhase:
 
 class TestCollectSpecDocuments:
     def test_absent_documents_read_as_none_and_the_state_file_as_none(self, tmp_path):
-        phase, files, state = r._collect_spec_documents(tmp_path)
+        phase, files, state, meta = r._collect_spec_documents(tmp_path)
         assert phase == "new"
         assert files == {"tasks.md": None, "design.md": None, "requirements.md": None}
         assert state is None
+        # An absent document carries no metadata at all: there is no hash to edit
+        # against, so the editor has nothing to base a write on. And an unwritten
+        # tasks.md is zero of zero rather than a missing progress reading.
+        assert meta == {"docs": {}, "tasks": [], "task_progress": {"done": 0, "total": 0}}
 
     def test_documents_are_redacted_on_their_way_out(self, tmp_path):
         (tmp_path / "requirements.md").write_text(f"token is {CRED_NAME}")
-        phase, files, _state = r._collect_spec_documents(tmp_path)
+        phase, files, _state, meta = r._collect_spec_documents(tmp_path)
         assert phase == "requirements"
         assert files["requirements.md"] is not None
         assert CRED_NAME not in files["requirements.md"]
+        # And a document redaction ALTERED is served for reading but refused for
+        # editing: saving the rendered text back would persist [redacted] over the
+        # real value.
+        assert meta["docs"]["requirements.md"]["editable"] is False
 
     def test_a_valid_state_file_is_normalized(self, tmp_path):
         (tmp_path / ".spec-state.json").write_text(
             json.dumps({"blocking": "review", "surprise": 1})
         )
-        _phase, _files, state = r._collect_spec_documents(tmp_path)
+        _phase, _files, state, _docs = r._collect_spec_documents(tmp_path)
         assert state == {"decisions": [], "blocking": "review", "context": {"template": ""}}
 
     def test_a_malformed_state_file_is_none_rather_than_an_error(self, tmp_path):
         (tmp_path / ".spec-state.json").write_text("{ not json")
-        _phase, _files, state = r._collect_spec_documents(tmp_path)
+        _phase, _files, state, _docs = r._collect_spec_documents(tmp_path)
         assert state is None
+
+    def test_an_unredacted_document_is_editable_and_carries_its_stored_hash(self, tmp_path):
+        (tmp_path / "requirements.md").write_text("plain prose, nothing secret")
+        _phase, _files, _state, meta = r._collect_spec_documents(tmp_path)
+        doc = meta["docs"]["requirements.md"]
+        assert doc["editable"] is True
+        # The hash is of the file AS STORED, which is what a save has to match.
+        assert doc["hash"] == r._sha256_text("plain prose, nothing secret")
 
 
 # -- the STOP sentinel --------------------------------------------------------
@@ -3390,7 +3406,7 @@ class TestHandleGet:
 
         def _collect_then_delete(_spec_dir):
             r._save_index({})
-            return "new", {}, None
+            return "new", {}, None, {}
 
         with mock.patch.object(r, "_collect_spec_documents", _collect_then_delete):
             out = await r._handle_get(
@@ -3406,7 +3422,7 @@ class TestHandleGet:
 
         def _collect_then_replace(_spec_dir):
             r._save_index({"demo": _entry(tmp_path / "somewhere-else")})
-            return "new", {}, None
+            return "new", {}, None, {}
 
         with mock.patch.object(r, "_collect_spec_documents", _collect_then_replace):
             out = await r._handle_get(
@@ -4125,6 +4141,16 @@ class TestRegisterRoutes:
             ("POST", f"{base}/specs/{{name}}/execute"),
             ("POST", f"{base}/specs/{{name}}/stop"),
             ("DELETE", f"{base}/specs/{{name}}"),
+            # The user's own authority over the artifacts, rather than asking the
+            # agent for every change: edit a document under a content-hash guard,
+            # record an approval of the version on screen, run ONE task from
+            # tasks.md, and rename/archive/duplicate the spec.
+            ("PUT", f"{base}/specs/{{name}}/doc"),
+            ("POST", f"{base}/specs/{{name}}/approve"),
+            ("POST", f"{base}/specs/{{name}}/task"),
+            ("POST", f"{base}/specs/{{name}}/title"),
+            ("POST", f"{base}/specs/{{name}}/archive"),
+            ("POST", f"{base}/specs/{{name}}/duplicate"),
         }
 
     def test_registration_creates_nothing_on_disk(self, tmp_path):

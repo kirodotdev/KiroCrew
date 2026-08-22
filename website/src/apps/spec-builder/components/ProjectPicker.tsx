@@ -28,7 +28,7 @@ export default function ProjectPicker({ value, onChange }: { value: string; onCh
   // browse response carries a fresh list for the folder being viewed.
   const recentsQuery = useQuery({
     queryKey: ['spec-builder', 'browse', ''],
-    queryFn: () => specApi.browse(''),
+    queryFn: ({ signal }) => specApi.browse('', signal),
   })
   useEffect(() => {
     if (recentsQuery.data) setRecents(recentsQuery.data.recents || [])
@@ -41,7 +41,7 @@ export default function ProjectPicker({ value, onChange }: { value: string; onCh
   const [navPath, setNavPath] = useState<string | null>(null)
   const navQuery = useQuery({
     queryKey: ['spec-builder', 'browse', navPath ?? ''],
-    queryFn: () => specApi.browse(navPath ?? ''),
+    queryFn: ({ signal }) => specApi.browse(navPath ?? '', signal),
     enabled: navPath !== null,
   })
   useEffect(() => {

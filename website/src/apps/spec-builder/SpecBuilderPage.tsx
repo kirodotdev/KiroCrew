@@ -53,7 +53,7 @@ function SpecBuilderInner() {
   // also the repo's standard for server state.
   const specsQuery = useQuery({
     queryKey: ['spec-builder', 'specs'],
-    queryFn: () => specApi.list(),
+    queryFn: ({ signal }) => specApi.list(signal),
     refetchInterval: 15000,
   })
   // useMemo so the array identity is stable across renders — otherwise the

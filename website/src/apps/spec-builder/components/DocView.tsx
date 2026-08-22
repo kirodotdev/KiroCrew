@@ -4,12 +4,13 @@
 // comment (with file attribution) into the parent's tray — nothing is sent to
 // the agent until "Send all to agent".
 import { useEffect, useRef, useState } from 'react'
-import { MessageSquare, Plus, X, FileText } from 'lucide-react'
+import { MessageSquare, Plus, X, FileText, Pencil, Save, AlertTriangle } from 'lucide-react'
 import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { Input } from '../../../components/ui'
-import type { SpecDetail } from '../api'
-import { ACCENT, SEL_BG, Btn } from './shared'
+import type { SpecDetail, SpecTask } from '../api'
+import { ACCENT, SEL_BG, Btn, inputStyle } from './shared'
 import { DocSkeleton } from './Shimmer'
+import TaskList from './TaskList'
 
 import { i18nT } from '../../../i18n/t'
 interface Selection {
@@ -39,16 +40,80 @@ export interface DocViewProps {
    *  empty state, so an in-flight document reads as pending, not absent. */
   running?: boolean
   addComment: (c: { file: string; quote: string; note: string }) => void
+  /** Persist an edit. Resolves on success; rejects with the backend's code, so a
+   *  `doc_conflict` can be surfaced as "reload" rather than a generic failure.
+   *  Absent = editing is not offered. */
+  saveDoc?: (file: string, content: string, baseHash: string) => Promise<void>
+  /** Dispatch a single task. Absent = the run controls are not offered. */
+  runTask?: (task: SpecTask) => void
+  pendingTaskIndex?: number | null
 }
 
-export default function DocView({ detail, tab, addComment, running = false }: DocViewProps) {
-  const content = detail?.files?.[tab + '.md']
+export default function DocView({
+  detail,
+  tab,
+  addComment,
+  running = false,
+  saveDoc,
+  runTask,
+  pendingTaskIndex = null,
+}: DocViewProps) {
+  const fname = tab + '.md'
+  const content = detail?.files?.[fname]
+  const docMeta = detail?.docs?.[fname]
   const boxRef = useRef<HTMLDivElement>(null)
   const [sel, setSel] = useState<Selection | null>(null)
   const [note, setNote] = useState<Selection | null>(null)
   const [draft, setDraft] = useState('')
 
+  // ── editing ──
+  // The base hash the editor OPENED against travels with the save, so a write the
+  // agent made in the meantime is refused instead of silently overwritten. Held in
+  // state rather than read from `detail` at submit time: this component re-renders
+  // on every 2.5s poll, so reading it live would quietly re-base the edit onto the
+  // agent's newer version and defeat the guard entirely.
+  const [editing, setEditing] = useState<{ text: string; baseHash: string } | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [saveErr, setSaveErr] = useState('')
+  const editable = !!saveDoc && !!docMeta?.editable
+
+  // Leaving the document (tab switch or a different spec) drops an unsaved draft
+  // rather than carrying it to the next file, where saving it would write this
+  // document's text into that one.
+  useEffect(() => {
+    setEditing(null)
+    setSaveErr('')
+  }, [fname, detail?.spec_dir])
+
+  const beginEdit = () => {
+    setSaveErr('')
+    setEditing({ text: content ?? '', baseHash: docMeta?.hash ?? '' })
+  }
+
+  const commit = async () => {
+    if (!editing || !saveDoc) return
+    setSaving(true)
+    setSaveErr('')
+    try {
+      await saveDoc(fname, editing.text, editing.baseHash)
+      setEditing(null)
+    } catch (e) {
+      const err = e as { code?: string; message?: string }
+      setSaveErr(
+        err.code === 'doc_conflict'
+          ? i18nT('apps.specBuilder.components.docView.this_document_changed_while_you_were_editing')
+          : err.message || i18nT('apps.specBuilder.components.docView.could_not_save_this_document'),
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
   const onSelectionSettled = () => {
+    // Selecting inside the editor is ordinary text selection, not a review
+    // gesture: raising the Comment pill over a textarea would offer to send the
+    // agent feedback about a draft that is not saved anywhere yet.
+    if (editing) { setSel(null); return }
     const s = window.getSelection()
     const text = s ? s.toString().replace(/\s+/g, ' ').trim() : ''
     if (!text || text.length < 3 || !boxRef.current || !s || !s.rangeCount) { setSel(null); return }
@@ -80,10 +145,82 @@ export default function DocView({ detail, tab, addComment, running = false }: Do
     }
   })
 
+  // The tasks tab renders the checklist as work rather than as prose. Editing
+  // switches it back to the raw markdown, so the file itself stays reachable.
+  const showTasks = tab === 'tasks' && !editing && !!runTask && !!detail?.tasks?.length
+
   return (
     <div className="flex-1 min-h-0 flex flex-col">
+      {/* Document toolbar. Only rendered when there is something to act on, so an
+          empty or still-drafting document keeps its uncluttered empty state. */}
+      {(editable || editing || docMeta?.reason === 'redacted') && (
+        <div className="shrink-0 flex items-center gap-2 px-3 py-1.5 border-b border-border">
+          {docMeta?.reason === 'redacted' && !editing && (
+            // Not editable BECAUSE the rendering is redacted: saving it back would
+            // write [redacted] over the real value. Say which, rather than showing
+            // a disabled button with no explanation.
+            <span className="flex items-center gap-1.5 text-[11px] text-muted">
+              <AlertTriangle size={12} strokeWidth={2} />
+              {i18nT('apps.specBuilder.components.docView.read_only_this_document_contains_redacted_content')}
+            </span>
+          )}
+          {saveErr && (
+            <span className="text-[11px] font-semibold flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap" style={{ color: 'var(--err)' }}>
+              {saveErr}
+            </span>
+          )}
+          <span className="flex-1" />
+          {editing
+            ? (
+              <>
+                <span className="text-[11px] text-muted">
+                  {i18nT('apps.specBuilder.components.docView.unsaved_changes')}
+                </span>
+                <Btn
+                  label={<><Save className="lucide-inline" /> {saving
+                    ? i18nT('apps.specBuilder.components.docView.saving')
+                    : i18nT('apps.specBuilder.components.docView.save')}</>}
+                  primary
+                  disabled={saving}
+                  onClick={() => { void commit() }}
+                />
+                <Btn
+                  label={i18nT('apps.specBuilder.components.docView.cancel')}
+                  disabled={saving}
+                  onClick={() => { setEditing(null); setSaveErr('') }}
+                />
+              </>
+            )
+            : editable && (
+              <Btn
+                label={<><Pencil className="lucide-inline" /> {i18nT('apps.specBuilder.components.docView.edit')}</>}
+                ariaLabel={i18nT('apps.specBuilder.components.docView.edit_document', { document: tab })}
+                title={i18nT('apps.specBuilder.components.docView.edit_this_document_directly')}
+                onClick={beginEdit}
+              />
+            )}
+        </div>
+      )}
       <div ref={boxRef} className="flex-1 min-h-0 overflow-y-auto text-[13px] relative">
-        {content ? (
+        {editing ? (
+          <textarea
+            autoFocus
+            value={editing.text}
+            onChange={(e) => setEditing({ ...editing, text: e.target.value })}
+            aria-label={i18nT('apps.specBuilder.components.docView.edit_document', { document: tab })}
+            spellCheck={false}
+            className="w-full h-full resize-none font-mono text-[12px] leading-relaxed px-4 py-3 focus-ring"
+            style={{ ...inputStyle, borderRadius: 0, border: 'none', minHeight: '100%' }}
+          />
+        ) : showTasks ? (
+          <TaskList
+            tasks={detail?.tasks ?? []}
+            progress={detail?.task_progress}
+            pendingIndex={pendingTaskIndex}
+            busy={running || detail?.status === 'executing'}
+            onRun={(t) => runTask?.(t)}
+          />
+        ) : content ? (
           <div className="px-5 py-[18px]">
             <MarkdownRenderer content={content} />
           </div>

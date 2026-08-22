@@ -20,6 +20,7 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import math
@@ -878,6 +879,90 @@ def _new_slot_key(name: str) -> str:
 
 _PHASE_FILES = [("tasks", "tasks.md"), ("design", "design.md"), ("requirements", "requirements.md")]
 
+#: ONE task line in ``tasks.md``: a bullet or ordered marker, then a checkbox,
+#: then the task text. Group 1 is the box body (empty/blank = open, ``x``/``X`` =
+#: done) and group 2 is the text. Accepts the ``-``/``*``/``+`` and ``1.``/``1)``
+#: markers Markdown allows, and a bare ``[]`` alongside ``[ ]``, because the list
+#: is model-written and its marker style varies between runs.
+#:
+#: Deliberately the ONLY task-line pattern in this module. The handoff gate needs
+#: "is there an open task", the detail endpoint needs the enumerated list, and the
+#: per-task endpoint needs to address one of them; expressing those as separate
+#: regexes would let the gate and the list disagree about what a task even is,
+#: and the per-task run would then target a line the gate never counted.
+_TASK_LINE_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+[.)])[ \t]+\[([ \t]?|[xX])\][ \t]*(.*)$", re.MULTILINE)
+
+#: Documents the user may edit through the app. The spec directory also holds
+#: ``.spec-state.json`` (agent-authored) and the STOP sentinel (a control), and
+#: neither is a document a person should be able to PUT arbitrary text into.
+_EDITABLE_DOCS = frozenset(f for _phase, f in _PHASE_FILES)
+
+#: Phases whose approval the app records. Matches ``ADVANCE`` in the SPA: there is
+#: no "approve tasks" step, because approving the task list IS the handoff.
+_APPROVABLE_PHASES = ("requirements", "design")
+
+#: Cap on tasks enumerated for one spec. A model-written list is normally tens of
+#: lines; the bound stops a pathological file from inflating every detail poll.
+_MAX_TASKS = 300
+
+
+def _sha256_text(text: str) -> str:
+    """Content hash used as an edit/approval fingerprint.
+
+    Hex-encoded SHA-256 of the UTF-8 bytes. Two uses, both about a document
+    changing under someone: an editor sends back the hash it loaded so a save
+    that would overwrite an agent's newer write is refused, and an approval
+    records the hash it approved so the UI can say the document has moved since.
+    """
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _parse_tasks(text: str) -> list[dict]:
+    """Enumerate ``tasks.md``'s checklist as addressable tasks.
+
+    Each task carries its ``index`` (position among task lines, which is what the
+    UI renders and what the run endpoint addresses) and a ``hash`` of its text.
+    BOTH are required to act on one: an index alone is a moving target because the
+    agent rewrites this file between polls, so a click on "task 3" could dispatch
+    whatever ended up third. The hash pins the identity the user actually saw, and
+    a mismatch is refused rather than guessed at.
+
+    ``tasks.md`` stays the source of truth -- there is no sidecar task store. That
+    file is the interop contract with the Kiro IDE and CLI, which read and write
+    the same three documents, so a spec built here has to remain a spec they can
+    open. Progress is therefore DERIVED by re-parsing checkboxes rather than
+    tracked separately, and an agent (or a person) checking a box by hand shows up
+    without anything having to be told.
+    """
+    tasks: list[dict] = []
+    for match in _TASK_LINE_RE.finditer(text or ""):
+        body = (match.group(2) or "").strip()
+        if not body:
+            # A checkbox with no text is not something a user can be asked to run.
+            continue
+        tasks.append(
+            {
+                "index": len(tasks),
+                "text": _redact(body)[:_MAX_FIELD],
+                "done": match.group(1).strip().lower() == "x",
+                "hash": _sha256_text(body),
+            }
+        )
+        if len(tasks) >= _MAX_TASKS:
+            break
+    return tasks
+
+
+def _has_open_task(text: str) -> bool:
+    """True when ``tasks.md`` holds at least one UNCHECKED task.
+
+    The predicate behind the handoff gate. Existence is not a plan: the prompt the
+    gate arms tells the agent to work through each unchecked task in order, so a
+    zero-byte, prose-only or fully-checked file gave the autonomous loop nothing to
+    act on while still reading as a finished Tasks phase.
+    """
+    return any(not t["done"] for t in _parse_tasks(text))
+
 
 def _spec_file(spec_dir: Path, fname: str) -> Path | None:
     """Resolve ``spec_dir/fname`` for reading, or ``None`` if it isn't safe.
@@ -939,7 +1024,7 @@ def _read_spec_text(spec_dir: Path, fname: str) -> str | None:
     return raw.decode("utf-8", errors="replace")
 
 
-def _collect_spec_documents(spec_dir: Path) -> tuple[str, dict, dict | None]:
+def _collect_spec_documents(spec_dir: Path) -> tuple[str, dict, dict | None, dict]:
     """Gather everything the detail endpoint needs off the filesystem.
 
     BLOCKING — call via ``asyncio.to_thread``. Bundled into one function so the
@@ -948,7 +1033,7 @@ def _collect_spec_documents(spec_dir: Path) -> tuple[str, dict, dict | None]:
     documents, and read + normalize the agent-authored state file.
     """
     phase = _derive_phase(spec_dir)
-    files = _read_spec_files(spec_dir)
+    files, docs = _read_spec_files(spec_dir)
     state: dict | None = None
     raw_text = _read_spec_text(spec_dir, ".spec-state.json")
     if raw_text is not None:
@@ -956,7 +1041,18 @@ def _collect_spec_documents(spec_dir: Path) -> tuple[str, dict, dict | None]:
             state = _normalize_spec_state(json.loads(raw_text))
         except json.JSONDecodeError:
             state = None
-    return phase, files, state
+    # The task list is parsed from the SAME tasks.md text already in hand rather
+    # than re-read: the detail endpoint is the only consumer and it polls every
+    # 2.5s during a build. Parsed from the redacted copy on purpose -- these
+    # strings are rendered as labels, and a task line is not a document the user
+    # edits through this field.
+    tasks = _parse_tasks(files.get("tasks.md") or "")
+    meta = {
+        "docs": docs,
+        "tasks": tasks,
+        "task_progress": {"done": sum(1 for t in tasks if t["done"]), "total": len(tasks)},
+    }
+    return phase, files, state, meta
 
 
 def _verified_spec_dir(spec_dir: Path) -> Path | None:
@@ -986,6 +1082,71 @@ def _verified_spec_dir(spec_dir: Path) -> Path | None:
         return spec_dir
     except OSError:
         return None
+
+
+def _save_spec_doc(spec_dir: Path, fname: str, text: str, base_hash: str) -> str:
+    """Compare-and-swap one spec document. ``""`` on success, else a refusal code.
+
+    BLOCKING -- call via ``asyncio.to_thread``.
+
+    The read, the hash comparison and the write are ONE hop on purpose. Splitting
+    them (read the document to hash it, await, then write) reopens exactly the race
+    the hash exists to close: the agent writes into this directory continuously, so
+    a write landing between the comparison and the replace is silently overwritten
+    by an editor that had already been told it was up to date. Here nothing awaits
+    between them.
+
+    *base_hash* is the hash the editor loaded, and ``""`` means "there was no file"
+    -- so creating a document only succeeds while it genuinely does not exist. A
+    mismatch returns ``conflict:<current-hash>`` and writes NOTHING; the caller
+    turns that into a 409 carrying the current content so the user can merge rather
+    than losing what they typed.
+
+    Writes through a PINNED directory descriptor with ``O_NOFOLLOW``, and swaps by
+    ``os.replace``, for the reasons ``_write_stop_sentinel`` documents at length:
+    verifying the directory and then writing by PATH lets the agent swap the
+    verified directory for a symlink in between, landing user-authored text
+    somewhere else entirely. Where pinning is unavailable (Windows) this FAILS
+    CLOSED rather than writing by path -- consistent with every other writer in
+    this module. Editing is then unavailable there instead of unsafe, and the
+    documents remain fully reviewable and agent-editable, which is how the app
+    worked before this endpoint existed.
+    """
+    if fname not in _EDITABLE_DOCS:
+        return "not_editable"
+    if len(text.encode("utf-8")) > _MAX_SPEC_BYTES:
+        return "too_large"
+    real_dir = _verified_spec_dir(spec_dir)
+    if real_dir is None:
+        return "unsafe_dir"
+    current = _read_spec_text(real_dir, fname)
+    current_hash = _sha256_text(current) if current is not None else ""
+    if current_hash != base_hash:
+        return "conflict:" + current_hash
+    if not _CAN_PIN_DIR:
+        return "unsupported_platform"
+    tmp_name = f".{fname}.{os.getpid()}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        dir_fd = os.open(real_dir, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return "write_failed"
+    try:
+        fd = os.open(tmp_name, flags, 0o600, dir_fd=dir_fd)
+        try:
+            os.write(fd, text.encode("utf-8"))
+        finally:
+            os.close(fd)
+        os.replace(tmp_name, fname, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        return ""
+    except OSError:
+        try:
+            os.unlink(tmp_name, dir_fd=dir_fd)
+        except OSError:
+            pass  # nothing to clean up
+        return "write_failed"
+    finally:
+        os.close(dir_fd)
 
 
 def _write_stop_sentinel(spec_dir: Path) -> bool:
@@ -1184,8 +1345,16 @@ def _prepare_handoff(
     # refuses a symlink, a realpath that escapes the spec dir, and a sensitive
     # target; the extra is_file() keeps the "not written yet" case honest.
     tasks = _spec_file(spec_dir, "tasks.md")
-    ready = tasks is not None and tasks.is_file()
-    return ready, sentinel
+    if tasks is None or not tasks.is_file():
+        return False, sentinel
+    # Existence is not a plan. The prompt this gate arms tells the agent to work
+    # through each UNCHECKED task in order, so a zero-byte or half-written
+    # tasks.md gave the autonomous loop nothing to act on while still reading as
+    # a finished Tasks phase. Read through _read_spec_text rather than by name:
+    # it validates the descriptor it read, and the agent writes into this very
+    # directory, so the inode can change after the is_file() above.
+    text = _read_spec_text(spec_dir, "tasks.md")
+    return bool(text and _has_open_task(text)), sentinel
 
 
 async def _restore_worker_transcript(state: Any, name: str, *, adopt_closed: bool) -> None:
@@ -1450,6 +1619,49 @@ def _numeric(value: object) -> float:
 
 #: Outcomes of _claim_execution, so the caller can tell "someone else is already
 #: building" from "the spec is gone" without re-reading the index.
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def _normalize_approvals(raw: Any, docs: dict) -> dict:
+    """Project the stored approval record onto its schema and mark what has moved.
+
+    Returns ``{phase: {"hash", "at", "user", "stale"}}`` for the phases in
+    ``_APPROVABLE_PHASES`` only.
+
+    ``stale`` is DERIVED here, never stored: it compares the hash that was approved
+    against the document's hash right now, so a document the agent rewrote after
+    sign-off reports itself as changed instead of continuing to look approved. A
+    phase whose document has since disappeared is also stale -- there is nothing
+    left that the approval describes.
+
+    Normalized on read because this record lives in the app's index, and the index
+    is reachable by the agent (it runs shell commands as the user), exactly like
+    every other index field this module scrubs on the way out. Which is also the
+    honest limit of what this is: a record of a human review, not an attestation
+    that cannot be forged. It earns its place against the previous behaviour --
+    where approval was a chat message and left no trace at all -- not against a
+    threat model where the agent is hostile.
+    """
+    out: dict[str, dict] = {}
+    if not isinstance(raw, dict):
+        return out
+    for phase in _APPROVABLE_PHASES:
+        entry = raw.get(phase)
+        if not isinstance(entry, dict):
+            continue
+        approved_hash = str(entry.get("hash", ""))
+        if not _SHA256_RE.match(approved_hash):
+            continue
+        current = str((docs.get(phase + ".md") or {}).get("hash", ""))
+        out[phase] = {
+            "hash": approved_hash,
+            "at": _numeric(entry.get("at")),
+            "user": _clean_str(entry.get("user")),
+            "stale": current != approved_hash,
+        }
+    return out
+
+
 _CLAIM_OK = ""
 _CLAIM_TAKEN = "taken"
 _CLAIM_GONE = "gone"
@@ -1851,12 +2063,41 @@ def _derive_phase(spec_dir: Path) -> str:
     return "new"
 
 
-def _read_spec_files(spec_dir: Path) -> dict:
-    out: dict[str, str | None] = {}
+def _read_spec_files(spec_dir: Path) -> tuple[dict, dict]:
+    """Read the three spec documents once, returning ``(files, docs)``.
+
+    ``files`` is what the browser renders: the text with credentials REDACTED.
+    ``docs`` is the per-document metadata the editor needs, and it is derived from
+    the SAME read so a 2.5s detail poll does not open three 1 MiB files twice.
+
+    ``docs[fname]["hash"]`` is the hash of the file as it is ON DISK, not of the
+    redacted copy, because it is the fingerprint the compare-and-swap write
+    compares against.
+
+    ``docs[fname]["editable"]`` is False when redaction ALTERED the text. This is
+    the hazard that arrives with an editor and did not exist while the documents
+    were read-only: the user is shown a redacted rendering, so saving it back would
+    persist ``[redacted]`` over whatever real value was there and destroy it. A
+    document that redacts is therefore displayed and reviewable but not writable
+    through the app, and the agent -- which reads the real file -- can still edit it
+    on request. Refusing the edit loses nothing; allowing it would silently lose the
+    user's content.
+    """
+    files: dict[str, str | None] = {}
+    docs: dict[str, dict] = {}
     for _phase, fname in _PHASE_FILES:
         text = _read_spec_text(spec_dir, fname)
-        out[fname] = _redact(text) if text is not None else None
-    return out
+        if text is None:
+            files[fname] = None
+            continue
+        shown = _redact(text)
+        files[fname] = shown
+        docs[fname] = {
+            "hash": _sha256_text(text),
+            "editable": shown == text,
+            "reason": "" if shown == text else "redacted",
+        }
+    return files, docs
 
 
 # ── validation / auth ────────────────────────────────────────────────────────
@@ -1964,6 +2205,44 @@ def _exec_prompt(name: str, spec_dir: Path, working_dir: str) -> str:
         f"mark its checkbox [x] in tasks.md, run the relevant build/tests to verify, "
         f"then continue. Stop when all tasks are checked or you hit a blocker that needs "
         f"me, and summarize what was done and what remains."
+    )
+
+
+def _task_prompt(name: str, spec_dir: Path, working_dir: str, task_text: str) -> str:
+    """Instruction for running ONE task from the list.
+
+    Deliberately scoped and deliberately NOT an autonudge loop: the whole-list
+    handoff arms a loop that keeps going, while this dispatches a single turn and
+    stops. Running one task is how a user takes a plan for a walk without handing
+    over the whole thing, so it must end where the user expects it to.
+
+    Names the task by its TEXT rather than an index, because the model reads
+    tasks.md itself and the numbering it sees can differ from the UI's -- indexes
+    identify the task on the wire, the text identifies it to the agent.
+    """
+    return (
+        f"SINGLE TASK from spec '{name}'. Work ONLY on this one task from "
+        f"{spec_dir / 'tasks.md'}, operating inside {working_dir} (your shell already "
+        f"starts there — no cd needed):\n\n{task_text}\n\n"
+        f"Mark its checkbox [x] in tasks.md when it is genuinely done, run the "
+        f"relevant build/tests to verify, then STOP and summarize. Do NOT continue "
+        f"to the following tasks — I am running these one at a time."
+    )
+
+
+def _duplicate_prompt(name: str, source: str, spec_dir: Path) -> str:
+    """Orientation for a duplicated spec's fresh conversation.
+
+    A duplicate copies the documents but NOT the transcript -- the new spec gets
+    its own slot key, so it cannot inherit the original's history. Without a first
+    turn the agent would come to the conversation knowing nothing about documents
+    that are already on disk, so this tells it what it is looking at and, notably,
+    tells it not to start rewriting them.
+    """
+    return (
+        f"Spec '{name}' is a copy of '{source}'. Its documents are already written "
+        f"at {spec_dir} — read them before doing anything else. Do NOT rewrite or "
+        f"regenerate them; wait for me to say what should change in this copy."
     )
 
 
@@ -2603,11 +2882,17 @@ async def _handle_list(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
     index, phases = await asyncio.to_thread(_load_index_with_discovery)
+    # Archived specs are hidden by default and fetched explicitly. Archive is the
+    # non-destructive counterpart to delete: the spec, its documents and its
+    # transcript all stay, it simply leaves the working set.
+    want_archived = request.query.get("archived") == "1"
     specs = []
     for name, meta in index.items():
         # A delete in flight keeps its entry so the name stays reserved (see
         # _mark_deleting); it is not a spec the user still has.
         if isinstance(meta, dict) and meta.get(_DELETING):
+            continue
+        if (meta.get("archived") is True) != want_archived:
             continue
         spec_dir = Path(meta.get("spec_dir", ""))
         slot = state.get_slot(_slot_key(name)) if (state := request.app.get("state")) else None
@@ -2621,6 +2906,9 @@ async def _handle_list(request: web.Request) -> web.Response:
                 "working_dir": _redact(str(meta.get("working_dir", ""))),
                 "spec_dir": _redact(str(spec_dir)),
                 "spec_type": _redact(str(meta.get("spec_type", "feature"))),
+                # Optional display label; the rail falls back to the name.
+                "title": _clean_str(meta.get("title")),
+                "archived": meta.get("archived") is True,
                 # Reconciled, not raw: a capped nudge loop that ran out of cycles
                 # leaves "executing" in the index forever (see _effective_status).
                 "status": await _effective_status(name, meta, slot),
@@ -2921,7 +3209,7 @@ async def _handle_get(request: web.Request) -> web.Response:
     # and reading .spec-state.json. The UI polls this endpoint every 2.5s while a
     # build runs, so doing it inline froze the gateway's event loop — chat
     # streaming and heartbeats included — for the duration of every poll.
-    phase, files, spec_state = await asyncio.to_thread(_collect_spec_documents, spec_dir)
+    phase, files, spec_state, doc_meta = await asyncio.to_thread(_collect_spec_documents, spec_dir)
 
     # Live context counters from the worker slot's transcript. The slot is
     # CREATED here if it does not exist yet (see _ensure_worker_slot): a spec
@@ -2983,6 +3271,25 @@ async def _handle_get(request: web.Request) -> web.Response:
             "running": bool(getattr(slot, "running", False)) if slot is not None else False,
             "phase": phase,
             "files": files,
+            # Per-document hash + editability. The hash is what a save sends back
+            # as its compare-and-swap base, so the editor cannot overwrite a newer
+            # agent write; editable is false for a document redaction altered (see
+            # _read_spec_files).
+            "docs": doc_meta["docs"],
+            # tasks.md's checklist, enumerated and individually addressable, plus
+            # derived progress. Both come from re-parsing the markdown -- there is
+            # no separate task store to drift out of sync with the file the IDE and
+            # CLI also read.
+            "tasks": doc_meta["tasks"],
+            "task_progress": doc_meta["task_progress"],
+            # A recorded human review per phase, with `stale` set when the document
+            # moved after sign-off. Approval used to be a chat message and left
+            # nothing behind at all.
+            "approvals": _normalize_approvals(meta.get("approvals"), doc_meta["docs"]),
+            # Display label. The NAME stays the immutable identity (directory, git
+            # branch, slot key); this is the only part a rename may touch.
+            "title": _clean_str(meta.get("title")),
+            "archived": meta.get("archived") is True,
             "state": spec_state,
             "context": {
                 "worktree_branch": _redact(str(meta.get("worktree_branch", ""))),
@@ -3125,7 +3432,11 @@ async def _handle_handoff(request: web.Request) -> web.Response:
     )
     if not has_tasks:
         return web.json_response(
-            {"code": "tasks_missing", "error": "tasks.md does not exist yet — finish the Tasks phase first"}, status=409
+            {
+                "code": "tasks_missing",
+                "error": "tasks.md has no unchecked tasks yet — finish the Tasks phase first",
+            },
+            status=409
         )
     # Reread AFTER the await as well: a delete+recreate can land during the thread
     # hop, and a stale request would then capture the REPLACEMENT's slot while its
@@ -3391,6 +3702,486 @@ def _client_identity_mismatch(
     return bool(claim.slot_key) and bool(actual_slot_key) and claim.slot_key != actual_slot_key
 
 
+async def _pinned_entry(request: web.Request, name: str, body: dict) -> dict | web.Response:
+    """Resolve the spec FRESH, pinned to the identity the client rendered.
+
+    The shared prologue for every mutation added below, factored out because the
+    pinning argument is subtle and six copies of it would drift: the body read is
+    an await, so the entry has to be re-read after it, and the client's captured
+    ``spec_dir`` + ``slot_key`` are what make a stale tab detectable. Both fields
+    stay optional, so an older client is treated as unpinned rather than refused --
+    the same contract ``_client_claim`` documents.
+    """
+    claimed_dir = str(body.get("spec_dir", "") or "").strip()
+    claimed_key = str(body.get("slot_key", "") or "").strip()
+    fresh = await _touch_spec(
+        name, expect_spec_dir=claimed_dir or None, expect_slot_key=claimed_key or None
+    )
+    if fresh is None:
+        return web.json_response({"code": "stale_client", "error": _STALE_CLIENT_ERROR}, status=409)
+    return fresh
+
+
+def _agent_is_writing(request: web.Request, name: str) -> bool:
+    """True while this spec's agent turn is in flight.
+
+    Both the editor and the per-task run refuse in that window. The agent writes
+    the spec documents itself, so accepting a save mid-turn means one of the two
+    writes silently wins -- and the compare-and-swap hash cannot help, because the
+    editor's base hash was valid when the turn STARTED. Refusing is the honest
+    answer: the user is told to wait rather than told the save succeeded.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return False
+    slot = state.get_slot(_slot_key(name))
+    return bool(getattr(slot, "running", False))
+
+
+async def _handle_put_doc(request: web.Request) -> web.Response:
+    """Write one spec document from the app, guarded by a content hash.
+
+    This is the endpoint that turns the documents from read-only into editable.
+    Before it, every correction -- a typo, a stale acceptance criterion, reordering
+    two tasks -- cost a full model turn, because the only way to change a file was
+    to ask the agent to change it.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    fname = str(body.get("file", "")).strip()
+    if fname not in _EDITABLE_DOCS:
+        return web.json_response(
+            {"code": "not_editable", "error": f"file must be one of {sorted(_EDITABLE_DOCS)}"}, status=400
+        )
+    content = body.get("content")
+    if not isinstance(content, str):
+        return web.json_response({"code": "content_required", "error": "content must be a string"}, status=400)
+    base_hash = str(body.get("base_hash", "") or "")
+    # "" means "this document does not exist yet"; anything else must be a hash.
+    if base_hash and not _SHA256_RE.match(base_hash):
+        return web.json_response({"code": "invalid_base_hash", "error": "base_hash must be a sha256 hex digest"}, status=400)
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    if _agent_is_writing(request, name):
+        return web.json_response(
+            {"code": "agent_running", "error": "the agent is writing right now — wait for the turn to finish"}, status=409
+        )
+    result = await asyncio.to_thread(
+        _save_spec_doc, Path(str(fresh.get("spec_dir", ""))), fname, content, base_hash
+    )
+    if result.startswith("conflict:"):
+        # The document moved under the editor. NOTHING was written, and the
+        # current hash rides along so the client can refetch and show the
+        # divergence instead of silently discarding one side.
+        return web.json_response(
+            {
+                "code": "doc_conflict",
+                "error": "this document changed since you opened it — reload to see the current version",
+                "current_hash": result.partition(":")[2],
+            },
+            status=409,
+        )
+    if result == "unsupported_platform":
+        return web.json_response(
+            {
+                "code": "doc_write_unsupported",
+                "error": "editing documents is not available on this platform; ask the agent to make the change",
+            },
+            status=501,
+        )
+    if result == "too_large":
+        return web.json_response({"code": "doc_too_large", "error": "document exceeds the size limit"}, status=413)
+    if result:
+        return web.json_response({"code": "doc_write_failed", "error": "could not write the document"}, status=400)
+    _audit("spec_doc_write", f"{name}/{fname}")
+    return web.json_response({"ok": True, "hash": _sha256_text(content)})
+
+
+async def _handle_approve(request: web.Request) -> web.Response:
+    """Record a human approval of one phase, against the version approved.
+
+    Records rather than enforces, and the distinction is deliberate. Enforcing
+    would mean refusing the agent's write to ``design.md`` until requirements is
+    approved, and the agent writes through its OWN file tools rather than this
+    app's API -- so the app cannot enforce that without owning the agent's
+    filesystem access, and a gate that can be walked around is worse than an
+    honest record. What this fixes is that approval used to be a chat message and
+    nothing else: the server never knew a phase had been approved, by whom, or
+    against which text.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    phase = str(body.get("phase", "")).strip()
+    if phase not in _APPROVABLE_PHASES:
+        return web.json_response(
+            {"code": "invalid_phase", "error": f"phase must be one of {list(_APPROVABLE_PHASES)}"}, status=400
+        )
+    claimed_hash = str(body.get("hash", "") or "")
+    if not _SHA256_RE.match(claimed_hash):
+        return web.json_response({"code": "invalid_hash", "error": "hash must be a sha256 hex digest"}, status=400)
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    spec_dir = Path(str(fresh.get("spec_dir", "")))
+    fname = phase + ".md"
+
+    def _current_hash() -> str:
+        text = _read_spec_text(spec_dir, fname)
+        return _sha256_text(text) if text is not None else ""
+
+    actual = await asyncio.to_thread(_current_hash)
+    if actual != claimed_hash:
+        # Approving a version you have not seen records nothing meaningful, so the
+        # client is sent back to re-read rather than having its claim trusted.
+        return web.json_response(
+            {
+                "code": "doc_changed",
+                "error": f"{fname} changed since you reviewed it — reload before approving",
+                "current_hash": actual,
+            },
+            status=409,
+        )
+    user = str(request.get("user") or "")
+    record = {"hash": claimed_hash, "at": time.time(), "user": user[:_MAX_FIELD]}
+
+    def _record(index: dict) -> bool:
+        meta = index.get(name)
+        if meta is None or meta.get(_DELETING):
+            return False
+        if str(meta.get("spec_dir", "")) != str(spec_dir):
+            return False
+        # Merged INSIDE the lock rather than by reading the dict out, editing it and
+        # stamping it back: the read-modify-write would drop a second phase's
+        # approval that landed in between, and this is the one field where losing a
+        # record silently defeats the point of having it.
+        existing = meta.get("approvals")
+        approvals = dict(existing) if isinstance(existing, dict) else {}
+        approvals[phase] = record
+        meta["approvals"] = approvals
+        meta["updated_at"] = time.time()
+        return True
+
+    if not await _mutate_index(_record):
+        return web.json_response({"code": "stale_client", "error": _STALE_CLIENT_ERROR}, status=409)
+    _audit("spec_phase_approve", f"{name}/{phase}")
+    return web.json_response({"ok": True, "phase": phase, "hash": claimed_hash})
+
+
+async def _handle_run_task(request: web.Request) -> web.Response:
+    """Run ONE task from tasks.md as a single turn.
+
+    The whole-list handoff arms an autonudge loop over every unchecked task, which
+    is the only granularity the app had: there was no way to run one task, and no
+    way to see which task a run was on. This dispatches a single scoped turn and
+    stops, and progress stays derived from the file's checkboxes.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    raw_index = body.get("index")
+    if not isinstance(raw_index, int) or isinstance(raw_index, bool) or raw_index < 0:
+        return web.json_response({"code": "invalid_index", "error": "index must be a non-negative integer"}, status=400)
+    claimed_hash = str(body.get("hash", "") or "")
+    if not _SHA256_RE.match(claimed_hash):
+        return web.json_response({"code": "invalid_hash", "error": "hash must be a sha256 hex digest"}, status=400)
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    state = request.app.get("state")
+    # An autonudge loop already working the whole list would collide with a
+    # single-task turn: both write the same files and both check boxes off.
+    if await _effective_status(name, fresh, state.get_slot(_slot_key(name)) if state else None) == "executing":
+        return web.json_response(
+            {"code": "already_executing", "error": "this spec is already building — pause it first"}, status=409
+        )
+    if _agent_is_writing(request, name):
+        return web.json_response(
+            {"code": "agent_running", "error": "the agent is busy right now — wait for the turn to finish"}, status=409
+        )
+    spec_dir = Path(str(fresh.get("spec_dir", "")))
+
+    def _tasks() -> list[dict]:
+        return _parse_tasks(_read_spec_text(spec_dir, "tasks.md") or "")
+
+    tasks = await asyncio.to_thread(_tasks)
+    if raw_index >= len(tasks):
+        return web.json_response(
+            {"code": "task_not_found", "error": "that task is no longer in the list — reload"}, status=409
+        )
+    task = tasks[raw_index]
+    # Position AND text must both still match. The agent rewrites tasks.md between
+    # polls, so an index alone is a moving target and a click on "task 3" could
+    # otherwise dispatch whatever ended up third.
+    if task["hash"] != claimed_hash:
+        return web.json_response(
+            {
+                "code": "task_changed",
+                "error": "that task changed since the list was rendered — reload and pick it again",
+            },
+            status=409,
+        )
+    if task["done"]:
+        return web.json_response({"code": "task_done", "error": "that task is already checked off"}, status=409)
+    slot = await _ensure_worker_slot(state, name, fresh)
+    if slot is None:
+        return web.json_response(
+            {"code": "slot_owned_by_another_app", "error": "this spec's chat session is owned by another app"}, status=409
+        )
+    # Re-pin immediately before dispatch, for the reason _handle_message spells
+    # out: _ensure_worker_slot awaits, so a delete-and-recreate can complete in
+    # that window and the turn would drive the replacement's agent.
+    if (
+        await _touch_spec(
+            name,
+            expect_spec_dir=str(spec_dir),
+            expect_slot_key=str(fresh.get("slot_key", "")) or None,
+        )
+        is None
+    ):
+        return web.json_response({"code": "stale_client", "error": _STALE_CLIENT_ERROR}, status=409)
+    _dispatch_turn(
+        state,
+        slot,
+        _task_prompt(name, spec_dir, str(fresh.get("working_dir", "")), task["text"]),
+    )
+    _audit("spec_task_run", f"{name}#{raw_index}")
+    return web.json_response({"ok": True, "index": raw_index})
+
+
+async def _handle_title(request: web.Request) -> web.Response:
+    """Set a spec's display label.
+
+    A rename, but of the LABEL only -- and that limit is the design, not a
+    shortcut. The name is simultaneously the on-disk directory under
+    ``.kiro/specs/``, the ``spec/<name>`` git branch, and the chat slot key, and
+    ``_owns_slot_key`` requires the key to ENCODE the indexed name. So renaming the
+    identity would move a directory the IDE and CLI also read, rewrite a branch
+    that may already have commits, and orphan the spec's transcript, which is the
+    very thing delete-and-recreate loses. A label fixes what users actually hit --
+    a spec misnamed at the New Spec screen -- and costs none of that.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    if "title" not in body:
+        return web.json_response({"code": "title_required", "error": "title required"}, status=400)
+    title = str(body.get("title") or "").strip()[:120]
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    # "" clears the label and the UI falls back to the name, so an empty title is
+    # a reset rather than an error.
+    if await _touch_spec(
+        name,
+        expect_spec_dir=str(fresh.get("spec_dir", "")),
+        expect_slot_key=str(fresh.get("slot_key", "")) or None,
+        title=title,
+    ) is None:
+        return web.json_response({"code": "stale_client", "error": _STALE_CLIENT_ERROR}, status=409)
+    _audit("spec_title", name)
+    return web.json_response({"ok": True, "title": title})
+
+
+async def _handle_archive(request: web.Request) -> web.Response:
+    """Move a spec out of the working set, or bring it back.
+
+    The non-destructive counterpart to delete: documents, transcript and index
+    entry all stay, so an archived spec is recoverable by definition. Delete was
+    the only lifecycle operation besides create, which meant tidying up a finished
+    spec and destroying it were the same act.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    archived = body.get("archived")
+    if not isinstance(archived, bool):
+        return web.json_response({"code": "archived_required", "error": "archived must be a boolean"}, status=400)
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    state = request.app.get("state")
+    if archived and await _effective_status(
+        name, fresh, state.get_slot(_slot_key(name)) if state else None
+    ) == "executing":
+        # Archiving a running spec would hide a loop that keeps editing files, so
+        # the user would have no surface left to stop it from.
+        return web.json_response(
+            {"code": "spec_executing", "error": "pause this spec before archiving it"}, status=409
+        )
+    if await _touch_spec(
+        name,
+        expect_spec_dir=str(fresh.get("spec_dir", "")),
+        expect_slot_key=str(fresh.get("slot_key", "")) or None,
+        archived=archived,
+    ) is None:
+        return web.json_response({"code": "stale_client", "error": _STALE_CLIENT_ERROR}, status=409)
+    _audit("spec_archive" if archived else "spec_unarchive", name)
+    return web.json_response({"ok": True, "archived": archived})
+
+
+async def _handle_duplicate(request: web.Request) -> web.Response:
+    """Copy a spec's documents into a new spec.
+
+    The recovery path for the case rename cannot serve: a spec whose NAME is wrong
+    after it already has a branch or history. The copy takes the documents and
+    nothing else -- new name, new directory, new slot key, so a fresh conversation
+    rather than a replayed one. No worktree either; that is an opt-in at create
+    time and silently branching off someone's repo is not a copy operation.
+    """
+    if denied := _require_auth(request):
+        return denied
+    name = request.match_info["name"]
+    body = await _read_json(request)
+    if isinstance(body, web.Response):
+        return body
+    new_name = str(body.get("new_name", "")).strip()
+    if not _usable_name(new_name):
+        return web.json_response(
+            {
+                "code": "invalid_name",
+                "error": (
+                    "new_name must be 1-64 chars: letters, digits, '-' or '_', "
+                    "and must not look like a credential"
+                ),
+            },
+            status=400,
+        )
+    fresh = await _pinned_entry(request, name, body)
+    if isinstance(fresh, web.Response):
+        return fresh
+    if new_name == name:
+        return web.json_response({"code": "spec_exists", "error": "that is the same name"}, status=409)
+    working_dir = str(fresh.get("working_dir", ""))
+    safe_wd = await asyncio.to_thread(_safe_dir, working_dir)
+    if safe_wd is None:
+        return web.json_response(
+            {"code": "working_dir_not_a_directory", "error": "this spec's project folder is no longer usable"}, status=400
+        )
+    source_dir = Path(str(fresh.get("spec_dir", "")))
+
+    def _copy() -> tuple[Path, str, dict]:
+        """Read the source documents, then prepare the destination. ONE hop."""
+        payload = {f: _read_spec_text(source_dir, f) for _p, f in _PHASE_FILES}
+        target, refusal = _prepare_spec_dir(str(safe_wd), safe_wd, new_name, False)
+        return target, refusal, payload
+
+    target_dir, refusal, docs = await asyncio.to_thread(_copy)
+    if refusal:
+        kind = refusal.partition(":")[0]
+        if kind == "existing":
+            return web.json_response(
+                {"code": "spec_files_exist", "error": f"'{new_name}' already has spec files on disk"}, status=409
+            )
+        if kind == "escape":
+            _audit("spec_path_escape_denied", f"{new_name} -> {target_dir}")
+            return web.json_response(
+                {"code": "spec_path_outside_root", "error": "resolved spec path is outside its root"}, status=400
+            )
+        return web.json_response(
+            {"code": "spec_dir_creation_failed", "error": "cannot create the copy's directory"}, status=400
+        )
+    if not any(text for text in docs.values()):
+        return web.json_response(
+            {"code": "nothing_to_copy", "error": "this spec has no documents to copy yet"}, status=409
+        )
+
+    def _write_copies() -> str:
+        for fname, text in docs.items():
+            if not text:
+                continue
+            # base_hash "" — the destination was just created, so every write must
+            # be a create. A non-empty file there means something else got in
+            # first, and the compare-and-swap refuses rather than overwriting it.
+            result = _save_spec_doc(target_dir, fname, text, "")
+            if result:
+                return result
+        return ""
+
+    if failure := await asyncio.to_thread(_write_copies):
+        _audit("spec_duplicate_failed", f"{name} -> {new_name}", outcome="failure")
+        if failure == "unsupported_platform":
+            return web.json_response(
+                {"code": "doc_write_unsupported", "error": "duplicating is not available on this platform"}, status=501
+            )
+        return web.json_response({"code": "doc_write_failed", "error": "could not write the copy"}, status=400)
+
+    await asyncio.to_thread(_forget_deleted, str(target_dir))
+    slot_key = _new_slot_key(new_name)
+    _SLOT_KEYS[new_name] = slot_key
+    now = time.time()
+    entry = {
+        "working_dir": str(safe_wd),
+        "spec_dir": str(target_dir),
+        # Validated, not carried over blind: spec_type comes off the agent-writable
+        # index, and an unknown value would flow into the copy's own payload.
+        "spec_type": (
+            st if (st := str(fresh.get("spec_type", "feature"))) in _VALID_TYPES else "feature"
+        ),
+        "status": "planning",
+        "slot_key": slot_key,
+        "worktree_branch": "",
+        "repo_root": "",
+        "title": _clean_str(fresh.get("title")),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    def _insert(index: dict) -> bool:
+        if new_name in index:
+            return False
+        index[new_name] = entry
+        return True
+
+    if not await _mutate_index(_insert):
+        return web.json_response(
+            {"code": "spec_exists", "error": f"a spec named '{new_name}' already exists"}, status=409
+        )
+    # adopt_closed=False for the same reason create passes it: a name reused after
+    # a delete must not hand the fresh agent the deleted spec's transcript.
+    slot = await _ensure_worker_slot(request.app.get("state"), new_name, entry, adopt_closed=False)
+    if slot is None:
+        def _pop(index: dict) -> bool:
+            meta = index.get(new_name)
+            if meta is None or str(meta.get("slot_key", "")) != slot_key:
+                return False
+            del index[new_name]
+            return True
+
+        await _mutate_index(_pop)
+        return web.json_response(
+            {"code": "slot_owned_by_another_app", "error": f"a chat session named '{new_name}' is owned by another app"},
+            status=409,
+        )
+    try:
+        slot.title = f"Spec: {new_name}"
+        slot._titled = True
+        if (state := request.app.get("state")) is not None and hasattr(state, "push_slot_title"):
+            state.push_slot_title(slot.key, slot.title)
+    except Exception:
+        logger.debug("title set failed", exc_info=True)
+    _dispatch_turn(request.app.get("state"), slot, _duplicate_prompt(new_name, name, target_dir))
+    _audit("spec_duplicate", f"{name} -> {new_name}")
+    return web.json_response({"name": new_name, "spec_dir": str(target_dir)}, status=201)
+
+
 async def _handle_stop_execution(request: web.Request) -> web.Response:
     if denied := _require_auth(request):
         return denied
@@ -3611,5 +4402,14 @@ def register_routes(app: web.Application) -> None:
     # Alias: the SPA page calls this "execute".
     app.router.add_post(f"{base}/specs/{{name}}/execute", _require_enabled(_handle_handoff))
     app.router.add_post(f"{base}/specs/{{name}}/stop", _require_enabled(_handle_stop_execution))
+    # Direct authority over the artifacts, rather than only the ability to ask the
+    # agent for a change: edit a document, record a phase approval, run one task,
+    # and the label / archive / duplicate lifecycle.
+    app.router.add_put(f"{base}/specs/{{name}}/doc", _require_enabled(_handle_put_doc))
+    app.router.add_post(f"{base}/specs/{{name}}/approve", _require_enabled(_handle_approve))
+    app.router.add_post(f"{base}/specs/{{name}}/task", _require_enabled(_handle_run_task))
+    app.router.add_post(f"{base}/specs/{{name}}/title", _require_enabled(_handle_title))
+    app.router.add_post(f"{base}/specs/{{name}}/archive", _require_enabled(_handle_archive))
+    app.router.add_post(f"{base}/specs/{{name}}/duplicate", _require_enabled(_handle_duplicate))
     app.router.add_delete(f"{base}/specs/{{name}}", _require_enabled(_handle_delete))
     logger.info("spec-builder: registered app routes under %s", base)

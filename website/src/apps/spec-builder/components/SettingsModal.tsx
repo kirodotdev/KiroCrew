@@ -31,7 +31,7 @@ export default function SettingsModal({ onClose, setErr }: SettingsModalProps) {
   // stay local state because they are edit buffers, seeded once the read lands.
   const settingsQuery = useQuery({
     queryKey: ['spec-builder', 'settings'],
-    queryFn: () => specApi.getSettings(),
+    queryFn: ({ signal }) => specApi.getSettings(signal),
   })
   useEffect(() => {
     if (settingsQuery.data) {

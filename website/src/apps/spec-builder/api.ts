@@ -18,6 +18,42 @@ export interface SpecSummary {
   status?: string
   /** true while the spec's agent turn is in flight (drives the pulsing dot). */
   running?: boolean
+  /** Optional display label. The NAME stays the spec's identity (its directory,
+   *  git branch and chat slot key); this is the only part a rename may change. */
+  title?: string
+  archived?: boolean
+}
+
+/** Per-document metadata the editor needs (GET /specs/{name} → `docs`). */
+export interface SpecDocMeta {
+  /** Hash of the file AS STORED. Sent back with a save as its compare-and-swap
+   *  base, so an edit cannot overwrite a newer agent write. */
+  hash: string
+  /** False when redaction altered the rendered text — saving it back would
+   *  persist `[redacted]` over the real value, so the app refuses to write it. */
+  editable: boolean
+  reason?: string
+}
+
+/** One addressable task parsed out of tasks.md. */
+export interface SpecTask {
+  /** Position among task lines; what the run endpoint addresses. */
+  index: number
+  text: string
+  done: boolean
+  /** Hash of the task text, sent with a run so a list that moved is refused
+   *  rather than dispatching whatever ended up at that index. */
+  hash: string
+}
+
+/** A recorded phase approval. */
+export interface SpecApproval {
+  /** The document hash that was approved. */
+  hash: string
+  at?: number
+  user?: string
+  /** True when the document changed after it was approved. */
+  stale?: boolean
 }
 
 export interface SpecListResponse {
@@ -62,6 +98,16 @@ export interface SpecDetail {
   spec_dir?: string
   /** Document contents keyed by filename, e.g. { 'requirements.md': '…' }. */
   files?: Record<string, string>
+  /** Hash + editability per document, keyed by the same filenames as `files`. */
+  docs?: Record<string, SpecDocMeta>
+  /** tasks.md's checklist, enumerated. Derived by re-parsing the markdown, which
+   *  stays the source of truth — there is no separate task store. */
+  tasks?: SpecTask[]
+  task_progress?: { done: number; total: number }
+  /** Recorded human approvals, keyed by phase ('requirements' | 'design'). */
+  approvals?: Record<string, SpecApproval>
+  title?: string
+  archived?: boolean
   state?: SpecState
   context?: SpecContextStats
   running?: boolean
@@ -118,6 +164,21 @@ import { i18nT } from '../../i18n/t'
 
 // ── fetch helper ────────────────────────────────────────────────────────────
 
+/** An error carrying the backend's machine-readable `code`.
+ *
+ *  The message alone is not enough once writes exist: a save that fails because
+ *  the document moved under the editor (`doc_conflict`) needs a different
+ *  response from the user than one that failed for any other reason, and matching
+ *  on translated prose to tell them apart would break in every locale but one. */
+export class SpecApiError extends Error {
+  code: string
+  constructor(message: string, code: string) {
+    super(message)
+    this.name = 'SpecApiError'
+    this.code = code
+  }
+}
+
 async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const r = await fetch(API + path, {
     credentials: 'same-origin',
@@ -126,12 +187,15 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   })
   if (!r.ok) {
     let msg = i18nT('apps.specBuilder.api.something_went_wrong', { status: r.status })
+    let code = ''
     try {
-      msg = ((await r.json()) as { error?: string }).error || msg
+      const parsed = (await r.json()) as { error?: string; code?: string }
+      msg = parsed.error || msg
+      code = parsed.code || ''
     } catch {
       /* non-JSON error body — keep the generic message */
     }
-    throw new Error(msg)
+    throw new SpecApiError(msg, code)
   }
   if (r.status === 204) return undefined as T
   const text = await r.text()
@@ -140,10 +204,19 @@ async function req<T>(path: string, opts?: RequestInit): Promise<T> {
 
 const enc = (name: string) => encodeURIComponent(name)
 
+// Reads take an optional AbortSignal so react-query can cancel a fetch that is
+// no longer wanted -- switching specs while a poll is in flight otherwise lets
+// the older response resolve last and overwrite the newer one. Writes
+// deliberately take no signal: the request has already reached the server by the
+// time a component unmounts, so cancelling the client side would hide the
+// outcome of a mutation that still lands.
 export const specApi = {
-  list: () => req<SpecListResponse>('/specs'),
+  // `archived` swaps which set the rail shows: archived specs are hidden from the
+  // working set and fetched deliberately, never mixed in.
+  list: (signal?: AbortSignal, archived = false) =>
+    req<SpecListResponse>('/specs' + (archived ? '?archived=1' : ''), { signal }),
   create: (body: CreateSpecBody) => req<{ name?: string }>('/specs', { method: 'POST', body: JSON.stringify(body) }),
-  get: (name: string) => req<SpecDetail>('/specs/' + enc(name)),
+  get: (name: string, signal?: AbortSignal) => req<SpecDetail>('/specs/' + enc(name), { signal }),
   // specDir is the identity the CLIENT rendered: the backend compares it against
   // the live index so a stale tab cannot drive a same-name spec that was deleted
   // and recreated pointing somewhere else.
@@ -171,14 +244,59 @@ export const specApi = {
     const q = new URLSearchParams(identity(id) as Record<string, string>).toString()
     return req<void>('/specs/' + enc(name) + (q ? '?' + q : ''), { method: 'DELETE' })
   },
-  getSettings: () => req<{ base_path: string; model?: string }>('/settings'),
+  // ── direct authority over the artifacts ──
+  // Before these, the only way to change anything was to ask the agent for it, so
+  // a typo cost a model turn and an approval left no record at all.
+  /** Write a document. `base_hash` is the hash the editor LOADED ('' to create):
+   *  the server refuses with `doc_conflict` if the file moved since, rather than
+   *  overwriting an agent write the editor never saw. */
+  saveDoc: (name: string, file: string, content: string, base_hash: string, id?: SpecIdentity) =>
+    req<{ ok: boolean; hash: string }>('/specs/' + enc(name) + '/doc', {
+      method: 'PUT',
+      body: JSON.stringify({ file, content, base_hash, ...identity(id) }),
+    }),
+  /** Record an approval of `phase` against the exact document hash reviewed. The
+   *  server rejects a hash that is not the current one, so an approval always
+   *  names a version somebody actually saw. */
+  approve: (name: string, phase: string, hash: string, id?: SpecIdentity) =>
+    req<{ ok: boolean }>('/specs/' + enc(name) + '/approve', {
+      method: 'POST',
+      body: JSON.stringify({ phase, hash, ...identity(id) }),
+    }),
+  /** Run ONE task as a single turn. Both index and hash are sent: the agent
+   *  rewrites tasks.md between polls, so an index alone could dispatch whatever
+   *  ended up in that position. */
+  runTask: (name: string, index: number, hash: string, id?: SpecIdentity) =>
+    req<{ ok: boolean }>('/specs/' + enc(name) + '/task', {
+      method: 'POST',
+      body: JSON.stringify({ index, hash, ...identity(id) }),
+    }),
+  /** Set the display label. '' clears it and the UI falls back to the name. */
+  setTitle: (name: string, title: string, id?: SpecIdentity) =>
+    req<{ ok: boolean }>('/specs/' + enc(name) + '/title', {
+      method: 'POST',
+      body: JSON.stringify({ title, ...identity(id) }),
+    }),
+  /** Move a spec out of the working set, or bring it back. Non-destructive. */
+  setArchived: (name: string, archived: boolean, id?: SpecIdentity) =>
+    req<{ ok: boolean }>('/specs/' + enc(name) + '/archive', {
+      method: 'POST',
+      body: JSON.stringify({ archived, ...identity(id) }),
+    }),
+  /** Copy the documents into a new spec. The copy gets a fresh conversation. */
+  duplicate: (name: string, new_name: string, id?: SpecIdentity) =>
+    req<{ name: string }>('/specs/' + enc(name) + '/duplicate', {
+      method: 'POST',
+      body: JSON.stringify({ new_name, ...identity(id) }),
+    }),
+  getSettings: (signal?: AbortSignal) => req<{ base_path: string; model?: string }>('/settings', { signal }),
   saveSettings: (base_path: string, model: string) =>
     req<{ ok: boolean }>('/settings', { method: 'POST', body: JSON.stringify({ base_path, model }) }),
-  browse: (path: string) => {
+  browse: (path: string, signal?: AbortSignal) => {
     // Not copy: a URL. Built through URLSearchParams so the remaining literal has
     // the same shape as every other endpoint path in this file.
     const q = new URLSearchParams({ path: path || '' }).toString()
-    return req<BrowseResponse>('/browse' + (q ? '?' + q : ''))
+    return req<BrowseResponse>('/browse' + (q ? '?' + q : ''), { signal })
   },
 }
 
