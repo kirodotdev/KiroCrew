@@ -796,8 +796,14 @@ class TestSandboxExecArgv:
         try:
             marker = f"{sandbox_mod._IN_SANDBOX_MARKER}=1"
             assert marker in argv
-            assert argv.index(marker) < argv.index("sandbox-exec")
-            assert argv[0] == "env"
+            # The confiner is emitted as an absolute path, not a bare name, so a
+            # PATH overlay handed to the outer ``env`` cannot redirect it (see
+            # TestSandboxExecArgvPinsInnerConfiner). Locate it by basename.
+            confiner = next(i for i, a in enumerate(argv) if os.path.basename(a) == "sandbox-exec")
+            assert argv.index(marker) < confiner
+            # Both wrappers are absolute for the same reason, so the outer ``env``
+            # is matched by basename too.
+            assert os.path.basename(argv[0]) == "env"
         finally:
             if profile_path:
                 os.unlink(profile_path)
@@ -806,11 +812,13 @@ class TestSandboxExecArgv:
     def test_includes_env_unset_flags(self):
         argv, profile_path = sandbox_exec_argv(["kiro-cli", "acp"], "strict")
         try:
-            assert "env" == argv[0]
+            assert os.path.basename(argv[0]) == "env"
             assert "-u" in argv
             assert "AWS_SECRET_ACCESS_KEY" in argv
             assert "SSH_AUTH_SOCK" in argv
-            assert "sandbox-exec" in argv
+            # Absolute, not a bare name — the confiner is pinned so an overlaid
+            # PATH cannot redirect it (see TestSandboxExecArgvPinsInnerConfiner).
+            assert any(os.path.basename(a) == "sandbox-exec" for a in argv)
             assert "-f" in argv
             assert profile_path is not None
             assert os.path.exists(profile_path)
@@ -1178,7 +1186,9 @@ class TestCgroupScopeArgv:
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=True),
             ):
                 out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
-            assert out[0] == "systemd-run"
+            # Absolute: the wrapper is pinned where it is prepended, so a caller
+            # passing a config-declared PATH in env= cannot redirect argv[0].
+            assert os.path.basename(out[0]) == "systemd-run"
             assert "--user" in out and "--scope" in out
             assert "TasksMax=8192" in out
             assert "MemoryMax=8192M" in out
@@ -1249,7 +1259,7 @@ class TestCgroupScopeArgv:
                 patch("kiro_crew.sandbox._cpu_controller_delegated", return_value=False),
             ):
                 out = sb.cgroup_scope_argv(["kiro-cli", "chat"])
-            assert out[0] == "systemd-run"
+            assert os.path.basename(out[0]) == "systemd-run"
             assert "TasksMax=8192" in out
             assert not any(a.startswith("CPUWeight=") for a in out)
             assert not any(a.startswith("CPUQuota=") for a in out)
@@ -1935,7 +1945,7 @@ class TestCgroupScopeBusEnv:
                     ["gh", "pr", "view"],
                     env={"PATH": "/usr/bin:/bin", "HOME": "/home/u"},
                 )
-            assert argv[0] == "systemd-run"
+            assert os.path.basename(argv[0]) == "systemd-run"
             assert env["XDG_RUNTIME_DIR"] == "/run/user/4242"
             assert env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/4242/bus"
             # The shim sits INSIDE the scope, immediately after `--`, so the real
@@ -2714,3 +2724,88 @@ class TestAgentSliceMemoryHigh:
         with patch.object(sb, "_USER_MANAGER_CGROUP_BASE", str(tmp_path)):
             assert sb._agents_slice_cgroup_dir() == nested
             assert sb._slice_memory_events_high() == 7
+
+
+class TestSandboxExecArgvPinsInnerConfiner:
+    """SECURITY (PR #2602 macOS hop): the outer ``env`` (argv[0]) is pinned to an
+    absolute path at the spawn site, but ``env`` then resolves the NEXT bare name
+    -- ``sandbox-exec``, the inner confiner -- through the PATH it is handed, which
+    may carry a per-server config PATH overlay. ``sandbox_exec_argv`` must emit
+    ``sandbox-exec`` as an absolute path so a hostile PATH cannot redirect it.
+
+    Pure argv-construction assertions: no macOS dependency, so they run on Linux
+    CI (where ``sandbox-exec`` is absent and the canonical fallback applies).
+    """
+
+    def test_sandbox_exec_token_is_absolute(self):
+        argv, cleanup = sandbox_exec_argv(["echo", "hi"], sandbox_level="standard")
+        try:
+            # The bare name must NOT appear as its own argv token.
+            assert "sandbox-exec" not in argv
+            # An absolute path ending in /sandbox-exec is present instead, and it
+            # is immediately followed by the ``-f <profile>`` flags.
+            sb = next(a for a in argv if a.endswith("sandbox-exec"))
+            assert os.path.isabs(sb), f"sandbox-exec must be absolute, got {sb!r}"
+            assert argv[argv.index(sb) + 1] == "-f"
+        finally:
+            if cleanup:
+                os.unlink(cleanup)
+
+    def test_cgroup_wrapper_is_absolute_or_refused(self):
+        """``cgroup_scope_argv`` pins the ``systemd-run`` IT prepends.
+
+        Callers hand the result to spawns whose ``env`` may carry a config-declared
+        PATH, and CPython resolves a slash-less argv[0] through that PATH -- so a
+        bare wrapper here is an exec-hijack channel that runs before ``--scope``
+        confines anything. When the wrapper is not in a trusted system directory
+        the function degrades to no cgroup ceiling (its documented fail-open) rather
+        than emitting an unpinned name: losing a DoS ceiling beats gaining an
+        arbitrary-exec channel.
+        """
+        with patch.object(sandbox_mod, "_probe_cgroup_scope", return_value=(True, "")), patch.object(
+            sandbox_mod, "_reconcile_slice_memory_high_off_thread"
+        ), patch.object(sandbox_mod, "_cpu_controller_delegated", return_value=False):
+            with patch.object(
+                sandbox_mod.platform_compat, "trusted_system_bin", return_value="/usr/bin/systemd-run"
+            ):
+                pinned = sandbox_mod.cgroup_scope_argv(["kiro-cli", "chat"])
+            assert pinned[0] == "/usr/bin/systemd-run"
+            assert "systemd-run" not in pinned
+
+            # Unresolvable -> no wrapper at all, never a bare name.
+            with patch.object(
+                sandbox_mod.platform_compat, "trusted_system_bin", return_value=None
+            ):
+                unwrapped = sandbox_mod.cgroup_scope_argv(["kiro-cli", "chat"])
+            assert unwrapped == ["kiro-cli", "chat"]
+
+    def test_outer_env_token_is_absolute(self):
+        """argv[0] runs FIRST of all, so it is pinned for the same reason.
+
+        It is resolved through ``trusted_system_bin`` (fixed system directories,
+        PATH ignored) rather than the gateway's PATH, which can legitimately lead
+        with agent-writable directories.
+        """
+        argv, cleanup = sandbox_exec_argv(["echo", "hi"], sandbox_level="standard")
+        try:
+            assert argv[0] != "env"
+            assert os.path.isabs(argv[0]), f"outer env must be absolute, got {argv[0]!r}"
+            assert os.path.basename(argv[0]) == "env"
+        finally:
+            if cleanup:
+                os.unlink(cleanup)
+
+    def test_falls_back_to_canonical_paths_when_not_resolvable(self):
+        """When a wrapper is not in a trusted system directory (e.g. ``sandbox-exec``
+        on Linux CI), the canonical macOS location is used -- never a bare name a
+        PATH overlay could redirect."""
+        with patch.object(sandbox_mod.platform_compat, "trusted_system_bin", return_value=None):
+            argv, cleanup = sandbox_exec_argv(["echo", "hi"], sandbox_level="standard")
+        try:
+            assert argv[0] == "/usr/bin/env"
+            assert "/usr/bin/sandbox-exec" in argv
+            assert "sandbox-exec" not in argv
+            assert "env" not in argv
+        finally:
+            if cleanup:
+                os.unlink(cleanup)

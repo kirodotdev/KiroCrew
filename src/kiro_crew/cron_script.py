@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.env import sanitize_spec_env
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
@@ -365,11 +366,47 @@ class McpToolClient:
 
     def __init__(self, server_name: str):
         self._server_name = server_name
-        argv = _resolve_mcp_server(server_name)
-        if not argv:
+        resolved = _resolve_mcp_server(server_name)
+        if not resolved:
             raise RuntimeError(f"MCP server '{server_name}' not found in agent config")
+        argv, spec_env = resolved
         sandboxed_argv, self._sandbox_cleanup = wrap_argv(list(argv), mode="standard")
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
+        # SECURITY: the confinement wrappers prepended above (`systemd-run` on
+        # Linux, `env` -> `sandbox-exec` on macOS) are absolute paths, pinned by
+        # the functions that prepend them. That matters here because Popen is
+        # handed an env whose PATH is overlaid from the per-server agent config
+        # below, and CPython resolves a slash-less argv[0] through THAT env's PATH
+        # (os.get_exec_path) -- a bare-name wrapper would be redirectable to an
+        # attacker binary running BEFORE confinement exists. Pinning belongs in
+        # those producers, not here: re-pinning at the spawn site would also
+        # rewrite argv[0] on the fail-open no-sandbox path, where argv[0] is the
+        # OPERATOR-declared command and silently resolving it against the
+        # gateway's own directories would override the very PATH selection the
+        # spec `env` block exists to provide.
+        #
+        # Build the subprocess env: start from the secret-scrubbed cron env, then
+        # overlay the per-server `env` block from the agent config (e.g. the PATH
+        # that lets a launcher resolve a helper binary it shells out to). A
+        # launcher that execs a binary reachable only via that env dies before the
+        # initialize handshake if the env is dropped. Three filters apply, and all
+        # three are load-bearing:
+        #   * _clean_cron_env() strips secrets from the INHERITED env;
+        #   * _CRON_ENV_DENY is re-applied to the spec overlay so a denied key
+        #     cannot be reintroduced through the config;
+        #   * sanitize_spec_env() drops loader/interpreter-injection keys
+        #     (LD_*/DYLD_*/PYTHON*). Those are NOT in _CRON_ENV_DENY, and the spec
+        #     env is externally authorable, so without this an `LD_PRELOAD` in a
+        #     server's `env` block would be honoured by the dynamic loader inside
+        #     the confinement wrapper process -- executing attacker code before
+        #     the wrapper establishes containment. Pinning argv[0] does not help:
+        #     the loader acts on the pinned binary. This is the same reason
+        #     mcp_discovery routes its probe's spec env through the sanitizer;
+        #     PATH is deliberately NOT denied, since forwarding it is the point.
+        proc_env = _clean_cron_env()
+        proc_env.update(
+            sanitize_spec_env((k, v) for k, v in spec_env.items() if k not in _CRON_ENV_DENY)
+        )
         # Capture stderr to a tempfile instead of DEVNULL so spawn/handshake
         # failures are legible. DEVNULL hid the real cause -- wrong
         # Node version, expired auth cookies, OOM kill, sandbox failure -- behind
@@ -384,6 +421,7 @@ class McpToolClient:
                 stdout=subprocess.PIPE,
                 stderr=self._stderr_file,
                 text=True,
+                env=proc_env,
             )
         except Exception:
             self._stderr_file.close()
@@ -501,8 +539,15 @@ class McpToolClient:
 
 
 @lru_cache(maxsize=16)
-def _resolve_mcp_server(name: str) -> tuple[str, ...] | None:
-    """Read MCP server command from agent config (cached per process)."""
+def _resolve_mcp_server(name: str) -> tuple[tuple[str, ...], dict[str, str]] | None:
+    """Read MCP server command + env from agent config (cached per process).
+
+    Returns ``(argv, env)``. The per-server ``env`` block is required for
+    launchers that shell out to a helper binary only reachable via the ``PATH``
+    the config supplies: dropping it makes the spawned MCP die at the JSON-RPC
+    ``initialize`` handshake. When the config has no ``env`` block -- or declares
+    one that is not a JSON object -- the env dict is empty.
+    """
     cfg_path = kiro_agents_dir() / "kirocrew.json"
     if not cfg_path.exists():
         # Fall back to any kirocrew-named agent spec in the same agents dir.
@@ -515,7 +560,23 @@ def _resolve_mcp_server(name: str) -> tuple[str, ...] | None:
     spec = cfg.get("mcpServers", {}).get(name)
     if not spec:
         return None
-    return tuple([spec["command"]] + spec.get("args", []))
+    argv = tuple([spec["command"]] + spec.get("args", []))
+    # A hand-edited config can spell `env` as anything JSON allows. Only a
+    # mapping has .items(), so a string/list/number would raise AttributeError
+    # here and fail EVERY ctx.call_tool for that server with a traceback that
+    # names this function rather than the malformed config. Treat a non-mapping
+    # as absent and say so once: the declaration cannot be honoured either way,
+    # and a silent drop reads as the env-drop bug this function exists to fix.
+    raw_env = spec.get("env")
+    if raw_env is not None and not isinstance(raw_env, dict):
+        logger.warning(
+            "MCP server %r declares a non-object 'env' (%s); ignoring it",
+            name,
+            type(raw_env).__name__,
+        )
+        raw_env = None
+    env = {str(k): str(v) for k, v in (raw_env or {}).items()}
+    return argv, env
 
 
 def _split_script_spec(script_path: str) -> tuple[str, str]:

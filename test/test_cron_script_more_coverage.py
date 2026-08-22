@@ -605,7 +605,11 @@ class TestScriptContextAudit:
 @pytest.fixture
 def mcp_spawn(monkeypatch):
     """Patch the spawn chain so McpToolClient never starts a real process."""
-    monkeypatch.setattr(cron_script, "_resolve_mcp_server", lambda name: ("srv-bin", "--stdio"))
+    # _resolve_mcp_server returns (argv, spec_env) — the per-server env block is
+    # forwarded to the spawned server, so the mock must supply both halves.
+    monkeypatch.setattr(
+        cron_script, "_resolve_mcp_server", lambda name: (("srv-bin", "--stdio"), {})
+    )
     monkeypatch.setattr(cron_script, "wrap_argv", lambda argv, **k: (list(argv), None))
     monkeypatch.setattr(cron_script, "cgroup_scope_argv", lambda argv: list(argv))
     state = SimpleNamespace(proc=None, popen_exc=None, calls=[])
@@ -862,7 +866,7 @@ class TestResolveMcpServer:
         )
         monkeypatch.setattr(cron_script, "kiro_agents_dir", lambda: agents)
 
-        assert _resolve_mcp_server("core") == ("node", "srv.js")
+        assert _resolve_mcp_server("core") == (("node", "srv.js"), {})
 
     def test_absent_server_entry_returns_none(self, tmp_path, monkeypatch):
         agents = tmp_path / "agents"
@@ -874,7 +878,7 @@ class TestResolveMcpServer:
 
         assert _resolve_mcp_server("server-b") is None
 
-    def test_argless_spec_yields_a_single_element_tuple(self, tmp_path, monkeypatch):
+    def test_argless_spec_yields_a_single_element_argv(self, tmp_path, monkeypatch):
         agents = tmp_path / "agents"
         agents.mkdir()
         (agents / "kirocrew.json").write_text(
@@ -882,7 +886,7 @@ class TestResolveMcpServer:
         )
         monkeypatch.setattr(cron_script, "kiro_agents_dir", lambda: agents)
 
-        assert _resolve_mcp_server("bare") == ("srv-bin",)
+        assert _resolve_mcp_server("bare") == (("srv-bin",), {})
 
 
 # ── path + secret resolution ──

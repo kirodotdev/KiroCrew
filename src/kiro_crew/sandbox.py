@@ -2313,8 +2313,24 @@ def sandbox_exec_argv(
     # position so the scrub cannot drop it — an in-sandbox wrap_argv
     # passthrough compares it against the requested tier to detect downgrades.
     level_assign = f"{_IN_SANDBOX_LEVEL_VAR}={sandbox_level}"
+    # SECURITY: BOTH wrappers this function prepends are pinned here, at the layer
+    # that prepends them, so no spawn site has to remember to re-pin (the caller's
+    # ``env`` may carry a config-declared PATH, and CPython resolves a slash-less
+    # argv[0] through THAT PATH via os.get_exec_path):
+    #   * the outer ``env`` (argv[0]), which runs first of all;
+    #   * the inner ``sandbox-exec``, which ``env`` itself resolves through the
+    #     PATH in the environment it is handed -- BEFORE the Seatbelt profile is
+    #     applied, so a hostile PATH there is a pre-confinement escape.
+    # ``trusted_system_bin`` ignores PATH entirely rather than reading os.environ:
+    # a gateway's PATH can legitimately lead with agent-writable directories
+    # (a worktree venv's bin, ~/.local/bin), so resolving through it would leave
+    # the hole half-open. Both fall back to their canonical macOS locations,
+    # matching the _probe_sandbox_exec probe, so a host with an unusual layout
+    # still gets an absolute path rather than a redirectable bare name.
+    outer_env = platform_compat.trusted_system_bin("env") or "/usr/bin/env"
+    sandbox_exec = platform_compat.trusted_system_bin("sandbox-exec") or "/usr/bin/sandbox-exec"
     return (
-        ["env", *unset_args, marker, level_assign, "sandbox-exec", "-f", path, *resolved_argv],
+        [outer_env, *unset_args, marker, level_assign, sandbox_exec, "-f", path, *resolved_argv],
         path,
     )
 
@@ -4453,11 +4469,34 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
     On a host without cgroup v2 delegation (older Linux, no systemd user
     session, macOS), returns *argv* unchanged and logs a one-time loud SECURITY
     warning — the RLIMIT_NOFILE preexec still applies, but the fork-bomb/memory
-    DoS ceiling is NOT enforced there.
+    DoS ceiling is NOT enforced there. The same degradation applies when
+    ``systemd-run`` resolves outside the trusted system directories: prepending
+    an unpinned wrapper name would trade a DoS ceiling for an exec-hijack
+    channel, which is the worse of the two.
+
+    The returned wrapper is an ABSOLUTE path, so callers may hand the result to
+    a spawn whose ``env`` carries a config-declared PATH without that PATH being
+    able to redirect argv[0].
     """
     available, reason = _probe_cgroup_scope()
     if not available:
         _warn_cgroup_unavailable(reason)
+        return argv
+    # SECURITY: the wrapper this function prepends becomes argv[0], and a caller
+    # that hands the result to a spawn with a config-influenced ``env`` has
+    # CPython resolve a slash-less argv[0] through THAT env's PATH
+    # (os.get_exec_path) -- so a bare name here is an exec-hijack channel that
+    # runs BEFORE ``--scope`` establishes confinement. Pin it at the layer that
+    # prepends it, so every caller inherits the protection rather than each
+    # spawn site remembering to re-pin (the same reason ``sandbox_exec_argv``
+    # pins its own wrappers). ``trusted_system_bin`` ignores PATH entirely: a
+    # gateway's PATH can legitimately lead with agent-writable directories, so
+    # resolving through it would leave the hole half-open. An unresolvable
+    # wrapper degrades exactly like a missing cgroup backend -- no ceiling, loud
+    # warning -- rather than emitting an unpinned name.
+    systemd_run = platform_compat.trusted_system_bin("systemd-run")
+    if not systemd_run:
+        _warn_cgroup_unavailable("systemd-run is not in a trusted system directory")
         return argv
     # Reconcile the slice-level aggregate ceiling off-thread: this call site
     # runs on the gateway event loop during agent spawn, and reconciliation
@@ -4480,7 +4519,7 @@ def cgroup_scope_argv(argv: list[str]) -> list[str]:
         if max_cpu_percent > 0:
             props += ["-p", f"CPUQuota={max_cpu_percent}%"]
     return [
-        "systemd-run",
+        systemd_run,
         "--user",
         "--scope",
         "-q",
