@@ -381,6 +381,44 @@ def err(msg):
     sys.stderr.write(msg + "\n")
 
 
+# statusCheckRollup needs Checks read access, which a fine-grained PAT
+# structurally cannot grant, and gh resolves every field of one --json request
+# atomically -- so bundling the rollup with the core fields makes the WHOLE
+# read fail for those tokens. The rollup is therefore fetched in its own call
+# (fetch_check_rollup) and degrades softly: the caller keeps the core metadata
+# and reports CI as unknown instead of aborting. The second read re-fetches
+# headRefOid and is discarded on a mismatch with the core read's head, so a
+# push landing between the two reads can never pair one head's metadata with
+# another head's checks. Byte-identical copy in pr_findings.py (parity-pinned
+# by test_prepare_pr_findings.py; the scripts are standalone-copyable, so
+# neither imports the other).
+ROLLUP_UNAVAILABLE_NOTICE = (
+    "CI check status UNAVAILABLE - the statusCheckRollup fetch failed (a token "
+    "without Checks read access, e.g. any fine-grained PAT, cannot fetch it); "
+    "treat CI as UNKNOWN, not as 'no checks yet'"
+)
+ROLLUP_HEAD_MOVED_NOTICE = (
+    "CI check status DISCARDED - the PR head changed between the core read and "
+    "the rollup read (concurrent push); treat CI as UNKNOWN and re-run for a "
+    "consistent snapshot"
+)
+
+
+def fetch_check_rollup(pr, expected_head):
+    """Return (rollup entries, notice); the notice is non-empty when degraded."""
+    rc, out, _ = run(["gh", "pr", "view", pr, "--json", "headRefOid,statusCheckRollup"])
+    if rc == 0 and out.strip():
+        try:
+            d = json.loads(out)
+        except ValueError:
+            d = None
+        if isinstance(d, dict):
+            if expected_head and (d.get("headRefOid") or "").strip() != expected_head:
+                return [], ROLLUP_HEAD_MOVED_NOTICE
+            return d.get("statusCheckRollup") or [], ""
+    return [], ROLLUP_UNAVAILABLE_NOTICE
+
+
 def classify_check(entry):
     """Return 'pass' | 'running' | 'fail' for one statusCheckRollup entry.
 
@@ -861,7 +899,7 @@ def main(argv):
 
     fields = (
         "number,title,state,isDraft,mergeable,mergeStateStatus,"
-        "reviewDecision,url,headRefName,headRefOid,statusCheckRollup,"
+        "reviewDecision,url,headRefName,headRefOid,"
         "body,closingIssuesReferences"
     )
     rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
@@ -875,7 +913,9 @@ def main(argv):
     mergeable = (d.get("mergeable") or "").upper()
     merge_state = (d.get("mergeStateStatus") or "").upper()
     decision = (d.get("reviewDecision") or "NONE").upper()
-    rollup = collapse_superseded(d.get("statusCheckRollup") or [])
+    head_sha = (d.get("headRefOid") or "").strip()
+    rollup_entries, rollup_notice = fetch_check_rollup(pr, head_sha)
+    rollup = collapse_superseded(rollup_entries)
 
     print("=" * 54)
     print("PR #{}  [{}{}]".format(d.get("number"), state, " draft" if draft else ""))
@@ -889,6 +929,8 @@ def main(argv):
     )
 
     print("-- CI checks " + "-" * 40)
+    if rollup_notice:
+        print("  NOTICE: " + rollup_notice)
     n_running = n_fail = 0
     failing_checks = []
     readiness_kind = None
@@ -935,7 +977,6 @@ def main(argv):
     # Reviewer-side conditions (issue #2550): the stamp and the comment body
     # are the signal -- never the review workflow's run conclusion, which is
     # unreliable in both directions on this repo.
-    head_sha = (d.get("headRefOid") or "").strip()
     repo = detect_repo(d.get("url") or "")
     marker_authors = resolve_marker_authors(argv, os.environ)
     marker_bindings = resolve_marker_bindings(argv, os.environ)

@@ -57,6 +57,8 @@ The scripts are stdlib **Python 3** (run with `python3`; no third-party deps), p
 
 `pr_status.py` drives the loop: **10** → `wait` and re-poll (don't inspect yet); **20** → drill in and fix; **0** → converge; **2** → fix env or escalate.
 
+**Token scope (fine-grained PATs):** the check rollup (`statusCheckRollup`) needs Checks read access, which a fine-grained PAT structurally cannot grant, and GitHub resolves each `gh … --json` request atomically — so both scripts fetch the rollup in its **own** `gh pr view` call, separate from the core PR read. When that rollup fetch fails, the scripts do **not** abort: they print a one-line `NOTICE: CI check status UNAVAILABLE …` and continue with an empty rollup. The rollup read re-fetches `headRefOid` and is discarded (`NOTICE: CI check status DISCARDED …`) when a concurrent push moved the head between the two reads, so one head's metadata is never paired with another head's checks. Both states are deliberately distinct from a genuine "no checks yet": `pr_status.py` fails closed (exit **20**, `no CI checks reported`) rather than reporting a false clean. To actually see CI state, use a token with Checks read access (a classic PAT or the Actions `GITHUB_TOKEN`).
+
 **Platform:** GitHub — uses `gh` and GitHub Actions.
 
 ## Guardrails

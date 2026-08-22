@@ -13,6 +13,8 @@ before the fix and prove nothing.
 
 from __future__ import annotations
 
+import inspect
+import json
 from pathlib import Path
 from types import ModuleType
 
@@ -305,3 +307,105 @@ class TestFindingLineFormats:
         assert [(f["kind"], f["path"], f["line"]) for f in found] == [
             ("FINDING", "src/b.py", 3)
         ]
+
+
+class TestRollupHelperParity:
+    """Both scripts carry a copy of fetch_check_rollup and its notice; neither
+    can import the other (standalone-copyable by design), so parity is pinned
+    here -- drift would make the two reports describe the same degraded token
+    state in different words, or degrade under different conditions."""
+
+    def test_rollup_fetch_helpers_are_byte_identical(self) -> None:
+        findings = _load_script()
+        status = _load_status()
+        assert findings.ROLLUP_UNAVAILABLE_NOTICE == status.ROLLUP_UNAVAILABLE_NOTICE
+        assert findings.ROLLUP_HEAD_MOVED_NOTICE == status.ROLLUP_HEAD_MOVED_NOTICE
+        assert inspect.getsource(findings.fetch_check_rollup) == inspect.getsource(
+            status.fetch_check_rollup
+        )
+
+
+class TestDegradedRollup:
+    """gh resolves a --json field set atomically, so a Checks-blind token (any
+    fine-grained PAT) fails EVERY request naming statusCheckRollup. The
+    findings collector must keep working on the core fields it was authorised
+    to read and say why its CI section is empty."""
+
+    def test_rollup_fetch_failure_completes_with_a_visible_notice(self, capsys) -> None:
+        module = _load_script()
+        payload = json.dumps(
+            {
+                "number": 42,
+                "url": "https://github.com/example/repo/pull/42",
+                "headRefOid": _HEAD,
+            }
+        )
+
+        def fake_run(args: list[str]) -> tuple[int, str, str]:
+            if args[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if args[:3] == ["gh", "pr", "view"]:
+                fields = args[args.index("--json") + 1] if "--json" in args else ""
+                if "statusCheckRollup" in fields:
+                    return 1, "", "Resource not accessible by personal access token"
+                return 0, payload, ""
+            raise AssertionError("unexpected command: {}".format(args))
+
+        module.run = fake_run
+        module.iter_unresolved_threads = lambda *_a: iter(())
+        module.fetch_bot_comments = lambda *_a: []
+
+        code = module.main(["pr_findings.py", "42"])
+        captured = capsys.readouterr()
+
+        assert code == 0
+        assert "NOTICE: " + module.ROLLUP_UNAVAILABLE_NOTICE in captured.out
+        assert "could not read PR" not in captured.err
+
+    def test_head_moved_between_reads_discards_the_rollup(self, capsys) -> None:
+        """A push landing between the core read and the rollup read must not
+        pair the old head's identity with the new head's failing checks: the
+        rollup is discarded with its own notice and no check is drilled into."""
+        module = _load_script()
+        payload = json.dumps(
+            {
+                "number": 42,
+                "url": "https://github.com/example/repo/pull/42",
+                "headRefOid": _OLD,
+            }
+        )
+        moved_rollup = json.dumps(
+            {
+                "headRefOid": _HEAD,
+                "statusCheckRollup": [
+                    {
+                        "name": "CI",
+                        "status": "COMPLETED",
+                        "conclusion": "FAILURE",
+                        "detailsUrl": "https://github.com/example/repo/actions/runs/1",
+                    }
+                ],
+            }
+        )
+
+        def fake_run(args: list[str]) -> tuple[int, str, str]:
+            if args[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if args[:3] == ["gh", "pr", "view"]:
+                fields = args[args.index("--json") + 1] if "--json" in args else ""
+                if "statusCheckRollup" in fields:
+                    return 0, moved_rollup, ""
+                return 0, payload, ""
+            raise AssertionError("unexpected command: {}".format(args))
+
+        module.run = fake_run
+        module.iter_unresolved_threads = lambda *_a: iter(())
+        module.fetch_bot_comments = lambda *_a: []
+
+        code = module.main(["pr_findings.py", "42"])
+        captured = capsys.readouterr()
+
+        assert code == 0
+        assert "NOTICE: " + module.ROLLUP_HEAD_MOVED_NOTICE in captured.out
+        # The stale-paired failing check must not be drilled into.
+        assert "--- CI" not in captured.out
