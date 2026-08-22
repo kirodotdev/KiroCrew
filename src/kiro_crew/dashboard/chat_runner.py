@@ -3290,7 +3290,23 @@ async def _eager_spawn(
             agent_model = ""
             resolved_ok = False
             try:
-                cfg = KiroCrewConfig.load()
+                # Off-loop: the load stats and reads config.json plus any
+                # config.local.json overlay, deep-merges them and runs the full
+                # schema validation. This task is speculative — it only makes the
+                # first real message faster — so it has no business holding the
+                # loop the live sessions share.
+                #
+                # The suspension lands INSIDE the envelope this function already
+                # maintains: `_bound` was snapshotted just above, and the guards
+                # after get_or_create below already discard a session whose
+                # creator lost the race, whose slot was deleted or replaced, or
+                # whose bindings moved. So a switch or delete landing during the
+                # load is revalidated there, and nothing new is needed here.
+                # Only the load crosses over: bindings are resolved and the slot
+                # read back on the loop, so no slot or session state is handed to
+                # a worker, and a worker abandoned by a cancelled eager task is
+                # harmless because the load is read-only.
+                cfg = await asyncio.to_thread(KiroCrewConfig.load)
                 bindings = resolve_agent_bindings(cfg, slot.agent or None)
                 kiro_agent = bindings.kiro_agent
                 crew_alias = bindings.resolved_alias
