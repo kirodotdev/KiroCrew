@@ -23,6 +23,7 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
 | [reference/](reference/README.md) | Upstream documentation we mirror but do not author. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
+| [superpowers/](superpowers/README.md) | Dated agentic implementation plans derived from accepted designs. |
 
 ## The rule for changing docs
 
