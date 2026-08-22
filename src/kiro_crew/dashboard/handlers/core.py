@@ -1250,20 +1250,33 @@ async def api_sel_events(request: web.Request) -> web.Response:
 
 
 async def api_sel_verify(request: web.Request) -> web.Response:
-    """GET /api/sel/verify — verify HMAC chain integrity."""
+    """GET /api/sel/verify — verify HMAC chain integrity.
+
+    ``integrity`` is ``unverifiable`` when the segment dir refused to pin (or
+    was swapped mid-verification): the rotated segments were not checked, and
+    the endpoint must not answer ``ok`` over the live log alone (#5051
+    review). ``detail`` carries the reason and is empty when verifiable.
+    """
 
     # Same offload rationale as api_sel_events, including deferring _sel() into
     # the callable: verify_integrity() reads the whole log file to check the HMAC
     # chain end to end and must not run on the event loop.
-    total, valid = await asyncio.get_running_loop().run_in_executor(
-        discovery_executor(), lambda: _sel().verify_integrity()
+    result = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), lambda: _sel().verify_integrity(detailed=True)
     )
+    if not result.history_verifiable:
+        integrity = "unverifiable"
+    elif result.total == result.valid:
+        integrity = "ok"
+    else:
+        integrity = "compromised"
     return web.json_response(
         {
-            "total": total,
-            "valid": valid,
-            "integrity": "ok" if total == valid else "compromised",
-            "tampered": total - valid,
+            "total": result.total,
+            "valid": result.valid,
+            "integrity": integrity,
+            "tampered": result.total - result.valid,
+            "detail": result.reason,
         }
     )
 
