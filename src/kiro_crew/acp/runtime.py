@@ -27,7 +27,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -1032,6 +1032,24 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Per-process scratch containment (#5063): the agent's temp AND its
+        # prompt-guided work products land in an owned directory instead of
+        # the shared system temp dir. Allocated off-loop (mkdir + config read)
+        # through the sandbox guard like the env resolution above, and
+        # fail-open -- scratch is hygiene, not a spawn prerequisite. The
+        # owner pid is recorded after spawn; reclamation is liveness-keyed
+        # (agent_scratch.sweep_dead_scratch), never age-keyed.
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await self._to_thread_guarding_sandbox(
+                agent_scratch.allocate_scratch, "runtime"
+            )
+            env.update(agent_scratch.scratch_env(self._scratch_dir))
+        except OSError:
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
         # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
@@ -1081,6 +1099,14 @@ class AcpRuntime:
         self._start_time = _get_start_time(self._pid)
         self._spawn_monotonic = time.monotonic()
         self._last_activity = time.monotonic()
+        if self._scratch_dir is not None:
+            # Liveness anchor for the scratch sweeps: a dir whose recorded
+            # owner is dead is reclaimable. Off-loop (file write), fail-open
+            # (an unowned dir falls under the grace-window rule instead).
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+            )
         logger.info(
             "AcpRuntime spawned backend=%s agent=%s (PID %d)",
             self._acp_backend,
