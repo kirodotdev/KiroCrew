@@ -708,7 +708,11 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       </div>
 
       <StatusRow show={showShellActivity}>
-        <div className="ml-3 mt-1 text-[12px] leading-5 text-muted">
+        {/* ml-5 = the pill's icon (12px) + the pill BUTTON's gap-2 (8px), so
+            this secondary line starts exactly where the pill's label text
+            does. (The outer wrapper's gap-1 is between pill and file chip —
+            not the icon-to-label gap.) */}
+        <div className="ml-5 mt-1 text-[12px] leading-5 text-muted" data-testid="shell-activity">
           <span className="sr-only" aria-live="polite">{i18nT('pages.chat.activityViewer.running')}</span>
           <span aria-hidden="true" className="tabular-nums font-mono">
             {i18nT('pages.chat.activityViewer.running')} · {elapsedLabel}
@@ -716,7 +720,9 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
         </div>
       </StatusRow>
       <StatusRow show={showWaitCountdown}>
-        <div className="ml-3 mt-1 flex items-center gap-2 text-[12px] leading-5 text-muted" data-testid="wait-countdown">
+        {/* Same ml-5 anchor as the shell-activity line above: the countdown is
+            a continuation of the pill's label text, not of its icon column. */}
+        <div className="ml-5 mt-1 flex items-center gap-2 text-[12px] leading-5 text-muted" data-testid="wait-countdown">
           {/* The status word is announced once; the digits are aria-hidden so a
               screen reader is not re-read every second. Same split as the shell
               activity row above. */}
