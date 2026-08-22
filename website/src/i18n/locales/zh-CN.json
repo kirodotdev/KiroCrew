@@ -1447,13 +1447,13 @@
         "truncated": "· 已截断"
       },
       "manifest": {
-        "description": "不用离开仪表板，就能浏览和阅读运行 Kiro Crew 那台机器上的文件。多个文件在标签页里同时打开，沿目录树浏览时每个文件旁边都显示 git 状态，可以在整个文件夹里搜字符串，markdown 也是渲染后阅读而不是看源码。它按设计就是只读的：只打开和搜索文件，从不编辑、移动或删除，可访问范围仅限主目录以及 /tmp 和 /opt。",
+        "description": "无需离开仪表板，即可浏览和阅读运行 Kiro Crew 所在机器上的文件。可在多个标签页中同时打开文件，浏览目录树并查看各文件 Git 状态，在整个文件夹中搜索关键词（包括 Word、Excel、PowerPoint 和 PDF 文件内部），并直接查看多种文件类型：Markdown 渲染视图、PDF、图片、HTML 页面、CSV/TSV 表格、Office 文档（含幻灯片颜色与版式），以及音频/视频。Markdown 文件可就地编辑并自动保存；其他文件类型严格保持只读，可访问路径仅限主目录、/tmp 和 /opt。",
         "display_name": "文件",
-        "highlight_1": "只读：只打开和搜索文件，从不写入、移动或删除",
-        "highlight_2": "多个文件在标签页里同时打开，带语法高亮",
-        "highlight_3": "Markdown 文件渲染为排版后的文本，而不是原始源码",
-        "highlight_4": "目录树在每个文件旁直接显示 git 状态",
-        "highlight_5": "跨目录搜索，给出行级匹配和上下文预览",
+        "highlight_1": "Markdown 文件可就地编辑，带自动保存和磁盘变更保护；其他一切保持只读",
+        "highlight_2": "直接查看 PDF、图片、HTML 预览、CSV/TSV 表格、Word/Excel/PowerPoint 内容以及音频/视频",
+        "highlight_3": "PowerPoint 幻灯片以真实颜色、位置和内嵌图片呈现",
+        "highlight_4": "文件夹搜索也能找到 Word、Excel、PowerPoint 和 PDF 文件内部的关键词",
+        "highlight_5": "目录树内联显示每个文件的 Git 状态",
         "highlight_6": "可访问路径仅限主目录、/tmp 和 /opt — 指向外部的符号链接会被拒绝",
         "page_label": "文件"
       },
@@ -1483,6 +1483,33 @@
       },
       "treeNode": {
         "loading": "加载中…"
+      },
+      "find": {
+        "find_in_document": "在文档中查找",
+        "find_in_file": "在 {{name}} 中查找",
+        "previous_match": "上一个匹配项",
+        "next_match": "下一个匹配项",
+        "close_find": "关闭查找"
+      },
+      "editor": {
+        "saving": "正在保存…",
+        "saved": "已保存",
+        "file_changed_on_disk": "⚠ 磁盘上的文件已更改 — 请重新加载",
+        "save_failed": "⚠ 保存失败",
+        "edit_file": "编辑 {{name}}",
+        "edit_file_action": "编辑",
+        "done_editing": "完成 — 保存并查看",
+        "recovered_unsaved": "已恢复未保存的更改"
+      },
+      "viewers": {
+        "preview": "预览",
+        "source": "源代码",
+        "table": "表格",
+        "slide_n": "幻灯片 {{n}}",
+        "empty_workbook": "空工作簿",
+        "extracting_document": "正在提取文档…",
+        "could_not_extract": "无法提取此文档",
+        "showing_first_rows": "… 仅显示前 {{count}} 行"
       }
     },
     "issueRadar": {

@@ -1479,14 +1479,14 @@
         "truncated": "· 省略"
       },
       "manifest": {
-        "description": "Kiro Crewが実行されているマシン上のファイルを閲覧して読み込み、ダッシュボードを離れる必要がありません。複数のファイルをタブで開いたままにして、各ファイルのGitステータスを表示させながらディレクトリツリーを操作して、フォルダー全体の文字列を検索して、マークダウンをレンダリングされたものとして読み込みます。設計上は読み取り専用です。ファイルを開いて検索しますが、決して編集、移動、削除することはなく、ホームディレクトリ、/tmp、/optのみにアクセスできます。",
+        "description": "ダッシュボードを離れずに、Kiro Crew が動作するマシン上のファイルを閲覧・読み取りできます。複数のファイルをタブで開き、各ファイルの Git ステータス付きでディレクトリツリーをたどり、フォルダー全体をキーワード検索（Word、Excel、PowerPoint、PDF ファイルの中身も対象）でき、多くのファイル形式をその場で表示できます：レンダリングされた Markdown、PDF、画像、HTML ページ、CSV/TSV のテーブル、スライドの色とレイアウト付きの Office ドキュメント、音声/動画。Markdown ファイルは自動保存付きでその場で編集できます。その他の形式は厳密に読み取り専用のままで、アクセスできるのはホームディレクトリと /tmp、/opt のみです。",
         "display_name": "ファイル",
-        "highlight_1": "読み取り専用：ファイルを開いて検索しますが、決して書き込み、移動、削除しません",
-        "highlight_2": "複数のファイルが同時にタブで開かれ、構文ハイライトが表示",
-        "highlight_3": "Markdown ファイルを、未加工のソースではなく整形済みテキストとして表示",
-        "highlight_4": "ディレクトリツリーは各ファイルのGitステータスをインラインで表示",
-        "highlight_5": "マッチレベルと周辺プレビューを含むディレクトリ全体で検索",
-        "highlight_6": "到達可能なパスはホームディレクトリ、/tmp、/optに制限 — 外部へのシンボリックリンクは拒否",
+        "highlight_1": "Markdown ファイルは自動保存とディスク変更保護付きでその場で編集可能。それ以外は読み取り専用のまま",
+        "highlight_2": "PDF、画像、HTML プレビュー、CSV/TSV テーブル、Word/Excel/PowerPoint の内容、音声/動画をその場で表示",
+        "highlight_3": "PowerPoint のスライドは実際の色、配置、埋め込み画像付きでレンダリング",
+        "highlight_4": "フォルダー検索は Word、Excel、PowerPoint、PDF ファイルの中の単語も検出",
+        "highlight_5": "ディレクトリツリーに各ファイルの Git ステータスをインライン表示",
+        "highlight_6": "アクセス可能なパスはホームディレクトリと /tmp、/opt に限定 — 外部へのシンボリックリンクは拒否",
         "page_label": "ファイル"
       },
       "pathBar": {
@@ -1515,6 +1515,33 @@
       },
       "treeNode": {
         "loading": "読み込み中…"
+      },
+      "find": {
+        "find_in_document": "ドキュメント内を検索",
+        "find_in_file": "{{name}} 内を検索",
+        "previous_match": "前の一致",
+        "next_match": "次の一致",
+        "close_find": "検索を閉じる"
+      },
+      "editor": {
+        "saving": "保存中…",
+        "saved": "保存しました",
+        "file_changed_on_disk": "⚠ ディスク上のファイルが変更されました — 再読み込みしてください",
+        "save_failed": "⚠ 保存に失敗しました",
+        "edit_file": "{{name}} を編集",
+        "edit_file_action": "編集",
+        "done_editing": "完了 — 保存して表示",
+        "recovered_unsaved": "未保存の変更を復元しました"
+      },
+      "viewers": {
+        "preview": "プレビュー",
+        "source": "ソース",
+        "table": "テーブル",
+        "slide_n": "スライド {{n}}",
+        "empty_workbook": "空のブック",
+        "extracting_document": "ドキュメントを抽出中…",
+        "could_not_extract": "このドキュメントを抽出できませんでした",
+        "showing_first_rows": "… 最初の {{count}} 行を表示しています"
       }
     },
     "issueRadar": {

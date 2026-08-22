@@ -2,6 +2,12 @@ export const API_BASE = '/apps/file-explorer/api'
 export const STORAGE_KEY = 'kc:file-explorer:state:v2'
 
 export const IMAGE_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.svg'])
+export const AUDIO_EXTS = new Set(['.mp3', '.wav', '.m4a', '.ogg', '.flac', '.aac'])
+export const VIDEO_EXTS = new Set(['.mp4', '.webm', '.m4v', '.mov'])
+export const OFFICE_EXTS = new Set(['.docx', '.xlsx', '.pptx'])
+export const MARKDOWN_EXTS = new Set(['.md', '.markdown'])
+/** Reading-position memory (viewer scroll offsets, keyed by absolute path). */
+export const SCROLL_STORAGE_KEY = 'kc:file-explorer:scroll:v1'
 
 export const LANG_BY_EXT: Record<string, string> = {
   '.ts': 'typescript', '.tsx': 'typescript', '.js': 'javascript', '.jsx': 'javascript',

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { fileExplorerApi } from '../apps/file-explorer/api'
+import { FileExplorerApiError, fileExplorerApi } from '../apps/file-explorer/api'
 
 /**
  * The File Explorer HTTP seam. Every path a user can type travels through these
@@ -129,5 +129,59 @@ describe('fileExplorerApi failures', () => {
       text: async () => { throw new Error('zzz stream broke') },
     } as unknown as Response)
     await expect(fileExplorerApi.resolve('/zzz')).rejects.toThrow('HTTP 502')
+  })
+})
+
+describe('fileExplorerApi viewer endpoints', () => {
+  it('rawUrl encodes the path and omits download by default', () => {
+    expect(fileExplorerApi.rawUrl('/zzz dir/a b.pdf'))
+      .toBe(`${BASE}/raw?path=%2Fzzz+dir%2Fa+b.pdf`)
+  })
+
+  it('rawUrl adds download=1 when asked', () => {
+    expect(fileExplorerApi.rawUrl('/zzz/a.xlsx', true))
+      .toBe(`${BASE}/raw?path=%2Fzzz%2Fa.xlsx&download=1`)
+  })
+
+  it('extract requests the encoded document path', async () => {
+    await fileExplorerApi.extract('/zzz dir/deck.pptx')
+    expect(calledUrl()).toBe(`${BASE}/extract?path=%2Fzzz%20dir%2Fdeck.pptx`)
+  })
+
+  it('extractMemberUrl carries both path and member as single parameters', () => {
+    expect(fileExplorerApi.extractMemberUrl('/zzz/deck.pptx', 'ppt/media/image1.png'))
+      .toBe(`${BASE}/extract?path=%2Fzzz%2Fdeck.pptx&member=ppt%2Fmedia%2Fimage1.png`)
+  })
+
+  it('write POSTs the body with credentials and the base mtime', async () => {
+    fetchMock.mockResolvedValue(ok({ ok: true, size: 5, mtime: 1234 }))
+    const res = await fileExplorerApi.write('/zzz/notes.md', '# hi', 1200)
+    expect(res).toEqual({ ok: true, size: 5, mtime: 1234 })
+    expect(calledUrl()).toBe(`${BASE}/write?path=%2Fzzz%2Fnotes.md&base_mtime=1200`)
+    const init = fetchMock.mock.calls[0][1] as RequestInit
+    expect(init.method).toBe('POST')
+    expect(init.credentials).toBe('same-origin')
+    expect(init.body).toBe('# hi')
+  })
+
+  it('write surfaces a 409 conflict with its status preserved', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 409,
+      json: async () => ({ error: 'zzz file changed on disk' }),
+    } as unknown as Response)
+    const err = await fileExplorerApi.write('/zzz/notes.md', 'x').catch((e) => e as FileExplorerApiError)
+    expect(err).toBeInstanceOf(FileExplorerApiError)
+    expect((err as FileExplorerApiError).status).toBe(409)
+    expect((err as FileExplorerApiError).message).toBe('zzz file changed on disk')
+  })
+
+  it('write falls back to the status code when the error body is unreadable', async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => { throw new Error('zzz not json') },
+    } as unknown as Response)
+    await expect(fileExplorerApi.write('/zzz/notes.md', 'x')).rejects.toThrow('HTTP 500')
   })
 })
