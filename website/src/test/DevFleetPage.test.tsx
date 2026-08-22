@@ -308,7 +308,8 @@ describe('DevFleetPage', () => {
       worktrees: FLEET.worktrees.map((w) =>
         w.name === 'unprov' ? { ...w, provision_run_id: 'run-prov-dead' } : w),
     }
-    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+    let dismissBody: unknown = null
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url, opts) => {
       const u = typeof url === 'string' ? url : (url as Request).url
       if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_WITH_FAILED), { status: 200 }))
       if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
@@ -316,6 +317,10 @@ describe('DevFleetPage', () => {
         return Promise.resolve(new Response(JSON.stringify({
           status: 'done', exit_code: 1, output: ['npm ERR! build failed'], started: Date.now() / 1000 - 300,
         }), { status: 200 }))
+      }
+      if (u.includes('/pod/provision/dismiss')) {
+        dismissBody = JSON.parse(String(opts?.body))
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, dismissed: true }), { status: 200 }))
       }
       return Promise.resolve(new Response('{}', { status: 200 }))
     })
@@ -325,6 +330,9 @@ describe('DevFleetPage', () => {
     // The last log line renders twice (inline strip + expanded <pre> panel).
     await waitFor(() => expect(screen.getByText('Provision failed (exit 1)')).toBeInTheDocument(), { timeout: 3000 })
     expect(screen.getAllByText('npm ERR! build failed').length).toBeGreaterThanOrEqual(2)
+    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    await waitFor(() => expect(dismissBody).toEqual({ name: 'unprov', run_id: 'run-prov-dead' }))
+    await waitFor(() => expect(screen.queryByText('Provision failed (exit 1)')).toBeNull())
   })
 
   it('reattached polling keeps the fetched log prefix and marks a scrolled gap', async () => {
