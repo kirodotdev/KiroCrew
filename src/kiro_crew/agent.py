@@ -1975,7 +1975,16 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         else:
             cmd = spec.get("command") or spec["command_fn"]()
             args = list(spec["args"])
-        entry = {"command": cmd, "args": args}
+        # The deep merge above may have supplied user-owned options such as a
+        # timeout or extra environment variables. Keep those on a clean build,
+        # while replacing the invocation and transport fields that define our
+        # trusted managed server.
+        existing = mcp.get(name)
+        entry = dict(existing) if isinstance(existing, dict) else {}
+        entry["command"] = cmd
+        entry["args"] = args
+        entry.pop("url", None)
+        entry.pop("headers", None)
         # Enterprise registry mode: without this marker the client drops the
         # entry before launch (see _mcp_registry_mode). command/args stay so the
         # spec still describes a runnable server for every other consumer —
@@ -1983,14 +1992,25 @@ def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
         # refresh — none of which route through the registry.
         if registry_mode:
             entry["type"] = _MCP_REGISTRY_TYPE
+        elif entry.get("type") == _MCP_REGISTRY_TYPE:
+            entry.pop("type", None)
         # Pin the data home so the shim cannot read a DIFFERENT one than the
         # gateway that spawned it (see _managed_mcp_env). Omitted entirely on a
         # default install, so the emitted spec is unchanged there.
-        env = _managed_mcp_env()
+        pinned = _managed_mcp_env()
+        env = dict(entry.get("env") or {})
+        env.pop("KIROCREW_HOME", None)
+        env.update(pinned)
         if env:
             entry["env"] = env
+        else:
+            entry.pop("env", None)
         if "autoApprove" in spec:
             entry["autoApprove"] = list(spec["autoApprove"])
+        else:
+            # agent.json is agent-writable; it cannot grant auto-approval to a
+            # managed server that does not ship an audited default grant.
+            entry.pop("autoApprove", None)
         mcp[name] = entry
 
     # Edition-contributed MCP servers (PlatformContext).  ADD-only: standalone
