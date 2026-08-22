@@ -282,8 +282,18 @@ is what makes nightlies read as previews of the *next* release:
 | `pyproject.toml` | `[project] version` — what the wheel carries |
 | `website/electron/package.json` | `version` — the updater's version compare |
 
-Keep it a bare `X.Y.Z`: `nightly.yml` builds both a semver and a PEP 440 stamp
-from it, and a suffixed base (`.dev0`) produces invalid versions.
+Keep it a bare `X.Y.Z` **on `main`**: `nightly.yml` builds both a semver and a
+PEP 440 stamp from it, and a suffixed base (`.dev0`) produces invalid versions.
+
+On an **insider release branch** the in-code version instead carries the RC, so
+a source/dev checkout reads as the candidate it is. All three files use the
+**same dual-valid spelling** `X.Y.Z-rc.N` (e.g. `0.4.0-rc.4`): it is valid
+SemVer for `package.json` **and** valid (non-canonical) PEP 440, which pip and
+setuptools normalize to `X.Y.ZrcN`. Do not use the canonical PEP 440 spelling
+(`0.4.0rc4`) in `__init__.py` — `packaging/build-desktop.sh` greps `__version__`
+straight into electron-builder's `extraMetadata.version`, which rejects
+non-SemVer and kills a local `make desktop`. The tag still overrides all three
+at build time (see `docs/build/release.md` → "Version numbering policy").
 
 ### One trap worth knowing
 

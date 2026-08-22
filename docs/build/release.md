@@ -402,9 +402,15 @@ the in-code value is what a non-tag build reports and what the promote sequence
 manipulates — the final byte stamp is decided by the tag, not this value.
 
 - **On an insider release branch, `__version__` carries the RC suffix, and the
-  tag matches.** The branch reads as what it is: `__version__ = "X.Y.ZrcN"`,
+  tag matches.** The branch reads as what it is: `__version__ = "X.Y.Z-rc.N"`,
   tags `vX.Y.Z-insider.N`. Do not leave a release branch declaring a bare
-  `X.Y.Z` while it is still cutting RCs.
+  `X.Y.Z` while it is still cutting RCs. All three version files
+  (`src/kiro_crew/__init__.py`, `pyproject.toml`,
+  `website/electron/package.json`) use the **same dual-valid spelling**
+  `X.Y.Z-rc.N` — valid SemVer and valid (non-canonical) PEP 440. The canonical
+  PEP 440 form (`0.4.0rc4`) is forbidden in `__init__.py`:
+  `packaging/build-desktop.sh` feeds `__version__` verbatim to
+  electron-builder, which requires SemVer.
 - **Promoting an insider line to stable is a three-step sequence:**
   1. **Drop the RC in a PR** — change `__version__` from `X.Y.ZrcN` to the bare
      `X.Y.Z`. This is the release commit; it also sets the base the stable
