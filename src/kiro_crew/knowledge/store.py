@@ -1472,6 +1472,7 @@ class KnowledgeStore:
             return {}
         mentions = self.db.execute("SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)).fetchall()
         entity_ids = [m["entity_id"] for m in mentions]
+        entity_id_set = set(entity_ids)
         entities = []
         for eid in entity_ids:
             row = self.db.execute("SELECT * FROM entities WHERE id = ?", (eid,)).fetchone()
@@ -1483,12 +1484,38 @@ class KnowledgeStore:
             for row in self.db.execute(
                     "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)):
                 r = dict(row)
-                if r["id"] not in seen_ids:
-                    seen_ids.add(r["id"])
-                    relations.append(r)
+                if r["id"] in seen_ids:
+                    continue
+                # A relation whose OTHER endpoint isn't among this item's
+                # mentioned entities, or that was recorded under a different
+                # item's observation (source_item_id), would re-import
+                # referencing an entity/item this single-item bundle never
+                # carries -- an FK violation on the receiving end. Only keep
+                # relations fully contained in what this bundle exports.
+                if r["source_id"] not in entity_id_set or r["target_id"] not in entity_id_set:
+                    continue
+                if r["source_item_id"] not in (None, item_id):
+                    continue
+                seen_ids.add(r["id"])
+                relations.append(r)
         locations = [dict(r) for r in self.db.execute(
             "SELECT * FROM source_locations WHERE item_id = ?", (item_id,))]
-        return {"item": item, "entities": entities, "relations": relations, "source_locations": locations}
+        mentions = [dict(r) for r in self.db.execute(
+            "SELECT * FROM mentions WHERE item_id = ?", (item_id,))]
+        source_ids = {sid for sid in (item.get("source_id"), *(loc["source_id"] for loc in locations)) if sid}
+        sources = []
+        for sid in source_ids:
+            row = self.db.execute("SELECT * FROM sources WHERE id = ?", (sid,)).fetchone()
+            if row:
+                sources.append(dict(row))
+        return {
+            "items": [item],
+            "sources": sources,
+            "entities": entities,
+            "relations": relations,
+            "source_locations": locations,
+            "mentions": mentions,
+        }
 
     def export_all(self, namespace: str | None = None) -> dict:
         if namespace:

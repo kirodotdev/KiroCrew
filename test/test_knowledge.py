@@ -911,13 +911,87 @@ class TestKnowledgeStoreExtended:
         store.add_entity_relation(e1, e2, "uses", source_item_id=item_id)
         store.add_source_location(item_id, sid, section_title="Main")
         bundle = store.export_item(item_id)
-        assert bundle["item"]["id"] == item_id
+        assert bundle["items"][0]["id"] == item_id
         assert len(bundle["entities"]) == 2
         assert len(bundle["relations"]) == 1
         assert len(bundle["source_locations"]) == 1
+        assert len(bundle["mentions"]) == 2
+        assert bundle["sources"][0]["id"] == sid
 
     def test_export_item_missing(self, store):
         assert store.export_item("nope") == {}
+
+    def test_export_item_without_source(self, store):
+        item_id = store.add_item("Doc", "content", "doc")
+        bundle = store.export_item(item_id)
+        assert bundle["items"][0]["id"] == item_id
+        assert bundle["sources"] == []
+
+    def test_export_item_roundtrips_into_a_fresh_instance(self, store_factory):
+        s1 = store_factory("export_item_src.db")
+        sid = s1.add_source("f", "local_file", "/tmp/exp2.md")
+        item_id = s1.add_item("Doc", "content", "doc", source_id=sid)
+        eid = s1.add_entity("Svc", "service")
+        s1.add_mention(item_id, eid)
+        s1.add_source_location(item_id, sid, section_title="Main")
+        bundle = s1.export_item(item_id)
+
+        s2 = store_factory("export_item_dst.db")
+        result = s2.import_bundle(bundle)
+        assert result["items_imported"] == 1
+        assert s2.get_item(item_id)["title"] == "Doc"
+        mentions = s2.db.execute(
+            "SELECT * FROM mentions WHERE item_id = ?", (item_id,)
+        ).fetchall()
+        assert len(mentions) == 1
+        assert mentions[0]["entity_id"] == eid
+
+    def test_export_item_excludes_relations_whose_other_endpoint_is_not_exported(self, store):
+        """A relation touching an entity outside this item's mentions must not
+        ride along -- the receiving store never gets that entity's row, so
+        re-importing the relation would violate entity_relations' FK on
+        source_id/target_id."""
+        item_id = store.add_item("Doc", "content", "doc")
+        mentioned = store.add_entity("Svc", "service")
+        outside = store.add_entity("Unrelated", "service")
+        store.add_mention(item_id, mentioned)
+        store.add_entity_relation(mentioned, outside, "calls")
+        bundle = store.export_item(item_id)
+        assert bundle["relations"] == []
+        assert {e["id"] for e in bundle["entities"]} == {mentioned}
+
+    def test_export_item_excludes_relations_owned_by_a_different_item(self, store):
+        """A relation recorded under another item's observation (source_item_id
+        set to that other item) must not ride along either -- re-importing it
+        here references an item that was never exported alongside it."""
+        item_id = store.add_item("Doc", "content", "doc")
+        other_item_id = store.add_item("Other", "content", "doc")
+        e1 = store.add_entity("A", "service")
+        e2 = store.add_entity("B", "service")
+        store.add_mention(item_id, e1)
+        store.add_mention(item_id, e2)
+        store.add_entity_relation(e1, e2, "calls", source_item_id=other_item_id)
+        bundle = store.export_item(item_id)
+        assert bundle["relations"] == []
+
+    def test_export_item_with_a_cross_referencing_relation_roundtrips_cleanly(self, store_factory):
+        """End-to-end reproduction of the FK bug: exporting an item whose
+        mentioned entity has a relation to an unexported entity must still
+        re-import cleanly (the offending relation is simply dropped, not
+        carried along to break the import)."""
+        s1 = store_factory("cross_ref_src.db")
+        item_id = s1.add_item("Doc", "content", "doc")
+        mentioned = s1.add_entity("Svc", "service")
+        outside = s1.add_entity("Unrelated", "service")
+        s1.add_mention(item_id, mentioned)
+        s1.add_entity_relation(mentioned, outside, "calls")
+        bundle = s1.export_item(item_id)
+
+        s2 = store_factory("cross_ref_dst.db")
+        result = s2.import_bundle(bundle)
+        assert result["items_imported"] == 1
+        assert result["relations_rebuilt"] == 0
+        assert s2.get_item(item_id) is not None
 
     def test_delete_item_cleans_mentions(self, store):
         item_id = store.add_item("Doc", "content", "doc")
