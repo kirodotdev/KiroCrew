@@ -11,6 +11,9 @@ to the config dir that was active when the handler was installed.
 from __future__ import annotations
 
 import asyncio
+import atexit
+import faulthandler
+import sys
 
 import pytest
 
@@ -137,3 +140,80 @@ class TestUnclosedConnectionDowngrade:
         crash_log = tmp_path / "home" / "logs" / "crash.log"
         assert crash_log.exists()
         assert "Some other problem" in crash_log.read_text()
+
+
+class TestInstallIdempotent:
+    """``install()`` is documented "Idempotent." — pin the early-return contract.
+
+    The ``if _INSTALLED: return`` arc in ``install()`` previously executed only
+    when two tests calling ``install()`` landed in the same pytest-xdist worker,
+    so its line coverage was a scheduling coin flip that flipped the per-file
+    coverage floor on unrelated PRs (#5019). These tests exercise that arc
+    unconditionally and deterministically: one sets the flag explicitly, the
+    other forces the flag off so the first call is the real installation and
+    the second call takes the early return.
+
+    Both tests monkeypatch ``atexit.register`` (to a recorder) and
+    ``faulthandler.enable`` (to a no-op) BEFORE calling ``install()``, so no
+    real registration and no faulthandler re-targeting ever happens: pytest's
+    own faulthandler plugin binds the dump fd to the real stderr, and a bare
+    ``faulthandler.enable()`` inside a test would silently re-point fatal-signal
+    dumps at the captured ``sys.stderr`` for the rest of the worker process.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_install_state(self, tmp_path, monkeypatch):
+        """Save/restore the module globals the tests mutate.
+
+        ``_CRASH_LOG`` is restored by the module-level autouse fixture. The
+        atexit and faulthandler side effects need no rollback because both are
+        monkeypatched away before any ``install()`` call in this class.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        saved_installed = crash_guard._INSTALLED
+        saved_hook = sys.excepthook
+        yield
+        crash_guard._INSTALLED = saved_installed
+        sys.excepthook = saved_hook
+
+    @staticmethod
+    def _neutralize_globals(monkeypatch) -> list[object]:
+        """Spy ``atexit.register`` and no-op ``faulthandler.enable``."""
+        registrations: list[object] = []
+        monkeypatch.setattr(
+            atexit, "register", lambda fn, *a, **kw: registrations.append(fn)
+        )
+        monkeypatch.setattr(faulthandler, "enable", lambda *a, **kw: None)
+        return registrations
+
+    def test_early_return_when_flag_already_set(self, monkeypatch):
+        """The early-return arc, exercised regardless of prior worker state."""
+        crash_guard._INSTALLED = True
+        registrations = self._neutralize_globals(monkeypatch)
+        hook_before = sys.excepthook
+        crash_log_before = crash_guard._CRASH_LOG
+
+        crash_guard.install()
+
+        assert sys.excepthook is hook_before
+        assert registrations == []
+        assert crash_guard._CRASH_LOG is crash_log_before
+
+    def test_second_install_is_a_noop(self, monkeypatch):
+        """A real install followed by a second call that must change nothing."""
+        crash_guard._INSTALLED = False  # deterministic: first call really installs
+        registrations = self._neutralize_globals(monkeypatch)
+
+        crash_guard.install()
+
+        assert crash_guard._INSTALLED is True
+        assert registrations == [crash_guard._atexit_handler]
+        assert sys.excepthook is crash_guard._excepthook
+        crash_log_after_first = crash_guard._CRASH_LOG
+        assert crash_log_after_first is not None
+
+        crash_guard.install()
+
+        assert sys.excepthook is crash_guard._excepthook
+        assert registrations == [crash_guard._atexit_handler]
+        assert crash_guard._CRASH_LOG is crash_log_after_first
