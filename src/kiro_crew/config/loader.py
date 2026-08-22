@@ -243,6 +243,20 @@ DEFAULT_AUTOCOMPACT_PCT = 70.0
 # unreachable and the early signal disappears for whoever did not change the
 # default. Kept here rather than in either consumer so the two cannot drift.
 CONTEXT_WARN_MARGIN_PCT = 20.0
+# session.pool_size — warm pool OFF by default. Each pooled slot is a full
+# kiro-cli process plus the MCP stdio servers its agent spec spawns (~109 MB per
+# backend), and a non-zero value is also reserved out of the memory term that
+# sizes the subagent cap (subagent.compute_max_subagents), so the cost is paid on
+# every host whether or not the pool is ever claimed. Cold start is instead
+# hidden by session.eager_spawn, which is on by default and pre-creates a slot's
+# session behind user think-time.
+#
+# Read by BOTH the SessionConfig field default and load()'s file-parse fallback,
+# because those are two independent paths to the same value: a home with no
+# config.json takes the field default, and a config.json that omits the key takes
+# the parse fallback. A literal in either place lets the two disagree, which is
+# invisible on disk — this constant is the only place the value is written.
+DEFAULT_POOL_SIZE = 0
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 )
@@ -1838,7 +1852,7 @@ class SessionConfig:
         ),
     )
     pool_size: int = field(
-        default=0,
+        default=DEFAULT_POOL_SIZE,
         metadata=_meta(
             "Warm Pool Size",
             "Number of pre-spawned kiro-cli processes kept ready for instant session start. 0 disables.",
@@ -6532,7 +6546,12 @@ class KiroCrewConfig:
                     lo=AUTOCOMPACT_PCT_MIN,
                     hi=AUTOCOMPACT_PCT_MAX,
                 ),
-                pool_size=_safe_int(session_data.get("pool_size", 2), 2, 0, POOL_SIZE_MAX),
+                pool_size=_safe_int(
+                    session_data.get("pool_size", DEFAULT_POOL_SIZE),
+                    DEFAULT_POOL_SIZE,
+                    0,
+                    POOL_SIZE_MAX,
+                ),
                 pool_agent=str(session_data.get("pool_agent", "")),
                 pool_ttl_secs=_safe_int(session_data.get("pool_ttl_secs", 1800), 1800),
                 eager_spawn=bool(session_data.get("eager_spawn", True)),

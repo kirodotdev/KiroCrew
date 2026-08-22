@@ -6,10 +6,12 @@ for property-based testing.
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import platform
+import re
 import tempfile
 import unittest.mock
 from pathlib import Path
@@ -88,6 +90,25 @@ def _load_from_dict(data: object) -> KiroCrewConfig:
             return KiroCrewConfig.load()
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _load_absent_config() -> KiroCrewConfig:
+    """Load with NEITHER config.json nor config.local.json present.
+
+    This is the only path that reaches the dataclass field defaults, so it is
+    what a default must be compared against.
+    """
+    with tempfile.TemporaryDirectory() as d:
+        missing = Path(d) / "config.json"
+        missing_local = Path(d) / "config.local.json"
+        with unittest.mock.patch(
+            "kiro_crew.config.loader.config_path",
+            return_value=missing,
+        ), unittest.mock.patch(
+            "kiro_crew.config.loader.config_local_path",
+            return_value=missing_local,
+        ):
+            return KiroCrewConfig.load()
 
 
 def _load_from_raw_string(content: str) -> KiroCrewConfig:
@@ -2978,6 +2999,68 @@ class TestAutocompactPctLoadClamp:
         assert (AUTOCOMPACT_PCT_MIN, AUTOCOMPACT_PCT_MAX) == (5.0, 90.0)
 
 
+class TestPoolSizeDefaultSingleSource:
+    """``session.pool_size`` has TWO independent paths to its default and they
+    must not be able to disagree.
+
+    A home with no ``config.json`` at all constructs ``SessionConfig()`` and
+    takes the dataclass field default; a home WITH a ``config.json`` that omits
+    the key reaches ``load()``'s file-parse fallback instead. An install that has
+    run setup is always the second case, so a literal at the parse site decides
+    the real default for essentially every host while the field default decides
+    what the schema, the docs, and a never-set-up home report. The disagreement
+    is invisible on disk: nothing serializes the difference, and each pooled slot
+    it silently buys is a kiro-cli process plus that agent's MCP stdio servers.
+    """
+
+    def test_field_default_reads_the_shared_constant(self) -> None:
+        assert loader_module.DEFAULT_POOL_SIZE == 0
+        assert (
+            SessionConfig.__dataclass_fields__["pool_size"].default
+            == loader_module.DEFAULT_POOL_SIZE
+        )
+        assert SessionConfig().pool_size == loader_module.DEFAULT_POOL_SIZE
+
+        # A dataclass default is bound at class creation, so no runtime
+        # assertion can tell a literal that happens to equal the constant from
+        # the constant itself. Read the declaration to close that gap: a literal
+        # here is exactly how the two spellings come apart.
+        decl = re.search(
+            r"pool_size:\s*int\s*=\s*field\(\s*default=([^,\s]+)\s*,",
+            inspect.getsource(SessionConfig),
+        )
+        assert decl is not None, "SessionConfig.pool_size field declaration not found"
+        assert decl.group(1) == "DEFAULT_POOL_SIZE"
+
+    def test_omitted_key_and_absent_file_agree(self) -> None:
+        """The behavioural invariant, stated without naming a value: whether a
+        config file omits ``pool_size``, omits the whole ``session`` block, or
+        does not exist, all three land on the same warm-pool size."""
+        omits_key = _load_from_dict({"session": {"timeout_secs": 1800}}).session.pool_size
+        omits_section = _load_from_dict({"agent": {"provider": "acp"}}).session.pool_size
+        no_file = _load_absent_config().session.pool_size
+
+        assert omits_key == omits_section == no_file == loader_module.DEFAULT_POOL_SIZE
+
+    def test_parse_fallback_holds_no_literal_of_its_own(self) -> None:
+        """Repoint the constant and the file-parse path must follow it.
+
+        This is what makes the constant the ONLY definition rather than merely
+        one that happens to agree today: with a literal at the parse site, the
+        loaded value ignores the repoint and this fails.
+        """
+        with unittest.mock.patch.object(loader_module, "DEFAULT_POOL_SIZE", 7):
+            assert _load_from_dict({"session": {}}).session.pool_size == 7
+            # The same fallback catches an unparseable value, so it must be
+            # sourced from the constant there too.
+            assert _load_from_dict({"session": {"pool_size": "two"}}).session.pool_size == 7
+
+    def test_explicit_value_still_wins_over_the_default(self) -> None:
+        """The reconciliation must not swallow a configured pool."""
+        assert _load_from_dict({"session": {"pool_size": 2}}).session.pool_size == 2
+        assert _load_from_dict({"session": {"pool_size": 0}}).session.pool_size == 0
+
+
 class TestConfigWriteProtection:
     """config.json / config.local.json are WRITE-protected (reads allowed)."""
 
@@ -3658,8 +3741,10 @@ class TestMalformedConfigNeverBricksLoad:
 
     def test_non_numeric_int_field_falls_back(self) -> None:
         # Pre-fix: ValueError: invalid literal for int() with base 10: 'two'.
+        # The fallback is the field's own default, read from the one constant
+        # that defines it rather than restated here.
         cfg = _load_from_dict({"session": {"pool_size": "two"}})
-        assert cfg.session.pool_size == 2
+        assert cfg.session.pool_size == loader_module.DEFAULT_POOL_SIZE
 
     def test_non_numeric_float_field_falls_back(self) -> None:
         cfg = _load_from_dict({"agent": {"subagent_cost_gb": "lots"}})
