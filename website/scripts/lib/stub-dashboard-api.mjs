@@ -19,6 +19,27 @@ export const json = (route, body, status = 200) => route.fulfill({
   status, contentType: 'application/json', body: JSON.stringify(body),
 })
 
+export const KIROCREW_CONFIG_FIXTURE = {
+  agents: { kirocrew: { provider: 'kiroacp', model: 'auto', approval_mode: 'reads' } },
+  default_agent: 'kirocrew',
+  workspaces: { default: { dir: '~/.kiro/crew/workspace' } },
+  default_workspace: 'default',
+  memory_stores: { default: { description: 'Workspace memory', embedding_provider: 'local' } },
+  default_memory_store: 'default',
+  agent: {
+    default_agent: 'kirocrew', provider: 'kiroacp', model: 'auto',
+    approval_mode: 'reads', sandbox: 'auto', max_channels: 5,
+    max_channel_agents: 2, enforce_denied_commands: 'on',
+  },
+  session: { timeout_secs: 900, pool_size: 2, pool_agent: 'kirocrew', pool_ttl_secs: 900 },
+  memory: { embedding_provider: 'local' },
+  auto_update: true,
+}
+
+export const AGENT_CONFIG_FIXTURE = {
+  name: 'kirocrew', provider: 'kiroacp', tools: [], mcpServers: {},
+}
+
 /**
  * Install the gateway-free API stub on a page.
  *
@@ -91,6 +112,10 @@ export async function stubDashboardApi(page, opts = {}) {
         merge_queued_messages: false, widget_density: 'more',
       })
     }
+    // These must precede the object-shaped catch-all below. Config renders
+    // enumerate all three maps, so `{}` throws and leaves a blank screenshot.
+    if (path === '/api/config/kirocrew') return json(route, KIROCREW_CONFIG_FIXTURE)
+    if (path === '/api/agent/config') return json(route, AGENT_CONFIG_FIXTURE)
     if (path === '/api/agents' || path === '/api/chat/agents') {
       return json(route, [{ name: 'kirocrew', source: 'builtin' }, { name: 'oncall', source: 'aim' }])
     }
