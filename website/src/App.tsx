@@ -66,6 +66,7 @@ import MarkdownRenderer, { Lightbox } from './components/MarkdownRenderer'
 import NotificationsPage from './pages/NotificationsPage'
 import NotificationDetailPanel from './components/notifications/NotificationDetailPanel'
 import NotificationFeed from './components/notifications/NotificationFeed'
+import BeforeIForget from './components/BeforeIForget'
 import LogsPage from './pages/LogsPage'
 import HooksPage from './pages/HooksPage'
 import WebhooksPage from './pages/WebhooksPage'
@@ -2612,6 +2613,12 @@ export default function App() {
               />
             </span>
           )}
+          {/* "Before I Forget" scratchpad — quick-capture floating notepad.
+              Desktop-only, like the FeedbackPill above: on mobile the row
+              already holds the readout capsule and the bell, and a third
+              peer action in one horizontal row is what website/AUTOSDE.yaml's
+              max-two-buttons-per-row forbids. */}
+          {!isMobile && <BeforeIForget />}
           {/* Notifications bell — borderless icon button, rightmost control.
               (The activity-panel open toggle now lives in the session header,
               beside the pop-out control — see ChatPage — so opening the panel

@@ -96,7 +96,15 @@
     "open_command_bar": "[Øþèñ Çøɱɱàñð Ɓàŕ ··············]",
     "focus_mode": "[Ƒøçùş ɱøðè ···············]",
     "focus_mode_title": "[Ƒøçùş ɱøðè · Àĺţ+Şĥìƒţ+Ṁ ·················]",
-    "focus_mode_title_mac": "[Ƒøçùş ɱøðè · ⌥⇧Ṁ ··············]"
+    "focus_mode_title_mac": "[Ƒøçùş ɱøðè · ⌥⇧Ṁ ··············]",
+    "before_i_forget": "[Ɓèƒøŕè Ì Ƒøŕğèţ ··············]",
+    "before_i_forget_chars_one": "[{{count}} çĥàŕ ········]",
+    "before_i_forget_chars_other": "[{{count}} çĥàŕş ·········]",
+    "before_i_forget_clear": "[Çĺèàŕ şçŕàţçĥþàð ··············]",
+    "before_i_forget_placeholder": "[Ĵøţ şøɱèţĥìñğ ðøẁñ… ·················]",
+    "before_i_forget_save_failed": "[ñøţ şàṽèð ··············]",
+    "before_i_forget_saved": "[şàṽèð ········]",
+    "before_i_forget_saving": "[şàṽìñğ… ···········]"
   },
   "appSdk": {
     "chatEmbed": {
