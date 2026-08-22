@@ -24,6 +24,11 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [reference/](reference/README.md) | Upstream documentation we mirror but do not author. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
 
+Single-topic docs at this level:
+
+- [devcontainers.md](devcontainers.md) — running a session's agent inside the
+  project's Dev Container.
+
 ## The rule for changing docs
 
 A code change that alters documented behavior MUST update the docs **in the same

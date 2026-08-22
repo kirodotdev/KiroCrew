@@ -572,6 +572,42 @@ export interface ConfiguredChannelTarget {
   unavailable_reason: string
 }
 
+/**
+ * Why a session that could have run inside the project's Dev Container is
+ * running on the host instead. Null whenever `mode` is `container`.
+ *
+ * Declared as a union PLUS an open string on purpose: the backend owns this
+ * vocabulary and can add a degradation cause without a coordinated frontend
+ * release, so the type keeps autocomplete for the known tokens while still
+ * accepting one it has never heard of. Every reader must therefore have a
+ * fallback branch — an unmapped token must never render raw or crash.
+ */
+export type SessionExecutionReason =
+  | 'untrusted'
+  | 'build_failed'
+  | 'docker_unavailable'
+  | 'config_changed'
+  | 'unsupported_platform'
+  | (string & Record<never, never>)
+
+/**
+ * WHERE a session's turns actually execute.
+ *
+ * Absent or null means the work directory ships no Dev Container config, so
+ * there are not two worlds to tell apart and no indicator belongs on screen.
+ * `container` and `host` are both positive statements: a granted trust does not
+ * guarantee the container, because any transient failure (no Docker, a broken
+ * build, a config edited after the grant) falls back to host execution, and that
+ * fallback is invisible without this field.
+ */
+export interface SessionExecution {
+  mode: 'container' | 'host'
+  /** Name of the container the session is inside; null when unknown. */
+  container_name: string | null
+  /** Cause of a host fallback. Null when `mode` is `container`. */
+  reason: SessionExecutionReason | null
+}
+
 export interface ChatSlot {
   key: string; title?: string; messages: number; running: boolean; stopping?: boolean; pending_approval?: boolean; created?: string; last_ts?: string; last_turn_ts?: string; last_message?: string; agent?: string; model?: string; reasoning_effort?: string; mode?: string; surface?: string; workspace?: string; trust?: boolean; trust_reads?: boolean; folder_id?: string; pinned?: boolean; tags?: string[]; links?: SessionLink[]; slack_linked?: boolean; slack_channel?: string; slack_thread_ts?: string; color_index?: number | null; color_hex?: string | null; memory_mode?: 'persistent' | 'incognito' | 'temporary'; clean_mode?: boolean; project?: string; forked_from?: string | null; source_links?: { provider: 'github' | 'gitlab' | 'jira'; number: number; url: string; repo?: string; ci?: 'running' | 'passed' | 'failed' | null; state?: 'open' | 'draft' | 'merged' | 'closed'; mergeable?: string; mergeStateStatus?: string; kind?: 'change' | 'issue' }[]; source_links_total?: number
   /** Provenance bucket from the backend `SlotOrigin` ("user" | "app" | "cron"
@@ -586,6 +622,11 @@ export interface ChatSlot {
   artifact?: string
   /** Metadata for kind="webapp" artifacts (deploy state, architecture, costs). */
   webapp_metadata?: WebAppMetadata
+  /**
+   * Where this session's turns execute. Absent when the work dir ships no Dev
+   * Container config, which is the common case and renders no indicator.
+   */
+  execution?: SessionExecution | null
   // Board fields
   has_options?: boolean; options?: string[]; pending_approval_info?: PendingApproval | null; last_activity_ts?: string; waiting_for_input?: boolean; prompt_preview?: string; subagents_running?: boolean; orchestrating?: boolean
   /** An unanswered question card the turn is parked on, so the row would

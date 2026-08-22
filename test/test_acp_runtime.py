@@ -3683,11 +3683,21 @@ class TestAcpRuntimeLoadSession:
         } <= builders.keys(), f"expected builders missing from scan: {sorted(builders)}"
         for name, body in builders.items():
             assert (
-                "pooled_session_servers" in body or "_pooled_mcp_servers" in body
+                "pooled_session_servers" in body
+                or "_pooled_mcp_servers" in body
+                or "_injected_mcp_servers" in body
+                or "_session_mcp_servers" in body
             ), (
                 f"{name} issues session/new or session/load but never consults "
                 "the pooled broker stubs — it would un-pool its sessions (#3528)"
             )
+        # The helpers above are the container-aware seam: they swap in the host
+        # stdio bridge when a runtime is containerized, and must still fall
+        # through to the pooling stubs on the host path.
+        injected = inspect.getsource(rt_mod.AcpRuntime._injected_mcp_servers)
+        assert "pooled_session_servers" in injected
+        session = inspect.getsource(client_mod.AcpClient._session_mcp_servers)
+        assert "pooled_session_servers" in session or "_pooled_mcp_servers" in session
 
 
 @pytest.mark.asyncio

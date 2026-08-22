@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText, Box } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
+import DevcontainerExecutionChip, { showsExecution } from './DevcontainerExecutionChip'
+import type { SessionExecution } from '../types'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import VoiceStatusBar from './VoiceStatusBar'
@@ -134,6 +136,9 @@ const FILE_PREVIEW_H_RESIZED = 101
 const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
+// Container ids are 64 hex chars; the leading 12 are what `docker ps` prints and
+// what the user pastes into a docker command, so the tooltip shows that prefix.
+const DEVCONTAINER_ID_CHARS = 12
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
 // programmatic value reset (send-clear, ↑/↓ history recall, prompt optimize)
@@ -372,6 +377,47 @@ interface ChatInputProps {
   projectBranch?: string
   /** True when the project's HEAD is detached, so the label is a commit. */
   projectDetached?: boolean
+  /**
+   * True while a Dev Container is up for the active project. Distinct from
+   * `devcontainerTrusted`: the chip mounts on trust, not on a running container,
+   * so the withdraw control exists for a user who has second thoughts before any
+   * container has been built.
+   */
+  devcontainerRunning?: boolean
+  /** Container id of that Dev Container, surfaced in the chip's tooltip. */
+  devcontainerId?: string
+  /**
+   * Trust key the chip's "Withdraw trust" acts on — the status response's
+   * `project_dir`, which is a realpath and can differ from the `project` label
+   * above. Passed explicitly so the revoke targets the same key the grant used.
+   */
+  devcontainerProject?: string
+  /**
+   * True while the active project's Dev Container config holds a trust grant.
+   * The chip mounts on THIS rather than on a running container: the trust card
+   * tells the user they can withdraw trust from the chip, and between granting
+   * and the first successful build there would otherwise be no control anywhere
+   * -- which is exactly when someone having second thoughts goes looking.
+   */
+  devcontainerTrusted?: boolean
+  /** Refetch Dev Container status after trust was withdrawn. */
+  onDevcontainerUntrust?: () => void | Promise<unknown>
+  /**
+   * True after an explicit refusal (Not now or Withdraw) for this config.
+   * Keeps the chip mounted so "Trust again" has somewhere to live — without
+   * it a withdrawn grant plus a stopped container leaves no way back.
+   */
+  devcontainerDismissed?: boolean
+  /** Clear the refusal so the trust card can ask again. */
+  onDevcontainerTrustAgain?: () => void
+  /**
+   * Where the active session's turns actually execute. Absent when the work dir
+   * ships no Dev Container config. Independent of `devcontainerRunning`, which
+   * is project-level polled state: a session can have fallen back to the host
+   * while a container is up for the project, and that is exactly the case the
+   * execution chip exists to make visible.
+   */
+  execution?: SessionExecution | null
   memoryMode?: string
   cleanMode?: boolean
   /** User-sent messages for ↑/↓ history navigation (oldest → newest). */
@@ -662,6 +708,14 @@ function ChatInput({
   project,
   projectBranch,
   projectDetached,
+  devcontainerRunning,
+  devcontainerId,
+  devcontainerTrusted,
+  devcontainerProject,
+  onDevcontainerUntrust,
+  devcontainerDismissed,
+  onDevcontainerTrustAgain,
+  execution,
   memoryMode,
   cleanMode,
   sentMessages,
@@ -925,6 +979,19 @@ function ChatInput({
   // "+" drop-up menu (upload file / image + browse toggle).
   const [plusOpen, setPlusOpen] = useState(false)
   const [ctxPopoverOpen, setCtxPopoverOpen] = useState(false)
+  // Dev Container chip menu. Its single item revokes trust, which is the only
+  // way back out of a container short of editing config, so it lives on the chip
+  // that reports the container rather than buried in Settings.
+  const devcMenuRef = useRef<HTMLDivElement>(null)
+  const [devcOpen, setDevcOpen] = useState(false)
+  const [devcBusy, setDevcBusy] = useState(false)
+  // A failed revoke is reported in the menu, next to the item that failed. The
+  // alternative — a menu that stays open with no explanation — reads as a dead
+  // control, and trust is still granted, so the user has to know it did not take.
+  const [devcError, setDevcError] = useState('')
+  // Describes the withdraw item: revoking stops FUTURE sessions, it does not
+  // evict the running one, and that difference is the whole decision.
+  const devcNoteId = useId()
   // Shelf responsiveness: measure the shelf row width and collapse chips to
   // icon-only (agent/project) + drop the model effort label when space is tight.
   // Truncation handles the in-between cases.
@@ -1018,6 +1085,76 @@ function ChatInput({
     document.addEventListener('mousedown', handler)
     return () => document.removeEventListener('mousedown', handler)
   }, [ctxPopoverOpen])
+  const devcWrapRef = useRef<HTMLDivElement>(null)
+  const devcBtnRef = useRef<HTMLButtonElement>(null)
+  // Anchor rect for the portaled menu (see the render site): captured when the
+  // menu opens, refreshed on scroll/resize so the floating menu tracks the chip.
+  const [devcMenuRect, setDevcMenuRect] = useState<DOMRect | null>(null)
+  useEffect(() => {
+    if (!devcOpen) return
+    const sync = () => {
+      if (devcBtnRef.current) setDevcMenuRect(devcBtnRef.current.getBoundingClientRect())
+    }
+    sync()
+    window.addEventListener('scroll', sync, true)
+    window.addEventListener('resize', sync)
+    return () => {
+      window.removeEventListener('scroll', sync, true)
+      window.removeEventListener('resize', sync)
+    }
+  }, [devcOpen])
+  useEffect(() => {
+    if (!devcOpen) return
+    const handler = (e: MouseEvent) => {
+      const target = e.target as Node
+      // The menu is portaled to <body>, so it is NOT inside devcWrapRef —
+      // clicking it would otherwise register as an outside click and close the
+      // menu before the item's own onClick ran.
+      if (devcMenuRef.current && devcMenuRef.current.contains(target)) return
+      if (devcWrapRef.current && !devcWrapRef.current.contains(target)) setDevcOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [devcOpen])
+  useEffect(() => {
+    if (!devcOpen) return
+    // Escape closes the menu and returns focus to the chip that opened it: a
+    // keyboard user who opened it has no pointer to click outside with, and
+    // without the focus return the caret lands nowhere. Captured and stopped so
+    // the composer's own Escape handling does not also fire on this key.
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return
+      e.stopPropagation()
+      setDevcOpen(false)
+      devcBtnRef.current?.focus()
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => document.removeEventListener('keydown', onKey, true)
+  }, [devcOpen])
+  // The chip is only mounted while a container runs, so an unmount mid-request
+  // would strand `devcBusy`; closing the menu on that transition is enough,
+  // because the request's own `finally` clears the flag either way.
+  const withdrawDevcontainerTrust = useCallback(async () => {
+    if (devcBusy || !devcontainerProject) return
+    setDevcBusy(true)
+    setDevcError('')
+    try {
+      // Optional call: several test suites mock `../api/client` partially, and a
+      // revoke that throws must not take the composer down with it.
+      await Promise.resolve(api.devcontainerUntrust?.(devcontainerProject))
+      await Promise.resolve(onDevcontainerUntrust?.())
+      setDevcOpen(false)
+    } catch (err) {
+      // Trust is unchanged on failure and the chip still reports the running
+      // container, so the menu stays open — with the reason, rather than looking
+      // like a control that does nothing.
+      setDevcError(err instanceof Error && err.message
+        ? err.message
+        : i18nT('components.chatInput.could_not_withdraw_trust'))
+    } finally {
+      setDevcBusy(false)
+    }
+  }, [devcBusy, devcontainerProject, onDevcontainerUntrust])
   const plusWrapRef = useRef<HTMLDivElement>(null)
   const plusBtnRef = useRef<HTMLButtonElement>(null)
   const plusMenuRef = useRef<HTMLDivElement>(null)
@@ -2986,6 +3123,121 @@ function ChatInput({
             </button>
           )}
           </div>
+        </div>
+      )}
+
+      {/* Dev Container chips sit in their own row rather than in the context
+          shelf above. That row already carries more action controls than the
+          two-action cap allows -- it is exempt at that width but must not
+          grow, and the cap counts siblings within one horizontal group.
+
+          Kept as TWO controls rather than collapsed into one, which would also
+          satisfy the count: the first reports the PROJECT's container and owns the
+          only exit from trust, the second reports where THIS session actually ran,
+          and the whole reason the second exists is the case where they disagree.
+
+          Gated on the same predicate the execution chip uses internally, so a
+          session with no Dev Container lays out no empty row. */}
+      {!showGhost &&
+        (devcontainerTrusted || devcontainerRunning || devcontainerDismissed || showsExecution(execution)) && (
+        <div className="pt-1 flex items-center gap-2 min-w-0">
+          {(devcontainerTrusted || devcontainerRunning || devcontainerDismissed) && (
+            /* A control, not a static badge: the chip owns the only exit from
+               trust, so it mounts as soon as trust is held rather than waiting
+               for a container to be up -- otherwise the trust card's "you can
+               withdraw trust from the chip" points at something that does not
+               exist yet. Scope is the PROJECT, not the session: where a given
+               session's turns run is the execution chip's job, and the two can
+               legitimately disagree. The menu is portaled (see the render site)
+               because both the composer wrapper and this shelf clip their
+               overflow. */
+            <div ref={devcWrapRef} className="relative flex items-center shrink-0">
+              <button
+                type="button"
+                ref={devcBtnRef}
+                onClick={() => { setDevcError(''); setDevcOpen(o => !o) }}
+                aria-haspopup="menu"
+                aria-expanded={devcOpen}
+                // Named explicitly, not via the label span: below the compact
+                // threshold the span is not rendered and the Box icon is
+                // aria-hidden, which would leave an unnamed menu button. The
+                // agent and project chips beside it are labelled the same way.
+                aria-label={i18nT('components.chatInput.dev_container')}
+                className={`inline-flex items-center gap-1.5 h-7 shrink-0 text-[12px] text-muted px-2.5 rounded-md border-none cursor-pointer transition-colors ${devcOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] text-text' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] hover:text-text'}`}
+                // Project-scoped wording. Saying "this session runs in a Dev
+                // Container" would contradict the execution chip beside it
+                // whenever a session fell back to the host while a container is
+                // up for the project -- the one case the execution chip exists
+                // for, so the two must not disagree there.
+                title={
+                  devcontainerRunning
+                    ? devcontainerId
+                      ? i18nT('components.chatInput.devcontainer_running_for_project_id', {
+                          id: devcontainerId.slice(0, DEVCONTAINER_ID_CHARS),
+                        })
+                      : i18nT('components.chatInput.devcontainer_running_for_project')
+                    : i18nT('components.chatInput.devcontainer_trusted_not_running')
+                }
+              >
+                <Box size={13} className="shrink-0 opacity-70" aria-hidden="true" />
+                {!shelfCompact && <span className="truncate max-w-[120px]">{i18nT('components.chatInput.dev_container')}</span>}
+              </button>
+              {devcOpen && devcMenuRect && createPortal(
+                /* Portaled to <body> with fixed positioning, like the busy-send
+                   menu above: the composer wrapper is `overflow-hidden` and the
+                   shelf strip is `overflow-x-auto`, so an `absolute` menu is
+                   clipped by both instead of floating over the transcript. */
+                <div
+                  ref={devcMenuRef}
+                  role="menu"
+                  aria-label={i18nT('components.chatInput.dev_container')}
+                  className="fixed z-[60] min-w-[180px] rounded-xl border border-border bg-bg-elevated shadow-xl py-1 animate-slide-up"
+                  style={{
+                    left: Math.max(8, Math.min(devcMenuRect.left, window.innerWidth - 180 - 8)),
+                    bottom: window.innerHeight - devcMenuRect.top + 6,
+                  }}
+                >
+                  {devcontainerTrusted ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    aria-describedby={devcNoteId}
+                    disabled={devcBusy || !devcontainerProject}
+                    onClick={withdrawDevcontainerTrust}
+                    className="w-full text-left px-3 py-1.5 text-[12px] text-text bg-transparent border-none cursor-pointer transition-colors hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {i18nT('components.chatInput.withdraw_trust')}
+                  </button>
+                  ) : (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={devcBusy}
+                    onClick={() => {
+                      onDevcontainerTrustAgain?.()
+                      setDevcOpen(false)
+                    }}
+                    className="w-full text-left px-3 py-1.5 text-[12px] text-text bg-transparent border-none cursor-pointer transition-colors hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    {i18nT('components.chatInput.trust_again')}
+                  </button>
+                  )}
+                  {devcontainerTrusted && (
+                  <div id={devcNoteId} className="px-3 pb-1.5 text-[11px] text-muted leading-snug max-w-[240px]">
+                    {i18nT('components.chatInput.withdrawing_stops_future_sessions')}
+                  </div>
+                  )}
+                  {devcError && (
+                    <div role="alert" className="px-3 pb-1.5 text-[11px] text-danger leading-snug max-w-[240px]">
+                      {devcError}
+                    </div>
+                  )}
+                </div>,
+                document.body,
+              )}
+            </div>
+          )}
+          <DevcontainerExecutionChip execution={execution} compact={shelfCompact} />
         </div>
       )}
     </div>

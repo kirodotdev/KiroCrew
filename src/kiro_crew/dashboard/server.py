@@ -1805,6 +1805,51 @@ def _register_browser_view_cleanup(app: web.Application) -> None:
     app.on_cleanup.append(_browser_view_shutdown)
 
 
+def _register_devcontainer_routes(app: web.Application) -> None:
+    """Register the Dev Container endpoints for a gateway that opted in.
+
+    The handler module is imported on the FIRST REQUEST, not here, so boot never
+    loads the optional subsystem under any combination of the two locks --
+    including the common one where the environment gate is set but
+    ``agent.devcontainer`` is still ``off``. Gating the import on the locks
+    instead would make the route table depend on config, which is read live: an
+    operator flipping the config on would then need a gateway restart to get the
+    endpoints, and readiness would still pay the import whenever both were open.
+    Deferring to first use is what makes "not on the boot path" true rather than
+    true-for-now.
+
+    The environment gate still decides whether the routes EXIST, because that
+    value is fixed for the process lifetime. Both locks are enforced inside the
+    handlers, which report the feature as disabled rather than acting.
+    """
+    from kiro_crew.constants import DEVCONTAINER_ENV_VAR, env_flag_enabled
+
+    # Checked before any devcontainer import: importing to read the gate would
+    # load the whole subsystem to decide not to use it.
+    if not env_flag_enabled(DEVCONTAINER_ENV_VAR):
+        logger.debug(
+            "dashboard: Dev Container routes not registered (%s is not set)",
+            DEVCONTAINER_ENV_VAR,
+        )
+        return
+
+    def _lazy(handler_name: str) -> Callable[[web.Request], Awaitable[web.StreamResponse]]:
+        async def _dispatch(request: web.Request) -> web.StreamResponse:
+            from kiro_crew.dashboard.handlers import devcontainer as handlers
+
+            handler = getattr(handlers, handler_name)
+            return await handler(request)
+
+        _dispatch.__name__ = handler_name
+        return _dispatch
+
+    app.router.add_get("/api/devcontainer/status", _lazy("api_devcontainer_status"))
+    app.router.add_get("/api/devcontainer/config", _lazy("api_devcontainer_config"))
+    app.router.add_post("/api/devcontainer/trust", _lazy("api_devcontainer_trust"))
+    app.router.add_delete("/api/devcontainer/trust", _lazy("api_devcontainer_untrust"))
+    app.router.add_post("/api/devcontainer/rebuild", _lazy("api_devcontainer_rebuild"))
+
+
 def _register_instances_hooks(app: web.Application, state: DashboardState, port: int) -> None:
     """Register the opt-in Instances (multi-instance) startup/cleanup hooks.
 
@@ -2528,6 +2573,13 @@ async def start_dashboard(
     # path preceding a pattern that would swallow it, so ``register_all`` calls the
     # slices in the table's original sequence -- see that package's docstring.
     register_all(app)
+
+    # Registered outside the table above: these routes exist only while the
+    # preview flag is enabled, and the table's order is pinned by a test, so a
+    # conditional member would make that pin depend on ambient config. The
+    # helper also owns the gate check, keeping the devcontainer modules out of
+    # the boot path entirely when the feature is off.
+    _register_devcontainer_routes(app)
 
     # Register built-in apps (idempotent — surfaces baked-in features in App Store).
     # Runs on the executor: escalation cleanup can traverse/delete legacy app

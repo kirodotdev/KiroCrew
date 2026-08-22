@@ -8,5 +8,6 @@ proposal lands.
 | Document | Covers |
 |---|---|
 | [playwright-cli-migration.md](playwright-cli-migration.md) | Moving browsing onto `playwright-cli`: the capability model, the install flow, snapshot retention, and the dashboard surface. |
+| [devcontainer-product-readiness.md](devcontainer-product-readiness.md) | Near-production opt-in Dev Containers: Docker Desktop, dual MCP transport, auth copy, one-file agent inject, and the security floor that stays closed. |
 
 Indexed from [../README.md](../README.md).
