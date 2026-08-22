@@ -22,11 +22,10 @@
  *   06-collapsed-unchanged    two distant hunks, so Pierre draws its collapsed
  *                             unchanged-region separator row between them
  *   07-headerless-fallback    a patch with `@@` hunks but NO `---`/`+++` lines.
- *                             KNOWN REGRESSION, captured deliberately: Pierre's
- *                             parser yields zero files, so PierrePatchImpl falls
- *                             back to PlainCodeFallback — no file header, and
- *                             therefore no Open / Split / Copy controls either
- *                             (they are slotted into Pierre's header).
+ *                             The repair pass synthesizes a file section for it,
+ *                             so it renders as a real diff — colours, gutter and
+ *                             the Open / Split / Copy controls that live in
+ *                             Pierre's header metadata slot.
  *
  * Every frame is an ELEMENT screenshot (`locator.screenshot()`), not a full-page
  * one: the transcript is taller than the 2000px-per-edge budget for PR media
@@ -278,11 +277,10 @@ const COLLAPSED_REGION_DIFF = [
   '```',
 ].join('\n')
 
-/* KNOWN REGRESSION fixture: `@@` hunks with NO `---`/`+++` file headers.
- * parsePatchFiles has no file section to attach the hunks to, so
- * PierrePatchImpl gets zero files and renders PlainCodeFallback — plain
- * monospace, no file header, and no Open/Split/Copy (those live in the header's
- * metadata slot). Captured on purpose as evidence, not worked around. */
+/* The shape an agent writes when it pastes a snippet under a ```diff fence:
+ * `@@` hunks with NO `---`/`+++` file headers. parsePatchFiles needs a named
+ * file section to attach hunks to, so the repair pass synthesizes one and the
+ * block renders as a real diff, header controls included. */
 const HEADERLESS_DIFF = [
   '```diff',
   '@@ -14,6 +14,7 @@',
@@ -599,7 +597,7 @@ async function main() {
     (await deepQuery('[data-separator]', '.diff-block')).map(s => s.text)))
   await shot(regionBlock, '06-collapsed-unchanged')
 
-  // ── Frame 7: headerless patch → PlainCodeFallback (known regression) ──────
+  // ── Frame 7: headerless patch → synthesized file section, real diff ───────
   await load(SURFACES.headerless)
   const hlBlock = page.locator('.diff-block').first()
   await hlBlock.waitFor({ state: 'visible', timeout: 15000 })

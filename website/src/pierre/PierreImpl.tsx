@@ -11,6 +11,7 @@ import { EXTENSION_TO_FILE_FORMAT, parsePatchFiles, setCustomExtension } from '@
 import { File, FileDiff, MultiFileDiff, Virtualizer, WorkerPoolContext } from '@pierre/diffs/react'
 import { getOrCreateWorkerPoolSingleton } from '@pierre/diffs/worker'
 import { useIsDark } from '../hooks/useIsDark'
+import { isFileHeaderAt, markHunkBodies, snippetFileHeaderLines } from '../components/unifiedPatchHeaders'
 import { PlainCodeFallback } from './PlainCodeFallback'
 import {
   PIERRE_EXTENSION_OVERRIDES,
@@ -91,37 +92,23 @@ export function normalizePatchHunks(patch: string): string {
   let oldLine = 1
   let newLine = 1
   let changed = false
-  /** Hunk-body extents derived from UNAMBIGUOUS delimiters only (`@@`, `diff `).
-   *  Header detection consults this, so it can ask "am I inside a hunk body?"
-   *  without depending on itself. */
-  const markHunkBodies = () => {
-    const body = new Array<boolean>(lines.length).fill(false)
-    for (let h = 0; h < lines.length; h++) {
-      if (!lines[h].startsWith('@@')) continue
-      for (let j = h + 1; j < lines.length; j++) {
-        if (lines[j].startsWith('@@') || lines[j].startsWith('diff ')) break
-        body[j] = true
-      }
-    }
-    return body
-  }
-  let hunkBody = markHunkBodies()
-  /** True when `--- `/`+++ ` at `i` is a real file-header pair rather than a
-   *  hunk body line deleting `-- x` / adding `++ x`.
-   *
-   *  Inside a hunk body those two are indistinguishable by shape — a deletion of
-   *  `-- foo/bar` IS the text `--- foo/bar` — so a pair there is content unless
-   *  it announces itself the way a real file section does: `diff ` above it, or a
-   *  `@@` hunk header immediately below. Known limit: a second file section that
-   *  is BOTH headerless and un-announced while a previous hunk is open reads as
-   *  content; git always emits `diff --git`, so that shape is not produced. */
-  const isFileHeader = (i: number) => {
-    const minus = lines[i].startsWith('--- ') ? i : lines[i].startsWith('+++ ') ? i - 1 : -1
-    if (minus < 0) return false
-    if (!(lines[minus] ?? '').startsWith('--- ')) return false
-    if (!(lines[minus + 1] ?? '').startsWith('+++ ')) return false
-    if (!hunkBody[minus]) return true
-    return (lines[minus - 1] ?? '').startsWith('diff ') || (lines[minus + 2] ?? '').startsWith('@@')
+  let hunkBody = markHunkBodies(lines)
+  const isFileHeader = (i: number) => isFileHeaderAt(lines, hunkBody, i)
+  // A patch with NO file section at all — just `+`/`-` lines, the shape an
+  // agent writes when it pastes a snippet under a ```diff fence. Pierre needs a
+  // NAMED `--- `/`+++ ` pair to recognize a file (empty names and a bare `@@`
+  // both parse to zero files), so synthesize one and let the pass below add the
+  // hunk header. The name is a placeholder, not a claim about any real file:
+  // call sites that show Pierre's file header suppress it when they have no
+  // path of their own (see DiffBlock).
+  if (
+    !lines.some(l => l.startsWith('diff ')) &&
+    !lines.some((_, i) => isFileHeader(i)) &&
+    lines.some(l => /^[+-](?![+-][+-] )/.test(l))
+  ) {
+    lines.unshift(...snippetFileHeaderLines())
+    hunkBody = markHunkBodies(lines)
+    changed = true
   }
   /** Body extent + line tallies for the hunk starting after `start`. */
   const measure = (start: number) => {
@@ -163,7 +150,7 @@ export function normalizePatchHunks(patch: string): string {
         .some(b => (b.startsWith('+') || b.startsWith('-')) && !b.startsWith('+++ ') && !b.startsWith('--- '))
       if (hasChange) {
         lines.splice(i + 1, 0, `@@ -${oldLine},${oldCount} +${newLine},${newCount} @@`)
-        hunkBody = markHunkBodies() // the splice shifted every later index
+        hunkBody = markHunkBodies(lines) // the splice shifted every later index
         oldLine += oldCount
         newLine += newCount
         changed = true

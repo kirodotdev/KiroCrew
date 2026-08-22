@@ -2830,7 +2830,7 @@ import { i18nT } from '../i18n/t'
  * before a bare diff with no +++/--- headers; this hint lets DiffBlock's
  * Open file button work in those cases.
  */
-function extractPathHintFromText(text: string | undefined): string | undefined {
+export function extractPathHintFromText(text: string | undefined): string | undefined {
   if (!text) return undefined
   // Last non-empty line before the diff is the most likely carrier of
   // "Created /path:" or "Edited /path:" — scan a few lines back rather
@@ -2848,7 +2848,17 @@ function extractPathHintFromText(text: string | undefined): string | undefined {
     //   ~/relative/path  (home-relative)
     //   `/abs/path`      (backtick-wrapped)
     const stripped = line.replace(/^`|`$/g, '')
-    const m = /(?:Created|Modified|Wrote|Updated|Edited|Saved|File|Path)?\s*[:\s]?\s*`?(\/[^\s`]+|~\/[^\s`]+)`?/i.exec(stripped)
+    // Two shapes only, because this text is ordinary prose: a path introduced by
+    // an explicit verb, or a line that is nothing BUT a path. An unanchored
+    // "any `/…` run" match reads a slash-joined pair out of a sentence — a
+    // grouping like `EU/Beta/Prod`, a fraction, an and/or — and hands back a
+    // file that never existed, which then titles the block and drives a probe.
+    // The introducer needs word boundaries for the same reason: unanchored, it
+    // fires inside ordinary words (`Profile /tmp/x`, `Dockerfile /etc/x`,
+    // `Recreated /etc/passwd`), which is the same false hint by another route.
+    const m =
+      /\b(?:Created|Modified|Wrote|Updated|Edited|Saved|File|Path)\b\s*[:\s]\s*`?(\/[^\s`]+|~\/[^\s`]+)`?/i.exec(stripped) ??
+      /^`?(\/[^\s`]+|~\/[^\s`]+)`?$/.exec(stripped)
     if (m && m[1]) return m[1]
   }
   return undefined
