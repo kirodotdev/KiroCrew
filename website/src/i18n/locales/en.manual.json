@@ -1167,29 +1167,14 @@
     }
   },
   "components": {
-    "crewWakeSection": {
-      "active": "active",
-      "pause_named": "Pause {{name}}",
-      "paused": "paused",
-      "resume_named": "Resume {{name}}",
-      "run_named_now": "Run {{name}} now",
-      "running": "running"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "Account details unavailable",
-      "checking_account": "Checking account…",
-      "checking_credit_usage": "Checking credit usage",
-      "credit_usage_unavailable": "Credit usage unavailable",
-      "days_until_expiration": "Days until expiration: {{count}}",
-      "estimated_overage_cost": "Estimated overage cost",
-      "hide_email": "Hide email",
-      "kiro_account": "Kiro Account",
-      "kiro_credit_usage": "Kiro credit usage",
-      "overage_rate_value": "{{rate}} / credit",
-      "remaining_credit_balance": "Remaining credit balance: {{count}}",
-      "show_email": "Show email",
-      "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
-      "used_credits": "Used: {{used}} / {{total}}"
+    "agentDropdownList": {
+      "active_in_this_session": "Active in this session",
+      "could_not_change_the_default_agent": "Could not change the default agent",
+      "default": "Default",
+      "default_agent_for_new_sessions": "Default agent for new sessions",
+      "manage_agents": "Manage agents…",
+      "new_sessions_start_with_this_agent": "New sessions start with this agent",
+      "set_default_agent": "Set <agent/> as default agent for new sessions"
     },
     "agentImportFlow": {
       "choose_sources": "Choose sources",
@@ -1204,6 +1189,12 @@
       "the_gateway_returned_an_unexpected_error": "The gateway returned an unexpected error.",
       "the_import_did_not_finish_please_try_again": "The import did not finish. Please try again.",
       "your_selected_setup_is_ready_in_kiro_crew": "Your selected setup is ready in {{productName}}."
+    },
+    "agentSkillsEditor": {
+      "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
+      "remove": "Remove {{name}}",
+      "remove_skill": "Remove skill {{name}}",
+      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none."
     },
     "appHost": {
       "not_installed": "\"{{name}}\" is not installed"
@@ -1293,9 +1284,21 @@
       "start_chat": "Start chat",
       "starting_session": "Starting session…"
     },
+    "artifactFolderDeleteDialog": {
+      "artifact_one": "{{count}} artifact",
+      "artifact_other": "{{count}} artifacts",
+      "delete_folder": "Delete folder “{{name}}”?",
+      "subfolder_one": "{{count}} subfolder",
+      "subfolder_other": "{{count}} subfolders"
+    },
     "artifactPanel": {
       "hide_comments": "Hide comments",
       "show_comments": "Show comments"
+    },
+    "askAgent": {
+      "ask_the_agent": "Ask the agent",
+      "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
+      "prompt_lead": "This error just came up in the {{productName}} dashboard. Diagnose the root cause and fix it."
     },
     "autoNudgePopover": {
       "goal_active_cycle": "Goal active (cycle {{cycle}})",
@@ -1470,6 +1473,49 @@
       "copy": "Copy {{label}} {{branch}}",
       "copy_2": "Copy {{label}}"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "How work arrives",
+      "group_what_it_can_do": "What it can do",
+      "group_where_it_works": "Where it works",
+      "group_who_it_is": "Who it is",
+      "node_none": "None",
+      "pane_overview": "Overview",
+      "pane_schedules": "Schedules",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "Workspace · Memory",
+      "rail_label": "Crew settings",
+      "stat_active_schedules": "Active schedules",
+      "stat_crews_sharing": "Crews sharing its storage",
+      "stat_resolved_model": "Resolved model",
+      "stat_unknown": "Unknown",
+      "tag_shared": "Shared",
+      "unsaved_changes": "Unsaved changes",
+      "webhook_unbound_short": "Not bound to a crew",
+      "wire_what_it_works_with": "What it works with"
+    },
+    "crewWakeSection": {
+      "active": "active",
+      "pause_named": "Pause {{name}}",
+      "paused": "paused",
+      "resume_named": "Resume {{name}}",
+      "run_named_now": "Run {{name}} now",
+      "running": "running"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "Could not load webhooks, so what wakes this crew is unknown right now.",
+      "inbound_webhooks_are_switched_off": "Inbound webhooks are switched off, so nothing can call in — bound tokens included.",
+      "last_used_ago": "used {{time}}",
+      "no_tokens_are_bound_to_this_crew": "No webhook tokens are bound to this crew.",
+      "off": "Off",
+      "open_webhooks": "Open Webhooks",
+      "outside_systems_holding_one_of_these_credentials": "Outside systems holding one of these tokens can start a turn as this crew. Create and revoke them on the Webhooks page.",
+      "retry": "Retry",
+      "signed": "Signed",
+      "unbound_tokens_can_wake_any_crew_one": "{{count}} token without a crew binding also exists; it can wake any crew, this one included.",
+      "unbound_tokens_can_wake_any_crew_other": "{{count}} tokens without a crew binding also exist; they can wake any crew, this one included.",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "Webhooks that wake this crew"
+    },
     "diffBlock": {
       "copied": "Copied!",
       "copy_patch": "Copy patch",
@@ -1487,6 +1533,9 @@
     },
     "embedTabStrip": {
       "sessions": "Sessions"
+    },
+    "errorNotice": {
+      "dismiss": "Dismiss"
     },
     "excalidrawBlock": {
       "render_failed": "Couldn't render diagram — showing source"
@@ -1517,6 +1566,20 @@
       "showing_raw_content_count": "Showing raw content ({{count}} chars)",
       "showing_raw_content_truncated_count": "Showing raw content ({{count}} chars, first {{shown}} shown)"
     },
+    "folderColorNames": {
+      "amber": "Amber",
+      "blue": "Blue",
+      "cyan": "Cyan",
+      "gray": "Gray",
+      "green": "Green",
+      "indigo": "Indigo",
+      "lime": "Lime",
+      "orange": "Orange",
+      "pink": "Pink",
+      "red": "Red",
+      "teal": "Teal",
+      "violet": "Violet"
+    },
     "folderConfigModal": {
       "agent_not_installed": "{{agent}} (not installed)",
       "browse": "Browse",
@@ -1544,20 +1607,6 @@
       "set_color_to_name": "Set color to {{name}}",
       "top_level": "Top level"
     },
-    "folderColorNames": {
-      "amber": "Amber",
-      "blue": "Blue",
-      "cyan": "Cyan",
-      "gray": "Gray",
-      "green": "Green",
-      "indigo": "Indigo",
-      "lime": "Lime",
-      "orange": "Orange",
-      "pink": "Pink",
-      "red": "Red",
-      "teal": "Teal",
-      "violet": "Violet"
-    },
     "followUpBar": {
       "click_to_add_to_input_double_click_to_select_and": "Click to add to input (double-click to select and send)",
       "click_to_add_to_input_editable_before_sending": "Click to add to input (editable before sending)",
@@ -1578,11 +1627,11 @@
     "inboundLinkChip": {
       "driven_from": "Driven from {{label}}"
     },
-    "instancesViewport": {
-      "connecting": "Connecting…",
-      "connection_error": "Connection error",
-      "disconnected": "Disconnected",
-      "pane_failed_to_load": "Pane failed to load"
+    "inlineCommentOverlay": {
+      "comment_one": "{{count}} comment",
+      "comment_other": "{{count}} comments",
+      "comment_unread_one": "{{count}} comment · unread",
+      "comment_unread_other": "{{count}} comments · unread"
     },
     "instanceTabBar": {
       "connected": "connected",
@@ -1600,6 +1649,12 @@
       "pin_crew": "Pin {{name}} to the header",
       "unpin_crew": "Unpin {{name}} from the header",
       "pinned_no_room": "pinned, no room in the header"
+    },
+    "instancesViewport": {
+      "connecting": "Connecting…",
+      "connection_error": "Connection error",
+      "disconnected": "Disconnected",
+      "pane_failed_to_load": "Pane failed to load"
     },
     "issuePanel": {
       "add_to_chat": "Add to chat",
@@ -1663,6 +1718,22 @@
     "jobLogsView": {
       "failed_to_load_history": "Failed to load history"
     },
+    "kiroAccountModal": {
+      "account_details_unavailable": "Account details unavailable",
+      "checking_account": "Checking account…",
+      "checking_credit_usage": "Checking credit usage",
+      "credit_usage_unavailable": "Credit usage unavailable",
+      "days_until_expiration": "Days until expiration: {{count}}",
+      "estimated_overage_cost": "Estimated overage cost",
+      "hide_email": "Hide email",
+      "kiro_account": "Kiro Account",
+      "kiro_credit_usage": "Kiro credit usage",
+      "overage_rate_value": "{{rate}} / credit",
+      "remaining_credit_balance": "Remaining credit balance: {{count}}",
+      "show_email": "Show email",
+      "usage_scope": "Monthly Kiro credit usage from kiro-cli /usage across chat, agents, MCP, and subagents.",
+      "used_credits": "Used: {{used}} / {{total}}"
+    },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Agent specs missing",
       "agent_specs_rejected": "Agent specs rejected",
@@ -1715,6 +1786,11 @@
       "this_page_detects_kiro_cli_automatically": "Leave this page open. It checks the gateway host and continues on its own once Kiro CLI is installed.",
       "waiting": "Waiting"
     },
+    "linkPreview": {
+      "copied": "Copied",
+      "copy_url": "Copy URL",
+      "copy_url_of": "Copy URL of {{name}}"
+    },
     "linkedSurfacesSection": {
       "connect_failed": "Could not connect to {{label}}: {{reason}}",
       "connect_to": "Connect to {{label}}",
@@ -1723,11 +1799,6 @@
       "held_elsewhere": "{{label}} is in use by another session.",
       "unavailable": "This destination is unavailable.",
       "unknown_error": "unknown error"
-    },
-    "linkPreview": {
-      "copied": "Copied",
-      "copy_url": "Copy URL",
-      "copy_url_of": "Copy URL of {{name}}"
     },
     "markdownPanel": {
       "add_to_artifact_library": "Add to artifact library",
@@ -1804,6 +1875,15 @@
       "hide_raw": "hide raw",
       "view_raw": "view raw"
     },
+    "micSourceMenu": {
+      "applies_next_recording": "Applies to your next recording.",
+      "change_input_source": "Change input source",
+      "input_source": "Input source",
+      "saved_device_unavailable": "Your saved microphone is unavailable — using the system default.",
+      "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
+      "system_default": "System default",
+      "unnamed_input": "Unnamed input"
+    },
     "migrationBanner": {
       "install_app_from_apps": "Install \"{{app}}\" from Apps before the next Kiro Crew update to keep using it."
     },
@@ -1867,6 +1947,12 @@
       "paste_lines_other": "[ Paste #{{seq}} · {{count}} lines ]",
       "preview_more_lines_one": "… {{count}} more line",
       "preview_more_lines_other": "… {{count}} more lines"
+    },
+    "privacyChapter": {
+      "continue": "Continue",
+      "eyebrow": "Privacy",
+      "subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
+      "title": "Privacy"
     },
     "publicPublishAckModal": {
       "acknowledge_publish": "I understand, publish publicly",
@@ -1942,6 +2028,16 @@
       "state_merged": "Merged",
       "state_open": "Open"
     },
+    "readingWidthToggle": {
+      "label_full": "F",
+      "label_md": "M",
+      "title_full": "Full width",
+      "title_md": "Medium width"
+    },
+    "reasoningEffortDropdown": {
+      "default_with_level": "Default · {{level}}",
+      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
+    },
     "registryManager": {
       "adding": "Adding…",
       "could_not_refresh_still_showing_last_synced": "Could not refresh: {{names}} — still showing the last-synced apps for these.",
@@ -1968,9 +2064,35 @@
       "fork_failed": "Fork failed",
       "open_read_only_viewer": "Open read-only viewer (read & comment; open the original on {{name}} from there)"
     },
+    "reportProblemModal": {
+      "report_a_problem": "Report a Problem",
+      "what_happened": "What happened?",
+      "note_placeholder": "e.g. Every message fails with “process exited (rc=None)” after updating.",
+      "include_recent_logs": "Include recent logs",
+      "include_logs_hint": "Gateway + kiro-cli logs. Turn off to send crash reports only.",
+      "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
+      "collect_failed": "Failed to collect diagnostics",
+      "cancel": "Cancel",
+      "create_report": "Create report",
+      "collecting": "Collecting…",
+      "done": "Done",
+      "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
+      "saved_to": "Saved to",
+      "download_zip": "Download zip",
+      "open_github_issue": "Open GitHub issue",
+      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it.",
+      "open_in_finder": "Open in Finder",
+      "open_in_file_explorer": "Open in File Explorer",
+      "show_in_file_manager": "Show in file manager"
+    },
     "restartButton": {
       "restart_failed": "Restart failed",
       "sessions_restarted_config_applied": "Sessions restarted — config applied."
+    },
+    "scheduleTemplateGallery": {
+      "subtitle": "Start from a pre-made schedule — you review and save before anything runs.",
+      "title": "Schedule templates",
+      "use_template": "Use the {{title}} template"
     },
     "searchBar": {
       "next": "Next ({{mod}})",
@@ -1981,6 +2103,10 @@
       "assistant": "Assistant",
       "selected": "selected",
       "you": "You"
+    },
+    "searchableSelect": {
+      "no_matches": "No matches",
+      "search": "Search…"
     },
     "secretField": {
       "hide": "Hide",
@@ -2015,6 +2141,43 @@
       "no_file_selected": "(no file selected)",
       "open": "Open {{path}}",
       "root": "(root)"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
+    },
+    "slashCommandMenu": {
+      "desc_agent": "Switch or manage the active agent",
+      "desc_changelog": "Show the release changelog",
+      "desc_chat": "Save or load a chat session",
+      "desc_clear": "Clear conversation history",
+      "desc_code": "Open code intelligence tools",
+      "desc_compact": "Compact conversation to free context",
+      "desc_context": "Manage context files and token usage",
+      "desc_editor": "Compose your prompt in an external editor",
+      "desc_exit": "Exit the chat session",
+      "desc_experiment": "Toggle experimental features",
+      "desc_help": "Show available commands",
+      "desc_hooks": "View configured context hooks",
+      "desc_issue": "Report an issue or bug",
+      "desc_kb": "Search knowledge library",
+      "desc_logdump": "Dump session logs to a file",
+      "desc_mcp": "Show configured MCP servers",
+      "desc_model": "Show or switch the current model",
+      "desc_onboarding": "Replay setup import and the welcome tour",
+      "desc_paste": "Paste an image from the clipboard",
+      "desc_prompts": "List or invoke saved prompts & agent SOPs",
+      "desc_quit": "Quit the chat session",
+      "desc_reply": "Reply to the last assistant message",
+      "desc_side": "Open Side Chat — ask without interrupting",
+      "desc_tangent": "Start a tangent conversation",
+      "desc_todos": "Show or manage the task list",
+      "desc_tools": "Show available tools",
+      "desc_usage": "Show billing and usage information"
     },
     "snipOverlay": {
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
@@ -2082,6 +2245,10 @@
       "mute_theme_sounds": "Mute theme sounds",
       "theme_overlay": "theme overlay {{id}}",
       "unmute_theme_sounds": "Unmute theme sounds"
+    },
+    "trustDropdown": {
+      "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
+      "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
     },
     "tunnelStatus": {
       "connected": "Connected",
@@ -2170,159 +2337,6 @@
       "creating": "Creating…",
       "failed_to_create_workspace": "Failed to create workspace",
       "name_required": "Name required"
-    },
-    "agentDropdownList": {
-      "active_in_this_session": "Active in this session",
-      "could_not_change_the_default_agent": "Could not change the default agent",
-      "default": "Default",
-      "default_agent_for_new_sessions": "Default agent for new sessions",
-      "manage_agents": "Manage agents…",
-      "new_sessions_start_with_this_agent": "New sessions start with this agent",
-      "set_default_agent": "Set <agent/> as default agent for new sessions"
-    },
-    "agentSkillsEditor": {
-      "edit_agent_config_to_change_mapping": "{{path}} — edit the agent config file to change this mapping",
-      "remove": "Remove {{name}}",
-      "remove_skill": "Remove skill {{name}}",
-      "skills_this_agent_template_loads_written_as_skil": "Skills this agent template loads. Written as skill:// resources in the agent config, so kiro-cli loads them natively when the agent starts. An agent with no skills mapped falls back to the default behavior: the kirocrew agent sees the whole catalog, other agents see none."
-    },
-    "artifactFolderDeleteDialog": {
-      "artifact_one": "{{count}} artifact",
-      "artifact_other": "{{count}} artifacts",
-      "delete_folder": "Delete folder “{{name}}”?",
-      "subfolder_one": "{{count}} subfolder",
-      "subfolder_other": "{{count}} subfolders"
-    },
-    "inlineCommentOverlay": {
-      "comment_one": "{{count}} comment",
-      "comment_other": "{{count}} comments",
-      "comment_unread_one": "{{count}} comment · unread",
-      "comment_unread_other": "{{count}} comments · unread"
-    },
-    "reasoningEffortDropdown": {
-      "default_with_level": "Default · {{level}}",
-      "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set (Fable/Opus/Sonnet only)."
-    },
-    "readingWidthToggle": {
-      "label_full": "F",
-      "label_md": "M",
-      "title_full": "Full width",
-      "title_md": "Medium width"
-    },
-    "slashCommandMenu": {
-      "desc_agent": "Switch or manage the active agent",
-      "desc_changelog": "Show the release changelog",
-      "desc_chat": "Save or load a chat session",
-      "desc_clear": "Clear conversation history",
-      "desc_code": "Open code intelligence tools",
-      "desc_compact": "Compact conversation to free context",
-      "desc_context": "Manage context files and token usage",
-      "desc_editor": "Compose your prompt in an external editor",
-      "desc_exit": "Exit the chat session",
-      "desc_experiment": "Toggle experimental features",
-      "desc_help": "Show available commands",
-      "desc_hooks": "View configured context hooks",
-      "desc_issue": "Report an issue or bug",
-      "desc_kb": "Search knowledge library",
-      "desc_logdump": "Dump session logs to a file",
-      "desc_mcp": "Show configured MCP servers",
-      "desc_model": "Show or switch the current model",
-      "desc_onboarding": "Replay setup import and the welcome tour",
-      "desc_paste": "Paste an image from the clipboard",
-      "desc_prompts": "List or invoke saved prompts & agent SOPs",
-      "desc_quit": "Quit the chat session",
-      "desc_reply": "Reply to the last assistant message",
-      "desc_side": "Open Side Chat — ask without interrupting",
-      "desc_tangent": "Start a tangent conversation",
-      "desc_todos": "Show or manage the task list",
-      "desc_tools": "Show available tools",
-      "desc_usage": "Show billing and usage information"
-    },
-    "privacyChapter": {
-      "continue": "Continue",
-      "eyebrow": "Privacy",
-      "subtitle": "The five anonymous fields Kiro Crew sends, and how to turn them off.",
-      "title": "Privacy"
-    },
-    "micSourceMenu": {
-      "applies_next_recording": "Applies to your next recording.",
-      "change_input_source": "Change input source",
-      "input_source": "Input source",
-      "saved_device_unavailable": "Your saved microphone is unavailable — using the system default.",
-      "switching_drops_audio": "Switching while recording drops about 0.2s of audio.",
-      "system_default": "System default",
-      "unnamed_input": "Unnamed input"
-    },
-    "askAgent": {
-      "ask_the_agent": "Ask the agent",
-      "open_a_chat_with_this_error_s_context_attached": "Open a chat with this error's full context attached",
-      "prompt_lead": "This error just came up in the {{productName}} dashboard. Diagnose the root cause and fix it."
-    },
-    "errorNotice": {
-      "dismiss": "Dismiss"
-    },
-    "reportProblemModal": {
-      "report_a_problem": "Report a Problem",
-      "what_happened": "What happened?",
-      "note_placeholder": "e.g. Every message fails with “process exited (rc=None)” after updating.",
-      "include_recent_logs": "Include recent logs",
-      "include_logs_hint": "Gateway + kiro-cli logs. Turn off to send crash reports only.",
-      "redaction_notice": "Bearer tokens, session cookies, and AWS keys are automatically removed before the zip is created.",
-      "collect_failed": "Failed to collect diagnostics",
-      "cancel": "Cancel",
-      "create_report": "Create report",
-      "collecting": "Collecting…",
-      "done": "Done",
-      "diagnostics_ready": "Diagnostics ready — {{redactions}} secret(s) redacted across {{files}} file(s).",
-      "saved_to": "Saved to",
-      "download_zip": "Download zip",
-      "open_github_issue": "Open GitHub issue",
-      "prefill_hint": "Opening the issue pre-fills the details — then drag the zip into it.",
-      "open_in_finder": "Open in Finder",
-      "open_in_file_explorer": "Open in File Explorer",
-      "show_in_file_manager": "Show in file manager"
-    },
-    "trustDropdown": {
-      "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
-      "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
-    },
-    "searchableSelect": {
-      "no_matches": "No matches",
-      "search": "Search…"
-    },
-    "scheduleTemplateGallery": {
-      "subtitle": "Start from a pre-made schedule — you review and save before anything runs.",
-      "title": "Schedule templates",
-      "use_template": "Use the {{title}} template"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "How work arrives",
-      "group_what_it_can_do": "What it can do",
-      "group_where_it_works": "Where it works",
-      "group_who_it_is": "Who it is",
-      "node_none": "None",
-      "pane_overview": "Overview",
-      "pane_schedules": "Schedules",
-      "pane_webhook": "Webhook",
-      "pane_workspace_memory": "Workspace · Memory",
-      "rail_label": "Crew settings",
-      "stat_active_schedules": "Active schedules",
-      "stat_crews_sharing": "Crews sharing its storage",
-      "stat_resolved_model": "Resolved model",
-      "stat_unknown": "Unknown",
-      "tag_shared": "Shared",
-      "unsaved_changes": "Unsaved changes",
-      "webhook_unbound_reason": "Webhook tokens carry no crew binding yet, so any token can wake any crew.",
-      "webhook_unbound_short": "Not bound to a crew",
-      "wire_what_it_works_with": "What it works with"
     }
   },
   "hooks": {

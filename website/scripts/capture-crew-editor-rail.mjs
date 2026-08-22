@@ -54,6 +54,32 @@ const editorApi = async (path, route) => {
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ jobs: JOBS }) })
     return true
   }
+  if (path === '/api/webhooks') {
+    // Two tokens bound to `oncall` (the rail count and the solid diagram node),
+    // one bound elsewhere (must NOT be listed), and one unbound (drives the
+    // pane's any-crew disclosure line).
+    await route.fulfill({
+      contentType: 'application/json',
+      body: JSON.stringify({
+        enabled: true, switch_on: true, has_tokens: true,
+        tokens: [
+          { id: 'wht_a1', label: 'CI runner', display_prefix: 'kc_whk_4f2b', last4: '9c1d',
+            created_at: Date.now() / 1000 - 864000, last_used_at: Date.now() / 1000 - 3600,
+            require_signature: true, legacy: false, agent: 'oncall' },
+          { id: 'wht_b2', label: 'Pager bridge', display_prefix: 'kc_whk_77e0', last4: '4aa2',
+            created_at: Date.now() / 1000 - 172800, last_used_at: null,
+            require_signature: false, legacy: false, agent: 'oncall' },
+          { id: 'wht_c3', label: 'Deploy bot', display_prefix: 'kc_whk_0d11', last4: 'f00d',
+            created_at: Date.now() / 1000 - 86400, last_used_at: null,
+            require_signature: true, legacy: false, agent: 'research' },
+          { id: 'wht_d4', label: 'Legacy relay', display_prefix: 'kc_whk_5b6c', last4: '77aa',
+            created_at: Date.now() / 1000 - 2592000, last_used_at: Date.now() / 1000 - 604800,
+            require_signature: false, legacy: false, agent: '' },
+        ],
+      }),
+    })
+    return true
+  }
   if (path === '/api/agents/resolved-model') {
     await route.fulfill({
       contentType: 'application/json',
@@ -109,7 +135,7 @@ async function main() {
       }
 
       await save('pane-overview')
-      for (const key of ['template', 'model', 'place', 'schedules', 'routing', 'danger']) {
+      for (const key of ['template', 'model', 'place', 'schedules', 'webhook', 'routing', 'danger']) {
         await sheet.locator(`[data-testid="crew-rail-${key}"]`).click()
         await page.waitForTimeout(250)
         await save(`pane-${key}`)

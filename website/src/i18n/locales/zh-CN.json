@@ -4324,36 +4324,6 @@
     "viewPr": "拉取请求"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "运行中",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "无法加载这个 Crew 的定时任务，因此不知道什么会唤醒它。",
-      "no_schedules_run_this_crew_automatically": "没有定时任务会自动运行这个 Crew。",
-      "open_schedule": "打开定时任务",
-      "pause_named": "暂停 {{name}}",
-      "paused": "已暂停",
-      "resume_named": "恢复 {{name}}",
-      "run_named_now": "立即运行 {{name}}",
-      "running": "执行中",
-      "schedule": "定时",
-      "schedules_that_run_this_crew_without_you_asking": "会在你不开口的情况下运行这个 Crew 的定时任务。与上面的 Triggers 不同，后者只决定编排器何时选中这个 Crew。",
-      "what_wakes_this_crew": "什么会唤醒这个 Crew"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "账户详情暂不可用",
-      "checking_account": "正在检查账户…",
-      "checking_credit_usage": "正在检查额度用量",
-      "credit_usage_unavailable": "额度用量暂不可用",
-      "days_until_expiration": "距到期：{{count}} 天",
-      "estimated_overage_cost": "预计超额费用",
-      "hide_email": "隐藏邮箱",
-      "kiro_account": "Kiro 账户",
-      "kiro_credit_usage": "Kiro 额度用量",
-      "overage_rate_value": "{{rate}} / 额度",
-      "remaining_credit_balance": "剩余额度：{{count}}",
-      "show_email": "显示邮箱",
-      "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
-      "used_credits": "已使用：{{used}} / {{total}}"
-    },
     "agentDropdownList": {
       "active_in_this_session": "在此会话中使用",
       "could_not_change_the_default_agent": "无法更改默认代理",
@@ -4997,6 +4967,54 @@
       "copy": "复制 {{label}} {{branch}}",
       "copy_2": "复制 {{label}}"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "活儿怎么来",
+      "group_what_it_can_do": "它能做什么",
+      "group_where_it_works": "它在哪里工作",
+      "group_who_it_is": "它是什么",
+      "node_none": "无",
+      "pane_overview": "概览",
+      "pane_schedules": "定时任务",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "工作区 · 记忆存储",
+      "rail_label": "Crew 设置",
+      "stat_active_schedules": "活动的定时任务",
+      "stat_crews_sharing": "共享其存储的 Crew",
+      "stat_resolved_model": "解析后的模型",
+      "stat_unknown": "未知",
+      "tag_shared": "共享",
+      "unsaved_changes": "未保存的改动",
+      "webhook_unbound_short": "未绑定到 Crew",
+      "wire_what_it_works_with": "它用什么工作"
+    },
+    "crewWakeSection": {
+      "active": "运行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "无法加载这个 Crew 的定时任务，因此不知道什么会唤醒它。",
+      "no_schedules_run_this_crew_automatically": "没有定时任务会自动运行这个 Crew。",
+      "open_schedule": "打开定时任务",
+      "pause_named": "暂停 {{name}}",
+      "paused": "已暂停",
+      "resume_named": "恢复 {{name}}",
+      "run_named_now": "立即运行 {{name}}",
+      "running": "执行中",
+      "schedule": "定时",
+      "schedules_that_run_this_crew_without_you_asking": "会在你不开口的情况下运行这个 Crew 的定时任务。与上面的 Triggers 不同，后者只决定编排器何时选中这个 Crew。",
+      "what_wakes_this_crew": "什么会唤醒这个 Crew"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "无法加载 Webhook，暂时不知道什么会唤醒这个 crew。",
+      "inbound_webhooks_are_switched_off": "入站 webhook 已关闭，任何调用都进不来——包括已绑定的 token。",
+      "last_used_ago": "{{time}}用过",
+      "no_tokens_are_bound_to_this_crew": "没有绑定到这个 crew 的 webhook token。",
+      "off": "已停用",
+      "open_webhooks": "打开 Webhooks",
+      "outside_systems_holding_one_of_these_credentials": "持有这些 token 的外部系统可以以这个 crew 的身份发起一轮工作。到 Webhooks 页面创建或吊销。",
+      "retry": "重试",
+      "signed": "已签名",
+      "unbound_tokens_can_wake_any_crew_other": "另有 {{count}} 个未绑定 crew 的 token，它能唤醒任何 crew，包括这个。",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "能唤醒这个 crew 的 Webhook"
+    },
     "detailPanel": {
       "close_panel": "关闭面板",
       "resize_panel": "调整面板大小"
@@ -5208,6 +5226,18 @@
       "this_session_has_no_project_directory_so_there_i": "此会话没有项目目录路径，因此没有可用于开分支的仓库",
       "worktree_disabled_no_project_directory": "“添加到此会话”只是预填输入框 — 在你按下发送前不会发送任何内容。此处无法使用工作树：此会话没有项目目录（可通过输入框的“项目”按钮选择一个）。"
     },
+    "gitPanel": {
+      "changes": "更改",
+      "clean": "干净",
+      "commits": "提交",
+      "empty_state": "没有可显示的更改或提交。",
+      "just_now": "刚刚",
+      "loading": "加载中…",
+      "no_project": "此会话未设置项目文件夹。",
+      "refresh": "刷新",
+      "title": "Git",
+      "uncommitted": "{{count}} 个未提交"
+    },
     "inboundLinkChip": {
       "driven_from": "由 {{label}} 驱动"
     },
@@ -5361,6 +5391,22 @@
       "no_execution_history_yet": "暂无执行历史",
       "prev": "← 上一页",
       "s_elapsed": "秒已过"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "账户详情暂不可用",
+      "checking_account": "正在检查账户…",
+      "checking_credit_usage": "正在检查额度用量",
+      "credit_usage_unavailable": "额度用量暂不可用",
+      "days_until_expiration": "距到期：{{count}} 天",
+      "estimated_overage_cost": "预计超额费用",
+      "hide_email": "隐藏邮箱",
+      "kiro_account": "Kiro 账户",
+      "kiro_credit_usage": "Kiro 额度用量",
+      "overage_rate_value": "{{rate}} / 额度",
+      "remaining_credit_balance": "剩余额度：{{count}}",
+      "show_email": "显示邮箱",
+      "usage_scope": "每月 Kiro 额度用量来自 kiro-cli /usage，涵盖聊天、代理、MCP 和子代理。",
+      "used_credits": "已使用：{{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "缺少代理规范",
@@ -5797,6 +5843,26 @@
       "select": "选择",
       "subdirectories": "子目录"
     },
+    "pttTestStrip": {
+      "focus_lost": "窗口失焦了，我们没有看到你松手。在真实对话里会有一个安全计时器替你停止录音。",
+      "headline_captured": "这个键可用",
+      "headline_idle": "等待按键",
+      "headline_lost": "没有检测到你松手",
+      "headline_matched": "识别到你选的键",
+      "headline_other_key": "这是另一个键",
+      "idle_press": "按一下 {{name}}，然后松手。",
+      "no_mic_note": "这个测试只看键盘。你的麦克风不会打开。",
+      "readout_held": "按住了 {{secs}} 秒",
+      "state_deciding": "判定中…",
+      "state_done": "完成",
+      "state_recording_sim": "此时会在录音",
+      "title": "按一下试试",
+      "verdict_hold": "这是一次长按 —— 在真实对话里会在你按住期间录音，松手就停。",
+      "verdict_tap_latch": "这是一次快速点按 —— 在真实对话里会开始录音并一直录，直到你再按一次这个键。",
+      "verdict_tap_noop": "这是一次快速点按 —— 在“{{mode}}”模式下不会发生任何事。请按住久一点。",
+      "verdict_toggle": "识别正确 —— 在真实对话里，这次按下会开始录音，下一次按下会停止。",
+      "verdict_wrong_key": "刚才那个是 {{got}}，不是你在上面选的 {{want}}。如果这块键盘没有那颗键，就在“{{field}}”里换一个。"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "我已了解，公开发布",
       "anyone_with_the_link": "世界上任何拿到链接的人都能查看 {{target}}——没有身份验证，也没有访问控制。",
@@ -6163,6 +6229,18 @@
       "remove_reference": "移除引用",
       "remove_reference_to": "移除对 {{name}} 的引用"
     },
+    "settingRef": {
+      "envVarAriaLabel": "环境变量 {{key}}",
+      "envVarDescription": "在启动 Kiro Crew 之前设置此环境变量。",
+      "envVarUnsetDescription": "在启动 Kiro Crew 之前取消设置此环境变量。",
+      "fileOnlyDescription": "使用下面的 CLI 命令设置此值。",
+      "copied": "已复制！",
+      "copyFailed": "复制失败",
+      "copyCommand": "复制命令",
+      "orEditConfigJson": "或者，直接编辑 ~/.kiro/crew/config.json。",
+      "openSettingsAriaLabel": "在设置 → {{tab}} 中打开 {{key}}",
+      "fileSettingAriaLabel": "仅文件设置 {{key}}"
+    },
     "settings": {
       "click_to_reset": "点击重置",
       "decrease": "减少",
@@ -6251,6 +6329,14 @@
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
       "no_matching_skills": "无匹配的技能"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "切换或管理当前代理",
@@ -6620,79 +6706,6 @@
       "select": "选择",
       "workspace_name": "工作区名称",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "envVarAriaLabel": "环境变量 {{key}}",
-      "envVarDescription": "在启动 Kiro Crew 之前设置此环境变量。",
-      "envVarUnsetDescription": "在启动 Kiro Crew 之前取消设置此环境变量。",
-      "fileOnlyDescription": "使用下面的 CLI 命令设置此值。",
-      "copied": "已复制！",
-      "copyFailed": "复制失败",
-      "copyCommand": "复制命令",
-      "orEditConfigJson": "或者，直接编辑 ~/.kiro/crew/config.json。",
-      "openSettingsAriaLabel": "在设置 → {{tab}} 中打开 {{key}}",
-      "fileSettingAriaLabel": "仅文件设置 {{key}}"
-    },
-    "pttTestStrip": {
-      "focus_lost": "窗口失焦了，我们没有看到你松手。在真实对话里会有一个安全计时器替你停止录音。",
-      "headline_captured": "这个键可用",
-      "headline_idle": "等待按键",
-      "headline_lost": "没有检测到你松手",
-      "headline_matched": "识别到你选的键",
-      "headline_other_key": "这是另一个键",
-      "idle_press": "按一下 {{name}}，然后松手。",
-      "no_mic_note": "这个测试只看键盘。你的麦克风不会打开。",
-      "readout_held": "按住了 {{secs}} 秒",
-      "state_deciding": "判定中…",
-      "state_done": "完成",
-      "state_recording_sim": "此时会在录音",
-      "title": "按一下试试",
-      "verdict_hold": "这是一次长按 —— 在真实对话里会在你按住期间录音，松手就停。",
-      "verdict_tap_latch": "这是一次快速点按 —— 在真实对话里会开始录音并一直录，直到你再按一次这个键。",
-      "verdict_tap_noop": "这是一次快速点按 —— 在“{{mode}}”模式下不会发生任何事。请按住久一点。",
-      "verdict_toggle": "识别正确 —— 在真实对话里，这次按下会开始录音，下一次按下会停止。",
-      "verdict_wrong_key": "刚才那个是 {{got}}，不是你在上面选的 {{want}}。如果这块键盘没有那颗键，就在“{{field}}”里换一个。"
-    },
-    "gitPanel": {
-      "changes": "更改",
-      "clean": "干净",
-      "commits": "提交",
-      "empty_state": "没有可显示的更改或提交。",
-      "just_now": "刚刚",
-      "loading": "加载中…",
-      "no_project": "此会话未设置项目文件夹。",
-      "refresh": "刷新",
-      "title": "Git",
-      "uncommitted": "{{count}} 个未提交"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "活儿怎么来",
-      "group_what_it_can_do": "它能做什么",
-      "group_where_it_works": "它在哪里工作",
-      "group_who_it_is": "它是什么",
-      "node_none": "无",
-      "pane_overview": "概览",
-      "pane_schedules": "定时任务",
-      "pane_webhook": "Webhook",
-      "pane_workspace_memory": "工作区 · 记忆存储",
-      "rail_label": "Crew 设置",
-      "stat_active_schedules": "活动的定时任务",
-      "stat_crews_sharing": "共享其存储的 Crew",
-      "stat_resolved_model": "解析后的模型",
-      "stat_unknown": "未知",
-      "tag_shared": "共享",
-      "unsaved_changes": "未保存的改动",
-      "webhook_unbound_reason": "Webhook 令牌目前不携带 Crew 绑定，因此任何令牌都能唤醒任何 Crew。",
-      "webhook_unbound_short": "未绑定到 Crew",
-      "wire_what_it_works_with": "它用什么工作"
     }
   },
   "hooks": {

@@ -81,6 +81,16 @@ export interface CrewEditorFacts {
   canDelete: boolean
   /** Schedules could not be loaded, so counts are unknown rather than zero. */
   schedulesUnknown?: boolean
+  /** Webhook tokens bound to this crew (unbound tokens are not counted: they
+   *  can wake any crew, so charging them to every row would read as N bindings
+   *  that do not exist — the pane itself discloses them instead). */
+  webhookTokens: number
+  /** The subset of those whose per-source admission switch is on. A disabled
+   *  binding exists but cannot call in, so counting it as live would overstate
+   *  the wake surface the same way ignoring the global kill switch would. */
+  webhookTokensActive: number
+  /** The webhook store could not be loaded — unknown rather than zero. */
+  webhooksUnknown?: boolean
   /** Panes whose controls differ from what is saved on the crew. */
   dirtyPanes: ReadonlySet<CrewPaneKey>
 }
@@ -95,7 +105,7 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
   const { t } = useTranslation()
   const {
     templateLabel, activeSchedules, totalSchedules, routingWords, sharesStorage, canDelete,
-    schedulesUnknown, dirtyPanes,
+    schedulesUnknown, webhookTokens, webhookTokensActive, webhooksUnknown, dirtyPanes,
   } = facts
   return useMemo(() => {
     const rows: CrewEditorSection[] = [
@@ -148,8 +158,14 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
         group: t('components.crewEditor.group_how_work_arrives'),
         icon: Webhook,
         label: t('components.crewEditor.pane_webhook'),
-        disabled: true,
-        reason: t('components.crewEditor.webhook_unbound_reason'),
+        // Same counting language as the Schedules row above: live/total over
+        // the BOUND tokens, so a disabled binding is visible as a shortfall
+        // rather than counted as a live wake path. Only tokens bound to this
+        // crew are counted; the pane itself discloses unbound ones. No badge
+        // at zero — nothing is bound, so there is no ratio to report.
+        ...(webhooksUnknown || webhookTokens === 0
+          ? {}
+          : { count: `${webhookTokensActive}/${webhookTokens}` }),
       },
     ]
     for (const row of rows) {
@@ -171,5 +187,5 @@ export function useCrewEditorSections(facts: CrewEditorFacts): CrewEditorSection
     // Primitives, not the `facts` object: a caller building it inline gets a new
     // identity every render, which would make the memo never hit.
   }, [templateLabel, activeSchedules, totalSchedules, routingWords, sharesStorage, canDelete,
-    schedulesUnknown, dirtyPanes, t])
+    schedulesUnknown, webhookTokens, webhookTokensActive, webhooksUnknown, dirtyPanes, t])
 }

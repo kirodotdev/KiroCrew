@@ -4516,36 +4516,6 @@
     "viewPr": "Пул-реквест"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "активно",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "Не удалось загрузить расписания этой crew, поэтому неизвестно, что её запускает.",
-      "no_schedules_run_this_crew_automatically": "Ни одно расписание не запускает эту crew автоматически.",
-      "open_schedule": "Открыть расписание",
-      "pause_named": "Приостановить {{name}}",
-      "paused": "на паузе",
-      "resume_named": "Возобновить {{name}}",
-      "run_named_now": "Запустить {{name}} сейчас",
-      "running": "выполняется",
-      "schedule": "расписание",
-      "schedules_that_run_this_crew_without_you_asking": "Расписания, запускающие эту crew без вашего участия. Отличается от Triggers выше, который лишь определяет, когда оркестратор выбирает эту crew.",
-      "what_wakes_this_crew": "Что запускает эту crew"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "Сведения об аккаунте недоступны",
-      "checking_account": "Проверка аккаунта…",
-      "checking_credit_usage": "Проверка использования кредитов",
-      "credit_usage_unavailable": "Данные об использовании кредитов недоступны",
-      "days_until_expiration": "Дней до истечения: {{count}}",
-      "estimated_overage_cost": "Ожидаемая стоимость превышения",
-      "hide_email": "Скрыть адрес электронной почты",
-      "kiro_account": "Аккаунт Kiro",
-      "kiro_credit_usage": "Использование кредитов Kiro",
-      "overage_rate_value": "{{rate}} / кредит",
-      "remaining_credit_balance": "Остаток кредитов: {{count}}",
-      "show_email": "Показать адрес электронной почты",
-      "usage_scope": "Ежемесячное использование кредитов Kiro по данным kiro-cli /usage в чатах, агентах, MCP и субагентах.",
-      "used_credits": "Использовано: {{used}} / {{total}}"
-    },
     "agentDropdownList": {
       "active_in_this_session": "Активен в этой сессии",
       "could_not_change_the_default_agent": "Не удалось изменить агента по умолчанию",
@@ -5222,6 +5192,57 @@
       "copy": "Копировать {{label}} {{branch}}",
       "copy_2": "Копировать {{label}}"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "Как приходит работа",
+      "group_what_it_can_do": "Что умеет",
+      "group_where_it_works": "Где работает",
+      "group_who_it_is": "Что это",
+      "node_none": "Нет",
+      "pane_overview": "Обзор",
+      "pane_schedules": "Расписания",
+      "pane_webhook": "Вебхук",
+      "pane_workspace_memory": "Область · Память",
+      "rail_label": "Настройки crew",
+      "stat_active_schedules": "Активные расписания",
+      "stat_crews_sharing": "Crew с общим хранилищем",
+      "stat_resolved_model": "Итоговая модель",
+      "stat_unknown": "Неизвестно",
+      "tag_shared": "Общее",
+      "unsaved_changes": "Несохранённые изменения",
+      "webhook_unbound_short": "Не привязан к crew",
+      "wire_what_it_works_with": "С чем работает"
+    },
+    "crewWakeSection": {
+      "active": "активно",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "Не удалось загрузить расписания этой crew, поэтому неизвестно, что её запускает.",
+      "no_schedules_run_this_crew_automatically": "Ни одно расписание не запускает эту crew автоматически.",
+      "open_schedule": "Открыть расписание",
+      "pause_named": "Приостановить {{name}}",
+      "paused": "на паузе",
+      "resume_named": "Возобновить {{name}}",
+      "run_named_now": "Запустить {{name}} сейчас",
+      "running": "выполняется",
+      "schedule": "расписание",
+      "schedules_that_run_this_crew_without_you_asking": "Расписания, запускающие эту crew без вашего участия. Отличается от Triggers выше, который лишь определяет, когда оркестратор выбирает эту crew.",
+      "what_wakes_this_crew": "Что запускает эту crew"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "Не удалось загрузить webhooks, поэтому сейчас неизвестно, что будит эту команду.",
+      "inbound_webhooks_are_switched_off": "Входящие webhooks выключены: ни один вызов не пройдёт, включая привязанные токены.",
+      "last_used_ago": "использован {{time}}",
+      "no_tokens_are_bound_to_this_crew": "К этой команде не привязано ни одного webhook-токена.",
+      "off": "Выключен",
+      "open_webhooks": "Открыть Webhooks",
+      "outside_systems_holding_one_of_these_credentials": "Внешние системы с одним из этих токенов могут запускать ход от имени этой команды. Создание и отзыв — на странице Webhooks.",
+      "retry": "Повторить",
+      "signed": "С подписью",
+      "unbound_tokens_can_wake_any_crew_few": "Существуют ещё {{count}} токена без привязки к команде; они могут разбудить любую команду, включая эту.",
+      "unbound_tokens_can_wake_any_crew_many": "Существует ещё {{count}} токенов без привязки к команде; они могут разбудить любую команду, включая эту.",
+      "unbound_tokens_can_wake_any_crew_one": "Существует ещё {{count}} токен без привязки к команде; он может разбудить любую команду, включая эту.",
+      "unbound_tokens_can_wake_any_crew_other": "Существуют ещё {{count}} токена без привязки к команде; они могут разбудить любую команду, включая эту.",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "Webhook, которые будят эту команду"
+    },
     "detailPanel": {
       "close_panel": "Закрыть панель",
       "resize_panel": "Изменить размер панели"
@@ -5448,6 +5469,18 @@
       "this_session_has_no_project_directory_so_there_i": "У этой сессии нет каталога проекта, поэтому нет репозитория для создания ветки",
       "worktree_disabled_no_project_directory": "«Добавить в эту сессию» только заполняет поле ввода — ничего не отправится, пока вы не нажмёте «Отправить». Worktree здесь недоступны: у этой сессии нет каталога проекта (выберите его через чип «Проект» в поле ввода)."
     },
+    "gitPanel": {
+      "changes": "Изменения",
+      "clean": "чисто",
+      "commits": "Коммиты",
+      "empty_state": "Нет изменений или коммитов для отображения.",
+      "just_now": "только что",
+      "loading": "загрузка...",
+      "no_project": "Для этого сеанса не задана папка проекта.",
+      "refresh": "Обновить",
+      "title": "Git",
+      "uncommitted": "{{count}} незакоммичено"
+    },
     "inboundLinkChip": {
       "driven_from": "Управляется из {{label}}"
     },
@@ -5607,6 +5640,22 @@
       "no_execution_history_yet": "История запусков пока пуста",
       "prev": "← Назад",
       "s_elapsed": "с прошло"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "Сведения об аккаунте недоступны",
+      "checking_account": "Проверка аккаунта…",
+      "checking_credit_usage": "Проверка использования кредитов",
+      "credit_usage_unavailable": "Данные об использовании кредитов недоступны",
+      "days_until_expiration": "Дней до истечения: {{count}}",
+      "estimated_overage_cost": "Ожидаемая стоимость превышения",
+      "hide_email": "Скрыть адрес электронной почты",
+      "kiro_account": "Аккаунт Kiro",
+      "kiro_credit_usage": "Использование кредитов Kiro",
+      "overage_rate_value": "{{rate}} / кредит",
+      "remaining_credit_balance": "Остаток кредитов: {{count}}",
+      "show_email": "Показать адрес электронной почты",
+      "usage_scope": "Ежемесячное использование кредитов Kiro по данным kiro-cli /usage в чатах, агентах, MCP и субагентах.",
+      "used_credits": "Использовано: {{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Спецификации агента отсутствуют",
@@ -6049,6 +6098,26 @@
       "select": "Выбрать",
       "subdirectories": "Подкаталоги"
     },
+    "pttTestStrip": {
+      "focus_lost": "Окно потеряло фокус, и мы не увидели, как вы отпустили клавишу. В реальном чате запись остановит защитный таймер.",
+      "headline_captured": "Клавиша работает",
+      "headline_idle": "Ожидание нажатия",
+      "headline_lost": "Не увидели, как вы отпустили",
+      "headline_matched": "Ваша клавиша распознана",
+      "headline_other_key": "Это другая клавиша",
+      "idle_press": "Нажмите {{name}} и отпустите.",
+      "no_mic_note": "Эта проверка следит только за клавиатурой. Микрофон остаётся выключенным.",
+      "readout_held": "Удерживалась {{secs}} с",
+      "state_deciding": "проверяем…",
+      "state_done": "готово",
+      "state_recording_sim": "шла бы запись",
+      "title": "Попробуйте",
+      "verdict_hold": "Это было длинное нажатие — в реальном чате запись шла бы, пока вы держите, и остановилась бы при отпускании.",
+      "verdict_tap_latch": "Это было короткое нажатие — в реальном чате запись началась бы и продолжалась, пока вы не нажмёте клавишу снова.",
+      "verdict_tap_noop": "Это было короткое нажатие — в режиме «{{mode}}» ничего бы не произошло. Держите клавишу дольше.",
+      "verdict_toggle": "Распознано — в реальном чате это нажатие начало бы запись, а следующее остановило бы её.",
+      "verdict_wrong_key": "Это была {{got}}, а не выбранная выше {{want}}. Если на этой клавиатуре её нет, выберите другую в «{{field}}»."
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Я понимаю, опубликовать публично",
       "anyone_with_the_link": "Любой человек в мире, у кого есть ссылка, может просмотреть {{target}} — без аутентификации и контроля доступа.",
@@ -6427,6 +6496,18 @@
       "remove_reference": "Удалить ссылку",
       "remove_reference_to": "Удалить ссылку на {{name}}"
     },
+    "settingRef": {
+      "envVarAriaLabel": "Переменная окружения {{key}}",
+      "envVarDescription": "Установите эту переменную окружения перед запуском Kiro Crew.",
+      "envVarUnsetDescription": "Удалите эту переменную окружения перед запуском Kiro Crew.",
+      "fileOnlyDescription": "Задайте это значение с помощью приведённой ниже команды CLI.",
+      "copied": "Скопировано!",
+      "copyFailed": "Ошибка копирования",
+      "copyCommand": "Скопировать команду",
+      "orEditConfigJson": "Либо отредактируйте ~/.kiro/crew/config.json напрямую.",
+      "openSettingsAriaLabel": "Открыть {{key}} в разделе Настройки → {{tab}}",
+      "fileSettingAriaLabel": "Настройка только через файл {{key}}"
+    },
     "settings": {
       "click_to_reset": "Нажми, чтобы сбросить",
       "decrease": "Уменьшить",
@@ -6518,6 +6599,14 @@
     "skillPickerMenu": {
       "loading_skills": "Загрузка навыков…",
       "no_matching_skills": "Нет подходящих навыков"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "Переключить активного агента или управлять им",
@@ -6887,79 +6976,6 @@
       "select": "Выбрать",
       "workspace_name": "Название рабочей области",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "envVarAriaLabel": "Переменная окружения {{key}}",
-      "envVarDescription": "Установите эту переменную окружения перед запуском Kiro Crew.",
-      "envVarUnsetDescription": "Удалите эту переменную окружения перед запуском Kiro Crew.",
-      "fileOnlyDescription": "Задайте это значение с помощью приведённой ниже команды CLI.",
-      "copied": "Скопировано!",
-      "copyFailed": "Ошибка копирования",
-      "copyCommand": "Скопировать команду",
-      "orEditConfigJson": "Либо отредактируйте ~/.kiro/crew/config.json напрямую.",
-      "openSettingsAriaLabel": "Открыть {{key}} в разделе Настройки → {{tab}}",
-      "fileSettingAriaLabel": "Настройка только через файл {{key}}"
-    },
-    "pttTestStrip": {
-      "focus_lost": "Окно потеряло фокус, и мы не увидели, как вы отпустили клавишу. В реальном чате запись остановит защитный таймер.",
-      "headline_captured": "Клавиша работает",
-      "headline_idle": "Ожидание нажатия",
-      "headline_lost": "Не увидели, как вы отпустили",
-      "headline_matched": "Ваша клавиша распознана",
-      "headline_other_key": "Это другая клавиша",
-      "idle_press": "Нажмите {{name}} и отпустите.",
-      "no_mic_note": "Эта проверка следит только за клавиатурой. Микрофон остаётся выключенным.",
-      "readout_held": "Удерживалась {{secs}} с",
-      "state_deciding": "проверяем…",
-      "state_done": "готово",
-      "state_recording_sim": "шла бы запись",
-      "title": "Попробуйте",
-      "verdict_hold": "Это было длинное нажатие — в реальном чате запись шла бы, пока вы держите, и остановилась бы при отпускании.",
-      "verdict_tap_latch": "Это было короткое нажатие — в реальном чате запись началась бы и продолжалась, пока вы не нажмёте клавишу снова.",
-      "verdict_tap_noop": "Это было короткое нажатие — в режиме «{{mode}}» ничего бы не произошло. Держите клавишу дольше.",
-      "verdict_toggle": "Распознано — в реальном чате это нажатие начало бы запись, а следующее остановило бы её.",
-      "verdict_wrong_key": "Это была {{got}}, а не выбранная выше {{want}}. Если на этой клавиатуре её нет, выберите другую в «{{field}}»."
-    },
-    "gitPanel": {
-      "changes": "Изменения",
-      "clean": "чисто",
-      "commits": "Коммиты",
-      "empty_state": "Нет изменений или коммитов для отображения.",
-      "just_now": "только что",
-      "loading": "загрузка...",
-      "no_project": "Для этого сеанса не задана папка проекта.",
-      "refresh": "Обновить",
-      "title": "Git",
-      "uncommitted": "{{count}} незакоммичено"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "Как приходит работа",
-      "group_what_it_can_do": "Что умеет",
-      "group_where_it_works": "Где работает",
-      "group_who_it_is": "Что это",
-      "node_none": "Нет",
-      "pane_overview": "Обзор",
-      "pane_schedules": "Расписания",
-      "pane_webhook": "Вебхук",
-      "pane_workspace_memory": "Область · Память",
-      "rail_label": "Настройки crew",
-      "stat_active_schedules": "Активные расписания",
-      "stat_crews_sharing": "Crew с общим хранилищем",
-      "stat_resolved_model": "Итоговая модель",
-      "stat_unknown": "Неизвестно",
-      "tag_shared": "Общее",
-      "unsaved_changes": "Несохранённые изменения",
-      "webhook_unbound_reason": "Токены вебхуков пока не привязаны к crew, поэтому любой токен может запустить любую crew.",
-      "webhook_unbound_short": "Не привязан к crew",
-      "wire_what_it_works_with": "С чем работает"
     }
   },
   "hooks": {

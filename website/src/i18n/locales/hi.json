@@ -4388,36 +4388,6 @@
     "viewPr": "पुल रिक्वेस्ट"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "चालू",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "इस Crew के शेड्यूल लोड नहीं हो सके, इसलिए इसे क्या जगाता है यह अज्ञात है।",
-      "no_schedules_run_this_crew_automatically": "कोई शेड्यूल इस Crew को अपने आप नहीं चलाता।",
-      "open_schedule": "शेड्यूल खोलो",
-      "pause_named": "{{name}} रोको",
-      "paused": "रुका हुआ",
-      "resume_named": "{{name}} फिर शुरू करो",
-      "run_named_now": "{{name}} अभी चलाओ",
-      "running": "चल रहा है",
-      "schedule": "शेड्यूल",
-      "schedules_that_run_this_crew_without_you_asking": "वे शेड्यूल जो तुम्हारे कहे बिना इस Crew को चलाते हैं। ऊपर दिए Triggers से अलग, जो केवल यह तय करता है कि ऑर्केस्ट्रेटर इस Crew को कब चुनेगा।",
-      "what_wakes_this_crew": "इस Crew को क्या जगाता है"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "खाता विवरण उपलब्ध नहीं है",
-      "checking_account": "खाता जाँचा जा रहा है…",
-      "checking_credit_usage": "क्रेडिट उपयोग जाँचा जा रहा है",
-      "credit_usage_unavailable": "क्रेडिट उपयोग उपलब्ध नहीं है",
-      "days_until_expiration": "समाप्ति तक दिन: {{count}}",
-      "estimated_overage_cost": "अनुमानित अतिरिक्त लागत",
-      "hide_email": "ईमेल छिपाएँ",
-      "kiro_account": "Kiro खाता",
-      "kiro_credit_usage": "Kiro क्रेडिट उपयोग",
-      "overage_rate_value": "{{rate}} / क्रेडिट",
-      "remaining_credit_balance": "शेष क्रेडिट: {{count}}",
-      "show_email": "ईमेल दिखाएँ",
-      "usage_scope": "चैट, एजेंट, MCP और सबएजेंट में kiro-cli /usage से मासिक Kiro क्रेडिट उपयोग।",
-      "used_credits": "उपयोग: {{used}} / {{total}}"
-    },
     "agentDropdownList": {
       "active_in_this_session": "इस सत्र में सक्रिय",
       "could_not_change_the_default_agent": "डिफ़ॉल्ट एजेंट बदला नहीं जा सका",
@@ -5072,6 +5042,55 @@
       "copy": "{{label}} {{branch}} कॉपी करो",
       "copy_2": "{{label}} कॉपी करो"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "काम कैसे आता है",
+      "group_what_it_can_do": "यह क्या कर सकता है",
+      "group_where_it_works": "यह कहाँ काम करता है",
+      "group_who_it_is": "यह क्या है",
+      "node_none": "कोई नहीं",
+      "pane_overview": "अवलोकन",
+      "pane_schedules": "शेड्यूल",
+      "pane_webhook": "वेबहुक",
+      "pane_workspace_memory": "वर्कस्पेस · मेमोरी स्टोर",
+      "rail_label": "Crew सेटिंग्स",
+      "stat_active_schedules": "चालू शेड्यूल",
+      "stat_crews_sharing": "इसका स्टोरेज साझा करने वाले Crew",
+      "stat_resolved_model": "हल किया गया मॉडल",
+      "stat_unknown": "अज्ञात",
+      "tag_shared": "साझा",
+      "unsaved_changes": "सहेजे नहीं गए बदलाव",
+      "webhook_unbound_short": "किसी Crew से बंधा नहीं",
+      "wire_what_it_works_with": "यह किसके साथ काम करता है"
+    },
+    "crewWakeSection": {
+      "active": "चालू",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "इस Crew के शेड्यूल लोड नहीं हो सके, इसलिए इसे क्या जगाता है यह अज्ञात है।",
+      "no_schedules_run_this_crew_automatically": "कोई शेड्यूल इस Crew को अपने आप नहीं चलाता।",
+      "open_schedule": "शेड्यूल खोलो",
+      "pause_named": "{{name}} रोको",
+      "paused": "रुका हुआ",
+      "resume_named": "{{name}} फिर शुरू करो",
+      "run_named_now": "{{name}} अभी चलाओ",
+      "running": "चल रहा है",
+      "schedule": "शेड्यूल",
+      "schedules_that_run_this_crew_without_you_asking": "वे शेड्यूल जो तुम्हारे कहे बिना इस Crew को चलाते हैं। ऊपर दिए Triggers से अलग, जो केवल यह तय करता है कि ऑर्केस्ट्रेटर इस Crew को कब चुनेगा।",
+      "what_wakes_this_crew": "इस Crew को क्या जगाता है"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "Webhooks लोड नहीं हो सके, इसलिए अभी पता नहीं कि इस crew को क्या जगाता है।",
+      "inbound_webhooks_are_switched_off": "इनबाउंड webhooks बंद हैं — बंधे टोकन समेत कोई कॉल नहीं आ सकती।",
+      "last_used_ago": "{{time}} इस्तेमाल हुआ",
+      "no_tokens_are_bound_to_this_crew": "इस crew से कोई webhook टोकन बंधा नहीं है।",
+      "off": "बंद",
+      "open_webhooks": "Webhooks खोलें",
+      "outside_systems_holding_one_of_these_credentials": "इनमें से कोई टोकन रखने वाले बाहरी सिस्टम इस crew के रूप में एक टर्न शुरू कर सकते हैं। बनाना और रद्द करना Webhooks पेज पर करें।",
+      "retry": "फिर कोशिश करें",
+      "signed": "हस्ताक्षरित",
+      "unbound_tokens_can_wake_any_crew_one": "बिना crew बंधन वाला {{count}} टोकन भी मौजूद है; वह किसी भी crew को जगा सकता है, यह भी शामिल।",
+      "unbound_tokens_can_wake_any_crew_other": "बिना crew बंधन वाले {{count}} टोकन भी मौजूद हैं; वे किसी भी crew को जगा सकते हैं, यह भी शामिल।",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "इस crew को जगाने वाले Webhook"
+    },
     "detailPanel": {
       "close_panel": "पैनल बंद करें",
       "resize_panel": "पैनल का आकार बदलें"
@@ -5288,6 +5307,18 @@
       "this_session_has_no_project_directory_so_there_i": "इस सेशन में कोई प्रोजेक्ट डायरेक्टरी नहीं है, इसलिए ब्रांच बनाने के लिए कोई रिपॉज़िटरी नहीं है",
       "worktree_disabled_no_project_directory": "\"इस सत्र में जोड़ें\" कंपोज़र को पहले से भर देता है — जब तक आप भेजें नहीं दबाते, कुछ भी नहीं भेजा जाता। वर्कट्री यहाँ उपलब्ध नहीं हैं: इस सत्र की कोई प्रोजेक्ट डायरेक्टरी नहीं है (कंपोज़र की प्रोजेक्ट चिप से एक चुनें)।"
     },
+    "gitPanel": {
+      "changes": "परिवर्तन",
+      "clean": "साफ़",
+      "commits": "कमिट",
+      "empty_state": "दिखाने के लिए कोई परिवर्तन या कमिट नहीं।",
+      "just_now": "अभी-अभी",
+      "loading": "लोड हो रहा है...",
+      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
+      "refresh": "रिफ़्रेश करें",
+      "title": "Git",
+      "uncommitted": "{{count}} अनकमिटेड"
+    },
     "inboundLinkChip": {
       "driven_from": "{{label}} से संचालित"
     },
@@ -5443,6 +5474,22 @@
       "no_execution_history_yet": "अभी कोई निष्पादन इतिहास नहीं",
       "prev": "← पीछे",
       "s_elapsed": "s बीते"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "खाता विवरण उपलब्ध नहीं है",
+      "checking_account": "खाता जाँचा जा रहा है…",
+      "checking_credit_usage": "क्रेडिट उपयोग जाँचा जा रहा है",
+      "credit_usage_unavailable": "क्रेडिट उपयोग उपलब्ध नहीं है",
+      "days_until_expiration": "समाप्ति तक दिन: {{count}}",
+      "estimated_overage_cost": "अनुमानित अतिरिक्त लागत",
+      "hide_email": "ईमेल छिपाएँ",
+      "kiro_account": "Kiro खाता",
+      "kiro_credit_usage": "Kiro क्रेडिट उपयोग",
+      "overage_rate_value": "{{rate}} / क्रेडिट",
+      "remaining_credit_balance": "शेष क्रेडिट: {{count}}",
+      "show_email": "ईमेल दिखाएँ",
+      "usage_scope": "चैट, एजेंट, MCP और सबएजेंट में kiro-cli /usage से मासिक Kiro क्रेडिट उपयोग।",
+      "used_credits": "उपयोग: {{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "एजेंट स्पेक मौजूद नहीं",
@@ -5881,6 +5928,26 @@
       "select": "चुनें",
       "subdirectories": "सब-डायरेक्टरी"
     },
+    "pttTestStrip": {
+      "focus_lost": "विंडो का फ़ोकस चला गया और कुंजी छोड़ना दर्ज नहीं हुआ। असली बातचीत में एक सुरक्षा टाइमर रिकॉर्डिंग स्वतः रोक देता है।",
+      "headline_captured": "यह कुंजी काम करती है",
+      "headline_idle": "कुंजी की प्रतीक्षा",
+      "headline_lost": "छोड़ना दर्ज नहीं हुआ",
+      "headline_matched": "चुनी हुई कुंजी पहचानी गई",
+      "headline_other_key": "यह कोई दूसरी कुंजी है",
+      "idle_press": "{{name}} दबाएँ और छोड़ दें।",
+      "no_mic_note": "यह जाँच केवल कीबोर्ड देखती है। माइक्रोफ़ोन बंद रहता है।",
+      "readout_held": "{{secs}} सेकंड दबाई रखी",
+      "state_deciding": "जाँच हो रही है…",
+      "state_done": "पूरा",
+      "state_recording_sim": "रिकॉर्डिंग हो रही होती",
+      "title": "आज़माएँ",
+      "verdict_hold": "यह लंबा दबाव था — असली बातचीत में जब तक दबाए रखते तब तक रिकॉर्डिंग चलती और छोड़ने पर रुक जाती।",
+      "verdict_tap_latch": "यह छोटा दबाव था — असली बातचीत में रिकॉर्डिंग शुरू होकर चलती रहती, जब तक कुंजी दोबारा न दबाई जाए।",
+      "verdict_tap_noop": "यह छोटा दबाव था — “{{mode}}” मोड में कुछ नहीं होता। कुंजी को अधिक देर दबाए रखें।",
+      "verdict_toggle": "पहचानी गई — असली बातचीत में यह दबाव रिकॉर्डिंग शुरू करता और अगला दबाव उसे रोक देता।",
+      "verdict_wrong_key": "वह {{got}} थी, ऊपर चुनी गई {{want}} नहीं। यदि इस कीबोर्ड में वह नहीं है, तो “{{field}}” में दूसरी चुनें।"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "मैं समझता हूँ, सार्वजनिक रूप से प्रकाशित करें",
       "anyone_with_the_link": "लिंक रखने वाला दुनिया में कोई भी व्यक्ति {{target}} देख सकता है — कोई प्रमाणीकरण नहीं, कोई एक्सेस नियंत्रण नहीं।",
@@ -6251,6 +6318,18 @@
       "remove_reference": "संदर्भ हटाएँ",
       "remove_reference_to": "{{name}} का संदर्भ हटाएँ"
     },
+    "settingRef": {
+      "envVarAriaLabel": "पर्यावरण चर {{key}}",
+      "envVarDescription": "Kiro Crew शुरू करने से पहले यह वातावरण चर सेट करें।",
+      "envVarUnsetDescription": "Kiro Crew शुरू करने से पहले यह वातावरण चर हटाएं।",
+      "fileOnlyDescription": "नीचे दिए गए CLI कमांड से यह मान सेट करें।",
+      "copied": "कॉपी हो गया!",
+      "copyFailed": "कॉपी विफल",
+      "copyCommand": "कमांड कॉपी करें",
+      "orEditConfigJson": "वैकल्पिक रूप से, सीधे ~/.kiro/crew/config.json को संपादित करें।",
+      "openSettingsAriaLabel": "सेटिंग्स → {{tab}} में {{key}} खोलें",
+      "fileSettingAriaLabel": "केवल फ़ाइल सेटिंग {{key}}"
+    },
     "settings": {
       "click_to_reset": "रीसेट करने के लिए क्लिक करें",
       "decrease": "घटाएँ",
@@ -6340,6 +6419,14 @@
     "skillPickerMenu": {
       "loading_skills": "स्किल लोड हो रही हैं…",
       "no_matching_skills": "कोई मेल खाती स्किल नहीं"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
@@ -6709,79 +6796,6 @@
       "select": "चुनें",
       "workspace_name": "वर्कस्पेस का नाम",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "envVarAriaLabel": "पर्यावरण चर {{key}}",
-      "envVarDescription": "Kiro Crew शुरू करने से पहले यह वातावरण चर सेट करें।",
-      "envVarUnsetDescription": "Kiro Crew शुरू करने से पहले यह वातावरण चर हटाएं।",
-      "fileOnlyDescription": "नीचे दिए गए CLI कमांड से यह मान सेट करें।",
-      "copied": "कॉपी हो गया!",
-      "copyFailed": "कॉपी विफल",
-      "copyCommand": "कमांड कॉपी करें",
-      "orEditConfigJson": "वैकल्पिक रूप से, सीधे ~/.kiro/crew/config.json को संपादित करें।",
-      "openSettingsAriaLabel": "सेटिंग्स → {{tab}} में {{key}} खोलें",
-      "fileSettingAriaLabel": "केवल फ़ाइल सेटिंग {{key}}"
-    },
-    "pttTestStrip": {
-      "focus_lost": "विंडो का फ़ोकस चला गया और कुंजी छोड़ना दर्ज नहीं हुआ। असली बातचीत में एक सुरक्षा टाइमर रिकॉर्डिंग स्वतः रोक देता है।",
-      "headline_captured": "यह कुंजी काम करती है",
-      "headline_idle": "कुंजी की प्रतीक्षा",
-      "headline_lost": "छोड़ना दर्ज नहीं हुआ",
-      "headline_matched": "चुनी हुई कुंजी पहचानी गई",
-      "headline_other_key": "यह कोई दूसरी कुंजी है",
-      "idle_press": "{{name}} दबाएँ और छोड़ दें।",
-      "no_mic_note": "यह जाँच केवल कीबोर्ड देखती है। माइक्रोफ़ोन बंद रहता है।",
-      "readout_held": "{{secs}} सेकंड दबाई रखी",
-      "state_deciding": "जाँच हो रही है…",
-      "state_done": "पूरा",
-      "state_recording_sim": "रिकॉर्डिंग हो रही होती",
-      "title": "आज़माएँ",
-      "verdict_hold": "यह लंबा दबाव था — असली बातचीत में जब तक दबाए रखते तब तक रिकॉर्डिंग चलती और छोड़ने पर रुक जाती।",
-      "verdict_tap_latch": "यह छोटा दबाव था — असली बातचीत में रिकॉर्डिंग शुरू होकर चलती रहती, जब तक कुंजी दोबारा न दबाई जाए।",
-      "verdict_tap_noop": "यह छोटा दबाव था — “{{mode}}” मोड में कुछ नहीं होता। कुंजी को अधिक देर दबाए रखें।",
-      "verdict_toggle": "पहचानी गई — असली बातचीत में यह दबाव रिकॉर्डिंग शुरू करता और अगला दबाव उसे रोक देता।",
-      "verdict_wrong_key": "वह {{got}} थी, ऊपर चुनी गई {{want}} नहीं। यदि इस कीबोर्ड में वह नहीं है, तो “{{field}}” में दूसरी चुनें।"
-    },
-    "gitPanel": {
-      "changes": "परिवर्तन",
-      "clean": "साफ़",
-      "commits": "कमिट",
-      "empty_state": "दिखाने के लिए कोई परिवर्तन या कमिट नहीं।",
-      "just_now": "अभी-अभी",
-      "loading": "लोड हो रहा है...",
-      "no_project": "इस सत्र के लिए कोई प्रोजेक्ट फ़ोल्डर सेट नहीं है।",
-      "refresh": "रिफ़्रेश करें",
-      "title": "Git",
-      "uncommitted": "{{count}} अनकमिटेड"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "काम कैसे आता है",
-      "group_what_it_can_do": "यह क्या कर सकता है",
-      "group_where_it_works": "यह कहाँ काम करता है",
-      "group_who_it_is": "यह क्या है",
-      "node_none": "कोई नहीं",
-      "pane_overview": "अवलोकन",
-      "pane_schedules": "शेड्यूल",
-      "pane_webhook": "वेबहुक",
-      "pane_workspace_memory": "वर्कस्पेस · मेमोरी स्टोर",
-      "rail_label": "Crew सेटिंग्स",
-      "stat_active_schedules": "चालू शेड्यूल",
-      "stat_crews_sharing": "इसका स्टोरेज साझा करने वाले Crew",
-      "stat_resolved_model": "हल किया गया मॉडल",
-      "stat_unknown": "अज्ञात",
-      "tag_shared": "साझा",
-      "unsaved_changes": "सहेजे नहीं गए बदलाव",
-      "webhook_unbound_reason": "वेबहुक टोकन अभी किसी Crew से बंधे नहीं हैं, इसलिए कोई भी टोकन किसी भी Crew को जगा सकता है।",
-      "webhook_unbound_short": "किसी Crew से बंधा नहीं",
-      "wire_what_it_works_with": "यह किसके साथ काम करता है"
     }
   },
   "hooks": {

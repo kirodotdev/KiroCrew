@@ -4452,36 +4452,6 @@
     "viewPr": "Solicitud"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "activo",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "No se pudieron cargar los horarios de este crew, así que no se sabe qué lo activa.",
-      "no_schedules_run_this_crew_automatically": "Ningún horario ejecuta este crew automáticamente.",
-      "open_schedule": "Abrir Programación",
-      "pause_named": "Pausar {{name}}",
-      "paused": "en pausa",
-      "resume_named": "Reanudar {{name}}",
-      "run_named_now": "Ejecutar {{name}} ahora",
-      "running": "en ejecución",
-      "schedule": "programación",
-      "schedules_that_run_this_crew_without_you_asking": "Horarios que ejecutan este crew sin que lo pidas. Distinto de Triggers arriba, que solo decide cuándo el orquestador selecciona este crew.",
-      "what_wakes_this_crew": "Qué activa este crew"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "Los detalles de la cuenta no están disponibles",
-      "checking_account": "Comprobando la cuenta…",
-      "checking_credit_usage": "Comprobando el uso de créditos",
-      "credit_usage_unavailable": "El uso de créditos no está disponible",
-      "days_until_expiration": "Días hasta el vencimiento: {{count}}",
-      "estimated_overage_cost": "Coste adicional estimado",
-      "hide_email": "Ocultar correo electrónico",
-      "kiro_account": "Cuenta de Kiro",
-      "kiro_credit_usage": "Uso de créditos de Kiro",
-      "overage_rate_value": "{{rate}} / crédito",
-      "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
-      "show_email": "Mostrar correo electrónico",
-      "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
-      "used_credits": "Usados: {{used}} / {{total}}"
-    },
     "agentDropdownList": {
       "active_in_this_session": "Activo en esta sesión",
       "could_not_change_the_default_agent": "No se pudo cambiar el agente predeterminado",
@@ -5147,6 +5117,56 @@
       "copy": "Copiar {{label}} {{branch}}",
       "copy_2": "Copiar {{label}}"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "Cómo llega el trabajo",
+      "group_what_it_can_do": "Qué puede hacer",
+      "group_where_it_works": "Dónde trabaja",
+      "group_who_it_is": "Qué es",
+      "node_none": "Ninguna",
+      "pane_overview": "Resumen",
+      "pane_schedules": "Programaciones",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "Espacio · Memoria",
+      "rail_label": "Configuración del crew",
+      "stat_active_schedules": "Programaciones activas",
+      "stat_crews_sharing": "Crews que comparten su almacenamiento",
+      "stat_resolved_model": "Modelo resuelto",
+      "stat_unknown": "Desconocido",
+      "tag_shared": "Compartido",
+      "unsaved_changes": "Cambios sin guardar",
+      "webhook_unbound_short": "Sin vincular a un crew",
+      "wire_what_it_works_with": "Con qué trabaja"
+    },
+    "crewWakeSection": {
+      "active": "activo",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "No se pudieron cargar los horarios de este crew, así que no se sabe qué lo activa.",
+      "no_schedules_run_this_crew_automatically": "Ningún horario ejecuta este crew automáticamente.",
+      "open_schedule": "Abrir Programación",
+      "pause_named": "Pausar {{name}}",
+      "paused": "en pausa",
+      "resume_named": "Reanudar {{name}}",
+      "run_named_now": "Ejecutar {{name}} ahora",
+      "running": "en ejecución",
+      "schedule": "programación",
+      "schedules_that_run_this_crew_without_you_asking": "Horarios que ejecutan este crew sin que lo pidas. Distinto de Triggers arriba, que solo decide cuándo el orquestador selecciona este crew.",
+      "what_wakes_this_crew": "Qué activa este crew"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "No se pudieron cargar los webhooks, así que ahora mismo se desconoce qué despierta a esta crew.",
+      "inbound_webhooks_are_switched_off": "Los webhooks entrantes están apagados: nada puede llamar, incluidos los tokens vinculados.",
+      "last_used_ago": "usado {{time}}",
+      "no_tokens_are_bound_to_this_crew": "Ningún token de webhook está vinculado a esta crew.",
+      "off": "Apagado",
+      "open_webhooks": "Abrir Webhooks",
+      "outside_systems_holding_one_of_these_credentials": "Los sistemas externos con uno de estos tokens pueden iniciar un turno como esta crew. Créalos y revócalos en la página de Webhooks.",
+      "retry": "Reintentar",
+      "signed": "Firmado",
+      "unbound_tokens_can_wake_any_crew_many": "También existen {{count}} tokens sin vínculo de crew; pueden despertar a cualquier crew, esta incluida.",
+      "unbound_tokens_can_wake_any_crew_one": "También existe {{count}} token sin vínculo de crew; puede despertar a cualquier crew, esta incluida.",
+      "unbound_tokens_can_wake_any_crew_other": "También existen {{count}} tokens sin vínculo de crew; pueden despertar a cualquier crew, esta incluida.",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "Webhooks que despiertan a esta crew"
+    },
     "detailPanel": {
       "close_panel": "Cerrar el panel",
       "resize_panel": "Redimensionar el panel"
@@ -5368,6 +5388,18 @@
       "this_session_has_no_project_directory_so_there_i": "Esta sesión no tiene directorio de proyecto, así que no hay repositorio del que crear una rama",
       "worktree_disabled_no_project_directory": "«Añadir a esta sesión» precarga el editor de mensajes — no se envía nada hasta que pulsas enviar. Los worktrees no están disponibles aquí: esta sesión no tiene directorio de proyecto (elige uno con el chip Proyecto del editor)."
     },
+    "gitPanel": {
+      "changes": "Cambios",
+      "clean": "limpio",
+      "commits": "Commits",
+      "empty_state": "No hay cambios ni commits que mostrar.",
+      "just_now": "ahora mismo",
+      "loading": "cargando...",
+      "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
+      "refresh": "Actualizar",
+      "title": "Git",
+      "uncommitted": "{{count}} sin confirmar"
+    },
     "inboundLinkChip": {
       "driven_from": "Controlada desde {{label}}"
     },
@@ -5525,6 +5557,22 @@
       "no_execution_history_yet": "Aún no hay historial de ejecuciones",
       "prev": "← Anterior",
       "s_elapsed": "s transcurridos"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "Los detalles de la cuenta no están disponibles",
+      "checking_account": "Comprobando la cuenta…",
+      "checking_credit_usage": "Comprobando el uso de créditos",
+      "credit_usage_unavailable": "El uso de créditos no está disponible",
+      "days_until_expiration": "Días hasta el vencimiento: {{count}}",
+      "estimated_overage_cost": "Coste adicional estimado",
+      "hide_email": "Ocultar correo electrónico",
+      "kiro_account": "Cuenta de Kiro",
+      "kiro_credit_usage": "Uso de créditos de Kiro",
+      "overage_rate_value": "{{rate}} / crédito",
+      "remaining_credit_balance": "Saldo de créditos restante: {{count}}",
+      "show_email": "Mostrar correo electrónico",
+      "usage_scope": "Uso mensual de créditos de Kiro según kiro-cli /usage en chats, agentes, MCP y subagentes.",
+      "used_credits": "Usados: {{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "Faltan las especificaciones del agente",
@@ -5965,6 +6013,26 @@
       "select": "Seleccionar",
       "subdirectories": "Subdirectorios"
     },
+    "pttTestStrip": {
+      "focus_lost": "La ventana perdió el foco y no vimos que la soltaras. En un chat real un temporizador de seguridad detiene la grabación por ti.",
+      "headline_captured": "La tecla funciona",
+      "headline_idle": "Esperando una tecla",
+      "headline_lost": "No detectamos que la soltaras",
+      "headline_matched": "Coincide con tu tecla",
+      "headline_other_key": "Esa es otra tecla",
+      "idle_press": "Pulsa {{name}} y suéltala.",
+      "no_mic_note": "Esta prueba solo observa el teclado. Tu micrófono permanece apagado.",
+      "readout_held": "Mantenida {{secs}} segundos",
+      "state_deciding": "comprobando…",
+      "state_done": "listo",
+      "state_recording_sim": "estaría grabando",
+      "title": "Pruébalo",
+      "verdict_hold": "Esa fue una pulsación larga: en un chat real grabaría mientras la mantienes y pararía al soltarla.",
+      "verdict_tap_latch": "Ese fue un toque rápido: en un chat real empezaría a grabar y seguiría hasta que pulses la tecla otra vez.",
+      "verdict_tap_noop": "Ese fue un toque rápido: en el modo «{{mode}}» no pasaría nada. Mantén la tecla más tiempo.",
+      "verdict_toggle": "Reconocida: en un chat real esta pulsación empezaría a grabar y la siguiente lo pararía.",
+      "verdict_wrong_key": "Esa era {{got}}, no la {{want}} que elegiste arriba. Si este teclado no la tiene, elige otra en «{{field}}»."
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "Lo entiendo, publicar públicamente",
       "anyone_with_the_link": "Cualquier persona del mundo con el enlace puede ver {{target}}: sin autenticación ni control de acceso.",
@@ -6339,6 +6407,18 @@
       "remove_reference": "Quitar referencia",
       "remove_reference_to": "Quitar la referencia a {{name}}"
     },
+    "settingRef": {
+      "envVarAriaLabel": "Variable de entorno {{key}}",
+      "envVarDescription": "Establece esta variable de entorno antes de iniciar Kiro Crew.",
+      "envVarUnsetDescription": "Elimina esta variable de entorno antes de iniciar Kiro Crew.",
+      "fileOnlyDescription": "Establece este valor con el siguiente comando de CLI.",
+      "copied": "¡Copiado!",
+      "copyFailed": "Error al copiar",
+      "copyCommand": "Copiar comando",
+      "orEditConfigJson": "Alternativamente, edita ~/.kiro/crew/config.json directamente.",
+      "openSettingsAriaLabel": "Abrir {{key}} en Configuración → {{tab}}",
+      "fileSettingAriaLabel": "Configuración solo de archivo {{key}}"
+    },
     "settings": {
       "click_to_reset": "Clic para restablecer",
       "decrease": "Reducir",
@@ -6429,6 +6509,14 @@
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
       "no_matching_skills": "No hay skills coincidentes"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",
@@ -6798,79 +6886,6 @@
       "select": "Seleccionar",
       "workspace_name": "Nombre del espacio de trabajo",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "envVarAriaLabel": "Variable de entorno {{key}}",
-      "envVarDescription": "Establece esta variable de entorno antes de iniciar Kiro Crew.",
-      "envVarUnsetDescription": "Elimina esta variable de entorno antes de iniciar Kiro Crew.",
-      "fileOnlyDescription": "Establece este valor con el siguiente comando de CLI.",
-      "copied": "¡Copiado!",
-      "copyFailed": "Error al copiar",
-      "copyCommand": "Copiar comando",
-      "orEditConfigJson": "Alternativamente, edita ~/.kiro/crew/config.json directamente.",
-      "openSettingsAriaLabel": "Abrir {{key}} en Configuración → {{tab}}",
-      "fileSettingAriaLabel": "Configuración solo de archivo {{key}}"
-    },
-    "pttTestStrip": {
-      "focus_lost": "La ventana perdió el foco y no vimos que la soltaras. En un chat real un temporizador de seguridad detiene la grabación por ti.",
-      "headline_captured": "La tecla funciona",
-      "headline_idle": "Esperando una tecla",
-      "headline_lost": "No detectamos que la soltaras",
-      "headline_matched": "Coincide con tu tecla",
-      "headline_other_key": "Esa es otra tecla",
-      "idle_press": "Pulsa {{name}} y suéltala.",
-      "no_mic_note": "Esta prueba solo observa el teclado. Tu micrófono permanece apagado.",
-      "readout_held": "Mantenida {{secs}} segundos",
-      "state_deciding": "comprobando…",
-      "state_done": "listo",
-      "state_recording_sim": "estaría grabando",
-      "title": "Pruébalo",
-      "verdict_hold": "Esa fue una pulsación larga: en un chat real grabaría mientras la mantienes y pararía al soltarla.",
-      "verdict_tap_latch": "Ese fue un toque rápido: en un chat real empezaría a grabar y seguiría hasta que pulses la tecla otra vez.",
-      "verdict_tap_noop": "Ese fue un toque rápido: en el modo «{{mode}}» no pasaría nada. Mantén la tecla más tiempo.",
-      "verdict_toggle": "Reconocida: en un chat real esta pulsación empezaría a grabar y la siguiente lo pararía.",
-      "verdict_wrong_key": "Esa era {{got}}, no la {{want}} que elegiste arriba. Si este teclado no la tiene, elige otra en «{{field}}»."
-    },
-    "gitPanel": {
-      "changes": "Cambios",
-      "clean": "limpio",
-      "commits": "Commits",
-      "empty_state": "No hay cambios ni commits que mostrar.",
-      "just_now": "ahora mismo",
-      "loading": "cargando...",
-      "no_project": "No hay carpeta de proyecto configurada para esta sesión.",
-      "refresh": "Actualizar",
-      "title": "Git",
-      "uncommitted": "{{count}} sin confirmar"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "Cómo llega el trabajo",
-      "group_what_it_can_do": "Qué puede hacer",
-      "group_where_it_works": "Dónde trabaja",
-      "group_who_it_is": "Qué es",
-      "node_none": "Ninguna",
-      "pane_overview": "Resumen",
-      "pane_schedules": "Programaciones",
-      "pane_webhook": "Webhook",
-      "pane_workspace_memory": "Espacio · Memoria",
-      "rail_label": "Configuración del crew",
-      "stat_active_schedules": "Programaciones activas",
-      "stat_crews_sharing": "Crews que comparten su almacenamiento",
-      "stat_resolved_model": "Modelo resuelto",
-      "stat_unknown": "Desconocido",
-      "tag_shared": "Compartido",
-      "unsaved_changes": "Cambios sin guardar",
-      "webhook_unbound_reason": "Los tokens de webhook aún no están vinculados a ningún crew, por lo que cualquier token puede activar cualquier crew.",
-      "webhook_unbound_short": "Sin vincular a un crew",
-      "wire_what_it_works_with": "Con qué trabaja"
     }
   },
   "hooks": {

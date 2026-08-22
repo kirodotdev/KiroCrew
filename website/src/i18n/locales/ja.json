@@ -4324,20 +4324,6 @@
     "viewPr": "プルリクエスト"
   },
   "components": {
-    "crewWakeSection": {
-      "active": "実行中",
-      "could_not_load_this_crew_s_schedules_so_what_wak": "このクルーのスケジュールを読み込めなかったため、何が起動するかは不明です。",
-      "no_schedules_run_this_crew_automatically": "このクルーを自動で実行するスケジュールはありません。",
-      "open_schedule": "スケジュールを開く",
-      "pause_named": "{{name}} を一時停止",
-      "paused": "一時停止中",
-      "resume_named": "{{name}} を再開",
-      "run_named_now": "{{name}} を今すぐ実行",
-      "running": "実行しています",
-      "schedule": "スケジュール",
-      "schedules_that_run_this_crew_without_you_asking": "あなたが頼まなくてもこのクルーを実行するスケジュール。上のトリガーとは別で、あちらはオーケストレーターがこのクルーを選ぶ条件だけを決めます。",
-      "what_wakes_this_crew": "このクルーを起動するもの"
-    },
     "agentDropdownList": {
       "active_in_this_session": "このセッションでアクティブ",
       "could_not_change_the_default_agent": "デフォルトエージェントを変更できませんでした",
@@ -4597,22 +4583,6 @@
       "artifact": "アーティファクト：{{slug}}",
       "image_could_not_be_loaded": "画像を読み込めませんでした",
       "rendering": "レンダリング中…"
-    },
-    "kiroAccountModal": {
-      "account_details_unavailable": "アカウント詳細を取得できません",
-      "checking_account": "アカウントを確認中…",
-      "checking_credit_usage": "クレジット使用量を確認中",
-      "credit_usage_unavailable": "クレジット使用量を取得できません",
-      "days_until_expiration": "有効期限までの日数: {{count}}",
-      "estimated_overage_cost": "推定超過料金",
-      "hide_email": "メールアドレスを隠す",
-      "kiro_account": "Kiro アカウント",
-      "kiro_credit_usage": "Kiro クレジット使用量",
-      "overage_rate_value": "{{rate}} / クレジット",
-      "remaining_credit_balance": "残りのクレジット残高: {{count}}",
-      "show_email": "メールアドレスを表示",
-      "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
-      "used_credits": "使用済み: {{used}} / {{total}}"
     },
     "artifactChatPanel": {
       "agent_chat": "エージェントチャット",
@@ -4997,6 +4967,54 @@
       "copy": "{{label}} {{branch}} をコピー",
       "copy_2": "{{label}} をコピー"
     },
+    "crewEditor": {
+      "group_how_work_arrives": "仕事の入り口",
+      "group_what_it_can_do": "何ができるか",
+      "group_where_it_works": "どこで動くか",
+      "group_who_it_is": "これは何か",
+      "node_none": "なし",
+      "pane_overview": "概要",
+      "pane_schedules": "スケジュール",
+      "pane_webhook": "Webhook",
+      "pane_workspace_memory": "ワークスペース · メモリストア",
+      "rail_label": "クルーの設定",
+      "stat_active_schedules": "実行中のスケジュール",
+      "stat_crews_sharing": "ストレージを共有するクルー",
+      "stat_resolved_model": "解決されたモデル",
+      "stat_unknown": "不明",
+      "tag_shared": "共有",
+      "unsaved_changes": "未保存の変更",
+      "webhook_unbound_short": "クルーに未紐付け",
+      "wire_what_it_works_with": "何を使うか"
+    },
+    "crewWakeSection": {
+      "active": "実行中",
+      "could_not_load_this_crew_s_schedules_so_what_wak": "このクルーのスケジュールを読み込めなかったため、何が起動するかは不明です。",
+      "no_schedules_run_this_crew_automatically": "このクルーを自動で実行するスケジュールはありません。",
+      "open_schedule": "スケジュールを開く",
+      "pause_named": "{{name}} を一時停止",
+      "paused": "一時停止中",
+      "resume_named": "{{name}} を再開",
+      "run_named_now": "{{name}} を今すぐ実行",
+      "running": "実行しています",
+      "schedule": "スケジュール",
+      "schedules_that_run_this_crew_without_you_asking": "あなたが頼まなくてもこのクルーを実行するスケジュール。上のトリガーとは別で、あちらはオーケストレーターがこのクルーを選ぶ条件だけを決めます。",
+      "what_wakes_this_crew": "このクルーを起動するもの"
+    },
+    "crewWebhookSection": {
+      "could_not_load_webhooks": "Webhook を読み込めなかったため、何がこのクルーを起こすのか今は不明です。",
+      "inbound_webhooks_are_switched_off": "受信 Webhook はオフになっており、紐づけ済みのトークンを含め何も呼び出せません。",
+      "last_used_ago": "{{time}}に使用",
+      "no_tokens_are_bound_to_this_crew": "このクルーに紐づく webhook トークンはありません。",
+      "off": "停止中",
+      "open_webhooks": "Webhooks を開く",
+      "outside_systems_holding_one_of_these_credentials": "これらのトークンを持つ外部システムは、このクルーとしてターンを開始できます。作成と失効は Webhooks ページで。",
+      "retry": "再試行",
+      "signed": "署名必須",
+      "unbound_tokens_can_wake_any_crew_other": "クルー未紐づけのトークンが {{count}} 件あり、このクルーを含む任意のクルーを起こせます。",
+      "webhook": "Webhook",
+      "webhooks_that_wake_this_crew": "このクルーを起こす Webhook"
+    },
     "detailPanel": {
       "close_panel": "パネルを閉じる",
       "resize_panel": "パネルのサイズを変更"
@@ -5208,6 +5226,18 @@
       "this_session_has_no_project_directory_so_there_i": "このセッションはプロジェクトディレクトリがないため、ブランチ元リポジトリがありません",
       "worktree_disabled_no_project_directory": "「このセッションに追加」はコンポーザーを事前入力します。送信を押すまで何も送信されません。ワークツリーは使用不可です。このセッションにはプロジェクトディレクトリがありません (コンポーザーのプロジェクトチップで選択してください)。"
     },
+    "gitPanel": {
+      "changes": "変更",
+      "clean": "クリーン",
+      "commits": "コミット",
+      "empty_state": "表示する変更やコミットはありません。",
+      "just_now": "たった今",
+      "loading": "読み込み中…",
+      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
+      "refresh": "更新",
+      "title": "Git",
+      "uncommitted": "{{count}} 件の未コミット"
+    },
     "inboundLinkChip": {
       "driven_from": "{{label}}から駆動中"
     },
@@ -5361,6 +5391,22 @@
       "no_execution_history_yet": "実行履歴がまだありません",
       "prev": "← 前へ",
       "s_elapsed": "秒経過"
+    },
+    "kiroAccountModal": {
+      "account_details_unavailable": "アカウント詳細を取得できません",
+      "checking_account": "アカウントを確認中…",
+      "checking_credit_usage": "クレジット使用量を確認中",
+      "credit_usage_unavailable": "クレジット使用量を取得できません",
+      "days_until_expiration": "有効期限までの日数: {{count}}",
+      "estimated_overage_cost": "推定超過料金",
+      "hide_email": "メールアドレスを隠す",
+      "kiro_account": "Kiro アカウント",
+      "kiro_credit_usage": "Kiro クレジット使用量",
+      "overage_rate_value": "{{rate}} / クレジット",
+      "remaining_credit_balance": "残りのクレジット残高: {{count}}",
+      "show_email": "メールアドレスを表示",
+      "usage_scope": "kiro-cli /usage による、チャット、エージェント、MCP、サブエージェント全体の月間 Kiro クレジット使用量。",
+      "used_credits": "使用済み: {{used}} / {{total}}"
     },
     "kiroPrerequisiteGate": {
       "agent_specs_missing": "エージェント仕様が見つかりません",
@@ -5797,6 +5843,26 @@
       "select": "選択",
       "subdirectories": "サブディレクトリ"
     },
+    "pttTestStrip": {
+      "focus_lost": "ウィンドウがフォーカスを失い、キーを離したことを検出できませんでした。実際のチャットでは安全用のタイマーが録音を停止します。",
+      "headline_captured": "キーは正常です",
+      "headline_idle": "キー入力を待っています",
+      "headline_lost": "キーを離したことを検出できませんでした",
+      "headline_matched": "設定したキーと一致しました",
+      "headline_other_key": "別のキーです",
+      "idle_press": "{{name}} を押して離してください。",
+      "no_mic_note": "このテストはキーボードだけを監視します。マイクはオフのままです。",
+      "readout_held": "{{secs}} 秒間押していました",
+      "state_deciding": "確認中…",
+      "state_done": "完了",
+      "state_recording_sim": "録音される状態",
+      "title": "試してみる",
+      "verdict_hold": "長押しです。実際のチャットでは押している間だけ録音し、離すと停止します。",
+      "verdict_tap_latch": "短く押しました。実際のチャットでは録音が始まり、もう一度キーを押すまで続きます。",
+      "verdict_tap_noop": "短く押しました。「{{mode}}」モードでは何も起こりません。もう少し長く押してください。",
+      "verdict_toggle": "認識しました。実際のチャットではこの操作で録音が始まり、次に押すと停止します。",
+      "verdict_wrong_key": "押されたのは {{got}} で、上で選んだ {{want}} ではありません。お使いのキーボードにそのキーがない場合は、「{{field}}」で別のキーを選んでください。"
+    },
     "publicPublishAckModal": {
       "acknowledge_publish": "理解しました。公開します",
       "anyone_with_the_link": "リンクを知っていれば世界中の誰でも {{target}} を閲覧できます。認証もアクセス制御もありません。",
@@ -6163,6 +6229,18 @@
       "remove_reference": "参照を削除",
       "remove_reference_to": "{{name}} への参照を削除"
     },
+    "settingRef": {
+      "envVarAriaLabel": "環境変数 {{key}}",
+      "envVarDescription": "Kiro Crew を起動する前にこの環境変数を設定してください。",
+      "envVarUnsetDescription": "Kiro Crew を起動する前にこの環境変数を解除してください。",
+      "fileOnlyDescription": "以下の CLI コマンドでこの値を設定してください。",
+      "copied": "コピーしました！",
+      "copyFailed": "コピーに失敗しました",
+      "copyCommand": "コマンドをコピー",
+      "orEditConfigJson": "または、~/.kiro/crew/config.json を直接編集してください。",
+      "openSettingsAriaLabel": "設定 → {{tab}} で {{key}} を開く",
+      "fileSettingAriaLabel": "ファイル専用設定 {{key}}"
+    },
     "settings": {
       "click_to_reset": "クリックしてリセット",
       "decrease": "減少",
@@ -6251,6 +6329,14 @@
     "skillPickerMenu": {
       "loading_skills": "スキルを読み込み中…",
       "no_matching_skills": "一致するスキルがありません"
+    },
+    "skillsMultiSelect": {
+      "add_skill": "Add skill",
+      "remove_skill": "Remove {{name}}",
+      "filter_skills": "Filter skills...",
+      "no_matching_skills": "No matching skills",
+      "skills_hint": "Skills loaded when this hook matches — no command needed.",
+      "selected": "Selected"
     },
     "slashCommandMenu": {
       "desc_agent": "アクティブなエージェントを切り替えるか管理する",
@@ -6620,79 +6706,6 @@
       "select": "選択",
       "workspace_name": "ワークスペース名",
       "workspace_name_2": "workspace-name"
-    },
-    "settingRef": {
-      "envVarAriaLabel": "環境変数 {{key}}",
-      "envVarDescription": "Kiro Crew を起動する前にこの環境変数を設定してください。",
-      "envVarUnsetDescription": "Kiro Crew を起動する前にこの環境変数を解除してください。",
-      "fileOnlyDescription": "以下の CLI コマンドでこの値を設定してください。",
-      "copied": "コピーしました！",
-      "copyFailed": "コピーに失敗しました",
-      "copyCommand": "コマンドをコピー",
-      "orEditConfigJson": "または、~/.kiro/crew/config.json を直接編集してください。",
-      "openSettingsAriaLabel": "設定 → {{tab}} で {{key}} を開く",
-      "fileSettingAriaLabel": "ファイル専用設定 {{key}}"
-    },
-    "pttTestStrip": {
-      "focus_lost": "ウィンドウがフォーカスを失い、キーを離したことを検出できませんでした。実際のチャットでは安全用のタイマーが録音を停止します。",
-      "headline_captured": "キーは正常です",
-      "headline_idle": "キー入力を待っています",
-      "headline_lost": "キーを離したことを検出できませんでした",
-      "headline_matched": "設定したキーと一致しました",
-      "headline_other_key": "別のキーです",
-      "idle_press": "{{name}} を押して離してください。",
-      "no_mic_note": "このテストはキーボードだけを監視します。マイクはオフのままです。",
-      "readout_held": "{{secs}} 秒間押していました",
-      "state_deciding": "確認中…",
-      "state_done": "完了",
-      "state_recording_sim": "録音される状態",
-      "title": "試してみる",
-      "verdict_hold": "長押しです。実際のチャットでは押している間だけ録音し、離すと停止します。",
-      "verdict_tap_latch": "短く押しました。実際のチャットでは録音が始まり、もう一度キーを押すまで続きます。",
-      "verdict_tap_noop": "短く押しました。「{{mode}}」モードでは何も起こりません。もう少し長く押してください。",
-      "verdict_toggle": "認識しました。実際のチャットではこの操作で録音が始まり、次に押すと停止します。",
-      "verdict_wrong_key": "押されたのは {{got}} で、上で選んだ {{want}} ではありません。お使いのキーボードにそのキーがない場合は、「{{field}}」で別のキーを選んでください。"
-    },
-    "gitPanel": {
-      "changes": "変更",
-      "clean": "クリーン",
-      "commits": "コミット",
-      "empty_state": "表示する変更やコミットはありません。",
-      "just_now": "たった今",
-      "loading": "読み込み中…",
-      "no_project": "このセッションにはプロジェクトフォルダーが設定されていません。",
-      "refresh": "更新",
-      "title": "Git",
-      "uncommitted": "{{count}} 件の未コミット"
-    },
-    "skillsMultiSelect": {
-      "add_skill": "Add skill",
-      "remove_skill": "Remove {{name}}",
-      "filter_skills": "Filter skills...",
-      "no_matching_skills": "No matching skills",
-      "skills_hint": "Skills loaded when this hook matches — no command needed.",
-      "selected": "Selected"
-    },
-    "crewEditor": {
-      "group_how_work_arrives": "仕事の入り口",
-      "group_what_it_can_do": "何ができるか",
-      "group_where_it_works": "どこで動くか",
-      "group_who_it_is": "これは何か",
-      "node_none": "なし",
-      "pane_overview": "概要",
-      "pane_schedules": "スケジュール",
-      "pane_webhook": "Webhook",
-      "pane_workspace_memory": "ワークスペース · メモリストア",
-      "rail_label": "クルーの設定",
-      "stat_active_schedules": "実行中のスケジュール",
-      "stat_crews_sharing": "ストレージを共有するクルー",
-      "stat_resolved_model": "解決されたモデル",
-      "stat_unknown": "不明",
-      "tag_shared": "共有",
-      "unsaved_changes": "未保存の変更",
-      "webhook_unbound_reason": "Webhook トークンはまだクルーに紐づいていないため、どのトークンでもどのクルーでも起動できます。",
-      "webhook_unbound_short": "クルーに未紐付け",
-      "wire_what_it_works_with": "何を使うか"
     }
   },
   "hooks": {

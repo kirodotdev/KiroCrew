@@ -37,6 +37,12 @@ export interface CrewOverviewPaneProps {
   workspaceShared: boolean
   /** Another crew points at this crew's memory store. */
   memoryShared: boolean
+  /** Webhook tokens bound to this crew. Unbound tokens are the pane's business,
+   *  not the diagram's: charging them here would draw N solid inputs per crew
+   *  for bindings that do not exist. */
+  webhookTokens: number
+  /** The webhook store could not be read — unknown rather than zero. */
+  webhooksUnknown?: boolean
 }
 
 function Stat({ icon, value, label }: { icon?: React.ReactNode; value: string; label: string }) {
@@ -59,7 +65,7 @@ function Stat({ icon, value, label }: { icon?: React.ReactNode; value: string; l
 export default function CrewOverviewPane({
   hub, templateLabel, template, workspace, memoryStore, modelLabel, modelInherited,
   resolvedModel, activeSchedules, schedulesUnknown, routingWords, sharingCrews,
-  workspaceShared, memoryShared,
+  workspaceShared, memoryShared, webhookTokens, webhooksUnknown,
 }: CrewOverviewPaneProps) {
   const { t } = useTranslation()
   const unknown = t('components.crewEditor.stat_unknown')
@@ -88,8 +94,18 @@ export default function CrewOverviewPane({
       key: 'webhook',
       icon: Webhook,
       label: t('components.crewEditor.pane_webhook'),
-      value: t('components.crewEditor.webhook_unbound_short'),
-      ghost: true,
+      // Dashed only while NOTHING is bound: the ghost treatment means "a real
+      // input that carries no crew binding", and once a token names this crew
+      // that claim is false. The node reports that bindings EXIST; whether each
+      // can currently call in is the rail badge's live/total and the pane's
+      // per-row marker, because a disabled binding is still a binding. Unknown
+      // keeps the ghost — a store that cannot be read is not evidence a
+      // binding exists.
+      value: webhooksUnknown
+        ? unknown
+        : webhookTokens > 0 ? String(webhookTokens) : t('components.crewEditor.webhook_unbound_short'),
+      muted: webhooksUnknown || webhookTokens === 0,
+      ghost: webhooksUnknown || webhookTokens === 0,
     },
   ]
 
