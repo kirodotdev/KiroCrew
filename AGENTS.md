@@ -368,7 +368,7 @@ doubling ratio only where it does not: absolute ceilings split by Python version
 enables coverage on 3.12 only), and tight timed ratios false-red on shared runners.
 
 **A test must not touch the operator's machine, and the floor you stand on is not the
-same in every testpath.** `testpaths` collects three trees, and only `test/` gets
+same in every testpath.** `testpaths` collects two trees, and only `test/` gets
 `test/conftest.py`; the ~108 test modules under `src/kiro_crew/apps/builtins/*/tests/`
 see the **rootdir** `conftest.py`, plus that app's own `tests/conftest.py` where one
 exists (three of the eight apps ship one). So the rootdir conftest carries the

@@ -81,6 +81,7 @@ import gc
 import getpass
 import importlib
 import linecache
+import logging
 import os
 import pathlib
 import shutil
@@ -771,6 +772,67 @@ def _no_leaked_telemetry_exporter():
         "to it -- see "
         "conftest._no_leaked_telemetry_exporter."
     )
+
+
+# ── the logging record factory goes back after every test ─────────────
+
+
+@pytest.fixture(autouse=True)
+def _restore_log_record_factory():
+    """Put ``logging``'s record factory back, so one test cannot rewrite every later record.
+
+    ``logging.setLogRecordFactory`` is ONE process-global slot. The wrapper the suite
+    reaches -- ``log_redaction``'s, installed by ``cli._setup_cli_logging`` for a
+    long-lived command -- is deliberately destructive to every record it then creates: it
+    materializes ``msg`` and clears ``args`` so a handler cannot re-format, and it renders
+    ``exc_info`` into ``exc_text`` and clears ``exc_info`` so a handler cannot re-render an
+    unredacted traceback. Correct for redaction, and invisible to the test that leaves it
+    installed, because the damage lands on whatever unrelated test later asserts on
+    ``record.exc_info``, ``record.args``, or a deferred ``%s``.
+
+    Measured: two tests failed this way in a release run and neither is a logging test --
+    ``test_pid_lifecycle.py::TestFindOrphanMcpCandidates::
+    test_unexpected_probe_error_keeps_traceback`` asserting a probe failure kept its
+    traceback, and ``test_log_redaction`` itself hitting ``RecursionError`` because
+    installing over the already-installed wrapper captured it as its own base factory.
+
+    **Sharding hides this class, so the floor cannot rely on a full-suite run to find it.**
+    ``ci.yml`` slices the suite into duration-balanced pytest-split groups and a leak only
+    damages tests in the SAME process, so PR CI usually cannot observe it at all; the
+    release job runs the suite whole and is otherwise the first place it appears -- as
+    failures in files unrelated to the cause, long after the diff merged. Restoring here
+    removes the class outright rather than improving the odds of noticing it.
+
+    Restoring rather than failing is deliberate, for the same reason the CWD restore in
+    ``pytest_runtest_teardown`` above does not blame either: installing this factory is a
+    legitimate, unavoidable side effect of every test that drives the real ``cli.main()``
+    or ``_setup_cli_logging`` in-process, which production does once per process and never
+    undoes. Blaming them would demand pure bookkeeping with no test value, and the damage
+    is to OTHER tests, so stopping it propagating is the whole job.
+    ``log_redaction.uninstall_log_redaction()`` is there for a test that wants to assert on
+    the uninstalled state itself; the install/uninstall contract is pinned by
+    ``test_log_redaction.py``, not by this floor.
+
+    The restore target is what this test INHERITED, not a pristine ``LogRecord``. That is
+    what lets a higher-scoped fixture install one for the whole class or module without
+    this floor tearing it out from under the second test, and it is also why this is a
+    fixture rather than the cheaper ``pytest_runtest_teardown`` hookimpl the CWD restore
+    uses: a conftest ``pytest_runtest_setup`` runs BEFORE the item's own fixtures, so its
+    snapshot would miss such an installer and the teardown would then rip it out after the
+    class's FIRST test. Measured cost of the fixture protocol over the hookimpl: ~50us per
+    test, ~3s of CPU across the suite, spread over the xdist workers.
+
+    The BOUNDARY that follows from the same choice: a class-, module- or session-scoped
+    fixture that installs a factory and never removes it leaks PAST its own scope, because
+    every later test inherits it and so restores to it. No fixture in this repo does that
+    -- every installer sits in a test body, which is inside this fixture's window -- but a
+    new higher-scoped one has to uninstall itself; the floor cannot tell that case from a
+    deliberate one.
+    """
+    before = logging.getLogRecordFactory()
+    yield
+    if logging.getLogRecordFactory() is not before:
+        logging.setLogRecordFactory(before)
 
 
 # ── the sandbox probe cache is warm for every test, in every testpath ──

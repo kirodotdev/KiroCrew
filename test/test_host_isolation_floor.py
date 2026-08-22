@@ -25,12 +25,15 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import logging
 import os
 import pathlib
 import sys
 import tempfile
 
 import pytest
+
+from kiro_crew.log_redaction import install_log_redaction
 
 _REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 _ROOT_CONFTEST = _REPO_ROOT / "conftest.py"
@@ -764,6 +767,54 @@ class TestTheWorkingDirectoryIsRestored:
             f"CWD at fixture-finalizer time was {_CWD_ORDER.get('at_finalizer')!r}, "
             f"expected {_CWD_ORDER.get('expected')!r} -- the restore ran too late, so "
             "tmp_path cleanup would be asked to delete the process's own directory"
+        )
+
+
+# ── the logging record factory ─────────────────────────────────────────────
+
+
+#: Written by one test and asserted by the next, for the same reason as ``_CWD_ORDER``:
+#: the restore this pins runs during teardown, so no finalizer of the leaking test can
+#: observe it -- the rootdir floor is the OUTER fixture and finalizes after them all.
+_FACTORY_ORDER: dict[str, object] = {}
+
+
+@pytest.mark.xdist_group(name="log_record_factory_floor")
+class TestTheLogRecordFactoryIsRestored:
+    """``logging.setLogRecordFactory`` is ONE process-global slot, per worker.
+
+    ``log_redaction``'s wrapper clears ``args`` and ``exc_info`` on every record created
+    after it, so a test that leaves it installed reds whatever unrelated test later
+    asserts on either field -- and because PR CI shards, the victim usually lands in a
+    different process and the pollution is invisible until an unsharded release run.
+    ``conftest._restore_log_record_factory`` is what removes the class; without a test,
+    an edit to it reverts silently and the failures reappear in files that have nothing
+    to do with the cause.
+
+    Grouped with ``xdist_group`` so the leaker and the observer stay on ONE worker:
+    ``--dist loadgroup`` honours that, and without it the two are distributed
+    independently and the observation passes vacuously.
+    """
+
+    def test_this_test_starts_with_the_stdlib_factory(self) -> None:
+        """Which is only true if no earlier test on this worker left a wrapper installed."""
+        assert logging.getLogRecordFactory() is logging.LogRecord
+
+    def test_a_leaked_wrapper_does_not_reach_the_next_test(self) -> None:
+        """Installs one and deliberately does NOT remove it -- the floor's job, not ours."""
+        install_log_redaction([])
+        _FACTORY_ORDER["installed"] = logging.getLogRecordFactory()
+        assert logging.getLogRecordFactory() is not logging.LogRecord
+
+    def test_the_next_test_sees_the_slot_restored(self) -> None:
+        """Reads what the previous test recorded. Ordered by definition order in the file."""
+        assert _FACTORY_ORDER.get("installed") is not None, (
+            "the installing test did not run on this worker, so this assertion proves "
+            "nothing -- the xdist_group mark on the class is what keeps them together"
+        )
+        assert logging.getLogRecordFactory() is logging.LogRecord, (
+            f"the record factory is still {logging.getLogRecordFactory()!r} -- a wrapper "
+            "left installed by an earlier test now rewrites every record on this worker"
         )
 
 

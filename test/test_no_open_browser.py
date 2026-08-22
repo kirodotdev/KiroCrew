@@ -9,7 +9,6 @@ Covers:
 from __future__ import annotations
 
 import json
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,16 +17,14 @@ import pytest
 from kiro_crew.config.loader import DashboardConfig, KiroCrewConfig
 
 
-def _load_from_raw_string(content: str) -> KiroCrewConfig:
-    """Write raw string content to a temp file and load."""
-    with tempfile.NamedTemporaryFile(
-        mode="w",
-        suffix=".json",
-        delete=False,
-        encoding="utf-8",
-    ) as f:
-        f.write(content)
-        tmp = Path(f.name)
+def _load_from_raw_string(content: str, tmp_path: Path) -> KiroCrewConfig:
+    """Write raw *content* under *tmp_path* and load the config from it.
+
+    ``config_path`` is patched, so the name is arbitrary — what matters is that the
+    file lives under ``tmp_path``, which pytest removes for us.
+    """
+    tmp = tmp_path / "config.json"
+    tmp.write_text(content, encoding="utf-8")
 
     with patch("kiro_crew.config.loader.config_path", return_value=tmp):
         return KiroCrewConfig.load()
@@ -41,32 +38,29 @@ class TestAutoOpenBrowserConfig:
         cfg = DashboardConfig()
         assert cfg.auto_open_browser is True
 
-    def test_from_json_false(self) -> None:
+    def test_from_json_false(self, tmp_path: Path) -> None:
         """Loading config with auto_open_browser=false reads the value."""
         content = json.dumps({"dashboard": {"auto_open_browser": False}})
-        cfg = _load_from_raw_string(content)
+        cfg = _load_from_raw_string(content, tmp_path)
         assert cfg.dashboard.auto_open_browser is False
 
-    def test_from_json_true(self) -> None:
+    def test_from_json_true(self, tmp_path: Path) -> None:
         """Loading config with auto_open_browser=true reads the value."""
         content = json.dumps({"dashboard": {"auto_open_browser": True}})
-        cfg = _load_from_raw_string(content)
+        cfg = _load_from_raw_string(content, tmp_path)
         assert cfg.dashboard.auto_open_browser is True
 
-    def test_missing_key_defaults_true(self) -> None:
+    def test_missing_key_defaults_true(self, tmp_path: Path) -> None:
         """Missing auto_open_browser key defaults to True."""
         content = json.dumps({"dashboard": {}})
-        cfg = _load_from_raw_string(content)
+        cfg = _load_from_raw_string(content, tmp_path)
         assert cfg.dashboard.auto_open_browser is True
 
-    def test_roundtrip_serialization(self) -> None:
+    def test_roundtrip_serialization(self, tmp_path: Path) -> None:
         """auto_open_browser survives save/load roundtrip."""
         cfg = KiroCrewConfig()
         cfg.dashboard.auto_open_browser = False
-        with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".json", delete=False, encoding="utf-8"
-        ) as f:
-            tmp = Path(f.name)
+        tmp = tmp_path / "config.json"
         with patch("kiro_crew.config.loader.config_path", return_value=tmp):
             cfg.save()
             loaded = KiroCrewConfig.load()

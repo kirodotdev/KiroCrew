@@ -1136,8 +1136,6 @@ class TestRunScriptSandboxedErrorPaths:
             "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
             "subprocess.Popen", return_value=mock_proc
-        ), patch(
-            "pathlib.Path.unlink"
         ):
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
@@ -1152,8 +1150,6 @@ class TestRunScriptSandboxedErrorPaths:
             "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
         ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
             "subprocess.Popen", return_value=mock_proc
-        ), patch(
-            "pathlib.Path.unlink"
         ):
             result = run_script_sandboxed("/f.py:run", "j1", "")
         assert result["status"] == "error"
@@ -1325,9 +1321,7 @@ class TestRunScriptSandboxedTimeout:
             # TestKillBroadcastGuard.
             "kiro_crew.platform_compat.kill_process_tree",
             return_value=True,
-        ) as mock_tree, patch(
-            "pathlib.Path.unlink"
-        ):
+        ) as mock_tree:
             result = run_script_sandboxed("/f.py:run", "j1", "", timeout=30)
         assert result["status"] == "error"
         assert "timed out" in result["error"]
@@ -1528,8 +1522,6 @@ class TestResolveInternalSecret:
             "kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)
         ), patch(
             "subprocess.Popen", side_effect=fake_popen
-        ), patch(
-            "pathlib.Path.unlink"
         ):
             run_script_sandboxed("/f.py:run", "j1", "", timeout=30)
         assert captured["secret"] == "realsecret"
