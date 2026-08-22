@@ -130,6 +130,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redacts at the source rather than at either boundary.",
     ),
     (
+        "Off-host backup uploads",
+        "snapshot_redact.py",
+        "The copy of a backup bundle that leaves the machine for object storage. A "
+        "bundle carries the whole data home — `config.json` holds a bot token in "
+        "plaintext, and any note or memory row can hold a key someone pasted — so the "
+        "outbound copy is rewritten through the credential + exfiltration-URL chain "
+        "before upload. Databases are redacted value-by-value through SQL rather than "
+        "over their bytes, because substituting a tag changes length and would leave a "
+        "file SQLite cannot open. The LOCAL archive is deliberately not redacted: it "
+        "never crosses the boundary, and redacting it would destroy the only copy that "
+        "restores complete.",
+    ),
+    (
         "Session intent summaries",
         "session_summary.py",
         "Intent-summary payloads persisted to the `.intents` sidecar and served by "
@@ -844,6 +857,12 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
 # catches an omission.
 NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
     {
+        # Drives the backup redaction pass and reports what it did, but applies no
+        # redactor itself: the outbound bytes are rewritten in `snapshot_redact.py`,
+        # which is the registered sink. What matches the call-site scan here are the
+        # orchestration and reporting names (`_redacted_upload_copy`,
+        # `_report_redaction`, `_report_redacted_bundle`).
+        "snapshot.py",
         # Inbound / gate-side: redacts what comes IN or what a gate logs, not what
         # goes out to a human.
         "context.py",

@@ -1305,9 +1305,82 @@ Examples:
     snap_parser.add_argument(
         "--list", action="store_true", dest="list_snapshots", help="List existing snapshots"
     )
+    snap_parser.add_argument(
+        "--components",
+        default=None,
+        help="Comma-separated components to include (default: all); see restore --list-components",
+    )
+    snap_parser.add_argument(
+        "--purpose",
+        default="backup",
+        choices=("backup", "share"),
+        help=(
+            "backup = restoring onto a host you control, keeps credential-bearing "
+            "components (the default, and the only one that produces a bundle today); "
+            "share = leaves your control, so it carries only components certified free "
+            "of credential material — no component is certified yet, so this currently "
+            "refuses rather than emitting a bundle that has not been checked"
+        ),
+    )
+
+    snap_parser.add_argument(
+        "--to-s3",
+        action="store_true",
+        dest="to_s3",
+        help=(
+            "Also upload the bundle to the backup destination in your own AWS account. "
+            "Run `kirocrew backup setup` once first — this writes only to the bucket that "
+            "created and recorded"
+        ),
+    )
+    # Retired, and defined only so it fails loudly. Without it, argparse accepts `--to`
+    # as an unambiguous abbreviation of `--to-s3`, which would turn an old
+    # `--to s3://bucket/prefix` invocation into "upload, and also write the bundle into a
+    # local directory named `s3:`" — silently, because the URL lands on the positional
+    # output_dir.
+    snap_parser.add_argument("--to", default=None, help=argparse.SUPPRESS)
+    snap_parser.add_argument(
+        "--aws-profile",
+        default=None,
+        dest="aws_profile",
+        help="AWS profile name for --to-s3 (default: the configured deploy profile)",
+    )
+
+    # backup: provision and inspect the off-host destination
+    backup_parser = sub.add_parser(
+        "backup", help="Set up and inspect the off-host (S3) backup destination"
+    )
+    backup_sub = backup_parser.add_subparsers(dest="backup_cmd")
+    b_setup = backup_sub.add_parser(
+        "setup", help="Create/repair a private, encrypted, versioned bucket and record it"
+    )
+    b_setup.add_argument(
+        "--bucket",
+        default=None,
+        help="Bucket name (default: kirocrew-backup-<accountid>-<region>)",
+    )
+    b_setup.add_argument("--region", default=None, help="AWS region (default: the profile's)")
+    b_setup.add_argument("--aws-profile", default=None, dest="aws_profile", help="AWS profile name")
+    b_status = backup_sub.add_parser("status", help="Show the configured destination and check it")
+    b_status.add_argument(
+        "--offline", action="store_true", help="Do not contact AWS; just print what is recorded"
+    )
+    b_status.add_argument(
+        "--aws-profile", default=None, dest="aws_profile", help="AWS profile name"
+    )
+    b_list = backup_sub.add_parser("list", help="List bundles in the destination, by host")
+    b_list.add_argument("--aws-profile", default=None, dest="aws_profile", help="AWS profile name")
 
     rest_parser = sub.add_parser("restore", help="Restore Kiro Crew state from a snapshot")
-    rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")
+    rest_parser.add_argument(
+        "snapshot", nargs="?", help="Path to snapshot .tar.gz, or s3://BUCKET/KEY"
+    )
+    rest_parser.add_argument(
+        "--aws-profile",
+        default=None,
+        dest="aws_profile",
+        help="AWS profile name when the snapshot is an s3:// URL",
+    )
     rest_parser.add_argument(
         "--mode",
         choices=("replace", "merge"),
@@ -1362,17 +1435,14 @@ Examples:
     # (issue #4843). Reading the file directly is correctly refused by the
     # credential-path gate, so the time selector has to live here.
     _time_help = (
-        "a relative age (30m, 2h, 7d) or an ISO 8601 instant "
-        "(2026-08-21, 2026-08-21T04:00:00Z)"
+        "a relative age (30m, 2h, 7d) or an ISO 8601 instant " "(2026-08-21, 2026-08-21T04:00:00Z)"
     )
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
-    tn_parser = sub.add_parser(
-        "tailnet", help="Publish this dashboard on your tailnet (Tailscale)"
-    )
+    tn_parser = sub.add_parser("tailnet", help="Publish this dashboard on your tailnet (Tailscale)")
     tn_sub = tn_parser.add_subparsers(dest="tailnet_action")
     for _tn_name, _tn_help in (
         ("status", "Show whether the dashboard is published and trusted on your tailnet"),
@@ -1405,7 +1475,9 @@ Examples:
         "policy", help="Inspect the governance security policy + profiles"
     )
     policy_sub = policy_parser.add_subparsers(dest="policy_action")
-    policy_show = policy_sub.add_parser("show", help="Show the effective enterprise security policy")
+    policy_show = policy_sub.add_parser(
+        "show", help="Show the effective enterprise security policy"
+    )
     policy_show.add_argument(
         "--ids",
         action="store_true",
@@ -1518,9 +1590,7 @@ Examples:
         action="store_true",
         help="Classify and print what would be reclaimed without deleting anything",
     )
-    pod_prune.add_argument(
-        "--json", action="store_true", help="Emit per-name results as JSON"
-    )
+    pod_prune.add_argument("--json", action="store_true", help="Emit per-name results as JSON")
     pod_status = pod_sub.add_parser("status", help="Up/down + health for one pod")
     pod_status.add_argument("name", help="Worktree name")
     pod_status.add_argument("--json", action="store_true", help="Emit status as JSON")
@@ -1647,12 +1717,8 @@ Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
     sbx_status = sbx_sub.add_parser(
         "status", help="Report whether this launch is covered by the profile"
     )
-    sbx_status.add_argument(
-        "--path", default=None, help="Executable to check instead of $APPIMAGE"
-    )
-    sbx_sub.add_parser(
-        "remove-profile", help="Unload and remove the profile (sudo on Linux)"
-    )
+    sbx_status.add_argument("--path", default=None, help="Executable to check instead of $APPIMAGE")
+    sbx_sub.add_parser("remove-profile", help="Unload and remove the profile (sudo on Linux)")
 
     # cloud — provision + run KiroCrew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
@@ -2485,6 +2551,14 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.snapshot import restore_main
 
         rc = restore_main(parsed=args)
+        if rc:
+            raise SystemExit(rc)
+    elif args.command == "backup":
+        # Resolved here, not at module scope: `kirocrew gateway` routes through this
+        # module, and `backup_cli` reaches the off-host destination code. Only the
+        # `backup` command needs it, so the gateway must not pay for it to reach
+        # readiness. Measured against the base boot path, which does not carry it.
+        rc = importlib.import_module("kiro_crew.backup_cli").backup_main(args)
         if rc:
             raise SystemExit(rc)
     elif args.command == "agent":

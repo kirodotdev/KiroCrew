@@ -190,7 +190,6 @@ src/kiro_crew/changelog.py
 src/kiro_crew/channel.py
 src/kiro_crew/channel_history.py
 src/kiro_crew/channel_transcript_migration.py
-src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
@@ -294,7 +293,6 @@ src/kiro_crew/dashboard/urls.py
 src/kiro_crew/dashboard/workflow_inject.py
 src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/__init__.py
-src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
 src/kiro_crew/deploy/iam.py
 src/kiro_crew/deploy/pricing.py
@@ -421,7 +419,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/safety_override.py
-src/kiro_crew/security.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py

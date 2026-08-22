@@ -30,16 +30,22 @@ def _setup_fake_kirocrew(d: Path) -> None:
     """Create a realistic fake ~/.kirocrew directory."""
     for sub in (
         "workspace/memory/history",
+        "workspace/knowledge",
         "workspace/hygiene_data",
         "skills/my-skill",
         "plan_memory",
     ):
         (d / sub).mkdir(parents=True, exist_ok=True)
 
+    # The markdown half of memory, which the `memory` component claims alongside the
+    # databases so restoring memory does not require the whole workspace.
+    (d / "workspace/memory/preferences.md").write_text("- prefers terse answers\n")
+    (d / "workspace/memory/projects.md").write_text("# Active Projects\n")
+    (d / "workspace/knowledge/kb.sqlite3").write_bytes(b"SQLite format 3\x00stub")
+
     # memory.db with all tables
     conn = sqlite3.connect(str(d / "memory.db"))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
         CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
             confidence REAL DEFAULT 0.5, source TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -71,8 +77,7 @@ def _setup_fake_kirocrew(d: Path) -> None:
             VALUES ('user', 'prefers', 'dark_mode', 'ep1', '2026-01-01');
         INSERT INTO knowledge_edges (source_key, target_key, relation, weight, created_at)
             VALUES ('user', 'dark_mode', 'prefers', 1.0, '2026-01-01');
-    """
-    )
+    """)
     conn.close()
 
     (d / "crons.json").write_text(
@@ -151,7 +156,20 @@ class TestSnapshot:
         assert (snap / "skills/my-skill/SKILL.md").is_file()
         assert not (snap / "workspace/hygiene_data/week1.json").exists()
         m = json.loads((snap / "MANIFEST.json").read_text(encoding="utf-8"))
-        assert m["version"] == 2
+        assert m["version"] == 3
+        # v3 is additive over v2 — every v2 key is still present, so a restore built
+        # before the purpose seam reads a v3 bundle correctly instead of refusing it.
+        for v2_key in (
+            "created_at",
+            "hostname",
+            "user",
+            "kirocrew_dir",
+            "contents",
+        ):
+            assert v2_key in m, v2_key
+        assert m["purpose"] == "backup"
+        assert m["components"]["memory"] == "unresolved"
+        assert m["components"]["config"] == "unresolved"
 
     def test_db_content_survives(self, env):
         _, _, tarball, tmp_path = env
@@ -560,7 +578,12 @@ class TestComponents:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         ret = restore_main([str(tarball), "--components", "bogus", "--force"])
         assert ret == 1
-        assert "Unknown component: bogus" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        # The refusal must name the offending component and the known set, so the
+        # operator can fix the invocation without reading the source.
+        assert "unknown component" in out.lower()
+        assert "bogus" in out
+        assert "memory" in out
 
     def test_all_components(self, env, monkeypatch):
         """TEST 23"""
