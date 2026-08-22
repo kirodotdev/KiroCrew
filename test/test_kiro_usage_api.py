@@ -457,7 +457,7 @@ class TestWindowsCliStore:
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 7.0, "usageLimit": 100.0}]}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": []})
             return _resp(200, usage_body)
@@ -473,6 +473,33 @@ class TestWindowsCliStore:
             out = api.fetch_usage_limits(expected_arn=None)
         assert out is not None
         assert out["credits_used"] == 7.0
+
+
+class TestRtsEndpoint:
+    """Regional RTS host is a hardcoded table keyed by the whoami ARN."""
+
+    def test_us_east_1_arn_keeps_codewhisperer_host(self):
+        arn = "arn:aws:codewhisperer:us-east-1:123:profile/A"
+        assert api._region_from_arn(arn) == "us-east-1"
+        assert api._rts_endpoint(arn) == "https://codewhisperer.us-east-1.amazonaws.com"
+
+    def test_eu_central_1_arn_uses_q_host(self):
+        # eu-central-1 is a different hostname, not codewhisperer.eu-central-1.
+        arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
+        assert api._region_from_arn(arn) == "eu-central-1"
+        assert api._rts_endpoint(arn) == "https://q.eu-central-1.amazonaws.com"
+
+    def test_unknown_or_missing_arn_falls_back_to_us_east_1(self):
+        assert api._rts_endpoint(None) == api._RTS_ENDPOINT
+        assert api._rts_endpoint("") == api._RTS_ENDPOINT
+        assert api._rts_endpoint("not-an-arn") == api._RTS_ENDPOINT
+        assert api._rts_endpoint("arn:aws:codewhisperer:ap-south-1:1:profile/X") == (
+            api._RTS_ENDPOINT
+        )
+
+    def test_default_constant_is_the_us_east_1_literal(self):
+        assert api._RTS_ENDPOINT == api._RTS_ENDPOINTS["us-east-1"]
+        assert api._RTS_ENDPOINT == "https://codewhisperer.us-east-1.amazonaws.com"
 
 
 class TestPostSecurityControls:
@@ -507,6 +534,30 @@ class TestPostSecurityControls:
         assert req.get_header("X-amz-target") == api._TARGET_GET_USAGE
         assert req.get_header("User-agent")
         assert captured["timeout"] == api._TIMEOUT_SECS
+
+    def test_post_uses_explicit_regional_endpoint(self):
+        captured = {}
+
+        class _FakeResp:
+            status = 200
+
+            def read(self, n=None):
+                return b"{}"
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_open(self, req, timeout=None):
+            captured["req"] = req
+            return _FakeResp()
+
+        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        with patch("urllib.request.OpenerDirector.open", fake_open):
+            api._post("tok", api._TARGET_LIST_PROFILES, {}, endpoint=eu)
+        assert captured["req"].get_full_url() == eu
 
     def test_opener_verifies_tls_and_disables_redirects(self):
         opener = api._build_opener()
@@ -574,7 +625,7 @@ class TestFetchUsageLimits:
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
         arn = "arn:aws:codewhisperer:...:profile/X"
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [
                     {"arn": arn,
@@ -586,13 +637,36 @@ class TestFetchUsageLimits:
             out = api.fetch_usage_limits(expected_arn=arn)
         assert out["account"] == "Acme Corp"
 
+    def test_eu_arn_posts_both_calls_to_q_eu_central_1(self):
+        # ListAvailableProfiles is region-scoped: hitting us-east-1 for an
+        # eu-central-1 IdC profile returns no ARN and the pill hides. Both
+        # RTS calls must use the EU host from the whoami ARN.
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
+        arn = "arn:aws:codewhisperer:eu-central-1:123:profile/A"
+        seen: list[str | None] = []
+
+        def fake_post(token, target, payload, **kwargs):
+            seen.append(kwargs.get("endpoint"))
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": [{"arn": arn}]})
+            return _resp(200, usage_body)
+
+        with patch.object(api, "_candidate_tokens", return_value=[_cand("tok")]), \
+             patch.object(api, "_post", side_effect=fake_post):
+            out = api.fetch_usage_limits(expected_arn=arn)
+        assert out is not None
+        eu = api._RTS_ENDPOINTS["eu-central-1"]
+        assert seen == [eu, eu]
+        assert eu == "https://q.eu-central-1.amazonaws.com"
+
     def test_no_account_when_profile_has_no_name(self):
         # An org profile with an ARN but no profileName must not set ``account``
         # (individual Builder ID accounts likewise have no profile at all).
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": "arn:x"}]})
             return _resp(200, usage_body)
@@ -608,7 +682,7 @@ class TestFetchUsageLimits:
             {"resourceType": "CREDIT", "currentUsage": 5.0, "usageLimit": 100.0}]}
         arn = "arn:aws:codewhisperer:us-east-1:1:profile/A"
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": [{"arn": arn}]})
             return _resp(403, {}) if token == "stale" else _resp(200, usage_body)
@@ -735,7 +809,7 @@ class TestExpectedArnAnchor:
     ARN_B = "arn:aws:codewhisperer:us-east-1:2:profile/B"
 
     def _fake_post(self, arn_for: dict[str, str], usage_for: dict[str, dict]):
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 arn = arn_for.get(token)
                 profiles = [{"arn": arn}] if arn else []
@@ -773,7 +847,7 @@ class TestExpectedArnAnchor:
 
         inner = self._fake_post(arns, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             seen.append((token, target))
             return inner(token, target, payload)
 
@@ -801,7 +875,7 @@ class TestExpectedArnAnchor:
         usage = {"tok": {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 1.0, "usageLimit": 10.0}]}}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(500, {})
             return _resp(200, usage[token])
@@ -865,7 +939,7 @@ class TestExpectedArnAnchor:
         sent: list[dict] = []
         inner = self._fake_post({"cli": arn}, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             if target == api._TARGET_GET_USAGE:
                 sent.append(payload)
             return inner(token, target, payload)
@@ -894,7 +968,7 @@ class TestExpectedArnAnchor:
         seen: list[tuple[str, str]] = []
         inner = self._fake_post({}, usage)
 
-        def recording_post(token, target, payload):
+        def recording_post(token, target, payload, **_kwargs):
             seen.append((token, target))
             return inner(token, target, payload)
 
