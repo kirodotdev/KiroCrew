@@ -53,6 +53,17 @@ logger = logging.getLogger(__name__)
 _STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
 _DIST_DIR = _STATIC_DIR / "dist"
 _DIST_INDEX = _DIST_DIR / "index.html"
+# mtime-keyed cache of the SPA shell HTML.  Each request stat()s _DIST_INDEX
+# (cheap) and re-reads the file only when its mtime_ns differs from the cached
+# key, so a Vite rebuild that rewrites index.html (new hashed asset refs) is
+# picked up on the very next request WITHOUT a gateway restart — the cache
+# never pins a pre-rebuild shell.  A missing-then-present bundle also self-heals
+# because a FileNotFoundError is never cached.  The stat replaces a full
+# read_text of the bundle on the hot path, which is the win.
+# SECURITY CONTRACT: the cached value must stay ``None`` or equal the static,
+# secret-free bundle — never inject per-request/dynamic data.  Pinned by
+# test_served_shell_is_auth_independent.
+_INDEX_HTML_CACHE: tuple[int, str] | None = None
 _SSE_INTERVAL_SECS = 5
 
 # Sentinel returned in place of sensitive config values in API responses. Kept
@@ -146,6 +157,29 @@ def _sel():
 # ── Page ──
 
 
+def _resolve_index_html() -> str:
+    """Return the SPA shell HTML, using the mtime-keyed cache.
+
+    Runs entirely in a worker thread (see ``index``): performs the blocking
+    ``stat()`` and, only on first load or after a rebuild changed the mtime, the
+    blocking ``read_text()``. A ``FileNotFoundError`` returns the static fallback
+    and is never cached, so a transiently-absent dist self-heals on the next
+    request (e.g. after a dev build). SECURITY CONTRACT: the cached value is
+    solely the on-disk bundle — never per-request/dynamic data.
+    """
+    global _INDEX_HTML_CACHE
+    try:
+        mtime = _DIST_INDEX.stat().st_mtime_ns
+        cached = _INDEX_HTML_CACHE
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        html = _DIST_INDEX.read_text(encoding="utf-8")
+        _INDEX_HTML_CACHE = (mtime, html)
+        return html
+    except FileNotFoundError:
+        return _DASHBOARD_HTML_NOT_FOUND
+
+
 async def index(request: web.Request) -> web.Response:
     """Serve the React dashboard SPA shell (``static/dist/index.html``).
 
@@ -164,10 +198,16 @@ async def index(request: web.Request) -> web.Response:
     would leak it across the auth boundary. Keep dynamic data behind gated
     ``/api/*`` routes. Pinned by test_served_shell_is_auth_independent.
     """
-    try:
-        html = _DIST_INDEX.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        html = _DASHBOARD_HTML_NOT_FOUND
+    # Resolve the shell entirely off the event loop: the stat() + conditional
+    # read_text() are the only blocking calls, and even a bare stat() can stall
+    # the loop on slow/network-backed storage. Route through the dedicated
+    # discovery_executor rather than the shared default thread pool: index() is
+    # served UNAUTHENTICATED on the cold-start path, so a remote SPA GET flood on
+    # slow storage must not be able to saturate the pool other gateway work
+    # (DNS, etc.) depends on. The mtime cache still serves repeat requests
+    # without a read.
+    loop = asyncio.get_running_loop()
+    html = await loop.run_in_executor(discovery_executor(), _resolve_index_html)
     return web.Response(text=html, content_type="text/html")
 
 

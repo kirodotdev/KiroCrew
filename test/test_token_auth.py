@@ -2408,6 +2408,102 @@ async def test_index_serves_guidance_when_bundle_missing(tmp_path, monkeypatch) 
     assert "someminted.token.value" not in body
 
 
+# -- index() SPA shell caching (issue #5087) -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_index_caches_html_and_rerereads_only_on_rebuild(
+    tmp_path, monkeypatch
+) -> None:
+    """The shell is cached keyed by index.html's mtime: repeated requests with
+    an UNCHANGED file read disk once; a rebuild (mtime change) is picked up on
+    the next request WITHOUT a restart.
+
+    Regression test for #5087 (unnecessary per-request read of a static bundle)
+    AND for the review finding that a process-lifetime cache would pin a
+    pre-rebuild shell after a Vite rebuild rewrote the hashed asset refs.
+    """
+    import kiro_crew.dashboard.handlers.core as core
+
+    fake_index = tmp_path / "index.html"
+    fake_index.write_text("<html>spa-shell-v1</html>", encoding="utf-8")
+
+    monkeypatch.setattr(core, "_INDEX_HTML_CACHE", None)
+    monkeypatch.setattr(core, "_DIST_INDEX", fake_index)
+
+    call_count = 0
+    original_read_text = fake_index.__class__.read_text
+
+    def counting_read_text(self, *args, **kwargs):
+        nonlocal call_count
+        if self == fake_index:
+            call_count += 1
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(fake_index.__class__, "read_text", counting_read_text)
+
+    # Two requests with the file unchanged → one disk read, cache serves the 2nd.
+    resp1 = await core.index(_make_request(path="/", remote="127.0.0.1"))
+    resp2 = await core.index(_make_request(path="/", remote="127.0.0.1"))
+    assert resp1.text == "<html>spa-shell-v1</html>"
+    assert resp2.text == resp1.text
+    assert call_count == 1, (
+        f"_DIST_INDEX.read_text was called {call_count} times across two "
+        "unchanged requests; expected 1 (second must hit the mtime cache)"
+    )
+
+    # Simulate a rebuild: new content AND a strictly newer mtime.
+    stale = fake_index.stat().st_mtime_ns
+    fake_index.write_text("<html>spa-shell-v2</html>", encoding="utf-8")
+    os.utime(fake_index, ns=(stale + 1_000_000_000, stale + 1_000_000_000))
+
+    resp3 = await core.index(_make_request(path="/", remote="127.0.0.1"))
+    assert resp3.text == "<html>spa-shell-v2</html>", (
+        "a rebuilt bundle (changed mtime) must be re-read, not served stale"
+    )
+    assert call_count == 2, (
+        f"expected a re-read after the mtime changed; read_text calls={call_count}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_index_missing_bundle_not_cached_recovers_when_dist_appears(
+    tmp_path, monkeypatch
+) -> None:
+    """A FileNotFoundError must NOT be cached: once the bundle appears on disk
+    the next request should serve it (self-healing after a dev build).
+    """
+    import kiro_crew.dashboard.handlers.core as core
+
+    fake_index = tmp_path / "index.html"
+    # Do NOT create the file yet — first request should get the fallback.
+
+    monkeypatch.setattr(core, "_INDEX_HTML_CACHE", None)
+    monkeypatch.setattr(core, "_DIST_INDEX", fake_index)
+
+    req = _make_request(path="/", remote="127.0.0.1")
+
+    # First request: bundle absent → fallback, cache stays None.
+    resp_missing = await core.index(req)
+    assert core.DASHBOARD_HTML_NOT_FOUND_MARKER in resp_missing.text
+    assert core._INDEX_HTML_CACHE is None, (
+        "FileNotFoundError path must NOT populate the cache"
+    )
+
+    # Bundle appears (e.g. dev build completed).
+    fake_index.write_text("<html>now-built</html>", encoding="utf-8")
+
+    # Second request: bundle present → real shell served and cached.
+    resp_recovered = await core.index(req)
+    assert resp_recovered.text == "<html>now-built</html>"
+    assert core._INDEX_HTML_CACHE is not None
+    assert core._INDEX_HTML_CACHE[1] == "<html>now-built</html>"
+
+    # Third request: still the cached value, no further disk read.
+    resp_cached = await core.index(req)
+    assert resp_cached.text == "<html>now-built</html>"
+
+
 # -- extract_numeric_claim (round-2 bugfix: api_auth_me session_exp=0) ---------
 
 
