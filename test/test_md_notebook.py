@@ -2772,6 +2772,335 @@ async def test_a_failed_save_leaves_the_previous_note_intact(fixtures) -> None:
         assert not (root / "keep.md.tmp").exists()
 
 
+@pytest.mark.asyncio
+async def test_a_contended_rename_does_not_lose_the_save(fixtures) -> None:
+    """A vault is a directory other processes hold open; a save must survive it.
+
+    On Windows ``os.replace`` raises ``PermissionError`` while ANY other handle is
+    open on either path. For a note that is expected rather than exotic: these are
+    Obsidian vaults, so the user's editor is often holding the file, and Windows
+    Search and AV both touch a freshly written one. A bare rename turns that
+    transient into a failed save -- the user loses what they just typed.
+
+    The other half of the contract is pinned by the test below: when the
+    contention coincides with a real external edit, the retry must yield to it
+    instead of publishing. Here nothing else changed the file, so the save is
+    simply completed.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        _, read = await client.get("/api/note?path=One.md")
+        target = Path(vault["localPath"]) / "One.md"
+
+        attempts: list[int] = []
+        real_replace = os.replace
+
+        def contended_once(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+            attempts.append(1)
+            if len(attempts) == 1:
+                # WinError 32, the sharing violation this retry exists for --
+                # and no external edit, so the file is unchanged between attempts.
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            # The retry is Windows-only and backs off; select that branch on every
+            # platform and zero the wait so it costs no wall clock.
+            mp.setattr(_mod.platform_compat, "IS_WINDOWS", True)
+            mp.setattr(_mod, "_SAVE_BACKOFF_SECONDS", 0.0)
+            mp.setattr(_mod.os, "replace", contended_once)
+            status, body = await client.put(
+                "/api/note",
+                {"path": "One.md", "content": "mine", "baseMtime": read["mtime"]},
+            )
+
+        assert status == 200, f"a transient sharing violation lost the save: {body}"
+        assert target.read_text(encoding="utf-8") == "mine"
+        assert len(attempts) == 2, f"expected one retry, saw {len(attempts)} attempt(s)"
+        assert not list(target.parent.glob("One.md.*.tmp")), "a temp file was left behind"
+
+
+@pytest.mark.asyncio
+async def test_a_contended_save_leaves_no_temp_behind(fixtures) -> None:
+    """A successful save must not leave a generated temp in the vault.
+
+    The cleanup after a refused rename is best-effort: if the same handle that
+    blocked the rename also blocks the unlink, the temp survives. Staging a FRESH
+    temp per attempt then meant a contended save could answer 200 with an orphan
+    ``One.md.<uuid>.tmp`` still sitting in the vault -- and nothing would tell the
+    user to look, because the save reported success.
+
+    That orphan is not inert. A user-initiated Sync stages every change
+    ``status()`` reports; only the unattended autosave is narrowed to ``.md``. So
+    the generated temp reaches a commit, and a push puts it on the remote.
+
+    One temp per save transaction removes the failure mode rather than cleaning
+    up after it: the same staged file is republished by each attempt, so success
+    consumes it.
+    """
+    _mod, remote, _seed = fixtures
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        root = Path(vault["localPath"])
+        target = root / "One.md"
+        _, read = await client.get("/api/note?path=One.md")
+
+        renames: list[str] = []
+        real_replace = os.replace
+        real_unlink = os.unlink
+
+        def contended_once(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+            renames.append(str(src))
+            if len(renames) == 1:
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst, *args, **kwargs)
+
+        def unlink_refused(path, *args, **kwargs):  # type: ignore[no-untyped-def]
+            # The handle that blocked the rename blocks the cleanup too, which is
+            # the whole reason an orphan can survive.
+            if str(path).endswith(".tmp"):
+                raise PermissionError(32, "The process cannot access the file")
+            return real_unlink(path, *args, **kwargs)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_mod.platform_compat, "IS_WINDOWS", True)
+            mp.setattr(_mod, "_SAVE_BACKOFF_SECONDS", 0.0)
+            mp.setattr(_mod.os, "replace", contended_once)
+            mp.setattr(_mod.os, "unlink", unlink_refused)
+            status, body = await client.put(
+                "/api/note",
+                {"path": "One.md", "content": "mine", "baseMtime": read["mtime"]},
+            )
+
+        assert status == 200, f"the contended save did not succeed: {body}"
+        assert target.read_text(encoding="utf-8") == "mine"
+
+        leftovers = sorted(p.name for p in root.glob("One.md.*.tmp"))
+        assert not leftovers, (
+            "a save answered 200 while leaving generated temp(s) in the vault, "
+            f"which a user Sync would commit: {leftovers}"
+        )
+        # The retry republished the SAME staged file rather than staging another.
+        assert len(set(renames)) == 1, (
+            f"each attempt staged its own temp: {sorted(set(renames))}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_an_external_edit_during_the_retry_window_still_wins(fixtures) -> None:
+    """Retrying a contended save must not defeat the stale-write guard.
+
+    The save is an optimistic check-and-write: the client sends the mtime it
+    read, the server re-stats under the lock, and an external edit since that read is a
+    409 ESTALE rather than a silent overwrite.
+
+    Retrying only the RENAME would stretch the gap between that check and the
+    publish across the whole backoff, so an external edit completing inside the
+    gap would be overwritten by the next attempt — the guard defeated by the very
+    mechanism meant to make saves reliable. The retry therefore re-runs the
+    freshness check before each attempt.
+
+    Ordering is forced, not raced: the external write happens INSIDE the injected
+    rename failure, so it is guaranteed to land after attempt 1 and before
+    attempt 2's re-check.
+    """
+    _mod, remote, _seed = fixtures
+    external = "# One\n\nchanged by another program\n"
+
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        _, read = await client.get("/api/note?path=One.md")
+        target = Path(vault["localPath"]) / "One.md"
+
+        attempts: list[int] = []
+        real_replace = os.replace
+
+        def contended_then_external(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+            attempts.append(1)
+            if len(attempts) == 1:
+                # Another program finishes its write while we are between
+                # attempts. Its mtime is pinned forward rather than slept for:
+                # two writes can share one filesystem tick, which would make the
+                # guard's comparison a coin flip instead of the thing under test.
+                target.write_text(external, encoding="utf-8")
+                future = target.stat().st_mtime + 5
+                os.utime(target, (future, future))
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst, *args, **kwargs)
+
+        from kiro_crew import atomic_write as aw
+
+        with pytest.MonkeyPatch.context() as mp:
+            # Both backoff knobs are zeroed, both with raising=False, so this test
+            # asserts the CONTRACT rather than where the retry happens to live.
+            # That is what makes it a valid negative control: against a build that
+            # retries inside the rename it still runs, and fails because the
+            # external edit was published over -- not because a constant was
+            # missing from the module.
+            mp.setattr(_mod.platform_compat, "IS_WINDOWS", True)
+            mp.setattr(aw.platform_compat, "IS_WINDOWS", True)
+            mp.setattr(_mod, "_SAVE_BACKOFF_SECONDS", 0.0, raising=False)
+            mp.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0.0, raising=False)
+            mp.setattr(_mod.os, "replace", contended_then_external)
+            status, body = await client.put(
+                "/api/note",
+                {"path": "One.md", "content": "mine", "baseMtime": read["mtime"]},
+            )
+
+        assert status == 409, f"the external edit was not detected: {status} {body}"
+        assert body["code"] == "ESTALE"
+        assert target.read_text(encoding="utf-8") == external, (
+            "the retry published over an edit made during its own backoff"
+        )
+        assert "mine" not in target.read_text(encoding="utf-8")
+        # The second attempt must never have REACHED the rename: a re-check that
+        # runs first turns it into the conflict above. A build that retries the
+        # rename alone shows 2 here and has already overwritten the file.
+        assert len(attempts) == 1, (
+            f"a second publish attempt ran without revalidating: {len(attempts)} attempts"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_retrying_save_without_basemtime_cannot_overwrite_a_later_one(
+    fixtures,
+) -> None:
+    """A contended save must not resurrect itself over a save that already won.
+
+    ``baseMtime`` is optional (``saveNote(..., baseMtime?: number)``) and
+    ``_assert_note_is_fresh`` is a no-op without it, so for an unguarded save a
+    writer arriving during the retry backoff is invisible to every later attempt.
+    Releasing the per-note lock across that backoff therefore let an earlier
+    contended save republish over a later one that had already been acknowledged
+    with 200 -- rename order ``['A', 'B', 'A']``, final content ``A``.
+
+    Without a token there is nothing to detect the interleave with, so ordering
+    is preserved instead: the lock is held across the backoff, which is exactly
+    the serialization the un-retried code had.
+
+    Ordering is forced with events and a structural assertion on the lock, never
+    slept for.
+    """
+    _mod, remote, _seed = fixtures
+    real_asyncio = asyncio
+
+    async with signed_client(_mod) as client:
+        vault = await _clone(client, remote)
+        target = Path(vault["localPath"]) / "One.md"
+
+        a_parked = asyncio.Event()
+        release_a = asyncio.Event()
+        renames: list[str] = []
+        real_replace = os.replace
+
+        def one_contention(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+            body = ""
+            try:
+                body = Path(src).read_text(encoding="utf-8")
+            except OSError:
+                pass
+            renames.append(body)
+            if len(renames) == 1:
+                raise PermissionError(32, "The process cannot access the file")
+            return real_replace(src, dst, *args, **kwargs)
+
+        class _GatedAsyncio:
+            """The real asyncio with the retry backoff parked on an event.
+
+            Rebinding the module reference the server holds keeps the
+            substitution to this one call site; every other attribute
+            (``to_thread``, ``Lock``) proxies through untouched.
+            """
+
+            async def sleep(self, _delay, *args, **kwargs):  # type: ignore[no-untyped-def]
+                # Park only the FIRST backoff -- A's -- which is what pins the
+                # ordering. Later backoffs delegate to a real short wait: after A
+                # returns, api_note_save re-reads every note in the vault to
+                # recompute backlinks, OUTSIDE the per-note lock, so B's rename
+                # can hit a genuine Windows sharing violation there. Production
+                # absorbs that with the backoff; collapsing it to zero would burn
+                # B's whole budget inside A's read window and make this test fail
+                # on an artifact of its own instrumentation.
+                if not release_a.is_set():
+                    a_parked.set()
+                    await release_a.wait()
+                    return
+                await real_asyncio.sleep(0.01)
+
+            def __getattr__(self, name):  # type: ignore[no-untyped-def]
+                return getattr(real_asyncio, name)
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_mod.platform_compat, "IS_WINDOWS", True)
+            mp.setattr(_mod.os, "replace", one_contention)
+            mp.setattr(_mod, "asyncio", _GatedAsyncio())
+
+            task_a = real_asyncio.create_task(
+                client.put("/api/note", {"path": "One.md", "content": "A"})
+            )
+            await real_asyncio.wait_for(a_parked.wait(), timeout=5)
+
+            # A is mid-retry with no freshness token. The note's lock must still
+            # be held, so a second save cannot slip in behind it.
+            assert _mod._save_lock(str(target)).locked(), (
+                "the per-note lock was released during an unguarded retry"
+            )
+
+            task_b = real_asyncio.create_task(
+                client.put("/api/note", {"path": "One.md", "content": "B"})
+            )
+            # Yield generously rather than sleeping: if B could interleave it
+            # would have completed by now.
+            for _ in range(100):
+                await real_asyncio.sleep(0)
+            assert not task_b.done(), "a later save interleaved into the retry gap"
+
+            release_a.set()
+            status_a, body_a = await real_asyncio.wait_for(task_a, timeout=5)
+            status_b, body_b = await real_asyncio.wait_for(task_b, timeout=5)
+
+        assert status_a == 200, f'the earlier save failed: {body_a}'
+        assert status_b == 200, f'the later save failed: {body_b} renames={renames}'
+        # The invariant is ordering, not a retry count: every A attempt precedes
+        # every B attempt, so the earlier save can never republish after the later
+        # one. An exact count would encode how many times B happened to retry,
+        # which depends on a real collision with A post-save vault read.
+        assert renames == sorted(renames, key=lambda body: body != "A"), (
+            f"an A attempt ran after a B attempt: {renames}"
+        )
+        assert "A" in renames and "B" in renames, f"both saves must publish: {renames}"
+        assert target.read_text(encoding="utf-8") == "B", (
+            "an earlier contended save resurrected itself over a later one"
+        )
+
+
+@pytest.mark.asyncio
+async def test_the_vault_registry_write_also_retries(fixtures) -> None:
+    """The registry is re-read by every later request, so it has the same window."""
+    from kiro_crew import atomic_write as aw
+
+    server_mod, _remote, _seed = fixtures
+
+    attempts: list[int] = []
+    real_replace = os.replace
+
+    def contended_once(src, dst, *args, **kwargs):  # type: ignore[no-untyped-def]
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PermissionError(32, "The process cannot access the file")
+        return real_replace(src, dst, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(aw.platform_compat, "IS_WINDOWS", True)
+        mp.setattr(aw, "_REPLACE_BACKOFF_SECONDS", 0.0)
+        mp.setattr(aw.os, "replace", contended_once)
+        await asyncio.to_thread(server_mod._write_vaults_sync, [{"id": "v1"}])
+
+    assert json.loads(server_mod._vaults_json().read_text("utf-8")) == [{"id": "v1"}]
+    assert len(attempts) == 2, f"expected one retry, saw {len(attempts)} attempt(s)"
+
+
 # ---------------------------------------------------------------------------
 # Settings store and the server-side auto-sync loop
 # ---------------------------------------------------------------------------
