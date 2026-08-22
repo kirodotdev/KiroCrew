@@ -1226,7 +1226,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
     )
     if capability.managed_by != MANAGED_BY_GIT:
         return web.json_response(
-            {"error": "Not a git checkout — update by redeploying (e.g. `kirocrew cloud launch`)"},
+            {"error": "Not a git checkout — update this install with `kirocrew update`, then restart the gateway"},
             status=409,
         )
 
