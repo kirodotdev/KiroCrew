@@ -822,3 +822,39 @@ class TestAutoSdeRound1Findings:
             assert not any(
                 server._is_within(expanded, root) for root in server.ALLOWED_ROOTS
             ), "attacker dir should NOT be within ALLOWED_ROOTS"
+
+
+def test_main_boots_platform_before_serving(monkeypatch):
+    """main() must install the platform context BEFORE binding the server.
+
+    The File Explorer backend runs as its own subprocess (spawned by the app
+    backend launcher) and inherits no platform context. Its git-command sandbox
+    wrapping reads the governed sandbox floor via current_context(), which
+    raises PlatformCompositionError cold on a non-standalone edition. Booting
+    first (idempotent, fail-closed) is the fix; the ORDER is the invariant.
+    """
+    from types import SimpleNamespace
+
+    calls: list[str] = []
+
+    def _fake_boot(_cfg):
+        calls.append("boot")
+        return SimpleNamespace()
+
+    class _FakeServer:
+        def __init__(self, *a, **k):
+            calls.append("bind")
+
+        def serve_forever(self):
+            calls.append("serve")
+
+        def server_close(self):
+            pass
+
+    monkeypatch.setattr(server, "boot_platform", _fake_boot)
+    monkeypatch.setattr(server.KiroCrewConfig, "load", classmethod(lambda cls: SimpleNamespace()))
+    monkeypatch.setattr(server, "ThreadingHTTPServer", _FakeServer)
+
+    assert server.main() == 0
+    assert calls[0] == "boot", "boot_platform must run before the server binds"
+    assert "bind" in calls
