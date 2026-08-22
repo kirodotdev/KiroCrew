@@ -38,6 +38,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ApiError } from '../api/client'
+import { editQueuedMessage } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
@@ -675,7 +676,7 @@ describe('ChatPage queued-message controls', () => {
   })
 
   it('editing a queued card trims the text and ignores a whitespace-only edit', async () => {
-    renderChatPage([queued('q1', 'run the migration')])
+    const { store } = renderChatPage([queued('q1', 'run the migration')])
     await waitFor(() => expect(queueProps).not.toBeNull())
     const editSpy = apiSpy('editQueuedMessage')
 
@@ -684,6 +685,16 @@ describe('ChatPage queued-message controls', () => {
 
     act(() => queueProps!.onEdit('q1', '  deploy instead  '))
     await waitFor(() => expect(editSpy).toHaveBeenCalledWith('chat-1', 'q1', 'deploy instead'))
+
+    // The card is NOT repainted client-side: the authoritative `queue_edit` WS
+    // broadcast is the single writer, so a local dispatch cannot race a
+    // concurrent echo (same contract as the merged queue-reorder PR #2250).
+    expect(queueProps!.messages[0].content).toBe('run the migration')
+
+    // Replaying that echo exactly as the WS handler does lands the edit.
+    act(() => {
+      store.dispatch(editQueuedMessage({ slot: 'chat-1', queue_id: 'q1', content: 'deploy instead' }))
+    })
     await waitFor(() => expect(queueProps!.messages[0].content).toBe('deploy instead'))
   })
 

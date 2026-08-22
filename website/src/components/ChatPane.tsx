@@ -25,7 +25,7 @@ import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { triggerRefresh } from '../store/dashboardSlice'
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
 import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
@@ -458,6 +458,32 @@ export default function ChatPane({
     }),
     [slotKey, toolDisclosure, setToolDisclosureFor],
   )
+  // Mirrors ChatPage's handleEditQueued. No client-side dispatch at all: the
+  // queue_edit WS broadcast - which this client also receives - is the single
+  // authoritative store update. Any local dispatch (optimistic or
+  // post-response) can race a concurrent edit: a delayed response committing
+  // after a later successful edit would overwrite newer content with stale
+  // text, diverging from the backend queue.
+  // Live view of this pane's queued cards for the edit-failure guard below:
+  // the .catch closure predates the WS echo, so it must read the CURRENT
+  // queue through a ref rather than the captured render's value.
+  const onEditQueued = useCallback((queueId: string, content: string) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    api.editQueuedMessage(slotKey, queueId, trimmed).catch((err) => {
+      // A rejected PATCH must not swallow the replacement text - but only an
+      // HTTP rejection (ApiError: the server answered and refused) proves the
+      // edit was not committed. A transport-level failure is ambiguous: the
+      // server may have committed and broadcast before the response was lost,
+      // and restoring then would duplicate committed text. So restore into
+      // this pane's composer (appending if the user typed something meanwhile,
+      // same recovery as the failed-send path above) only on a proven
+      // rejection; on the ambiguous transport case the card keeps its old
+      // text, which is the user's cue to retry.
+      if (!(err instanceof ApiError)) return
+      setInput((prev) => (prev.trim() ? `${prev}\n${trimmed}` : trimmed))
+    })
+  }, [slotKey])
 
   const ddInputCls = 'w-full px-2 py-1 text-[13px] font-body bg-bg border border-border rounded text-text outline-none focus-visible:border-accent'
 
@@ -543,7 +569,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onReorder={onReorderQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the
