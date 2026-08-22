@@ -3641,7 +3641,17 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # apply _redact_for_display, and every queue_* broadcast (including the
         # queue_push below) sanitizes. Sanitizing at insert would corrupt the
         # delivered message relative to the normal queue path.
-        qid = slot.queue_insert(0, steer_msg)
+        #
+        # Carry the delivery id the steer registered under. The drain unions every
+        # consumed entry's meta onto the row it writes, so this reaches the row even
+        # when several queued items are merged into one — which is the only way the
+        # steer's caller can tell "already persisted by the drain" from "consumed by
+        # the turn" after both bookkeeping lists have emptied.
+        _meta: dict | None = None
+        _did = getattr(slot, "_steer_delivery_ids", {}).pop(steer_msg, "")
+        if _did:
+            _meta = {"steer_delivery_id": _did}
+        qid = slot.queue_insert(0, steer_msg, meta=_meta)
         try:
             content, _ = redact_exfiltration_urls(steer_msg)
             content, _ = redact_credentials(content)
@@ -3966,19 +3976,6 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     cron_label = match.group(1) if match else "cron"
     cron_label, _ = redact_exfiltration_urls(cron_label)
     cron_label, _ = redact_credentials(cron_label)
-    # Structured completion facts stamped at enqueue time (gateway _subagent_done)
-    # ride through to the row so the card reads them instead of re-parsing the
-    # header prose. Only a single, un-merged system injection carries
-    # them: a merge concatenates several entries under one synthetic header, for
-    # which per-entry facts are meaningless — subagent completions never merge
-    # (they drain one at a time and break any user-message merge), so this only
-    # fires on the shape it was computed for.
-    _row_meta = consumed[0].get("meta") if (is_subagent and len(consumed) == 1) else None
-    # When synthesis is pending, mark the completion so the frontend can collapse
-    # the per-completion assistant response that follows (it will be restated by
-    # the synthesis turn).
-    if is_subagent and slot._pending_synthesis and isinstance(_row_meta, dict):
-        _row_meta = {**_row_meta, "synthesisPending": True}
     if is_subagent:
         row_role = "subagent"
     elif is_cron or is_recovery:
@@ -3993,6 +3990,38 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
+    # Provenance a producer attached to the queue entry belongs on the row the
+    # drain writes, not only on the entry that is about to disappear.
+    _drained_meta: dict = {}
+    # Delivery ids ACCUMULATE; everything else is last-writer-wins. A merge folds
+    # several queued messages into one row, and each may carry its own steer's id —
+    # a plain `update` would keep only the last, and every other caller would see
+    # no row for its delivery and append a duplicate. The row stands for all of
+    # them, so it has to name all of them.
+    #
+    # Accumulating generally does not undo the narrow rule above: per-entry
+    # subagent facts would be meaningless on a merged row, but a subagent
+    # completion never merges (it drains alone and breaks any user-message
+    # merge), so a merged row cannot carry them in the first place.
+    _drained_ids: list[str] = []
+    for item in consumed:
+        _item_meta = item.get("meta")
+        if isinstance(_item_meta, dict):
+            _one = _item_meta.get("steer_delivery_id")
+            if isinstance(_one, str) and _one:
+                _drained_ids.append(_one)
+            _many = _item_meta.get("steer_delivery_ids")
+            if isinstance(_many, list):
+                _drained_ids.extend(x for x in _many if isinstance(x, str) and x)
+            _drained_meta.update(_item_meta)
+    if _drained_ids:
+        _drained_meta.pop("steer_delivery_id", None)
+        _drained_meta["steer_delivery_ids"] = _drained_ids
+    # When synthesis is pending, mark the completion so the frontend can collapse
+    # the per-completion assistant response that follows (it will be restated by
+    # the synthesis turn).
+    if is_subagent and slot._pending_synthesis and _drained_meta:
+        _drained_meta["synthesisPending"] = True
     # Durable provenance for every `inject` row. `cls` is NOT persisted for this
     # role (chat_persistence only keeps it for `role == "system"`), and the
     # frontend's `meta.cronLabel` exists on the wire only because parse_cls_meta
@@ -4004,6 +4033,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # message verbatim when the turn emitted nothing, and that row must keep
     # rendering as speech. `synthetic_payload` is the existing answer to exactly
     # that question, so reuse it rather than inventing a second signal.
+    #
+    # Folded into the drained meta rather than a separate `_row_meta`: this drain
+    # now unions the meta of EVERY consumed entry (a merged row names all of its
+    # steer delivery ids), so the drained mapping is the one the row write reads.
+    # An `inject` row and a `subagent` row are mutually exclusive by `row_role`,
+    # so these two provenance blocks can never both fire on one row.
     if row_role == "inject":
         if is_cron:
             _inject_kind = "cron"
@@ -4014,12 +4049,12 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
         _inject_meta: dict = {"injectKind": _inject_kind}
         if is_cron:
             _inject_meta["cronLabel"] = cron_label
-        _row_meta = {**_row_meta, **_inject_meta} if isinstance(_row_meta, dict) else _inject_meta
+        _drained_meta.update(_inject_meta)
     slot.append(
         row_role,
         next_msg,
         row_cls,
-        meta=_row_meta if isinstance(_row_meta, dict) else None,
+        meta=_drained_meta or None,
     )
 
     # Per-turn consumption cell for a drained sub-agent completion (see

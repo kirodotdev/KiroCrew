@@ -40,6 +40,81 @@ def _running_slot(state, key="test"):
     return slot
 
 
+class TestDeliveryIdLifecycle:
+    """The delivery-id map must not outlive the delivery it identifies.
+
+    It is keyed by the message TEXT, so an entry left behind holds a full
+    message string for the slot's whole lifetime. The requeue paths keep theirs
+    on purpose -- the drain in `chat_runner` still has to match the id, and that
+    entry is bounded by the queue -- but a delivery that persists its own row is
+    terminal here and nothing downstream will read it again.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_successful_steer_leaves_no_entry(self, tmp_path, monkeypatch, _patch_sel):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"slot": "test", "message": "fix sw.js", "steer": True}
+            )
+            assert resp.status == 200
+
+        assert slot._steer_delivery_ids == {}, (
+            "a delivered steer that persisted its own row is terminal; its id has "
+            "no later reader, so keeping it holds the message text for the slot's life"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_steer_leaves_no_entry(self, tmp_path, monkeypatch, _patch_sel):
+        """The unwind path must clear it too, or a queue fallback leaks instead."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=False)
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post(
+                "/api/chat", json={"slot": "test", "message": "fix sw.js", "steer": True}
+            )
+
+        assert slot._steer_delivery_ids == {}
+
+    @pytest.mark.asyncio
+    async def test_many_successful_steers_do_not_accumulate(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The growth shape is what makes this a leak rather than one stale key."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            for n in range(5):
+                await client.post(
+                    "/api/chat",
+                    json={"slot": "test", "message": f"unique message {n}", "steer": True},
+                )
+
+        assert slot._steer_delivery_ids == {}
+
+
 class TestSteerPendingTracking:
     """The steer handler records successful steers on the slot."""
 
@@ -319,6 +394,25 @@ class TestProductionWiring:
             "the queue drain so a requeued steer is delivered on the very next turn"
         )
 
+    def test_inject_provenance_folds_into_the_mapping_the_row_write_reads(self):
+        """One mapping carries BOTH provenance kinds to the row.
+
+        `_start_next_queued_turn` builds row meta from two independent producers:
+        the drain's union over every consumed entry (which is what carries a merged
+        row's steer delivery ids) and the `inject` block's `injectKind`/`cronLabel`.
+        They must fold into the SAME mapping, because only one of them is passed to
+        `slot.append`. A second local would silently drop whichever producer the row
+        write does not read -- and no drain-level test covers `injectKind`, so that
+        loss would not otherwise surface.
+        """
+        src = self._runner_source()
+        fold_at = src.index("_drained_meta.update(_inject_meta)")
+        write_at = src.index("meta=_drained_meta or None", fold_at)
+        assert fold_at < write_at, (
+            "the inject provenance fold must target _drained_meta -- the same "
+            "mapping slot.append receives -- and must precede the row write"
+        )
+
     def test_event_loop_wires_steer_consumed_to_settle(self):
         src = self._runner_source()
         assert "elif event.kind == EVENT_STEER_CONSUMED:" in src
@@ -330,11 +424,11 @@ class TestProductionWiring:
     def test_steer_handler_registers_before_await(self):
         from pathlib import Path
 
-        import kiro_crew.dashboard.chat_handlers as ch
+        import kiro_crew.dashboard.chat_delivery as cd
 
-        src = Path(ch.__file__).read_text(encoding="utf-8")
+        src = Path(cd.__file__).read_text(encoding="utf-8")
         register_at = src.index("slot._pending_steers.append(message)")
-        await_at = src.index("await _client.steer(message)")
+        await_at = src.index("await client.steer(message)")
         assert register_at < await_at, (
             "pending registration must precede the steer RPC await so a turn "
             "dying mid-write still requeues the steer"
@@ -401,6 +495,64 @@ class TestSteerRequeueOnTurnDeath:
         # message is in the queue even though the broadcast failed
         assert [i["content"] for i in slot._queue] == ["important"]
         assert slot._pending_steers == []
+
+
+class TestRequeuedThenCancelledSteer:
+    """A requeued steer whose card the user cancels never ran, so no row.
+
+    The teardown requeue MOVES the delivery id out of `_steer_delivery_ids` and
+    into the new queue entry's meta. If the user then cancels that card before the
+    steer RPC resumes, the id is in neither place and no row was ever written --
+    which looks exactly like the running turn having consumed the steer.
+
+    A natural stage end requeues without touching `_stop_generation`, so this
+    arrives with `stopped` false. Before the fix the not-stopped path never
+    consulted the delivery-id map and fell through to the persisting tail,
+    writing a transcript row for text the user had explicitly cancelled.
+    """
+
+    @pytest.mark.asyncio
+    async def test_cancelled_requeue_is_not_persisted_as_delivered(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+        text = "fix sw.js"
+
+        async def _requeue_then_cancel(*_a, **_k):
+            # Mirror `_requeue_unconsumed_steers`: it pops BOTH the pending entry
+            # and the delivery id, carrying the id into the queue entry's meta.
+            did = slot._steer_delivery_ids.get(text, "")
+            slot._pending_steers.clear()
+            slot._steer_delivery_ids.clear()
+            qid = slot.queue_insert(0, text, meta={"steer_delivery_id": did})
+            # The user dismisses that card before this RPC returns.
+            slot.queue_remove_by_id(qid)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(side_effect=_requeue_then_cancel)
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await client.post("/api/chat", json={"slot": "test", "message": text, "steer": True})
+
+        persisted = [m for m in slot.messages if text in str(m.get("content", ""))]
+        assert persisted == [], (
+            "the steer was requeued and its card cancelled, so the text never ran; "
+            "persisting a row claims a delivery the user explicitly discarded"
+        )
+        # Not lost either: STEER_UNAVAILABLE means "did not land, safe to resend",
+        # so `/api/chat` falls back to `queue_for_next_turn` and the message comes
+        # back as its own cancellable card. That fallback is the pre-existing
+        # contract of this return value (the hard-kill path shares it) -- what the
+        # fix changes is only that no row claims the steer was delivered.
+        assert [q["content"] for q in slot._queue] == [
+            text
+        ], "an undeliverable steer must fall back to the queue rather than vanish"
 
 
 class TestHardKillDiscardsSteers:

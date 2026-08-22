@@ -32,7 +32,7 @@ from kiro_crew.constants import (
     SUBAGENT_COMPLETION_PREFIX,
 )
 from kiro_crew.dashboard.chat_compaction_notice import deliver_channel_compaction_notice
-from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count
+from kiro_crew.dashboard.session_pulse_counter import increment_user_session_count_off_loop
 from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
@@ -1524,6 +1524,7 @@ class _ChatSlot:
         "_native_subagent_tracker",
         "_native_subagent_output",
         "_pending_steers",
+        "_steer_delivery_ids",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -1988,6 +1989,13 @@ class _ChatSlot:
         # STOP, error). Without this, a steer swallowed by a dying turn
         # vanished with no trace (see the requeue site).
         self._pending_steers: list[str] = []
+        # Opaque id per in-flight steer, keyed by its text (the one-per-text
+        # rule in chat_delivery makes that key unique). The requeue moves the id
+        # onto the queue entry and the drain unions entry meta onto the row it
+        # writes, which is how a caller can tell a delivery the drain already
+        # persisted from one the running turn consumed — a distinction the bare
+        # text cannot make.
+        self._steer_delivery_ids: dict[str, str] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so
@@ -2677,7 +2685,14 @@ class _ChatSlot:
         """
         self._last_enqueue_ts = datetime.now(timezone.utc).isoformat()
 
-    def queue_insert(self, index: int, content: str, kind: str = "", payload: str = "") -> str:
+    def queue_insert(
+        self,
+        index: int,
+        content: str,
+        kind: str = "",
+        payload: str = "",
+        meta: dict | None = None,
+    ) -> str:
         """Insert a message at a specific queue position. Returns the queue ID.
 
         See :meth:`queue_append` for the ``kind`` structural origin tag. ``payload``
@@ -2686,7 +2701,10 @@ class _ChatSlot:
         message shares the recovery kind but is not machine speech.
         """
         qid = uuid.uuid4().hex[:12]
-        self._queue.insert(index, {"id": qid, "content": content, "kind": kind, "payload": payload})
+        entry: dict[str, Any] = {"id": qid, "content": content, "kind": kind, "payload": payload}
+        if meta:
+            entry["meta"] = dict(meta)
+        self._queue.insert(index, entry)
         self._note_enqueue()
         return qid
 
@@ -5352,7 +5370,14 @@ class DashboardState:
             # only the request layer ever supplies origin=USER. Best-effort:
             # the helper swallows its own I/O errors and never raises into
             # slot creation.
-            increment_user_session_count()
+            #
+            # Off the loop, because this method is synchronous and every
+            # request-layer birth runs it on the gateway loop -- the counter's
+            # read + mkdir + tempfile write + replace would stall it on slow
+            # storage. The offload is the counter's, not this allocation's: this
+            # block must not become a suspension point, or callers could observe
+            # a half-configured slot.
+            increment_user_session_count_off_loop()
         if memory_mode and memory_mode != "persistent":
             self._restricted_keys.add(f"dashboard:{name}")
         if ephemeral:

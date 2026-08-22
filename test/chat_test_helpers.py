@@ -123,6 +123,30 @@ def _make_state(tmp_path, **kwargs):
     sessions.set_slack_link = MagicMock(side_effect=_set_slack_link)
     sessions.get_slack_link = MagicMock(side_effect=_get_slack_link)
     sessions.clear_slack_link = MagicMock(side_effect=_clear_slack_link)
+
+    # Real in-memory mirror-link store, for the same reason as the Slack one and
+    # with a sharper failure mode: callers branch on whether a mirror is PRESENT,
+    # and a bare MagicMock is unconditionally truthy, so every session reads as
+    # mirrored to a channel. A guard that refuses mirrored sessions then refuses
+    # ALL of them, which looks like a broken guard rather than a missing double.
+    # Parity with SessionStore: absent -> None.
+    _mirror_links: dict[str, tuple[str, str]] = {}
+
+    def _set_mirror_link(key, channel_id, thread_ts):
+        if channel_id or thread_ts:
+            _mirror_links[key] = (channel_id, thread_ts)
+        else:
+            _mirror_links.pop(key, None)
+
+    def _get_mirror_link(key):
+        return _mirror_links.get(key)
+
+    def _clear_mirror_link(key):
+        return _mirror_links.pop(key, None) is not None
+
+    sessions.set_mirror_link = MagicMock(side_effect=_set_mirror_link)
+    sessions.get_mirror_link = MagicMock(side_effect=_get_mirror_link)
+    sessions.clear_mirror_link = MagicMock(side_effect=_clear_mirror_link)
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),

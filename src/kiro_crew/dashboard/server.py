@@ -319,6 +319,21 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # wiring class as "/api/notifications/agent" above.
         "/api/knowledge/agent-document",
         "/api/mcp/servers",
+        # Session control -- the three routes behind the session_create /
+        # session_stop / session_read_message MCP tools.
+        # STRICT, not mixed: no browser calls them, and they are the entry point
+        # to opening, stopping, and reading ANOTHER live conversation. A cookie
+        # fall-through there would be a new authorization path, not a
+        # convenience.
+        #
+        # Every route registered under /api/session-control MUST appear here.
+        # An unlisted path falls through to the general branch, which honors only
+        # cookie/query tokens, so the MCP caller's X-Internal-Secret is ignored
+        # and the handler's own internal_auth re-assert then refuses it -- the
+        # tool is unreachable in production while handler-level tests still pass.
+        "/api/session-control/create",
+        "/api/session-control/stop",
+        "/api/session-control/read",
     }
 )
 
@@ -968,6 +983,27 @@ def _precompute_telemetry(state: "DashboardState") -> None:
         _log.debug("telemetry.record_event(gateway_start) failed", exc_info=True)
 
 
+def _deferred_session_control(handler_name: str) -> Callable:
+    """Bind a session-control route without importing the subsystem at boot.
+
+    Session control is feature-flagged (``agent.session_control``), and the
+    enabled check lives inside the handler -- so a module-level import would be
+    an eager import of an optional subsystem whose gate runs after it, which the
+    boot-path rule names explicitly. Route registration itself is allowed at
+    boot; only the import moves to first request, so an operator who disabled the
+    feature never pays for loading it.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard.handlers import session_control
+
+        handler = getattr(session_control, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -1013,6 +1049,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
+    # Session control. Registered here so the headless --slack-only server
+    # serves the same MCP surface as the dashboard; all three are on
+    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
+    # pins by deriving the route set from the router rather than a hand-copied list.
+    app.router.add_post(
+        "/api/session-control/create", _deferred_session_control("api_session_control_create")
+    )
+    app.router.add_post(
+        "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+    )
+    app.router.add_get(
+        "/api/session-control/read", _deferred_session_control("api_session_control_read")
+    )
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)

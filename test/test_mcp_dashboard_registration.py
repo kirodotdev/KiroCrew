@@ -336,25 +336,51 @@ class TestWhatThisSetGrants:
         "chat_folder_move",
         "chat_folder_move_session",
     }
+    #: The session-control half. Granted by the SAME assignment as the folder
+    #: half — see ``test_session_driving_tools_ship_with_the_folder_tools`` for
+    #: why the two classes ride together rather than in two servers.
+    SESSION_TOOLS = {
+        "session_create",
+        "session_stop",
+        "session_read_message",
+    }
+    GRANTED_TOOLS = FOLDER_TOOLS | SESSION_TOOLS
 
     def test_the_set_is_exactly_the_folder_tools(self) -> None:
         from kiro_crew import mcp_dashboard
 
-        assert {t["name"] for t in mcp_dashboard._tool_definitions()} == self.FOLDER_TOOLS
+        assert {t["name"] for t in mcp_dashboard._tool_definitions()} == self.GRANTED_TOOLS
 
     def test_the_advertised_list_is_the_set(self) -> None:
         """Reaching the process means the set was assigned; nothing is hidden."""
         from kiro_crew import mcp_dashboard
 
-        assert {t["name"] for t in mcp_dashboard._list_tools()} == self.FOLDER_TOOLS
+        assert {t["name"] for t in mcp_dashboard._list_tools()} == self.GRANTED_TOOLS
 
-    def test_no_session_driving_tool_joins_this_set(self) -> None:
-        """A tool that messages/stops another session needs its own server."""
+    def test_session_driving_tools_ship_with_the_folder_tools(self) -> None:
+        """This set deliberately bundles two capability classes.
+
+        The earlier ratchet here asserted the OPPOSITE — that nothing which
+        messages or stops another session may join the folder set. That guard
+        existed for the window before session control landed, to stop such a tool
+        arriving as an unnoticed side effect of a folder change. Bundling them is
+        now the decided design: one assignable set, granted as a whole, so an
+        agent told to organize sessions can also hand work between them.
+
+        The ratchet is inverted rather than deleted, because the property worth
+        protecting did not go away: what the set contains must be a decision, not
+        an accident. If either class disappears from the server, this fails and
+        whoever changed it has to say which half they meant to drop.
+        """
         from kiro_crew import mcp_dashboard
 
         names = {t["name"] for t in mcp_dashboard._tool_definitions()}
-        forbidden = {n for n in names if "message" in n or "stop" in n or "steer" in n}
-        assert not forbidden, (
-            f"{sorted(forbidden)} drive another session but would be granted by "
-            "assigning the folder-organization set — give that class its own server"
+        folder = {n for n in names if n.startswith("chat_folder_")}
+        session = {n for n in names if n.startswith("session_")}
+        assert folder, "the folder-organization tools left this set"
+        assert session, "the session-control tools left this set"
+        # Nothing else rides along unannounced.
+        assert names == folder | session, (
+            f"{sorted(names - folder - session)} is neither folder organization nor "
+            "session control — name the class it belongs to before adding it here"
         )

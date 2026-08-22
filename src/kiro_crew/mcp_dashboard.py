@@ -80,6 +80,9 @@ from kiro_crew.validation import (
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
     MCP_DASHBOARD_SCHEMAS,
+    SESSION_CREATE_SCHEMA,
+    SESSION_READ_MESSAGE_SCHEMA,
+    SESSION_STOP_SCHEMA,
     validate_tool_args,
 )
 
@@ -87,6 +90,18 @@ logger = logging.getLogger(__name__)
 
 SERVER_NAME = "kirocrew-dashboard"
 SERVER_VERSION = "1.0.0"
+
+#: The session-control half of this server's tool set, in one place because three
+#: separate things must agree on it: the caller-identity gate in
+#: ``_call_tool_inner``, the channel-agent containment list
+#: (``CHANNEL_AGENT_BLOCKED_TOOLS``), and the pinned advertised set in the
+#: registration tests. Spelling it out per site is how ``session_create`` came to
+#: be gated for identity but reachable from a channel agent.
+SESSION_CONTROL_TOOLS: tuple[str, ...] = (
+    "session_create",
+    "session_stop",
+    "session_read_message",
+)
 
 # The folder endpoints store ``name[:100]``. Mirroring the number here is what
 # lets this server refuse an overlong name instead of writing one it cannot
@@ -193,6 +208,95 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["session"],
+            },
+        },
+        {
+            "name": "session_create",
+            "description": (
+                "Open a NEW chat session, pre-named and bound to the agent you pick, so a "
+                "separate workstream has a home of its own. The new session appears in "
+                "the user's sidebar like any other — they can read it, take it over and "
+                "close it — so use it to stand up a workstream alongside this one (watch a "
+                "build, grind a long refactor) rather than to hide work. It starts empty: "
+                "the person is the one who types the first message into it. Returns its "
+                "key; pass that as `target` to the other session tools."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": (
+                            "Short name for the session, shown in the sidebar. Say what the "
+                            "session is FOR so the user can tell your sessions apart."
+                        ),
+                    },
+                    "agent": {
+                        "type": "string",
+                        "description": (
+                            "Agent to bind the session to. Omit to use the default agent."
+                        ),
+                    },
+                },
+                "required": [],
+            },
+        },
+        {
+            "name": "session_stop",
+            "description": (
+                "Stop another session's in-flight turn — the same thing as pressing Stop "
+                "in that tab. Use it when a peer session is working on something you now "
+                "know is wrong or already done, and letting it finish would waste the run "
+                "or make a conflicting change. The first call cancels cooperatively; "
+                "calling again while that is still pending escalates to a hard kill. "
+                "A stop card appears in the "
+                "target's transcript so the person reading it sees what happened. Stopping "
+                "discards the turn's work, so read the session first when you are not sure "
+                "what it is doing."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                },
+                "required": ["target"],
+            },
+        },
+        {
+            "name": "session_read_message",
+            "description": (
+                "Read the tail of another session's transcript, plus whether it is still "
+                "working. Use it to watch a peer session's progress: `wait`, then read — "
+                "pass the ``next_since`` from the previous read back as ``since`` "
+                "and you get only what arrived in between, so a poll loop does not re-read "
+                "the same messages. ``running: false`` with nothing new means the target "
+                "finished and is idle, which is the difference between 'not done yet' and "
+                "'done'. READ-only: it never sends anything or changes the target's state."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max messages to return (default 20, max 100).",
+                        "default": 20,
+                    },
+                    "since": {
+                        "type": "integer",
+                        "description": (
+                            "Return messages from this index onward — pass the ``next_since`` from "
+                            "your previous read to get only new ones. Omit for the newest tail."
+                        ),
+                    },
+                },
+                "required": ["target"],
             },
         },
     ]
@@ -687,6 +791,114 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     """Dispatch one validated tool call."""
+    caller_key = ""
+    if name in SESSION_CONTROL_TOOLS:
+        # Authorization for all four is the CALLER'S IDENTITY: the route decides
+        # what a session may reach from the key sent here. The lenient resolver
+        # walks /proc ancestors, and a spawned subagent lives under its parent
+        # slot's process tree — so the walk would hand a subagent its parent's
+        # identity and let it read, message, or stop the parent's sibling
+        # sessions. Only the signed sources count.
+        #
+        # The verified key is KEPT and handed to the request helper below. Gating
+        # on the strict resolver and then letting the helper resolve again would
+        # authorize the check and the action as potentially different sessions:
+        # the lenient walk reads mutable process state, so what it answers at
+        # request time need not be what the gate approved.
+        caller_key = _resolve_session_key_strict()
+        if not caller_key:
+            return (
+                "Error: this session cannot be identified well enough to control another "
+                "session. Session control authorizes on the calling session's identity, and "
+                "only a gateway-issued key counts — a spawned subagent has none of its own."
+            )
+
+    if name == "session_create":
+        args = validate_tool_args(args, SESSION_CREATE_SCHEMA)
+        resp = _post(
+            "/api/session-control/create",
+            {"title": args.get("title", ""), "agent": args.get("agent", "")},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not create a session: {resp['error']}"
+        return (
+            f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}). "
+            "It is empty and waiting in the user's sidebar; watch it with "
+            "session_read_message."
+        )
+
+    if name == "session_stop":
+        args = validate_tool_args(args, SESSION_STOP_SCHEMA)
+        resp = _post(
+            "/api/session-control/stop",
+            {"target": args["target"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not stop that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        info = resp.get("info")
+        if info:
+            # The target was not running (or a stop was already in flight) — say
+            # so rather than implying a turn was cancelled.
+            return f"\u2139\ufe0f `{target}`: {info} — nothing to stop."
+        return f"\U0001f6d1 Stop sent to `{target}`. Its transcript now shows the stop card."
+
+    if name == "session_read_message":
+        args = validate_tool_args(args, SESSION_READ_MESSAGE_SCHEMA)
+        query = f"target={quote(str(args['target']))}&limit={args.get('limit', 20)}"
+        if args.get("since") is not None:
+            query += f"&since={int(args['since'])}"
+        resp = _get(f"/api/session-control/read?{query}", caller_key)
+        if resp.get("error"):
+            return f"Error: could not read that session: {resp['error']}"
+        msg_rows = resp.get("messages") or []
+        state_line = "still working" if resp.get("running") else "idle"
+        queued = resp.get("queue_depth", 0)
+        if queued:
+            state_line += f", {queued} message(s) queued"
+        head_line = (
+            f"\U0001f4d6 `{resp.get('target', '')}` — {resp.get('title', '')} "
+            f"({state_line}; total={resp.get('total', 0)})"
+        )
+        if not msg_rows:
+            # The cursor rides along even with nothing to show. A poll loop's most
+            # common answer is an empty window, and a caller left without a
+            # position either re-reads without `since` -- taking the tail, which
+            # silently skips everything older than the last `limit` rows once the
+            # target answers in a burst -- or keeps reusing a cursor from before,
+            # re-reading rows it has already seen. `next_since` is absent only when
+            # rows have been trimmed and positions stopped being exact, which is
+            # the one case a cursor must not be invented for.
+            empty_lines = [head_line, "No messages in that window yet."]
+            if "next_since" in resp:
+                empty_lines.append(
+                    f"Pass since={resp['next_since']} on your next read to resume from here."
+                )
+            return "\n".join(empty_lines)
+        read_lines = [head_line]
+        for row in msg_rows:
+            text_body = str(row.get("content", ""))
+            if row.get("truncated"):
+                text_body += " …[truncated]"
+            read_lines.append(f"[{row.get('index')}] {row.get('role')}: {text_body}")
+        read_lines.append(
+            (
+                f"Pass since={resp['next_since']} on your next read to see only what "
+                f"is new. (total={resp.get('total', 0)} is the backlog depth — when it "
+                f"exceeds next_since there are older rows this window did not reach, so "
+                f"read again immediately rather than waiting.)"
+            )
+            if "next_since" in resp
+            else (
+                "This session is long enough that older messages have been trimmed, so "
+                "cursor positions are no longer exact and `since` reads are refused. "
+                "Read again without `since` to get the latest messages."
+            )
+        )
+        return "\n".join(read_lines)
+
     if name == "chat_folder_tree":
         validate_tool_args(args, CHAT_FOLDER_TREE_SCHEMA)
         chat_folders, folders_err = _get_rows("/api/chat/folders")

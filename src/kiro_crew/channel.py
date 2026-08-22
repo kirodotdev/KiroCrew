@@ -38,10 +38,26 @@ _INBOX_POLL_SECS = 1.0
 # agents communicate exclusively through channel posts.  send_notification
 # reaches the user like send_message does (notification feed publish, badge,
 # and sound), so both sit
-# behind the same containment boundary.  Matched against the rendered
+# behind the same containment boundary.  All THREE session-control tools sit
+# behind it, in both directions: stopping one of the user's dashboard sessions
+# reaches the user through that session's transcript, and READING one pulls a
+# private dashboard conversation into a channel other humans can see.  The read
+# tool mutates nothing, but containment here is about what crosses the boundary,
+# not about who writes — so the exfiltration direction is blocked alongside the
+# control one.  CREATE is blocked for a different reason than the other two: it
+# writes nothing into an existing conversation, but a session it opened would be
+# one the channel agent then owns and may act on, which is exactly the
+# containment this list exists to hold.
+# Matched against the rendered
 # permission-request text/title via _blocked_tool_named() (boundary-aware,
 # not naive substring — "Editing send_notification.py" must NOT match).
-CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = ("send_message", "send_notification")
+CHANNEL_AGENT_BLOCKED_TOOLS: tuple[str, ...] = (
+    "send_message",
+    "send_notification",
+    "session_stop",
+    "session_read_message",
+    "session_create",
+)
 
 # Boundary-aware matcher: the tool name must stand alone in the rendered
 # title — not embedded in a filename/path/identifier ("send_notification.py",
