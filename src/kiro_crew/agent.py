@@ -57,6 +57,7 @@ from kiro_crew.config.paths import (
     _in_linked_git_worktree,
     _under_system_tmp,
     _valid_override_home,
+    ambient_agents_dir,
     isolated_agents_dir,
     kiro_agents_dir,
 )
@@ -2640,8 +2641,12 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     * A globally exported ``KIRO_HOME`` moves the shared directory, so comparing
       against a hard-coded default reads "not the shared one" and waves the write
       straight through. The comparison is therefore against what the AMBIENT
-      environment resolves right now (``kiro_agents_dir()``), which is by
+      environment resolves right now (``ambient_agents_dir()``), which is by
       definition the directory every instance under this environment shares.
+      Deliberately the override-BLIND resolver, not ``kiro_agents_dir()``: the
+      latter follows ``config.paths._agents_dir_override``, so a redirect would
+      move both sides of this comparison together, read as "target is the shared
+      one", and refuse the write from any ephemeral checkout.
 
     A target is exempt only when it is **provably private**: either a caller
     redirected the write somewhere the ambient environment would never produce (a
@@ -2658,7 +2663,7 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     (``KIROCREW_HOME=$HOME`` is enough).
     """
     target = kiro_agents_dir_path().resolve()
-    if target != kiro_agents_dir().resolve():
+    if target != ambient_agents_dir().resolve():
         # A caller pointed the write somewhere of its own choosing; nothing is
         # shared with the ambient install, so there is nothing to protect.
         return None

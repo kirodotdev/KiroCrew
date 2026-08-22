@@ -1506,33 +1506,14 @@ _AGENT_SPEC_HOOKS: tuple[tuple[str, str], ...] = (
     ("kiro_crew.doctor_deadpath", "KIRO_AGENTS_DIR"),
 )
 
-#: Modules that WRITE through a bound ``config.paths.kiro_agents_dir`` name, which no
-#: hook reaches. Deliberately short: this file's remit is the host-MUTATION floor, and
-#: redirecting a read-only consumer's bound name costs more than it protects -- the
-#: dominant isolation idiom in this suite is ``patch("<module>.Path.home", ...)`` and
-#: then reading through that module's own resolver, which a redirect silently overrides.
-#: Every read-only consumer is therefore listed as excluded, with that reason, in
-#: ``test_host_isolation_floor.py``'s ratchet rather than pinned here.
-#:
-#: ``kiro_crew.config.paths`` is the DEFINITION, and patching it is what reaches a writer
-#: that imports the name inside a function body -- ``auto_improvement.spine.agent_runner``
-#: copies agent specs that way, so no module-level binding exists to pin.
-#:
-#: ``kiro_crew.agent.kiro_agents_dir`` is deliberately ABSENT, and adding it would break
-#: the suite on the setup this repo mandates for development. That binding is not a
-#: write target -- ``agent`` writes exclusively through ``kiro_agents_dir_path()``, which
-#: reads the hook above -- it is the AMBIENT reference
-#: ``_decline_shared_agent_home`` compares the target against to decide whether the
-#: target is shared at all. Leaving it resolving the real home is what makes the pinned
-#: hook read as "a caller redirected this somewhere the ambient environment would never
-#: produce", which returns early and allows the write. Patch it too and target ==
-#: ambient, so the guard falls through to its ephemerality check and DECLINES from a
-#: linked git worktree -- every test that reaches ``rebuild_agent_config`` would then
-#: pass in CI and fail on a developer's machine.
-_AGENT_SPEC_RESOLVER_BINDINGS: tuple[tuple[str, str], ...] = (
-    ("kiro_crew.config.paths", "kiro_agents_dir"),
-    ("kiro_crew.dashboard.handlers.mcp", "kiro_agents_dir"),
-)
+#: The real user home, captured at IMPORT -- before any test can patch
+#: ``Path.home``. The pin below compares against it to tell "nobody redirected the
+#: home, so use the per-test dir" from "this test redirected it, so follow the test".
+#: ``patch("<module>.Path.home", ...)`` is the dominant isolation idiom in this suite
+#: and it is global by construction (``from pathlib import Path`` binds the same class
+#: object everywhere, so patching an attribute on it patches it for every module), which
+#: is why the pin can detect it at all.
+_REAL_USER_HOME = pathlib.Path.home()
 
 
 @pytest.fixture(scope="session")
@@ -1626,23 +1607,22 @@ def _isolate_agent_spec_home(_agent_spec_seam_modules, _isolation_dirs, monkeypa
     monkeypatch.delenv("KIRO_HOME", raising=False)
     root = _isolation_dirs("kiro-agents")
     paths = sys.modules.get("kiro_crew.config.paths")
-    real = getattr(paths, "kiro_agents_dir", None) if paths is not None else None
 
     def _pinned_agents_dir() -> pathlib.Path:
-        """The per-test dir, unless this test chose a kiro home of its own."""
-        if os.environ.get("KIRO_HOME") and real is not None:
-            return real()
+        """The per-test dir, unless this test redirected the home itself."""
+        if paths is None:  # pragma: no cover - defensive: package not importable
+            return root
+        if os.environ.get("KIRO_HOME") or pathlib.Path.home() != _REAL_USER_HOME:
+            return paths.ambient_agents_dir()
         return root
 
     for module, attr in _AGENT_SPEC_HOOKS:
         mod = sys.modules.get(module)
         if mod is not None:
             monkeypatch.setattr(mod, attr, root, raising=False)
-    for module, attr in _AGENT_SPEC_RESOLVER_BINDINGS:
-        mod = sys.modules.get(module)
-        if mod is not None:
-            monkeypatch.setattr(mod, attr, _pinned_agents_dir, raising=False)
-    return real
+    if paths is not None:
+        monkeypatch.setattr(paths, "_agents_dir_override", _pinned_agents_dir)
+    return paths.ambient_agents_dir if paths is not None else None
 
 
 @pytest.fixture
@@ -1665,10 +1645,9 @@ def unpinned_agent_spec_home(_isolate_agent_spec_home, monkeypatch):
         mod = sys.modules.get(module)
         if mod is not None:
             monkeypatch.setattr(mod, attr, None, raising=False)
-    for module, attr in _AGENT_SPEC_RESOLVER_BINDINGS:
-        mod = sys.modules.get(module)
-        if mod is not None and _isolate_agent_spec_home is not None:
-            monkeypatch.setattr(mod, attr, _isolate_agent_spec_home, raising=False)
+    paths = sys.modules.get("kiro_crew.config.paths")
+    if paths is not None:
+        monkeypatch.setattr(paths, "_agents_dir_override", None)
     return _isolate_agent_spec_home
 
 

@@ -28,7 +28,7 @@ import logging
 import os
 import sys
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -544,6 +544,37 @@ def isolated_agents_dir(data_home: Path) -> Path:
     return data_home / "kiro" / "agents"
 
 
+#: Test/tooling redirect for :func:`kiro_agents_dir`, consulted on every call
+#: (``None`` = resolve from the environment). A CALLABLE rather than a path so a
+#: caller can decide per call — the suite's own redirect defers to a test that
+#: moved ``Path.home`` or ``$KIRO_HOME`` itself, which it cannot know in advance.
+#:
+#: Why it lives HERE rather than as a per-module hook: 16 modules bind
+#: ``kiro_agents_dir`` by name (``from ... import kiro_agents_dir``), and that
+#: copies the function OBJECT, so patching this module's attribute never reaches
+#: them. A value read inside the function BODY does reach them, because a
+#: function's globals are always its defining module's -- so one assignment here
+#: redirects every consumer, present and future, with no per-module registration
+#: to keep in sync.
+_agents_dir_override: Callable[[], Path] | None = None
+
+
+def ambient_agents_dir() -> Path:
+    """The agents dir the AMBIENT ENVIRONMENT resolves, ignoring any override.
+
+    Exists for exactly one caller: ``agent._decline_shared_agent_home`` asks "is
+    the target this instance is about to write the one every instance under this
+    environment shares?". That question is about the environment, so it must not
+    see a redirect — with the override applied to both sides the comparison is
+    trivially equal and the guard mistakes a privately redirected target for the
+    shared one, then refuses the write from any ephemeral checkout.
+
+    Not a general-purpose reader. Anything that WRITES or reads the specs in use
+    wants :func:`kiro_agents_dir`, which honours the redirect.
+    """
+    return kiro_home() / "agents"
+
+
 def kiro_agents_dir() -> Path:
     """Return the kiro agents directory (``<kiro home>/agents``).
 
@@ -557,8 +588,21 @@ def kiro_agents_dir() -> Path:
     to a search path would leave those writers without one obvious destination.
     Project-local discovery is a separate READ-only scope — see
     :func:`project_agents_dir`.
+
+    Honours :data:`_agents_dir_override` when one is installed, which is what
+    makes this the single accessor every consumer already routes through. See
+    :func:`ambient_agents_dir` for the one caller that must NOT follow it.
+
+    The no-override branch DELEGATES to that function rather than re-spelling
+    ``kiro_home() / "agents"``. Two hand-written copies of the default would let a
+    later change to the layout land in only one, and the write guard compares this
+    resolver's answer against that one -- a stale comparison there reads a shared
+    target as private and fails OPEN on the machine-wide home, which is the #4912
+    failure class this whole seam exists to prevent.
     """
-    return kiro_home() / "agents"
+    if _agents_dir_override is not None:
+        return _agents_dir_override()
+    return ambient_agents_dir()
 
 
 def project_agents_dir(project_dir: str | Path) -> Path:

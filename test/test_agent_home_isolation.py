@@ -41,7 +41,13 @@ def _no_overrides(monkeypatch) -> None:
     monkeypatch.delenv("KIROCREW_POD", raising=False)
 
 
-def test_kiro_home_defaults_to_dot_kiro(monkeypatch):
+def test_kiro_home_defaults_to_dot_kiro(monkeypatch, unpinned_agent_spec_home):
+    """The shipped default, with the suite's agents-dir pin lifted.
+
+    ``kiro_agents_dir()`` honours ``config.paths._agents_dir_override``, which the
+    host-mutation floor installs for every test, so this assertion is about the
+    resolver's own default rather than what a test run resolves.
+    """
     _no_overrides(monkeypatch)
     assert kiro_home() == Path.home() / ".kiro"
     assert kiro_agents_dir() == Path.home() / ".kiro" / "agents"
@@ -170,9 +176,15 @@ def _pretend_target_is_shared(monkeypatch, agent_mod, agents_dir: Path) -> None:
     A target the ambient environment would never produce is by definition private
     to whoever redirected it, so a test must line the two up to exercise the
     guard.
+
+    The ambient side is ``config.paths.ambient_agents_dir``, patched at its
+    DEFINITION: it is the override-blind resolver the guard reads, and ``agent``
+    binds it by name so a module-attribute patch on ``agent`` would be a second
+    copy that the guard's own call still ignores. ``KIRO_AGENTS_DIR`` stays the
+    target side because ``kiro_agents_dir_path()`` prefers it.
     """
     monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents_dir)
-    monkeypatch.setattr(agent_mod, "kiro_agents_dir", lambda: agents_dir)
+    monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: agents_dir)
 
 
 def test_private_target_is_never_declined(monkeypatch, tmp_path):
@@ -217,7 +229,7 @@ def test_symlinked_shared_home_still_declines(monkeypatch, tmp_path):
     # Same directory, two spellings: the target is reached through the symlink,
     # the machine-wide default through the real path.
     monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", link / "agents")
-    monkeypatch.setattr(agent, "kiro_agents_dir", lambda: real)
+    monkeypatch.setattr(agent, "ambient_agents_dir", lambda: real)
 
     assert (
         agent._decline_shared_agent_home() is not None
