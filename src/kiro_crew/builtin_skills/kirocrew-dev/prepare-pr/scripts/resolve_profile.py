@@ -30,7 +30,8 @@ tomllib (Python 3.11+) or an importable `tomli`; on older interpreters without
 either, a PRESENT .prepare-pr.toml is a hard error (exit 2) rather than being
 silently ignored (so the profile is never quietly wrong).
 
-Usage:  python3 resolve_profile.py [repo_root]   (default: git toplevel or CWD)
+Usage:  python3 resolve_profile.py [repo_root] [base_ref]
+        (repo defaults to git toplevel or CWD; base_ref pins .prepare-pr.toml)
 Exit:   0 resolved (JSON on stdout) - 2 env / parse error
 """
 import glob
@@ -116,6 +117,23 @@ def load_toml(path):
         )
     with open(path, "rb") as fh:
         return toml.load(fh)
+
+
+def load_toml_bytes(data, source):
+    """Parse TOML bytes obtained from a pinned git object."""
+    toml = None
+    for name in ("tomllib", "tomli"):
+        try:
+            toml = importlib.import_module(name)
+            break
+        except ImportError:
+            continue
+    if toml is None:
+        raise RuntimeError(
+            "found {} but this Python has no TOML parser "
+            "(need 3.11+ tomllib or the `tomli` package)".format(source)
+        )
+    return toml.loads(data.decode("utf-8"))
 
 
 def normalize(raw, source):
@@ -233,11 +251,26 @@ def detect_reviewers(root):
     return reviewers
 
 
-def resolve(root):
+def resolve(root, base_ref=None):
     """Apply the resolution order and return a normalized profile dict."""
     toml_path = os.path.join(root, ".prepare-pr.toml")
-    if _safe_regular_file(toml_path):
-        profile = normalize(load_toml(toml_path), "config")
+    raw_config = None
+    if base_ref:
+        rc, out, stderr = run(
+            ["git", "-C", root, "show", "{}:.prepare-pr.toml".format(base_ref)]
+        )
+        if rc == 0:
+            raw_config = load_toml_bytes(out.encode("utf-8"), "{}:.prepare-pr.toml".format(base_ref))
+        elif "does not exist" not in stderr and "exists on disk" not in stderr:
+            # A missing file is a defined fallback; an unreadable ref is not.
+            check_rc, _, _ = run(["git", "-C", root, "rev-parse", "--verify", base_ref])
+            if check_rc != 0:
+                raise RuntimeError("cannot resolve base ref {!r}".format(base_ref))
+    elif _safe_regular_file(toml_path):
+        raw_config = load_toml(toml_path)
+
+    if raw_config is not None:
+        profile = normalize(raw_config, "config")
         # A partial config must not silently blank out gates/reviewers (which
         # would make the Phase 2 local gate a no-op) — fill any omitted section
         # from auto-detection.
@@ -257,9 +290,10 @@ def resolve(root):
 
 def main(argv):
     start = argv[1] if len(argv) > 1 else os.getcwd()
+    base_ref = argv[2] if len(argv) > 2 else None
     root = find_repo_root(start)
     try:
-        profile = resolve(root)
+        profile = resolve(root, base_ref=base_ref)
     except RuntimeError as exc:
         err("ERROR: " + str(exc))
         return 2

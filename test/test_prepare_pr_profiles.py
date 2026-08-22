@@ -14,6 +14,7 @@ because tomllib is 3.11+.
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -57,6 +58,37 @@ def test_generic_fallback_on_empty_repo(tmp_path):
     assert prof["reviewers"] == []
     assert prof["readiness"] == {"status_context": None, "defer_label": None}
     assert prof["single_commit"] is False
+
+
+def test_profile_is_loaded_from_base_ref_not_worktree(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    profile = tmp_path / ".prepare-pr.toml"
+    profile.write_text("[project]\nsingle_commit = true\n")
+    subprocess.run(["git", "add", ".prepare-pr.toml"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    profile.write_text("[project]\nsingle_commit = false\n")
+
+    resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
+
+    assert resolved["source"] == "config"
+    assert resolved["single_commit"] is True
+
+
+def test_branch_only_profile_is_ignored_when_base_has_none(tmp_path):
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("base\n")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    (tmp_path / ".prepare-pr.toml").write_text("[project]\nsingle_commit = true\n")
+
+    resolved = resolve_profile.resolve(str(tmp_path), base_ref="HEAD")
+
+    assert resolved["source"] == "generic"
+    assert resolved["single_commit"] is False
 
 
 def test_autodetect_python_stack(tmp_path):

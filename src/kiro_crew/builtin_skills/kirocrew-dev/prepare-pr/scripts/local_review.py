@@ -1126,7 +1126,7 @@ def assemble(
     """Assemble every reviewer brief the profile declares. Raises ParityError."""
     resolve_profile = _load_sibling("_lr_resolve_profile", "resolve_profile.py")
     try:
-        profile = resolve_profile.resolve(worktree)
+        profile = resolve_profile.resolve(worktree, base_ref=base_ref)
     except (EnvironmentError, ParityError):
         raise
     except Exception as exc:
