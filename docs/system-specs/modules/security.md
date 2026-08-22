@@ -1276,7 +1276,7 @@ When the dashboard presents a tool approval prompt, users can now choose from th
 | `trust_base` | Session-scoped | Base command glob (e.g., `ls *` — trusts `ls` with any arguments) |
 | `yolo` | Global | All tools across all slots (existing behavior, now time-limited) |
 
-Trust patterns are stored per-slot as session-scoped fnmatch globs (`slot._trusted_patterns`). Pattern matching uses the ACTUAL command from `tool_input` (not the LLM-controlled display text) for security. For non-shell MCP tools without `tool_input`, `event.title` is used as it IS the provider-controlled tool name. Multi-command titles (e.g., `cat,wc`) generate patterns for each binary.
+Trust patterns are stored per-slot as session-scoped fnmatch globs (`slot._trusted_patterns`). Pattern matching keys on the event's canonical, provenance-trusted fields, never the LLM-authored display title (`event.title`). Shell tools match `event.shell_command` (recovered from provenance-trusted params; `None` / deny-by-default when the command is unrecoverable). Non-shell tools (file edits, MCP tools) match a canonical key of `tool_name` plus the provenance-trusted target path (`_nonshell_trust_key`), with fnmatch metacharacters in the path escaped so it matches literally; when the tool identity or path provenance is missing the gate denies by default rather than trusting the title. Multi-command shell titles (e.g., `cat,wc`) generate patterns for each binary.
 
 ### SEL Audit Logging (`sel.py`)
 

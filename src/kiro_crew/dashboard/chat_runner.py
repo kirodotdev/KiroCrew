@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import glob
 import ipaddress
 import json
 import logging
@@ -1969,6 +1970,33 @@ def _split_command_segments(
                 restored = restored.replace(ph, ch)
         segments.append(restored)
     return normalized, segments
+
+
+def _nonshell_trust_key(event: Any) -> str | None:
+    """Canonical, non-model-authored trust key for a NON-shell tool call.
+
+    Returns ``"<tool_name> <path>"`` when a provenance-trusted target path is
+    present (file edits), else ``"<tool_name>"`` (path-less MCP tools). Returns
+    None when the canonical ``tool_name`` is absent (fail-closed — never fall
+    back to the LLM-authored ``event.title``).
+
+    Both the trusted-pattern MATCH gate and the pattern STORAGE side derive the
+    key from this one function so a stored grant and a later event produce the
+    same string. Keying on ``tool_name`` + ``trusted_edit_path`` (not title) is
+    what makes "trust this edit" bind to a real tool identity and file, so a
+    backend whose display title diverges from its params cannot get a write to a
+    different path auto-approved (Fable-5 design review, point 1).
+    """
+    name = getattr(event, "tool_name", "") or ""
+    if not name:
+        return None
+    path = event.trusted_edit_path
+    # Escape fnmatch metacharacters in the concrete path so a file literally
+    # named e.g. ``a*.txt`` is stored and matched as a literal, not as a glob
+    # that would widen the grant to sibling files (_matches_trusted_pattern
+    # runs the key through fnmatch). tool_name is a fixed identifier, not a
+    # glob, so it is left as-is.
+    return f"{name} {glob.escape(path)}" if path else name
 
 
 def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
@@ -6413,19 +6441,36 @@ async def _run_chat(
                     )
                     continue
                 # Session-trusted patterns: auto-approve commands matching user globs.
-                # Security: match against the ACTUAL command from tool_input (not
-                # event.title which is LLM-controlled display text). For shell tools,
-                # extract the real command; for non-shell MCP tools (no tool_input),
-                # use event.title as it IS the provider-controlled tool name.
-                # When tool_input exists but isn't recognized as bash, skip pattern
-                # matching entirely (deny-by-default).
+                # Security: key on the event's canonical, non-model-authored fields,
+                # NEVER event.title (LLM-controlled display text).
+                #
+                # Gate logic keys on the event's canonical, non-model-authored
+                # fields (see acp/types.py) rather than the LLM-authored title:
+                # - is_shell True → shell path: match event.shell_command, which
+                #   is recovered from provenance-trusted params (raw_tool_params,
+                #   then tool_input JSON), returns None on unrecoverable input
+                #   (deny-by-default), and handles the structured use_aws shape
+                #   that raw tool_input sniffing misses. Never falls back to the
+                #   model-authored title.
+                # - shell_classified True + is_shell False → POSITIVELY resolved
+                #   non-shell tool (file edit, MCP tool). Match on the canonical
+                #   _nonshell_trust_key (tool_name + provenance-trusted path),
+                #   NOT event.title: title is LLM-authored, so a backend whose
+                #   title diverges from the real params could otherwise let a
+                #   prompt-injected model forge a trusted path and get writes to
+                #   other files auto-approved. None → deny-by-default.
+                # - Otherwise (shell signal never resolved) → deny-by-default.
                 if slot._trusted_patterns and not _child_low_fidelity:
-                    _tp_cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
-                    if _tp_cmd:
-                        _tp_check_title = f"Running: {_tp_cmd}"
-                    elif not event.tool_input:
-                        _tp_check_title = event.title
+                    if event.is_shell:
+                        # Shell tool: provenance-trusted command or deny.
+                        _tp_shell_cmd = event.shell_command
+                        _tp_check_title = f"Running: {_tp_shell_cmd}" if _tp_shell_cmd else None
+                    elif event.shell_classified:
+                        # Positively classified non-shell tool: match on the
+                        # canonical tool identity + trusted path, never title.
+                        _tp_check_title = _nonshell_trust_key(event)
                     else:
+                        # Shell classification never resolved → deny-by-default.
                         _tp_check_title = None
                     matched = (
                         _matches_trusted_pattern(_tp_check_title, slot._trusted_patterns)
@@ -6557,9 +6602,14 @@ async def _run_chat(
                         metadata={"reason": "browser_cli"},
                     )
                     continue
-                # Trust-reads: auto-approve read-only bash commands
-                # Detect bash tools by tool_input content (title is human-readable)
-                cmd = _extract_bash_command(event.tool_input) if event.tool_input else ""
+                # Trust-reads: auto-approve read-only bash commands.
+                # Use the provenance-trusted shell command (raw_tool_params /
+                # tool_input JSON, use_aws-aware) rather than sniffing tool_input:
+                # event.shell_command is None for non-shell tools and for shell
+                # tools with unrecoverable params, so a non-shell tool carrying a
+                # `command`-shaped field (or a lost-signal shell tool) can never
+                # reach is_read_only_bash below — deny-by-default.
+                cmd = event.shell_command or ""
                 yolo_active = state.is_yolo_active()
                 # Evaluated ONCE for both branches below. Two separate calls could
                 # straddle a scoped grant's expiry and disagree with each other, and
@@ -6710,17 +6760,29 @@ async def _run_chat(
                 if cmd:
                     perm_meta["is_read_only"] = "1" if is_read_only_bash(cmd) else ""
                 # Pre-compute pattern fields for the TrustDropdown.
-                # NOTE: derived from the UN-annotated event.title — the
-                # _child_lf_warning prefix is applied to the DISPLAY text
-                # only, so learned trust patterns keep meaning tool identity.
+                # Derived from PROVENANCE-TRUSTED identity, never event.title
+                # (LLM-authored; select_tool_title even prefers the model's
+                # description for shell tools). This MUST mirror the trusted-
+                # pattern gate's check-string construction exactly, or a stored
+                # grant would never match a later event:
+                #   - shell tool         -> "Running: <shell_command>"
+                #   - non-shell (edit)   -> _nonshell_trust_key (tool_name+path)
+                #   - unrecoverable      -> "" (no trust option offered)
+                # tool_title below stays title-derived for DISPLAY only.
                 _safe_title, _ = redact_exfiltration_urls(event.title)
                 _safe_title, _ = redact_credentials(_safe_title)
                 perm_meta["tool_title"] = _safe_title
-                _full = _extract_full_command(event.title)
+                if event.is_shell:
+                    _pat_src = f"Running: {event.shell_command}" if event.shell_command else ""
+                elif event.shell_classified:
+                    _pat_src = _nonshell_trust_key(event) or ""
+                else:
+                    _pat_src = ""
+                _full = _extract_full_command(_pat_src) if _pat_src else ""
                 _full, _ = redact_exfiltration_urls(_full)
                 _full, _ = redact_credentials(_full)
                 perm_meta["full_command"] = _full
-                _base = _extract_base_command(event.title)
+                _base = _extract_base_command(_pat_src) if _pat_src else ""
                 _base, _ = redact_exfiltration_urls(_base)
                 _base, _ = redact_credentials(_base)
                 perm_meta["base_command"] = _base

@@ -612,6 +612,24 @@ class AcpEvent:
             return True
         return False
 
+    @property
+    def trusted_edit_path(self) -> str | None:
+        """Target file path from PROVENANCE-TRUSTED params, else None.
+
+        Returns the write/edit target (``path`` / ``file_path``) only when
+        ``raw_tool_params`` came from the tool_call cache (``raw_params_trusted``)
+        — NEVER the agent-authored inline permission-frame fallback, and NEVER
+        the LLM-authored display title. A security gate that keys on a trusted
+        tool identity + this path (see acp/types.py ``tool_name`` note) cannot be
+        fooled by a backend whose title diverges from the real params. Returns
+        None when params are untrusted, absent, or carry no path (the caller
+        must then deny-by-default rather than fall back to the title).
+        """
+        if not self.raw_params_trusted or not isinstance(self.raw_tool_params, dict):
+            return None
+        p = self.raw_tool_params.get("path") or self.raw_tool_params.get("file_path")
+        return p if isinstance(p, str) and p else None
+
 
 @dataclass
 class AcpPromptStats:
