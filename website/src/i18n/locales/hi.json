@@ -5179,6 +5179,8 @@
       "folder": "फ़ोल्डर",
       "folder_kind": "फ़ोल्डर",
       "no_matches": "कोई मिलान नहीं",
+      "no_matches_ctrl_enter_sends": "कोई मेल खाती फ़ाइल नहीं — Ctrl+Enter संदेश भेज देगा",
+      "no_matches_enter_sends": "कोई मेल खाती फ़ाइल नहीं — Enter संदेश भेज देगा",
       "open_in_viewer": "व्यूअर में खोलें",
       "remove_folder": "फ़ोल्डर हटाएँ",
       "searching": "खोज रहे हैं…",

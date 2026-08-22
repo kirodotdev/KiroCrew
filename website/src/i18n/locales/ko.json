@@ -5100,6 +5100,8 @@
       "folder": "폴더",
       "folder_kind": "폴더",
       "no_matches": "일치 항목 없음",
+      "no_matches_ctrl_enter_sends": "일치하는 파일이 없습니다 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_matches_enter_sends": "일치하는 파일이 없습니다 — Enter 키를 누르면 메시지가 전송됩니다",
       "open_in_viewer": "뷰어에서 열기",
       "remove_folder": "폴더 제거",
       "searching": "검색 중…",

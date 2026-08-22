@@ -5337,6 +5337,8 @@
       "folder": "Папка",
       "folder_kind": "папка",
       "no_matches": "Совпадений нет",
+      "no_matches_ctrl_enter_sends": "Нет подходящих файлов — Ctrl+Enter отправит сообщение",
+      "no_matches_enter_sends": "Нет подходящих файлов — Enter отправит сообщение",
       "open_in_viewer": "Открыть в просмотрщике",
       "remove_folder": "Удалить папку",
       "searching": "Поиск…",

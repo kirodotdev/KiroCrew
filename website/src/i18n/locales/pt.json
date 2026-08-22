@@ -5258,6 +5258,8 @@
       "folder": "Pasta",
       "folder_kind": "pasta",
       "no_matches": "Nenhuma correspondência",
+      "no_matches_ctrl_enter_sends": "Nenhum arquivo correspondente — Ctrl+Enter envia a mensagem",
+      "no_matches_enter_sends": "Nenhum arquivo correspondente — Enter envia a mensagem",
       "open_in_viewer": "Abrir no visualizador",
       "remove_folder": "Remover pasta",
       "searching": "Pesquisando…",

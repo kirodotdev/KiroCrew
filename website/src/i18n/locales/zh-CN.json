@@ -5100,6 +5100,8 @@
       "folder": "文件夹",
       "folder_kind": "文件夹",
       "no_matches": "无匹配项",
+      "no_matches_ctrl_enter_sends": "没有匹配的文件 —— 按 Ctrl+Enter 直接发送消息",
+      "no_matches_enter_sends": "没有匹配的文件 —— 按 Enter 直接发送消息",
       "open_in_viewer": "在查看器中打开",
       "remove_folder": "移除文件夹",
       "searching": "搜索中…",

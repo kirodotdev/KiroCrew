@@ -5100,6 +5100,8 @@
       "folder": "フォルダー",
       "folder_kind": "フォルダー",
       "no_matches": "一致するものがありません",
+      "no_matches_ctrl_enter_sends": "一致するファイルがありません — Ctrl+Enter でメッセージを送信します",
+      "no_matches_enter_sends": "一致するファイルがありません — Enter でメッセージを送信します",
       "open_in_viewer": "ビューアで開く",
       "remove_folder": "フォルダーを削除",
       "searching": "検索中…",

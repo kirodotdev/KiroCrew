@@ -110,10 +110,10 @@ describe('FilePickerMenu', () => {
     expect(fileSearch.mock.calls[1][0]).toBe('zzq')
   })
 
-  it('shows the empty state once a search settles with no hits', async () => {
+  it('shows the empty state once a search settles with no hits, announcing that Enter sends', async () => {
     fileSearch.mockResolvedValue({ results: [], root: '/root' } as never)
     mount()
-    expect(await screen.findByText('No matches')).toBeInTheDocument()
+    expect(await screen.findByText(/No matching files/)).toBeInTheDocument()
   })
 
   it('renders a file row with size and relative age', async () => {
@@ -219,5 +219,103 @@ describe('FilePickerMenu', () => {
     await screen.findByRole('option')
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onClose).toHaveBeenCalled()
+  })
+
+  // Regression for #5029: a prompt mention (e.g. "@agent-sop:name") matches no
+  // file, and the empty menu used to swallow Enter — the message could not be
+  // sent until a trailing space closed the menu.
+  it('with zero matches, Enter passes through un-prevented and closes the menu', async () => {
+    fileSearch.mockResolvedValue({ results: [], root: '/root' } as never)
+    const { onSelect, onClose } = mount()
+    // The settled-empty state announces the mode flip (UX: Enter now sends).
+    await screen.findByText(/No matching files/)
+    // fireEvent returns false when preventDefault was called; the composer's
+    // own Enter-to-send only fires when the keystroke is NOT prevented.
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true)
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('with zero matches, Tab passes through un-prevented and closes the menu', async () => {
+    fileSearch.mockResolvedValue({ results: [], root: '/root' } as never)
+    const { onSelect, onClose } = mount()
+    await screen.findByText(/No matching files/)
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('with matches, Enter is still consumed by the menu (not released)', async () => {
+    const { onSelect } = mount()
+    await screen.findByRole('option')
+    // The inverse of the zero-match release: a populated menu keeps its claim.
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1))
+  })
+
+  it('while the search is still in flight, Enter stays swallowed (no premature send)', async () => {
+    // A never-settling fetch models the debounce/in-flight window: results are
+    // transiently [], but releasing Enter here would send a draft whose
+    // mention the user was still completing.
+    fileSearch.mockImplementation(() => new Promise(() => {}))
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    const { rerender } = mount({ onSelect, onClose })
+    rerender(<Host query="zz" open onSelect={onSelect} onClose={onClose} />)
+    expect(await screen.findByText(/Searching/)).toBeInTheDocument()
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    expect(onClose).not.toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('below the 2-char threshold, Enter stays swallowed', async () => {
+    const { onClose, rerender } = mount({ query: 'z' })
+    rerender(<Host query="z" open onSelect={vi.fn()} onClose={onClose} />)
+    await screen.findByText(/Type 2\+ chars to search files and folders/)
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('after a settled-empty search, editing the query re-swallows Enter until the debounce settles', async () => {
+    // Settled empty for "zz", then the user broadens the mention: during the
+    // 200ms debounce lag the stale empty result set must NOT release Enter --
+    // the new query may well have matches.
+    fileSearch.mockResolvedValue({ results: [], root: '/root' } as never)
+    const onSelect = vi.fn()
+    const onClose = vi.fn()
+    const { rerender } = mount({ onSelect, onClose })
+    await screen.findByText(/No matching files/)
+
+    rerender(<Host query="zq" open onSelect={onSelect} onClose={onClose} />)
+    // debounced still holds "zz" here -- the stale window under test. The copy
+    // drops back to the plain empty state while the release gate is off.
+    await screen.findByText('No matches')
+    expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(false)
+    expect(onClose).not.toHaveBeenCalled()
+
+    // Once the debounce settles (and the fetch resolves empty), Enter releases.
+    await vi.advanceTimersByTimeAsync(250)
+    await screen.findByText(/No matching files/)
+    await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
+    expect(onClose).toHaveBeenCalled()
+  })
+
+  it('after the search settles in an ERROR, Enter is released too (trap must not survive the error path)', async () => {
+    // A failed search renders the same "No matches" empty state; keeping the
+    // swallow there would recreate the #5029 trap whenever /api/file-search
+    // has a transient failure.
+    fileSearch.mockRejectedValue(new Error('boom'))
+    const { onSelect, onClose } = mount()
+    expect(await screen.findByText(/No matching files/)).toBeInTheDocument()
+    await waitFor(() => expect(fireEvent.keyDown(document, { key: 'Enter' })).toBe(true))
+    expect(onClose).toHaveBeenCalled()
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('in ctrl-enter send mode, the settled-empty copy names Ctrl+Enter (bare Enter is a newline there)', async () => {
+    fileSearch.mockResolvedValue({ results: [], root: '/root' } as never)
+    mount({ sendOnEnter: 'ctrl-enter' })
+    expect(await screen.findByText(/Ctrl\+Enter sends the message/)).toBeInTheDocument()
+    expect(screen.queryByText(/— Enter sends the message/)).not.toBeInTheDocument()
   })
 })

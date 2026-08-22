@@ -2419,6 +2419,7 @@ function ChatInput({
           anchorRef={inputRef as React.RefObject<HTMLElement>}
           open={filePickerOpen}
           project={project}
+          sendOnEnter={sendOnEnter}
           onFileOpen={onFileOpen}
           onSelect={({ path, relativePath, kind }) => {
             // relativePath already carries a trailing slash for directories

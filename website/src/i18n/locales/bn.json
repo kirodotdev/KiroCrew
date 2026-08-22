@@ -5179,6 +5179,8 @@
       "folder": "ফোল্ডার",
       "folder_kind": "ফোল্ডার",
       "no_matches": "কোনো মিল নেই",
+      "no_matches_ctrl_enter_sends": "কোনো মিলে যাওয়া ফাইল নেই — Ctrl+Enter বার্তা পাঠাবে",
+      "no_matches_enter_sends": "কোনো মিলে যাওয়া ফাইল নেই — Enter বার্তা পাঠাবে",
       "open_in_viewer": "ভিউয়ারে খুলুন",
       "remove_folder": "ফোল্ডার সরান",
       "searching": "খোঁজা হচ্ছে…",

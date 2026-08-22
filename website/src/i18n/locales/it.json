@@ -5258,6 +5258,8 @@
       "folder": "Cartella",
       "folder_kind": "cartella",
       "no_matches": "Nessuna corrispondenza",
+      "no_matches_ctrl_enter_sends": "Nessun file corrispondente — Ctrl+Invio invia il messaggio",
+      "no_matches_enter_sends": "Nessun file corrispondente — Invio invia il messaggio",
       "open_in_viewer": "Apri nel visualizzatore",
       "remove_folder": "Rimuovi cartella",
       "searching": "Ricerca in corso…",

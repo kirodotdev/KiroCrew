@@ -5179,6 +5179,8 @@
       "folder": "Ordner",
       "folder_kind": "Ordner",
       "no_matches": "Keine Treffer",
+      "no_matches_ctrl_enter_sends": "Keine passenden Dateien — Ctrl+Enter sendet die Nachricht",
+      "no_matches_enter_sends": "Keine passenden Dateien — Enter sendet die Nachricht",
       "open_in_viewer": "Im Betrachter öffnen",
       "remove_folder": "Ordner entfernen",
       "searching": "Wird gesucht…",

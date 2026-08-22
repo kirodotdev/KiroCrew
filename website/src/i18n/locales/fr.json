@@ -5258,6 +5258,8 @@
       "folder": "Dossier",
       "folder_kind": "dossier",
       "no_matches": "Aucun résultat",
+      "no_matches_ctrl_enter_sends": "Aucun fichier correspondant — Ctrl+Enter envoie le message",
+      "no_matches_enter_sends": "Aucun fichier correspondant — Enter envoie le message",
       "open_in_viewer": "Ouvrir dans la visionneuse",
       "remove_folder": "Retirer le dossier",
       "searching": "Recherche…",

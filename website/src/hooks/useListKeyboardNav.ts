@@ -50,6 +50,18 @@ export interface UseListKeyboardNavOptions {
    * handled (so the hook can stop further processing). Optional.
    */
   onAltEnter?: (index: number) => boolean
+  /**
+   * When the list is empty (`count === 0`), release Enter/Tab instead of
+   * swallowing them, and close the surface (default: false).
+   *
+   * An empty picker has no claim on the keyboard: with nothing to choose,
+   * a swallowed Enter silently blocks the host's own Enter action (e.g. the
+   * chat composer's Enter-to-send) with no way out but typing a closing
+   * character. Surfaces where staying put on an empty list is deliberate
+   * (palette-style surfaces that keep focus while the user refines the
+   * query) keep the default.
+   */
+  releaseKeysWhenEmpty?: boolean
 }
 
 export interface ListKeyboardNav {
@@ -64,7 +76,7 @@ export interface ListKeyboardNav {
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
-  const { open, count, onChoose, onClose, onAltEnter, wrap = false } = opts
+  const { open, count, onChoose, onClose, onAltEnter, wrap = false, releaseKeysWhenEmpty = false } = opts
 
   const [selected, setSelected] = useState(0)
   const selectedRef = useRef(0)
@@ -115,8 +127,15 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       return
     }
     if (n === 0) {
-      // Nothing to choose: swallow the choose/tab keys so the surface stays put.
       if (e.key === 'Enter' || e.key === 'Tab') {
+        if (releaseKeysWhenEmpty) {
+          // Nothing to choose: the surface has no claim on the keystroke, so
+          // close and let it reach the host (e.g. the composer's
+          // Enter-to-send) untouched.
+          onCloseRef.current()
+          return
+        }
+        // Nothing to choose: swallow the choose/tab keys so the surface stays put.
         e.preventDefault()
         e.stopPropagation()
       }
@@ -151,7 +170,7 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       e.stopPropagation()
       onChooseRef.current(selectedRef.current, false)
     }
-  }, [move, wrap])
+  }, [move, wrap, releaseKeysWhenEmpty])
 
   useEffect(() => {
     if (!open) return

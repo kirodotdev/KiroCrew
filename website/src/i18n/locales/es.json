@@ -5258,6 +5258,8 @@
       "folder": "Carpeta",
       "folder_kind": "carpeta",
       "no_matches": "Sin coincidencias",
+      "no_matches_ctrl_enter_sends": "No hay archivos coincidentes: Ctrl+Enter envía el mensaje",
+      "no_matches_enter_sends": "No hay archivos coincidentes: Enter envía el mensaje",
       "open_in_viewer": "Abrir en el visor",
       "remove_folder": "Quitar carpeta",
       "searching": "Buscando…",

@@ -5,6 +5,7 @@ import { FileText, Folder, Eye } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import type { SendMode } from '../pages/chat/ChatSettings'
 
 import { i18nT } from '../i18n/t'
 import { fmtBytes, fmtDateFields, fmtRelative } from '../i18n/format'
@@ -33,6 +34,12 @@ interface Props {
   onClose: () => void
   onFileOpen?: (path: string) => void
   project?: string
+  /**
+   * The composer's effective send binding (see ChatInput's SendMode). Only
+   * consulted for the settled-empty copy: in 'ctrl-enter' mode a bare Enter
+   * is not a send key, so the empty state must not promise "Enter sends".
+   */
+  sendOnEnter?: SendMode
 }
 
 const formatSize = (bytes: number): string => fmtBytes(bytes)
@@ -79,7 +86,7 @@ export function selectionFor(f: FileResult, root: string): { path: string; relat
   }
 }
 
-export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project }: Props) {
+export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClose, onFileOpen, project, sendOnEnter = 'enter' }: Props) {
   const rootRef = useRef('')
   const resultsRef = useRef<FileResult[]>([])
   const onFileOpenRef = useRef(onFileOpen)
@@ -99,7 +106,7 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
   // which already use useQuery). `enabled` gates on 2+ chars; the queryFn `signal`
   // aborts stale requests; `placeholderData` keeps the prior results on screen
   // while the next query resolves so the list doesn't flicker to empty.
-  const { data, isFetching } = useQuery<FileSearchResponse>({
+  const { data, isFetching, isError } = useQuery<FileSearchResponse>({
     queryKey: ['file-search', debounced, project],
     queryFn: ({ signal }) => api.fileSearch(debounced, project, signal),
     enabled: open && debounced.length >= 2,
@@ -143,13 +150,25 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     onSelect(selectionFor(f, rootRef.current))
   }, [onSelect, openInViewer])
 
+  // "Settled and genuinely empty": only then does the menu have no claim on
+  // the keyboard. During the debounce window (debounced lagging the live
+  // query) or an in-flight fetch the results are transiently [] or stale, and
+  // releasing Enter there would irreversibly send a draft whose mention the
+  // user was still completing. A settled ERROR counts as settled-empty too —
+  // the menu shows the same empty state and has nothing to offer, so keeping
+  // the swallow there would recreate the trap on the error path.
+  const releaseKeysWhenEmpty = query.length >= 2 && debounced === query && !isFetching && (data !== undefined || isError)
+
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
+  // When the release gate is armed, Enter/Tab pass through and the menu closes
+  // so the composer can still send the message (the #5029 prompt-mention trap).
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
     open,
     count: results.length,
     onChoose: choose,
     onClose,
     onAltEnter: openInViewer,
+    releaseKeysWhenEmpty,
   })
 
   // Mirror the ordered results into the ref that choose()/openInViewer read at
@@ -179,7 +198,11 @@ export default function FilePickerMenu({ query, anchorRef, open, onSelect, onClo
     ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.type_2_chars_to_search_files')}</div>
     : isFetching
     ? <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.searching')}</div>
-    : <div className="px-3 py-3 text-[12px] text-muted">{i18nT('components.filePickerMenu.no_matches')}</div>
+    // Enter's meaning flips with the release gate (pick → send), so the copy
+    // must announce it at the point of action rather than silently sending.
+    // Named per the composer's send binding: in 'ctrl-enter' mode a bare
+    // Enter is a newline, so promising "Enter sends" there would be false.
+    : <div className="px-3 py-3 text-[12px] text-muted">{i18nT(!releaseKeysWhenEmpty ? 'components.filePickerMenu.no_matches' : sendOnEnter === 'ctrl-enter' ? 'components.filePickerMenu.no_matches_ctrl_enter_sends' : 'components.filePickerMenu.no_matches_enter_sends')}</div>
 
   return createPortal(
     <div

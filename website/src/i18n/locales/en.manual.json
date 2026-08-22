@@ -1175,6 +1175,10 @@
       "run_named_now": "Run {{name}} now",
       "running": "running"
     },
+    "filePickerMenu": {
+      "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
+      "no_matches_enter_sends": "No matching files — Enter sends the message"
+    },
     "kiroAccountModal": {
       "account_details_unavailable": "Account details unavailable",
       "checking_account": "Checking account…",
