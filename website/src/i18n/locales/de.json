@@ -6337,9 +6337,30 @@
       "triggers": "Auslöser",
       "what_this_skill_does_and_when_the_agent_should_u": "Was dieser Skill tut und wann der Agent ihn verwenden soll"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} kommt aus dem eigenen .kiro/skills-Ordner dieses Projekts.",
+      "confirm": "Diesem Ordner vertrauen",
+      "consequence": "Wenn du diesem Ordner vertraust, dürfen seine Skill-Dateien in den Kontext dieses Chats gelangen, wo sie den Agenten anweisen können, Befehle auszuführen. Vertraue nur einem Projekt, das du kennst.",
+      "decline": "Jetzt nicht",
+      "decline_consequence": "Wenn du ablehnst, wird nichts geladen und deine Nachricht bleibt, wie du sie eingegeben hast.",
+      "grant_failed": "Vertrauen für diesen Ordner konnte nicht gespeichert werden.",
+      "title": "Den Skills dieses Projekts vertrauen?",
+      "withdraw_hint": "Du kannst das später auf der Einstellungsseite Skills widerrufen.",
+      "working": "Vertrauen wird erteilt…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Dieser Ordner existiert nicht mehr.",
+      "hint": "Diese Projektordner dürfen ihre eigenen Skills in einen Chat laden. Widerrufe einen Ordner, damit seine Skills nicht mehr geladen werden.",
+      "revoke": "Widerrufen",
+      "revoke_failed": "Vertrauen für diesen Ordner konnte nicht widerrufen werden.",
+      "revoking": "Wird widerrufen…",
+      "title": "Vertraute Projektordner"
+    },
     "skillPickerMenu": {
       "loading_skills": "Skills werden geladen…",
-      "no_matching_skills": "Keine passenden Skills"
+      "no_matching_skills": "Keine passenden Skills",
+      "trust_needed_badge": "Vertrauen nötig",
+      "trust_needed_hint": "Aus diesem Projekt. Auswählen, um zu prüfen und dem Ordner zu vertrauen."
     },
     "slashCommandMenu": {
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",

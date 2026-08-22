@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Sparkles } from 'lucide-react'
+import { Lock, Sparkles } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
@@ -18,14 +18,25 @@ interface SkillItem {
   name: string
   description: string
   source?: string      // kirocrew | aim | kiro-user | kiro-workspace
+  // Only present on `kiro-workspace` rows: whether the operator has granted
+  // this project directory trust. An untrusted row is LISTED but not usable —
+  // its `$token` would expand to nothing, because SkillsLoader gates the
+  // project root on the grant.
+  trusted?: boolean
 }
 
 interface Props {
   query: string
   anchorRef: React.RefObject<HTMLElement | null>
   open: boolean
+  // Real chat-slot key (e.g. "dashboard:chat-7"). Sent as X-Session-Key so the
+  // server resolves THIS chat's project rather than the shared placeholder.
+  slotKey?: string
   // Receives the leaf token to insert (e.g. "oncall-handover") plus the full key.
   onSelect: (info: { leaf: string; key: string }) => void
+  // An untrusted project skill was chosen: ask for consent rather than
+  // inserting a token that cannot resolve.
+  onTrustRequest?: (info: { leaf: string; key: string }) => void
   onClose: () => void
 }
 
@@ -35,18 +46,26 @@ function leafOf(key: string): string {
   return i === -1 ? key : key.slice(i + 1)
 }
 
-export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onClose }: Props) {
+// A workspace skill the operator has not consented to yet.
+function needsTrust(s: SkillItem): boolean {
+  return s.source === 'kiro-workspace' && s.trusted === false
+}
+
+export default function SkillPickerMenu({
+  query, anchorRef, open, slotKey, onSelect, onTrustRequest, onClose,
+}: Props) {
   const [results, setResults] = useState<SkillItem[]>([])
   const resultsRef = useRef<SkillItem[]>([])
 
-  // Shared skills cache. Keyed ['skills'] so it dedupes with SkillsTab's query
-  // and any focus-prefetch in ChatInput — the menu's first open is warm if the
-  // list was already fetched. staleTime is long because skills change rarely
-  // (added via setup/AIM sync). `enabled: open` keeps the menu lazy: no fetch
-  // until it's actually shown (the focus-prefetch warms the cache separately).
+  // Shared skills cache, keyed per slot: the list now depends on the requesting
+  // chat's project, so a flat ['skills'] key would serve one chat's project
+  // skills to a chat working somewhere else. Prefix-matching keeps every
+  // existing invalidateQueries({queryKey:['skills']}) call working.
+  // staleTime is long because skills change rarely. `enabled: open` keeps the
+  // menu lazy — the focus-prefetch warms the same key separately.
   const { data, isLoading } = useQuery<SkillItem[]>({
-    queryKey: ['skills'],
-    queryFn: () => api.skills(),
+    queryKey: ['skills', slotKey ?? null],
+    queryFn: () => api.skills(slotKey),
     enabled: open,
     staleTime: 5 * 60 * 1000, // 5 min
   })
@@ -56,8 +75,13 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
   const choose = useCallback((idx: number) => {
     const r = resultsRef.current
     const s = r[idx >= r.length ? 0 : idx]
-    if (s) onSelect({ leaf: leafOf(s.key || s.name), key: s.key || s.name })
-  }, [onSelect])
+    if (!s) return
+    const info = { leaf: leafOf(s.key || s.name), key: s.key || s.name }
+    // Route an unconsented project skill to the consent step. Inserting its
+    // token instead would look like success and then do nothing at all.
+    if (needsTrust(s) && onTrustRequest) onTrustRequest(info)
+    else onSelect(info)
+  }, [onSelect, onTrustRequest])
 
   // Shared Arrow/Enter/Tab/Escape + scroll-into-view (see useListKeyboardNav).
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
@@ -126,6 +150,8 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
     >
       {results.length === 0 ? empty : results.map((s, i) => {
         const leaf = leafOf(s.key || s.name)
+        const gated = needsTrust(s)
+        const info = { leaf, key: s.key || s.name }
         return (
           <div
             role="option"
@@ -136,16 +162,30 @@ export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onCl
             className={`w-full text-left px-3 py-2 flex items-center gap-3 cursor-pointer transition-colors ${i === selected ? 'bg-accent-subtle text-text' : 'text-muted hover:bg-bg-hover hover:text-text'}`}
             title={s.key}
             onMouseEnter={() => setSelected(i)}
-            onMouseDown={e => { e.preventDefault(); onSelect({ leaf, key: s.key || s.name }) }}
+            onMouseDown={e => {
+              e.preventDefault()
+              if (gated && onTrustRequest) onTrustRequest(info)
+              else onSelect(info)
+            }}
           >
-            <Sparkles size={14} className="shrink-0 lucide-inline" />
+            {gated
+              ? <Lock size={14} className="shrink-0 lucide-inline" />
+              : <Sparkles size={14} className="shrink-0 lucide-inline" />}
             <div className="flex-1 min-w-0">
-              <div className="text-[13px] font-mono font-semibold truncate">${leaf}</div>
-              <div className="text-[11px] text-muted truncate">{s.description || s.key}</div>
+              <div className={`text-[13px] font-mono font-semibold truncate ${gated ? 'text-muted' : ''}`}>${leaf}</div>
+              <div className="text-[11px] text-muted truncate">
+                {gated ? i18nT('components.skillPickerMenu.trust_needed_hint') : (s.description || s.key)}
+              </div>
             </div>
-            {s.source && s.source !== 'kirocrew' && (
-              <span className="text-[10px] text-muted shrink-0 whitespace-nowrap uppercase tracking-wide">{s.source}</span>
-            )}
+            {gated
+              ? (
+                <span className="text-[10px] text-warn shrink-0 whitespace-nowrap uppercase tracking-wide">
+                  {i18nT('components.skillPickerMenu.trust_needed_badge')}
+                </span>
+              )
+              : s.source && s.source !== 'kirocrew' && (
+                <span className="text-[10px] text-muted shrink-0 whitespace-nowrap uppercase tracking-wide">{s.source}</span>
+              )}
           </div>
         )
       })}

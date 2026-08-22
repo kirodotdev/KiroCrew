@@ -629,6 +629,123 @@ Supports nested directories (e.g. `skills/utils/tiny-url/SKILL.md`). The skill n
 
 **Source precedence** (project-level wins): `$KIROCREW_PROJECT_DIR/skills/` → `builtin_skills/` (bundled). Auto-copied to `~/.kiro/crew/skills/` on first run. Copies entire skill directories (scripts, assets, etc.).
 
+**Project skills (`<project>/.kiro/skills`) — a different source from the one above.**
+`$KIROCREW_PROJECT_DIR/skills/` is a *sync* source: its contents are copied into
+`~/.kiro/crew/skills/` and thereafter are ordinary local skills. `<project>/.kiro/skills`
+is *discovered in place* for the session whose slot is bound to that project, and is
+never copied. A skill found there is reported with source `kiro-workspace`.
+
+The project reaches the loader through its public entry points (`_iter`,
+`get_triggered_skills`, `get_context`, `load_skill`, `resolve_dollar_skills`,
+`list_skills`), not through `SkillsLoader.__init__`. There are a dozen construction
+sites, none of which knows a session's project; threading the constructor would have
+required every one of them to learn about a concept only the chat paths have. A caller
+that wants project skills passes `project_dir`; every other caller is unchanged and
+sees exactly the previous behaviour. The `_iter` cache is keyed per project, so two
+chats on different projects cannot serve each other's skills from a shared entry.
+
+**Consent (`skill_trust.py`).** A SKILL.md is prose, but it enters the agent's context
+and can instruct the agent to run anything, so loading one out of whatever repository
+happens to be open is an execution-adjacent decision. Project skills are therefore
+gated on an explicit per-directory grant, recorded at
+`<data home>/trust/project-skills.json` (mode `0o600`). That directory is a
+whole-directory entry on the keystone deny list, so the agent's own file tools can
+neither read the store nor forge a grant; like every other keystone reader, the module
+opens the path directly rather than through the agent file gate.
+
+Grants are keyed on the **canonical** directory (`os.path.realpath`), because the
+directory *is* the resource. Keying on a softer identity would leave the unkeyed
+component forgeable: a second name aliasing one directory would carry its own trust,
+and a rename would orphan the record. A symlink therefore resolves to the same grant as
+its target, and cannot manufacture a new one.
+
+Every unknown resolves toward untrusted: an unreadable store, a malformed store, a
+schema version newer than this build, a relative path, a path that does not exist, and a
+path naming a file all yield no grant. Refusing to load a skill costs a click; loading
+one the operator never consented to cannot be undone.
+
+`skills.project_skills_enabled` (`SkillsConfig`, default true) is the operator's hard off
+switch — independent of any grant, so a directory carrying one still loads nothing when
+it is false.
+
+**Trust verbs.** `GET/POST/DELETE /api/skills/-/trust`, registered before the
+`/api/skills/{name}` catch-all. The grant derives its directory from the requesting
+chat slot, never from a client-supplied path, so no caller can consent on behalf of a
+directory the operator never opened. `DELETE` accepts an explicit `path` so a grant
+whose directory has since disappeared stays revocable — `list_trusted_projects` reports
+stored rows rather than the enforced set for the same reason, since an invisible grant
+could not be withdrawn.
+
+**One project-resolution rule, and it is the strict one.** The catalog
+(`GET /api/skills`), the trust read and the grant all resolve their directory with
+`requesting_slot_project()` — the project bound to *that* chat slot, with no
+cross-slot fallback — because that is what `SkillsLoader` resolves from
+(`slot.project` verbatim). The neighbouring `active_project_dir()` additionally falls
+back to "the single project some open slot has", which is right for a global settings
+page and wrong here in two ways: a grant issued from a chat with no project would
+record consent against *another* chat's project, and the catalog would advertise a
+skill whose `$token` expands to nothing because the loader sees no project. Revoke
+keeps the permissive helper, since revoking only ever narrows what loads. The loader
+is deliberately the strict side: teaching it the fallback would inject one project's
+skills into a chat not bound to it.
+
+**Consent is confined to the consented directory.** A grant names one directory, so
+the skills root must actually live inside it: `<project>/.kiro/skills` is resolved with
+`realpath` and refused (with a logged reason) when it points out of the project, and
+the walk is confined to the granted key rather than inheriting the skill-provider roots
+that let an *app* symlink into its own tree. Containment is enforced per directory and
+per file, because a symlinked `SKILL.md` sits inside a perfectly contained directory
+while its contents come from elsewhere — and its frontmatter reaches the catalog and the
+injected skills index, which tells the agent to read that path. `validate_file_path()`
+is not sufficient here: it is a sensitivity denylist, not a containment check.
+
+**One enforcement point for every enumerated read.** Enumeration is TTL-cached, so a
+path vetted while genuine can be replaced by a link out of the granted directory before
+anything reads it — and the root that made it acceptable is only known at enumeration
+time. So `_iter_uncached` records, per path, the root it was vetted against, and
+`SkillsLoader._read_enumerated_skill_bytes` is the only place an enumerated skill file is
+read: it re-checks that root on the *descriptor it opened* (`O_NOFOLLOW` + `fstat`), not
+on the path string. Both the body read and the frontmatter/metadata read go through it,
+and a guard test fails if either stops doing so.
+
+That guard exists because the two drifted apart once: the body read was hardened while
+the metadata read of the same cached paths stayed unchecked, which is not a cosmetic gap
+— frontmatter `description` is rendered verbatim into the injected skills index, and
+`triggers` / `always` / `inject_on_trigger` decide what loads on every turn. A path with
+no recorded root (the global skills dir, `extra_paths`, edition roots) is read
+unconfined, which is what keeps an app's registered symlink into its own tree working;
+confinement applies to project paths only. An oversized file is skipped with a warning
+rather than raised, because the global path applies no cap at all and a chat turn must
+not die on a checked-out file.
+
+The dashboard's skill *browse* endpoints are deliberately **not** trust-gated: reading a
+`SKILL.md` is how the operator decides whether to grant trust, so requiring the grant to
+view the file would make that decision blind. The boundary that matters — an unconsented
+project skill never reaching the agent's context — is enforced in `SkillsLoader`.
+
+**Enforcement is audited, on first use rather than per message.** Granting and revoking
+consent are audited `critical=True` where the operator acts. The decision that *uses* that
+authority — admitting a project's skills into a session — is audited too, or the log would
+show who consented but never that it took effect. It is recorded once per (canonical
+directory, outcome) per process, because `_trusted_project_key` runs on every message: one
+governance event per message would bury the events that matter and put an SEL write on the
+per-message path. A new directory, or the same directory after `project_skills_enabled` is
+flipped, is recorded again. Refusals are recorded on the same basis, because "this project's
+skills were not loaded" is what an operator debugging a dead `$token` needs. `critical=False`
+deliberately: this is a record of an outcome, not an audit-or-deny gate, so an unwritable SEL
+must not fail a chat turn — the authority it refers to was already written synchronously when
+consent was given.
+
+**Untrusted skills are listed, not hidden.** Catalog rows for `kiro-workspace` carry
+`trusted: bool`. A silently absent skill is indistinguishable from one that does not
+exist, so the picker shows an untrusted project skill with a "needs trust" marker and
+choosing it opens the consent dialog instead of inserting a `$token` the loader would
+refuse to resolve.
+
+**`search_skills` stays project-blind.** Only a session key reaches that boundary and
+resolving a project from it needs a seam that does not exist yet, so the MCP tool
+continues to search locally installed skills only.
+
 The bundled `session-summaries` skill is on-demand, guidance-only: it explains the
 chat session summary panel (see [session-summary](session-summary.md)) — what it
 shows, its token cost, and how to make a session summarize well — so the agent can

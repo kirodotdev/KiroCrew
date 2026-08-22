@@ -6426,9 +6426,30 @@
       "triggers": "Activadores",
       "what_this_skill_does_and_when_the_agent_should_u": "Qué hace esta skill y cuándo debería usarla el agente"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} viene de la carpeta .kiro/skills propia de este proyecto.",
+      "confirm": "Confiar en esta carpeta",
+      "consequence": "Confiar en esta carpeta permite que sus archivos de habilidad entren en el contexto de este chat, donde pueden indicarle al agente que ejecute comandos. Confía solo en un proyecto que reconozcas.",
+      "decline": "Ahora no",
+      "decline_consequence": "Si rechazas, no se carga nada y tu mensaje queda tal como lo escribiste.",
+      "grant_failed": "No se pudo registrar la confianza en esta carpeta.",
+      "title": "¿Confiar en las habilidades de este proyecto?",
+      "withdraw_hint": "Puedes retirar esto más adelante desde la página de ajustes Habilidades.",
+      "working": "Confiando…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Esta carpeta ya no existe.",
+      "hint": "Estas carpetas de proyecto pueden cargar sus propios skills en un chat. Retira una carpeta para que sus skills dejen de cargarse.",
+      "revoke": "Retirar",
+      "revoke_failed": "No se pudo retirar la confianza de esta carpeta.",
+      "revoking": "Retirando…",
+      "title": "Carpetas de proyecto de confianza"
+    },
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
-      "no_matching_skills": "No hay skills coincidentes"
+      "no_matching_skills": "No hay skills coincidentes",
+      "trust_needed_badge": "Requiere confianza",
+      "trust_needed_hint": "De este proyecto. Selecciónala para revisarla y confiar en la carpeta."
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",

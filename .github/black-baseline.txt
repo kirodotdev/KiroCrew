@@ -235,7 +235,6 @@ src/kiro_crew/dashboard/chat_voice.py
 src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/cron_inject.py
 src/kiro_crew/dashboard/file_index.py
-src/kiro_crew/dashboard/handlers/_shared.py
 src/kiro_crew/dashboard/handlers/agents.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
@@ -253,12 +252,10 @@ src/kiro_crew/dashboard/handlers/mcp_custom.py
 src/kiro_crew/dashboard/handlers/memory.py
 src/kiro_crew/dashboard/handlers/messaging.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
-src/kiro_crew/dashboard/handlers/prompts.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/session_storage.py
 src/kiro_crew/dashboard/handlers/sessions.py
 src/kiro_crew/dashboard/handlers/side.py
-src/kiro_crew/dashboard/handlers/skill_budget.py
 src/kiro_crew/dashboard/handlers/source_providers.py
 src/kiro_crew/dashboard/handlers/sso_login.py
 src/kiro_crew/dashboard/handlers/steering.py
@@ -436,7 +433,6 @@ src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
 src/kiro_crew/skill_providers/skillsh.py
 src/kiro_crew/skill_usage.py
-src/kiro_crew/skills.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/blocks.py
@@ -1222,7 +1218,6 @@ test/test_side_context.py
 test/test_side_context_cov80.py
 test/test_side_steer_queue.py
 test/test_skill_browser.py
-test/test_skill_budget.py
 test/test_skill_dedupe.py
 test/test_skill_discover.py
 test/test_skill_home_paths.py

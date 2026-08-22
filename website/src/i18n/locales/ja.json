@@ -6248,9 +6248,30 @@
       "triggers": "トリガー",
       "what_this_skill_does_and_when_the_agent_should_u": "このスキルが何をするか、およびエージェントがいつそれを使用すべきかの説明"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} はこのプロジェクト自身の .kiro/skills フォルダーにあります。",
+      "confirm": "このフォルダーを信頼",
+      "consequence": "このフォルダーを信頼すると、その中のスキルファイルがこのチャットのコンテキストに読み込まれ、エージェントにコマンドの実行を指示できるようになります。信頼していいのは、心当たりのあるプロジェクトだけです。",
+      "decline": "今はしない",
+      "decline_consequence": "拒否した場合、何も読み込まれず、メッセージは入力したままになります。",
+      "grant_failed": "このフォルダーの信頼を記録できませんでした。",
+      "title": "このプロジェクトのスキルを信頼しますか？",
+      "withdraw_hint": "これは後でスキル設定ページから取り消せます。",
+      "working": "信頼中…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "このフォルダーはもう存在しません。",
+      "hint": "これらのプロジェクトフォルダーは、独自のスキルをチャットに読み込めます。フォルダーの信頼を取り消すと、そのスキルは読み込まれなくなります。",
+      "revoke": "取り消す",
+      "revoke_failed": "このフォルダーの信頼を取り消せませんでした。",
+      "revoking": "取り消し中…",
+      "title": "信頼済みのプロジェクトフォルダー"
+    },
     "skillPickerMenu": {
       "loading_skills": "スキルを読み込み中…",
-      "no_matching_skills": "一致するスキルがありません"
+      "no_matching_skills": "一致するスキルがありません",
+      "trust_needed_badge": "信頼が必要",
+      "trust_needed_hint": "このプロジェクトのスキルです。選択すると内容を確認してフォルダーを信頼できます。"
     },
     "slashCommandMenu": {
       "desc_agent": "アクティブなエージェントを切り替えるか管理する",

@@ -6248,9 +6248,30 @@
       "triggers": "触发词",
       "what_this_skill_does_and_when_the_agent_should_u": "此技能的作用以及代理应在何时使用它"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} 来自此项目自带的 .kiro/skills 文件夹。",
+      "confirm": "信任此文件夹",
+      "consequence": "信任此文件夹后，其中的技能文件会进入本次聊天的上下文，并可指示代理执行命令。只信任你认得的项目。",
+      "decline": "暂不",
+      "decline_consequence": "如果拒绝，不会加载任何内容，消息保持你输入的原样。",
+      "grant_failed": "无法记录对此文件夹的信任。",
+      "title": "信任此项目的技能？",
+      "withdraw_hint": "以后可以在技能设置页面撤销。",
+      "working": "正在信任…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "此文件夹已不存在。",
+      "hint": "这些项目文件夹可以把自带技能加载到聊天中。撤销某个文件夹后，它的技能将不再加载。",
+      "revoke": "撤销",
+      "revoke_failed": "无法撤销此文件夹的信任。",
+      "revoking": "正在撤销…",
+      "title": "受信任的项目文件夹"
+    },
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
-      "no_matching_skills": "无匹配的技能"
+      "no_matching_skills": "无匹配的技能",
+      "trust_needed_badge": "需要信任",
+      "trust_needed_hint": "来自此项目。选择它即可查看并信任此文件夹。"
     },
     "slashCommandMenu": {
       "desc_agent": "切换或管理当前代理",

@@ -3341,6 +3341,18 @@ class SkillsConfig:
             "Local ~/.kiro/crew/skills/ takes precedence for duplicate names.",
         ),
     )
+    project_skills_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Project Skills",
+            "Whether a chat session may load skills from its own project's "
+            "<project>/.kiro/skills directory. Enabled by default, but a project's "
+            "skills are still only loaded after the operator grants that specific "
+            "directory trust, because a SKILL.md enters the agent's context and can "
+            "instruct it to run anything. Set false to make project skills "
+            "impossible regardless of any grant already recorded.",
+        ),
+    )
 
     def __post_init__(self) -> None:
         if self.max_triggered < 0:
@@ -6934,6 +6946,7 @@ class KiroCrewConfig:
                 extra_paths=[
                     p for p in _safe_list(skills_data.get("extra_paths")) if isinstance(p, str)
                 ],
+                project_skills_enabled=bool(skills_data.get("project_skills_enabled", True)),
             ),
             session_summary=SessionSummaryConfig(
                 enabled=bool(session_summary_data.get("enabled", False)),

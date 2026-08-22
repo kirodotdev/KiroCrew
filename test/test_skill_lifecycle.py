@@ -99,10 +99,10 @@ def test_pin_unpin_roundtrip(loader):
     meta = loader._cached_frontmatter  # noqa: F841 (ensure attr exists)
     import pathlib
 
-    fm = loader._cached_frontmatter(pathlib.Path(loader._dir / name / "SKILL.md"))
+    fm = loader._cached_frontmatter(pathlib.Path(loader._dir / name / "SKILL.md"), within=None)
     assert str(fm.get("pinned", "")).lower() == "true"
     assert loader.set_pinned(name, False) is True
-    fm2 = loader._cached_frontmatter(pathlib.Path(loader._dir / name / "SKILL.md"))
+    fm2 = loader._cached_frontmatter(pathlib.Path(loader._dir / name / "SKILL.md"), within=None)
     assert "pinned" not in fm2
 
 

@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api } from '../../api/client'
+import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
@@ -232,6 +233,7 @@ export default function SkillsTab() {
 
   return (<>
     <PendingSkillsPanel />
+    <ProjectSkillsTrustList />
     {/* Create Skill Modal */}
     <Modal open={creating} onClose={() => setCreating(false)} title={i18nT('pages.overview.skillsTab.create_new_skill')} maxWidth={560} footer={<>
       <Btn onClick={() => setCreating(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>

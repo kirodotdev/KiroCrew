@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.skill_usage import SkillUsageLedger
 
 # ---------------------------------------------------------------------------
@@ -66,10 +67,13 @@ class TestAliasFold:
         os.symlink(str(canonical_file), str(alias_skill))
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "ns/pod-e2e": (262, now - 3600),
-            "pod-e2e": (52, now - 7200),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "ns/pod-e2e": (262, now - 3600),
+                "pod-e2e": (52, now - 7200),
+            },
+        )
 
         # Build a minimal SkillsLoader mock.
         skill_pairs = [("ns/pod-e2e", canonical_file)]
@@ -82,9 +86,11 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return skill_pairs
+                # Third element: the root the path was vetted against. These
+                # fixtures are an operator-installed tree, so None.
+                return [(n, pth, None) for n, pth in skill_pairs]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Pod E2e"}
 
             def _owned_hint(self, path):
@@ -92,6 +98,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -115,10 +122,13 @@ class TestAliasFold:
 
         now = time.time()
         # "ghost-skill" has no SKILL.md on disk at all.
-        ledger = _make_ledger(tmp_path, {
-            "real-skill": (10, now - 100),
-            "ghost-skill": (999, now - 50),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "real-skill": (10, now - 100),
+                "ghost-skill": (999, now - 50),
+            },
+        )
 
         class FakeLoader:
             _usage = ledger
@@ -128,9 +138,9 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return [("real-skill", canonical_file)]
+                return [("real-skill", canonical_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Real Skill"}
 
             def _owned_hint(self, path):
@@ -138,6 +148,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -164,9 +175,9 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return [("brand-new", skill_file)]
+                return [("brand-new", skill_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Brand New"}
 
             def _owned_hint(self, path):
@@ -174,6 +185,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -201,9 +213,9 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return [("measured", skill_file)]
+                return [("measured", skill_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Measured"}
 
             def _owned_hint(self, path):
@@ -211,6 +223,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -227,10 +240,13 @@ class TestAliasFold:
         f2 = _make_skill(tmp_path, "beta", "bbbbb")
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "alpha": (3, now),
-            "beta": (2, now),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "alpha": (3, now),
+                "beta": (2, now),
+            },
+        )
 
         class FakeLoader:
             _usage = ledger
@@ -240,9 +256,9 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return [("alpha", f1), ("beta", f2)]
+                return [("alpha", f1, None), ("beta", f2, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {}
 
             def _owned_hint(self, path):
@@ -250,6 +266,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -271,9 +288,9 @@ class TestAliasFold:
             _alias_cache = None
 
             def _iter(self):
-                return [("orphan", skill_file)]
+                return [("orphan", skill_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Orphan"}
 
             def _owned_hint(self, path):
@@ -281,6 +298,7 @@ class TestAliasFold:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -315,11 +333,14 @@ class TestNestedFirstSkillBaseDir:
         os.symlink(str(nested_file), str(alias_skill))
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "apps/deploy": (100, now - 100),
-            "old-deploy": (50, now - 200),
-            "zebra": (10, now - 50),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "apps/deploy": (100, now - 100),
+                "old-deploy": (50, now - 200),
+                "zebra": (10, now - 50),
+            },
+        )
 
         # Pairs sorted alphabetically — "apps/deploy" comes FIRST.
         skill_pairs = [("apps/deploy", nested_file), ("zebra", zebra_file)]
@@ -332,9 +353,11 @@ class TestNestedFirstSkillBaseDir:
             _alias_cache = None
 
             def _iter(self):
-                return skill_pairs
+                # Third element: the root the path was vetted against. These
+                # fixtures are an operator-installed tree, so None.
+                return [(n, pth, None) for n, pth in skill_pairs]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Deploy" if "deploy" in str(path) else "Zebra"}
 
             def _owned_hint(self, path):
@@ -342,6 +365,7 @@ class TestNestedFirstSkillBaseDir:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -378,10 +402,13 @@ class TestAliasUnderExtraPath:
         os.symlink(str(served_file), str(alias_dir / "SKILL.md"))
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "pod-e2e": (291, now - 100),
-            "old-pod-e2e": (51, now - 500),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "pod-e2e": (291, now - 100),
+                "old-pod-e2e": (51, now - 500),
+            },
+        )
 
         class FakeLoader:
             _usage = ledger
@@ -390,9 +417,9 @@ class TestAliasUnderExtraPath:
             _alias_cache = None
 
             def _iter(self):
-                return [("pod-e2e", served_file)]
+                return [("pod-e2e", served_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Pod E2E"}
 
             def _owned_hint(self, path):
@@ -400,6 +427,7 @@ class TestAliasUnderExtraPath:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -425,10 +453,13 @@ class TestServedAliasIsFolded:
         os.symlink(str(real_file), str(alias_file))
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "new-name": (100, now - 100),
-            "old-name": (40, now - 900),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "new-name": (100, now - 100),
+                "old-name": (40, now - 900),
+            },
+        )
         # Both are served -- this is what _iter_skill_files really returns here.
         skill_pairs = [("new-name", real_file), ("old-name", alias_file)]
 
@@ -439,9 +470,11 @@ class TestServedAliasIsFolded:
             _alias_cache = None
 
             def _iter(self):
-                return skill_pairs
+                # Third element: the root the path was vetted against. These
+                # fixtures are an operator-installed tree, so None.
+                return [(n, pth, None) for n, pth in skill_pairs]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Skill"}
 
             def _owned_hint(self, path):
@@ -449,6 +482,7 @@ class TestServedAliasIsFolded:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -477,6 +511,7 @@ class TestServedAliasIsFolded:
             [("aaa-alias", alias_file), ("zzz-real", real_file)],
             [("zzz-real", real_file), ("aaa-alias", alias_file)],
         ):
+
             class FakeLoader:
                 _usage = ledger
                 _dir = tmp_path
@@ -484,7 +519,8 @@ class TestServedAliasIsFolded:
                 _alias_cache = None
 
                 def _iter(self, _p=pairs):
-                    return _p
+                    # Third element: the vetted root. Fixture tree, so None.
+                    return [(n, pth, None) for n, pth in _p]
 
             got = SkillsLoader.resolve_ledger_aliases(FakeLoader())
             assert got == {"zzz-real": ["aaa-alias"]}, f"order changed the winner: {got}"
@@ -511,10 +547,15 @@ class TestFrontmatterFailurePolicy:
 
         class FakeLoader:
             _fm_cache: dict = {}
+            # No recorded root: the unconfined case, so these tests keep
+            # exercising real read/decode failure rather than a refusal.
+            _confine: dict = {}
+            _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
+            _parse_frontmatter_text = staticmethod(SkillsLoader._parse_frontmatter_text)
             _parse_frontmatter = staticmethod(SkillsLoader._parse_frontmatter)
 
         with pytest.raises(UnicodeDecodeError):
-            SkillsLoader._cached_frontmatter(FakeLoader(), bad)
+            SkillsLoader._cached_frontmatter(FakeLoader(), bad, within=None)
 
     def test_nothing_is_cached_for_a_failed_read(self, tmp_path):
         """A propagated failure must not leave a poisoned mtime-keyed entry."""
@@ -527,11 +568,16 @@ class TestFrontmatterFailurePolicy:
 
         class FakeLoader:
             _fm_cache: dict = {}
+            # No recorded root: the unconfined case, so these tests keep
+            # exercising real read/decode failure rather than a refusal.
+            _confine: dict = {}
+            _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
+            _parse_frontmatter_text = staticmethod(SkillsLoader._parse_frontmatter_text)
             _parse_frontmatter = staticmethod(SkillsLoader._parse_frontmatter)
 
         loader = FakeLoader()
         with pytest.raises(UnicodeDecodeError):
-            SkillsLoader._cached_frontmatter(loader, bad)
+            SkillsLoader._cached_frontmatter(loader, bad, within=None)
         assert loader._fm_cache == {}, "a failed read must not be cached"
 
     def test_a_successful_parse_is_still_cached(self, tmp_path):
@@ -542,16 +588,59 @@ class TestFrontmatterFailurePolicy:
 
         class FakeLoader:
             _fm_cache: dict = {}
+            # No recorded root: the unconfined case, so these tests keep
+            # exercising real read/decode failure rather than a refusal.
+            _confine: dict = {}
+            _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
 
             @staticmethod
-            def _parse_frontmatter(path):
+            def _parse_frontmatter_text(content):
                 calls.append(1)
-                return SkillsLoader._parse_frontmatter(path)
+                return SkillsLoader._parse_frontmatter_text(content)
 
         loader = FakeLoader()
-        SkillsLoader._cached_frontmatter(loader, skill)
-        SkillsLoader._cached_frontmatter(loader, skill)
+        SkillsLoader._cached_frontmatter(loader, skill, within=None)
+        SkillsLoader._cached_frontmatter(loader, skill, within=None)
         assert len(calls) == 1, "a successful parse should be cached, not re-read"
+
+
+class TestUnreadableSkillPropagates:
+    """An unreadable file is an ERROR, not a refusal, and writers must hear it.
+
+    Distinct from the undecodable case above, which fails at the decode step. This
+    one fails at the OPEN, and the two travel different paths through
+    `_read_enumerated_skill_bytes`: a refusal (escaped its vetted root, not a
+    regular file, oversized) degrades to no metadata, while a genuine read failure
+    propagates. Collapsing them is what turns a loud failure into silent data loss
+    for `update_auto_skill`.
+    """
+
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="POSIX mode bits; Windows ACLs do not make a file unopenable this way",
+    )
+    def test_an_unopenable_skill_raises_rather_than_returning_no_metadata(self, tmp_path):
+        import os
+
+        from kiro_crew.skills import SkillsLoader
+
+        if os.geteuid() == 0:
+            pytest.skip("root ignores mode bits, so the file stays readable")
+
+        skill = _make_skill(tmp_path, "locked", "---\nname: Locked\n---\nbody")
+        os.chmod(skill, 0o000)
+
+        class FakeLoader:
+            _fm_cache: dict = {}
+            _confine: dict = {}
+            _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
+            _parse_frontmatter_text = staticmethod(SkillsLoader._parse_frontmatter_text)
+
+        try:
+            with pytest.raises(OSError):
+                SkillsLoader._cached_frontmatter(FakeLoader(), skill, within=None)
+        finally:
+            os.chmod(skill, 0o644)
 
 
 class TestUndecodableSkillDoesNotCrash:
@@ -581,12 +670,17 @@ class TestUndecodableSkillDoesNotCrash:
             _extra_paths: list = []
             _alias_cache = None
             _fm_cache: dict = {}
+            # No recorded root: the unconfined case, so these tests keep
+            # exercising real read/decode failure rather than a refusal.
+            _confine: dict = {}
+            _read_enumerated_skill_bytes = SkillsLoader._read_enumerated_skill_bytes
+            _parse_frontmatter_text = staticmethod(SkillsLoader._parse_frontmatter_text)
 
             def _iter(self):
-                return [("bad", bad), ("good", good)]
+                return [("bad", bad, None), ("good", good, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
-                return SkillsLoader._cached_frontmatter(self, path, mtime)
+            def _cached_frontmatter(self, path, mtime=None, within=None):
+                return SkillsLoader._cached_frontmatter(self, path, mtime, within=None)
 
             _parse_frontmatter = staticmethod(SkillsLoader._parse_frontmatter)
 
@@ -628,7 +722,7 @@ class TestSymlinkLoopDoesNotCrash:
             _alias_cache = None
 
             def _iter(self):
-                return [("good", good), ("loop", loop / "SKILL.md")]
+                return [("good", good, None), ("loop", loop / "SKILL.md", None)]
 
         # Must return, not raise.
         got = SkillsLoader.resolve_ledger_aliases(FakeLoader())
@@ -664,7 +758,9 @@ class TestCacheCoversTheFilesystem:
             _alias_cache = None
 
             def _iter(self):
-                return list(pairs)
+                # Third element: the vetted root. Operator-installed
+                # fixture tree, so None.
+                return [(n, pth, None) for n, pth in pairs]
 
         loader = FakeLoader()
         first = SkillsLoader.resolve_ledger_aliases(loader)
@@ -692,9 +788,9 @@ class TestNameIsRedacted:
         # that first, so the test cannot pass by redacting nothing.
         planted = "aws_secret_access_key=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
         cleaned, warnings = redact_credentials(planted)
-        assert cleaned != planted and warnings, (
-            "fixture is not credential-shaped for this redactor; pick another"
-        )
+        assert (
+            cleaned != planted and warnings
+        ), "fixture is not credential-shaped for this redactor; pick another"
 
         skill = _make_skill(tmp_path, "leaky", "# Leaky\nbody")
         now = time.time()
@@ -706,9 +802,9 @@ class TestNameIsRedacted:
             _extra_paths: list = []
 
             def _iter(self):
-                return [("leaky", skill)]
+                return [("leaky", skill, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": planted}
 
             def _owned_hint(self, path):
@@ -736,9 +832,9 @@ class TestNameIsRedacted:
             _extra_paths: list = []
 
             def _iter(self):
-                return [("normal", skill)]
+                return [("normal", skill, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "kirocrew-worktree-dev"}
 
             def _owned_hint(self, path):
@@ -779,9 +875,9 @@ class TestCostIsCharactersNotBytes:
             _extra_paths: list = []
 
             def _iter(self):
-                return [("dashes", skill)]
+                return [("dashes", skill, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Dashes"}
 
             def _owned_hint(self, path):
@@ -822,9 +918,14 @@ class TestAliasCacheInvalidation:
         os.symlink(str(first), str(alias_link))
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "first": (10, now), "second": (20, now), "alias": (7, now),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "first": (10, now),
+                "second": (20, now),
+                "alias": (7, now),
+            },
+        )
 
         pairs = [("first", first), ("second", second)]
 
@@ -834,7 +935,9 @@ class TestAliasCacheInvalidation:
             _extra_paths: list = []
 
             def _iter(self):
-                return list(pairs)
+                # Third element: the vetted root. Operator-installed
+                # fixture tree, so None.
+                return [(n, pth, None) for n, pth in pairs]
 
         loader = FakeLoader()
         assert SkillsLoader.resolve_ledger_aliases(loader) == {"first": ["alias"]}
@@ -845,9 +948,9 @@ class TestAliasCacheInvalidation:
         os.symlink(str(second), str(alias_link))
 
         got = SkillsLoader.resolve_ledger_aliases(loader)
-        assert got == {"second": ["alias"]}, (
-            f"a retargeted alias was still credited to the old skill: {got}"
-        )
+        assert got == {
+            "second": ["alias"]
+        }, f"a retargeted alias was still credited to the old skill: {got}"
 
     def test_cache_invalidates_on_key_set_change(self, tmp_path):
         """Adding a ledger key invalidates the cache."""
@@ -874,7 +977,7 @@ class TestAliasCacheInvalidation:
             _alias_cache = None
 
             def _iter(self):
-                return [("alpha", skill_file)]
+                return [("alpha", skill_file, None)]
 
         loader = FakeLoader()
         r1 = SkillsLoader.resolve_ledger_aliases(loader)
@@ -914,9 +1017,9 @@ class TestAlwaysTrueSkillCost:
             _alias_cache = None
 
             def _iter(self):
-                return [("core-skill", skill_file)]
+                return [("core-skill", skill_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Core Skill", "always": "true"}
 
             def _owned_hint(self, path):
@@ -924,6 +1027,7 @@ class TestAlwaysTrueSkillCost:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -953,9 +1057,9 @@ class TestAlwaysTrueSkillCost:
             _alias_cache = None
 
             def _iter(self):
-                return [("pinned", skill_file)]
+                return [("pinned", skill_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 return {"name": "Pinned", "always": "true"}
 
             def _owned_hint(self, path):
@@ -963,6 +1067,7 @@ class TestAlwaysTrueSkillCost:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -981,10 +1086,13 @@ class TestAlwaysTrueSkillCost:
         regular_file = _make_skill(tmp_path, "regular", "y" * 200)
 
         now = time.time()
-        ledger = _make_ledger(tmp_path, {
-            "always-skill": (10, now),
-            "regular": (5, now),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "always-skill": (10, now),
+                "regular": (5, now),
+            },
+        )
 
         class FakeLoader:
             _usage = ledger
@@ -994,9 +1102,9 @@ class TestAlwaysTrueSkillCost:
             _alias_cache = None
 
             def _iter(self):
-                return [("always-skill", always_file), ("regular", regular_file)]
+                return [("always-skill", always_file, None), ("regular", regular_file, None)]
 
-            def _cached_frontmatter(self, path, mtime=None):
+            def _cached_frontmatter(self, path, mtime=None, within=None):
                 if "always-skill" in str(path):
                     return {"name": "Always", "always": "true"}
                 return {"name": "Regular"}
@@ -1006,6 +1114,7 @@ class TestAlwaysTrueSkillCost:
 
             def resolve_ledger_aliases(self):
                 from kiro_crew.skills import SkillsLoader
+
                 return SkillsLoader.resolve_ledger_aliases(self)
 
         result = _compute_budget(FakeLoader())
@@ -1023,10 +1132,13 @@ class TestSnapshotMethod:
     """SkillUsageLedger.snapshot() returns a consistent copy."""
 
     def test_snapshot_returns_all_keys(self, tmp_path):
-        ledger = _make_ledger(tmp_path, {
-            "a": (5, time.time()),
-            "b": (3, time.time() - 100),
-        })
+        ledger = _make_ledger(
+            tmp_path,
+            {
+                "a": (5, time.time()),
+                "b": (3, time.time() - 100),
+            },
+        )
         snap = ledger.snapshot()
         assert set(snap.keys()) == {"a", "b"}
         assert snap["a"][0] == 5
@@ -1035,3 +1147,85 @@ class TestSnapshotMethod:
     def test_snapshot_empty_ledger(self, tmp_path):
         ledger = _make_ledger(tmp_path, {})
         assert ledger.snapshot() == {}
+
+
+class TestBudgetEndpointAgainstTheRealLoader:
+    """No doubles: the real SkillsLoader, so signature drift cannot hide here.
+
+    The rest of this file drives `_compute_budget` with fakes that override
+    `_cached_frontmatter`. That is convenient, but it meant a required-argument
+    change to the real method could crash this endpoint with every test green --
+    which is precisely what happened. This test calls the real thing.
+    """
+
+    def test_the_budget_computes_over_a_real_loader(self, tmp_path):
+        from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
+        from kiro_crew.skills import SkillsLoader
+
+        skills_root = tmp_path / "skills"
+        (skills_root / "alpha").mkdir(parents=True)
+        (skills_root / "alpha" / "SKILL.md").write_text(
+            "---\nname: Alpha\ndescription: first\n---\n\nAlpha body\n",
+            encoding="utf-8",
+        )
+        (skills_root / "beta").mkdir(parents=True)
+        (skills_root / "beta" / "SKILL.md").write_text(
+            "---\nname: Beta\ndescription: second\nalways: true\n---\n\nBeta body\n",
+            encoding="utf-8",
+        )
+
+        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+        result = _compute_budget(loader)
+
+        keys = {row["key"] for row in result["rows"]}
+        assert {"alpha", "beta"} <= keys, keys
+        # Frontmatter was actually parsed, not swallowed by an exception handler.
+        by_key = {row["key"]: row for row in result["rows"]}
+        assert (
+            by_key["beta"].get("always") is True or by_key["beta"].get("is_always") is True
+        ), by_key["beta"]
+
+    def test_the_budget_view_is_project_blind(self, tmp_path, monkeypatch):
+        """It enumerates project-blind, so a project's skills never appear here.
+
+        This is why every `within` it passes is None, and it is load-bearing: were
+        this view to become project-aware, it would start parsing frontmatter for
+        paths under a granted directory and would have to carry the vetted root to
+        do it safely. This test fails at that moment rather than letting an
+        unconfined read appear quietly.
+
+        The earlier version of this test asserted the smuggled text was absent
+        while the endpoint could never have listed it -- an assertion that cannot
+        fail, which its surviving mutation exposed.
+        """
+        from kiro_crew import skill_trust
+        from kiro_crew.dashboard.handlers.skill_budget import _compute_budget
+        from kiro_crew.skills import SkillsLoader
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        skill_trust.reset_cache_for_tests()
+
+        project = tmp_path / "proj"
+        real = project / ".kiro" / "skills" / "project-only"
+        real.mkdir(parents=True)
+        (real / "SKILL.md").write_text(
+            "---\nname: project-only\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+        )
+        skills_root = tmp_path / "skills"
+        (skills_root / "global-one").mkdir(parents=True)
+        (skills_root / "global-one" / "SKILL.md").write_text(
+            "---\nname: global-one\ndescription: d\n---\n\nbody\n", encoding="utf-8"
+        )
+
+        skill_trust.grant_project_trust(project)
+        loader = SkillsLoader(skills_path=skills_root, install_builtins=False)
+
+        # The project IS trusted, and its skill IS enumerable when asked for.
+        assert "project-only" in {n for n, _, _ in loader._iter(project)}
+
+        keys = {row["key"] for row in _compute_budget(loader)["rows"]}
+        assert "global-one" in keys, keys
+        assert "project-only" not in keys, (
+            "the budget view became project-aware; it now parses frontmatter for "
+            "paths under a granted directory and must carry the vetted root"
+        )

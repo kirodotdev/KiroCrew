@@ -48,6 +48,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger)
     # Skill context budget (read-only cost analysis with alias folding).
     app.router.add_get("/api/skills/-/budget", handlers.api_skills_budget)
+    # Project-skills trust grants (per-directory consent). Registered before the
+    # catch-all {name:.+} so the ``-`` sentinel path resolves first.
+    app.router.add_get("/api/skills/-/trust", handlers.api_skills_trust)
+    app.router.add_post("/api/skills/-/trust", handlers.api_skills_trust_grant)
+    app.router.add_delete("/api/skills/-/trust", handlers.api_skills_trust_revoke)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)
     app.router.add_get("/api/skills/{name:.+}/-/file", handlers.api_skill_file)
     app.router.add_get("/api/skills/{name:.+}", handlers.api_skill_detail)

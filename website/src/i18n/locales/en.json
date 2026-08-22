@@ -4400,9 +4400,30 @@
       "triggers": "Triggers",
       "what_this_skill_does_and_when_the_agent_should_u": "What this skill does and when the agent should use it"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} comes from this project's own .kiro/skills folder.",
+      "confirm": "Trust this folder",
+      "consequence": "Trusting this folder lets its skill files enter this chat's context, where they can instruct the agent to run commands. Only trust a project you recognise.",
+      "decline": "Not now",
+      "decline_consequence": "If you decline, nothing is loaded and your message is left as you typed it.",
+      "grant_failed": "Could not record trust for this folder.",
+      "title": "Trust this project's skills?",
+      "withdraw_hint": "You can withdraw this later from the Skills settings page.",
+      "working": "Trusting…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "This folder no longer exists.",
+      "hint": "These project folders may load their own skills into a chat. Withdraw a folder to stop its skills loading.",
+      "revoke": "Withdraw",
+      "revoke_failed": "Could not withdraw trust for this folder.",
+      "revoking": "Withdrawing…",
+      "title": "Trusted project folders"
+    },
     "skillPickerMenu": {
       "loading_skills": "Loading skills…",
-      "no_matching_skills": "No matching skills"
+      "no_matching_skills": "No matching skills",
+      "trust_needed_badge": "Needs trust",
+      "trust_needed_hint": "From this project. Choose it to review and trust the folder."
     },
     "slotTagPopover": {
       "assign_tags": "Assign tags",

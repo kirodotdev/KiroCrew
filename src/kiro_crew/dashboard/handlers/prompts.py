@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import re
 from pathlib import Path
@@ -14,6 +15,14 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.skill_trust import (
+    TrustStoreUnreadable,
+    canonical_key,
+    grant_project_trust,
+    is_project_trusted,
+    list_trusted_projects,
+    revoke_project_trust,
+)
 
 from ._shared import (
     _capability_manager,
@@ -24,12 +33,14 @@ from ._shared import (
     collect_skills_blocking,
     list_skill_tree,
     read_skill_file,
+    requesting_slot_project,
 )
 
 
 def _list_aim_prompts():
     """Import from parent to avoid circular — cache lives in __init__.py for test compat."""
     import kiro_crew.dashboard.handlers as _pkg
+
     return _pkg._list_aim_prompts()
 
 
@@ -41,6 +52,7 @@ MAX_PROMPT_BYTES = 100_000  # 100 KB — public constant, imported across dashbo
 def _sel():
     """Late-binding sel() — allows monkeypatching at parent package level."""
     import kiro_crew.dashboard.handlers as _pkg
+
     return _pkg.sel()
 
 
@@ -90,9 +102,13 @@ async def api_prompts(request: web.Request) -> web.Response:
         _redact_prompt(p)
         p["path"] = p["path"].replace(home, "~")
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_prompts_list', tool_kind='prompt', outcome='ok',
-        metadata={'count': len(prompts)},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_prompts_list",
+        tool_kind="prompt",
+        outcome="ok",
+        metadata={"count": len(prompts)},
     )
     return web.json_response(prompts)
 
@@ -120,42 +136,63 @@ async def api_prompt_detail(request: web.Request) -> web.Response:
     p = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _find_prompt, raw)
     if not p:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_prompt_detail', tool_kind='prompt', outcome='not_found',
-            metadata={'name': raw},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_prompt_detail",
+            tool_kind="prompt",
+            outcome="not_found",
+            metadata={"name": raw},
         )
         return web.json_response({"error": "not found"}, status=404)
     name = raw.split("/", 1)[-1] if "/" in raw else raw
     from kiro_crew.hooks import validate_file_path  # noqa: F811
+
     resolved = validate_file_path(p["path"])
     if resolved is None:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_prompt_detail', tool_kind='prompt', outcome='blocked',
-            metadata={'name': name, 'path': p['path']},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_prompt_detail",
+            tool_kind="prompt",
+            outcome="blocked",
+            metadata={"name": name, "path": p["path"]},
         )
         return web.json_response({"error": "access denied"}, status=403)
     try:
         path = Path(resolved)
         if path.stat().st_size > MAX_PROMPT_BYTES:
             _sel().log_tool_invocation(
-                session_key='', agent='api', source='dashboard',
-                tool_name='api_prompt_detail', tool_kind='prompt', outcome='too_large',
-                metadata={'name': name, 'path': p['path']},
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_prompt_detail",
+                tool_kind="prompt",
+                outcome="too_large",
+                metadata={"name": name, "path": p["path"]},
             )
             return web.json_response({"error": "file too large"}, status=413)
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_prompt_detail', tool_kind='prompt', outcome='error',
-            metadata={'name': name, 'path': p['path']},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_prompt_detail",
+            tool_kind="prompt",
+            outcome="error",
+            metadata={"name": name, "path": p["path"]},
         )
         return web.json_response({"error": "file not readable"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_prompt_detail', tool_kind='prompt', outcome='ok',
-        metadata={'name': name, 'path': p['path']},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_prompt_detail",
+        tool_kind="prompt",
+        outcome="ok",
+        metadata={"name": name, "path": p["path"]},
     )
     content, _ = redact_credentials(content)
     content, _ = redact_exfiltration_urls(content)
@@ -189,7 +226,9 @@ async def api_skills(request: web.Request) -> web.Response:
     # Scoped to the requesting chat slot: without the key, two chats on
     # different projects made this fall to None and kiro-workspace skills
     # silently vanished from the listing (#2457).
-    project_dir: Path | None = active_project_dir(state, _read_session_key(request))
+    # Strict: must match what SkillsLoader will resolve for THIS chat, or the
+    # catalog advertises a skill whose $token expands to nothing.
+    project_dir: Path | None = requesting_slot_project(state, _read_session_key(request))
     # Run the edition capability lookup async (on the loop, non-blocking), then offload ALL
     # blocking filesystem work — kirocrew list_skills() (os.walk + per-file
     # frontmatter reads), package path globs, kiro per-skill resolve/read, and the
@@ -219,6 +258,174 @@ async def api_skills(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+class _ReviewedProjectChanged(Exception):
+    """The slot's project is no longer the directory the operator reviewed."""
+
+
+def _grant_reviewed_project(project_dir: Path, expected: object, *, session_key: str) -> str:
+    """Confirm *expected* still names *project_dir*, then grant. Blocking.
+
+    Runs on the discovery executor: `canonical_key` realpaths both paths, which is
+    one lstat per component, and `grant_project_trust` takes a lock and writes.
+    Neither belongs on the event loop.
+
+    *expected* is a CONFIRMATION, never a selector -- the directory granted is
+    always the caller's *project_dir*, taken from the requesting slot. A mismatch
+    raises rather than silently granting something else, and an absent *expected*
+    skips the check so callers that cannot supply it are unaffected (they gain
+    nothing by omitting it, since they still cannot choose the directory).
+
+    Canonical comparison rather than string equality: the store keys on the
+    canonical form, so that is the identity deciding what loads, and `/tmp/./x`
+    would otherwise be a spurious mismatch.
+    """
+    if expected:
+        want = canonical_key(str(expected))
+        got = canonical_key(str(project_dir))
+        if want is None or got is None or want != got:
+            raise _ReviewedProjectChanged(str(expected))
+    return grant_project_trust(project_dir, session_key=session_key)
+
+
+def _trust_snapshot(project_dir: Path | None) -> dict[str, Any]:
+    """Blocking read of trust state for *project_dir* plus every stored grant."""
+    return {
+        "project": str(project_dir) if project_dir else "",
+        "trusted": is_project_trusted(project_dir) if project_dir else False,
+        "grants": list_trusted_projects(),
+    }
+
+
+async def api_skills_trust(request: web.Request) -> web.Response:
+    """Report the requesting chat's project-skills trust state and all grants."""
+    state: DashboardState = request.app["state"]
+    # Strict: must match what SkillsLoader will resolve for THIS chat, or the
+    # catalog advertises a skill whose $token expands to nothing.
+    project_dir: Path | None = requesting_slot_project(state, _read_session_key(request))
+    snapshot = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), _trust_snapshot, project_dir
+    )
+    return web.json_response(snapshot)
+
+
+async def api_skills_trust_grant(request: web.Request) -> web.Response:
+    """Grant project-skills trust to the REQUESTING CHAT's own project.
+
+    The directory is taken from the requesting slot, never from the request
+    body: a caller-supplied path would let anything that can reach this
+    endpoint consent on the operator's behalf for a directory they never
+    opened. The operator can only trust the project they actually have open.
+
+    The body MAY carry ``expected_path`` — the directory the consent dialog
+    actually showed. It is a confirmation, never a selector: the directory still
+    comes from the slot, and a mismatch is REFUSED rather than honoured. Without
+    it, a slot retargeted between rendering the dialog and clicking Trust
+    (``set_project``, a worktree switch, another agent turn) would record consent
+    for a directory whose name and skills the operator never read.
+    """
+    state: DashboardState = request.app["state"]
+    session_key = _read_session_key(request)
+    # Strict: consent is recorded for the directory THIS chat is bound to.
+    # The shared fallback would grant trust to another chat's project.
+    project_dir: Path | None = requesting_slot_project(state, session_key)
+    if project_dir is None:
+        return web.json_response(
+            {
+                "error": "no project is set for this chat, so there is no directory to trust",
+                "code": "skill_trust_no_project",
+                "reason": "no_project",
+            },
+            status=400,
+        )
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — no body is fine; the field is optional
+        body = {}
+    expected = (body or {}).get("expected_path") if isinstance(body, dict) else None
+    loop = asyncio.get_running_loop()
+    try:
+        # Confirmation AND grant in one offloaded call. Both halves touch the
+        # filesystem (canonical_key does realpath + isdir, i.e. one lstat per path
+        # component), and this handler offloads every other filesystem step -- doing
+        # it inline stalled the event loop. Combining them also removes the window
+        # a second await would open between confirming a directory and recording
+        # consent for it, so what was reviewed is what gets written.
+        await loop.run_in_executor(
+            discovery_executor(),
+            functools.partial(
+                _grant_reviewed_project,
+                project_dir,
+                expected,
+                session_key=session_key,
+            ),
+        )
+    except _ReviewedProjectChanged:
+        return web.json_response(
+            {
+                "error": (
+                    "this chat's project is no longer the directory shown for "
+                    "review, so consent was not recorded"
+                ),
+                "code": "skill_trust_project_changed",
+                "reviewed": str(expected),
+                "current": str(project_dir),
+            },
+            status=409,
+        )
+    except ValueError as exc:
+        return web.json_response(
+            {"error": str(exc), "code": "skill_trust_unusable_project"}, status=400
+        )
+    except TrustStoreUnreadable as exc:
+        # Refusing beats overwriting: the store may hold grants this build
+        # cannot read, and appending to an empty list would destroy them.
+        return web.json_response(
+            {"error": str(exc), "code": "skill_trust_store_unreadable"}, status=409
+        )
+    snapshot = await loop.run_in_executor(discovery_executor(), _trust_snapshot, project_dir)
+    return web.json_response(snapshot)
+
+
+async def api_skills_trust_revoke(request: web.Request) -> web.Response:
+    """Withdraw a project-skills trust grant.
+
+    Unlike granting, this accepts an explicit ``path`` so the operator can
+    revoke a grant for a directory they no longer have open (or have deleted)
+    from the settings list. Removing trust only ever narrows what loads, so a
+    caller-supplied path is safe here.
+    """
+    state: DashboardState = request.app["state"]
+    session_key = _read_session_key(request)
+    target = request.query.get("path", "").strip()
+    if not target:
+        project_dir = active_project_dir(state, session_key)
+        if project_dir is None:
+            return web.json_response(
+                {
+                    "error": "no path given and no project is set for this chat",
+                    "code": "skill_trust_no_target",
+                },
+                status=400,
+            )
+        target = str(project_dir)
+    loop = asyncio.get_running_loop()
+    try:
+        removed = await loop.run_in_executor(
+            discovery_executor(),
+            functools.partial(revoke_project_trust, target, session_key=session_key),
+        )
+    except TrustStoreUnreadable as exc:
+        # A revoke rewrites the survivors, so an unreadable store would lose the
+        # grants it could not read -- refuse rather than narrow destructively.
+        return web.json_response(
+            {"error": str(exc), "code": "skill_trust_store_unreadable"}, status=409
+        )
+    project_dir = active_project_dir(state, session_key)
+    snapshot = await loop.run_in_executor(discovery_executor(), _trust_snapshot, project_dir)
+    snapshot["removed"] = removed
+    return web.json_response(snapshot)
+
+
 async def api_skill_tree(request: web.Request) -> web.Response:
     """GET /api/skills/{name}/tree — list files within a skill folder.
 
@@ -241,9 +448,13 @@ async def api_skill_tree(request: web.Request) -> web.Response:
     )
     if root is None:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_tree', tool_kind='skill', outcome='not_found',
-            metadata={'name': name},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_tree",
+            tool_kind="skill",
+            outcome="not_found",
+            metadata={"name": name},
         )
         return web.json_response({"error": "not found"}, status=404)
     # Sanitize the absolute path — never expose the server's real home to the
@@ -254,9 +465,13 @@ async def api_skill_tree(request: web.Request) -> web.Response:
     for home in {str(Path.home()), str(Path.home().resolve())}:
         display_root = display_root.replace(home, "~")
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_tree', tool_kind='skill', outcome='ok',
-        metadata={'name': name, 'root': display_root, 'count': len(entries)},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_tree",
+        tool_kind="skill",
+        outcome="ok",
+        metadata={"name": name, "root": display_root, "count": len(entries)},
     )
     return web.json_response({"name": name, "root": display_root, "entries": entries})
 
@@ -275,13 +490,17 @@ async def api_skill_file(request: web.Request) -> web.Response:
         # Audit every access — including failed ones (traversal rejections,
         # sensitive-path blocks), which can indicate filesystem probing.
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_file', tool_kind='skill', outcome=outcome,
-            metadata={'name': name, 'path': rel_path},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_file",
+            tool_kind="skill",
+            outcome=outcome,
+            metadata={"name": name, "path": rel_path},
         )
 
     if not rel_path:
-        _audit('bad_request')
+        _audit("bad_request")
         return web.json_response({"error": "path query param required"}, status=400)
     session_key = _read_session_key(request)
 
@@ -297,21 +516,21 @@ async def api_skill_file(request: web.Request) -> web.Response:
         discovery_executor(), _resolve_and_read
     )
     if root is None:
-        _audit('not_found')
+        _audit("not_found")
         return web.json_response({"error": "not found"}, status=404)
     if err:
         if err == "access denied":
-            _audit('blocked')
+            _audit("blocked")
             return web.json_response({"error": err}, status=403)
         if err.startswith("file too large"):
-            _audit('too_large')
+            _audit("too_large")
             return web.json_response({"error": err}, status=413)
         if err == "invalid path":
-            _audit('blocked')
+            _audit("blocked")
             return web.json_response({"error": err}, status=400)
-        _audit('not_found')
+        _audit("not_found")
         return web.json_response({"error": err}, status=404)
-    _audit('ok')
+    _audit("ok")
     return web.json_response({"name": name, "path": rel_path, "content": content})
 
 
@@ -351,9 +570,13 @@ async def api_skills_pending(request: web.Request) -> web.Response:
     except Exception:
         items = []
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skills_pending', tool_kind='skill', outcome='ok',
-        metadata={'count': len(items)},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skills_pending",
+        tool_kind="skill",
+        outcome="ok",
+        metadata={"count": len(items)},
     )
     return web.json_response({"pending": items})
 
@@ -365,9 +588,13 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     if not _pending_slug_ok(slug):
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_detail', tool_kind='skill',
-            outcome='bad_request', metadata={'slug': slug},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_detail",
+            tool_kind="skill",
+            outcome="bad_request",
+            metadata={"slug": slug},
         )
         return web.json_response({"error": "invalid slug"}, status=400)
     try:
@@ -376,15 +603,23 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
         )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_detail', tool_kind='skill',
-            outcome='error', metadata={'slug': slug},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_detail",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_pending_detail', tool_kind='skill',
-        outcome='ok' if detail is not None else 'not_found', metadata={'slug': slug},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pending_detail",
+        tool_kind="skill",
+        outcome="ok" if detail is not None else "not_found",
+        metadata={"slug": slug},
     )
     if detail is None:
         return web.json_response({"error": "not found"}, status=404)
@@ -406,9 +641,7 @@ async def api_skill_pending_detail(request: web.Request) -> web.Response:
                 return None
 
         try:
-            pv = await asyncio.get_running_loop().run_in_executor(
-                discovery_executor(), _preview
-            )
+            pv = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _preview)
         except Exception:
             pv = None
         detail["live_body"] = (pv or {}).get("live_body")
@@ -427,9 +660,13 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     if not _pending_slug_ok(slug):
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_approve', tool_kind='skill',
-            outcome='rejected', metadata={'slug': slug, 'reason': 'invalid_slug'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_approve",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "reason": "invalid_slug"},
         )
         return web.json_response({"error": "invalid slug"}, status=400)
 
@@ -475,16 +712,24 @@ async def api_skill_pending_approve(request: web.Request) -> web.Response:
         )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_approve', tool_kind='skill',
-            outcome='error', metadata={'slug': slug},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_approve",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
     outcome = "ok" if name else "not_found"
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_pending_approve', tool_kind='skill', outcome=outcome,
-        metadata={'slug': slug, 'name': name or ''},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pending_approve",
+        tool_kind="skill",
+        outcome=outcome,
+        metadata={"slug": slug, "name": name or ""},
     )
     if not name:
         return web.json_response(
@@ -501,9 +746,13 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
     slug = request.match_info["slug"]
     if not _pending_slug_ok(slug):
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_dismiss', tool_kind='skill',
-            outcome='rejected', metadata={'slug': slug, 'reason': 'invalid_slug'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_dismiss",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "reason": "invalid_slug"},
         )
         return web.json_response({"error": "invalid slug"}, status=400)
     try:
@@ -512,15 +761,23 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
         )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pending_dismiss', tool_kind='skill',
-            outcome='error', metadata={'slug': slug},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_dismiss",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"slug": slug},
         )
         return web.json_response({"error": "internal error"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_pending_dismiss', tool_kind='skill',
-        outcome='ok' if ok else 'not_found', metadata={'slug': slug},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pending_dismiss",
+        tool_kind="skill",
+        outcome="ok" if ok else "not_found",
+        metadata={"slug": slug},
     )
     if not ok:
         return web.json_response({"error": "not found"}, status=404)
@@ -543,13 +800,16 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
     except Exception:
         body = {}
     if not isinstance(body, dict):
-        return web.json_response({"error": "body must be a JSON object", "code": "invalid_body"}, status=400)
+        return web.json_response(
+            {"error": "body must be a JSON object", "code": "invalid_body"}, status=400
+        )
     raw_slugs = body.get("slugs")
     if raw_slugs is not None and (
-        not isinstance(raw_slugs, list)
-        or not all(isinstance(s, str) for s in raw_slugs)
+        not isinstance(raw_slugs, list) or not all(isinstance(s, str) for s in raw_slugs)
     ):
-        return web.json_response({"error": "slugs must be an array of strings", "code": "invalid_slugs"}, status=400)
+        return web.json_response(
+            {"error": "slugs must be an array of strings", "code": "invalid_slugs"}, status=400
+        )
     slugs: list[str] = raw_slugs if isinstance(raw_slugs, list) else []
     try:
         if slugs:
@@ -558,18 +818,32 @@ async def api_skills_pending_dismiss_all(request: web.Request) -> web.Response:
                 lambda: skills.dismiss_pending_slugs(slugs),
             )
         else:
-            return web.json_response({"error": "slugs array is required and must not be empty", "code": "slugs_required"}, status=400)
+            return web.json_response(
+                {
+                    "error": "slugs array is required and must not be empty",
+                    "code": "slugs_required",
+                },
+                status=400,
+            )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
-            outcome='error', metadata={},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skills_pending_dismiss_all",
+            tool_kind="skill",
+            outcome="error",
+            metadata={},
         )
         return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skills_pending_dismiss_all', tool_kind='skill',
-        outcome='ok', metadata={'count': count},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skills_pending_dismiss_all",
+        tool_kind="skill",
+        outcome="ok",
+        metadata={"count": count},
     )
     return web.json_response({"dismissed_count": count})
 
@@ -587,17 +861,25 @@ async def api_skill_pin(request: web.Request) -> web.Response:
     raw_pinned = body.get("pinned", True)
     if not isinstance(raw_pinned, bool):
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pin', tool_kind='skill',
-            outcome='rejected', metadata={'name': name, 'reason': 'pinned_not_bool'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pin",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, "reason": "pinned_not_bool"},
         )
         return web.json_response({"error": "pinned must be a boolean"}, status=400)
     pinned = raw_pinned
     if not name:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pin', tool_kind='skill',
-            outcome='rejected', metadata={'name': name, 'reason': 'name_required'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pin",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, "reason": "name_required"},
         )
         return web.json_response({"error": "name required"}, status=400)
     try:
@@ -606,15 +888,23 @@ async def api_skill_pin(request: web.Request) -> web.Response:
         )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_pin', tool_kind='skill',
-            outcome='error', metadata={'name': name, 'pinned': pinned},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pin",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"name": name, "pinned": pinned},
         )
         return web.json_response({"error": "internal error"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_pin', tool_kind='skill',
-        outcome='ok' if ok else 'rejected', metadata={'name': name, 'pinned': pinned},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_pin",
+        tool_kind="skill",
+        outcome="ok" if ok else "rejected",
+        metadata={"name": name, "pinned": pinned},
     )
     if not ok:
         return web.json_response({"error": "not an auto-skill or not found"}, status=400)
@@ -648,9 +938,13 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     raw_inject = body.get("inject")
     if not isinstance(raw_inject, bool):
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
-            outcome='rejected', metadata={'name': name, 'reason': 'inject_not_bool'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_inject_on_trigger",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, "reason": "inject_not_bool"},
         )
         return web.json_response(
             {"error": "inject must be a boolean", "code": "inject_not_bool"}, status=400
@@ -658,30 +952,38 @@ async def api_skill_inject_on_trigger(request: web.Request) -> web.Response:
     inject = raw_inject
     if not name:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
-            outcome='rejected', metadata={'name': name, 'reason': 'name_required'},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_inject_on_trigger",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"name": name, "reason": "name_required"},
         )
-        return web.json_response(
-            {"error": "name required", "code": "name_required"}, status=400
-        )
+        return web.json_response({"error": "name required", "code": "name_required"}, status=400)
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
             discovery_executor(), skills.set_inject_on_trigger, name, inject
         )
     except Exception:
         _sel().log_tool_invocation(
-            session_key='', agent='api', source='dashboard',
-            tool_name='api_skill_inject_on_trigger', tool_kind='skill',
-            outcome='error', metadata={'name': name, 'inject': inject},
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_inject_on_trigger",
+            tool_kind="skill",
+            outcome="error",
+            metadata={"name": name, "inject": inject},
         )
-        return web.json_response(
-            {"error": "internal error", "code": "internal_error"}, status=500
-        )
+        return web.json_response({"error": "internal error", "code": "internal_error"}, status=500)
     _sel().log_tool_invocation(
-        session_key='', agent='api', source='dashboard',
-        tool_name='api_skill_inject_on_trigger', tool_kind='skill',
-        outcome='ok' if ok else 'rejected', metadata={'name': name, 'inject': inject},
+        session_key="",
+        agent="api",
+        source="dashboard",
+        tool_name="api_skill_inject_on_trigger",
+        tool_kind="skill",
+        outcome="ok" if ok else "rejected",
+        metadata={"name": name, "inject": inject},
     )
     if not ok:
         return web.json_response(

@@ -2672,7 +2672,7 @@ class ContextBuilder:
         if not is_custom and not minimal_context:
             triggered = self.skills.get_triggered_skills(text, project_dir=project)
             if triggered:
-                enforced, pointer_only = self.skills.split_triggered(triggered)
+                enforced, pointer_only = self.skills.split_triggered(triggered, project)
                 # Log the split, not just the match: a pointed-at skill the
                 # agent declines to read leaves no other trace, so without this
                 # "the skill stopped being followed" is indistinguishable from
@@ -2684,7 +2684,13 @@ class ContextBuilder:
                     ", ".join(pointer_only) or "-",
                 )
                 for name in enforced:
-                    content = self.skills.load_skill(name)
+                    # project_dir, not project-blind: get_triggered_skills and
+                    # split_triggered above are both project-aware, so a trusted
+                    # project's skill can reach here -- and loading it blind
+                    # returned None, making a matched skill contribute nothing at
+                    # all. The project branch reads through the containment-checked
+                    # reader, so this is confined like every other project read.
+                    content = self.skills.load_skill(name, project)
                     if content:
                         stripped = self.skills.strip_frontmatter(content)
                         parts.append(f"[Skill: {name}]\n{stripped}\n[End of skill]\n\n")
@@ -2693,7 +2699,7 @@ class ContextBuilder:
                         # positive, pointer-only, or undelivered) must not earn
                         # ranking weight in the lazy-load hotness ledger.
                         self.skills._record_use(name)
-                hint = self.skills.trigger_hint(pointer_only)
+                hint = self.skills.trigger_hint(pointer_only, project)
                 if hint:
                     parts.append(hint)
 

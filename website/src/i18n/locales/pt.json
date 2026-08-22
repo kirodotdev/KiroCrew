@@ -6426,9 +6426,30 @@
       "triggers": "Gatilhos",
       "what_this_skill_does_and_when_the_agent_should_u": "O que esta habilidade faz e quando o agente deve usá-la"
     },
+    "projectSkillsTrust": {
+      "body": "${{skill}} vem da pasta .kiro/skills deste projeto.",
+      "confirm": "Confiar nesta pasta",
+      "consequence": "Confiar nesta pasta permite que os arquivos de habilidade dela entrem no contexto deste chat, onde podem instruir o agente a executar comandos. Confie apenas em um projeto que você reconhece.",
+      "decline": "Agora não",
+      "decline_consequence": "Se você recusar, nada é carregado e sua mensagem fica como você digitou.",
+      "grant_failed": "Não foi possível registrar a confiança nesta pasta.",
+      "title": "Confiar nas habilidades deste projeto?",
+      "withdraw_hint": "Você pode revogar isso depois na página de configurações Skills.",
+      "working": "Confiando…"
+    },
+    "projectSkillsTrustList": {
+      "folder_missing": "Esta pasta já não existe.",
+      "hint": "Estas pastas de projeto podem carregar os próprios skills em um chat. Remova uma pasta para que os skills dela não sejam mais carregados.",
+      "revoke": "Remover",
+      "revoke_failed": "Não foi possível remover a confiança nesta pasta.",
+      "revoking": "Removendo…",
+      "title": "Pastas de projeto confiáveis"
+    },
     "skillPickerMenu": {
       "loading_skills": "Carregando habilidades…",
-      "no_matching_skills": "Nenhuma habilidade correspondente"
+      "no_matching_skills": "Nenhuma habilidade correspondente",
+      "trust_needed_badge": "Precisa de confiança",
+      "trust_needed_hint": "Deste projeto. Escolha-a para revisar e confiar na pasta."
     },
     "slashCommandMenu": {
       "desc_agent": "Alternar ou gerenciar o agente ativo",

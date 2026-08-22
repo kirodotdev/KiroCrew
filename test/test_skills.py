@@ -162,7 +162,7 @@ class TestNoteToolRead:
             (link_dir / "SKILL.md").symlink_to(skills_dir / "alpha" / "SKILL.md")
         except (OSError, NotImplementedError):
             pytest.skip("symlinks unavailable on this platform")
-        loader._iter_cache = None  # re-walk so the alias is served
+        loader._invalidate_iter_cache()  # re-walk so the alias is served
         recorded = self._read(
             loader, tool_name="fs_read", raw_params={"path": str(link_dir / "SKILL.md")}
         )
@@ -1487,9 +1487,9 @@ class TestTriggerPerformance:
         calls = {"n": 0}
         orig = loader._iter_uncached
 
-        def _counting():
+        def _counting(project_key=None):
             calls["n"] += 1
-            return orig()
+            return orig(project_key)
 
         monkeypatch.setattr(loader, "_iter_uncached", _counting)
         for _ in range(5):
