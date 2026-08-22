@@ -2400,6 +2400,16 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     atomic (0600 temp file in the same dir, then rename) so a crash can never
     truncate .env and lose other credentials, and there is no world-readable
     window between create and chmod.
+
+    Blocking, and called from async request handlers, so every caller must
+    reach it through ``asyncio.to_thread`` -- it stats, reads and re-parses the
+    whole file, then creates a temp file, chmods it, writes, and renames.
+
+    Offload the WHOLE call, never a part of it: the read-modify-write is one
+    transaction, and a suspension point between the read and the rename would
+    let a concurrent writer's keys be silently dropped by a write derived from
+    lines nobody re-read. Keeping it one synchronous function on one worker is
+    what preserves that, so the atomicity does not depend on the caller.
     """
     import tempfile  # noqa: F811
 
@@ -2694,7 +2704,7 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        _write_env_updates(env_updates)
+        await asyncio.to_thread(_write_env_updates, env_updates)
         # Keep the live process environment in sync with the new .env state.
         # load_credentials() lets os.environ win over .env, so without this a
         # replaced/cleared token would keep being reported as installed by GET
@@ -3016,7 +3026,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        _write_env_updates(env_updates)
+        await asyncio.to_thread(_write_env_updates, env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
@@ -3857,7 +3867,7 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
                     relabel="session_folder" in changes,
                 )
         if env_updates:
-            _write_env_updates(env_updates)
+            await asyncio.to_thread(_write_env_updates, env_updates)
             # Keep the live process environment in sync (see the Slack save path).
             for key, new_val in env_updates.items():
                 if new_val is None:
