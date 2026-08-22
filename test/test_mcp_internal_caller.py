@@ -48,13 +48,16 @@ def captured(monkeypatch: pytest.MonkeyPatch) -> _CapturedRequest:
         def __exit__(self, *a: Any) -> None:
             self.close()
 
-    def _fake_urlopen(req: Any, timeout: float = 0) -> _Resp:
+    def _fake_urlopen(req: Any, timeout: float = 0, unix_socket_path: Any = None) -> _Resp:
         cap.req = req
         return _Resp(json.dumps({}).encode())
 
     monkeypatch.setattr(mcp_core, "_api_urlopen", _fake_urlopen)
     monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "sekrit")
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "")
+    # One attempt resolves its (base, socket_path) pair once (#4106 item 1), so
+    # the base is scripted at that seam; the empty socket keeps this TCP-only.
+    monkeypatch.setattr(mcp_core, "_resolve_api_target", lambda: ("http://127.0.0.1:1", ""))
     monkeypatch.setattr(mcp_core, "_api_base", lambda: "http://127.0.0.1:1")
     return cap
 
