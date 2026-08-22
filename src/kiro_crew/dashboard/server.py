@@ -163,7 +163,12 @@ from kiro_crew.safety_override import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.skill_usage import register_skill_read_observer
-from kiro_crew.skills import SkillsLoader, set_pending_consumed_hook, set_pending_staged_hook
+from kiro_crew.skills import (
+    SkillsLoader,
+    set_pending_consumed_hook,
+    set_pending_staged_hook,
+    set_update_auto_applied_hook,
+)
 from kiro_crew.tunnel.setup import setup_tunnel
 
 if TYPE_CHECKING:
@@ -2317,6 +2322,50 @@ async def start_dashboard(
                 logger.debug("pending-skill notification resolve failed", exc_info=True)
 
         set_pending_consumed_hook(_on_pending_skill_consumed)
+
+        def _on_update_auto_applied(info: dict) -> None:
+            try:
+                target = str(info.get("target") or info.get("name") or "skill")
+                version = info.get("new_version")
+                description = str(info.get("description") or "").strip()
+                head = f"**{target}** auto-updated to v{version}."
+                if description:
+                    head = f"**{target}** — {description}\n\nAuto-updated to v{version}."
+                body = (
+                    head + "\n\nApplied without review because skill approval is disabled; "
+                    "the previous version remains available in version history."
+                )
+                payload = {
+                    "slug": str(info.get("slug") or ""),
+                    "target": target,
+                    "new_version": version,
+                }
+
+                def _emit() -> None:
+                    try:
+                        state.notify(
+                            "skills",
+                            "Skill auto-updated",
+                            body,
+                            meta=payload,
+                            url="/capabilities?tab=skills",
+                        )
+                        state.broadcast_ws("skills.pending_changed", payload)
+                    except Exception:
+                        logger.debug("auto-applied-update notification failed", exc_info=True)
+
+                loop = state.serving_loop
+                if loop is not None and not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(_emit)
+                    except RuntimeError:  # pragma: no cover - loop closing
+                        pass
+                else:
+                    _emit()
+            except Exception:
+                logger.debug("auto-applied-update notification failed", exc_info=True)
+
+        set_update_auto_applied_hook(_on_update_auto_applied)
     except Exception:
         logger.debug("Could not register pending-skill staged hook", exc_info=True)
 

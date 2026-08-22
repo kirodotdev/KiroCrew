@@ -26,11 +26,13 @@ to pay for, so the whole subsystem is inert until `session_summary.enabled`.
 ## Storage: a sidecar, never the transcript
 
 Summaries live in `~/.kiro/crew/sessions/.intents/<safe_key>.json`, keyed by the
-session's **transcript** key, with the payload shape below plus the `sig` and
-`gen` fields that together identify the transcript it describes.
+session's **transcript** key, with the payload shape below plus the `sig`, `size`,
+and `gen` fields that identify the transcript it describes. `size` is absent from
+legacy sidecars, which retain their prior mtime-plus-generation validation.
 
 ```json
-{"sig": 1760000000.5, "gen": 3, "generated_at": 1760000123.1, "user_turns": 7,
+{"sig": 1760000000.5, "size": 18421, "gen": 3,
+ "generated_at": 1760000123.1, "user_turns": 7,
  "last_activity": "2026-08-10T10:00:00+00:00",
  "intents": [ … ], "constraints": [ … ]}
 ```
@@ -38,27 +40,28 @@ session's **transcript** key, with the payload shape below plus the `sig` and
 Three properties of this arrangement are load-bearing:
 
 **The transcript is never rewritten.** A summary write touches only the sidecar.
-The session JSONL's mtime is the cache-validity signature for *every* derived
-artifact and the sort key for `list_sessions`, so a write that advanced it would
-invalidate unrelated caches and reorder the user's session list. Housekeeping
+The session JSONL's mtime remains the sort key for `list_sessions`, so a summary
+write that advanced it would reorder the user's session list. Housekeeping
 rewrites (title edits, consolidation, rotation) deliberately restore the previous
 mtime for the same reason — see `history.md`. `test_session_summary_storage.py`
 pins that writing and reading a summary leaves the transcript's bytes and mtime
 untouched.
 
-**Identity is `sig` + `gen`, and freshness requires BOTH to match.** `sig` is the
-session file's mtime: any real append advances it, so it catches the ordinary
-case for one `stat`, with no content comparison. `gen` is
-`rotation_generation` — the transcript's content-identity counter.
+**Identity is `sig` + optional `size` + `gen`.** Freshness requires every field
+present in the sidecar to match. `sig` is the session file's mtime. `size` is the
+message-region byte count (total size minus the metadata first line), so an append
+inside one filesystem timestamp tick still invalidates the sidecar while a
+metadata-only rewrite does not. `gen` is `rotation_generation` — the transcript's
+content-identity counter for same-size message rewrites.
 
-The second half is not redundant, because the first half has a blind spot the
-paragraph above creates. Housekeeping that CHANGES the messages — a rotation,
-the dashboard rewrite save (regenerate / rewind / fork), a channel transcript
-merge — deliberately restores the previous mtime so it does not reorder
-`list_sessions`. Against mtime alone those rewrites are invisible, and a summary
-describing the pre-rewrite conversation stayed valid indefinitely: unlike the
-in-process caches, a sidecar is a FILE, so the staleness survived a restart. All
-of them advance the content generation, which is what `gen` reads.
+The generation is not redundant, because the file signature still has a blind
+spot. Housekeeping that CHANGES the messages — a rotation, the dashboard rewrite
+save (regenerate / rewind / fork), a channel transcript merge — deliberately
+restores the previous mtime so it does not reorder `list_sessions`, and a rewrite
+can retain the same message-byte count. A summary describing the pre-rewrite
+conversation could then stay valid indefinitely: unlike the in-process caches, a
+sidecar is a FILE, so the staleness survives a restart. All of those writers
+advance the content generation, which is what `gen` reads.
 
 Metadata-only rewrites do NOT invalidate. `mark_consolidated` rewrites the
 metadata line and never touches a message, so it moves neither signal — an
@@ -84,11 +87,11 @@ generation-compare bookkeeping that makes the clear safe lives in one place.
 **It is a different file from the one-line summary.** `.summaries/<key>.json`
 holds the on-demand one-line description shown in the sessions list, written by
 `set_cached_summary`, which overwrites the whole file. It carries the same
-`sig` + `gen` identity and is validated the same way — the blind spot above is
-a property of the transcript, not of either consumer. The two artifacts have
-independent writers and independent triggers, so sharing a file would have them
-clobbering each other — exactly the read-modify-write race the sidecar design
-exists to avoid.
+`sig` + optional `size` + `gen` identity and is validated the same way — the
+blind spots above are properties of the transcript, not of either consumer. The
+two artifacts have independent writers and independent triggers, so sharing a
+file would have them clobbering each other — exactly the read-modify-write race
+the sidecar design exists to avoid.
 
 Both sidecars are reaped by `delete_session`, which is contractually a permanent
 removal: a deleted session must leave no orphaned model-generated text on disk.
@@ -97,23 +100,22 @@ removal: a deleted session must leave no orphaned model-generated text on disk.
 while the model call is in flight (it can take tens of seconds), so a permanent
 `delete_session` can complete in that window — removing the transcript and both
 sidecars. `set_cached_intent_summary` therefore takes `_locked(key)` and writes
-only if the transcript still exists with the exact signature the generation
-started from; otherwise it refuses (returns `False`) and the generator discards
-the payload without pushing a WS update or advancing its turn mark. The same
-check drops a summary a mid-generation append has already made stale, rather
-than storing it as the latest word.
+only if the transcript still exists with the exact mtime, message-byte count, and
+generation the summary started from; otherwise it refuses (returns `False`) and
+the generator discards the payload without pushing a WS update or advancing its
+turn mark. The same check drops a summary a mid-generation append has already
+made stale, even when that append shares the previous mtime.
 
-**Both halves of the identity are snapshotted by the CALLER, before the model
-call.** The generation is captured next to `sig`, never read at write time, for
-the same reason the guard above exists: a content rewrite landing mid-generation
-preserves the mtime while advancing the generation, so reading it at write time
-would stamp the NEW content's identity onto the OLD summary and bless it as
-fresh — and with the mtime preserved, nothing downstream could ever catch it.
-`set_cached_intent_summary` refuses a payload whose generation moved, exactly as
-it refuses one whose mtime moved; `set_cached_summary` records the snapshot, so
-the entry it writes is already invalid on the next read. This mirrors
-`mark_consolidated`, which likewise takes the generation its caller snapshotted
-rather than sampling it after the slow call.
+**Every identity field is snapshotted by the CALLER, before the model call.** The
+generation and message-byte count are captured next to `sig`, never sampled only
+at write time. A same-tick append moves the byte count; a content rewrite can
+preserve both mtime and byte count while advancing the generation. Stamping any
+post-change field onto the older summary would bless it as fresh.
+`set_cached_intent_summary` refuses a payload whose captured identity moved;
+`set_cached_summary` records the snapshot, so the entry it writes is already
+invalid on the next read. This mirrors `mark_consolidated`, which likewise takes
+the generation its caller snapshotted rather than sampling it after the slow
+call.
 
 ### Keyed on the transcript key, not the slot key
 

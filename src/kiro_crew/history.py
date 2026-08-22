@@ -10,11 +10,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import contextvars
+import hashlib
 import json
 import logging
 import math
 import os
 import re
+import secrets
 import threading
 import time as _time
 from collections import OrderedDict
@@ -824,9 +826,7 @@ def count_needle(needle: SearchNeedle, folded_text: str) -> int:
             if found < 0:
                 break
             end = found + len(text)
-            before_ok = (
-                not left_bounded or found == 0 or not folded_text[found - 1].isdigit()
-            )
+            before_ok = not left_bounded or found == 0 or not folded_text[found - 1].isdigit()
             after_ok = end >= len(folded_text) or not folded_text[end].isdigit()
             if before_ok and after_ok:
                 total += 1
@@ -1251,9 +1251,7 @@ def parse_search_query(query: str) -> tuple[list[SearchNeedle], str, bool]:
                 # score, so a wrong-family hit costs a little rank rather than
                 # admitting a wrong object into the results.
                 spellings = tuple(
-                    dict.fromkeys(
-                        s for s in (gh_text, *gh_alts, mr_text, *mr_alts) if s != part
-                    )
+                    dict.fromkeys(s for s in (gh_text, *gh_alts, mr_text, *mr_alts) if s != part)
                 )
                 ranking[gh_text] = SearchNeedle(
                     spellings[0], _FORGE_REF_WEIGHT, False, spellings[1:], True
@@ -2547,12 +2545,37 @@ class ConversationLog:
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
 
-        Advances on every real message :meth:`append` but is preserved across
-        metadata-only writes (see :func:`_restore_mtime`), so it is a faithful
-        "has this conversation changed?" signal — used as the cache-validity
-        signature for derived artifacts like on-demand session summaries.
+        Advances on real message :meth:`append` calls when the filesystem clock
+        can distinguish them, and is preserved across metadata-only writes (see
+        :func:`_restore_mtime`). It remains the session activity-order signal;
+        summary caches pair it with message-region size via
+        :meth:`session_signature` so a same-clock-tick append cannot leave stale
+        derived content looking fresh.
         """
         return _safe_mtime(self._path(key))
+
+    def session_signature(self, key: str) -> tuple[float, int] | None:
+        """Return ``(mtime, message_bytes)`` for summary-cache validation.
+
+        Some filesystems can report the same mtime for consecutive appends. The
+        message region still grows, while metadata-only rewrites may change the
+        first line without changing the conversation a summary describes. Read
+        the stat and metadata-line length from one open file description so an
+        atomic replacement cannot pair facts from different inodes.
+        """
+        try:
+            with self._path(key).open("rb") as session_file:
+                stat = os.fstat(session_file.fileno())
+                metadata_bytes = len(session_file.readline())
+        except OSError:
+            return None
+        return stat.st_mtime, max(0, stat.st_size - metadata_bytes)
+
+    @staticmethod
+    def _sidecar_file_signature_matches(data: dict, signature: tuple[float, int]) -> bool:
+        """Validate a sidecar's file signature, accepting legacy mtime-only data."""
+        mtime, size = signature
+        return data.get("sig") == mtime and ("size" not in data or data.get("size") == size)
 
     def _summary_cache_path(self, key: str) -> Path:
         """Sidecar path for a session's cached one-line summary."""
@@ -2564,19 +2587,19 @@ class ConversationLog:
         Summaries are cached in a sidecar file — never in the session JSONL —
         so summarizing a session never rewrites (and therefore never risks
         clobbering, via a read-modify-write race with :meth:`append`) its
-        conversation log. The cache is valid only while the session file's
-        mtime matches the signature recorded when the summary was generated;
-        any real append advances the mtime and invalidates it.
+        conversation log. Newly written sidecars match both mtime and size, so
+        even an append inside one filesystem timestamp tick invalidates them.
+        Legacy sidecars without ``size`` retain their prior mtime-only behavior.
         """
         try:
             data = json.loads(self._summary_cache_path(key).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
         summary = data.get("summary")
-        sig = self.session_mtime(key)
+        signature = self.session_signature(key)
         if (
-            sig is not None
-            and data.get("sig") == sig
+            signature is not None
+            and self._sidecar_file_signature_matches(data, signature)
             and data.get("gen", 0) == self.rotation_generation(key)
             and isinstance(summary, str)
         ):
@@ -2584,14 +2607,20 @@ class ConversationLog:
         return None
 
     def set_cached_summary(
-        self, key: str, summary: str, sig: float, generation: int | None = None
+        self,
+        key: str,
+        summary: str,
+        sig: float,
+        generation: int | None = None,
+        size: int | None = None,
     ) -> None:
         """Persist a derived one-line *summary* to the sidecar cache.
 
-        Keyed by the session file's mtime *sig* so a later append invalidates
-        it. Atomic and side-effect-free with respect to the session JSONL —
-        no read-modify-write, hence no data-loss race with a concurrent
-        :meth:`append`.
+        Keyed by the session file's mtime *sig* and, for new callers, its
+        message-region byte *size*, so a later append invalidates it even when
+        the filesystem reports an unchanged mtime. Atomic and side-effect-free
+        with respect to the session JSONL — no read-modify-write, hence no
+        data-loss race with a concurrent :meth:`append`.
 
         *generation* is :meth:`rotation_generation` captured at the same moment
         as *sig*, and must come from the caller for the same reason *sig* does:
@@ -2602,20 +2631,14 @@ class ConversationLog:
         staleness the generation was added to catch. ``None`` reads it at write
         time, which is only safe when no snapshot preceded the call.
         """
-        atomic_write(
-            self._summary_cache_path(key),
-            json.dumps(
-                {
-                    "sig": sig,
-                    "gen": (
-                        self.rotation_generation(key)
-                        if generation is None
-                        else generation
-                    ),
-                    "summary": summary,
-                }
-            ),
-        )
+        cache: dict[str, object] = {
+            "sig": sig,
+            "gen": (self.rotation_generation(key) if generation is None else generation),
+            "summary": summary,
+        }
+        if size is not None:
+            cache["size"] = size
+        atomic_write(self._summary_cache_path(key), json.dumps(cache))
 
     def _intent_summary_cache_path(self, key: str) -> Path:
         """Sidecar path for a session's cached intent-structured summary.
@@ -2630,10 +2653,10 @@ class ConversationLog:
     def get_cached_intent_summary(self, key: str) -> dict | None:
         """Return the cached intent summary payload for *key* if still valid.
 
-        Same mtime-signature contract as :meth:`get_cached_summary`: any real
-        append advances the session file's mtime and invalidates the cache,
-        while metadata-only rewrites preserve it. Returns the whole payload so
-        the caller can read ``generated_at`` for display.
+        Same composite-signature contract as :meth:`get_cached_summary`: any
+        real append changes mtime or size and invalidates the cache, while
+        metadata-only rewrites preserve both. Returns the whole payload so the
+        caller can read ``generated_at`` for display.
         """
         try:
             raw = self._intent_summary_cache_path(key).read_text(encoding="utf-8")
@@ -2642,8 +2665,8 @@ class ConversationLog:
             return None
         if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
             return None
-        sig = self.session_mtime(key)
-        if sig is None or data.get("sig") != sig:
+        signature = self.session_signature(key)
+        if signature is None or not self._sidecar_file_signature_matches(data, signature):
             return None
         if data.get("gen", 0) != self.rotation_generation(key):
             return None
@@ -2666,16 +2689,21 @@ class ConversationLog:
             return None, False
         if not isinstance(data, dict) or not isinstance(data.get("intents"), list):
             return None, False
-        sig = self.session_mtime(key)
+        signature = self.session_signature(key)
         fresh = (
-            sig is not None
-            and data.get("sig") == sig
+            signature is not None
+            and self._sidecar_file_signature_matches(data, signature)
             and data.get("gen", 0) == self.rotation_generation(key)
         )
         return data, not fresh
 
     def set_cached_intent_summary(
-        self, key: str, payload: dict, sig: float, generation: int | None = None
+        self,
+        key: str,
+        payload: dict,
+        sig: float,
+        generation: int | None = None,
+        size: int | None = None,
     ) -> bool:
         """Persist a derived intent summary *payload* to its sidecar cache.
 
@@ -2684,14 +2712,14 @@ class ConversationLog:
         both invalidate every other derived cache and reorder ``list_sessions``).
 
         The write happens under ``_locked`` and only if the transcript still
-        exists with the *same* signature the generation started from. Generation
-        holds no lock while the model call is in flight (it can take tens of
-        seconds), so a permanent :meth:`delete_session` can complete in that
-        window -- removing the transcript AND this sidecar. An unconditional
-        write here would then recreate the sidecar, resurrecting deleted
-        conversation data after the user was told it was gone. The sig equality
-        check also drops a summary that a mid-generation append has already made
-        stale, rather than storing it as the latest word.
+        exists with the same mtime, optional byte size, and generation the
+        summary started from. Generation holds no lock while the model call is
+        in flight (it can take tens of seconds), so a permanent
+        :meth:`delete_session` can complete in that window -- removing the
+        transcript AND this sidecar. An unconditional write here would then
+        recreate the sidecar, resurrecting deleted conversation data after the
+        user was told it was gone. The composite equality check also drops a
+        summary that a same-tick append has already made stale.
 
         Returns True when the payload was written, False when it was refused
         (transcript deleted or changed, or the lock could not be acquired).
@@ -2700,36 +2728,29 @@ class ConversationLog:
         """
         try:
             with self._locked(key):
-                if _safe_mtime(self._path(key)) != sig:
+                current_signature = self.session_signature(key)
+                if current_signature is None or current_signature[0] != sig:
+                    return False
+                if size is not None and current_signature[1] != size:
                     return False
                 current_generation = self.rotation_generation(key)
                 if generation is not None and current_generation != generation:
                     # A rewrite landed while the model call was in flight. It
-                    # PRESERVED the mtime, so the check above cannot see it —
-                    # the generation is the only signal that the summary now
-                    # describes replaced content. Refuse for the same reason a
-                    # changed mtime is refused: storing it would record a known
-                    # stale payload as the latest word.
+                    # PRESERVED the mtime, so the file signature alone may not
+                    # see a same-size rewrite; the generation is the signal that
+                    # the summary now describes replaced content.
                     return False
-                atomic_write(
-                    self._intent_summary_cache_path(key),
-                    json.dumps(
-                        {
-                            **payload,
-                            "sig": sig,
-                            "gen": (
-                                current_generation
-                                if generation is None
-                                else generation
-                            ),
-                        }
-                    ),
-                )
+                cache: dict[str, object] = {
+                    **payload,
+                    "sig": sig,
+                    "gen": (current_generation if generation is None else generation),
+                }
+                if size is not None:
+                    cache["size"] = size
+                atomic_write(self._intent_summary_cache_path(key), json.dumps(cache))
                 return True
         except HistoryLockTimeout:
-            logger.warning(
-                "set_cached_intent_summary: lock timeout, not writing key=%s", key
-            )
+            logger.warning("set_cached_intent_summary: lock timeout, not writing key=%s", key)
             return False
 
     def append(
@@ -3237,9 +3258,7 @@ class ConversationLog:
             attempts = 0
         return max(0, attempts), retry_at
 
-    def _attempts_describe_current_span(
-        self, meta: dict, message_count: int | None
-    ) -> bool:
+    def _attempts_describe_current_span(self, meta: dict, message_count: int | None) -> bool:
         """True when the recorded attempts belong to the span in front of us now.
 
         A span is identified by where it starts AND how far it reaches: the
@@ -4399,9 +4418,7 @@ class ConversationLog:
         if "tab_id" in fields:
             self.invalidate_tab_id_cache()
 
-    def update_metadata_if(
-        self, key: str, fields: dict, guard: Callable[[dict], bool]
-    ) -> bool:
+    def update_metadata_if(self, key: str, fields: dict, guard: Callable[[dict], bool]) -> bool:
         """Merge *fields* only if *guard* still accepts the on-disk metadata.
 
         ``guard`` is evaluated INSIDE the cross-process lock, against the record
@@ -5388,11 +5405,7 @@ class ConversationLog:
                 # exactly like an undecodable one, so report it the same way --
                 # an empty dict that IS a genuine answer -- instead of throwing a
                 # non-OSError out of a read that callers treat as total.
-                meta = (
-                    data
-                    if isinstance(data, dict) and data.get("_type") == "metadata"
-                    else {}
-                )
+                meta = data if isinstance(data, dict) and data.get("_type") == "metadata" else {}
             except json.JSONDecodeError:
                 meta = {}
             # Guarded publish — discard the fill if a write invalidated this
@@ -5831,9 +5844,7 @@ class HistoryConsolidator:
             return False
         return (_time.time() if now is None else now) >= retry_at
 
-    async def _note_failed_attempt(
-        self, key: str, span: AttemptedSpan, reason: str
-    ) -> None:
+    async def _note_failed_attempt(self, key: str, span: AttemptedSpan, reason: str) -> None:
         """Charge one attempt for a billed turn that never reached the marker.
 
         Called only once the prompt has actually reached the provider, so a
@@ -5859,9 +5870,7 @@ class HistoryConsolidator:
         except Exception:
             # Without a persisted count the sweep cannot back off, so say so
             # loudly — but never let bookkeeping mask the original failure.
-            logger.warning(
-                "Could not persist consolidation retry state for %s", key, exc_info=True
-            )
+            logger.warning("Could not persist consolidation retry state for %s", key, exc_info=True)
             return
         if attempts < 1:
             # The session was deleted mid-consolidation, so nothing was recorded
@@ -5869,8 +5878,7 @@ class HistoryConsolidator:
             return
         if attempts < _CONSOLIDATION_MAX_ATTEMPTS:
             logger.warning(
-                "Consolidation attempt %d/%d failed for %s (%s); "
-                "next attempt in %.0fs",
+                "Consolidation attempt %d/%d failed for %s (%s); " "next attempt in %.0fs",
                 attempts,
                 _CONSOLIDATION_MAX_ATTEMPTS,
                 key,
@@ -5888,15 +5896,11 @@ class HistoryConsolidator:
             span.total,
         )
         try:
-            await asyncio.to_thread(
-                self._log.mark_consolidated, key, span.total, span.generation
-            )
+            await asyncio.to_thread(self._log.mark_consolidated, key, span.total, span.generation)
         except Exception:
             # The count stays at the cap, so retry_eligible() keeps refusing —
             # the span stops spending even though the marker is missing.
-            logger.warning(
-                "Could not mark abandoned consolidation for %s", key, exc_info=True
-            )
+            logger.warning("Could not mark abandoned consolidation for %s", key, exc_info=True)
 
     async def _note_environment_failure(self, key: str, reason: str) -> None:
         """Arm the backoff for a consolidation that never reached the provider.
@@ -6037,9 +6041,7 @@ class HistoryConsolidator:
         # expiry. Checked here (as well as inside _consolidate()) so the skip is
         # logged before a task is ever scheduled.
         if not self.retry_eligible(key, message_count=total):
-            logger.info(
-                "consolidate_session skipped for %s: consolidation retry backoff", key
-            )
+            logger.info("consolidate_session skipped for %s: consolidation retry backoff", key)
             return
         # Short-circuit sensitive sessions before scheduling a task
         messages = self._log._read_messages(key)
@@ -6149,9 +6151,7 @@ class HistoryConsolidator:
             # the sentinel lets those callbacks tell a refusal from a completed
             # pass and leave their bookkeeping untouched.
             if not self.retry_eligible(key, message_count=total):
-                logger.info(
-                    "_consolidate refused for %s: consolidation retry backoff", key
-                )
+                logger.info("_consolidate refused for %s: consolidation retry backoff", key)
                 return _CONSOLIDATION_REFUSED
             # Freeze the whole span identity from that one snapshot. The offset is
             # derived rather than returned because the snapshot slices at it
@@ -6328,9 +6328,7 @@ class HistoryConsolidator:
                 # unconsolidated: the span re-bills a full turn every idle window,
                 # and immediately after every restart. Charge the attempt.
                 if include_history:
-                    await self._note_failed_attempt(
-                        key, attempted, "empty LLM result"
-                    )
+                    await self._note_failed_attempt(key, attempted, "empty LLM result")
                 return None
 
             if entry := result.get("history_entry"):
@@ -6373,9 +6371,7 @@ class HistoryConsolidator:
                         # in that window, writing would silently revert it,
                         # so the store skips the stale write instead.
                         wrote = await run_in_embed_pool(
-                            lambda: memory.write_preferences(
-                                prefs, expected_baseline=current_prefs
-                            )
+                            lambda: memory.write_preferences(prefs, expected_baseline=current_prefs)
                         )
                         if not wrote:
                             logger.info(
@@ -6464,9 +6460,7 @@ class HistoryConsolidator:
             # skip conditions are false again on the next 60s tick. Charging the
             # attempt here is what converts that tight loop into backoff.
             if billed and include_history:
-                await self._note_failed_attempt(
-                    key, attempted, "exception after the LLM call"
-                )
+                await self._note_failed_attempt(key, attempted, "exception after the LLM call")
             raise
         finally:
             self._running.discard(key)
@@ -6886,6 +6880,8 @@ class HistoryConsolidator:
         triggers: str,
         procedure_md: str,
         scripts: "list[dict] | None" = None,
+        scripts_supplied: bool = False,
+        allow_auto_apply: bool = True,
     ) -> None:
         """Stage a pending UPDATE candidate for an existing auto-skill.
 
@@ -6995,6 +6991,14 @@ class HistoryConsolidator:
         _live_description = _frontmatter_value(live_body, "description")
         _staged_triggers = _merge_trigger_lists(_live_triggers, triggers)
         _staged_description = description or _live_description
+        auto_apply = (
+            allow_auto_apply
+            and not self._approval_required
+            and not scripts
+            and not scripts_supplied
+        )
+        stage_token = secrets.token_hex(16) if auto_apply else None
+        unattended_binding: list[str] = []
         name = loader.stage_skill_candidate(
             _update_slug,
             description=_staged_description,
@@ -7005,6 +7009,10 @@ class HistoryConsolidator:
             kind="update",
             target=target_key,
             base_version=base_version,
+            notify=not auto_apply,
+            stage_token=stage_token,
+            base_content_hash=hashlib.sha256(live_body.encode("utf-8")).hexdigest(),
+            unattended_binding_out=unattended_binding if auto_apply else None,
         )
         if name:
             logger.info("Staged skill update %s (target %s) from session %s", name, target_key, key)
@@ -7020,6 +7028,14 @@ class HistoryConsolidator:
                     "merged": used_merge,
                 },
             )
+            if auto_apply and stage_token and unattended_binding:
+                self._auto_apply_staged_update(
+                    key=key,
+                    staged_name=name,
+                    target_key=target_key,
+                    stage_token=stage_token,
+                    candidate_binding=unattended_binding[0],
+                )
         else:
             logger.info("Skill update staging rejected for target '%s'", target_key)
             sel().log_tool_invocation(
@@ -7029,6 +7045,58 @@ class HistoryConsolidator:
                 outcome="rejected",
                 metadata={"slug": _update_slug, "reason": "creation_failed"},
             )
+
+    def _auto_apply_staged_update(
+        self,
+        *,
+        key: str,
+        staged_name: str,
+        target_key: str,
+        stage_token: str,
+        candidate_binding: str,
+    ) -> None:
+        loader = self._skills_loader
+        if loader is None:
+            return
+        slug = staged_name.split("/", 1)[-1]
+        applied: tuple[str, int] | None = None
+        try:
+            applied = loader.auto_apply_pending_update(
+                slug,
+                expected_stage_token=stage_token,
+                expected_candidate_binding=candidate_binding,
+            )
+        except Exception:
+            logger.warning(
+                "Auto-apply failed for %s; leaving it pending review",
+                staged_name,
+                exc_info=True,
+            )
+        if applied:
+            applied_name, new_version = applied
+            sel().log_tool_invocation(
+                session_key=key,
+                tool_name="auto_skill_create",
+                tool_kind="skills",
+                outcome="auto_applied_update",
+                metadata={
+                    "name": applied_name,
+                    "target": target_key,
+                    "new_version": new_version,
+                },
+            )
+            return
+        sel().log_tool_invocation(
+            session_key=key,
+            tool_name="auto_skill_create",
+            tool_kind="skills",
+            outcome="auto_apply_failed",
+            metadata={
+                "name": staged_name,
+                "target": target_key,
+                "reason": "left_pending_for_review",
+            },
+        )
 
     def _process_auto_skills(self, result: dict, key: str) -> None:
         """Extract + write auto-generated skills from the consolidation result.
@@ -7152,6 +7220,8 @@ class HistoryConsolidator:
                         triggers=triggers,
                         procedure_md=procedure_md,
                         scripts=valid_scripts or None,
+                        scripts_supplied=scripts_supplied,
+                        allow_auto_apply=not self._auto_refine_enabled,
                     )
                 else:
                     provenance = AutoSkillProvenance(
@@ -7357,9 +7427,7 @@ class HistoryConsolidator:
         async with contextlib.AsyncExitStack() as stack:
             try:
                 client = await stack.enter_async_context(
-                    background_turn(
-                        self._sessions, task="consolidation", agent="kirocrew-lite"
-                    )
+                    background_turn(self._sessions, task="consolidation", agent="kirocrew-lite")
                 )
             except Exception as exc:
                 logger.warning(
@@ -7368,9 +7436,7 @@ class HistoryConsolidator:
                     _time.monotonic() - t_start,
                     exc_info=True,
                 )
-                raise _ConsolidationNotDispatched(
-                    "background session unavailable"
-                ) from exc
+                raise _ConsolidationNotDispatched("background session unavailable") from exc
             t_acquired = _time.monotonic()
             wait_s = t_acquired - t_start
             # Reject all tools: this is a text/JSON-only generation turn. kiro

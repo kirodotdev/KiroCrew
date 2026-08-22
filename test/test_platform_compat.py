@@ -108,6 +108,96 @@ class TestFileLock:
             os.close(fd)
 
 
+def test_prepare_lock_file_seeds_windows_byte_range(tmp_path, monkeypatch):
+    lock = tmp_path / "prepared.lock"
+    fd = os.open(str(lock), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        pc.prepare_lock_file(fd)
+        assert os.fstat(fd).st_size == 1
+        assert os.read(fd, 1) == b"\0"
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize(
+    ("machine", "expected_number"),
+    [("x86_64", 316), ("aarch64", 276)],
+)
+def test_linux_rename_no_replace_falls_back_to_syscall(monkeypatch, machine, expected_number):
+    calls = []
+
+    class FakeSyscall:
+        restype = None
+
+        def __call__(self, *args):
+            calls.append(args)
+            return 0
+
+    class FakeLibc:
+        syscall = FakeSyscall()
+
+    monkeypatch.setattr(pc.platform, "machine", lambda: machine)
+
+    assert pc._linux_rename_no_replace(FakeLibc(), b"source", b"destination") == 0
+    assert calls[0][0].value == expected_number
+    assert calls[0][-1].value == pc._RENAME_NOREPLACE
+
+
+def test_rename_no_replace_maps_kernel_enosys_to_enotsup(monkeypatch):
+    class FakeSyscall:
+        restype = None
+
+        def __call__(self, *_args):
+            pc.ctypes.set_errno(errno.ENOSYS)
+            return -1
+
+    class FakeLibc:
+        syscall = FakeSyscall()
+
+    monkeypatch.setattr(pc.ctypes, "CDLL", lambda *_args, **_kwargs: FakeLibc())
+    monkeypatch.setattr(pc.platform, "machine", lambda: "x86_64")
+    try:
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace("source", "destination")
+    finally:
+        pc.ctypes.set_errno(0)
+
+    assert exc_info.value.errno == errno.ENOTSUP
+
+
+class TestRenameNoReplace:
+    def test_renames_directory_when_destination_is_absent(self, tmp_path):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        (source / "payload").write_text("original", encoding="utf-8")
+
+        pc.rename_no_replace(source, destination)
+
+        assert not source.exists()
+        assert (destination / "payload").read_text(encoding="utf-8") == "original"
+
+    @pytest.mark.parametrize("occupied", [False, True])
+    def test_refuses_existing_directory_without_nesting_or_replacing(self, tmp_path, occupied):
+        source = tmp_path / "source"
+        destination = tmp_path / "destination"
+        source.mkdir()
+        destination.mkdir()
+        (source / "payload").write_text("candidate", encoding="utf-8")
+        if occupied:
+            (destination / "live").write_text("existing", encoding="utf-8")
+
+        with pytest.raises(OSError) as exc_info:
+            pc.rename_no_replace(source, destination)
+
+        assert exc_info.value.errno in (errno.EEXIST, errno.ENOTEMPTY)
+        assert (source / "payload").read_text(encoding="utf-8") == "candidate"
+        assert not (destination / "source").exists()
+        if occupied:
+            assert (destination / "live").read_text(encoding="utf-8") == "existing"
+
+
 class TestProcessHelpers:
     def test_pid_exists_true_for_self(self):
         # The current process obviously exists — on POSIX via os.kill(0), on

@@ -16,6 +16,7 @@ import functools
 import io
 import logging
 import os
+import platform
 import shutil
 import signal
 import stat
@@ -336,6 +337,23 @@ _WIN_LOCK_POLL_SECS = 0.01
 _WIN_LOCK_TIMEOUT_SECS = 300.0
 
 
+def prepare_lock_file(fd: int) -> None:
+    """Make a dedicated lock-file descriptor usable by every platform.
+
+    ``msvcrt.locking`` locks a byte range and refuses an empty file. Dedicated
+    lock files opened with ``O_CREAT`` therefore need one inert byte before the
+    first Windows acquire. POSIX ``flock`` does not need or want a write, so
+    this helper is a no-op there. Callers must pass a writable descriptor for a
+    dedicated lock file, never an application-data file.
+    """
+    if not IS_WINDOWS:
+        return
+    if os.fstat(fd).st_size == 0:
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, b"\0")
+    os.lseek(fd, 0, os.SEEK_SET)
+
+
 def _win_acquire_blocking(fd: int, *, timeout: float = _WIN_LOCK_TIMEOUT_SECS) -> bool:
     """Windows blocking lock acquire: spin on LK_NBLCK until free or timeout.
 
@@ -506,6 +524,90 @@ def try_acquire_lock(fd: int, *, exclusive: bool = False) -> bool:
         return True
     except OSError:
         return False
+
+
+_AT_FDCWD = -100
+_RENAME_NOREPLACE = 1
+_LINUX_RENAMEAT2_SYSCALLS = {
+    # First-class Linux release architectures. The syscall numbers are stable
+    # ABI values and let source installs run on glibc < 2.28, whose kernels
+    # support renameat2 but whose libc exports no wrapper.
+    "x86_64": 316,
+    "amd64": 316,
+    "aarch64": 276,
+    "arm64": 276,
+}
+
+
+def _linux_rename_no_replace(libc: object, source: bytes, destination: bytes) -> int:
+    """Invoke Linux ``renameat2(RENAME_NOREPLACE)`` via libc or ``syscall``."""
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is not None:
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        return int(renameat2(_AT_FDCWD, source, _AT_FDCWD, destination, _RENAME_NOREPLACE))
+
+    syscall_number = _LINUX_RENAMEAT2_SYSCALLS.get(platform.machine().casefold())
+    syscall = getattr(libc, "syscall", None)
+    if syscall_number is None or syscall is None:
+        raise OSError(errno.ENOTSUP, "renameat2(RENAME_NOREPLACE) is unavailable")
+    # ``syscall`` is variadic, so do not assign argtypes; explicit ctypes values
+    # preserve pointer and integer widths on both supported architectures.
+    syscall.restype = ctypes.c_long
+    return int(
+        syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(_AT_FDCWD),
+            ctypes.c_char_p(source),
+            ctypes.c_int(_AT_FDCWD),
+            ctypes.c_char_p(destination),
+            ctypes.c_uint(_RENAME_NOREPLACE),
+        )
+    )
+
+
+def rename_no_replace(src: str | os.PathLike, dst: str | os.PathLike) -> None:
+    """Atomically rename *src* to *dst*, refusing an existing destination.
+
+    ``os.rename`` replaces an empty destination directory on POSIX, while
+    ``shutil.move`` nests inside an existing directory. Neither behavior is
+    safe for publish/restore paths whose destination may be occupied by a
+    concurrent writer. Use the native no-replace primitive on each supported
+    platform and fail closed when the host provides no such primitive.
+    """
+    if IS_WINDOWS:
+        # MoveFileW, which backs os.rename, fails when the destination exists.
+        os.rename(src, dst)
+        return
+
+    source = os.fsencode(src)
+    destination = os.fsencode(dst)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if IS_LINUX:
+        result = _linux_rename_no_replace(libc, source, destination)
+    elif IS_MACOS:
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise OSError(errno.ENOTSUP, "renamex_np(RENAME_EXCL) is unavailable")
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(source, destination, 0x00000004)
+    else:
+        raise OSError(errno.ENOTSUP, "atomic no-replace rename is unavailable")
+
+    if result != 0:
+        error = ctypes.get_errno()
+        # A kernel without renameat2 support is an unsupported primitive, not a
+        # missing path. Keep the API consistent across wrapper and syscall use.
+        if error == errno.ENOSYS:
+            error = errno.ENOTSUP
+        raise OSError(error, os.strerror(error), os.fspath(dst))
 
 
 def probe_file_persistence(directory: Path) -> str | None:

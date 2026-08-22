@@ -1101,13 +1101,14 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     if is_incognito_transcript(meta.get("memory_mode")):
         return ""
     # Cache: a summary persisted in a sidecar file is reusable as long as the
-    # session file hasn't changed since it was generated. session_mtime advances
-    # only on real message appends (preserved across metadata writes), so it is a
-    # cheap, exact staleness signal — a repeat list_sessions(summarize=true) for
-    # an unchanged session pays zero LLM cost. The cache lives in a sidecar
-    # (never the session JSONL) so summarizing an *active* session never rewrites
-    # its log and cannot lose a concurrently-appended message.
-    sig = await loop.run_in_executor(None, log.session_mtime, key)
+    # session messages have not changed since it was generated. The composite
+    # signature pairs activity mtime with message-region bytes, so same-tick
+    # appends invalidate without treating metadata-only rewrites as activity. A
+    # repeat list_sessions(summarize=true) for an unchanged session pays zero
+    # LLM cost. The cache lives in a sidecar (never the session JSONL) so
+    # summarizing an *active* session never rewrites its log and cannot lose a
+    # concurrently-appended message.
+    signature = await loop.run_in_executor(None, log.session_signature, key)
     # Captured WITH the signature: a rewrite during the model call below
     # preserves the mtime while advancing this counter, and stamping the new
     # content identity onto the older summary would bless it as fresh.
@@ -1137,16 +1138,17 @@ async def _summarize_one(state: DashboardState, key: str) -> str:
     summary, _ = redact_exfiltration_urls(summary)
     summary, _ = redact_credentials(summary)
     summary = summary[:200]
-    # Persist for reuse in a sidecar cache (best-effort; keyed by the mtime we
-    # observed above so a concurrent append invalidates it on the next call).
-    # Writing the sidecar never touches the session JSONL, so it cannot race a
-    # concurrent append or reorder list_sessions.
-    if sig is not None:
+    # Persist for reuse in a sidecar cache (best-effort; keyed by the composite
+    # signature observed above so a concurrent append invalidates it on the next
+    # call). Writing the sidecar never touches the session JSONL, so it cannot
+    # race a concurrent append or reorder list_sessions.
+    if signature is not None:
+        sig, size = signature
         try:
             await loop.run_in_executor(
                 None,
                 functools.partial(
-                    log.set_cached_summary, key, summary, sig, generation
+                    log.set_cached_summary, key, summary, sig, generation, size
                 ),
             )
         except Exception:

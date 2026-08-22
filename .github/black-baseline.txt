@@ -327,7 +327,6 @@ src/kiro_crew/frontend.py
 src/kiro_crew/gateway_shutdown_budget.py
 src/kiro_crew/github_runner.py
 src/kiro_crew/heartbeat.py
-src/kiro_crew/history.py
 src/kiro_crew/hooks.py
 src/kiro_crew/image_artifacts.py
 src/kiro_crew/imaging.py
@@ -434,7 +433,6 @@ src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
 src/kiro_crew/skill_providers/skillsh.py
 src/kiro_crew/skill_usage.py
-src/kiro_crew/skills.py
 src/kiro_crew/skills_dedupe.py
 src/kiro_crew/skills_script_validator.py
 src/kiro_crew/slack/blocks.py
@@ -1228,12 +1226,9 @@ test/test_skill_index_app_symlinks.py
 test/test_skill_paths_and_mcp_sync.py
 test/test_skill_pending.py
 test/test_skill_pending_api.py
-test/test_skill_pending_notify.py
 test/test_skill_providers.py
 test/test_skill_script_validator.py
 test/test_skill_trigger_pointer.py
-test/test_skill_update_flow.py
-test/test_skill_versioning.py
 test/test_skills.py
 test/test_slack_agent_passthrough.py
 test/test_slack_dashboard_live_sync.py

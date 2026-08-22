@@ -731,7 +731,9 @@ async def api_skill_detail(request: web.Request) -> web.Response:
     skills = _get_skills(state)
 
     if request.method == "DELETE":
-        ok = skills.delete_skill(name)
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.delete_skill, name
+        )
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -744,7 +746,9 @@ async def api_skill_detail(request: web.Request) -> web.Response:
         content = body.get("content", "")
         if not content:
             return web.json_response({"error": "content is required"}, status=400)
-        ok = skills.update_skill(name, content)
+        ok = await asyncio.get_running_loop().run_in_executor(
+            discovery_executor(), skills.update_skill, name, content
+        )
         if not ok:
             return web.json_response({"error": "not found"}, status=404)
         return web.json_response({"ok": True})
@@ -815,7 +819,9 @@ async def api_skills_create(request: web.Request) -> web.Response:
     if not safe_name:
         return web.json_response({"error": "invalid skill name"}, status=400)
     skills = _get_skills(state)
-    ok = skills.create_skill(safe_name, content)
+    ok = await asyncio.get_running_loop().run_in_executor(
+        discovery_executor(), skills.create_skill, safe_name, content
+    )
     if not ok:
         return web.json_response({"error": f"skill '{safe_name}' already exists"}, status=409)
     return web.json_response({"ok": True, "name": safe_name})

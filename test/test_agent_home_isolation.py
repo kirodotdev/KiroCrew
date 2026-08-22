@@ -744,8 +744,15 @@ def test_no_new_hardcoded_global_agents_dir():
     ), "hard-coded global agents dir — use kiro_agents_dir() instead:\n" + "\n".join(offenders)
 
 
-def test_repo_has_no_python_syntax_regression():
-    """Cheap compile-all so a rewrite typo fails here rather than at import."""
+def test_repo_has_no_python_syntax_regression(tmp_path, monkeypatch):
+    """Cheap compile-all so a rewrite typo fails here rather than at import.
+
+    ``compileall`` normally writes thousands of ``.pyc`` files beside the
+    checkout sources. Under xdist that races tests which assert skill-helper
+    imports leave no checkout residue, so redirect bytecode into this test's
+    temporary directory instead.
+    """
+    monkeypatch.setenv("PYTHONPYCACHEPREFIX", str(tmp_path / "pycache"))
     proc = subprocess.run(
         [sys.executable, "-m", "compileall", "-q", str(SRC)],
         capture_output=True,

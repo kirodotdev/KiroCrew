@@ -1446,8 +1446,15 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
         os.utime(log._path(key), (aged, aged))
         sig = log.session_mtime(key)
         assert sig == aged
-        log.set_cached_summary(key, "describes the PRE-rewrite conversation", sig)
-        log.set_cached_intent_summary(key, {"intents": [{"text": "pre-rewrite"}]}, sig)
+        signature = log.session_signature(key)
+        assert signature is not None and signature[0] == sig
+        size = signature[1]
+        log.set_cached_summary(
+            key, "describes the PRE-rewrite conversation", sig, size=size
+        )
+        log.set_cached_intent_summary(
+            key, {"intents": [{"text": "pre-rewrite"}]}, sig, size=size
+        )
         assert log.get_cached_summary(key) == "describes the PRE-rewrite conversation"
         return sig
 
@@ -1590,11 +1597,38 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
 
         assert stored is False, "the payload describes content that was replaced"
 
-    def test_a_genuine_append_still_invalidates_by_signature(self, tmp_path: Path) -> None:
-        """Control: the existing mtime rule keeps working for ordinary writes."""
+    def test_intent_setter_refuses_a_same_tick_append(self, tmp_path: Path) -> None:
+        """Size prevents a stale payload from being blessed with unchanged mtime."""
         log = _log(tmp_path)
-        self._seed(log, "k")
+        sig = self._seed(log, "k")
+        signature = log.session_signature("k")
+        assert signature is not None and signature[0] == sig
+        generation = log.rotation_generation("k")
+
+        log.append("k", "user", "landed while the model was running")
+        H._restore_mtime(log._path("k"), sig)
+
+        stored = log.set_cached_intent_summary(
+            "k",
+            {"intents": [{"text": "omits the append"}]},
+            sig,
+            generation,
+            signature[1],
+        )
+
+        assert stored is False
+
+    def test_a_genuine_append_still_invalidates_by_signature(self, tmp_path: Path) -> None:
+        """A same-clock-tick append still changes the composite signature."""
+        log = _log(tmp_path)
+        sig = self._seed(log, "k")
 
         log.append("k", "user", "a real new message")
+        path = log._path("k")
+        H._restore_mtime(path, sig)
 
+        assert log.session_mtime("k") == sig, (
+            "precondition: mtime must be unchanged so size is the only append signal"
+        )
         assert log.get_cached_summary("k") is None
+        assert log.get_cached_intent_summary("k") is None
