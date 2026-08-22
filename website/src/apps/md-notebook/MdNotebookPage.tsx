@@ -377,6 +377,7 @@ export default function MdNotebookPage() {
   const [lastSyncByVault, setLastSyncByVault] = useState<Record<string, number>>({})
 
   const saveTimer = useRef<number | null>(null)
+  const savesInFlightRef = useRef(new Set<Promise<void>>())
   const contentRef = useRef('')
   const pathRef = useRef<string | null>(null)
   const vaultRef = useRef(activeVaultId)
@@ -416,6 +417,43 @@ export default function MdNotebookPage() {
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [])
+
+  useEffect(
+    () => () => {
+      if (!saveTimer.current && !savesInFlightRef.current.size) return
+
+      if (saveTimer.current) {
+        window.clearTimeout(saveTimer.current)
+        saveTimer.current = null
+      }
+
+      // In-app navigation unmounts this page without firing beforeunload. An
+      // autosave may already be retrying newer buffer snapshots, so wait for it
+      // to finish before using the mtime it produced. If its bounded retry loop
+      // exhausted while the user kept typing, persist the final dirty snapshot
+      // without calling flushSave: that function updates React state and could
+      // therefore outlive the component being torn down.
+      const activeSaves = [...savesInFlightRef.current]
+      const saveDirtySnapshot = async () => {
+        const vault = vaultRef.current
+        const path = pathRef.current
+        if (vault && path && dirtyRef.current) {
+          await notesApi.saveNote(
+            vault,
+            path,
+            contentRef.current,
+            mtimeRef.current ?? undefined,
+          )
+        }
+      }
+      if (activeSaves.length) {
+        void Promise.all(activeSaves).then(saveDirtySnapshot).catch(() => undefined)
+      } else {
+        void saveDirtySnapshot().catch(() => undefined)
+      }
+    },
+    [],
+  )
 
   // Re-render every 30s so the "5m ago" label ages without interaction.
   const [, setTick] = useState(0)
@@ -555,6 +593,11 @@ export default function MdNotebookPage() {
     // and the banner offers "Use the file on disk" against the NEW vault's buffer.
     const savingPath = pathRef.current
     const saving = { vault: vaultRef.current, path: savingPath }
+    let finishSave!: () => void
+    const saveInFlight = new Promise<void>(resolve => {
+      finishSave = resolve
+    })
+    savesInFlightRef.current.add(saveInFlight)
     try {
       // Save until what landed matches what the editor holds. `contentRef` can
       // move while the request is in flight, and the debounce timer was
@@ -600,6 +643,9 @@ export default function MdNotebookPage() {
       } else {
         setError(e instanceof Error ? e.message : String(e))
       }
+    } finally {
+      finishSave()
+      savesInFlightRef.current.delete(saveInFlight)
     }
   }, [])
 
