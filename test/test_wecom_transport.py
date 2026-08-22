@@ -18,6 +18,16 @@ class FakeClient:
         self.started = False
         self.closed = False
         self.replies: list[tuple[str, str]] = []
+        self.dedupe_calls: list[str] = []
+
+    def already_delivered(self, msgid: str) -> bool:
+        """Record-and-report, like the real client's bounded window.
+
+        Present because the transport consults it on every inbound frame; a fake
+        that omitted it would make ``receive`` raise instead of testing the gate.
+        """
+        self.dedupe_calls.append(msgid)
+        return False
 
     async def start(self) -> None:
         self.started = True

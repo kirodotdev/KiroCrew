@@ -24,10 +24,21 @@ Security: :meth:`authorize` is **deny-by-default** and owner-only. An empty
 allow-list authorizes nobody (fail closed), never everybody. The only path to
 "everybody" is the explicit ``allow_all`` opt-in (config
 ``wecom.allow_all_users``), which still denies frames without a userid.
+
+Two further inbound gates run in :meth:`receive`, both BEFORE a turn is
+dispatched and in this order:
+
+* **1:1 chats only** — group traffic is refused (``_chat_is_direct``). Sessions
+  are keyed on ``userid``, so a group message would run inside the sender's
+  private DM session and publish its history and tool output to the whole room.
+* **Redelivery suppression** — WeCom may repeat a callback, and each repeat would
+  run the turn again. Checked after authorization so unauthorized traffic cannot
+  evict entries from the bounded window.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
@@ -38,7 +49,14 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
-from kiro_crew.wecom.client import _REPLY_MAX_CHARS, WeComClient, WeComInbound
+from kiro_crew.wecom.client import (
+    _REPLY_MAX_CHARS,
+    CHAT_TYPE_SINGLE,
+    WeComClient,
+    WeComInbound,
+)
+
+logger = logging.getLogger(__name__)
 
 # A dispatch callback consumes an authorized WeCom inbound (carrying the WS
 # routing keys ``req_id`` / ``response_url`` that the neutral InboundMessage
@@ -193,6 +211,8 @@ class WeComTransport(MessagingTransport):
         inbound = raw_envelope
         if not inbound.text:
             return
+        if not self._chat_is_direct(inbound):
+            return
         msg = InboundMessage(
             channel_type="wecom",
             user_id=inbound.userid,
@@ -202,5 +222,37 @@ class WeComTransport(MessagingTransport):
         )
         if not self.authorize(msg):
             return
+        # Dedupe AFTER authorization, so unauthorized traffic cannot evict
+        # genuine entries from the bounded window (see ``already_delivered``).
+        if self._client.already_delivered(inbound.msgid):
+            logger.info("WeCom: dropping redelivered msgid for %s", inbound.userid)
+            return
         if self._dispatch is not None:
             await self._dispatch(inbound)
+
+    def _chat_is_direct(self, inbound: WeComInbound) -> bool:
+        """Fail closed on anything that is not a 1:1 chat.
+
+        A WeCom group is a shared disclosure boundary: every member reads whatever
+        the bot posts, including tool output and file contents. Sessions here are
+        keyed on ``userid`` alone, so a group message would ALSO run inside that
+        user's private DM session — echoing that conversation's history and tool
+        results into the room, and letting the room steer a session the user
+        believes is private. Neither is acceptable, and the userid allow-list does
+        not help: the sender is allow-listed, the audience is not.
+
+        So group traffic is refused until per-group sessions and a group
+        allow-list exist. Same posture, and the same reasoning, as Webex's
+        direct-rooms-only gate and iMessage's group fail-closed.
+        """
+        if inbound.chattype == CHAT_TYPE_SINGLE:
+            return True
+        sel().log_api_access(
+            caller=inbound.userid or "unknown",
+            operation="wecom_transport.receive",
+            outcome="denied",
+            source="wecom",
+            resources="reason=denied_group_chat",
+        )
+        logger.info("WeCom: dropping non-direct chat message from %s", inbound.userid)
+        return False

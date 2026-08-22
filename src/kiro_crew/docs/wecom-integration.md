@@ -52,9 +52,11 @@ Message the bot in WeCom and it answers. If it stays quiet, look for
 is allowed.
 
 Those two values — **Bot ID** and **Secret** — are all Kiro Crew needs. There's
-no corp ID, agent ID, callback URL, or AES key to wire up. Good to know: the
-WeCom bot replies to messages you send it — it can't start a conversation on its
-own, and it has no buttons (so `OPTIONS` arrive as plain text).
+no corp ID, agent ID, callback URL, or AES key to wire up. Good to know about
+today's WeCom channel: it answers messages you send it and does not start a
+conversation on its own, and it renders no buttons (so `OPTIONS` arrive as plain
+text). Those are current limits of this integration, not of WeCom — proactive
+push and tappable cards both exist in the AI-bot API and are planned.
 
 ## Who can reach it
 
@@ -68,7 +70,11 @@ own, and it has no buttons (so `OPTIONS` arrive as plain text).
   This is an explicit opt-in — an empty list never means "everyone" — and it
   works because a WeCom AI bot is only reachable inside your own org tenant.
   Messages without a userid are still dropped.
-- The WeCom AI bot carries direct messages only — one conversation per userid.
+- **Direct messages only — one conversation per userid.** A message sent to the
+  bot in a WeCom **group** is refused and recorded in the audit log, even from an
+  allowed sender. Your session is keyed to your userid, so answering in a group
+  would replay that private conversation's history and tool output to everyone in
+  the room. Group support needs its own per-group sessions and group allow-list.
 - Anyone else is quietly dropped and recorded in the audit log.
 
 ## Commands
@@ -76,9 +82,10 @@ own, and it has no buttons (so `OPTIONS` arrive as plain text).
 - `/new` (or `新对话`, `清空`) — start a fresh conversation
 - `/compact` — free up room when the context fills
 
-In a group chat, where addressing the bot is required, send the command on its
-own after the mention — `@Kiro /new`. Anything else after the mention is treated
-as an ordinary message.
+Send commands in your direct chat with the bot. A leading `@mention` is tolerated
+and stripped before the command is matched, so `@Kiro /new` also works — but see
+"Who can reach it": messages sent in a WeCom group are refused, so commands only
+take effect in a direct chat.
 
 ## Settings & reference
 

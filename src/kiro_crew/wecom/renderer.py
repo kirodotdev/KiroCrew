@@ -104,6 +104,17 @@ class WeComRenderer(Renderer):
         self._tool = ""
         self._started = False
         self._finalized = False
+        # How much of the answer earlier bubbles already carry. A WeCom stream
+        # frame REPLACES its bubble with the full text it is given, so after
+        # rolling to a fresh bubble the continuation must send only what comes
+        # after this offset — otherwise the reader sees the whole answer twice.
+        self._carried = 0
+        # Absolute answer lengths carried by the last two frames put on the wire.
+        # Two, not one, because a refusal is only observed on a LATER push, so the
+        # newest frame is the one that may have been rejected — see
+        # ``_roll_if_sealed``.
+        self._sent_abs = 0
+        self._prev_sent_abs = 0
 
     # -- lifecycle ----------------------------------------------------------
     async def on_turn_start(self) -> None:
@@ -131,9 +142,7 @@ class WeComRenderer(Renderer):
         self._tool = title or tool_kind or "工具"
         await self._push(force=True)
 
-    async def on_prompt_choice(
-        self, options: list[dict[str, Any]], request_id: str | int
-    ) -> None:
+    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
         # WeCom has no interactive buttons. The driver only dispatches
         # prompt_choice for INTERACTIVE + a decider, and WeCom runs decider-less
         # (deny-by-default), so this is never reached -- kept as a safe no-op to
@@ -151,13 +160,31 @@ class WeComRenderer(Renderer):
         self._finalized = True
         self._tool = ""  # never lock a tool footer into the final answer
         ok = stop_reason != "error"
-        content = self.text() or ("…" if ok else "⚠️ 出错了，请重试")
-        if self._stream_ok:
+        answer = self.text()
+        # The final frame is the one that MUST land, so give it a live bubble: a
+        # turn that outran the platform's stream lifetime has a sealed one, and
+        # writing the answer there delivers it nowhere.
+        #
+        # Roll only when there is something left to deliver. If the sealed bubble
+        # already carries the whole answer, opening a fresh one just to seal it
+        # would post a bubble with no content in it — the seal is cosmetic
+        # (it locks the message), and an unsealed bubble holding the full answer
+        # is strictly better than a spurious empty one.
+        if self._client.stream_is_dead(self._stream_id) and len(answer) > self._prev_sent_abs:
+            self._roll_if_sealed()
+        remainder = answer[self._carried :]
+        if answer:
+            content = remainder
+        else:
+            content = "…" if ok else "⚠️ 出错了，请重试"
+        if self._stream_ok and content:
             sent = await self._client.send_stream(
                 self._req_id, self._stream_id, content, finish=True
             )
             if sent:
                 return
+        if not content:
+            return
         # Fallback: stream never started or died mid-turn -- one-shot POST.
         await self._client.send_reply(self._response_url, content)
 
@@ -175,12 +202,44 @@ class WeComRenderer(Renderer):
         return _strip_options("".join(self._buf).strip())
 
     def _compose(self) -> str:
-        """Streaming content = answer text + optional transient tool footer."""
-        body = self.text()
+        """Streaming content = answer text + optional transient tool footer.
+
+        Only the part of the answer this bubble owns (see ``_carried``).
+        """
+        body = self.text()[self._carried :]
         if self._tool:
             footer = f"🔧 正在运行：{self._tool}…"
             return f"{body}\n\n{footer}" if body else footer
         return body
+
+    def _roll_if_sealed(self) -> None:
+        """Move to a fresh bubble when WeCom has sealed the current one.
+
+        A bubble stops accepting writes after the platform's 10-minute stream
+        lifetime (errcode 846608), or if its req_id becomes unroutable (846605).
+        An agentic turn doing tool work routinely runs past ten minutes, and the
+        refusal is asynchronous — ``send_stream`` reports only that the frame
+        reached the socket — so without this the renderer keeps "succeeding" into
+        a sealed bubble and the rest of the answer, including the final frame, is
+        never seen.
+
+        Rolling keeps what the sealed bubble already shows and continues after
+        it, so the answer is delivered in two bubbles rather than lost.
+
+        Where the continuation RESUMES from is deliberately conservative. The
+        refusal is only observed on a later push, so the most recent frame is
+        exactly the one that may have been rejected — resuming after it would drop
+        text the reader never received. The continuation therefore resumes from
+        the frame BEFORE it, which was acknowledged by being followed by another
+        accepted send. The cost is that one frame's worth of text can appear
+        twice; the alternative is a silent hole in the answer, and a visible
+        repeat is the better failure.
+        """
+        if not self._client.stream_is_dead(self._stream_id):
+            return
+        self._carried = self._prev_sent_abs
+        self._stream_id = new_stream_id()
+        logger.info("WeCom: stream bubble sealed by the platform, continuing in a new one")
 
     async def _push(self, *, force: bool) -> None:
         if not self._stream_ok:
@@ -188,13 +247,17 @@ class WeComRenderer(Renderer):
         now = time.monotonic()
         if not force and now - self._last_send < _STREAM_THROTTLE_S:
             return
+        self._roll_if_sealed()
         content = self._compose()
         if not content:
             return
         cap = self.capabilities.max_message_chars
         if cap > 0:
             content = content[:cap]
+        answer_len = len(self.text())
         self._stream_ok = await self._client.send_stream(
             self._req_id, self._stream_id, content, finish=False
         )
+        if self._stream_ok:
+            self._prev_sent_abs, self._sent_abs = self._sent_abs, answer_len
         self._last_send = now

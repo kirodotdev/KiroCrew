@@ -1,0 +1,15 @@
+{
+  "_provenance": {
+    "source": "vendor_doc",
+    "reference": "WeCom AI bot 长连接 (long connection): a reply/heartbeat/subscribe acknowledgement is a frame with NO cmd, carrying headers.req_id plus errcode (0 = success) and errmsg (\"ok\"). errcode 846608 is the sealed/expired stream bubble — the platform ends a stream ~10 minutes after its first frame. https://developer.work.weixin.qq.com/document/path/101463 (§ 回复消息 / 帧格式)",
+    "captured_at": "2026-08-22",
+    "note": "Transcribed from published docs, NOT captured from a live bot. Recorded because this envelope is shared by three different acknowledgements (subscribe, ping, reply) and is distinguishable only by req_id -- treating a reply refusal as a no-op is what let a sealed bubble keep 'accepting' frames that went nowhere. errmsg is deliberately a placeholder here: the real value is never logged, because it can echo the rejected payload."
+  },
+  "payload": {
+    "headers": {
+      "req_id": "REQUEST_ID"
+    },
+    "errcode": 846608,
+    "errmsg": "stream expired"
+  }
+}
