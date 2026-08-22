@@ -9580,7 +9580,13 @@
         "undo": "Rückgängig",
         "uninstall": "Deinstallieren",
         "unknown": "Unbekannt",
-        "declared": "Deklariert"
+        "declared": "Deklariert",
+        "sign_in_required": "Anmeldung erforderlich",
+        "sign_in_required_help": "Dieser Server verwendet OAuth und es hat sich noch niemand angemeldet. <chatLink>Zum Chat wechseln</chatLink>, eine neue Sitzung starten und eine Nachricht senden – die Genehmigung der Anmeldung erfolgt dann im Chat.",
+        "oauth_not_a_static_token": "Dieser Server meldet sich über OAuth an; ein statischer Authorization-Header genügt ihm nicht. Den Server ohne den Header entfernen und erneut hinzufügen, aktivieren und dann in einer neuen Chat-Sitzung anmelden.",
+        "sign_in_required_next": "Nach der Genehmigung die Schaltfläche MCP-Server prüfen über dieser Tabelle verwenden; die Zeile zeigt dann Angemeldet.",
+        "signed_in": "Angemeldet",
+        "signed_in_help": "Kiro CLI hält eine Anmeldung für {{provider}}. Die Prüfung läuft ohne dieses Token, daher kann {{productName}} nicht bestätigen, dass die Anmeldung noch gültig ist."
       },
       "memoryGraphTab": {
         "all_count": "Alle ({{count}})",

@@ -9696,7 +9696,13 @@
         "undo": "Annuler",
         "uninstall": "Désinstaller",
         "unknown": "Inconnu",
-        "declared": "Déclaré"
+        "declared": "Déclaré",
+        "sign_in_required": "Connexion requise",
+        "sign_in_required_help": "Ce serveur utilise OAuth et personne ne s’est encore connecté. <chatLink>Accédez au chat</chatLink>, démarrez une nouvelle session et envoyez un message : il vous sera demandé d’approuver la connexion dans le chat.",
+        "oauth_not_a_static_token": "Ce serveur se connecte via OAuth ; un en-tête Authorization statique ne peut pas lui suffire. Supprimez puis ajoutez à nouveau ce serveur sans l’en-tête, activez-le, puis démarrez une nouvelle session de chat pour vous connecter.",
+        "sign_in_required_next": "Une fois la connexion approuvée, utilisez le bouton Sonder les serveurs MCP au-dessus de ce tableau : la ligne affichera alors Connecté.",
+        "signed_in": "Connecté",
+        "signed_in_help": "Kiro CLI conserve une connexion pour {{provider}}. Le sondage s’exécute sans ce jeton, donc {{productName}} ne peut pas confirmer que la connexion est toujours valide."
       },
       "memoryGraphTab": {
         "all_count": "Tous ({{count}})",

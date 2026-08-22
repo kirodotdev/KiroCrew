@@ -2650,14 +2650,31 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
     # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
-    # ``kiro_crew.connections.mint.grant_present`` STATS the paired
+    # ``kiro_crew.mcp_grant.grant_present`` STATS the paired
     # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn
-    # whether kiro-cli already holds a grant for ONE provider -- the mint's only
-    # consent-completion signal. The files are never opened, so no token material
-    # can enter the process, and the name is a hex digest of a registry-declared
-    # provider URL, so no other path in that directory is expressible. Audited on
-    # the observation a caller acts on, not per poll; see
-    # ``mint._grant_observed`` for why that boundary is not fail-closed.
+    # whether kiro-cli already holds a grant for ONE endpoint. The files are never
+    # opened, so no token material can enter the process.
+    #
+    # TWO callers, and the second is the wider one: the mint's consent-completion
+    # signal (curated registry providers only), and ``mcp_discovery``'s remote
+    # probe, which asks for ANY url the user configured whenever a probe meets an
+    # OAuth challenge. So the reasoning cannot rest on the url being
+    # registry-declared. What keeps it sound for arbitrary input is the key: the
+    # name is a sha256 over the url's normalized origin and path, so no caller can
+    # express a path outside this directory, name a file it did not derive, or
+    # smuggle a credential from the url into the filename. The digest is also why
+    # the widened caller set adds no read surface -- both callers can only ever
+    # probe for the pair belonging to the url they already hold.
+    #
+    # Audited on the observation a caller acts on, not per poll, and the two
+    # callers differ on which observations those are. The mint polls for a grant
+    # to APPEAR, so only its TRUE is acted on and recorded. The probe reads once
+    # and renders either answer -- an absent pair is what produces "Sign-in
+    # required" -- so it opts into recording the negative too, as ``missing``.
+    # See ``mcp_grant.grant_observed`` for why that boundary is not fail-closed,
+    # and note that neither caller logs the url itself (the probe logs the server
+    # name, the mint warning logs the key) because a user-supplied endpoint can
+    # carry a credential in its userinfo or query string.
     "connections_mint.oauth_grant_presence": ".aws/sso/cache/<sha256(mcp_url)>.token.json",
     # Class 2, same artifacts and same posture as the mint entry above: the
     # status module (``kiro_crew.connections.status``) STATS the identical

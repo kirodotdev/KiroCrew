@@ -9464,7 +9464,13 @@
         "undo": "撤销",
         "uninstall": "卸载",
         "unknown": "未知",
-        "declared": "仅声明"
+        "declared": "仅声明",
+        "sign_in_required": "需要登录",
+        "sign_in_required_help": "此服务器使用 OAuth，且尚无人登录。<chatLink>前往聊天</chatLink>，启动一个新会话并发送消息，聊天中会提示你批准登录。",
+        "oauth_not_a_static_token": "此服务器通过 OAuth 登录，因此静态 Authorization 标头无法满足它。请移除此服务器，在不含该标头的情况下重新添加并启用它，然后启动新的聊天会话以登录。",
+        "sign_in_required_next": "批准后，使用此表上方的“探测 MCP 服务器”按钮；该行随后会显示“已登录”。",
+        "signed_in": "已登录",
+        "signed_in_help": "Kiro CLI 保存着 {{provider}} 的登录信息。探测在没有该令牌的情况下运行，因此 {{productName}} 无法确认该登录是否仍然有效。"
       },
       "memoryGraphTab": {
         "all_count": "全部（{{count}}）",

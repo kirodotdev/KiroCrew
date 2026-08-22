@@ -9696,7 +9696,13 @@
         "undo": "Annulla",
         "uninstall": "Disinstalla",
         "unknown": "Sconosciuto",
-        "declared": "Dichiarato"
+        "declared": "Dichiarato",
+        "sign_in_required": "Accesso richiesto",
+        "sign_in_required_help": "Questo server usa OAuth e nessuno ha ancora effettuato l’accesso. <chatLink>Vai alla chat</chatLink>, avvia una nuova sessione e invia un messaggio: ti verrà chiesto di approvare l’accesso nella chat.",
+        "oauth_not_a_static_token": "Questo server accede tramite OAuth, quindi un header Authorization statico non è sufficiente. Rimuovi e aggiungi di nuovo il server senza l’header, attivalo, poi avvia una nuova sessione di chat per accedere.",
+        "sign_in_required_next": "Dopo l’approvazione, usa il pulsante Sonda i server MCP sopra questa tabella; la riga mostrerà quindi Accesso effettuato.",
+        "signed_in": "Accesso effettuato",
+        "signed_in_help": "Kiro CLI conserva un accesso per {{provider}}. Il sondaggio viene eseguito senza quel token, quindi {{productName}} non può confermare che l’accesso sia ancora valido."
       },
       "memoryGraphTab": {
         "all_count": "Tutti ({{count}})",

@@ -9464,7 +9464,13 @@
         "undo": "실행 취소",
         "uninstall": "제거",
         "unknown": "알 수 없음",
-        "declared": "선언됨"
+        "declared": "선언됨",
+        "sign_in_required": "로그인 필요",
+        "sign_in_required_help": "이 서버는 OAuth를 사용하며 아직 아무도 로그인하지 않았습니다. <chatLink>채팅으로 이동한 다음</chatLink> 새 세션을 시작하고 메시지를 보내면 채팅에서 로그인을 승인하라는 요청이 표시됩니다.",
+        "oauth_not_a_static_token": "이 서버는 OAuth로 로그인하므로 정적 Authorization 헤더로는 연결할 수 없습니다. 이 서버를 제거하고 헤더 없이 다시 추가하여 활성화한 다음, 새 채팅 세션을 시작해 로그인하세요.",
+        "sign_in_required_next": "승인한 다음 이 표 위의 MCP 서버 탐색 버튼을 사용하세요. 그러면 행이 로그인됨으로 바뀝니다.",
+        "signed_in": "로그인됨",
+        "signed_in_help": "{{provider}}에 대한 로그인은 Kiro CLI가 보유하고 있습니다. 탐색은 해당 토큰 없이 실행되므로 {{productName}}은(는) 로그인이 여전히 유효한지 확인할 수 없습니다."
       },
       "memoryGraphTab": {
         "all_count": "전체 ({{count}})",
