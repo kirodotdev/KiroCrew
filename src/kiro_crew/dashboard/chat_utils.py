@@ -72,9 +72,11 @@ async def run_config_write(fn, /, *args, **kwargs):
     takes (covering CLI / boot-refresh / other-process writers), and the
     loop-side :func:`_get_config_lock` asyncio lock that the dashboard's legacy
     handlers still rely on *alone* (bare ``read_config_for_update`` +
-    ``write_config_atomically`` — e.g. the memory-settings PUT). A writer that
-    holds only one of the two can interleave with the other family and silently
-    revert its settings from a stale snapshot.
+    ``write_config_atomically``). A writer that holds only one of the two can
+    interleave with the other family and silently revert its settings from a
+    stale snapshot. The memory-settings PUT was such a writer and is not one
+    any more: ``handlers/memory.py`` routes every config mutation through this
+    helper.
 
     This helper is the one async entry point that holds both: the asyncio lock
     is acquired on the event loop, then ``fn`` (a sync callable that itself
@@ -85,7 +87,39 @@ async def run_config_write(fn, /, *args, **kwargs):
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # lazy: import cycle
 
     async with _get_config_lock():
-        return await asyncio.to_thread(fn, *args, **kwargs)
+        # The worker is SHIELDED and drained before the lock is released. A
+        # thread cannot be cancelled, so cancelling this coroutine -- a gateway
+        # shutdown cancelling the boot migration, a client disconnecting mid-PUT
+        # -- would otherwise unwind the `async with` while ``fn`` is still inside
+        # its read-modify-write. The next writer would then enter the critical
+        # section against a file the previous one is still rewriting, and land a
+        # config derived from a snapshot taken before it: the earlier caller's
+        # settings silently revert.
+        #
+        # The invariant is NOT "drain once after a cancellation": it is that once
+        # a cancellation has been observed, the lock cannot leave this block until
+        # the worker is done. A single drain does not give that -- awaiting the
+        # drain is itself a suspension point, so a SECOND cancel (a graceful
+        # shutdown escalating after its timeout, which is exactly when a config
+        # write is most likely to be in flight) unwinds the `async with` with the
+        # thread still writing. Hence the loop: every cancellation is absorbed,
+        # and only a finished future ends it.
+        #
+        # Draining cannot change WHETHER the write happens -- the thread runs to
+        # completion either way -- so this only decides whether the lock outlives
+        # it. The cancellation is re-raised once, never swallowed.
+        fut = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        cancelled = False
+        while True:
+            try:
+                result = await asyncio.shield(fut)
+            except asyncio.CancelledError:
+                cancelled = True
+                continue
+            break
+        if cancelled:
+            raise asyncio.CancelledError
+        return result
 
 
 # Per-turn compaction-failure backoff. See

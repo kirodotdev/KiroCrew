@@ -899,10 +899,12 @@ def update_config_locked(
 
     The locked primitive for the converted config.json writers and the required
     path for new config.json mutations.  Legacy writers that pre-date this
-    function (dashboard agents endpoint, updates.py, memory.py, security.py,
+    function (dashboard agents endpoint, updates.py, security.py,
     messaging.py, mcp.py, core.py STT) still use
     :func:`write_config_atomically` directly and rely on the in-process asyncio
-    ``_get_config_lock()`` only.
+    ``_get_config_lock()`` only.  ``memory.py`` was in that list and has been
+    converted; it now reaches this function through
+    ``dashboard/chat_utils.run_config_write``.
 
     Contract:
 
