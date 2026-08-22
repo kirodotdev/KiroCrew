@@ -152,17 +152,24 @@ def main(argv: list[str] | None = None) -> int:
         "settleMs": args.settle_ms,
         "tailMs": args.tail_ms,
     }
+    # delete=False because the driver is a separate process that opens this by name,
+    # so the handle has to be closed before the spawn. The driver reads it once at
+    # startup, so nothing needs it after the run returns; the unlink is a finally
+    # because the timeout below raises past a trailing statement.
     with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
         json.dump(cfg, f)
         cfg_path = f.name
 
-    proc = subprocess.run(
-        [node, str(DRIVER), cfg_path],
-        cwd=str(project),
-        capture_output=True,
-        text=True,
-        timeout=600,
-    )
+    try:
+        proc = subprocess.run(
+            [node, str(DRIVER), cfg_path],
+            cwd=str(project),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+    finally:
+        Path(cfg_path).unlink(missing_ok=True)
     sys.stderr.write(proc.stderr)
     if proc.returncode != 0:
         _fail(f"driver failed (exit {proc.returncode})", proc.returncode)

@@ -233,8 +233,8 @@ custom-rules:
       never checked.
 
       Know which floor you are standing on — it is NOT the same everywhere:
-      - The ROOTDIR `conftest.py` is the HOST-MUTATION FLOOR and applies to all
-        three testpaths. It pins $XDG_CONFIG_HOME and the launchd paths, blocks
+      - The ROOTDIR `conftest.py` is the HOST-MUTATION FLOOR and applies to both
+        testpaths. It pins $XDG_CONFIG_HOME and the launchd paths, blocks
         host service mutation, pins KIROCREW_HOME per test (with
         `config.paths._resolved_home` reset, since resolving the home CREATES it
         and can run the legacy migration), pins the import-time `~/.kiro`

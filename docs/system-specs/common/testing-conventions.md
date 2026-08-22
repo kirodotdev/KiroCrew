@@ -106,7 +106,7 @@ test). The sweep's own behavior belongs in its own module's tests.
 
 ## Which conftest you are standing on
 
-There are **three** testpaths (`setup.cfg`'s `testpaths = test transfer
+There are **two** testpaths (`setup.cfg`'s `testpaths = test
 src/kiro_crew/apps/builtins`) and they do **not** get the same fixtures. Know which
 floor is under your file before you decide what to isolate yourself:
 
@@ -125,7 +125,7 @@ It also pins the other real host paths a test must not reach: the subagent regis
 running gateway sweeps stray entries there as orphans), the 610MB embedding-model
 download, and the agent-state sidecar.
 
-Two members are there for a different reason — a **process-global** that any testpath
+Three members are there for a different reason — a **process-global** that any testpath
 can poison for every test after it, which is the same failure shape as host mutation
 one scope down:
 
@@ -139,6 +139,18 @@ one scope down:
   running. See the Rules entry — that thread makes the sandbox probe's fork child
   multithreaded, which the kernel answers with an EINVAL the probe used to cache as
   "this host has no sandbox backend".
+* `_restore_log_record_factory` puts `logging`'s record factory back. There is one such
+  slot per process, and `log_redaction`'s wrapper deliberately clears `args` and
+  `exc_info` on every record it creates, so leaving it installed reds whatever unrelated
+  test later asserts on either field. `cli._setup_cli_logging` installs it for a
+  long-lived command, so grepping `cli.main()` finds only some of the tests that reach
+  it — most call that helper directly, and they are in `test_cli_logging.py`, whose own
+  `_pristine_logging` fixture restores handlers and levels but not the factory, which is
+  why that file looks like it already handles this. Restored rather than blamed, for the
+  same reason the CWD restore is: production installs it once per process and never
+  undoes it, so a test driving that code cannot avoid it.
+  `log_redaction.uninstall_log_redaction()` exists for a test that wants to assert on
+  the uninstalled state itself.
 
 It registers the xdist worker budget too — the policy is in the repo-root
 `xdist_budget.py`, a plain module rather than a second conftest, because the module
@@ -154,8 +166,8 @@ When you add isolation, put it in the rootdir conftest **only** if a test in any
 testpath could damage the host, poison a process global for every later test, or
 consume enough of a shared *resource* — memory, cores, disk — to take the machine down
 with it. Otherwise it belongs in `test/conftest.py`, where it costs the in-package
-suites nothing. Both of the entries above started life in `test/conftest.py` and were
-silently absent from the in-package tests, which is how each was found.
+suites nothing. The first two of those entries started life in `test/conftest.py` and
+were silently absent from the in-package tests, which is how each was found.
 
 Resource consumption belongs on that list for the same reason damage does: a guard
 that only covers `test/` is invisibly absent from the other two testpaths, and the
@@ -225,7 +237,7 @@ which testpath asked for the workers.
 - **Never leave the process working directory somewhere else.** The CWD is
   per-PROCESS, so under xdist one test's `os.chdir` becomes every later test's starting
   directory on that worker. Use `monkeypatch.chdir`, which reverts on its own; the
-  rootdir conftest's `_restore_cwd` puts it back either way.
+  rootdir conftest's `pytest_runtest_teardown` puts it back either way.
 
   This was survivable only while the directory outlived the run. With
   `tmp_path_retention_policy = failed` pytest removes a passing test's `tmp_path` at
@@ -703,6 +715,26 @@ mark is the tool for a test that genuinely cannot share a worker.
 
 Mutate process globals through `monkeypatch`, which reverts on teardown even when the
 test fails. Raw assignment does not.
+
+**Sharding does not just scatter this class, it hides it — so a full-suite run is the wrong
+place to be finding it.** `ci.yml` slices the suite into duration-balanced `pytest-split`
+groups, and a leaker only damages tests that land in the *same process*, so a leak whose
+victim sits in another shard is not observable in PR CI at all. The release job runs the
+suite whole and is therefore the first place it appears — as failures in files that have
+nothing to do with the cause, at a point where the diff that introduced it is long merged.
+Running the full suite more often narrows that window; it does not close it, because which
+tests share a worker still varies run to run.
+
+What closes it is a floor fixture per process-global chokepoint: snapshot at setup, compare
+at teardown, restore to **what the test inherited** (not to a pristine value, so a leak from
+an earlier test is not re-reported against every test after it). So when you introduce a new
+process-global, ship its floor entry with it rather than relying on a full-suite run to
+notice. Whether that entry also *fails* the test depends on whether reaching the global is a
+defect: `_no_leaked_telemetry_exporter` fails, because nothing legitimately leaves an
+exporter running; the CWD restore and `_restore_log_record_factory` restore silently, because
+production really does `chdir` and really does install a record factory, and a test driving
+that code cannot avoid inheriting it. Restore either way — the damage is to other tests, and
+stopping it propagating is the part that is never optional.
 
 ### 5. Absolute time budgets on instrumented runs
 
