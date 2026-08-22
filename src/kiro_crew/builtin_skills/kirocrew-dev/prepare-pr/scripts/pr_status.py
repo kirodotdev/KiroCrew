@@ -736,6 +736,7 @@ def decide(
     readiness_context,
     marker_eval=None,
     head_run="skip",
+    rollup_unreadable=False,
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
 
@@ -794,7 +795,16 @@ def decide(
         reasons.append("{} reported action required".format(readiness_context))
     elif readiness_kind is None and n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
-    if n_checks == 0:
+    if rollup_unreadable:
+        # Distinct from "none reported": the checks may well be green, we
+        # simply could not see them. Both fail closed, but only this wording
+        # points at the token instead of sending the reader to look for a CI
+        # config that is not the problem.
+        reasons.append(
+            "CI checks could not be read - the GitHub token cannot see "
+            "statusCheckRollup (fail-closed)"
+        )
+    elif n_checks == 0:
         reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
     if marker_eval is not None:
         if not marker_eval.get("ok"):
@@ -864,10 +874,63 @@ def main(argv):
         "reviewDecision,url,headRefName,headRefOid,statusCheckRollup,"
         "body,closingIssuesReferences"
     )
-    rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
+    rc, out, view_err = run(["gh", "pr", "view", pr, "--json", fields])
+    rollup_unreadable = False
     if rc != 0 or not out:
-        err("ERROR: could not read PR #" + str(pr))
-        return 2
+        # ``statusCheckRollup`` mixes Check Runs with legacy commit-status
+        # contexts, and the fine-grained-PAT permission model has no grant
+        # that covers the Check Runs half: it exposes no usable ``Checks``
+        # permission, and ``Commit statuses: Read-only`` covers only the
+        # legacy contexts. So the field can be refused
+        # (``Resource not accessible by personal access token``) on a token
+        # that already holds every grant the interface offers -- this is not
+        # a missing scope the caller can go and add.
+        #
+        # gh fails the WHOLE query when one field is refused. Every other
+        # field this script needs -- state, mergeability, review decision,
+        # body, linked issues -- is readable with plain repository access,
+        # so one unreadable field was taking the entire status check down.
+        #
+        # Retry without it. The retry is NOT conditioned on the error text:
+        # gh's message for a field-level permission denial is not a stable
+        # contract, and a text match that stops matching would silently
+        # restore the hard failure. A genuinely missing PR fails the retry
+        # too and still errors out.
+        rc2, out2, _ = run(
+            ["gh", "pr", "view", pr, "--json", fields.replace(",statusCheckRollup", "")]
+        )
+        if rc2 != 0 or not out2:
+            err("ERROR: could not read PR #" + str(pr))
+            return 2
+        # Degraded, never silent: the verdict below fails closed on the
+        # missing rollup, so this can only ever withhold a CLEAN, never
+        # manufacture one.
+        err(
+            "WARNING: could not read statusCheckRollup for PR #{}; continuing "
+            "without CI checks (commonly a fine-grained-PAT limitation). CI "
+            "status remains fail-closed.".format(pr)
+        )
+        # HEDGED on purpose, twice over.
+        #
+        # The retry is unconditional, so a transient first-query failure also
+        # lands here. Asserting *why* the field was refused would state a
+        # diagnosis this code never verified -- the same species of
+        # misdirection the whole change exists to remove. The echoed
+        # ``gh reported:`` line below carries the actual evidence.
+        #
+        # And the cause, when it IS the token, is not phrased as a grant to go
+        # and add: a fine-grained PAT can be unable to read the Check Runs
+        # portion of the rollup even WITH ``Commit statuses: Read-only``, so
+        # naming that grant would send the reader to enable a permission they
+        # may already hold.
+        err(
+            "  Note: fine-grained PATs may be unable to read the Check Runs "
+            "portion of statusCheckRollup even with Commit statuses: Read-only."
+        )
+        if view_err:
+            err("  gh reported: " + view_err.splitlines()[0])
+        out = out2
+        rollup_unreadable = True
     d = json.loads(out)
 
     state = (d.get("state") or "").upper()
@@ -889,6 +952,8 @@ def main(argv):
     )
 
     print("-- CI checks " + "-" * 40)
+    if rollup_unreadable:
+        print("  (unreadable - token cannot see statusCheckRollup)")
     n_running = n_fail = 0
     failing_checks = []
     readiness_kind = None
@@ -1006,6 +1071,7 @@ def main(argv):
         readiness_context=readiness_context,
         marker_eval=marker_eval,
         head_run=head_run,
+        rollup_unreadable=rollup_unreadable,
     )
     print(status)
     if "--json" in argv[1:]:

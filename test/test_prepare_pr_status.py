@@ -1166,3 +1166,131 @@ def test_stampless_advisory_lane_comment_does_not_block_discovery_mode() -> None
     assert module.main(["pr_status.py", "42"]) == 0
     # Pinned: UX is explicitly required -> its stampless state blocks.
     assert module.main(["pr_status.py", "42", "--reviewers", "GPT,UX"]) == 20
+
+
+# ── A token that cannot read statusCheckRollup ──────────────────────────────
+# ``statusCheckRollup`` mixes Check Runs with legacy commit-status contexts,
+# and the fine-grained-PAT model has no grant covering the Check Runs half --
+# no usable ``Checks`` permission exists, and ``Commit statuses: Read-only``
+# covers only the legacy contexts. #4546's reporter HELD that grant and was
+# still refused the field, so this is not a scope the caller can add.
+#
+# gh fails the whole `pr view` when one field is refused, so one unreadable
+# field took the entire status check down and the prepare-pr integration
+# reported an environment failure.
+
+
+def _install_rollup_denied_gh(module: ModuleType, comments: str = "[]") -> dict:
+    """Fake gh where only the statusCheckRollup-bearing query is refused.
+
+    Returns a dict recording the field lists requested, so a test can assert the
+    retry actually dropped the field rather than succeeding for some other
+    reason.
+    """
+    seen: dict = {"field_lists": []}
+    payload = json.loads(_pr_payload([{"context": "PR Readiness", "state": "SUCCESS"}]))
+    payload.pop("statusCheckRollup")
+    reduced_payload = json.dumps(payload)
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            fields = args[args.index("--json") + 1]
+            seen["field_lists"].append(fields)
+            if "statusCheckRollup" in fields:
+                # The verbatim error #4546 reports, so the fixture reproduces
+                # the real refusal rather than a generic scope complaint.
+                return (
+                    1,
+                    "",
+                    "GraphQL: Resource not accessible by personal access token "
+                    "(repository.pullRequest.statusCheckRollup.nodes.0.commit."
+                    "statusCheckRollup.contexts.nodes.0)",
+                )
+            return 0, reduced_payload, ""
+        if args[:3] == ["gh", "repo", "view"]:
+            return 0, "example/repo", ""
+        if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
+            return 0, comments, ""
+        if args[:2] == ["gh", "api"] and "/actions/runs" in args[2]:
+            return 0, json.dumps({"total_count": 1, "workflow_runs": [{"event": "pull_request"}]}), ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    module.unresolved_thread_count = lambda _number: 0
+    return seen
+
+
+def test_unreadable_rollup_does_not_fail_the_whole_status_read(capsys) -> None:
+    """The PR still reports, instead of erroring out on one refused field."""
+    module = _load_script()
+    seen = _install_rollup_denied_gh(module)
+
+    code = module.main(["pr_status.py", "42"])
+
+    assert code != 2, "one unauthorized field must not take the whole read down"
+    out = capsys.readouterr()
+    assert "PR #42" in out.out, "the readable fields should still be reported"
+    assert len(seen["field_lists"]) == 2, "expected exactly one retry"
+    assert "statusCheckRollup" in seen["field_lists"][0]
+    assert "statusCheckRollup" not in seen["field_lists"][1], (
+        "the retry must drop the refused field, not repeat the same query"
+    )
+
+
+def test_unreadable_rollup_still_fails_closed(capsys) -> None:
+    """Degrading must never manufacture a CLEAN verdict.
+
+    The checks may well be green -- we simply cannot see them. Reporting CLEAN
+    here would let an unattended caller merge on CI it never read, which is a
+    strictly worse failure than the error this replaces.
+    """
+    module = _load_script()
+    _install_rollup_denied_gh(module)
+
+    code = module.main(["pr_status.py", "42"])
+
+    assert code == 20, "unreadable CI must block, not pass"
+    out = capsys.readouterr()
+    assert "STATUS: BLOCKED" in out.out
+    assert "statusCheckRollup" in out.out, (
+        "the reason must name the refused field so the reader looks at the "
+        "token, not at a CI config that is not the problem"
+    )
+    assert "no CI checks reported" not in out.out, (
+        "'none reported' is a different diagnosis and sends the reader the "
+        "wrong way"
+    )
+    assert "could not read statusCheckRollup" in out.err, (
+        "the warning should say what could not be read"
+    )
+    # The retry is unconditional, so a transient failure reaches this line
+    # too. The warning must not assert a cause it never verified -- that is
+    # the same misdirection this change removes.
+    assert "commonly" in out.err, "the cause must be hedged, not asserted"
+    assert not re.search(r"[Tt]he (current )?GitHub token cannot", out.err), (
+        "must not state an unverified diagnosis as fact"
+    )
+    # The reporter of #4546 HELD 'Commit statuses: Read-only' and was still
+    # refused, so the warning must never present that grant as the remedy --
+    # it would send the reader to enable a permission they already have.
+    assert not re.search(r"[Gg]rant .{0,40}Commit statuses", out.err), (
+        "must not tell the user to grant a permission they may already hold"
+    )
+
+
+def test_a_genuinely_missing_pr_still_errors(capsys) -> None:
+    """The retry must not turn a real read failure into a degraded success."""
+    module = _load_script()
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            return 1, "", "could not resolve to a PullRequest with the number of 42."
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    assert module.main(["pr_status.py", "42"]) == 2
+    assert "could not read PR #42" in capsys.readouterr().err
