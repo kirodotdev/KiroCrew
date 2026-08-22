@@ -6444,6 +6444,7 @@
       "desc_code": "Apri gli strumenti di code intelligence",
       "desc_compact": "Comprimi la conversazione per liberare contesto",
       "desc_context": "Gestisci i file di contesto e l’uso dei token",
+      "desc_crew": "Esegui una revisione di Quality Engineering in sola lettura",
       "desc_editor": "Scrivi il prompt in un editor esterno",
       "desc_exit": "Esci dalla sessione di chat",
       "desc_experiment": "Attiva o disattiva le funzionalità sperimentali",

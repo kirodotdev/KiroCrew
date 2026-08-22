@@ -4068,6 +4068,20 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         _finalize_and_write()
     logger.info("Installed agent config: %s", path)
 
+    # Install first-party Crew role specs as private executable workers.  This
+    # deliberately writes only namespaced kiro-cli specs/prompts; it does not
+    # add config aliases, so public rosters and default-agent bindings remain
+    # separate from the internal runtime lookup surface.
+    try:
+        from kiro_crew.crew_registry import materialize_builtin_crew_agents
+
+        materialize_builtin_crew_agents(
+            kiro_agents_dir_path(),
+            kiro_agents_dir_path().parent / "crew-prompts",
+        )
+    except Exception:
+        logger.warning("Built-in Crew worker installation failed", exc_info=True)
+
     # Install KiroCrew AIM capabilities package (includes kirocrew-lite)
     _install_aim_capabilities()
 

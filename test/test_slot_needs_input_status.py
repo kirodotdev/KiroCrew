@@ -492,3 +492,17 @@ async def test_one_question_exiting_leaves_another_ask_status_standing() -> None
     st.resolve_question("a2", {"Which approach?": "Option A"})
     await second
     assert st._slots["chat-1"].to_dict()["needs_input"] is False
+
+
+@pytest.mark.asyncio
+async def test_pairing_preflight_card_reports_and_retires_needs_input():
+    from kiro_crew.pairing_preflight import build_pairing_question
+
+    st = _state("chat-1")
+    await st.post_question_card("chat-1", build_pairing_question("behavior change"))
+    assert st._slots["chat-1"].to_dict()["needs_input"] is True
+
+    _turn(st._slots["chat-1"], ("user", "Guided"))
+
+    assert st._slots["chat-1"].to_dict()["needs_input"] is False
+    assert st._slots["chat-1"]._question_pending == {}

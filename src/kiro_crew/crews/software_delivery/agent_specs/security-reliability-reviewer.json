@@ -1,0 +1,8 @@
+{
+  "name": "kirocrew-software-delivery-security",
+  "description": "Read-only security and reliability review role for Software Delivery.",
+  "model": "auto",
+  "tools": ["fs_read", "code", "grep", "glob", "report"],
+  "resources": ["file://.kiro/steering/**/*.md"],
+  "includeMcpJson": false
+}

@@ -27,7 +27,7 @@ from typing import Any, Callable, Optional
 from kiro_crew import autonudge
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
-from .agent_exec import build_agent_fn
+from .agent_exec import WORKFLOW_APP_ID, build_agent_fn
 from .agent_pool import build_pooled_agent_fn
 from .registry import RunRegistry
 from .runner import WorkflowRunner, clamp_run_timeout
@@ -330,20 +330,36 @@ class WorkflowService:
             # The underlying shielded add stays supervised by AutoNudgeService.
             await asyncio.gather(*still_pending, return_exceptions=True)
 
-    def _runner(self, run_id: str, *, timeout_secs: Optional[int] = None) -> WorkflowRunner:
+    def _runner(
+        self,
+        run_id: str,
+        *,
+        timeout_secs: Optional[int] = None,
+        allow_native_crew: bool = False,
+        source_session_key: str = "",
+    ) -> WorkflowRunner:
         # ``timeout_secs`` overrides the service default for THIS run only (clamped
         # into [MIN, MAX] so a per-run value can lengthen the ceiling but never
         # remove it). None → the service default.
         ceiling = clamp_run_timeout(timeout_secs, default=self._timeout_secs)
 
-        # Native ports wired for every run of this service. ``nudge`` bridges
-        # ``ctx.nudge`` to AutoNudge (the port is session-agnostic — the runner
-        # supplies each run's originating session_key at call time; the closure
-        # binds run_id so arms are tracked per run and drained at teardown).
+        # ``nudge`` is available to every run and bridges ``ctx.nudge`` to
+        # AutoNudge. Native Crew dispatch is host-authorized only; public or
+        # rerun workflows must not receive a ``ctx.workflow`` port.
         def _nudge(**kw: Any) -> None:
             self._nudge_port(run_id=run_id, **kw)
 
-        ports = {"nudge": _nudge}
+        async def _workflow(ctx: Any, name: str, args: dict) -> Any:
+            # Lazy import keeps the workflow engine usable when the optional
+            # built-in Crew resources are not installed, while automatic route
+            # starts fail closed through the adapter's bounded result envelope.
+            from kiro_crew.crew_dispatch import execute_native_crew
+
+            return await execute_native_crew(ctx, name, args)
+
+        ports: dict[str, Any] = {"nudge": _nudge}
+        if allow_native_crew:
+            ports["workflow"] = _workflow
 
         async def _drain() -> None:
             # Awaited by the runner BEFORE each terminal event: nudge outcome
@@ -362,6 +378,9 @@ class WorkflowService:
                     run_id=run_id,
                     max_workers=workers,
                     max_starting=min(workers, 2),
+                    native_crew=allow_native_crew,
+                    source_session_key=source_session_key,
+                    app=WORKFLOW_APP_ID if allow_native_crew else "",
                 )
             except Exception:  # noqa: BLE001 - never let pooling break run start
                 agent_fn, pool = None, None
@@ -373,7 +392,13 @@ class WorkflowService:
         # Pooling off, or its init raised: cold-start a session per call instead.
         # Keyed on ``agent_fn``, so a pool that yields no executor is not used.
         if agent_fn is None:
-            agent_fn = build_agent_fn(self._sessions, run_id=run_id)
+            agent_fn = build_agent_fn(
+                self._sessions,
+                run_id=run_id,
+                native_crew=allow_native_crew,
+                source_session_key=source_session_key,
+                app=WORKFLOW_APP_ID if allow_native_crew else "",
+            )
 
         async def _teardown() -> None:
             # Safety net (drain is a no-op if pre_terminal already ran; covers
@@ -511,17 +536,24 @@ class WorkflowService:
         session_key: str = "",
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
+        _allow_native_crew: bool = False,
     ) -> dict:
         """Validate + launch a background run; return {run_id} or {error}.
 
         ``timeout_secs`` overrides the wall-clock ceiling for this run only (clamped
-        into the runner's bounds).
+        into the runner's bounds). ``_allow_native_crew`` is a private host-only
+        capability for fixed Crew entry points; public workflow callers leave it off.
         """
         vr = validate(source)
         if not vr.ok:
             return {"error": "; ".join(vr.errors), "errors": vr.errors}
         run_id = self._new_run_id()
-        await self._runner(run_id, timeout_secs=timeout_secs).run_background(
+        await self._runner(
+            run_id,
+            timeout_secs=timeout_secs,
+            allow_native_crew=_allow_native_crew,
+            source_session_key=session_key,
+        ).run_background(
             source,
             registry=self.registry,
             run_id=run_id,

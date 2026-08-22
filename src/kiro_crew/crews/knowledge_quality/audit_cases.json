@@ -1,0 +1,82 @@
+[
+  {
+    "id": "exact-title-auth",
+    "query": "Authentication Service Design",
+    "language": "en",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "pass"
+  },
+  {
+    "id": "exact-phrase-token",
+    "query": "refresh token rotation",
+    "language": "en",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "pass"
+  },
+  {
+    "id": "paraphrase-auth",
+    "query": "How does the login service renew credentials?",
+    "language": "en",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "unverified"
+  },
+  {
+    "id": "partial-architecture",
+    "query": "service architecture",
+    "language": "en",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "unverified"
+  },
+  {
+    "id": "empty-query",
+    "query": "",
+    "language": "en",
+    "expected_source_uris": [],
+    "expected_verdict": "pass"
+  },
+  {
+    "id": "punctuation-query",
+    "query": "?!",
+    "language": "en",
+    "expected_source_uris": [],
+    "expected_verdict": "pass"
+  },
+  {
+    "id": "thai-query",
+    "query": "ระบบจัดการการยืนยันตัวตนอย่างไร",
+    "language": "th",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "unverified"
+  },
+  {
+    "id": "cjk-query",
+    "query": "認証サービスの設計",
+    "language": "ja",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "unverified"
+  },
+  {
+    "id": "expected-no-result",
+    "query": "quantum bicycle inventory",
+    "language": "en",
+    "expected_source_uris": [],
+    "expected_verdict": "pass"
+  },
+  {
+    "id": "duplicate-source-case",
+    "query": "same authentication document",
+    "language": "en",
+    "expected_source_uris": [
+      "fixture:///knowledge/authentication-service.md",
+      "fixture:///knowledge/authentication-service-copy.md"
+    ],
+    "expected_verdict": "unverified"
+  },
+  {
+    "id": "stale-version-case",
+    "query": "authentication version history",
+    "language": "en",
+    "expected_source_uris": ["fixture:///knowledge/authentication-service.md"],
+    "expected_verdict": "unverified"
+  }
+]

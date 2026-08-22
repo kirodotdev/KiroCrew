@@ -23,6 +23,7 @@ New here? Start with [guides/install.md](guides/install.md), then
 | [blog/](blog/README.md) | Essays on direction and design philosophy. Arguments, not contracts. |
 | [reference/](reference/README.md) | Upstream documentation we mirror but do not author. |
 | [task-specs/](task-specs/README.md) | Archived per-task specs. Not current context. |
+| [PR review status](pr-4552-review-status.md) | Review evidence and readiness checklist for the active change. |
 
 ## The rule for changing docs
 

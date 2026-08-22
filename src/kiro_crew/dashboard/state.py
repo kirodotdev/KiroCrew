@@ -3319,6 +3319,105 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
+    # Pairing preflight is intentionally transient and separate from route
+    # clarification. ``None`` is the safe class-level baseline for
+    # __new__-constructed test states; __init__ installs per-instance dicts.
+    _pairing_preflight_pending: dict[str, dict[str, Any]] | None = None
+    _pairing_tasks: dict[str, dict[str, Any]] | None = None
+
+    def _pairing_maps(self) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
+        pending = getattr(self, "_pairing_preflight_pending", None)
+        if not isinstance(pending, dict):
+            pending = {}
+            self._pairing_preflight_pending = pending
+        tasks = getattr(self, "_pairing_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = {}
+            self._pairing_tasks = tasks
+        return pending, tasks
+
+    def pairing_pending(self, slot_key: str) -> dict[str, Any] | None:
+        """Return the stateless preflight record for *slot_key*, if any."""
+
+        pending, _ = self._pairing_maps()
+        record = pending.get(slot_key)
+        return dict(record) if isinstance(record, dict) else None
+
+    def set_pairing_pending(self, slot_key: str, record: dict[str, Any]) -> None:
+        """Replace one slot's pending preflight record without persisting it."""
+
+        pending, _ = self._pairing_maps()
+        pending[slot_key] = dict(record)
+
+    def consume_pairing_pending(self, slot_key: str) -> dict[str, Any] | None:
+        """Consume a pending answer exactly once."""
+
+        pending, _ = self._pairing_maps()
+        record = pending.pop(slot_key, None)
+        return dict(record) if isinstance(record, dict) else None
+
+    def pairing_task(self, slot_key: str) -> dict[str, Any] | None:
+        """Return the active task context for *slot_key*, if any."""
+
+        _, tasks = self._pairing_maps()
+        record = tasks.get(slot_key)
+        return dict(record) if isinstance(record, dict) else None
+
+    def set_pairing_task(self, slot_key: str, record: dict[str, Any]) -> None:
+        """Set one active task context; the record remains transient."""
+
+        _, tasks = self._pairing_maps()
+        tasks[slot_key] = dict(record)
+
+    def clear_pairing_task(self, slot_key: str, task_id: str | None = None) -> bool:
+        """Clear a task only when its optional owner id still matches."""
+
+        _, tasks = self._pairing_maps()
+        current = tasks.get(slot_key)
+        if not isinstance(current, dict):
+            return False
+        if task_id is not None and current.get("task_id") != task_id:
+            return False
+        tasks.pop(slot_key, None)
+        return True
+
+    def clear_pairing_slot(self, slot_key: str) -> bool:
+        """Drop all transient pairing state owned by a removed slot."""
+
+        pending, tasks = self._pairing_maps()
+        removed = pending.pop(slot_key, None) is not None
+        removed = tasks.pop(slot_key, None) is not None or removed
+        return removed
+
+    def clear_pairing_for_workflow_run(self, workflow_run_id: str) -> list[str]:
+        """Clear workflow-owned tasks only when their run id still matches.
+
+        The task id comparison in ``clear_pairing_task`` prevents a late
+        completion callback from deleting a newer task that reused the slot.
+        """
+
+        if not workflow_run_id:
+            return []
+        _, tasks = self._pairing_maps()
+        cleared: list[str] = []
+        for slot_key, record in list(tasks.items()):
+            if not isinstance(record, dict) or record.get("workflow_run_id") != workflow_run_id:
+                continue
+            task_id = record.get("task_id")
+            if not isinstance(task_id, str) or not task_id:
+                continue
+            if self.clear_pairing_task(slot_key, task_id):
+                cleared.append(slot_key)
+        return cleared
+
+    def clear_all_pairing(self) -> int:
+        """Clear all transient pairing state for an explicit session reset."""
+
+        pending, tasks = self._pairing_maps()
+        count = len(pending) + len(tasks)
+        pending.clear()
+        tasks.clear()
+        return count
 
     def __init__(
         self,
@@ -3374,6 +3473,14 @@ class DashboardState:
         # builtin-service restart lookup (getattr-based, no-op when None).
         self._secretary_restart: Any = None  # restart callback (always None — service removed)
         self.workflow_service: Any = None  # lazy-init in server.py (WorkflowService, M6)
+        # Automatic Crew routing is intentionally transient and private.  The
+        # workflow registry remains the durable source of run state; these maps
+        # only prevent a second ordinary turn from racing an active routed run
+        # and ensure one low-confidence message gets at most one clarification.
+        self._automatic_route_runs: dict[str, str] = {}
+        self._automatic_route_pending: dict[str, dict[str, str]] = {}
+        self._pairing_preflight_pending: dict[str, dict[str, Any]] = {}
+        self._pairing_tasks: dict[str, dict[str, Any]] = {}
         self.context_builder = context_builder
         self.conversation_log = conversation_log
         self.consolidator = consolidator

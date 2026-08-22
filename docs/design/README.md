@@ -8,5 +8,6 @@ proposal lands.
 | Document | Covers |
 |---|---|
 | [playwright-cli-migration.md](playwright-cli-migration.md) | Moving browsing onto `playwright-cli`: the capability model, the install flow, snapshot retention, and the dashboard surface. |
+| [2026-08-20-quality-engineering-crew.md](2026-08-20-quality-engineering-crew.md) | Approved Quality Engineering Crew roles, routes, bounded evidence, automatic routing, and direct command design. |
 
 Indexed from [../README.md](../README.md).

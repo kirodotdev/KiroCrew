@@ -2811,3 +2811,23 @@ class TestAppAgentDispatchGuard:
             await chat_runner._eager_spawn(state, slot)
 
         state.sessions.get_or_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_default_turn_completion_clears_owned_pairing_context(tmp_path):
+    state, client = _runner_state(tmp_path)
+    slot = _slot("pairing-runner")
+    state.set_pairing_task(
+        slot.key,
+        {
+            "task_id": "task-guided",
+            "message": "Implement the feature",
+            "mode": "guided",
+            "workflow_run_id": "",
+        },
+    )
+    _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="completed"), _complete()])
+
+    await _drive(state, slot, "$learning-pairing\ncheckpoint: P1")
+
+    assert state.pairing_task(slot.key) is None

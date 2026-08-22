@@ -63,6 +63,8 @@ from kiro_crew.context_management import (
     strip_plan_markers,
     validate_plan_format,
 )
+from kiro_crew.crew_dispatch import INTERNAL_QUALITY_WORKFLOW, automatic_workflow_source
+from kiro_crew.crews.quality_engineering import DEFAULT_E2E_CHECK_IDS
 from kiro_crew.dashboard.chat_persistence import _build_history_prefix, save_slot_off_loop
 from kiro_crew.dashboard.chat_summary import generate_session_summary
 from kiro_crew.dashboard.chat_title import (
@@ -3500,6 +3502,96 @@ async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key:
         logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
 
 
+def _direct_quality_project(slot: "_ChatSlot") -> tuple[str, str]:
+    """Validate the active slot project; message paths never override it."""
+
+    raw = getattr(slot, "project", "")
+    if not isinstance(raw, str) or not raw.strip():
+        return "", "active slot has no project binding"
+    path = Path(raw).expanduser()
+    if not path.is_absolute() or ".." in path.parts:
+        return "", "active slot project must be an absolute non-traversing path"
+    if path.is_symlink() or is_sensitive_path(str(path)):
+        return "", "active slot project is not allowed"
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        return "", "active slot project cannot be resolved"
+    if is_sensitive_path(str(resolved)) or not resolved.is_dir():
+        return "", "active slot project must be an existing directory"
+    return str(resolved), ""
+
+
+async def _handle_crew_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
+    """Handle the exact local ``/crew quality-engineering <request>`` command."""
+
+    parts = message.split(None, 2)
+    if len(parts) != 3 or parts[0] != "/crew" or parts[1] != "quality-engineering":
+        body = "Usage: `/crew quality-engineering <request>`."
+        outcome = "invalid_syntax"
+    else:
+        request_text = parts[2].strip()
+        project_path, project_error = await asyncio.to_thread(_direct_quality_project, slot)
+        service = getattr(state, "workflow_service", None)
+        if not request_text:
+            body = "Quality Engineering request is required."
+            outcome = "request_required"
+        elif len(request_text) > 8_000:
+            body = "Quality Engineering request exceeds the size limit."
+            outcome = "request_too_large"
+        elif project_error:
+            body = f"Quality Engineering route blocked: {project_error}."
+            outcome = "project_blocked"
+        elif service is None:
+            body = "Quality Engineering route is unavailable in this dashboard."
+            outcome = "workflow_unavailable"
+        else:
+            args = {
+                "__crew_workflow": INTERNAL_QUALITY_WORKFLOW,
+                "route": "full_quality_review",
+                "request": request_text,
+                "project_path": project_path,
+                "check_ids": list(DEFAULT_E2E_CHECK_IDS),
+            }
+            try:
+                started = await service.start(
+                    automatic_workflow_source(),
+                    name="automatic-crew-routing",
+                    args=args,
+                    author="direct-crew-command",
+                    session_key=f"dashboard:{slot.key}",
+                    _allow_native_crew=True,
+                )
+                run_id = started.get("run_id") if isinstance(started, dict) else None
+            except Exception:
+                logger.warning(
+                    "direct Quality Engineering route failed for slot %s", slot.key, exc_info=True
+                )
+                run_id = None
+            if not isinstance(run_id, str) or not run_id:
+                body = "Quality Engineering route could not be started."
+                outcome = "start_failed"
+            else:
+                state._automatic_route_runs[slot.key] = run_id
+                state.push_slots_update()
+                body = "Started Quality Engineering full_quality_review for the active project."
+                outcome = "started"
+
+    body = _redact_for_display(body)
+    sel().log_tool_invocation(
+        session_key=slot.key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name="/crew",
+        tool_kind="slash_command",
+        outcome=outcome,
+        metadata={"slot": slot.key, "crew": "quality-engineering"},
+    )
+    slot.append("assistant", body, "msg msg-a")
+    state.push_slots_update()
+    slot.append("done", "", "done")
+
+
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
@@ -4626,6 +4718,11 @@ async def _run_chat(
         )
         state.push_slots_update()
         slot.append("done", "", "done")
+        return
+
+    # ── /crew quality-engineering: start the read-only QE workflow locally ──
+    if first_word == "/crew":
+        await _handle_crew_command(state, slot, message)
         return
 
     # ── /goal: arm / clear a goal-driven self-verdict loop (v0) ──
@@ -9000,4 +9097,7 @@ async def _run_chat(
             next_turn_started = await _start_next_queued_turn(state, slot)
 
         if not next_turn_started:
+            active_pairing = state.pairing_task(slot.key)
+            if active_pairing is not None and not active_pairing.get("workflow_run_id"):
+                state.clear_pairing_task(slot.key, active_pairing.get("task_id"))
             _finish_queue_cycle(state, slot)

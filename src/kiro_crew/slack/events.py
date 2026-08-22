@@ -39,6 +39,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
 )
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.crew_registry import is_internal_crew_worker
 from kiro_crew.cron import format_schedule
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers import get_update_info
@@ -311,7 +312,9 @@ async def _handle_agent(
     # Show selector dropdown
     agents_dir = kiro_agents_dir()
     jsons = sorted(agents_dir.glob("*.json")) if agents_dir.is_dir() else []
-    agent_names = sorted(f.stem for f in jsons)
+    agent_names = sorted(
+        f.stem for f in jsons if not is_internal_crew_worker(f.stem)
+    )
     current = _get_default_agent() or ""
 
     options = [{"text": {"type": "plain_text", "text": n[:75]}, "value": n} for n in agent_names]
@@ -558,7 +561,9 @@ def _get_agent_names() -> list[str]:
             # `/kirocrew channels` handler / channel-modal refresh task before
             # it opens. Mirrors agent.py's _load_json.
             name = None
-        names.append(name or f.stem)
+        resolved_name = name or f.stem
+        if not is_internal_crew_worker(resolved_name):
+            names.append(resolved_name)
     return sorted(names)
 
 

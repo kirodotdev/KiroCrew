@@ -23,6 +23,17 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from kiro_crew import model_registry
 from kiro_crew.acp.client import AcpModelUnavailable
 from kiro_crew.agent_discovery import cached_project_agent_names, warm_project_agent_names
+from kiro_crew.automatic_routing import (
+    CONFIDENCE_HIGH,
+    CREW_KNOWLEDGE_QUALITY,
+    CREW_QUALITY_ENGINEERING,
+    CREW_SOFTWARE_DELIVERY,
+    ROUTE_E2E_VALIDATION,
+    ROUTE_FULL_QUALITY_REVIEW,
+    RouteDecision,
+    classify_clarification_answer,
+    classify_message,
+)
 from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
@@ -30,6 +41,8 @@ from kiro_crew.config.loader import (
     default_project_dir,
     resolve_agent_bindings,
 )
+from kiro_crew.crew_dispatch import automatic_workflow_source
+from kiro_crew.crews.quality_engineering import DEFAULT_E2E_CHECK_IDS
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed
 from kiro_crew.dashboard.chat_auto_tag import maybe_auto_tag
 from kiro_crew.dashboard.chat_folders import _unhide_folder
@@ -85,6 +98,12 @@ from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_no
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import carry_provenance, is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.pairing_preflight import (
+    build_pairing_prompt,
+    build_pairing_question,
+    classify_pairing_task,
+    parse_pairing_mode,
+)
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.providers.base import LLMProvider
 from kiro_crew.safety_override import safety_override
@@ -159,6 +178,227 @@ def _sweep_stale_permissions(slot: "_ChatSlot") -> None:
             source="turn_start_sweep",
             resources=cls.get("request_id", ""),
         )
+
+
+_AUTOMATIC_ROUTE_QUESTIONS = [
+    {
+        "header": "ROUTING",
+        "question": "Is this a code change, a retrieval/Knowledge audit, or ordinary chat?",
+        "options": [
+            {
+                "label": "Code change",
+                "description": "Implement, fix, refactor, or otherwise change software.",
+            },
+            {
+                "label": "Retrieval or Knowledge audit",
+                "description": "Inspect, validate, or compare Knowledge/retrieval behavior.",
+            },
+            {
+                "label": "Something else",
+                "description": "Use the normal default-agent path.",
+            },
+        ],
+    }
+]
+
+
+_PAIRING_CAPABILITY_ERROR = (
+    "Pairing Preflight capability is unavailable. No work was started; "
+    "choose a mode again or retry."
+)
+
+_AUTOMATIC_ROUTE_BLOCKED = (
+    "Automatic Crew routing is unavailable. No work was started; retry."
+)
+
+
+def _pairing_skill_available(state: DashboardState) -> bool:
+    """Return whether the allowlisted live learning-pairing skill is loadable."""
+
+    try:
+        from kiro_crew.dashboard.handlers import _get_skills
+
+        resolved = _get_skills(state).resolve_dollar_skills("$learning-pairing")
+    except Exception:
+        logger.warning("learning-pairing capability check failed", exc_info=True)
+        return False
+    return any(
+        name.rsplit("/", 1)[-1].casefold() == "learning-pairing" and bool(body.strip())
+        for _token, name, body in resolved
+    )
+
+
+async def _post_pairing_card(state: DashboardState, slot: _ChatSlot, reason: str) -> bool:
+    """Post a preflight card, failing closed if the dashboard card path is unavailable."""
+
+    try:
+        await state.post_question_card(slot.key, build_pairing_question(reason))
+    except Exception:
+        logger.warning("pairing preflight card failed for slot %s", slot.key, exc_info=True)
+        slot.append("assistant", _PAIRING_CAPABILITY_ERROR, "msg msg-err")
+        state.push_slots_update()
+        return False
+    state.push_slots_update()
+    return True
+
+
+def _automatic_route_eligible(message: str, agent: str, slot: _ChatSlot) -> bool:
+    """Keep explicit agent/control/domain-owned paths on their existing routes."""
+
+    return bool(
+        message.strip()
+        and not message.lstrip().startswith("/")
+        and not agent
+        and not getattr(slot, "agent", "")
+        and getattr(slot, "mode", "") not in {"crew", "orchestrator"}
+    )
+
+
+def _automatic_route_args(message: str, decision: RouteDecision) -> dict[str, Any]:
+    if decision.crew_id == CREW_SOFTWARE_DELIVERY:
+        return {
+            "__crew_workflow": "__kirocrew.crew.software-delivery",
+            "route": decision.route,
+            "request": message,
+            "candidate_workspace": decision.project_path,
+        }
+    if decision.crew_id == CREW_QUALITY_ENGINEERING:
+        return {
+            "__crew_workflow": "__kirocrew.crew.quality-engineering",
+            "route": decision.route,
+            "request": message,
+            "project_path": decision.project_path,
+            "check_ids": list(DEFAULT_E2E_CHECK_IDS)
+            if decision.route in {ROUTE_E2E_VALIDATION, ROUTE_FULL_QUALITY_REVIEW}
+            else [],
+        }
+    return {
+        "__crew_workflow": "__kirocrew.crew.knowledge-quality",
+        "route": decision.route,
+        "request": message,
+        "candidate_workspace": decision.project_path,
+    }
+
+
+async def _automatic_route_ack(request: web.Request, *, slot: _ChatSlot, kind: str) -> web.StreamResponse:
+    """Acknowledge a routed/card turn using the caller's normal transport."""
+
+    if request.query.get("ws") == "1":
+        slot._has_reader = False
+        return web.json_response({"ok": True, "slot": slot.key, kind: True})
+    response = web.StreamResponse()
+    response.content_type = "text/event-stream"
+    response.headers["Cache-Control"] = "no-cache"
+    response.headers["X-Accel-Buffering"] = "no"
+    try:
+        await response.prepare(request)
+        await response.write(b"data: [DONE]\n\n")
+    finally:
+        slot._has_reader = False
+    return response
+
+
+async def _automatic_route_blocked(
+    request: web.Request,
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    pairing_task_id: str | None,
+) -> web.StreamResponse:
+    """Stop a recognized Crew route without falling through to default chat."""
+
+    if pairing_task_id is not None:
+        state.clear_pairing_task(slot.key, pairing_task_id)
+    slot.append("assistant", _AUTOMATIC_ROUTE_BLOCKED, "msg msg-err")
+    state.push_slots_update()
+    return await _automatic_route_ack(request, slot=slot, kind="automatic_route_blocked")
+
+
+async def _try_automatic_route(
+    request: web.Request,
+    state: DashboardState,
+    slot: _ChatSlot,
+    message: str,
+    decision: RouteDecision,
+    *,
+    ask_clarification: bool = True,
+    pairing_task_id: str | None = None,
+) -> web.StreamResponse | None:
+    """Handle a high/low decision; ``None`` preserves the genuine default path."""
+
+    if decision.confidence != CONFIDENCE_HIGH:
+        if not ask_clarification:
+            return None
+        state._automatic_route_pending[slot.key] = {
+            "message": message,
+            "project_path": decision.project_path,
+        }
+        await state.post_question_card(slot.key, _AUTOMATIC_ROUTE_QUESTIONS)
+        state.push_slots_update()
+        return await _automatic_route_ack(request, slot=slot, kind="route_clarification")
+
+    recognized_crew = decision.crew_id in {
+        CREW_SOFTWARE_DELIVERY,
+        CREW_KNOWLEDGE_QUALITY,
+        CREW_QUALITY_ENGINEERING,
+    }
+    if not recognized_crew:
+        return None
+
+    service = getattr(state, "workflow_service", None)
+    if service is None:
+        logger.warning("automatic Crew route unavailable for slot %s", slot.key)
+        return await _automatic_route_blocked(
+            request, state, slot, pairing_task_id=pairing_task_id
+        )
+    try:
+        started = await service.start(
+            automatic_workflow_source(),
+            name="automatic-crew-routing",
+            args=_automatic_route_args(message, decision),
+            author="automatic-router",
+            session_key=f"dashboard:{slot.key}",
+            _allow_native_crew=True,
+        )
+    except Exception:
+        logger.warning("automatic Crew route failed to start for slot %s", slot.key, exc_info=True)
+        return await _automatic_route_blocked(
+            request, state, slot, pairing_task_id=pairing_task_id
+        )
+    run_id = started.get("run_id") if isinstance(started, dict) else None
+    if not isinstance(run_id, str) or not run_id:
+        logger.warning("automatic Crew route returned no run id for slot %s: %r", slot.key, started)
+        return await _automatic_route_blocked(
+            request, state, slot, pairing_task_id=pairing_task_id
+        )
+    if pairing_task_id is not None:
+        active_task = state.pairing_task(slot.key)
+        if active_task is not None and active_task.get("task_id") == pairing_task_id:
+            active_task["workflow_run_id"] = run_id
+            state.set_pairing_task(slot.key, active_task)
+    state._automatic_route_pending.pop(slot.key, None)
+    state._automatic_route_runs[slot.key] = run_id
+    state.push_slots_update()
+    return await _automatic_route_ack(request, slot=slot, kind="automatic_route")
+
+
+async def _route_pending_answer(
+    state: DashboardState, slot: _ChatSlot, message: str
+) -> tuple[RouteDecision, str] | None:
+    pending = state._automatic_route_pending.pop(slot.key, None)
+    if not isinstance(pending, dict):
+        return None
+    original = pending.get("message")
+    project_path = pending.get("project_path")
+    if not isinstance(original, str):
+        return RouteDecision(reason_codes=("clarification.original_missing",)), message
+    decision = await asyncio.to_thread(
+        classify_clarification_answer,
+        original,
+        message,
+        project_path=project_path,
+    )
+    return decision, f"{original}\nClarification: {message}"
 
 
 async def api_chat(request: web.Request) -> web.StreamResponse:
@@ -407,6 +647,33 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
         return web.json_response({"ok": True, "queued": True})
 
+    # Automatic Crew runs use the shared WorkflowService and do not own
+    # slot.task, so explicitly hold ingress while one is active instead of
+    # starting a concurrent default-agent turn.
+    _automatic_run_id = state._automatic_route_runs.get(slot.key)
+    if _automatic_run_id:
+        _service = getattr(state, "workflow_service", None)
+        _automatic_status = _service.status(_automatic_run_id) if _service is not None else None
+        if isinstance(_automatic_status, dict) and _automatic_status.get("status") in {
+            "running",
+            "pending",
+        }:
+            qid = slot.queue_append(message)
+            _c, _ = redact_exfiltration_urls(message)
+            _c, _ = redact_credentials(_c)
+            _redacted = _redact_for_display(_c)
+            state.broadcast_ws(
+                "queue_push",
+                {
+                    "slot": slot.key,
+                    "content": _redacted,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                    "queue_id": qid,
+                },
+            )
+            return web.json_response({"ok": True, "queued": True})
+        state._automatic_route_runs.pop(slot.key, None)
+
     # ── Crew Mode dispatch (RFC orchestrator-chat-sessions) ─────────
     # MUST precede the hold-users gate below: crew topics ARE background
     # sub-agents, so the hold would swallow every message the moment one
@@ -649,10 +916,146 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         logger.debug("on_user_message observer raised; ignoring", exc_info=True)
 
     # FIX 2: an unattended app-owned turn runs under the background concurrency
+    # Automatic routing is deliberately the last dispatch seam: explicit agent
+    # selection, steering, visible Crew/orchestrator modes, queueing, and control
+    # messages have already returned above. Pairing preflight is the final
+    # decision gate before that seam. Its pending map is intentionally separate
+    # from route clarification so one answer cannot consume the other.
+    _route_pending = slot.key in state._automatic_route_pending
+    _pairing_pending = state.pairing_pending(slot.key)
+    _pairing_active = state.pairing_task(slot.key)
+    _route_message = message
+    _pairing_task_id: str | None = (
+        _pairing_active.get("task_id")
+        if isinstance(_pairing_active, dict) and _pairing_active.get("mode") == "normal"
+        else None
+    )
+    _skip_automatic_route = bool(
+        _pairing_active is not None
+        and _pairing_active.get("mode") in {"guided", "practice"}
+    )
+
+    if _automatic_route_eligible(message, agent, slot) and not body.get("steer"):
+        if _pairing_pending is None and _pairing_active is None:
+            eligibility = classify_pairing_task(message)
+            if eligibility.eligible:
+                task_id = uuid.uuid4().hex
+                state.set_pairing_pending(
+                    slot.key,
+                    {
+                        "task_id": task_id,
+                        "message": message,
+                        "project_path": getattr(slot, "project", ""),
+                        "eligible": True,
+                        "mode": None,
+                        "scope": "task",
+                        "decision_source": "classifier",
+                        "reason_code": eligibility.reason_code,
+                        "reason": eligibility.reason,
+                    },
+                )
+                if not await _post_pairing_card(state, slot, eligibility.reason):
+                    state.consume_pairing_pending(slot.key)
+                return await _automatic_route_ack(
+                    request, slot=slot, kind="pairing_preflight"
+                )
+
+        elif _pairing_pending is not None:
+            mode = parse_pairing_mode(str(message))
+            original = _pairing_pending.get("message")
+            pending_task_id = _pairing_pending.get("task_id")
+            reason = str(_pairing_pending.get("reason") or "รายละเอียดงานยังไม่พอ")
+            if (
+                not isinstance(original, str)
+                or not original.strip()
+                or not isinstance(pending_task_id, str)
+            ):
+                await _post_pairing_card(state, slot, reason)
+                return await _automatic_route_ack(
+                    request, slot=slot, kind="pairing_preflight"
+                )
+            task_id = pending_task_id
+            if mode is None:
+                await _post_pairing_card(state, slot, reason)
+                return await _automatic_route_ack(
+                    request, slot=slot, kind="pairing_preflight"
+                )
+            if mode in {"guided", "practice"} and not _pairing_skill_available(state):
+                slot.append("assistant", _PAIRING_CAPABILITY_ERROR, "msg msg-err")
+                await _post_pairing_card(state, slot, reason)
+                return await _automatic_route_ack(
+                    request, slot=slot, kind="pairing_preflight"
+                )
+
+            consumed = state.consume_pairing_pending(slot.key)
+            if consumed is None:
+                await _post_pairing_card(state, slot, reason)
+                return await _automatic_route_ack(
+                    request, slot=slot, kind="pairing_preflight"
+                )
+            task_id = str(consumed["task_id"])
+            original = str(consumed["message"])
+            _pairing_task_id = task_id
+            state.set_pairing_task(
+                slot.key,
+                {
+                    "task_id": task_id,
+                    "message": original,
+                    "project_path": consumed.get("project_path", ""),
+                    "eligible": True,
+                    "mode": mode,
+                    "scope": "task",
+                    "decision_source": "user",
+                    "workflow_run_id": "",
+                    "pairing": {
+                        "eligible": True,
+                        "mode": mode,
+                        "scope": "task",
+                        "decision_source": "user",
+                    },
+                },
+            )
+            if mode in {"guided", "practice"}:
+                _route_message = build_pairing_prompt(original, task_id, mode)
+                _skip_automatic_route = True
+            else:
+                _route_message = original
+
+        if not _skip_automatic_route:
+            if _route_pending:
+                _pending_result = await _route_pending_answer(state, slot, _route_message)
+                _route_decision = _pending_result[0] if _pending_result else None
+                if _pending_result:
+                    _route_message = _pending_result[1]
+            else:
+                _route_decision = await asyncio.to_thread(
+                    classify_message,
+                    _route_message,
+                    project_path=getattr(slot, "project", ""),
+                )
+            if _route_decision is not None:
+                _routed_response = await _try_automatic_route(
+                    request,
+                    state,
+                    slot,
+                    _route_message,
+                    _route_decision,
+                    ask_clarification=not _route_pending,
+                    pairing_task_id=_pairing_task_id,
+                )
+                if _routed_response is not None:
+                    return _routed_response
+    elif _route_pending:
+        # An explicit agent/control path wins over a stale route card.
+        state._automatic_route_pending.pop(slot.key, None)
+    elif _pairing_pending is not None:
+        # An explicit agent/control path also abandons a stale preflight card.
+        state.consume_pairing_pending(slot.key)
+
     # cap; run_background_turn passes an attended slot straight through, so the
     # interactive path is unchanged (no semaphore is even created).
     task = spawn_guarded_turn(
-        state, slot, state.run_background_turn(slot, _run_chat(state, slot, message))
+        state, slot, state.run_background_turn(slot, _run_chat(state, slot, _route_message))
     )
     slot.task = task
     slot._recovery_retrigger_count = 0
@@ -2376,6 +2779,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
         # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.
         slot._pending_steers.clear()
+        state.clear_pairing_slot(name)
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
 
@@ -2408,6 +2812,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     # Already stopping or not running — no-op (idempotent repeat press guard)
     if slot._stop_state != "idle" or not slot.running:
         if not slot.running:
+            state.clear_pairing_slot(name)
             logger.info("Stop: slot %s not running, ignoring", name)
             _info = "not running"
         else:
@@ -3312,6 +3717,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             {"error": "failed to save history", "code": "history_save_failed"}, status=500
         )
     else:
+        state.clear_pairing_slot(name)
         state._restricted_keys.discard(f"dashboard:{name}")
         # Durable, so no rollback can retract this frame — a client pruning its
         # per-slot cards on it can never be pruning a slot that comes back.

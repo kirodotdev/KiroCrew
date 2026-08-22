@@ -386,7 +386,6 @@ src/kiro_crew/mcp_tools/browser.py
 src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
-src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
 src/kiro_crew/messaging/attachments.py

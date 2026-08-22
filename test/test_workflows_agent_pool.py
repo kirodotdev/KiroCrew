@@ -114,6 +114,71 @@ async def test_sequential_calls_reuse_one_warm_session():
 
 
 @pytest.mark.asyncio
+async def test_native_pool_uses_hook_based_approval_and_identity(monkeypatch):
+    sessions = _FakeSessions()
+    hook_store = object()
+    captured: dict = {}
+
+    async def capture_stream(provider, prompt, **kwargs):
+        captured.update(kwargs)
+        return f"[{provider.tag}] {prompt}"
+
+    monkeypatch.setattr("kiro_crew.hooks.get_global_hook_store", lambda: hook_store)
+    monkeypatch.setattr("kiro_crew.workflows.agent_pool.stream_and_collect", capture_stream)
+
+    agent_fn, pool = build_pooled_agent_fn(
+        sessions,
+        run_id="native-pool",
+        native_crew=True,
+        source_session_key="dashboard:slot-b",
+        app="workflows",
+        max_workers=1,
+    )
+    try:
+        await agent_fn("native work", {"agent": "kirocrew-software-delivery-engineer"})
+    finally:
+        await pool.shutdown()
+
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    assert captured["approval_policy"] is ToolApprovalPolicy.HOOK_BASED
+    assert captured["hooks"] is hook_store
+    assert captured["session_key"] == "dashboard:slot-b"
+    assert captured["agent"] == "kirocrew-software-delivery-engineer"
+    assert captured["app"] == "workflows"
+    assert await captured["on_tool_approval"](object()) is False
+
+
+@pytest.mark.asyncio
+async def test_native_pool_rejects_all_without_global_hook_store(monkeypatch):
+    sessions = _FakeSessions()
+    captured: dict = {}
+
+    async def capture_stream(provider, prompt, **kwargs):
+        captured.update(kwargs)
+        return "blocked"
+
+    monkeypatch.setattr("kiro_crew.hooks.get_global_hook_store", lambda: None)
+    monkeypatch.setattr("kiro_crew.workflows.agent_pool.stream_and_collect", capture_stream)
+
+    agent_fn, pool = build_pooled_agent_fn(
+        sessions,
+        run_id="native-pool-no-hooks",
+        native_crew=True,
+        max_workers=1,
+    )
+    try:
+        await agent_fn("native work", {})
+    finally:
+        await pool.shutdown()
+
+    from kiro_crew.llm_helpers import ToolApprovalPolicy
+
+    assert captured["approval_policy"] is ToolApprovalPolicy.REJECT_ALL
+    assert captured["hooks"] is None
+
+
+@pytest.mark.asyncio
 async def test_reuse_triggers_cheap_reset_not_cold_start():
     sessions = _FakeSessions()
     agent_fn, pool = build_pooled_agent_fn(sessions, run_id="r2", max_workers=2)

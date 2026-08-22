@@ -313,6 +313,12 @@ class _RunContext:
         self._approve_fn = ports.get("approve")
         self._send_slack_fn = ports.get("send_slack")
         self._send_message_fn = ports.get("send_message")
+        # Native workflow dispatch is an internal host port.  The public MCP
+        # workflow tool is not called here; a fixed automatic route script uses
+        # this same context so budget, events, approval, cancellation, and
+        # checkpoints remain owned by the parent Dynamic Workflow run.
+        self._workflow_fn = ports.get("workflow")
+        self._workflow_depth = 0
 
         self._run_id = run_id
         self._author = author
@@ -489,11 +495,19 @@ class _RunContext:
         return await _pipeline(items, *stages, limit=self._concurrency)
 
     async def workflow(self, name: str, args: Optional[dict] = None) -> Any:
-        # Contract-only. ``workflow`` is not in CORE_CTX_SURFACE and no shipped host
-        # wires a ``workflow`` port, so the pre-exec surface check rejects a script
-        # that names it in the entrypoint. This stays reachable through the gap that
-        # check leaves open on purpose: a helper handed the real ctx is not scanned.
-        raise NotImplementedError("nested ctx.workflow() is not implemented")
+        """Run one host-native workflow inline, with exactly one nesting level."""
+        if self._workflow_fn is None:
+            raise RuntimeError("ctx.workflow is not available for this run (no workflow port wired)")
+        if self._workflow_depth >= 1:
+            raise RuntimeError("nested ctx.workflow() is limited to one level")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError("ctx.workflow requires a workflow name")
+        child = self._workflow_depth + 1
+        self._workflow_depth = child
+        try:
+            return await self._workflow_fn(self, name, args or {})
+        finally:
+            self._workflow_depth = child - 1
 
     # --- progress / UI ---
     def phase(self, title: str) -> "_PhaseContextManager":

@@ -6266,6 +6266,7 @@
       "desc_code": "코드 인텔리전스 도구를 엽니다",
       "desc_compact": "대화를 압축해 컨텍스트를 확보합니다",
       "desc_context": "컨텍스트 파일과 토큰 사용량을 관리합니다",
+      "desc_crew": "읽기 전용 Quality Engineering 검토 실행",
       "desc_editor": "외부 편집기에서 프롬프트를 작성합니다",
       "desc_exit": "채팅 세션을 종료합니다",
       "desc_experiment": "실험적 기능을 켜거나 끕니다",

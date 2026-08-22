@@ -6355,6 +6355,7 @@
       "desc_code": "Werkzeuge für Code-Intelligenz öffnen",
       "desc_compact": "Unterhaltung verdichten, um Kontext freizugeben",
       "desc_context": "Kontextdateien und Tokenverbrauch verwalten",
+      "desc_crew": "Eine schreibgeschützte Quality-Engineering-Prüfung ausführen",
       "desc_editor": "Deinen Prompt in einem externen Editor schreiben",
       "desc_exit": "Die Chat-Sitzung verlassen",
       "desc_experiment": "Experimentelle Funktionen umschalten",

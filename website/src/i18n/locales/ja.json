@@ -6266,6 +6266,7 @@
       "desc_code": "コードインテリジェンスツールを開く",
       "desc_compact": "会話をコンパクト化してコンテキストを解放する",
       "desc_context": "コンテキストファイルとトークン使用量を管理する",
+      "desc_crew": "読み取り専用の Quality Engineering レビューを実行",
       "desc_editor": "外部エディタでプロンプトを作成する",
       "desc_exit": "チャットセッションを終了する",
       "desc_experiment": "実験的機能を切り替える",

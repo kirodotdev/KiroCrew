@@ -67,6 +67,9 @@ class _FakeState:
     def cancel_questions_for_slot(self, slot_key):
         return 0
 
+    def clear_pairing_slot(self, slot_key):
+        return False
+
 
 def _request(state, query=None, caller_app=""):
     app = web.Application()

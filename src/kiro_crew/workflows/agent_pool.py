@@ -42,29 +42,34 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 # Per-step tool-call ceiling — shared with the per-call path (agent_exec) so a
 # single edit retunes both; a hand-duplicated copy here would silently diverge the
 # pooled vs fallback ceilings. ``test_workflows_agent_pool.py`` pins them equal.
-from kiro_crew.workflows.agent_exec import _MAX_TURNS_PER_STEP
+from kiro_crew.workflows.agent_exec import (
+    _MAX_TURNS_PER_STEP,
+    _workflow_tool_gate_kwargs,
+)
 
 logger = logging.getLogger(__name__)
 
 
-async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = None) -> str:
+async def _run_step(
+    provider: Any,
+    prompt: str,
+    *,
+    timeout: Optional[float] = None,
+    gate_kwargs: Optional[dict[str, Any]] = None,
+) -> str:
     """Stream one workflow agent step through ``provider`` and redact its output.
 
-    Single source of truth for the per-step contract shared by the pooled worker
-    and the ``session=`` bypass path: AUTO_APPROVE policy, the shared
-    ``_MAX_TURNS_PER_STEP`` tool-call ceiling, an optional per-task ``timeout``
-    (via ``asyncio.wait_for`` — the pool passes its per-task bound here so a
-    wedged turn is terminated instead of holding a permit until the run ceiling),
-    and the credential + exfiltration-URL output redaction pair (parity with
-    ``agent_exec`` — prevents credential leakage into workflow results stored in
-    history / injected into parent chat).
+    The shared per-step contract includes the tool-call ceiling, optional timeout,
+    output redaction, and an optional native-Crew HookManager gate. Public
+    workflows pass no ``gate_kwargs`` and retain AUTO_APPROVE behavior.
     """
-    coro = stream_and_collect(
-        provider,
-        prompt,
-        approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
-        max_turns=_MAX_TURNS_PER_STEP,
-    )
+    stream_kwargs: dict[str, Any] = {
+        "approval_policy": ToolApprovalPolicy.AUTO_APPROVE,
+        "max_turns": _MAX_TURNS_PER_STEP,
+    }
+    if gate_kwargs:
+        stream_kwargs.update(gate_kwargs)
+    coro = stream_and_collect(provider, prompt, **stream_kwargs)
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
     text, _ = redact_credentials(text)
     text, _ = redact_exfiltration_urls(text)
@@ -87,6 +92,9 @@ class _WorkflowSessionWorker:
         model: Optional[str],
         cwd: Optional[str],
         extra_env: Optional[dict[str, str]] = None,
+        native_crew: bool = False,
+        source_session_key: str = "",
+        app: str = "",
     ) -> None:
         self._sessions = sessions
         self._key = key
@@ -94,6 +102,9 @@ class _WorkflowSessionWorker:
         self._model = model
         self._cwd = cwd
         self._extra_env = extra_env
+        self._native_crew = native_crew
+        self._source_session_key = source_session_key
+        self._app = app
         self._provider: Any = None
 
     async def start(self) -> None:
@@ -112,7 +123,19 @@ class _WorkflowSessionWorker:
             await self.start()
         # Honor the pool's per-task timeout: a wedged turn is terminated here
         # instead of holding a _task_sema permit until the run-level ceiling.
-        return await _run_step(self._provider, prompt, timeout=timeout)
+        gate_kwargs = _workflow_tool_gate_kwargs(
+            native_crew=self._native_crew,
+            key=self._key,
+            source_session_key=self._source_session_key,
+            agent=self._agent,
+            app=self._app,
+        )
+        return await _run_step(
+            self._provider,
+            prompt,
+            timeout=timeout,
+            gate_kwargs=gate_kwargs,
+        )
 
     async def reset(self) -> None:
         """Cheap clean slate before REUSE — fresh conversation on the warm process.
@@ -184,6 +207,9 @@ def build_pooled_agent_fn(
     default_model: Optional[str] = None,
     cwd: Optional[str] = None,
     extra_env: Optional[dict[str, str]] = None,
+    native_crew: bool = False,
+    source_session_key: str = "",
+    app: str = "",
     max_workers: int = 4,
     max_starting: int = 2,
     max_identities: int = 8,
@@ -198,6 +224,9 @@ def build_pooled_agent_fn(
 
     The caller owns ``pool`` and MUST ``await pool.shutdown()`` when the run ends
     (e.g. in the runner's finally / on_done) so the warm sessions are released.
+    ``native_crew`` applies the host-authorized HookManager boundary to every
+    pooled, named-session, and unpooled overflow path; without a global hook
+    store those turns reject all tools.
     Per-call ``ctx.agent(agent=/model=/cwd=)`` overrides are honored: each
     distinct ``(agent, model, cwd)`` identity gets its OWN warm sub-pool (so a
     multi-specialist fan-out still gets warm reuse per specialist, and a worker
@@ -219,6 +248,9 @@ def build_pooled_agent_fn(
                 model=model,
                 cwd=work_dir,
                 extra_env=extra_env,
+                native_crew=native_crew,
+                source_session_key=source_session_key,
+                app=app,
             )
 
         return WorkerPool(
@@ -275,7 +307,14 @@ def build_pooled_agent_fn(
             extra_env=extra_env,
         )
         try:
-            return await _run_step(provider, prompt)
+            gate_kwargs = _workflow_tool_gate_kwargs(
+                native_crew=native_crew,
+                key=key,
+                source_session_key=source_session_key,
+                agent=opts.get("agent") or default_agent,
+                app=app,
+            )
+            return await _run_step(provider, prompt, gate_kwargs=gate_kwargs)
         finally:
             try:
                 await sessions.destroy(key)
@@ -294,7 +333,14 @@ def build_pooled_agent_fn(
                 cwd=opts.get("cwd") or cwd,
                 extra_env=extra_env,
             )
-            return await _run_step(provider, prompt)
+            gate_kwargs = _workflow_tool_gate_kwargs(
+                native_crew=native_crew,
+                key=named,
+                source_session_key=source_session_key,
+                agent=opts.get("agent") or default_agent,
+                app=app,
+            )
+            return await _run_step(provider, prompt, gate_kwargs=gate_kwargs)
         # Ephemeral default path: run on a warm worker from the sub-pool matching
         # this call's (agent, model, cwd) — honoring per-call overrides exactly as
         # the per-call-session model (build_agent_fn) it replaces did.

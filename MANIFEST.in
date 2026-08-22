@@ -36,6 +36,8 @@ recursive-include src/kiro_crew/apps *.md
 recursive-include src/kiro_crew/eval/scenarios *.json
 recursive-include src/kiro_crew/docs *.md
 recursive-include src/kiro_crew/tests_fixtures *
+recursive-include src/kiro_crew/crews *.json
+recursive-include src/kiro_crew/crews *.txt
 
 # --- Pruning: never ship test trees, vendored node deps, or build cruft ------
 prune test

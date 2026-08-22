@@ -1,0 +1,8 @@
+{
+  "name": "kirocrew-knowledge-quality-validator",
+  "description": "Read-only retrieval audit validator for Knowledge Quality.",
+  "model": "auto",
+  "tools": ["report"],
+  "allowedTools": ["report"],
+  "includeMcpJson": false
+}

@@ -1,0 +1,9 @@
+{
+  "name": "kirocrew-quality-engineering-ux",
+  "description": "Private Quality Engineering UX Reviewer worker",
+  "model": "auto",
+  "includeMcpJson": false,
+  "tools": ["report"],
+  "allowedTools": ["report"],
+  "resources": []
+}

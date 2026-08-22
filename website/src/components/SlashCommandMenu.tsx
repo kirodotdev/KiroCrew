@@ -51,6 +51,7 @@ const COMMAND_DESC_KEY: Record<string, string> = {
   '/code': 'components.slashCommandMenu.desc_code',
   '/compact': 'components.slashCommandMenu.desc_compact',
   '/context': 'components.slashCommandMenu.desc_context',
+  '/crew': 'components.slashCommandMenu.desc_crew',
   '/editor': 'components.slashCommandMenu.desc_editor',
   '/exit': 'components.slashCommandMenu.desc_exit',
   '/experiment': 'components.slashCommandMenu.desc_experiment',
@@ -100,7 +101,7 @@ function commandDescription(cmd: SlashCommand): string {
 // COMMAND_DESC_KEY either way. /kb is a frontend-only command (also merged
 // via FRONTEND_COMMANDS below).
 const FALLBACK_COMMAND_NAMES = [
-  '/agent', '/changelog', '/clear', '/code', '/compact', '/context',
+  '/agent', '/changelog', '/clear', '/code', '/compact', '/context', '/crew',
   '/experiment', '/help', '/hooks', '/issue', '/kb', '/logdump',
   '/mcp', '/model', '/prompts', '/side', '/todos', '/tools', '/usage',
 ] as const

@@ -6266,6 +6266,7 @@
       "desc_code": "打开代码智能工具",
       "desc_compact": "压缩对话以释放上下文",
       "desc_context": "管理上下文文件和 token 用量",
+      "desc_crew": "运行只读 Quality Engineering 审查",
       "desc_editor": "在外部编辑器中撰写提示词",
       "desc_exit": "退出聊天会话",
       "desc_experiment": "开关实验性功能",

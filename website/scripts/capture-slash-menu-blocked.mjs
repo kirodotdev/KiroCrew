@@ -33,6 +33,7 @@ const API_COMMANDS = [
   { name: '/code', description: 'Open code intelligence tools' },
   { name: '/compact', description: 'Compact conversation to free context' },
   { name: '/context', description: 'Manage context files and token usage' },
+  { name: '/crew', description: 'Run a read-only Quality Engineering review' },
   { name: '/experiment', description: 'Toggle experimental features' },
   { name: '/goal', description: 'Set a standing goal the agent works toward across turns' },
   { name: '/help', description: 'Show available commands' },
@@ -90,6 +91,7 @@ async function main() {
     if (rows.includes(cmd)) throw new Error(`blocked command ${cmd} rendered in the menu`)
   }
   if (!rows.includes('/compact')) throw new Error('expected /compact in the menu')
+  if (!rows.includes('/crew')) throw new Error('expected /crew in the menu')
 
   await page.screenshot({ path: `${OUT}/${PREFIX}-01-slash-menu-no-blocked.png` })
   console.log('wrote', `${OUT}/${PREFIX}-01-slash-menu-no-blocked.png`)
