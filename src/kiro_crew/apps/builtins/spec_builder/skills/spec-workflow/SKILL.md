@@ -61,6 +61,12 @@ Rules:
 - Add a decision entry whenever you ask the user a choice in chat (same
   options, keep `id` stable). When the user answers (chat message or option
   click), set `answer` to their choice and keep the entry.
+- An answered decision is **final**. Once the user has answered, that `id` is
+  settled: the app records the answer itself and its card will never offer the
+  options again, so re-emitting the same `id` with `answer: null` does not
+  re-ask the question — it just shows the recorded answer. If a decision genuinely
+  has to be revisited (new information invalidated it), ask it as a NEW entry with
+  a NEW `id`, and say in chat why you are re-opening it.
 - `blocking` is ONE plain-language sentence: what you are waiting on, or what
   happens next. Clear it (`null`) when nothing blocks.
 - `context.template` = the existing code/module you are modeling the work on,

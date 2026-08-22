@@ -176,6 +176,58 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Bash gate**: the marker leaf is also in `_WRITE_PROTECTED_BASH_LEAVES`, and `is_sensitive_bash_command` matches it **verb-independently** (any command naming the home-anchored marker path, including a trailing-`/` subpath so `mkdir -p …/.data-home-ready/x` — which also materializes it — is caught). This mirrors the verb-independent backstop the sensitive-dir matcher uses, so quoted redirects / `cp` / `python open()` / novel write verbs cannot bypass an enumerated allowlist. Bash *reads* are incidentally blocked too — harmless, since the marker holds no secret (it is deliberately NOT in `_SENSITIVE_HOME_DIRS`, so file-read tools and `is_sensitive_path` are unaffected) and the only legitimate readers (`kirocrew doctor`, the migration code) use Python `os` calls, not bash.
 - The migration code stamps the marker directly in Python (not via a tool/bash), so legitimate stamping is unaffected. As with credential paths, the bash gate is home-anchored, defense-in-depth: a `cd`-into-home + bare-relative-leaf write is a pre-existing limitation shared by every sensitive-path rule, not specific to the marker.
 
+**Spec Builder's decision record** (`trust/spec-builder-decisions.json`) — the app
+refuses a second answer for the same normalized question. Each record is bound to a
+fingerprint of the rendered id, title, and options, so an agent reusing an id for a new
+question does not inherit the old answer. A claim is first persisted as a pending outbox
+entry and is marked final only when the chat runner reports that the model consumed the
+prompt. Immediately before model dispatch, the row moves durably from `pending` to
+`relayed`; a failure to persist that boundary refuses dispatch. A crash before consumption
+leaves either state for the next detail poll to replay; an already-persisted chat row is
+reused rather than appended twice, but is not itself mistaken for proof of model
+consumption. Immediately before any replay, the backend revalidates the question
+fingerprint and offered option against the normalized current state. A mismatched
+`pending` row with no chat marker is removed rather than relayed or finalized. A
+`relayed` or chat-marked row is retained fail-closed because a crash after model
+consumption but before ledger finalization is indistinguishable from a pre-model crash.
+The durable prompt is rebuilt from the backend-validated title and selected option; its
+bound includes both normalized fields so replay cannot truncate the immutable answer.
+Every Spec Builder dispatch boundary (decision answer, ordinary message, and execution
+handoff) also re-reads each indexed name for the spec directory after its last await and
+compares every live slot's task identity and monotonic turn generation with the initial
+busy scan. The generation survives normal teardown clearing `slot.task` back to idle, so
+this catches an alias turn that starts and finishes during validation as well as an alias
+the agent adds mid-turn; the synchronous final check and task publication are one
+event-loop step. Create registration uses the same normalized directory identity while
+holding that directory's turn lock and refuses an index entry for any second name that
+already points at it. Filesystem equivalence is checked by directory identity, so Windows
+and case-insensitive macOS variants must not mint two slots that dispatch agents into the
+same files; macOS arbitration folds case conservatively before the index transaction so a
+create cannot race delete cleanup. An upgrade-state alias, agent-written alias, or sole
+index path rewritten to a filesystem-equivalent spelling fails closed when it differs
+from an immutable lexical key already present in the protected ledger. Detail reads,
+new-spec registration, decision claims, and deletion can therefore neither mint a second
+answer record nor strand the first one under an unreadable spelling. Decision claims
+validate aliases and persist the answer from one protected-ledger snapshot, and refuse an
+unreadable snapshot rather than retrying the write from different state. A handoff that
+already armed its bounded nudge loop unwinds that loop and its execution claim when the
+final alias check refuses dispatch.
+New-spec registration also returns 503 before mutation or seed dispatch when the protected
+decision ledger cannot be read, because transient unreadability cannot prove an alias safe.
+Pre-consumption automatic retries carry
+the settlement callback on their process-local queue entry, including across repeated
+retries; a gateway restart drops that callback deliberately and the durable pending entry
+re-arms it on replay. This file is therefore an **input to the
+refusal and recovery path**, not a setting. An agent able to write it could erase an entry
+to make a settled decision answerable again, forge one to lock a decision the user never
+answered, or plant a pending prompt for the backend to relay. It lives under the
+whole-directory `trust` entry rather than getting a leaf of its own, because gating the
+leaf alone left its parent replaceable: a directory under `workspace/` is not itself a
+sensitive path, so one `ln -s` naming it redirected every read and write — the app opens
+the path directly, as keystone writers must, so it would have followed the link. It is
+also deliberately NOT a field on the app's `index.json`, which is agent-writable by
+design.
+
 **Ops Mission Control authorization inputs** (`apps/ops-mission-control/data/rotation.yaml`,
 `apps/ops-mission-control/data/incidents/index.json`) — two app-owned files that are
 write-protected on both layers for the same reason as the marker above, and with the same

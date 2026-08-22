@@ -87,6 +87,12 @@ class TestTheListItself:
 
     def test_every_tracked_name_is_a_test_that_exists(self):
         """A stale entry silently absorbs a regression, which is what the list forbids."""
-        source = (Path(spec_conftest.__file__).parent / "test_routes.py").read_text()
+        # encoding pinned: read_text() with no encoding decodes with the platform default
+        # (the ANSI code page on Windows), so any non-ASCII anywhere in test_routes.py --
+        # a locale round-trip fixture, an em dash in a docstring -- kills this read on the
+        # Windows shard alone. The file is UTF-8; say so rather than asking the host.
+        source = (Path(spec_conftest.__file__).parent / "test_routes.py").read_text(
+            encoding="utf-8"
+        )
         missing = sorted(n for n in spec_conftest._WINDOWS_GAPS if f"def {n}(" not in source)
         assert missing == []
