@@ -284,6 +284,60 @@ class TestHandleMessage:
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio
+    async def test_trailing_run_survives_on_stream_wire(self, monkeypatch):
+        """A reply ending in credential-class chars is not truncated on the wire
+        (the append_stream frames, since stop_stream's final_text is ignored)."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="How can I "),
+                LLMEvent(kind="text_chunk", text="help you"),
+                LLMEvent(kind="text_chunk", text=" with?"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "hi", None, "msg1", "U1")
+
+        # What Slack renders is the append_stream frames, not stop_stream's final_text.
+        wire = "".join(a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream")
+        assert wire == "How can I help you with?"
+
+    @pytest.mark.asyncio
+    async def test_exfil_url_in_flushed_tail_is_redacted(self, monkeypatch):
+        """A suspicious URL split across chunks and reassembled in the flushed
+        tail is exfil-redacted before reaching Slack (the per-chunk scan misses
+        it since no single chunk is a whole URL)."""
+        import kiro_crew.slack.handler as _h
+
+        monkeypatch.setattr(_h, "_EDIT_INTERVAL", 0.0)
+
+        slack = MockSlackClient()
+        slack._stream_enabled = True
+        blob = "A" * 48  # base64-like blob (>=40) trips the exfil scanner
+        # No single chunk is a complete URL: chunk 1 has no TLD, chunk 2 no scheme.
+        provider = FakeProvider(
+            [
+                LLMEvent(kind="text_chunk", text="See https://evil"),
+                LLMEvent(kind="text_chunk", text=f".example/x?data={blob}"),
+            ]
+        )
+        sessions = FakeSessionManager(provider)
+        await handle_message(slack, sessions, "C1", "link me", None, "msg1", "U1")
+
+        # Raw URL never on the wire; complete text still reaches it (redacted, not truncated).
+        appended = [a[1].get("text") or "" for a in slack.actions if a[0] == "append_stream"]
+        for frame in appended:
+            assert "evil.example" not in frame or "[REDACTED" in frame
+        wire = "".join(appended)
+        assert f"evil.example/x?data={blob}" not in wire
+        assert "[REDACTED: suspicious URL to evil.example]" in wire
+
+    @pytest.mark.asyncio
     async def test_edit_mode_snapshot_not_truncated(self, monkeypatch):
         """Edit-mode live previews must show the complete accumulated text, not a
         trailing-token-truncated snapshot: the complete tail (`42`)

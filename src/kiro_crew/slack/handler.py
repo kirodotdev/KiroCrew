@@ -2918,9 +2918,8 @@ async def handle_message(
     _stream_had_redaction = False  # True when per-chunk redaction modified a streamed chunk
     # Rolling-buffer redactor for the live Slack wire: withholds the trailing
     # credential-class run so a credential split across streaming chunks can't
-    # reach Slack unredacted (issue 3). The final message is posted from the
-    # complete, fully-redacted `accumulated`, so the held tail is superseded at
-    # stop_stream — no data loss.
+    # reach Slack unredacted (issue 3). stop_stream ignores final_text, so the
+    # withheld tail is explicitly flushed and appended before stop_stream.
     _sred = StreamRedactor()
     accumulated = ""
     thinking_accumulated = ""
@@ -2957,9 +2956,8 @@ async def handle_message(
         Streams through the rolling redactor (``_sred``) so a credential split
         across streaming chunks can't reach Slack unredacted (issue 3): only the
         confirmed-safe prefix is sent now; the trailing (possible-partial-
-        credential) run is withheld until the next append. The final message is
-        posted from the complete, fully-redacted ``accumulated`` at stop_stream,
-        so the withheld tail is superseded — never lost.
+        credential) run is withheld until the next append. The final held tail is
+        flushed and appended before stop_stream (which ignores final_text).
         """
         nonlocal _stream_had_redaction
         if not stream_ts:
@@ -2977,6 +2975,26 @@ async def handle_message(
                 assert stream_ts is not None
                 return await slack.append_stream(channel, stream_ts, safe)
         return ok
+
+    async def _flush_sred_tail() -> None:
+        """Emit _sred's withheld tail before stopping the stream.
+
+        stop_stream ignores final_text, so the held tail is dropped unless sent
+        as an append frame. flush() runs redact() (credentials AND exfil URLs).
+        Rotates on append failure, mirroring _append_stream.
+        """
+        nonlocal _stream_had_redaction
+        if not stream_ts:
+            return
+        tail = _sred.flush()
+        if not tail:
+            return
+        if "[REDACTED" in tail:
+            _stream_had_redaction = True
+        if not await slack.append_stream(channel, stream_ts, tail) and use_slack_stream:
+            if await _rotate_stream():
+                assert stream_ts is not None
+                await slack.append_stream(channel, stream_ts, tail)
 
     async def _append_task(task_id: str, title: str, status: str, details: str = "") -> bool:
         """Append task card to stream, rotating on failure."""
@@ -3472,6 +3490,7 @@ async def handle_message(
                         )
                         await _append_task(_active_task_id, _ct, "complete")
                         _active_task_id = ""
+                    await _flush_sred_tail()
                     await slack.stop_stream(channel, stream_ts)
                     stream_ts = None
                     accumulated = ""
@@ -3880,6 +3899,7 @@ async def handle_message(
         if stream_buffer:
             stream_buffer, _ = strip_thinking_tags(stream_buffer, strip_whitespace=False)
             await _append_stream(stream_buffer)
+        await _flush_sred_tail()
         await slack.stop_stream(channel, stream_ts, clean_text or _NO_RESPONSE)
 
     if use_slack_stream and stream_ts:
