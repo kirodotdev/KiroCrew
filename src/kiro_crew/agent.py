@@ -3449,6 +3449,18 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         # that declares its own ``env.PATH`` is searched against a DIFFERENT path
         # than one that does not, so a caller reporting ``spec_env_path("")``
         # would name directories that were never searched.
+        if os.path.dirname(cmd):
+            # ...and neither were these. ``shutil.which`` looks a command with a
+            # directory component up DIRECTLY and never consults ``path`` (see
+            # its first branch), so an absolute or ``./relative`` command that
+            # fails to resolve searched no directories at all. Reporting
+            # ``_search`` here would name every directory on the spec's PATH for
+            # a command that was only ever checked at one location, which is the
+            # inverse of what the report is for: it turns "this exact path does
+            # not exist" into "not found in any of N directories". The absolute
+            # branch above already returned for the ones that DO resolve, so
+            # this is the failing tail of the same case, plus its relative form.
+            return shutil.which(cmd), ""
         return shutil.which(cmd, path=_search), _search
 
     valid_servers: dict[str, Any] = {}
@@ -3600,12 +3612,25 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             # against a different path, so recomputing one here would name
             # directories that were never consulted. The candidate list stays at
             # DEBUG: that is about which spec won, not about why none resolved.
-            logger.warning(
-                "Dropping MCP server %r: command not found: %s — %s",
-                name,
-                spec.get("command", ""),
-                describe_search_path(dedup_path(os.pathsep.join(searched))),
-            )
+            if searched:
+                logger.warning(
+                    "Dropping MCP server %r: command not found: %s — %s",
+                    name,
+                    spec.get("command", ""),
+                    describe_search_path(dedup_path(os.pathsep.join(searched))),
+                )
+            else:
+                # No candidate was PATH-searched at all -- every one carried a
+                # directory component, which ``shutil.which`` looks up directly.
+                # There is no search to describe, and describe_search_path("")
+                # would report "searched no directories (empty PATH)", naming a
+                # cause that is not this one: the PATH was fine, it was simply
+                # never consulted.
+                logger.warning(
+                    "Dropping MCP server %r: command not found: %s",
+                    name,
+                    spec.get("command", ""),
+                )
             logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers
 

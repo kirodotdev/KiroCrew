@@ -101,3 +101,148 @@ def test_probe_warning_repeats_are_still_demoted(caplog):
         caplog.clear()
         mcp_discovery._warn_unresolvable_once("srv", "ghost", BASE_PATH)
         assert "command not found" not in caplog.text  # repeat demoted to DEBUG
+
+
+# ── a directory-qualified command searched no directories at all ──────────────
+#
+# ``shutil.which`` looks a command carrying a directory component up DIRECTLY
+# and never consults ``path``: its first branch is
+# ``if os.path.dirname(cmd): ... return None``. So an absolute (or ``./``
+# relative) command that fails to resolve was checked at exactly ONE location.
+# Reporting the spec's PATH for it inverts the distinction these messages exist
+# to draw -- "this exact path does not exist" is rendered as "not found in any
+# of the N directories searched", pointing the reader at a search that never
+# happened.
+
+
+ABSENT_ABS = _abs("opt", "vendor", "bin", "ghost")
+
+
+def test_shutil_which_really_ignores_path_for_a_qualified_command():
+    """The premise, pinned. Everything below rests on it."""
+    import shutil
+
+    assert os.path.dirname(ABSENT_ABS)
+    assert shutil.which(ABSENT_ABS, path=BASE_PATH) is None
+
+
+def test_probe_error_for_an_absolute_command_claims_no_directories():
+    from kiro_crew.mcp_discovery import _unresolved_error
+
+    assert _unresolved_error(ABSENT_ABS, "") == "command not found: %s" % ABSENT_ABS
+    assert "directories" not in _unresolved_error(ABSENT_ABS, "")
+
+
+# ── the dashboard probe ───────────────────────────────────────────────────────
+
+
+def _probe(monkeypatch, command: str):
+    """Drive the real ``probe_server`` and capture what it reported.
+
+    Asserted at the reporting boundary rather than on an internal local: the
+    defect is what the reader is told, and ``probe_server`` reaches the same two
+    helpers from two different exits.
+    """
+    import asyncio
+
+    from kiro_crew import mcp_discovery
+
+    seen: list[tuple[str, str]] = []
+
+    def _record(name, cmd, search_path=""):
+        seen.append((cmd, search_path))
+
+    monkeypatch.setattr(mcp_discovery, "_warn_unresolvable_once", _record)
+    monkeypatch.setenv("PATH", BASE_PATH)
+    server = mcp_discovery.McpServerInfo(name="vendor", command=command)
+    result = asyncio.run(mcp_discovery.probe_server(server))
+    return result, seen
+
+
+def test_probe_reports_no_search_path_for_a_directory_qualified_command(monkeypatch):
+    result, seen = _probe(monkeypatch, ABSENT_ABS)
+
+    assert result.status == "error"
+    assert seen, "the probe never reported the unresolvable command"
+    command, search_path = seen[-1]
+    assert command == ABSENT_ABS
+    assert search_path == "", (
+        "the probe told the reader it searched %r for a command shutil.which "
+        "only ever checked at one location" % (search_path,)
+    )
+    assert "directories" not in (
+        result.error or ""
+    ), "the dashboard string still claims a directory search: %r" % (result.error,)
+
+
+def test_probe_still_reports_the_search_path_for_a_bare_command(monkeypatch):
+    """Preservation: #4954's behaviour is untouched where a search DID happen."""
+    result, seen = _probe(monkeypatch, "ghost-bare-command")
+
+    assert result.status == "error"
+    assert seen
+    _command, search_path = seen[-1]
+    assert search_path, "a bare command must still name what it searched"
+    assert "directories" in (result.error or "")
+
+
+# ── the agent config rebuild ──────────────────────────────────────────────────
+
+
+def _rebuild_with_command(tmp_path, monkeypatch, command: str, caplog):
+    """Run the real ``rebuild_agent_config`` over one unresolvable server."""
+    import json
+
+    from kiro_crew.agent import rebuild_agent_config
+
+    agent_dir = tmp_path / "agents"
+    agent_dir.mkdir()
+    (agent_dir / "defaults.json").write_text(json.dumps({"name": "kirocrew"}))
+    (agent_dir / "prompt.md").write_text("prompt")
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+
+    kiro_dir = tmp_path / ".kiro" / "agents"
+    kiro_dir.mkdir(parents=True)
+    settings_dir = tmp_path / ".kiro" / "settings"
+    settings_dir.mkdir(parents=True)
+    (settings_dir / "mcp.json").write_text(
+        json.dumps({"mcpServers": {"vendor": {"command": command, "env": {"PATH": BASE_PATH}}}})
+    )
+
+    monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", kiro_dir)
+    monkeypatch.setattr("kiro_crew.agent._KIRO_MCP_JSON", settings_dir / "mcp.json")
+    monkeypatch.setattr("kiro_crew.agent._CC_MCP_JSON", tmp_path / "nonexistent_cc.json")
+    monkeypatch.setattr("kiro_crew.agent._KIROCREW_BIN", "/usr/bin/kirocrew")
+
+    with caplog.at_level("WARNING"):
+        rebuild_agent_config()
+    return caplog.text
+
+
+def test_rebuild_drop_warning_names_no_directories_for_an_absolute_command(
+    tmp_path, monkeypatch, caplog
+):
+    text = _rebuild_with_command(tmp_path, monkeypatch, ABSENT_ABS, caplog)
+
+    assert "command not found" in text, "the server was not reported as dropped"
+    assert USR_BIN not in text, (
+        "the drop warning named a directory that shutil.which never consulted "
+        "for a command carrying a directory component"
+    )
+    assert "directories searched" not in text
+    # And not the wrong cause either: the PATH was fine, it was never consulted.
+    assert (
+        "empty PATH" not in text
+    ), "the warning blamed an empty PATH for a command that was never " "PATH-searched: %r" % (
+        text,
+    )
+
+
+def test_rebuild_drop_warning_still_names_directories_for_a_bare_command(
+    tmp_path, monkeypatch, caplog
+):
+    """Preservation: the whole point of #4954 survives for bare commands."""
+    text = _rebuild_with_command(tmp_path, monkeypatch, "ghost-bare-command", caplog)
+
+    assert "command not found" in text
+    assert USR_BIN in text, "a bare command must still name the directories searched"
