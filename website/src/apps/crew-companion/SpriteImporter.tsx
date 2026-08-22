@@ -4,7 +4,7 @@
 import { FolderOpen, Plus } from 'lucide-react'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { REQUIRED_STATES, OPTIONAL_STATES, STATUS_STATES, BREATHING_STATES, RANDOM_STATES, type PackMeta } from './appearanceTypes'
-import { SpriteRenderer } from './SpriteRenderer'
+import { SpriteRenderer } from '../shared/SpriteRenderer'
 import { PackInfoHeader } from './PackInfoHeader'
 import { SaveDialog } from './SaveDialog'
 import { EditorFooter } from './EditorFooter'
