@@ -154,7 +154,7 @@ describe("first-download installer design contract", () => {
     assert.equal(pkg.build.nsis.runAfterFinish, true);
   });
 
-  it("reuses the shipped logo and opening-animation ghost artwork", () => {
+  it("reuses shipped artwork without adding non-localized installer copy", () => {
     const normalize = text => text.replaceAll(",", " ").replace(/\s+/g, " ");
     const loading = normalize(fs.readFileSync(path.join(ROOT, "loading.html"), "utf8"));
     const siteLogo = normalize(
@@ -178,6 +178,9 @@ describe("first-download installer design contract", () => {
     assert.ok(siteLogo.includes(logoGhost));
     assert.ok(sidebarSource.includes(logoGhost));
     assert.ok(headerSource.includes(logoGhost));
+    assert.match(sidebarSource, /fill="#c6a0ff"/i);
+    assert.match(headerSource, /fill="#fbfafd"/i);
+    assert.doesNotMatch(`${sidebarSource}\n${headerSource}`, /Quick setup/i);
   });
 
   it("applies the branded layout again after signing and stapling", () => {
