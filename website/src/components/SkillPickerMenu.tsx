@@ -24,6 +24,10 @@ interface Props {
   query: string
   anchorRef: React.RefObject<HTMLElement | null>
   open: boolean
+  // Active agent (session slot's `.agent`, e.g. "default" or a custom
+  // template's name). Scopes the list to that agent's own skill:// mapping
+  // when it has one; omit/undefined falls back to the unfiltered catalog.
+  agent?: string
   // Receives the leaf token to insert (e.g. "oncall-handover") plus the full key.
   onSelect: (info: { leaf: string; key: string }) => void
   onClose: () => void
@@ -35,18 +39,20 @@ function leafOf(key: string): string {
   return i === -1 ? key : key.slice(i + 1)
 }
 
-export default function SkillPickerMenu({ query, anchorRef, open, onSelect, onClose }: Props) {
+export default function SkillPickerMenu({ query, anchorRef, open, agent, onSelect, onClose }: Props) {
   const [results, setResults] = useState<SkillItem[]>([])
   const resultsRef = useRef<SkillItem[]>([])
 
-  // Shared skills cache. Keyed ['skills'] so it dedupes with SkillsTab's query
-  // and any focus-prefetch in ChatInput — the menu's first open is warm if the
-  // list was already fetched. staleTime is long because skills change rarely
-  // (added via setup/AIM sync). `enabled: open` keeps the menu lazy: no fetch
-  // until it's actually shown (the focus-prefetch warms the cache separately).
+  // Shared skills cache, scoped by agent. The unscoped key (['skills'], no
+  // agent) still dedupes with SkillsTab's query and any agent-less
+  // focus-prefetch in ChatInput; an active custom agent gets its own cache
+  // entry (['skills', agent]) since its listing is a real subset, not the
+  // same data. staleTime is long because skills change rarely (added via
+  // setup/AIM sync). `enabled: open` keeps the menu lazy: no fetch until
+  // it's actually shown (the focus-prefetch warms the cache separately).
   const { data, isLoading } = useQuery<SkillItem[]>({
-    queryKey: ['skills'],
-    queryFn: () => api.skills(),
+    queryKey: agent ? ['skills', agent] : ['skills'],
+    queryFn: () => api.skills(agent),
     enabled: open,
     staleTime: 5 * 60 * 1000, // 5 min
   })

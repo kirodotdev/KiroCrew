@@ -19,8 +19,9 @@ const SKILLS = [
 
 /** Harness: gives the menu a real anchored element (it reads getBoundingClientRect)
  *  and a QueryClientProvider (the menu reads the shared ['skills'] cache). */
-function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn() }: {
-  query: string; open: boolean; onSelect?: (i: { leaf: string; key: string }) => void; onClose?: () => void
+function Harness({ query, open, agent, onSelect = vi.fn(), onClose = vi.fn() }: {
+  query: string; open: boolean; agent?: string
+  onSelect?: (i: { leaf: string; key: string }) => void; onClose?: () => void
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -28,7 +29,7 @@ function Harness({ query, open, onSelect = vi.fn(), onClose = vi.fn() }: {
     <QueryClientProvider client={qc}>
       <div>
         <div ref={ref} data-testid="anchor">anchor</div>
-        <SkillPickerMenu query={query} anchorRef={ref} open={open} onSelect={onSelect} onClose={onClose} />
+        <SkillPickerMenu query={query} anchorRef={ref} open={open} agent={agent} onSelect={onSelect} onClose={onClose} />
       </div>
     </QueryClientProvider>
   )
@@ -51,6 +52,16 @@ describe('SkillPickerMenu', () => {
     expect(await screen.findByText('$oncall-handover')).toBeInTheDocument()
     expect(screen.getByText('$ticket-pull')).toBeInTheDocument()
     expect(screen.getByText('$grill')).toBeInTheDocument()
+  })
+
+  it('forwards the active agent to api.skills() and uses an agent-scoped cache key', async () => {
+    render(<Harness query="" open agent="custom-template" />)
+    await waitFor(() => expect(mockApi.skills).toHaveBeenLastCalledWith('custom-template'))
+  })
+
+  it('omits the agent argument when none is active', async () => {
+    render(<Harness query="" open />)
+    await waitFor(() => expect(mockApi.skills).toHaveBeenLastCalledWith(undefined))
   })
 
   it('filters by leaf-name substring', async () => {

@@ -886,6 +886,94 @@ class TestEndpoints:
             assert "entries" in (await resp2.json())
 
 
+class TestApiSkillsAgentScoping:
+    """#3348: GET /api/skills?agent=<name> scopes the listing to that
+    agent's own skill:// mapping, instead of the chat `$` picker always
+    showing the unfiltered global catalog regardless of the active agent
+    template."""
+
+    @staticmethod
+    def _state() -> MagicMock:
+        from kiro_crew.skills import SkillsLoader
+
+        # A real SkillsLoader, not a bare MagicMock: `_get_skills` treats
+        # `hasattr(state, "_standalone_skills")` as "already built", but a
+        # MagicMock auto-vivifies ANY attribute access as truthy, so an
+        # unseeded MagicMock state silently returns a mock in place of the
+        # loader — collect_skills_blocking then serializes that mock into
+        # the response and 500s. Matches the pattern already used above for
+        # api_skill_detail's fake state.
+        state = MagicMock(_slots={}, context_builder=None)
+        state._standalone_skills = SkillsLoader(install_builtins=False)
+        return state
+
+    @pytest.mark.asyncio
+    async def test_agent_with_an_explicit_mapping_sees_only_its_own_skills(self, fake_home):
+        _write_skill(fake_home / ".kiro" / "skills", "alpha")
+        _write_skill(fake_home / ".kiro" / "skills", "beta")
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "custom.json").write_text(json.dumps({
+            "name": "custom",
+            "resources": ["skill://~/.kiro/skills/alpha/SKILL.md"],
+        }))
+
+        async with TestClient(TestServer(_make_app(self._state()))) as client:
+            resp = await client.get("/api/skills", params={"agent": "custom"})
+            assert resp.status == 200
+            payload = await resp.json()
+        assert {s["name"] for s in payload} == {"alpha"}
+
+    @pytest.mark.asyncio
+    async def test_agent_without_an_explicit_mapping_sees_everything(self, fake_home):
+        """An agent with NO skill:// resources of its own (empty
+        ``agent_skill_globs``) must keep the unfiltered, legacy
+        all-or-nothing listing — the majority of agents that never
+        customized their skill set must not lose access just because a
+        DIFFERENT, customized agent exists on the same install."""
+        _write_skill(fake_home / ".kiro" / "skills", "alpha")
+        _write_skill(fake_home / ".kiro" / "skills", "beta")
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "plain.json").write_text(json.dumps({"name": "plain"}))
+        (agents_dir / "custom.json").write_text(json.dumps({
+            "name": "custom",
+            "resources": ["skill://~/.kiro/skills/alpha/SKILL.md"],
+        }))
+
+        async with TestClient(TestServer(_make_app(self._state()))) as client:
+            resp = await client.get("/api/skills", params={"agent": "plain"})
+            assert resp.status == 200
+            payload = await resp.json()
+        assert {s["name"] for s in payload} == {"alpha", "beta"}
+
+    @pytest.mark.asyncio
+    async def test_unknown_agent_name_sees_everything(self, fake_home):
+        _write_skill(fake_home / ".kiro" / "skills", "alpha")
+        async with TestClient(TestServer(_make_app(self._state()))) as client:
+            resp = await client.get("/api/skills", params={"agent": "does-not-exist"})
+            assert resp.status == 200
+            payload = await resp.json()
+        assert {s["name"] for s in payload} == {"alpha"}
+
+    @pytest.mark.asyncio
+    async def test_no_agent_param_is_unfiltered_as_before(self, fake_home):
+        _write_skill(fake_home / ".kiro" / "skills", "alpha")
+        _write_skill(fake_home / ".kiro" / "skills", "beta")
+        agents_dir = fake_home / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "custom.json").write_text(json.dumps({
+            "name": "custom",
+            "resources": ["skill://~/.kiro/skills/alpha/SKILL.md"],
+        }))
+
+        async with TestClient(TestServer(_make_app(self._state()))) as client:
+            resp = await client.get("/api/skills")
+            assert resp.status == 200
+            payload = await resp.json()
+        assert {s["name"] for s in payload} == {"alpha", "beta"}
+
+
 class TestSessionScopedSkillResolution:
     """#2457: kiro-workspace/ resolution is scoped to the requesting chat slot.
 
