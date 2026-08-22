@@ -1074,7 +1074,7 @@ class SubagentInfo:
     # whether the spawn was allowed, and the child's ongoing tool calls run
     # unconstrained by the app scope.
     app: str = ""
-    approval_mode: str = ""  # "auto" to skip tool approvals in the subagent session
+    approval_mode: str = ""  # "auto": skip spawn gate + auto-approve tools; "spawn": skip spawn gate but keep tools approval-gated
     silent: bool = False  # suppress completion notification (dashboard + Slack)
     turns: int = 0
     last_tool: str = ""
@@ -3097,8 +3097,11 @@ class SubagentManager:
                 set. Enables cwd-relative resource globs (``AGENTS.md``,
                 ``.kiro/steering``, ``CLAUDE.md``) to resolve correctly.
             approval_mode (str | None): "auto" to skip spawn gate and
-                set session-level auto-approve.  Only honored from
-                authenticated internal callers (X-Internal-Secret).
+                set session-level auto-approve.  "spawn" also skips the spawn
+                gate but keeps the subagent's tool calls approval-gated (no
+                auto, no trusted-parent/yolo/global inheritance) -- for an
+                owner-authorized spawn that acts on untrusted input.  Only
+                honored from authenticated internal callers (X-Internal-Secret).
             silent (bool): Suppress completion notifications.
 
         Returns:
@@ -3476,7 +3479,9 @@ class SubagentManager:
         if self._is_yolo and self._is_yolo():
             self._tasks[agent_id] = asyncio.create_task(self._run(info))
             self._log_spawned(info)
-        elif approval_mode == "auto":
+        elif approval_mode in ("auto", "spawn"):
+            # "spawn" pre-authorizes the spawn like "auto", but the tool-approval
+            # policy in _run_inner() deliberately stays non-auto (see deny_auto_inherit).
             self._tasks[agent_id] = asyncio.create_task(self._run(info))
             self._log_spawned(info)
             sel().log_tool_invocation(
@@ -3484,7 +3489,7 @@ class SubagentManager:
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="auto_approved_spawn",
-                metadata={"subagent_id": agent_id, "reason": "approval_mode_auto"},
+                metadata={"subagent_id": agent_id, "reason": f"approval_mode_{approval_mode}"},
             )
         elif parent_trusted:
             self._tasks[agent_id] = asyncio.create_task(self._run(info))
@@ -5270,6 +5275,43 @@ class SubagentManager:
         info.last_activity = info._exec_started
         # Inherit approval policy from parent session; yolo/trust overrides
         parent_policy = self._sessions.get_approval_policy(info.parent_session_key)
+        # A subagent spawned with approval_mode="spawn" is pre-authorized to run but
+        # must NEVER auto-approve its own tool calls: it acts on untrusted input, so a
+        # trusted parent's (or yolo/global/config/hook) auto policy is deliberately NOT
+        # inherited -- its tool calls route through the normal approval path.
+        deny_auto_inherit = info.approval_mode == "spawn"
+        if deny_auto_inherit:
+            # Suppressing an auto grant is a permission decision, so audit the single
+            # source that would otherwise have granted auto -- parent, yolo, global
+            # config, or the auto_approve_subagent_tools hook. The grant branches below
+            # are mutually exclusive (first match wins) and stay guarded by
+            # ``not deny_auto_inherit``, so none of them fires here; this is the one
+            # place the suppression is recorded (backend-security-controls).
+            _denied_auto = ""
+            if parent_policy == "auto":
+                _denied_auto = "parent"
+                parent_policy = ""
+            elif self._is_yolo and self._is_yolo():
+                _denied_auto = "yolo"
+            elif self._global_approval_mode == "auto" and (
+                not info.parent_session_key
+                or self._sessions.has_session(info.parent_session_key) is False
+            ):
+                _denied_auto = "global_config"
+            elif (
+                self._ctx_builder
+                and self._ctx_builder.hooks
+                and self._ctx_builder.hooks.auto_approve_subagent_tools is True
+            ):
+                _denied_auto = "auto_approve_subagent_tools"
+            if _denied_auto:
+                sel().log_api_access(
+                    caller=info.parent_session_key or f"subagent:{info.id}",
+                    operation="subagent.deny_auto_inherit",
+                    outcome="denied",
+                    source="subagent",
+                    resources=f"subagent_id={info.id},source={_denied_auto}",
+                )
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
         if not parent_policy and info.approval_mode == "auto":
             parent_policy = "auto"
@@ -5280,7 +5322,7 @@ class SubagentManager:
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
-        if not parent_policy and self._is_yolo and self._is_yolo():
+        if not parent_policy and not deny_auto_inherit and self._is_yolo and self._is_yolo():
             parent_policy = "auto"
             sel().log_api_access(
                 caller=info.parent_session_key,
@@ -5289,7 +5331,7 @@ class SubagentManager:
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
-        if not parent_policy and self._global_approval_mode == "auto":
+        if not parent_policy and not deny_auto_inherit and self._global_approval_mode == "auto":
             # Apply global config as fallback only when parent is absent or
             # confirmed garbage-collected (no longer in session store).
             # If parent session still exists but returned no policy, deny by
@@ -5319,7 +5361,7 @@ class SubagentManager:
                 )
         # auto_approve_subagent_tools auto-approves tool calls inside
         # subagents (separate from the spawn gate, deny-by-default).
-        if not parent_policy and self._ctx_builder and self._ctx_builder.hooks:
+        if not parent_policy and not deny_auto_inherit and self._ctx_builder and self._ctx_builder.hooks:
             if self._ctx_builder.hooks.auto_approve_subagent_tools is True:
                 parent_policy = "auto"
                 sel().log_api_access(
@@ -5864,16 +5906,31 @@ class SubagentManager:
                         error="child_origin_no_command_context",
                     )
                     continue
+                # A spawn-mode subagent runs on untrusted input, so it must not honour a
+                # hook auto-approval (deny_auto_inherit); otherwise a tool matching
+                # auto_approve_tools would execute without approval.
                 if tool_result.action == TOOL_AUTO_APPROVE:
-                    await self._approve_and_log(
-                        client,
-                        event.request_id,
-                        session_key,
-                        event,
-                        metadata={"subagent_id": info.id, "reason": "hook_auto_approve"},
-                        info=info,
-                    )
-                    continue
+                    if deny_auto_inherit:
+                        # Suppressing the hook's auto-grant is a permission override, so
+                        # audit the denial (backend-security-controls); then fall through to
+                        # the interactive callback / deny-by-default below.
+                        sel().log_api_access(
+                            caller=info.parent_session_key or f"subagent:{info.id}",
+                            operation="subagent.hook_auto_approve_suppressed",
+                            outcome="denied",
+                            source="subagent",
+                            resources=f"subagent_id={info.id},tool={_redact(event.title or '')}",
+                        )
+                    else:
+                        await self._approve_and_log(
+                            client,
+                            event.request_id,
+                            session_key,
+                            event,
+                            metadata={"subagent_id": info.id, "reason": "hook_auto_approve"},
+                            info=info,
+                        )
+                        continue
                 if parent_policy == "auto":
                     await self._approve_and_log(
                         client,

@@ -12,6 +12,7 @@ from __future__ import annotations
 from aiohttp import web
 
 from kiro_crew.dashboard import handlers
+from kiro_crew.dashboard.handlers.create_skill import api_create_skill_from_session
 from kiro_crew.dashboard.handlers.discover import (
     api_skills_discover,
     api_skills_discover_install,
@@ -46,6 +47,10 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/skills/-/pending/{slug}/dismiss", handlers.api_skill_pending_dismiss)
     app.router.add_post("/api/skills/-/pin", handlers.api_skill_pin)
     app.router.add_post("/api/skills/-/inject-on-trigger", handlers.api_skill_inject_on_trigger)
+    # Author a skill from the current chat session (manual "Create skill"
+    # button).  A ``/-/`` sentinel POST, registered before the catch-all
+    # {name:.+} so aiohttp resolves it first.
+    app.router.add_post("/api/skills/-/from-session", api_create_skill_from_session)
     # Skill context budget (read-only cost analysis with alias folding).
     app.router.add_get("/api/skills/-/budget", handlers.api_skills_budget)
     app.router.add_get("/api/skills/{name:.+}/-/tree", handlers.api_skill_tree)

@@ -7667,7 +7667,11 @@
         "rendered_view": "[Ŕèñðèŕèð ṽìèẁ ············]",
         "switch_to_raw_markdown_view": "[Şẁìţçĥ ţø ŕàẁ ɱàŕķðøẁñ ṽìèẁ ···················]",
         "switch_to_rendered_view": "[Şẁìţçĥ ţø ŕèñðèŕèð ṽìèẁ ················]",
-        "use_as_plan_count": "[Ùşè àş Þĺàñ ({{count}} şţèþş) ··················]"
+        "use_as_plan_count": "[Ùşè àş Þĺàñ ({{count}} şţèþş) ··················]",
+        "create_skill": "[Çŕèàţè şķìĺĺ ···········]",
+        "create_skill_hint": "[Ðèşçŕìƀè ţĥè şķìĺĺ ţø çŕèàţè ƒŕøɱ ţĥìş çĥàţ. ······················]",
+        "create_skill_placeholder": "[Şķìĺĺ þùŕþøşè ············]",
+        "create_skill_submit": "[Çŕèàţè ·········]"
       },
       "chatFooter": {
         "compacting": "[Çøɱþàçţìñğ… ··········]",
@@ -8164,7 +8168,8 @@
       "upload_failed_error": "[Ùþĺøàð ƒàìĺèð: {{error}} ··············]",
       "worktree_creation_returned_no_path": "[Ẁøŕķţŕèè çŕèàţìøñ ŕèţùŕñèð ñø þàţĥ ·················]",
       "loading_earlier_messages": "[Ĺøàðìñğ èàŕĺìèŕ ɱèşşàğèş… ··················]",
-      "send_failed_with_error": "[Şèñð ƒàìĺèð: {{error}} ············]"
+      "send_failed_with_error": "[Şèñð ƒàìĺèð: {{error}} ············]",
+      "create_skill_failed_error": "[Çøùĺð ñøţ şţàŕţ şķìĺĺ çŕèàţìøñ: {{error}} ················]"
     },
     "chatSidebar": {
       "add_column_after_this_one": "[Àðð çøĺùɱñ àƒţèŕ ţĥìş øñè ··················]",

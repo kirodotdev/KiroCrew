@@ -378,6 +378,11 @@ export interface DiscoverInstallResult {
   file_count: number
 }
 
+export interface CreateSkillResult {
+  id: string
+  status: string
+}
+
 /** A server result from the multi-provider MCP discover endpoint. */
 export interface DiscoveredMcpServer {
   /** Provider-specific id (official: reverse-DNS name; capability: backend-defined id). */

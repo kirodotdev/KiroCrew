@@ -122,6 +122,13 @@ _ITER_CACHE_TTL_SECS = 60.0
 # hand-authored skills.  Final path: ``~/.kiro/crew/skills/auto/<name>/SKILL.md``.
 AUTO_SKILL_NAMESPACE = "auto"
 
+# Namespace for user-triggered ("create skill") captures — the manual
+# counterpart to the auto namespace. A candidate marks itself manual via
+# ``namespace: "manual"`` in ``.meta.json`` and is promoted to ``manual/<slug>``
+# on approval, so a deliberate capture is never filed as, or archived like, an
+# auto-generated one.
+MANUAL_SKILL_NAMESPACE = "manual"
+
 # Archive area for retired auto-skills. A dot-prefixed dir so it is pruned from
 # skill discovery (``_iter_skill_files``) — archived skills never trigger, but
 # stay on disk and are restorable. Layout: ``auto/.archive/<slug>/SKILL.md``.
@@ -3284,7 +3291,10 @@ class SkillsLoader:
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
             return None
-        name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
+        namespace = self._read_pending_meta(slug).get("namespace")
+        if namespace not in (AUTO_SKILL_NAMESPACE, MANUAL_SKILL_NAMESPACE):
+            namespace = AUTO_SKILL_NAMESPACE
+        name = f"{namespace}/{slug}"
         dest = self._dir / name
         if dest.exists():
             logger.warning("Cannot approve %s: a live skill already exists", name)

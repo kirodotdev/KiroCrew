@@ -7780,7 +7780,11 @@
         "turn_took_credits_cost": "टर्न में {{elapsed}} लगे और {{credits}} क्रेडिट खर्च हुए ({{cost}} API लागत)",
         "use_as_plan_count": "योजना के रूप में उपयोग करें ({{count}} चरण)",
         "pin_message": "संदेश पिन करें",
-        "unpin_message": "संदेश अनपिन करें"
+        "unpin_message": "संदेश अनपिन करें",
+        "create_skill": "स्किल बनाएँ",
+        "create_skill_hint": "इस चैट से बनाई जाने वाली स्किल का वर्णन करें।",
+        "create_skill_placeholder": "स्किल का उद्देश्य",
+        "create_skill_submit": "बनाएँ"
       },
       "chatFooter": {
         "compacting": "संक्षिप्त किया जा रहा है…",
@@ -8277,7 +8281,8 @@
       "what_can_i_do_for_you": "मैं आपके लिए क्या कर सकता हूँ?",
       "worktree_creation_returned_no_path": "वर्कट्री बनाने पर कोई पथ नहीं मिला",
       "loading_earlier_messages": "पुराने संदेश लोड हो रहे हैं…",
-      "send_failed_with_error": "भेजना विफल: {{error}}"
+      "send_failed_with_error": "भेजना विफल: {{error}}",
+      "create_skill_failed_error": "स्किल निर्माण शुरू नहीं किया जा सका: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 छोड़ा गया — अभी चुना हुआ)",

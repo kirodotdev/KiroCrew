@@ -1953,6 +1953,7 @@ export const api = {
     fetch('/api/skills/' + name.split('/').map(encodeURIComponent).join('/') +
           '/-/file?path=' + encodeURIComponent(relPath)).then(j),
   createSkill: (name: string, content: string) => post('/api/skills', { name, content }).then(j),
+  createSkillFromSession: (slot: string, purpose?: string) => post('/api/skills/-/from-session', { session_key: slot, purpose: purpose ?? '' }, `dashboard:${slot}`).then(j) as Promise<import('../types').CreateSkillResult>,
   updateSkill: (name: string, content: string) => put('/api/skills/' + name.split('/').map(encodeURIComponent).join('/'), { content }).then(j),
   deleteSkill: (name: string) => del('/api/skills/' + name.split('/').map(encodeURIComponent).join('/')).then(j),
 

@@ -1442,7 +1442,20 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     Reads X-Session-Key header (set by browser and MCP subprocesses).
     Returns True if the session should be blocked from memory operations.
     """
-    sk = _read_session_key(request)
+    return _session_key_is_restricted(state, _read_session_key(request))
+
+
+def _session_key_is_restricted(state: DashboardState, sk: str) -> bool:
+    """Canonical restriction check for an EXPLICIT session key.
+
+    The key-keyed core of :func:`_is_restricted_session`, for a handler that
+    targets a session OTHER than the request's own (e.g. authoring a skill from a
+    chosen session). It gates on that session's canonical state -- including a
+    linked channel session: a Slack thread set to ``!incognito`` carries its
+    restriction on the ``SessionMap`` under the ``slack:<ts>`` key, NOT on the
+    dashboard slot's ``memory_mode``, so a slot-mode check alone reads a private
+    thread as unrestricted.
+    """
     if not sk:
         return False
     if sk == "dashboard:ui":

@@ -39,6 +39,10 @@ export interface SessionActionsMenuProps {
   /** Extra items rendered in the top "informational" group (header-only today:
    *  the MCP-servers submenu). Generic so the shared menu stays surface-agnostic. */
   infoSlots?: React.ReactNode[]
+  /** Extra items rendered right after the Autopilot/Chat toggle in the tab-modifier
+   *  group (header-only today: the "Create skill" action). Generic so the shared
+   *  menu stays surface-agnostic. */
+  modeSlots?: React.ReactNode[]
   /** Called after a colour pick; lets a caller that controls its own menu close it (the header does). */
   onColorPicked?: () => void
 }
@@ -74,13 +78,13 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * Canonical order, five groups (each renders only if it has surviving items,
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
- *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · Move to folder ▸ · Tags…
+ *   [tab modifiers]  Rename · Mark read/unread · Pin · Switch to Autopilot/Chat · [modeSlots] · Move to folder ▸ · Tags…
  *   [nav / access]   Reveal in sidebar (header only) · Copy link · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
 export default function SessionActionsMenu({
-  variant, slotKey, mode, onReveal, onRename, infoSlots, onColorPicked,
+  variant, slotKey, mode, onReveal, onRename, infoSlots, modeSlots, onColorPicked,
 }: SessionActionsMenuProps) {
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
@@ -142,6 +146,8 @@ export default function SessionActionsMenu({
       <Item key="mode" onSelect={() => toggleMode(slotKey)}>
         <Zap size={13} className="shrink-0 text-muted" /> {slot?.mode === 'orchestrator' ? i18nT('components.sessionActionsMenu.switch_to_chat') : i18nT('components.sessionActionsMenu.switch_to_autopilot')}
       </Item>,
+      // Caller-injected items directly under the Autopilot/Chat toggle (header "Create skill").
+      ...(modeSlots ?? []),
       folders.length > 0 && (
         <FolderMoveSubmenu
           key="move"

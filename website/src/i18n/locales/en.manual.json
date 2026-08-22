@@ -2751,7 +2751,11 @@
         "rendered_view": "Rendered view",
         "switch_to_raw_markdown_view": "Switch to raw markdown view",
         "switch_to_rendered_view": "Switch to rendered view",
-        "use_as_plan_count": "Use as Plan ({{count}} steps)"
+        "use_as_plan_count": "Use as Plan ({{count}} steps)",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Describe the skill to create from this chat.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create"
       },
       "chatNavPanel": {
         "link": "Link"
@@ -3005,7 +3009,8 @@
       "upload_failed_error": "Upload failed: {{error}}",
       "worktree_creation_returned_no_path": "Worktree creation returned no path",
       "loading_earlier_messages": "Loading earlier messages…",
-      "send_failed_with_error": "Send failed: {{error}}"
+      "send_failed_with_error": "Send failed: {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}"
     },
     "chatSidebar": {
       "default_agent": "Default agent: {{name}}",

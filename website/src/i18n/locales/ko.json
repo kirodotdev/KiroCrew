@@ -7679,7 +7679,11 @@
         "turn_took_credits_cost": "턴에 {{elapsed}} 걸렸고 크레딧 {{credits}}을(를) 사용했습니다(API 비용 {{cost}})",
         "use_as_plan_count": "플랜으로 사용({{count}}단계)",
         "pin_message": "Pin message",
-        "unpin_message": "Unpin message"
+        "unpin_message": "Unpin message",
+        "create_skill": "스킬 만들기",
+        "create_skill_hint": "이 대화에서 만들 스킬을 설명하세요.",
+        "create_skill_placeholder": "스킬 목적",
+        "create_skill_submit": "만들기"
       },
       "chatFooter": {
         "compacting": "압축 중…",
@@ -8172,7 +8176,8 @@
       "what_can_i_do_for_you": "무엇을 도와드릴까요?",
       "worktree_creation_returned_no_path": "워크트리 생성 결과에 경로가 없습니다",
       "loading_earlier_messages": "이전 메시지를 불러오는 중…",
-      "send_failed_with_error": "전송 실패: {{error}}"
+      "send_failed_with_error": "전송 실패: {{error}}",
+      "create_skill_failed_error": "스킬 생성을 시작할 수 없습니다: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1개 건너뜀 — 현재 선택됨)",

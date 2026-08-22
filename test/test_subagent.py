@@ -157,6 +157,116 @@ class TestSpawnWithoutApprovalCallback:
         )
 
     @pytest.mark.asyncio
+    async def test_spawn_mode_does_not_inherit_trusted_parent_auto(self) -> None:
+        """approval_mode="spawn" keeps tools approval-gated even under a trusted parent.
+
+        The authoring subagent (e.g. the Create-skill capture) acts on an untrusted
+        transcript, so it must NOT inherit the parent session's auto policy -- its tool
+        calls route through normal approval instead of auto-approving.
+        """
+        from kiro_crew.subagent import SubagentInfo
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="auto")  # trusted parent
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.hooks.auto_approve_subagent_tools = False
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        info = SubagentInfo(
+            id="spawn01",
+            task="author a skill",
+            parent_session_key="dashboard:chat-1",
+            approval_mode="spawn",
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            await manager._run_inner(info, "subagent:spawn01")
+
+        sessions.get_or_create.assert_awaited_once()
+        approval_policy = sessions.get_or_create.call_args.kwargs.get("approval_policy")
+        assert approval_policy != "auto", (
+            f"spawn-mode subagent must not inherit trusted-parent auto; got {approval_policy!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_spawn_mode_audits_denied_yolo_auto(self) -> None:
+        """A spawn-mode subagent that suppresses a NON-parent auto policy audits the denial.
+
+        backend-security-controls: suppressing an auto grant is a permission decision, so
+        deny_auto_inherit must emit a SEL denial event even when the auto policy would have
+        come from yolo/global/hook rather than a trusted parent.
+        """
+        from kiro_crew.subagent import SubagentInfo
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="")  # no parent auto
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.hooks.auto_approve_subagent_tools = False
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, is_yolo=lambda: True)
+        info = SubagentInfo(
+            id="spawn02",
+            task="author a skill",
+            parent_session_key="dashboard:chat-1",
+            approval_mode="spawn",
+        )
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel") as mock_sel:
+            await manager._run_inner(info, "subagent:spawn02")
+
+        approval_policy = sessions.get_or_create.call_args.kwargs.get("approval_policy")
+        assert approval_policy != "auto"
+        calls = mock_sel.return_value.log_api_access.call_args_list
+        deny = [c for c in calls if c.kwargs.get("operation") == "subagent.deny_auto_inherit"]
+        assert deny, f"expected a deny_auto_inherit SEL event; ops={[c.kwargs.get('operation') for c in calls]}"
+        assert deny[0].kwargs.get("outcome") == "denied"
+        assert "yolo" in deny[0].kwargs.get("resources", "")
+
+    @pytest.mark.asyncio
+    async def test_spawn_mode_suppresses_hook_auto_approve(self) -> None:
+        """A spawn-mode subagent must NOT honour a hook TOOL_AUTO_APPROVE.
+
+        It runs on an untrusted transcript, so a tool matching an auto_approve_tools hook
+        must not auto-execute; with no interactive approver it falls through to
+        deny-by-default rather than the hook's auto-approve.
+        """
+        from kiro_crew.hooks import TOOL_AUTO_APPROVE, ToolHookResult
+        from kiro_crew.providers.base import EVENT_PERMISSION_REQUEST, LLMEvent
+        from kiro_crew.subagent import SubagentInfo
+
+        sessions = _mock_sessions()
+        sessions.get_approval_policy = MagicMock(return_value="")  # no parent auto
+        provider = sessions.get_or_create.return_value[0]
+
+        async def _stream(*_a, **_kw):
+            yield LLMEvent(kind=EVENT_PERMISSION_REQUEST, title="rm -rf /", request_id=7)
+
+        provider.stream = MagicMock(side_effect=lambda *a, **kw: _stream())
+        provider.approve_tool = AsyncMock()
+        provider.reject_tool = AsyncMock()
+
+        ctx = MagicMock()
+        ctx.build_message = MagicMock(return_value=("msg", None))
+        ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
+
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=10)
+        info = SubagentInfo(
+            id="spawn03",
+            task="author a skill",
+            parent_session_key="dashboard:chat-1",
+            approval_mode="spawn",
+        )
+        manager._agents["spawn03"] = info
+
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel") as mock_sel, patch(
+            "kiro_crew.subagent.update_state"
+        ), patch("kiro_crew.subagent.create_agent_folder", MagicMock(), create=True):
+            await manager._run_inner(info, "subagent:spawn03")
+
+        provider.approve_tool.assert_not_awaited()
+        provider.reject_tool.assert_awaited()
+        ops = [c.kwargs.get("operation") for c in mock_sel.return_value.log_api_access.call_args_list]
+        assert "subagent.hook_auto_approve_suppressed" in ops
+
+    @pytest.mark.asyncio
     async def test_spawn_without_callback_yolo_on_executes(self) -> None:
         """Spawn executes when yolo is on even without approval callback."""
         # Arrange

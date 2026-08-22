@@ -7679,7 +7679,11 @@
         "turn_took_credits_cost": "ターンに {{elapsed}} かかり {{credits}} クレジットを使用しました({{cost}} の API コスト)",
         "use_as_plan_count": "プランとして使用({{count}} ステップ)",
         "pin_message": "メッセージをピン留め",
-        "unpin_message": "メッセージのピン留めを解除"
+        "unpin_message": "メッセージのピン留めを解除",
+        "create_skill": "スキルを作成",
+        "create_skill_hint": "このチャットから作成するスキルについて説明してください。",
+        "create_skill_placeholder": "スキルの目的",
+        "create_skill_submit": "作成"
       },
       "chatFooter": {
         "compacting": "コンパクト中…",
@@ -8172,7 +8176,8 @@
       "what_can_i_do_for_you": "何をお手伝いしましょうか？",
       "worktree_creation_returned_no_path": "ワークツリーの作成結果にパスがありません",
       "loading_earlier_messages": "以前のメッセージを読み込み中…",
-      "send_failed_with_error": "送信に失敗しました: {{error}}"
+      "send_failed_with_error": "送信に失敗しました: {{error}}",
+      "create_skill_failed_error": "スキルの作成を開始できませんでした: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 件を除外 — 現在選択中)",

@@ -7982,7 +7982,11 @@
         "turn_took_credits_cost": "Ход занял {{elapsed}} и израсходовал {{credits}} кредитов (стоимость API: {{cost}})",
         "use_as_plan_count": "Использовать как план (шагов: {{count}})",
         "pin_message": "Закрепить сообщение",
-        "unpin_message": "Открепить сообщение"
+        "unpin_message": "Открепить сообщение",
+        "create_skill": "Создать навык",
+        "create_skill_hint": "Опишите навык, который нужно создать из этого чата.",
+        "create_skill_placeholder": "Назначение навыка",
+        "create_skill_submit": "Создать"
       },
       "chatFooter": {
         "compacting": "Сжатие контекста…",
@@ -8487,7 +8491,8 @@
       "what_can_i_do_for_you": "Чем могу помочь?",
       "worktree_creation_returned_no_path": "Создание worktree не вернуло путь",
       "loading_earlier_messages": "Загрузка предыдущих сообщений…",
-      "send_failed_with_error": "Не удалось отправить: {{error}}"
+      "send_failed_with_error": "Не удалось отправить: {{error}}",
+      "create_skill_failed_error": "Не удалось начать создание навыка: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 пропущена — выбрана сейчас)",

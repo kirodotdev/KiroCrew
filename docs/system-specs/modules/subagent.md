@@ -74,6 +74,12 @@ Spawn flow:
    approval with a 2-minute timeout. Timeout or rejection frees the
    concurrency slot.
 
+The caller-supplied `approval_mode` tunes this: `"auto"` skips the spawn gate
+**and** auto-approves the subagent's tools; `"spawn"` skips the spawn gate but
+keeps its tools approval-gated (see the chain below) — for an owner-authorized
+spawn that acts on untrusted input (e.g. the Create-skill capture), so a
+prompt-injected transcript cannot drive unattended tool calls.
+
 ### Tool Approval Cascade
 
 When a subagent's tool call triggers `EVENT_PERMISSION_REQUEST`, approval
@@ -85,10 +91,13 @@ is decided in strict priority order:
 4. **Interactive callback** — `on_tool_approval` (races dashboard + Slack, 2h timeout)
 5. **Deny by default** — none of the above matched → reject
 
+A subagent spawned with `approval_mode="spawn"` (`deny_auto_inherit`) suppresses the auto-approve steps — both the hook `TOOL_AUTO_APPROVE` and `parent_policy == "auto"` — so an untrusted-input authoring subagent's tool calls always fall through to interactive approval or deny-by-default and never auto-execute.
+
 `parent_policy` is resolved once when `_run_inner` starts, using this chain:
 1. Read from parent session via `get_approval_policy(parent_session_key)`
 2. If empty and YOLO mode active → `"auto"`
 3. If still empty **and subagent has no parent session key** → use the cached `KiroCrewConfig.agent.approval_mode` (snapshotted at `SubagentManager` init); if `"auto"` → `"auto"`
+4. **Override:** `approval_mode="spawn"` forces `parent_policy=""` (non-auto) regardless of steps 1–3 — a trusted parent, YOLO, global-config, or `auto_approve_subagent_tools` hook auto policy is deliberately **not** inherited, because the subagent runs on untrusted input. Suppressing that auto grant is a permission decision, so it emits a single `subagent.deny_auto_inherit` SEL event (`outcome="denied"`, with the overridden `source=` in `resources`) — required by `backend-security-controls`.
 
 Step 3 ensures parentless subagents (e.g. cron jobs) respect the user's
 global approval mode instead of falling through to interactive approval.

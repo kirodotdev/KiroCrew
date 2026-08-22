@@ -7881,7 +7881,11 @@
         "turn_took_credits_cost": "Le tour a pris {{elapsed}} et consommé {{credits}} crédits ({{cost}} de coût API)",
         "use_as_plan_count": "Utiliser comme plan ({{count}} étapes)",
         "pin_message": "Épingler le message",
-        "unpin_message": "Désépingler le message"
+        "unpin_message": "Désépingler le message",
+        "create_skill": "Create skill",
+        "create_skill_hint": "Décrivez la compétence à créer à partir de cette conversation.",
+        "create_skill_placeholder": "Skill purpose",
+        "create_skill_submit": "Create"
       },
       "chatFooter": {
         "compacting": "Compactage…",
@@ -8382,7 +8386,8 @@
       "what_can_i_do_for_you": "Que puis-je faire pour vous ?",
       "worktree_creation_returned_no_path": "La création du worktree n’a renvoyé aucun chemin",
       "loading_earlier_messages": "Chargement des messages précédents…",
-      "send_failed_with_error": "Échec de l'envoi : {{error}}"
+      "send_failed_with_error": "Échec de l'envoi : {{error}}",
+      "create_skill_failed_error": "Could not start skill creation: {{error}}"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 ignorée — actuellement sélectionnée)",
