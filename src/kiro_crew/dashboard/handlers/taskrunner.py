@@ -12,7 +12,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
-from kiro_crew.task_planner import plan_to_yaml
+from kiro_crew.task_planner import parse_spec_approval_mode, plan_to_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +21,47 @@ def _sel():
     """Late-binding _sel() for test monkeypatch compatibility."""
     import kiro_crew.dashboard.handlers as _pkg  # noqa: F811
     return _pkg.sel()
+
+
+# Chars scanned for the approval directive. Bounds the read so a huge spec never
+# loads into memory just to check the top-of-file directive.
+_SPEC_APPROVAL_READ_CHARS = 4000
+
+
+def _approval_head(text: str) -> str:
+    """Truncation-safe approval head of a spec ALREADY IN MEMORY. Same boundary
+    rule as :func:`_read_spec_head`, but applied to bytes we have already read, so
+    the SAME bytes back BOTH the approval decision and the frozen execution
+    snapshot — closing the read/execute TOCTOU (a file edited between an approval
+    read and a later execution read could run different tasks under a stale
+    auto-grant, GPT review PR #2129 B10)."""
+    if len(text) <= _SPEC_APPROVAL_READ_CHARS:
+        return text
+    chunk = text[: _SPEC_APPROVAL_READ_CHARS + 1]
+    nl = chunk.rfind("\n")
+    return chunk[: nl + 1] if nl != -1 else ""
+
+
+def _read_spec_head(spec_path: str) -> str:
+    """Read the top of a spec for the approval directive, WITHOUT letting the
+    truncation boundary forge a directive.
+
+    A plain ``.read(N)`` can slice a line mid-content — e.g. a file whose Nth
+    char lands inside ``approval: auto is NOT enabled`` yields the prefix
+    ``...approval: auto`` and the parser would read it as a directive. To prevent
+    that we read one EXTRA char: if more content exists past the window (the read
+    was truncated), the final line is incomplete, so we drop everything after the
+    last newline. A single-line file that fits entirely (no truncation) is kept
+    as-is. Deny-by-default at the read boundary, upstream of the parser.
+    """
+    with Path(spec_path).open(encoding="utf-8") as fh:
+        chunk = fh.read(_SPEC_APPROVAL_READ_CHARS + 1)
+    if len(chunk) <= _SPEC_APPROVAL_READ_CHARS:
+        return chunk  # whole head fit — no truncation, nothing to discard
+    # Truncated: the last line is partial. Keep only through the last newline so
+    # a cut-off directive line cannot be read as complete.
+    nl = chunk.rfind("\n")
+    return chunk[: nl + 1] if nl != -1 else ""
 
 
 async def _gate_auto_approve(
@@ -152,17 +193,45 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             return web.json_response({"error": "access denied"}, status=403)
         spec_path = str(resolved)
 
+    # Spec text used ONLY to read a declared approval mode (see below). Captured
+    # for the inline case here; for a file path it is read as a bounded prefix.
+    spec_text_for_approval = ""
+
+    # ``_full_spec`` holds the exact bytes an approval decision is based on, so a
+    # granted auto-approval can be pinned to an immutable snapshot of them (B10).
+    # None means "already an immutable snapshot" (the inline path writes a fresh
+    # work-dir file), so no re-snapshot is needed for that case.
+    _full_spec = None
+
     # Handle inline spec content
     if spec_path.startswith("__inline__:"):
         content = spec_path[len("__inline__:"):]
         if not content.strip():
             return web.json_response({"error": "empty spec content"}, status=400)
+        spec_text_for_approval = content
         work_dir = state.task_runner._work_dir
         fname = f"TASK_{uuid.uuid4().hex[:8]}.md"
         fpath = Path(work_dir) / fname
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")
         spec_path = str(fpath)
+    else:
+        # Read the validated file ONCE, in full, so the approval decision AND (if
+        # auto is granted) the execution snapshot come from the SAME bytes — no
+        # window for an edit between an approval read and run()'s later re-read
+        # (TOCTOU, B10). The approval head is derived in-memory from those bytes.
+        # A read failure is non-fatal: empty head -> per-action (deny-by-default).
+        try:
+            _full_spec = await asyncio.to_thread(
+                lambda: Path(spec_path).read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError):
+            # A non-UTF-8 spec raises UnicodeDecodeError (a ValueError, NOT an
+            # OSError); catch it here so a malformed file leaves the declared mode
+            # empty (per-action, deny-by-default) instead of crashing the start
+            # endpoint with a 500.
+            _full_spec = None
+        spec_text_for_approval = _approval_head(_full_spec) if _full_spec is not None else ""
 
     try:
         agent = body.get("agent", "")
@@ -171,10 +240,35 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         allowed_sources = {"dashboard", "text", "spec", "file", "chat", "mcp", "cron", "yaml"}
         claimed_source = body.get("source")
         source = claimed_source if claimed_source in allowed_sources else "dashboard"
-        # Deny-by-default (`is True`) + shared provenance gate (dashboard-context only).
+        # A spec may DECLARE `approval: auto` (frontmatter or a top-of-file
+        # directive) as an alternative to the UI's per-run toggle, so a trusted
+        # plan can commit its unattended-execution intent into version control.
+        # This is only a REQUEST — it is OR-ed into the same `_gate_auto_approve`
+        # provenance check as the UI flag, so it can never widen trust beyond
+        # what the launching surface already allows: a dashboard human's spec can
+        # run unattended, but the identical directive on a cron/MCP launch is
+        # still denied. Deny-by-default: only a literal `auto` requests it.
+        spec_declares_auto = parse_spec_approval_mode(spec_text_for_approval) == "auto"
         auto_approve = await _gate_auto_approve(
-            request, body.get("auto_approve") is True, claimed_source, endpoint="start"
+            request,
+            body.get("auto_approve") is True or spec_declares_auto,
+            claimed_source,
+            endpoint="start",
         )
+        # B10 (TOCTOU): if auto-approval was granted BECAUSE a file-backed spec
+        # declared it, pin execution to an immutable snapshot of the EXACT bytes
+        # that were parsed for approval. Otherwise run() would re-read spec_path
+        # at execution time and a file edited in between would run different tasks
+        # under the stale grant. Snapshot only when it matters (auto granted AND
+        # the directive drove it AND we have the file's bytes); the non-auto path
+        # and the inline path (already an immutable work-dir file) are untouched,
+        # so spec-file resume/edit workflows for per-action runs are unaffected.
+        if auto_approve and spec_declares_auto and _full_spec is not None:
+            work_dir = state.task_runner._work_dir
+            snap = Path(work_dir) / f"TASK_{uuid.uuid4().hex[:8]}.md"
+            snap.parent.mkdir(parents=True, exist_ok=True)
+            snap.write_text(_full_spec, encoding="utf-8")
+            spec_path = str(snap)
         task_id = await state.task_runner.start_background(
             spec_path, agent=agent, name=task_name, source=source, workspace_dir=workspace_dir,
             auto_approve=auto_approve,
@@ -588,6 +682,19 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     agent = body.get("agent", "")
     fresh = body.get("fresh", False)
     workspace_dir = body.get("workspace_dir", "")
+    # A planned run may carry a spec that DECLARED `approval: auto`. Honor it on
+    # /execute too, so the directive behaves identically across BOTH dashboard
+    # launch paths — /start and plan→/execute (the Design Review path-inconsistency
+    # finding). ``spec_content`` was captured in memory at plan time and is the
+    # immutable snapshot the run already executes from, so parsing it here is NOT a
+    # fresh disk read: there is no read/execute TOCTOU on this path. Still only a
+    # REQUEST — OR-ed with the UI flag and routed through the SAME provenance gate,
+    # so a cron/MCP or app/proxy-embedded caller cannot honor it. Deny-by-default:
+    # only a literal `auto` requests unattended execution.
+    run = state.task_runner._runs.get(task_id)
+    spec_declares_auto = bool(
+        run and parse_spec_approval_mode(_approval_head(run.spec_content or "")) == "auto"
+    )
     # Same provenance gate as /start: an app/proxy-embedded caller cannot mint
     # trust on the resume/execute path either (no source claim here — the run
     # already exists — so only the dashboard-context check applies). The gate
@@ -595,7 +702,7 @@ async def api_taskrunner_execute_plan(request: web.Request) -> web.Response:
     # so no CWE-755 try/except is needed at the call site — the invariant lives
     # in the gate, not here.
     auto_approve = await _gate_auto_approve(
-        request, body.get("auto_approve") is True, None, endpoint="execute"
+        request, body.get("auto_approve") is True or spec_declares_auto, None, endpoint="execute"
     )
     try:
         await state.task_runner.execute_plan(task_id, agent=agent, fresh=fresh, workspace_dir=workspace_dir, auto_approve=auto_approve)
