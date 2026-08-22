@@ -272,7 +272,7 @@ jobs:
       # The existing-tag re-run path is handled by the VERIFY step below.
       - name: Attest image provenance (fresh build)
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.digest.outputs.value }}
