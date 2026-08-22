@@ -38,7 +38,7 @@ from typing import Any, Collection, Mapping
 from kiro_crew import __version__, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
-from kiro_crew.env import spec_env_path, spec_path_key
+from kiro_crew.env import mcp_search_path, spec_path_key
 from kiro_crew.mcp_gateway import STUB_MODULE
 from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
@@ -151,7 +151,7 @@ def _resolve_target_command(
     ``PATH`` lacks the toolbox / user-local bin dirs a login shell has — so a
     bare command that resolves fine for the SESSION's own exec ENOENTs on
     every pooled spawn: 79% of all measured fallbacks. The search is
-    :func:`kiro_crew.env.spec_env_path` — literally the same composition the
+    :func:`kiro_crew.env.mcp_search_path` — literally the same composition the
     MCP probe and the agent-config resolver use (spec ``env.PATH`` first, then
     the augmented host PATH) — so a server that probes healthy on the
     dashboard can never ENOENT in gatewayd.
@@ -182,12 +182,12 @@ def _resolve_target_command(
     # legitimately spell it "Path" and the child's loader honours it.
     path_key = spec_path_key(env_pairs) if isinstance(env_pairs, dict) else None
     env_path = env_pairs.get(path_key, "") if path_key else ""
-    # spec_env_path is the canonical composition the MCP probe and the
-    # agent-config resolver also use: the spec's own env.PATH entries FIRST
-    # (an operator pin must win), then the augmented host PATH. It also
-    # degrades a non-string PATH and dedups, so one malformed hand-edited
-    # spec cannot abort the rewrite pass.
-    search_path = spec_env_path(env_path)
+    # mcp_search_path is the canonical RESOLUTION composition the MCP probe and
+    # the agent-config resolver also use: the spec's own env.PATH entries FIRST
+    # (an operator pin must win), then the contributed MCP directories, then the
+    # augmented host PATH. It also degrades a non-string PATH and dedups, so one
+    # malformed hand-edited spec cannot abort the rewrite pass.
+    search_path = mcp_search_path(env_path)
     resolved = shutil.which(target_command, path=search_path)
     if notes is not None:
         notes.which_results[
@@ -966,9 +966,11 @@ def _rewrite_inputs_fingerprint(
       so a moved/upgraded interpreter must regenerate the overlays.
     * ``path_env`` / ``pathext`` / ``path_augment`` — feed the
       ``shutil.which`` resolution of bare command names (``path_augment`` is
-      :func:`kiro_crew.env.spec_env_path` over an empty spec PATH — the
+      :func:`kiro_crew.env.mcp_search_path` over an empty spec PATH — the
       augmentation-and-dedup half of the search, which depends on ambient
-      state like ``MISE_DATA_DIR`` that ``path_env`` cannot see). The
+      state like ``MISE_DATA_DIR`` and on ``mcp.extra_path_dirs`` that
+      ``path_env`` cannot see, so editing that setting invalidates the
+      cache instead of reusing a stale resolution). The
       other half of which()'s input — the CONTENTS of the searched
       directories — is not stat-able here; it is covered by the stored
       per-probe results, which the cache-hit path re-runs and compares (see
@@ -993,7 +995,7 @@ def _rewrite_inputs_fingerprint(
         "python": sys.executable,
         "path_env": os.environ.get("PATH", ""),
         "pathext": os.environ.get("PATHEXT", ""),
-        "path_augment": spec_env_path(""),
+        "path_augment": mcp_search_path(""),
         "forward_declared_env": bool(forward_env),
         "pool_identity_env": sorted(frozenset(identity_keys)),
         "source_dir": str(source_dir),

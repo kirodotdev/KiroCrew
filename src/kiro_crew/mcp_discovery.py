@@ -32,9 +32,11 @@ import aiohttp
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import (
+    MCP_PATH_HINT,
     denied_spec_env_keys,
     describe_search_path,
     emit_env,
+    mcp_search_path,
     sanitize_spec_env,
     spec_env_path,
     spec_path_key,
@@ -150,7 +152,13 @@ def _warn_unresolvable_once(name: str, command: str, search_path: str = "") -> N
         )
         return
     _unresolvable_warned.add(key)
-    logger.warning("MCP probe failed [%s]: command not found: %s%s", name, command, searched)
+    logger.warning(
+        "MCP probe failed [%s]: command not found: %s%s; %s",
+        name,
+        command,
+        searched,
+        MCP_PATH_HINT,
+    )
 
 
 #: Servers whose probe has already reported a missing sandbox backend. Keyed by
@@ -1572,7 +1580,7 @@ async def probe_server(
         # "PATH" here would probe with a different path than the session gets.
         _path_key = spec_path_key(server.env)
         _declared_path = server.env.get(_path_key, "") if _path_key else ""
-        env["PATH"] = spec_env_path(_declared_path if isinstance(_declared_path, str) else "")
+        env["PATH"] = mcp_search_path(_declared_path if isinstance(_declared_path, str) else "")
         # The declared env is untrusted config text applied to the environment
         # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
         # keys must not pass through — they would execute before confinement
