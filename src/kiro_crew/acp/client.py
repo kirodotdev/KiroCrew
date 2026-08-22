@@ -887,9 +887,9 @@ class AcpError(Exception):
 class AcpTimeoutError(AcpError):
     """Prompt timed out."""
 
-    def __init__(self, partial_output: str = ""):
+    def __init__(self, partial_output: str = "", *, message: str = "ACP prompt timed out"):
         self.partial_output = partial_output
-        super().__init__("ACP prompt timed out")
+        super().__init__(message)
 
 
 class AcpPermissionNeeded(AcpError):  # noqa: N818
@@ -3164,7 +3164,12 @@ class AcpClient:
 
         self._last_substitution_model = None
         session_id = await self._send_request(METHOD_SESSION_NEW, new_params)
-        session_resp = await self._wait_for_response(session_id, timeout=_INIT_TIMEOUT)
+        session_resp = await self._wait_for_response(
+            session_id,
+            timeout=_INIT_TIMEOUT,
+            method=METHOD_SESSION_NEW,
+            expected_mcp=new_params.get("mcpServers"),
+        )
 
         # Happy path: a real session came back.
         if session_resp.get("sessionId"):
@@ -3206,7 +3211,12 @@ class AcpClient:
                     logger.warning("re-seed of settings.local.json failed", exc_info=True)
             self._last_substitution_model = None
             retry_id = await self._send_request(METHOD_SESSION_NEW, new_params)
-            session_resp = await self._wait_for_response(retry_id, timeout=_INIT_TIMEOUT)
+            session_resp = await self._wait_for_response(
+                retry_id,
+                timeout=_INIT_TIMEOUT,
+                method=METHOD_SESSION_NEW,
+                expected_mcp=new_params.get("mcpServers"),
+            )
 
         return session_resp
 
@@ -3277,7 +3287,12 @@ class AcpClient:
                     else:
                         load_params["_meta"] = {"_kiro.dev/session_file": session_file}
                     load_id = await self._send_request(METHOD_SESSION_LOAD, load_params)
-                    load_resp = await self._wait_for_response(load_id, timeout=_INIT_TIMEOUT)
+                    load_resp = await self._wait_for_response(
+                        load_id,
+                        timeout=_INIT_TIMEOUT,
+                        method=METHOD_SESSION_LOAD,
+                        expected_mcp=load_params.get("mcpServers"),
+                    )
                     if "modes" in load_resp:
                         self._session_id = resume_sid
                         self._resumed = True
@@ -3610,7 +3625,14 @@ class AcpClient:
             params=data.get("params"),
         )
 
-    async def _wait_for_response(self, req_id: int, timeout: float = 50.0) -> dict:
+    async def _wait_for_response(
+        self,
+        req_id: int,
+        timeout: float = 50.0,
+        *,
+        method: str = "",
+        expected_mcp: object = None,
+    ) -> dict:
         """Block until a JSON-RPC response matching *req_id* arrives.
 
         Explicitly classifies JSON-RPC 2.0 messages with the same method-aware
@@ -3723,7 +3745,59 @@ class AcpClient:
             deferred.append(msg)
 
         _reinject()
-        raise AcpTimeoutError()
+        label = method or f"request {req_id}"
+        message = f"ACP {label} timed out after {timeout:.0f}s"
+        if method in {METHOD_SESSION_NEW, METHOD_SESSION_LOAD}:
+            progress = self._mcp_timeout_progress(expected_mcp)
+            if progress:
+                message += f" ({progress})"
+        raise AcpTimeoutError(message=message)
+
+    def _mcp_timeout_progress(self, expected: object) -> str:
+        """Summarize the MCP notifications buffered during a stalled session start."""
+        def clean(value: object, cap: int = 64) -> str:
+            text, _ = redact_exfiltration_urls(str(value or ""))
+            text, _ = redact_credentials(text)
+            return "".join(ch for ch in " ".join(text.split()) if ch.isprintable())[:cap]
+
+        roster = [
+            clean(item.get("name"))
+            for item in (expected if isinstance(expected, list) else [])
+            if isinstance(item, dict) and item.get("name")
+        ]
+        ready: set[str] = set()
+        failed: dict[str, str] = {}
+        auth: set[str] = set()
+        for msg in self._mcp_notifications:
+            params = msg.params if isinstance(msg.params, dict) else {}
+            name = clean(params.get("serverName") or params.get("name"))
+            if not name:
+                continue
+            if msg.is_method(METHOD_MCP_SERVER_INITIALIZED):
+                ready.add(name)
+            elif msg.is_method(METHOD_MCP_SERVER_INIT_FAILURE):
+                failed[name] = clean(params.get("error"), 120)
+            elif msg.is_method(METHOD_MCP_OAUTH_REQUEST):
+                auth.add(name)
+
+        def names(values: list[str]) -> str:
+            head = values[:8]
+            suffix = f" (+{len(values) - 8} more)" if len(values) > 8 else ""
+            return ", ".join(head) + suffix
+
+        reported = ready | set(failed)
+        parts = [f"{len(reported & set(roster))}/{len(roster)} MCP server(s) reported"] if roster else []
+        missing = [name for name in roster if name not in reported]
+        if missing:
+            parts.append(f"no report from {names(missing)}")
+        if failed:
+            parts.append(
+                "failed: "
+                + names([f"{name} ({error})" if error else name for name, error in failed.items()])
+            )
+        if auth:
+            parts.append(f"awaiting authorization: {names(sorted(auth))}")
+        return "; ".join(parts)
 
     async def _drain_notifications(
         self,
