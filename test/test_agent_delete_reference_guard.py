@@ -19,6 +19,18 @@ from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.dashboard.handlers.agents import api_agent_detail
 
 
+@pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Run as the dashboard owner: these tests exercise handler behavior PAST
+    the owner boundary on the agents module's mutating endpoints, which has
+    its own enumerate-the-invariant coverage in
+    test_agents_endpoints_owner_auth.py."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agents.is_owner_dashboard_request",
+        lambda request: True,
+    )
+
+
 def _delete_request(name: str):
     request = MagicMock(spec=web.Request)
     request.method = "DELETE"

@@ -33,6 +33,18 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 
+@pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Run as the dashboard owner: these tests exercise handler behavior PAST
+    the owner boundary on the agents module's mutating endpoints, which has
+    its own enumerate-the-invariant coverage in
+    test_agents_endpoints_owner_auth.py."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agents.is_owner_dashboard_request",
+        lambda request: True,
+    )
+
+
 def _fake_config():
     """A stand-in KiroCrewConfig recording whether save() was reached."""
     saved: list[bool] = []
@@ -76,9 +88,12 @@ async def _post(body, cfg, installed=(), spy=None):
             "kiro_crew.dashboard.handlers.agents.list_agents",
             new=_list_agents,
         ),
-        patch("kiro_crew.dashboard.handlers.agents._sel", return_value=SimpleNamespace(
-            log_api_access=lambda **kwargs: None,
-        )),
+        patch(
+            "kiro_crew.dashboard.handlers.agents._sel",
+            return_value=SimpleNamespace(
+                log_api_access=lambda **kwargs: None,
+            ),
+        ),
     ):
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.post("/api/agents", json=body)
@@ -160,9 +175,7 @@ class TestTemplateNameGrammar:
         """
         cfg = _fake_config()
         spy: list[bool] = []
-        status, _ = await _post(
-            {"name": "researcher", "kiro_agent": "../etc"}, cfg, spy=spy
-        )
+        status, _ = await _post({"name": "researcher", "kiro_agent": "../etc"}, cfg, spy=spy)
         assert status == 400
         assert spy == [], "the agent listing was consulted for an invalid name"
 

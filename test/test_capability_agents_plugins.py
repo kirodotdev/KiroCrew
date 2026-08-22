@@ -31,6 +31,19 @@ from kiro_crew.platform.capability_bound import (
 from kiro_crew.platform.defaults import DefaultCapabilityManager
 from kiro_crew.platform.interfaces import CapabilityResult
 
+
+@pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Run as the dashboard owner: these tests exercise handler behavior PAST
+    the owner boundary on the agents module's mutating endpoints, which has
+    its own enumerate-the-invariant coverage in
+    test_agents_endpoints_owner_auth.py."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agents.is_owner_dashboard_request",
+        lambda request: True,
+    )
+
+
 # Ops added alongside the original set, with the bound each must inherit.
 _NEW_OPS = {
     "install_agent": CAPABILITY_INSTALL_TIMEOUT,

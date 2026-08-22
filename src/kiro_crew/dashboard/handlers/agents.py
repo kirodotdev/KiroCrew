@@ -55,6 +55,7 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
+from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
@@ -116,6 +117,42 @@ def _sel():
     return _pkg.sel()
 
 
+async def _require_owner(request: web.Request, operation: str) -> web.Response | None:
+    """Owner gate shared by every mutating handler in this module.
+
+    ``~/.kiro/agents`` and ``cfg.agents`` are machine-global: a write there
+    installs tool grants and MCP server commands that later sessions execute,
+    so mutations are owner-only — the same server-side boundary
+    ``mcp_apps.api_mcp_apps_call`` enforces. The caller identity comes from
+    the token-auth middleware (``request["user"]`` / ``request["app"]``),
+    never from a client-set header. Returns the 403 to send, or ``None`` when
+    the caller is the owner.
+    """
+    if is_owner_dashboard_request(request):
+        return None
+    # Off the loop: the FIRST sel() of a process CONSTRUCTS the log — trust-dir
+    # creation, key validation, and on Windows an icacls subprocess — so on a
+    # fresh gateway whose first mutating request is non-owner this would stall
+    # every other request. Same reasoning as connections._audit_started.
+    caller = str(request.get("user") or "unknown")
+    try:
+        await asyncio.to_thread(
+            lambda: _sel().log_api_access(
+                caller=caller,
+                operation=operation,
+                outcome="denied",
+                source="dashboard",
+                resources="non_owner_block",
+            )
+        )
+    except Exception:  # pragma: no cover — audit must never change the outcome
+        logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
+    return web.json_response(
+        {"error": "owner authorization required", "code": "owner_only"},
+        status=403,
+    )
+
+
 # ── Agent Config ──
 
 
@@ -157,6 +194,9 @@ async def api_agent_config(request: web.Request) -> web.Response:
     agent_config_path = installed_path if installed_path.is_file() else defaults_path
 
     if request.method == "PUT":
+        denied = await _require_owner(request, "agent_config.write")
+        if denied is not None:
+            return denied
         try:
             body = await request.json()
         except Exception:
@@ -237,6 +277,9 @@ async def api_default_agent(request: web.Request) -> web.Response:
     import kiro_crew.dashboard.handlers as _h  # noqa: F811
 
     if request.method == "PUT":
+        denied = await _require_owner(request, "default_agent.write")
+        if denied is not None:
+            return denied
         try:
             body = await request.json()
         except Exception:
@@ -390,6 +433,9 @@ async def api_capability_mcp_list(request: web.Request) -> web.Response:
 
 async def api_capability_mcp_install(request: web.Request) -> web.Response:
     """POST /api/capability/mcp/install — install an MCP server via the capability manager."""
+    denied = await _require_owner(request, "capability_mcp_install")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -423,6 +469,9 @@ async def api_capability_mcp_install(request: web.Request) -> web.Response:
 
 async def api_capability_mcp_uninstall(request: web.Request) -> web.Response:
     """POST /api/capability/mcp/uninstall — uninstall an MCP server via the capability manager."""
+    denied = await _require_owner(request, "capability_mcp_uninstall")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -472,6 +521,9 @@ async def api_capability_skills_install(request: web.Request) -> web.Response:
     edition's capability manager (no Amazon-internal version-set field is
     exposed on the public API).
     """
+    denied = await _require_owner(request, "capability_skills_install")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -499,6 +551,9 @@ async def api_capability_skills_install(request: web.Request) -> web.Response:
 
 async def api_capability_skills_uninstall(request: web.Request) -> web.Response:
     """POST /api/capability/skills/uninstall — uninstall a skill package."""
+    denied = await _require_owner(request, "capability_skills_uninstall")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -535,6 +590,11 @@ async def _mutate_agent_package(request: web.Request, *, install: bool) -> web.R
     same seam: an allowlist on the name BEFORE it leaves core, ``_redact_external``
     on the manager's message, and an explicit SEL line naming the package.
     """
+    denied = await _require_owner(
+        request, f"capability_agent_{'install' if install else 'uninstall'}"
+    )
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -620,6 +680,9 @@ async def api_capability_plugins_list(request: web.Request) -> web.Response:
 
 async def api_capability_plugins_sync(request: web.Request) -> web.Response:
     """POST /api/capability/plugins/sync — reconcile plugins with agent packages."""
+    denied = await _require_owner(request, "capability_plugins_sync")
+    if denied is not None:
+        return denied
     mgr = _capability_manager()
     if not mgr.available():
         return web.json_response({"error": _CAPABILITY_UNAVAILABLE}, status=503)
@@ -1172,6 +1235,10 @@ async def api_slash_commands(request: web.Request) -> web.Response:
 async def api_agent_detail(request: web.Request) -> web.Response:
     """GET/DELETE/PATCH /api/agents/detail/{name} — view, delete, or update agent config."""
     name = request.match_info["name"]
+    if request.method != "GET":
+        denied = await _require_owner(request, f"agent_detail.{request.method.lower()}")
+        if denied is not None:
+            return denied
     # Parse body early so JSONDecodeError returns 400, not 404 from the file loop.
     patch_body = None
     if request.method == "PATCH":
@@ -1513,6 +1580,9 @@ def _get_config_lock() -> asyncio.Lock:
 
 async def api_kirocrew_agents_sync(request: web.Request) -> web.Response:
     """POST /api/agents/sync — auto-sync AIM-installed agents into config.json."""
+    denied = await _require_owner(request, "agents.sync")
+    if denied is not None:
+        return denied
     async with _get_config_lock():
         return await _do_agents_sync(request)
 
@@ -1671,6 +1741,9 @@ async def api_kirocrew_agent_resolved_model(request: web.Request) -> web.Respons
 async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
     """POST /api/agents — create a new KiroCrew agent."""
 
+    denied = await _require_owner(request, "agent.create")
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except Exception:
@@ -1761,6 +1834,9 @@ async def api_kirocrew_agents_create(request: web.Request) -> web.Response:
 async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
     """PUT /api/agents/{name} — update a KiroCrew agent."""
 
+    denied = await _require_owner(request, "agent.update")
+    if denied is not None:
+        return denied
     name = request.match_info["name"]
     try:
         body = await request.json()
@@ -1810,6 +1886,9 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
 async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
     """DELETE /api/agents/{name} — delete a KiroCrew agent."""
 
+    denied = await _require_owner(request, "agent.delete")
+    if denied is not None:
+        return denied
     name = request.match_info["name"]
     async with _get_config_lock():
         cfg = KiroCrewConfig.load()

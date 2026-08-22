@@ -43,6 +43,18 @@ from kiro_crew.skills import SkillsLoader
 
 
 @pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Run as the dashboard owner: these tests exercise handler behavior PAST
+    the owner boundary on the agents module's mutating endpoints, which has
+    its own enumerate-the-invariant coverage in
+    test_agents_endpoints_owner_auth.py."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agents.is_owner_dashboard_request",
+        lambda request: True,
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_agent_cache():
     clear_list_agents_cache()
     yield

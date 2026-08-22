@@ -17,6 +17,19 @@ from kiro_crew.dashboard.handlers.agents import (
 )
 from kiro_crew.mcp_provenance import without_marker
 
+
+@pytest.fixture(autouse=True)
+def _owner_caller(monkeypatch):
+    """Run as the dashboard owner: these tests exercise handler behavior PAST
+    the owner boundary on the agents module's mutating endpoints, which has
+    its own enumerate-the-invariant coverage in
+    test_agents_endpoints_owner_auth.py."""
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.handlers.agents.is_owner_dashboard_request",
+        lambda request: True,
+    )
+
+
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
