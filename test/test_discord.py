@@ -937,6 +937,10 @@ class TestStripSteering:
         assert "STEERING" not in out
         assert out.startswith("body text")
 
+    def test_an_unclosed_marker_cannot_span_table_rows(self) -> None:
+        text = "[STEERING steer-deadbeef |\n| --- | --- |"
+        assert _strip_steering(text) == text
+
 
 class TestFindButtonLabel:
     def test_recovers_label(self) -> None:

@@ -30,8 +30,9 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.webex.client import chunk_utf8
+from kiro_crew.webex.client import WEBEX_MAX_TEXT, chunk_utf8
 
 if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
@@ -151,7 +152,21 @@ class WebexRenderer(Renderer):
             return
         self._finalized = True
         ok = stop_reason != "error"
-        content = self.text() or ("…" if ok else _ERROR_TEXT)
+        raw = self.text()
+        content = self.render_tables_for_target(raw)
+        if content != raw and len(content.encode("utf-8")) > WEBEX_MAX_TEXT:
+            # Generated grids must stay in one message; cards and display-safe
+            # raw text can use lossless byte chunks. An unrepresentable card run
+            # reports its grid so the raw form wins.
+            content, generated_grid = self.render_tables_for_target_with_metadata(
+                raw,
+                policy=TABLE_POLICY_CARDS,
+            )
+            if generated_grid and len(content.encode("utf-8")) > WEBEX_MAX_TEXT:
+                safe_raw = self.safe_raw_table_fallback(raw, policy=TABLE_POLICY_CARDS)
+                if safe_raw is not None:
+                    content = safe_raw
+        content = content or ("…" if ok else _ERROR_TEXT)
         # Byte-aware, lossless split: Webex caps messages in UTF-8 BYTES, so
         # the neutral character-based chunk_text could hand the client an
         # oversized chunk that gets tail-truncated (silent data loss).

@@ -31,6 +31,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -58,6 +59,10 @@ WECOM_CAPABILITIES = TransportCapabilities(
     files_outbound=False,
     rich_blocks=False,
     threads=False,
+    # One replacement bubble has no continuation path. Keep canonical tables:
+    # an adaptive representation can exceed the cap while the only shorter raw
+    # candidate still contains a value that display-form redaction would remove.
+    table_mode=TABLE_POLICY_OFF,
     max_message_chars=_REPLY_MAX_CHARS,
     max_buttons=0,
     supports_proactive_send=False,

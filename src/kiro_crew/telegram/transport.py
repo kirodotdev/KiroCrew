@@ -19,6 +19,7 @@ from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass
 from typing import Any
 
+from kiro_crew.messaging.tables import TABLE_POLICY_NATIVE
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -75,6 +76,10 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     files_outbound=False,
     rich_blocks=False,
     threads=True,
+    # sendRichMessage renders a GFM pipe table as a real table; the plain-HTML
+    # fallback monospaces the run (telegram/renderer.py::_seal_table_fallback).
+    table_mode=TABLE_POLICY_NATIVE,
+    native_tables=True,
     max_message_chars=TELEGRAM_CHUNK_LIMIT,
     max_buttons=25,
     supports_proactive_send=True,

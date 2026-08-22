@@ -47,6 +47,7 @@ from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suff
 from kiro_crew.discord.client import DISCORD_MAX_TEXT
 from kiro_crew.messaging.renderer import Renderer, apply_options_cap, chunk_text
 from kiro_crew.messaging.split import split_markdown_safe
+from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
@@ -82,8 +83,8 @@ _OPTIONS_RE = OPTIONS_RE_TRAILER
 
 # kiro-cli's inline "[STEERING steer-<id>: …]" steer-ack marker (see the
 # Telegram renderer for the full rationale — Discord likewise has no parser).
-_STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]]*\]", re.IGNORECASE)
-_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]]*)\]", re.IGNORECASE)
+_STEER_MARKER_RE = re.compile(r"\[STEERING\b[^\]\r\n]*\]", re.IGNORECASE)
+_STEER_SUMMARY_RE = re.compile(r"\[STEERING\s+steer-[0-9a-f]+\s*:\s*([^\]\r\n]*)\]", re.IGNORECASE)
 
 
 def _extract_options(text: str) -> tuple[str, list[str]]:
@@ -105,7 +106,7 @@ def _strip_steering(text: str) -> str:
     including an UNCLOSED trailing fragment still streaming in (see the
     Telegram renderer for the show-then-vanish rationale)."""
     cleaned = _STEER_MARKER_RE.sub("", text)
-    cleaned = re.sub(r"\[STEERING\b[^\]]*$", "", cleaned)  # unclosed, streaming
+    cleaned = re.sub(r"\[STEERING\b[^\]\r\n]*$", "", cleaned)  # unclosed, streaming
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
 
@@ -267,6 +268,9 @@ class DiscordRenderer(Renderer):
         self._channel_id = channel_id
         self._session_key = session_key
         self._buf: list[str] = []
+        # Delivery transforms never enter the canonical protocol buffer. A
+        # snapshot exists only when outbound presentation differs from source.
+        self._delivery_text: str | None = None
         self._last_tool = ""
         # Transient tool-activity footer ("🔧 {tool}…") shown ONLY on live
         # streaming frames — never stored in _buf, so seals/finals stay clean.
@@ -280,6 +284,10 @@ class DiscordRenderer(Renderer):
         self._stream_mid: str | None = None
         self._shown = ""
         self._last_edit = 0.0
+        # A valid table at the end of a stream may still receive rows. While it
+        # is pending, keep it in the buffer instead of freezing a partial card
+        # or splitting raw pipes across messages; the final pass converts it.
+        self._table_pending = False
         self._seal_count = 0  # rotations so far == index into _steer_texts
         # Chip pending from the last rotation, NOT yet in _buf (materializes
         # only when real post-steer text arrives — see the Telegram renderer).
@@ -316,15 +324,80 @@ class DiscordRenderer(Renderer):
 
     async def on_text_chunk(self, text: str) -> None:
         self._buf.append(text)
+        self._delivery_text = None
         self._tool = ""  # text resumed -> drop the transient tool footer
         # 1) Rotate to a fresh message at each COMPLETE [STEERING …] marker.
         await self._rotate_at_markers()
         # 1b) Materialize the pending chip once real post-steer text exists.
         self._materialize_chip()
-        # 2) Rotate when a segment would exceed one Discord message.
-        await self._rotate_on_length()
-        # 3) Live-stream the current segment (throttled in-place edit).
-        await self._stream_live()
+        # 1c) Convert finished tables before anything measures the segment.
+        self._convert_tables(final=False)
+        # A valid trailing table may still receive rows. Splitting or displaying
+        # it now would either freeze a partial card or expose raw pipes; keep the
+        # segment buffered until prose terminates the run or the turn finishes.
+        if not self._table_pending:
+            # 2) Rotate when a segment would exceed one Discord message.
+            await self._rotate_on_length()
+            # 3) Live-stream the current segment (throttled in-place edit).
+            await self._stream_live()
+
+    def _render_tables_for_delivery(self, raw: str, *, final: bool) -> str:
+        """Adapt tables without handing a generated fence to message rotation."""
+        converted = self.render_tables_for_target(raw, final=final)
+        if converted != raw and len(converted) > self._limit():
+            # Generated grids can require a longer fence when a cell contains
+            # backticks. Prefer cards because they remain independently readable
+            # across ordinary text chunks; an unrepresentable card run reports
+            # its retained grid so a fitting safe raw table can stay whole.
+            forced, generated_grid = self.render_tables_for_target_with_metadata(
+                raw,
+                policy=TABLE_POLICY_CARDS,
+                final=final,
+            )
+            if generated_grid and len(forced) > self._limit():
+                safe_raw = self.safe_raw_table_fallback(
+                    raw,
+                    policy=TABLE_POLICY_CARDS,
+                    final=final,
+                )
+                if safe_raw is not None and len(safe_raw) <= self._limit():
+                    return safe_raw
+            return forced
+        return converted
+
+    def _convert_tables(self, *, final: bool) -> None:
+        """Refresh outbound table presentation while preserving canonical text.
+
+        Protocol recognition always reads ``_buf``. The rendered snapshot is
+        used only for streaming, sizing, and delivery, so card text that happens
+        to resemble a control marker remains visible content. A transformed
+        segment that already exceeds Discord's cap stays buffered until a
+        terminal seal, when its presentation can be split without needing to
+        map display offsets back onto still-growing Markdown source.
+        """
+        raw = _strip_steering("".join(self._buf))
+        converted = self._render_tables_for_delivery(raw, final=final)
+        self._delivery_text = converted if converted != raw else None
+        if final:
+            self._table_pending = False
+            return
+
+        final_render = self._render_tables_for_delivery(raw, final=True)
+        trailing_table = converted != final_render
+        transformed_over_limit = self._delivery_text is not None and len(converted) > self._limit()
+        self._table_pending = trailing_table or transformed_over_limit
+
+    def _take_canonical_options(self) -> list[str]:
+        """Remove an authored OPTIONS trailer before presentation transforms.
+
+        Table cards can join separate cells into text that resembles protocol.
+        Extracting once from the canonical buffer ensures only an actual model
+        directive becomes controls; generated display text remains content.
+        """
+        body, options = _extract_options("".join(self._buf))
+        self._buf = [body]
+        self._delivery_text = None
+        return options
 
     def _materialize_chip(self) -> None:
         """Prepend the pending steer chip to the segment — but only when the
@@ -333,20 +406,21 @@ class DiscordRenderer(Renderer):
         if self._pending_chip and self._segment_text().strip():
             body = "".join(self._buf).lstrip("\n")
             self._buf = [f"{self._pending_chip}\n\n{body}"]
+            self._delivery_text = None
             self._pending_chip = ""
 
     async def on_steer_consumed(self, summary: str = "") -> None:
         """Seal the pre-steer segment at the driver's structured boundary."""
         self._materialize_chip()
+        # Protocol is recognized only in canonical output. A delivery transform
+        # may create marker-shaped text, but that remains ordinary content.
+        opts = self._take_canonical_options()
+        # This segment is terminal, so a trailing table can no longer grow.
+        self._convert_tables(final=True)
         await self._rotate_on_length()
-        # A trailing [OPTIONS:] block belongs to the visible PRE-STEER answer,
-        # but the steering marker sits after it in the raw buffer, so the
-        # end-of-buffer anchor no longer sees it. Extract it here -- BEFORE the
-        # seal -- so the choices ship as buttons on the sealed message instead of
-        # being frozen as literal protocol text the user cannot act on.
-        body_raw, opts = _extract_options("".join(self._buf))
-        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
-        self._buf = [body_raw]
+        body_text, opts = apply_options_cap(self._segment_text(), opts, self.capabilities)
+        self._buf = []
+        self._delivery_text = body_text
         # apply_options_cap may EXPAND the body (numbered overflow lines), and
         # the rotation above ran before that expansion -- re-check, or a
         # near-limit answer with over-cap options seals past the transport cap.
@@ -362,6 +436,7 @@ class DiscordRenderer(Renderer):
         self._seal_count += 1
         self._pending_chip = chip or ""
         self._buf = []
+        self._delivery_text = None
         if sealed:
             self._open_new_message()
 
@@ -374,10 +449,12 @@ class DiscordRenderer(Renderer):
             if marker is None:
                 return
             self._buf = [raw[: marker.start()]]
+            self._delivery_text = None
             summary_match = _STEER_SUMMARY_RE.match(raw, marker.start())
             summary = _neutralize_md(summary_match.group(1)) if summary_match else ""
             await self.on_steer_consumed(summary)
             self._buf = [raw[marker.end() :]]
+            self._delivery_text = None
 
     async def _rotate_on_length(self) -> None:
         """Rotate when the segment exceeds one Discord message, keeping fenced
@@ -385,10 +462,17 @@ class DiscordRenderer(Renderer):
         protocol directive (``[OPTIONS:]`` / streaming ``[STEERING`` fragment)
         in half."""
         limit = self._limit()
-        raw = "".join(self._buf)
-        if len(raw) <= limit:
+        delivery_text = self._delivery_text
+        presentation_only = delivery_text is not None
+        candidate = delivery_text if delivery_text is not None else "".join(self._buf)
+        if len(candidate) <= limit:
             return
-        raw, protocol_suffix = split_trailing_protocol_suffix(raw)
+        if presentation_only:
+            # Terminal table presentation has no future source chunks to map
+            # back onto. Split it directly and keep protocol state empty.
+            raw, protocol_suffix = candidate, ""
+        else:
+            raw, protocol_suffix = split_trailing_protocol_suffix("".join(self._buf))
         # The shared splitter's streaming contract does the whole job: every
         # chunk but the last is already sealed, and the last is deliberately
         # left OPEN so a still-arriving fence keeps streaming into it. Mid-stream
@@ -397,13 +481,26 @@ class DiscordRenderer(Renderer):
         # closer on the chunks we seal and none on the tail we keep. Nothing is
         # appended to the tail here, so there is nothing to strip back off it —
         # and prefix stability means a later, longer buffer re-derives these same
-        # sealed chunks byte-for-byte, so no message already posted can move.
+        # sealed chunks byte-for-byte, so no message already posted can move. A
+        # converted table is terminal, so its variable-length generated fences
+        # are split by the same grammar rather than a private re-derivation.
         chunks = await asyncio.to_thread(split_markdown_safe, raw, limit)
-        for ch in chunks[:-1]:
-            self._buf = [ch]
+        for chunk in chunks[:-1]:
+            if presentation_only:
+                self._buf = []
+                self._delivery_text = chunk
+            else:
+                self._buf = [chunk]
+                self._delivery_text = None
             await self._seal_current()
             self._open_new_message()
-        self._buf = [(chunks[-1] if chunks else "") + protocol_suffix]
+        tail = chunks[-1] if chunks else ""
+        if presentation_only:
+            self._buf = []
+            self._delivery_text = tail
+        else:
+            self._buf = [tail + protocol_suffix]
+            self._delivery_text = None
 
     def _open_new_message(self) -> None:
         """Next render creates a fresh message instead of editing the old one."""
@@ -411,9 +508,14 @@ class DiscordRenderer(Renderer):
         self._shown = ""
 
     def _segment_text(self) -> str:
-        """Current segment's markdown source (chip already seeded into _buf),
-        with the steer marker stripped. Discord renders markdown natively, so
-        no further translation is needed."""
+        """Current outbound text, with protocol removed only from canonical source.
+
+        Presentation snapshots are derived only after canonical protocol
+        handling and must be returned verbatim: parsing them again could
+        reinterpret table cards as control markers.
+        """
+        if self._delivery_text is not None:
+            return self._delivery_text
         return _strip_steering("".join(self._buf))
 
     async def _stream_live(self, *, force: bool = False) -> None:
@@ -421,11 +523,21 @@ class DiscordRenderer(Renderer):
         first render. The transient ``🔧 {tool}…`` footer is appended ONLY here
         (live frames) — seals and the final render never carry it. ``force``
         bypasses the throttle so a tool-call event surfaces immediately."""
+        if self._table_pending:
+            return
         now = time.monotonic()
         if not force and now - self._last_edit < _EDIT_THROTTLE_S:
             return
-        # Hold back trailing [OPTIONS:] markup from live frames.
-        body, _ = _extract_options(self._segment_text())
+        # Hold back trailing [OPTIONS:] markup only when canonical source owns
+        # it. Running the parser on presentation alone could hide authored card
+        # text that merely resembles an incomplete directive.
+        visible = self._segment_text()
+        canonical = _strip_steering("".join(self._buf))
+        canonical_body, _ = _extract_options(canonical)
+        if canonical_body != canonical:
+            body, _ = _extract_options(visible)
+        else:
+            body = visible
         footer = f"-# 🔧 {self._tool}…" if self._tool else ""
         if footer:
             room = self._limit() - len(footer) - 2
@@ -551,11 +663,14 @@ class DiscordRenderer(Renderer):
         # the [OPTIONS:] button rows attached to the last chunk.
         await self._rotate_at_markers()
         self._materialize_chip()
-        # Extract the trailing [OPTIONS:] BEFORE length rotation (see the
-        # Telegram renderer's rationale).
-        body_raw, opts = _extract_options("".join(self._buf))
-        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
-        self._buf = [body_raw]
+        # Consume protocol before table cards can join cells into marker-shaped
+        # display text. Presentation output is never reinterpreted as control.
+        opts = self._take_canonical_options()
+        # The stream is over, so a trailing table run is complete.
+        self._convert_tables(final=True)
+        body_text, opts = apply_options_cap(self._segment_text(), opts, self.capabilities)
+        self._buf = []
+        self._delivery_text = body_text
         components = build_option_components(opts) if opts else None
         # No-rotation fallback: steers were injected but no marker rotated —
         # prepend one summary chip so they're still shown.
@@ -564,7 +679,7 @@ class DiscordRenderer(Renderer):
             if quoted:
                 body = self._segment_text().strip()
                 summary = "> " + " · ".join(quoted)
-                self._buf = [summary + ("\n\n" + body if body else "")]
+                self._delivery_text = summary + ("\n\n" + body if body else "")
         await self._rotate_on_length()
         if not self._segment_text().strip():
             # Nothing to post. Earlier rotated segments carried the turn ->

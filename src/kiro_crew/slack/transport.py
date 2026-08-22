@@ -18,6 +18,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     InboundMessage,
     MessagingTransport,
@@ -45,6 +46,8 @@ SLACK_CAPABILITIES = TransportCapabilities(
     files_outbound=True,  # /api/slack/upload-file external-upload flow
     rich_blocks=True,
     threads=True,
+    # Slack's established format pipeline already flattens tables byte-for-byte.
+    table_mode=TABLE_POLICY_OFF,
     max_message_chars=SLACK_MSG_LIMIT,
     # 10 = the platform cap on a checkboxes element's options[] — the widget
     # Slack actually renders for [OPTIONS:]. The previous 5 was copied from

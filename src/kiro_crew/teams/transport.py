@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Awaitable, Callable, Iterable
 
+from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -49,6 +50,8 @@ TEAMS_CAPABILITIES = TransportCapabilities(
     files_outbound=False,
     rich_blocks=False,
     threads=False,
+    # Teams renders pipe tables literally.
+    table_mode=TABLE_POLICY_AUTO,
     max_message_chars=TEAMS_MAX_TEXT,
     max_buttons=0,
     supports_proactive_send=True,

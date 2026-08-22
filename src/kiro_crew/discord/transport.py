@@ -27,6 +27,7 @@ from kiro_crew.discord.client import (
     DiscordInbound,
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
+from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -68,6 +69,9 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     files_outbound=False,
     rich_blocks=False,
     threads=True,
+    # Discord renders pipe tables literally. ``auto`` keeps grids only when
+    # they fit a phone-sized monospace viewport and cards wider tables.
+    table_mode=TABLE_POLICY_AUTO,
     max_message_chars=DISCORD_CHUNK_LIMIT,
     # 25 = TOTAL interactive choices (5 buttons/row x 5 action rows -- the
     # platform max the renderer actually ships). The previous 5 was the
