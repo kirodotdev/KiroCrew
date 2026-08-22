@@ -28,11 +28,11 @@ import logging
 import os
 import re
 import sys
-import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.deploy import engine
 from kiro_crew.platform_compat import file_lock
@@ -120,23 +120,12 @@ def locked_registry() -> Generator[dict[str, Any], None, None]:
             reg = load_registry()
             yield reg
             # Persist on clean exit (exceptions skip save, lock still releases)
-            tmp_fd = tempfile.NamedTemporaryFile(
-                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-                delete=False, encoding="utf-8",
+            # mode=0o600 is NOT optional: NamedTemporaryFile created the temp
+            # owner-only and this never widened it, so the registry (which holds
+            # account ids) is 0o600 today, not the umask default.
+            atomic_write(
+                _registry_path(), json.dumps(reg, indent=2), fsync=True, mode=0o600
             )
-            try:
-                tmp_fd.write(json.dumps(reg, indent=2))
-                tmp_fd.flush()
-                os.fsync(tmp_fd.fileno())
-                tmp_fd.close()
-                os.replace(tmp_fd.name, str(_registry_path()))
-            except BaseException:
-                tmp_fd.close()
-                try:
-                    os.unlink(tmp_fd.name)
-                except OSError:
-                    pass
-                raise
 
 
 def make_entry(name: str, region: str, *, account: str = "", verified_at: str = "",
@@ -201,23 +190,11 @@ def save_registry(reg: dict[str, Any]) -> dict[str, Any]:
     lock_path = _registry_path().with_suffix(".lock")
     with open(lock_path, "w") as fd:
         with file_lock(fd.fileno(), exclusive=True, required=True):
-            tmp_fd = tempfile.NamedTemporaryFile(
-                mode="w", dir=str(_data_dir()), suffix=".json.tmp",
-                delete=False, encoding="utf-8",
+            # mode=0o600: see locked_registry above. Same NamedTemporaryFile
+            # provenance, same owner-only publish mode to preserve.
+            atomic_write(
+                _registry_path(), json.dumps(reg, indent=2), fsync=True, mode=0o600
             )
-            try:
-                tmp_fd.write(json.dumps(reg, indent=2))
-                tmp_fd.flush()
-                os.fsync(tmp_fd.fileno())
-                tmp_fd.close()
-                os.replace(tmp_fd.name, str(_registry_path()))
-            except BaseException:
-                tmp_fd.close()
-                try:
-                    os.unlink(tmp_fd.name)
-                except OSError:
-                    pass
-                raise
     return reg
 
 

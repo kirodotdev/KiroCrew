@@ -8,16 +8,14 @@ pattern as profiles.py registry.
 """
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
-import os
-import tempfile
 import time
 import uuid
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import file_lock
 
@@ -46,21 +44,10 @@ def _load_raw() -> list[dict[str, Any]]:
 
 def _save_raw(entries: list[dict[str, Any]]) -> None:
     p = _store_path()
-    p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = tempfile.NamedTemporaryFile(
-        mode="w", dir=str(p.parent), suffix=".tmp", delete=False, encoding="utf-8"
-    )
-    try:
-        tmp.write(json.dumps(entries, indent=2))
-        tmp.flush()
-        os.fsync(tmp.fileno())
-        tmp.close()
-        os.replace(tmp.name, str(p))
-    except BaseException:
-        tmp.close()
-        with contextlib.suppress(OSError):
-            os.unlink(tmp.name)
-        raise
+    # mode=0o600 is NOT optional. NamedTemporaryFile creates its file owner-only
+    # and this function never widened it, so the pending store is 0o600 today.
+    # Omitting the mode would publish it at the umask default (0o644) instead.
+    atomic_write(p, json.dumps(entries, indent=2), fsync=True, mode=0o600)
 
 
 def _prune_expired(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
