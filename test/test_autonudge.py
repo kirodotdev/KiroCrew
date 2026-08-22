@@ -13,6 +13,7 @@ from kiro_crew import autonudge as _an
 from kiro_crew import autonudge_authz as _autonudge_mod
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
+from kiro_crew.monitoring.models import MonitorOutcome, MonitorState
 
 
 @pytest.fixture(autouse=True)
@@ -41,6 +42,17 @@ def _freeze_clock(monkeypatch) -> None:
     the wall-clock dependency.
     """
     monkeypatch.setattr(_an.time, "time", lambda: _FROZEN_NOW)
+
+
+def _structured_monitor(**changes: object) -> MonitorState:
+    values: dict[str, object] = {
+        "kind": "github_pull_request",
+        "target": "owner/repo#123",
+        "objective": "review_ready",
+        "created_ts": 1_000.0,
+    }
+    values.update(changes)
+    return MonitorState(**values)
 
 
 @pytest.mark.asyncio
@@ -113,6 +125,119 @@ async def test_persistence_across_restart(tmp_path):
     assert restored.max_cycles == 5
     assert loop.id in svc2._timers  # timer re-armed
     svc2.stop()
+
+
+@pytest.mark.asyncio
+async def test_unwired_structured_monitor_is_not_armed_or_fired_on_start(tmp_path):
+    """PR1 persists structured monitors but cannot deliver them before Task4."""
+    store = {
+        "version": 1,
+        "loops": [
+            {
+                "id": "monitor01",
+                "slot_key": "chat-1-123",
+                "message": "must not dispatch",
+                "idle_secs": 15,
+                "active": True,
+                "monitor": {
+                    "kind": "github_pull_request",
+                    "target": "owner/repo#123",
+                    "objective": "review_ready",
+                    "created_ts": 1_000.0,
+                },
+            }
+        ],
+    }
+    (tmp_path / "autonudge.json").write_text(json.dumps(store), encoding="utf-8")
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    await service.start()
+    try:
+        loop = service._loops["monitor01"]
+        assert not loop.active
+        assert loop.id not in service._timers
+        assert fired == []
+    finally:
+        service.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "monitor",
+    (
+        _structured_monitor(),
+        _structured_monitor(version=99),
+        _structured_monitor(outcome=MonitorOutcome.BLOCKED),
+    ),
+)
+async def test_generic_update_cannot_reactivate_a_structured_monitor(tmp_path, monitor):
+    """The legacy PATCH path cannot revive current, future, or terminal monitors."""
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = NudgeLoop(
+        id="monitor02",
+        slot_key="chat-1-123",
+        message="must not dispatch",
+        active=False,
+        monitor=monitor,
+    )
+    service._loops[loop.id] = loop
+
+    updated = await service.update(loop.id, active=True)
+
+    assert updated is loop
+    assert not loop.active
+    assert loop.id not in service._timers
+
+
+@pytest.mark.asyncio
+async def test_unwired_structured_monitor_timer_dispatches_zero_turns(tmp_path):
+    """A pre-existing timer cannot reach legacy delivery after monitor attachment."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor03",
+        slot_key="chat-1-123",
+        message="must not dispatch",
+        monitor=_structured_monitor(),
+    )
+    service._loops[loop.id] = loop
+
+    await service._timer(loop, delay=0)
+
+    assert fired == []
+    assert not loop.active
+
+
+@pytest.mark.asyncio
+async def test_unwired_structured_monitor_fire_cycle_dispatches_zero_turns(tmp_path):
+    """Legacy delivery stays closed if monitor state changes after timer checks."""
+    fired: list[NudgeLoop] = []
+
+    async def on_fire(loop):
+        fired.append(loop)
+        return True
+
+    service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
+    loop = NudgeLoop(
+        id="monitor04",
+        slot_key="chat-1-123",
+        message="must not dispatch",
+        monitor=_structured_monitor(),
+    )
+
+    await service._run_fire_cycle(loop)
+
+    assert fired == []
 
 
 @pytest.mark.asyncio

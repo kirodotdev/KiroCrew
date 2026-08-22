@@ -36,7 +36,7 @@ import tempfile
 import time
 import uuid
 from contextlib import asynccontextmanager, contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Iterator
 
@@ -44,6 +44,14 @@ from kiro_crew import platform_compat, shutdown_event
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.loader import config_dir, data_home
 from kiro_crew.config.paths import legacy_home
+from kiro_crew.monitoring.models import (
+    MONITOR_STATE_VERSION,
+    MonitorOutcome,
+    MonitorState,
+    monitor_state_from_dict,
+    monitor_state_to_dict,
+    quarantine_monitor_state,
+)
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
@@ -425,6 +433,10 @@ class NudgeLoop:
     # so a restart resumes the countdown. A lost background write degrades to
     # a fresh full countdown after restart, never a lost or premature fire.
     next_due_ts: float = 0.0
+    # Optional typed controller state. Its absence is the compatibility marker
+    # for a legacy prompt-driven loop; legacy records are never inferred into a
+    # monitor merely because they use a babysit-shaped message.
+    monitor: MonitorState | None = None
 
 
 def _repair_number(
@@ -519,9 +531,8 @@ class AutoNudgeService:
         # the durable row until the dependent worker has been archived.
         self._maintenance_quiescing: set[str] = set()
         self._maintenance_quiesce_events: dict[str, asyncio.Event] = {}
-        # Set by _load() when a persisted loop was repaired in memory (currently
-        # a re-homed/dropped stop_sentinel_path) so start() can flush the
-        # correction back to disk ONCE instead of re-deriving it every boot.
+        # Set by _load() when persisted state is repaired in memory so start()
+        # flushes the correction before any loop can re-arm.
         self._store_dirty = False
         # Consecutive non-delivery count per loop (drives escalating re-arm
         # backoff + once-per-streak failure logging). Not persisted; resets on
@@ -547,7 +558,40 @@ class AutoNudgeService:
             data = json.load(fh)
         for raw in data.get("loops", []):
             try:
-                loop = NudgeLoop(**{k: raw[k] for k in raw if k in NudgeLoop.__dataclass_fields__})
+                loop_values = {
+                    key: raw[key]
+                    for key in raw
+                    if key in NudgeLoop.__dataclass_fields__ and key != "monitor"
+                }
+                loop = NudgeLoop(**loop_values)
+                if "monitor" in raw:
+                    monitor_raw = raw["monitor"]
+                    try:
+                        loop.monitor = monitor_state_from_dict(monitor_raw)
+                    except (TypeError, ValueError):
+                        loop.monitor = quarantine_monitor_state(monitor_raw)
+                        loop.active = False
+                        loop.next_due_ts = 0.0
+                        self._store_dirty = True
+                        logger.warning(
+                            "AutoNudge: quarantined malformed monitor record for loop %s",
+                            loop.id,
+                            exc_info=True,
+                        )
+                    if loop.monitor.version != MONITOR_STATE_VERSION:
+                        # An older controller cannot safely interpret a newer
+                        # policy. Runtime guards keep it inert without
+                        # rewriting the active intent a newer gateway needs.
+                        loop.monitor.outcome = MonitorOutcome.BLOCKED
+                        loop.monitor.stopped_reason = "unsupported_monitor_version"
+                    elif loop.active:
+                        # Structured monitor delivery belongs to the controller,
+                        # which is intentionally not wired in this substrate.
+                        # Deactivate rather than allowing the legacy timer to
+                        # inject the prompt before a typed decision is made.
+                        loop.active = False
+                        loop.next_due_ts = 0.0
+                        self._store_dirty = True
                 # Re-home / re-validate the persisted kill-switch path. A loop
                 # armed before the data-home move would otherwise be re-armed
                 # with a sentinel path nothing can ever create (see
@@ -644,8 +688,19 @@ class AutoNudgeService:
         """
         return {
             "version": _STORE_VERSION,
-            "loops": [asdict(lp) for lp in self._loops.values()],
+            "loops": [self._serialize_loop(lp) for lp in self._loops.values()],
         }
+
+    @staticmethod
+    def _serialize_loop(loop: NudgeLoop) -> dict[str, Any]:
+        payload = asdict(loop)
+        if loop.monitor is None:
+            # Preserve the legacy wire shape instead of eagerly migrating every
+            # record the next time an unrelated loop is saved.
+            payload.pop("monitor", None)
+        else:
+            payload["monitor"] = monitor_state_to_dict(loop.monitor)
+        return payload
 
     def _write_state(self, payload: dict) -> None:
         # Atomic write: serialize to a temp file in the same dir, fsync, then
@@ -703,7 +758,9 @@ class AutoNudgeService:
                     await self._persist_locked()
                     self._store_dirty = False
                 except Exception:  # noqa: BLE001 - in-memory repair still applies
-                    logger.warning("AutoNudge: could not persist sentinel repair", exc_info=True)
+                    logger.warning(
+                        "AutoNudge: could not persist loaded-state repair", exc_info=True
+                    )
             for loop in self._loops.values():
                 if loop.active:
                     self._arm_from_deadline(loop)
@@ -1043,7 +1100,9 @@ class AutoNudgeService:
             loop = self._loops.get(loop_id)
             if not loop:
                 return None
-            previous = asdict(loop)
+            # Keep typed nested values intact. ``asdict`` recursively converts
+            # MonitorState to a plain dict, which is not a valid rollback value.
+            previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
             was_active = loop.active
             if message is not None:
                 loop.message = message
@@ -1057,6 +1116,16 @@ class AutoNudgeService:
             if max_runtime_secs is not None:
                 loop.max_runtime_secs = max(0, int(max_runtime_secs))
             if active is not None:
+                if active and loop.monitor is not None:
+                    if loop.monitor.version == MONITOR_STATE_VERSION:
+                        # The generic loop update path owns legacy prompt cycles,
+                        # not structured monitor policy. Task4 supplies the
+                        # controller that can deliberately re-arm these records.
+                        loop.active = False
+                        loop.next_due_ts = 0.0
+                    # An older gateway cannot interpret future structured state.
+                    # Ignore its generic Save flag instead of changing the outer
+                    # active intent that a compatible version may resume.
                 # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation
                 # (stopped_reason supplied — the _timer's cycle_cap /
                 # runtime_budget paths) must never OVERWRITE a deactivation
@@ -1070,7 +1139,7 @@ class AutoNudgeService:
                 # already inactive. The reverse order is already safe — a
                 # manual pause overwriting a bound tag only ever NARROWS
                 # revivability ("manual" never auto-revives).
-                if (
+                elif (
                     not active
                     and stopped_reason is None
                     and loop.stopped_reason == AUTONUDGE_STOP_REASON
@@ -1453,6 +1522,12 @@ class AutoNudgeService:
         sending another message. The delay is capped at ``idle_secs`` so a
         clock jump can never park the timer beyond one full interval.
         """
+        if loop.monitor is not None:
+            # A typed monitor needs a pre-delivery decision controller. PR1
+            # persists its substrate only, so any legacy timer is cancelled and
+            # cannot reach _run_fire_cycle before Task4 wires that controller.
+            self._cancel_timer(loop.id)
+            return
         now = time.time()
         if loop.next_due_ts <= 0:
             loop.next_due_ts = now + loop.idle_secs
@@ -1490,6 +1565,13 @@ class AutoNudgeService:
         except asyncio.CancelledError:
             return
         if shutdown_event.is_set():
+            return
+        if loop.monitor is not None:
+            # A timer can predate monitor attachment or a process upgrade. It
+            # must never dispatch a structured record through legacy prompt
+            # delivery, even if it was already sleeping when state changed.
+            if loop.active:
+                await self.update(loop.id, active=False)
             return
         # Kill switch: sentinel file present?
         if loop.stop_sentinel_path and Path(loop.stop_sentinel_path).exists():
@@ -1558,7 +1640,7 @@ class AutoNudgeService:
         # Fire. Update state only if the callback reports actual delivery —
         # otherwise skipped nudges (e.g. slot mid-turn) inflate cycle_count and
         # prematurely trip max_cycles. Missing callback → nothing to deliver.
-        if self._on_fire is None:
+        if self._on_fire is None or loop.monitor is not None:
             return
         self._firing.add(loop.id)
         try:
@@ -1582,7 +1664,7 @@ class AutoNudgeService:
         Runs entirely inside the caller's ``_firing`` window so a concurrent
         ``update()`` never cancels this task between delivery and persistence.
         """
-        if self._on_fire is None:
+        if self._on_fire is None or loop.monitor is not None:
             return
         # Mark the fire window so a concurrent update() defers its re-arm
         # instead of cancelling this task mid-turn (see update()). The window

@@ -875,6 +875,50 @@ as `research-notes`, and user-created canonical lookalikes such as
 `research-deadbeef`, are ordinary dashboard slots and retain remove-on-stop
 behavior.
 
+**Structured monitor substrate** (`monitoring/models.py`,
+`monitoring/decision.py`): `NudgeLoop.monitor` is an optional, versioned
+controller record for probe-first monitors. Absence is the durable compatibility
+marker for a legacy prompt loop, and serialization omits the absent field so an
+unrelated save does not eagerly migrate old records. The record owns target and
+objective identity, canonical observation and wake fingerprints, in-flight
+state, provider-error streak, completed agent-turn and token totals, probe
+deadline, and terminal outcome. Load reconstructs the typed record; a terminal
+current-version record with a contradictory active loop is deactivated. An
+AutoNudge dashboard response recursively passes every string in the structured
+monitor mapping through `redact_via_context`, including provider-controlled
+observation keys and values, before it leaves the backend. Legacy loop fields
+retain their existing response shape. An
+unsupported monitor version is marked blocked in its compatibility view and
+retained for inspection rather than executed under an older policy; its raw
+future payload and outer active intent survive an unrelated store rewrite
+unchanged. A generic legacy Save with `active=true` likewise leaves that future
+outer intent untouched. Its inert compatibility view uses validated current
+identity values when
+present and placeholders otherwise, so a future schema may rename those fields
+without making an older reader delete the raw record. Its compatibility view is
+inert under the older runtime without rewriting the outer active intent, allowing
+a later compatible gateway to resume it. A malformed current-version
+monitor mapping is quarantined inactive with `invalid_monitor_record`; its exact
+strict-JSON monitor payload remains durable across unrelated store rewrites for
+inspection. A non-mapping payload is skipped because it has no preservable monitor
+identity. Structured cadence is typed state with a 300-second default;
+the legacy loop default remains 60 seconds. This substrate has no delivery
+controller: loading, generic updating, arming, or a pre-existing timer all fail
+closed without a model turn until a later slice wires typed decisions. The pure
+`decide_monitor` policy performs no I/O. It
+checks the non-zero runtime/turn/token budgets first, classifies provider errors
+without a model turn, suppresses an unchanged observation, and permits
+`wake_actionable` only when the actionable fingerprint differs from the last
+acknowledged wake fingerprint. The defaults are 14,400 seconds, eight completed
+agent turns, 250,000 aggregate input/output tokens, and three consecutive
+provider errors. This substrate does not yet schedule a provider probe or expose
+a new MCP tool; those are later RFC implementation slices.
+
+Every persisted monitor mapping must encode as strict JSON; nested non-finite numbers
+and other values accepted only by Python's permissive encoder invalidate the record.
+Timestamp-like integers too large for finite float arithmetic are likewise quarantined
+with a zeroed compatibility timestamp while their exact raw monitor payload is retained.
+
 A reasonless inactive update is idempotent for a Research Lab stop tombstone:
 it preserves the source-owned `autonudge_stop` reason until the watchdog
 consumes it. An API retry or unrelated patch therefore cannot downgrade a

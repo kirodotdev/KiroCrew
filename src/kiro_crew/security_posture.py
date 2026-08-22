@@ -130,6 +130,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "source URL and its bare hostname.",
     ),
     (
+        "AutoNudge monitor responses",
+        "dashboard/handlers/autonudge.py",
+        "Structured monitor state served by the AutoNudge dashboard endpoints. "
+        "Provider observations are arbitrary nested JSON and can quote credentials "
+        "or exfiltration URLs, so every string key and value in the monitor mapping "
+        "passes through the platform-aware redaction chain before the response leaves "
+        "the backend.",
+    ),
+    (
         "AWS identity-probe failures",
         "aws_consent.py",
         "The stderr of a failed `aws sts get-caller-identity`, run to show the "

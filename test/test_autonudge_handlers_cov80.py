@@ -23,6 +23,7 @@ from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.autonudge import NudgeLoop
 from kiro_crew.dashboard.handlers import autonudge as h
+from kiro_crew.monitoring.models import MonitorState
 
 
 class _FakeSvc:
@@ -104,6 +105,29 @@ async def test_list_serializes_every_loop(monkeypatch: pytest.MonkeyPatch) -> No
     # asdict() round-trip, not a repr: the full dataclass shape reaches the client.
     assert payload["loops"][0]["idle_secs"] == 300
     assert payload["loops"][0]["slot_key"] == "chat-1-111"
+
+
+@pytest.mark.asyncio
+async def test_list_redacts_nested_monitor_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "AKIAIOSFODNN7EXAMPLE"
+    loop = _loop()
+    loop.monitor = MonitorState(
+        kind="github_pull_request",
+        target="https://github.com/example/repo/pull/1",
+        objective="review_ready",
+        created_ts=1.0,
+        last_observation={
+            "summary": f"provider returned {secret}",
+            "history": [secret],
+            secret: "credential-shaped keys are provider-controlled too",
+        },
+    )
+    _svc(monkeypatch, _FakeSvc([loop]))
+
+    payload = _body(await h.api_autonudge_list(_mk("GET", "/api/autonudge")))
+
+    assert secret not in json.dumps(payload)
+    assert "provider returned" in payload["loops"][0]["monitor"]["last_observation"]["summary"]
 
 
 # --- GET /api/autonudge/{slot_key} -------------------------------------------

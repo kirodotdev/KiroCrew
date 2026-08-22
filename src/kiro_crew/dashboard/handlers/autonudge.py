@@ -20,6 +20,7 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     resolve_stop_sentinel,
 )
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.platform import redact_via_context
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import ledger_key, render_snapshot
 
@@ -58,8 +59,24 @@ async def compose_nudge_body(
     return body
 
 
-def _serialize(loop: Any) -> dict:
-    return asdict(loop)
+def _redact_monitor_value(value: Any) -> Any:
+    """Redact every string in provider-controlled monitor evidence."""
+    if isinstance(value, str):
+        return redact_via_context(value)
+    if isinstance(value, dict):
+        return {
+            _redact_monitor_value(key): _redact_monitor_value(item) for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_monitor_value(item) for item in value]
+    return value
+
+
+def _serialize(loop: Any) -> dict[str, Any]:
+    payload = asdict(loop)
+    if payload.get("monitor") is not None:
+        payload["monitor"] = _redact_monitor_value(payload["monitor"])
+    return payload
 
 
 async def api_autonudge_list(request: web.Request) -> web.Response:
