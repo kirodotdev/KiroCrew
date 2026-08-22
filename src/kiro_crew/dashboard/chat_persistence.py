@@ -507,9 +507,17 @@ def _rehydrate_slot_from_history(
             # A legacy channel transcript carrying neither marker is surfaced by
             # ``channel_slot_reconciler`` instead, which sets the flag -- and the
             # first save then persists it, so later boots need no inference.
+            # The ``linked_session_key`` arm is a legacy inference for rows
+            # written before the flag existed, and it must not fire for an
+            # app-owned row: an app-scoped slot cannot hold a binding
+            # (:attr:`_ChatSlot.linked_session_key`), so a persisted one is a
+            # record of the escalation that wrote it, and inferring provenance
+            # FROM it would hand back through ``slot_history_key`` the very
+            # transcript authority the refused binding just denied. An explicit
+            # ``meta["channel_origin"]`` is real provenance and still wins.
             channel_origin=(
                 bool(meta.get("channel_origin"))
-                or bool(meta.get("linked_session_key"))
+                or (bool(meta.get("linked_session_key")) and not meta.get("app"))
             ),
             # Restore the persisted origin. Re-deriving it here would relabel
             # every rehydrated slot on restart, so a cron slot would come back
