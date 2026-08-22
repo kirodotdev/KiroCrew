@@ -152,13 +152,26 @@ def _warn_unresolvable_once(name: str, command: str, search_path: str = "") -> N
         )
         return
     _unresolvable_warned.add(key)
-    logger.warning(
-        "MCP probe failed [%s]: command not found: %s%s; %s",
-        name,
-        command,
-        searched,
-        MCP_PATH_HINT,
-    )
+    if search_path:
+        logger.warning(
+            "MCP probe failed [%s]: command not found: %s%s; %s",
+            name,
+            command,
+            searched,
+            MCP_PATH_HINT,
+        )
+    else:
+        # Nothing was PATH-searched: the command carried a directory component,
+        # so ``shutil.which`` looked it up directly. MCP_PATH_HINT reads "if it
+        # is installed elsewhere, add that directory to mcp.extra_path_dirs" --
+        # a remedy that cannot change this lookup, so offering it here points
+        # the reader at the one thing that was not wrong. Same reason the
+        # searched-directory list is omitted above.
+        logger.warning(
+            "MCP probe failed [%s]: command not found: %s",
+            name,
+            command,
+        )
 
 
 #: Servers whose probe has already reported a missing sandbox backend. Keyed by
@@ -1557,6 +1570,13 @@ async def probe_server(
     # FileNotFoundError handler can name the searched directories regardless of
     # how far the attempt got.
     effective_path = ""
+    # What was ACTUALLY searched, which is not the same thing: ``shutil.which``
+    # ignores ``path`` for a command carrying a directory component, so only a
+    # BARE command is ever looked up across ``effective_path``. Reported
+    # separately so a failing ``/opt/vendor/bin/foo`` does not claim it was
+    # missing from every directory on the PATH. Bound before the try for the
+    # same reason ``effective_path`` is.
+    searched_path = ""
     # Stamped at probe START so the early error returns below (which skip the
     # cache) still carry an honest "when": the probe DID run at this time.
     # _cache_probe overwrites it with completion time on the paths it covers.
@@ -1595,11 +1615,12 @@ async def probe_server(
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
+        searched_path = "" if os.path.dirname(server.command) else effective_path
         resolved = shutil.which(server.command, path=effective_path)
         if not resolved:
             server.status = "error"
-            server.error = _unresolved_error(server.command, effective_path)
-            _warn_unresolvable_once(server.name, server.command, effective_path)
+            server.error = _unresolved_error(server.command, searched_path)
+            _warn_unresolvable_once(server.name, server.command, searched_path)
             return server
 
         # The command resolved, so forget any prior "not found" report — keyed on
@@ -1867,10 +1888,11 @@ async def probe_server(
         )
     except FileNotFoundError:
         server.status = "error"
-        server.error = _unresolved_error(server.command, effective_path)
-        # ``effective_path`` was bound before the try, so it is always safe to
-        # read here even if the failure preceded PATH resolution.
-        _warn_unresolvable_once(server.name, server.command, effective_path)
+        server.error = _unresolved_error(server.command, searched_path)
+        # ``searched_path`` was bound before the try, so it is always safe to
+        # read here even if the failure preceded PATH resolution -- and it is
+        # already "" for a directory-qualified command, which never had one.
+        _warn_unresolvable_once(server.name, server.command, searched_path)
     except SandboxUnavailableError as exc:
         # The PROBE could not run — this says nothing about the server, and the
         # two must not be reported alike. Ahead of the generic clause, which would
