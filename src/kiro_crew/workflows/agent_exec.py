@@ -44,6 +44,53 @@ AgentFn = Callable[[str, dict], Any]
 # but prevents infinite tool loops from prompt injection.
 _MAX_TURNS_PER_STEP = 200
 
+# Stable identity used by the HookManager governance profile resolver for the
+# host-authorized native workflow surface. Public workflows leave ``app`` empty.
+WORKFLOW_APP_ID = "workflows"
+
+
+async def _reject_unattended_tool(_event: Any) -> bool:
+    """Native Crew has no interactive approver, so fail closed on TOOL_ALLOW."""
+    return False
+
+
+def _workflow_tool_gate_kwargs(
+    *,
+    native_crew: bool,
+    key: str,
+    source_session_key: str,
+    agent: Optional[str],
+    app: str,
+) -> dict[str, Any]:
+    """Return the tool-gate kwargs for one workflow agent turn.
+
+    Dynamic/public workflows retain their historical AUTO_APPROVE behavior;
+    native Crew execution is a separate host-authorized capability and must
+    cross the HookManager boundary. If the dashboard has not initialized the
+    global hook store, REJECT_ALL is deliberate fail-closed behavior — never
+    silently degrade a native role to auto-approval.
+    """
+    if not native_crew:
+        return {"approval_policy": ToolApprovalPolicy.AUTO_APPROVE}
+
+    from kiro_crew.hooks import get_global_hook_store
+
+    hooks = get_global_hook_store()
+    return {
+        "approval_policy": (
+            ToolApprovalPolicy.HOOK_BASED
+            if hooks is not None
+            else ToolApprovalPolicy.REJECT_ALL
+        ),
+        "hooks": hooks,
+        # Governance profiles bind to the originating dashboard session, while
+        # the provider key remains an ephemeral per-role implementation detail.
+        "session_key": source_session_key or key,
+        "agent": agent or "",
+        "app": app or WORKFLOW_APP_ID,
+        "on_tool_approval": _reject_unattended_tool,
+    }
+
 
 def build_agent_fn(
     sessions: Any,
@@ -53,6 +100,9 @@ def build_agent_fn(
     default_model: Optional[str] = None,
     cwd: Optional[str] = None,
     extra_env: Optional[dict[str, str]] = None,
+    native_crew: bool = False,
+    source_session_key: str = "",
+    app: str = "",
 ) -> AgentFn:
     """Return an ``agent_fn`` that runs each workflow agent step through a model.
 
@@ -64,6 +114,11 @@ def build_agent_fn(
     session, mirroring ``default_agent``/``default_model``/``cwd``. It is a
     per-run pin rather than a per-call override because ``WorkflowContext.agent()``
     exposes no ``env=`` parameter (that Protocol is frozen).
+
+    ``native_crew`` enables the host-authorized native Crew boundary. Its tool
+    turns use the global HookManager when available and reject all tools when
+    that store is absent. ``source_session_key`` and ``app`` identify the
+    originating workflow surface to governance profiles.
     """
 
     # Per-run, 0-based ephemeral session index (not a module-global, so each run
@@ -89,10 +144,17 @@ def build_agent_fn(
         # setup is not charged to the turn.
         _turn_t0 = time.monotonic()
         try:
+            gate_kwargs = _workflow_tool_gate_kwargs(
+                native_crew=native_crew,
+                key=key,
+                source_session_key=source_session_key,
+                agent=opts.get("agent") or default_agent,
+                app=app,
+            )
             text = await stream_and_collect(
                 provider,
                 prompt,
-                approval_policy=ToolApprovalPolicy.AUTO_APPROVE,
+                **gate_kwargs,
                 max_turns=_MAX_TURNS_PER_STEP,
             )
             # ── Per-turn usage row: attribute workflow spend. ──

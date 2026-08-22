@@ -2228,6 +2228,7 @@
       "desc_code": "Open code intelligence tools",
       "desc_compact": "Compact conversation to free context",
       "desc_context": "Manage context files and token usage",
+      "desc_crew": "Run a read-only Quality Engineering review",
       "desc_editor": "Compose your prompt in an external editor",
       "desc_exit": "Exit the chat session",
       "desc_experiment": "Toggle experimental features",

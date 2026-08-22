@@ -1291,6 +1291,8 @@ async def _remove_slot_for_history_key(state: DashboardState, key: str) -> None:
         slot = state._slots.pop(normalized, None)
     if slot:
         pin_slot_keys.add(slot.key)
+    for candidate in pin_slot_keys:
+        state.clear_pairing_slot(candidate)
     # Crew persists independently of the transcript, so a permanent delete has to
     # reach into it too: its durable queue holds the user's own request texts and
     # its dispatched subagents keep running whether or not a tab is open. Purging
@@ -1799,6 +1801,7 @@ async def _reset_all_sessions(request: web.Request) -> int:
     Returns the number of sessions reset.
     """
     state: DashboardState = request.app["state"]
+    state.clear_all_pairing()
     sessions = state.sessions
 
     # Reload factory so provider switch takes effect immediately

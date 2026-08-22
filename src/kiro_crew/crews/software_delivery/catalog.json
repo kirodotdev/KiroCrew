@@ -1,0 +1,102 @@
+{
+  "schema": 1,
+  "roles": [
+    {
+      "id": "solution-architect",
+      "version": "0.1.0",
+      "mission": "Turn an ambiguous technical request into an implementable decision.",
+      "agent": "kirocrew-software-delivery-architect",
+      "skills": [],
+      "tool_scopes": ["read_project", "read_knowledge"],
+      "profile": "read-only",
+      "input_schema": "architecture_request",
+      "output_schema": "architecture_brief",
+      "handoff": "architecture_brief",
+      "quality_gates": ["goals_and_non_goals", "tradeoffs", "acceptance_criteria"],
+      "side_effects": "none"
+    },
+    {
+      "id": "software-engineer",
+      "version": "0.1.0",
+      "mission": "Implement an approved change in a candidate workspace.",
+      "agent": "kirocrew-software-delivery-engineer",
+      "skills": [],
+      "tool_scopes": ["read_project", "candidate_write"],
+      "profile": "candidate-write",
+      "input_schema": "implementation_request",
+      "output_schema": "implementation_result",
+      "handoff": "implementation_result",
+      "quality_gates": ["tests_recorded", "changed_paths_recorded"],
+      "side_effects": "candidate-write"
+    },
+    {
+      "id": "validator",
+      "version": "0.1.0",
+      "mission": "Evaluate a candidate result against project and Crew quality gates.",
+      "agent": "kirocrew-software-delivery-validator",
+      "skills": [],
+      "tool_scopes": ["read_project", "run_checks"],
+      "profile": "read-only",
+      "input_schema": "validation_request",
+      "output_schema": "validation_report",
+      "handoff": "validation_report",
+      "quality_gates": ["required_checks_run", "result_classified"],
+      "side_effects": "none"
+    },
+    {
+      "id": "security-reliability-reviewer",
+      "version": "0.1.0",
+      "mission": "Review security, reliability, recovery, and residual risk.",
+      "agent": "kirocrew-software-delivery-security",
+      "skills": [],
+      "tool_scopes": ["read_project", "read_audit"],
+      "profile": "read-only",
+      "input_schema": "risk_review_request",
+      "output_schema": "risk_review",
+      "handoff": "risk_review",
+      "quality_gates": ["failure_modes_reviewed", "residual_risk_recorded"],
+      "side_effects": "none"
+    }
+  ],
+  "crews": [
+    {
+      "id": "software-delivery",
+      "version": "0.1.0",
+      "roles": [
+        "solution-architect",
+        "software-engineer",
+        "validator",
+        "security-reliability-reviewer"
+      ],
+      "routing": {
+        "small_change": {
+          "roles": ["software-engineer", "validator"],
+          "approval": false
+        },
+        "feature": {
+          "roles": ["solution-architect", "software-engineer", "validator"],
+          "approval": false
+        },
+        "production_change": {
+          "roles": [
+            "solution-architect",
+            "software-engineer",
+            "validator",
+            "security-reliability-reviewer"
+          ],
+          "approval": true
+        }
+      },
+      "handoffs": [
+        "architecture_brief",
+        "implementation_result",
+        "validation_report",
+        "risk_review"
+      ],
+      "policies": {
+        "target_write": "human_approval_only",
+        "push": "human_approval_only"
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "name": "kirocrew-software-delivery-validator",
+  "description": "Read-only validation role for Software Delivery.",
+  "model": "auto",
+  "tools": ["fs_read", "code", "grep", "glob", "execute_bash", "report"],
+  "resources": ["file://.kiro/steering/**/*.md"],
+  "includeMcpJson": false
+}

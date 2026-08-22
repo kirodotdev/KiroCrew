@@ -507,3 +507,42 @@ class TestStartDashboardWiring:
         await _cancel_stray_tasks()
 
         provider.stop.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_workflow_completion_callback_clears_pairing_before_result_injection(
+    tmp_path, monkeypatch
+) -> None:
+    async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+        run_id = "pairing-callback-run"
+        state.set_pairing_task(
+            "callback-slot",
+            {
+                "task_id": "pairing-callback-task",
+                "mode": "normal",
+                "workflow_run_id": run_id,
+            },
+        )
+        state._automatic_route_runs["callback-slot"] = run_id
+
+        workflow_service = state.workflow_service
+        assert workflow_service is not None
+        callback = workflow_service.registry._on_done
+        assert callback is not None
+
+        callback(
+            run_id,
+            {
+                "run_id": run_id,
+                "name": "pairing callback test",
+                "status": "finished",
+                "result": {"ok": True},
+                "session_key": "legacy-session-without-live-slot",
+            },
+        )
+
+        assert state.pairing_task("callback-slot") is None
+        assert "callback-slot" not in state._automatic_route_runs
+        fallback = state.get_slot(f"workflow-{run_id}")
+        assert fallback is not None
+        assert any("pairing callback test" in message["content"] for message in fallback.messages)

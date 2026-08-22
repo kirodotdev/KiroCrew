@@ -113,6 +113,29 @@ async def test_a_hook_security_deny_is_flagged_as_a_security_block():
 
 
 @pytest.mark.asyncio
+async def test_hook_allow_is_denied_when_unattended_callback_rejects():
+    """HOOK_BASED must not silently auto-approve native unattended turns."""
+    from kiro_crew.hooks import HookManager
+
+    provider = _ScriptedProvider(_script("DeleteFile"))
+
+    async def _deny(_event) -> bool:
+        return False
+
+    await stream_and_collect(
+        provider,  # type: ignore[arg-type]
+        "q",
+        approval_policy=ToolApprovalPolicy.HOOK_BASED,
+        hooks=HookManager(),
+        on_tool_approval=_deny,
+        retry_transient=False,
+    )
+
+    assert provider.approved == []
+    assert provider.rejected == ["r1"]
+
+
+@pytest.mark.asyncio
 async def test_a_governance_deny_is_not_a_security_block():
     """Policy state is not a defect in the attempt: the same call becomes allowed
     when the ceiling loosens, so it must not feed a durable failure budget."""

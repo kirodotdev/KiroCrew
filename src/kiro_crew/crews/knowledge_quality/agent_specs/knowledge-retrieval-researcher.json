@@ -1,0 +1,8 @@
+{
+  "name": "kirocrew-knowledge-quality-researcher",
+  "description": "Read-only retrieval evidence analyst for Knowledge Quality.",
+  "model": "auto",
+  "tools": ["report"],
+  "allowedTools": ["report"],
+  "includeMcpJson": false
+}

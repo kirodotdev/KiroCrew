@@ -8,6 +8,7 @@ import logging
 import threading
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from uuid import uuid4
 
 try:
@@ -191,8 +192,9 @@ _OWNERSHIP_HASH_COL: dict[str, str] = {
 
 
 class KnowledgeStore:
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, *, read_only: bool = False):
         self._db_path = db_path
+        self._read_only = read_only
         # One connection PER THREAD. sqlite3 connections carry
         # thread affinity (check_same_thread=True by default), but callers
         # like HybridRetriever.search() run on worker threads via
@@ -204,13 +206,23 @@ class KnowledgeStore:
         # serializes rare cross-thread writes.
         self._thread_local = threading.local()
         self.graph = SimpleDiGraph()
-        self._init_schema()
-        self._migrate()
+        if not self._read_only:
+            self._init_schema()
+            self._migrate()
         self._load_graph()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
-        conn.execute("PRAGMA journal_mode=WAL")
+        if self._read_only:
+            database_uri = f"{Path(self._db_path).resolve().as_uri()}?mode=ro"
+            conn = sqlite3.connect(
+                database_uri,
+                uri=True,
+                timeout=30,
+                isolation_level=None,
+            )
+        else:
+            conn = sqlite3.connect(self._db_path, timeout=30, isolation_level=None)
+            conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.row_factory = sqlite3.Row

@@ -85,6 +85,53 @@ async def test_subagents_get_full_tooled_agent_not_lite() -> None:
     assert sessions2.created[0][1]["agent"] == "agent-sde"
 
 
+async def test_native_crew_uses_hook_based_approval_and_identity(monkeypatch) -> None:
+    sessions = FakeSessions()
+    hook_store = object()
+    captured: dict = {}
+
+    async def capture_stream(provider, message, **kwargs):
+        captured.update(kwargs)
+        return "approved reply"
+
+    monkeypatch.setattr("kiro_crew.hooks.get_global_hook_store", lambda: hook_store)
+    monkeypatch.setattr(agent_exec, "stream_and_collect", capture_stream)
+
+    fn = build_agent_fn(
+        sessions,
+        run_id="wf_native",
+        native_crew=True,
+        source_session_key="dashboard:slot-a",
+        app="workflows",
+    )
+    await fn("native work", {"agent": "kirocrew-software-delivery-engineer"})
+
+    assert captured["approval_policy"] is agent_exec.ToolApprovalPolicy.HOOK_BASED
+    assert captured["hooks"] is hook_store
+    assert captured["session_key"] == "dashboard:slot-a"
+    assert captured["agent"] == "kirocrew-software-delivery-engineer"
+    assert captured["app"] == "workflows"
+    assert await captured["on_tool_approval"](MagicMock()) is False
+
+
+async def test_native_crew_rejects_all_without_global_hook_store(monkeypatch) -> None:
+    sessions = FakeSessions()
+    captured: dict = {}
+
+    async def capture_stream(provider, message, **kwargs):
+        captured.update(kwargs)
+        return "blocked reply"
+
+    monkeypatch.setattr("kiro_crew.hooks.get_global_hook_store", lambda: None)
+    monkeypatch.setattr(agent_exec, "stream_and_collect", capture_stream)
+
+    fn = build_agent_fn(sessions, run_id="wf_native_no_hooks", native_crew=True)
+    await fn("native work", {"agent": "kirocrew-software-delivery-engineer"})
+
+    assert captured["approval_policy"] is agent_exec.ToolApprovalPolicy.REJECT_ALL
+    assert captured["hooks"] is None
+
+
 async def test_named_session_is_reused_and_not_released() -> None:
     sessions = FakeSessions()
     fn = build_agent_fn(sessions, run_id="wf_x")

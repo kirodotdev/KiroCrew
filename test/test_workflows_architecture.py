@@ -48,6 +48,7 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     # service is the gateway-side façade ABOVE runner — composes the engine for the
     # live process (chat tools / app / injection). Top of the stack.
     "service": {"validate", "registry", "runner", "agent_exec", "agent_pool", "store"},
+    "role_resolver": set(),  # workflow-local role adapter; depends only on package contracts
 }
 
 # Modules outside the package the engine must never import directly (F1).

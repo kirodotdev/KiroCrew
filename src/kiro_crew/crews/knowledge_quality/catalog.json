@@ -1,0 +1,81 @@
+{
+  "schema": 1,
+  "roles": [
+    {
+      "id": "retrieval-researcher",
+      "version": "0.1.0",
+      "mission": "Analyze prepared retrieval evidence and classify knowledge-quality outcomes.",
+      "agent": "kirocrew-knowledge-quality-researcher",
+      "skills": [],
+      "tool_scopes": ["read_audit"],
+      "profile": "read-only",
+      "input_schema": "retrieval_audit_request",
+      "output_schema": "knowledge_audit_report",
+      "handoff": "knowledge_audit_report",
+      "quality_gates": ["source_identity_checked", "claims_classified"],
+      "side_effects": "none"
+    },
+    {
+      "id": "retrieval-validator",
+      "version": "0.1.0",
+      "mission": "Validate every retrieval case against its expected source and evidence contract.",
+      "agent": "kirocrew-knowledge-quality-validator",
+      "skills": [],
+      "tool_scopes": ["read_audit"],
+      "profile": "read-only",
+      "input_schema": "validation_request",
+      "output_schema": "validation_report",
+      "handoff": "validation_report",
+      "quality_gates": ["all_cases_classified", "evidence_gaps_recorded"],
+      "side_effects": "none"
+    },
+    {
+      "id": "security-reliability-reviewer",
+      "version": "0.1.0",
+      "mission": "Review read-only enforcement, failure modes, migration risk, and residual risk.",
+      "agent": "kirocrew-knowledge-quality-security",
+      "skills": [],
+      "tool_scopes": ["read_audit"],
+      "profile": "read-only",
+      "input_schema": "risk_review_request",
+      "output_schema": "risk_review",
+      "handoff": "risk_review",
+      "quality_gates": ["failure_modes_reviewed", "residual_risk_recorded"],
+      "side_effects": "none"
+    }
+  ],
+  "crews": [
+    {
+      "id": "knowledge-quality",
+      "version": "0.1.0",
+      "roles": [
+        "retrieval-researcher",
+        "retrieval-validator",
+        "security-reliability-reviewer"
+      ],
+      "routing": {
+        "retrieval_audit": {
+          "roles": ["retrieval-researcher", "retrieval-validator"],
+          "approval": false
+        },
+        "retrieval_audit_with_risk_review": {
+          "roles": [
+            "retrieval-researcher",
+            "retrieval-validator",
+            "security-reliability-reviewer"
+          ],
+          "approval": false
+        }
+      },
+      "handoffs": [
+        "knowledge_audit_report",
+        "validation_report",
+        "risk_review"
+      ],
+      "policies": {
+        "target_write": "none",
+        "push": "none"
+      }
+    }
+  ]
+}

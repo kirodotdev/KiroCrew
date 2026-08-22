@@ -423,3 +423,17 @@ async def test_pool_agents_false_uses_per_call_sessions() -> None:
     # and a no-op when the run armed no nudges.
     assert runner._on_complete is not None
     await runner._on_complete()  # no nudge tasks → returns immediately
+
+
+async def test_public_runner_does_not_expose_native_crew_port() -> None:
+    svc = WorkflowService(sessions=FakeSessions([]))
+    runner = svc._runner("wf_public")
+
+    assert runner._ports.get("workflow") is None
+
+
+async def test_host_authorized_runner_exposes_native_crew_port() -> None:
+    svc = WorkflowService(sessions=FakeSessions([]))
+    runner = svc._runner("wf_host", allow_native_crew=True)
+
+    assert runner._ports.get("workflow") is not None

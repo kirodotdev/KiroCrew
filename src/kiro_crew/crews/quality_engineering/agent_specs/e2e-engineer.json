@@ -1,0 +1,9 @@
+{
+  "name": "kirocrew-quality-engineering-e2e",
+  "description": "Private Quality Engineering E2E Engineer worker",
+  "model": "auto",
+  "includeMcpJson": false,
+  "tools": ["report"],
+  "allowedTools": ["report"],
+  "resources": []
+}

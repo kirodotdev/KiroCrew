@@ -1,0 +1,8 @@
+{
+  "name": "kirocrew-knowledge-quality-security",
+  "description": "Read-only security and reliability reviewer for Knowledge Quality.",
+  "model": "auto",
+  "tools": ["report"],
+  "allowedTools": ["report"],
+  "includeMcpJson": false
+}

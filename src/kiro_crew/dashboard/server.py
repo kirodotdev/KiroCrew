@@ -2344,6 +2344,16 @@ async def start_dashboard(
                 logger.debug("workflow on_event broadcast failed", exc_info=True)
 
         def _wf_on_done(run_id: str, snapshot: dict) -> None:
+            try:
+                state.clear_pairing_for_workflow_run(run_id)
+            except Exception:
+                # Completion callbacks can race slot reset/delete; pairing cleanup
+                # is best-effort and must never suppress workflow result delivery.
+                logger.debug("workflow pairing cleanup failed for %s", run_id, exc_info=True)
+            for _slot_key, _active_run_id in list(state._automatic_route_runs.items()):
+                if _active_run_id == run_id:
+                    state._automatic_route_runs.pop(_slot_key, None)
+
             def _auto_turn(slot: Any, snap: dict) -> None:
                 try:
                     from kiro_crew.dashboard.chat import _run_chat
