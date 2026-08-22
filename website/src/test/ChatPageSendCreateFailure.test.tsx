@@ -67,7 +67,7 @@ Object.defineProperty(window, 'matchMedia', {
 
 import ChatPage from '../pages/ChatPage'
 
-function makeStore(pendingInput = 'do not lose me') {
+function makeStore(pendingInput: string | null = 'do not lose me') {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -447,5 +447,20 @@ describe('send() when creating the session fails', { timeout: 20_000 }, () => {
     expect(createChatSlot).toHaveBeenCalledTimes(2)
     // NOT 'slot-a' — that session has nothing to do with this message.
     expect(sendChat.mock.calls[0][1]).toBe('slot-z')
+  })
+})
+
+describe('full-dashboard new-window intent', () => {
+  it('creates a blank slot without copying or sending the current session', async () => {
+    createChatSlot.mockResolvedValue({
+      key: 'slot-new', title: 'slot-new', messages: 0, running: false,
+    })
+    const store = makeStore(null)
+
+    await renderSlotless(store, '/chat?new=1')
+
+    await waitFor(() => expect(createChatSlot).toHaveBeenCalledTimes(1))
+    expect(sendChat).not.toHaveBeenCalled()
+    expect(store.getState().chat.activeSlot).toBe('slot-new')
   })
 })
