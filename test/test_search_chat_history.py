@@ -147,6 +147,32 @@ class TestSearchChatHistoryHandler:
         out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
         assert "redis.timeout" in out
 
+    def test_get_chat_session_reads_recall_roles(self, tmp_path, monkeypatch):
+        """An inject-role breadcrumb is readable here, and a system-role one is not.
+
+        A ``/note`` breadcrumb is appended with ``role="inject"``, and reading a
+        past session is the clearest case of crossing the boundary those notes
+        exist to survive -- so a handler that filtered on a hardcoded
+        ``{"user", "assistant"}`` dropped exactly the messages it was asked for.
+        ``RECALL_ROLES`` already governs replay and compression; this asserts the
+        same constant governs the fetch.
+
+        The system-role half is the negative direction, and it is what makes the
+        test measure the CONSTANT rather than merely the absence of a filter:
+        ``ConversationLog.recent`` guards with ``if roles:``, so deleting the
+        argument is permissive and would satisfy the inject assertion on its own
+        while quietly admitting internal system rows into the transcript.
+        """
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        cl = _seed_sessions(tmp_path)
+        cl.append("dashboard_chat-1", "inject", "note breadcrumb: rotate the staging key")
+        cl.append("dashboard_chat-1", "system", "internal marker, not for recall")
+
+        out = mcp_core._call_tool_inner("get_chat_session", {"session_key": "dashboard_chat-1"})
+
+        assert "rotate the staging key" in out, "an inject breadcrumb must be readable here"
+        assert "internal marker, not for recall" not in out, "system is absent from RECALL_ROLES"
+
     def test_legacy_metadataless_session_still_surfaces(self, tmp_path, monkeypatch):
         # A legacy session file whose first line is a message (predates the
         # metadata line) yields {} from get_metadata. Search must NOT drop it:
