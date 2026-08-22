@@ -301,9 +301,6 @@ PROPOSAL_REJECTED = "rejected"
 #: not consent, and treating it as refusal would quietly drop work the operator may still
 #: want. It stops asking and says so.
 PROPOSAL_EXPIRED = "expired"
-VALID_PROPOSAL_STATES: frozenset[str] = frozenset(
-    {PROPOSAL_PENDING, PROPOSAL_APPROVED, PROPOSAL_REJECTED, PROPOSAL_EXPIRED}
-)
 
 #: How long a proposal waits before it stops asking. The source bumps once at 24h and
 #: never auto-acts; this keeps the window and the never-auto-act half, and leaves the bump

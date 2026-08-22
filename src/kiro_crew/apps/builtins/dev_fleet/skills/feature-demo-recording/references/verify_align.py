@@ -51,8 +51,9 @@ def _home() -> pathlib.Path:
 
 DRIFT_WARN = 1.0  # seconds; above this the cut looks out of sync
 DRIFT_FAIL = 3.0
-DARK_MAX = 60.0  # a designed dark slide sits well under this
-BLACK_MAX = 12.0  # below this a window is effectively black
+# Below this a window is effectively black. A designed dark slide still averages well
+# above it, so the floor fires only on a genuinely black frame.
+BLACK_MAX = 12.0
 BRIGHT_MIN = 244.0  # above this it is blown out -- a white frame is as dead as a black one
 
 
@@ -205,7 +206,12 @@ def main() -> int:
         # Anything past DRIFT_WARN is visible on screen, and the house budget is
         # a few hundred milliseconds -- a WARN that does not fail the gate lets a
         # visibly desynchronised cut exit 0, which is what the gate exists to stop.
-        flag = "ok" if abs(d) <= DRIFT_WARN else ("FAIL" if abs(d) <= DRIFT_FAIL else "FAIL!")
+        if abs(d) <= DRIFT_WARN:
+            flag = "ok"
+        elif abs(d) <= DRIFT_FAIL:
+            flag = "FAIL"
+        else:
+            flag = "FAIL!"
         if flag != "ok":
             failures.append(f"beat {i} drifts {d:+.2f}s from its line")
         print(f"  beat {i}: line {fr:7.3f}s  beat {beat_rel[j]:7.3f}s  drift {d:+6.3f}s  {flag}")
@@ -262,7 +268,12 @@ def main() -> int:
                 f"{label} at {at:.1f}s is {how} (YAVG {y:.1f}) -- "
                 "did the video element fail to seek?"
             )
-        verdict = "NEAR-BLACK" if dark else ("BLOWN-OUT" if blown else "ok")
+        if dark:
+            verdict = "NEAR-BLACK"
+        elif blown:
+            verdict = "BLOWN-OUT"
+        else:
+            verdict = "ok"
         print(f"  {label:12s} t={at:7.2f}s  YAVG={y:7.2f}  {verdict}")
 
     print("== streams ==")

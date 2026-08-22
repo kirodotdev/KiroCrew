@@ -68,14 +68,8 @@ DEFAULT_AGENT_SURFACE_LIMIT = 6
 RULE_AGENT_BUG = "AGENT"
 RULE_AGENT_COVERAGE = "COVERAGE"
 
-# Cap the FOCUS LIST so the agent converges fast (operator directive 2026-06-15: "shrink
-# focus + hard turn cap"). A long list (82 files) made the agent investigate 10+ min and
-# blow the timeout. ~12 highest-value files is enough to find real defects per cycle; the
-# loop runs many cycles and the ledger dedups, so coverage accrues over runs, not in one.
-DEFAULT_FOCUS_FILE_CAP = 12
-
-# Low-value filename substrings — boilerplate/wiring with little testable logic. Dropped
-# from the focus list first so the cap is spent on logic-bearing modules.
+# Low-value filename substrings — boilerplate/wiring with little testable logic. Sorted
+# LAST so a bounded read budget is spent on logic-bearing modules.
 _LOW_VALUE_MARKERS = (
     "__init__.py",
     "__main__.py",

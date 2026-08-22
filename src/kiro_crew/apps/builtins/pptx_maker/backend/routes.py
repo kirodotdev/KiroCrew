@@ -186,11 +186,6 @@ _BITMAP_MAGIC: tuple[bytes, ...] = (
     b"BM",  # BMP
 )
 
-# How much of the base64 body to decode for the signature probe. 16 base64 chars
-# decode to 12 bytes — more than any signature above needs, and a fixed tiny
-# prefix keeps the check cheap on a multi-megabyte blob.
-_BITMAP_MAGIC_B64_CHARS = 16
-
 # AVIF/HEIF put a 4-byte box length BEFORE the `ftyp` brand, so the signature is
 # at an offset rather than at byte 0.
 _BITMAP_FTYP_OFFSET = 4
