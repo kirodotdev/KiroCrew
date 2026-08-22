@@ -20,6 +20,8 @@
 
 import type { Recurrence } from './types'
 import { hasHan, parseZhParts, ZH_LEAD_FILLER } from './reminderParseZh'
+import { hasHangul, parseKoParts, KO_LEAD_FILLER, KO_TRAIL_FILLER } from './reminderParseKo'
+import type { ScheduleParts } from './reminderParseParts'
 import { foldForMatch, toUnits } from './reminderText'
 
 export interface ParsedReminder {
@@ -348,9 +350,12 @@ export function parseReminder(input: string, now: Date, fallbackText = 'Reminder
   // shifts every span measured afterwards and corrupts the saved text.
   const lower = foldForMatch(original)
 
-  // Chinese input takes the CJK rules. Dispatching on script rather than on the UI
-  // language deliberately: a Chinese UI user may still type English and vice versa,
-  // and the text itself is the only reliable signal.
+  // Chinese and Korean input take their own rules. Dispatching on SCRIPT rather than
+  // on the UI language is deliberate: a Korean UI user may still type English and
+  // vice versa, and the text itself is the only reliable signal. Hangul is tested
+  // first because Korean text can carry an incidental Han character (漢字 in a name,
+  // 時 in a quotation) while Chinese text never carries Hangul.
+  if (hasHangul(original)) return parseKo(original, now, fallbackText)
   if (hasHan(original)) return parseZh(original, now, fallbackText)
 
   const interval = findInterval(lower)
@@ -406,36 +411,29 @@ export function parseReminder(input: string, now: Date, fallbackText = 'Reminder
 }
 
 /**
- * Resolve Chinese input.
+ * Turn already-extracted schedule pieces into a reminder.
  *
- * Deliberately shares the DAY/next-occurrence rules with the English path via
- * `atClock` and `resolveClock` — those rules are about time, not language, and
- * duplicating them is how the two paths would silently drift apart.
+ * Shared by the Chinese and Korean paths, and deliberately reusing the English
+ * path's `atClock` / `resolveClock`: the next-occurrence and day-rollover rules are
+ * about time, not language, and duplicating them per language is how the paths
+ * silently drift apart.
  */
-function parseZh(original: string, now: Date, fallbackText: string): ParsedReminder {
-  const parts = parseZhParts(original)
-
-  let text = cleanText(original, parts.spans)
-  text = text.replace(ZH_LEAD_FILLER, '').trim()
-  // Chinese has no inter-word spaces, so leftover connectives read as noise.
-  text = text.replace(/^[，,、。\s]+|[，,、。\s]+$/g, '').trim()
-  if (!text) text = fallbackText
-
+function resolveParts(parts: ScheduleParts, text: string, now: Date): ParsedReminder {
   /*
-    Same rule as the English path above: a clock, a delay or an interval is a
-    schedule; anything else is not. `hasSignal` alone is too weak, because a
-    zero-offset day marker (今天) is a signal that carries NO time — it would slip
-    through and fall out of the branch chain below onto an invented default.
+    Same rule as the English path: a clock, a delay or an interval is a schedule;
+    anything else is not. `hasSignal` alone is too weak, because a zero-offset day
+    marker (今天 / 오늘) is a signal that carries NO time — it would slip through and
+    fall out of the branch chain below onto an invented default.
 
     needsSchedule's own contract is that the caller asks rather than the parser
-    guessing, so both languages must agree on this condition or one of them
-    silently schedules something the user never asked for.
+    guessing, so every language must agree on this condition or one of them silently
+    schedules something the user never asked for.
   */
-  const zhHasSchedule = parts.clock != null
+  const hasSchedule = parts.clock != null
     || parts.delayMinutes != null
     || parts.everyMinutes != null
     || parts.dayOffset > 0
-  if (!parts.hasSignal || !zhHasSchedule) {
+  if (!parts.hasSignal || !hasSchedule) {
     return { text, fireAt: null, recurrence: null, needsSchedule: true }
   }
 
@@ -457,15 +455,15 @@ function parseZh(original: string, now: Date, fallbackText: string): ParsedRemin
   } else if (parts.delayMinutes != null) {
     fireAt = new Date(now.getTime() + parts.delayMinutes * 60_000)
   } else if (parts.dayOffset > 0) {
-    // 明天 with no time — the same conventional morning hour as the English side.
+    // A day marker with no time — the same conventional morning hour as English.
     fireAt = atClock(now, DEFAULT_HOUR, 0)
     fireAt.setDate(fireAt.getDate() + parts.dayOffset)
   } else {
     /*
       Recurring with no stated time: first fire one interval out, so adding
-      每2小时 does not fire the moment you press Enter.
+      每2小时 / 2시간마다 does not fire the moment you press Enter.
 
-      everyMinutes is non-null here by the zhHasSchedule guard above — every other
+      everyMinutes is non-null here by the hasSchedule guard above — every other
       branch of that guard is handled by an earlier arm of this chain. There is
       deliberately no fallback default (an invented one-hour default would make
       今天提醒我买牛奶 schedule itself silently).
@@ -479,4 +477,38 @@ function parseZh(original: string, now: Date, fallbackText: string): ParsedRemin
     recurrence: parts.everyMinutes ? { everyMinutes: parts.everyMinutes } : null,
     needsSchedule: false,
   }
+}
+
+/** Resolve Chinese input. */
+function parseZh(original: string, now: Date, fallbackText: string): ParsedReminder {
+  const parts = parseZhParts(original)
+
+  let text = cleanText(original, parts.spans)
+  text = text.replace(ZH_LEAD_FILLER, '').trim()
+  // Chinese has no inter-word spaces, so leftover connectives read as noise.
+  text = text.replace(/^[，,、。\s]+|[，,、。\s]+$/g, '').trim()
+  if (!text) text = fallbackText
+
+  return resolveParts(parts, text, now)
+}
+
+/**
+ * Resolve Korean input.
+ *
+ * The request verb comes LAST in Korean (물 마시기 알려 줘), so the trailing filler
+ * is stripped as well as the leading one, and a stranded particle left behind by a
+ * removed time phrase is cleaned off the ends.
+ */
+function parseKo(original: string, now: Date, fallbackText: string): ParsedReminder {
+  const parts = parseKoParts(original)
+
+  let text = cleanText(original, parts.spans)
+  text = text.replace(KO_TRAIL_FILLER, '').trim()
+  text = text.replace(KO_LEAD_FILLER, '').trim()
+  text = text.replace(/^[\s,、]*(?:에|엔|부터)\s+/, '').trim()
+  text = text.replace(/\s+(?:에|엔|부터)[\s,、.]*$/, '').trim()
+  text = text.replace(/^[，,、。\s]+|[，,、。\s]+$/g, '').trim()
+  if (!text) text = fallbackText
+
+  return resolveParts(parts, text, now)
 }
