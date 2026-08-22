@@ -40,6 +40,8 @@ from kiro_crew.acp.types import (
     JSONRPC_METHOD_NOT_FOUND,
     AcpPromptStats,
 )
+from kiro_crew.env import augmented_path
+from kiro_crew.kiro_cli import known_kiro_cli_dirs
 
 # Windows lacks os.killpg and POSIX process-tree APIs (ps, /proc).
 # Tests that exercise these paths are skipped on Windows.
@@ -633,7 +635,7 @@ class TestAcpClientSessionKey:
         with (
             patch(
                 "kiro_crew.acp.client._resolve_claude_acp_bin",
-                return_value=["/usr/bin/node", "/x/acp.js"],
+                return_value=(["/usr/bin/node", "/x/acp.js"], ""),
             ),
             patch(
                 "kiro_crew.acp.client.wrap_argv",
@@ -844,7 +846,10 @@ class TestAcpClientBackendSelection:
         with (
             patch(
                 "kiro_crew.acp.client._resolve_claude_acp_bin",
-                return_value=["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
+                return_value=(
+                    ["/usr/local/bin/node", "/usr/local/lib/claude-agent-acp/index.js"],
+                    "",
+                ),
             ),
             patch("kiro_crew.acp.client._resolve_kiro_bin", return_value="/usr/bin/kiro-cli"),
             patch(
@@ -874,7 +879,10 @@ class TestAcpClientBackendSelection:
     async def test_spawn_claude_backend_missing_bin_raises(self, tmp_path):
         client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
         with (
-            patch("kiro_crew.acp.client._resolve_claude_acp_bin", return_value=None),
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=(None, ""),
+            ),
             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
         ):
             with pytest.raises(AcpError, match="claude-agent-acp not found"):
@@ -957,9 +965,9 @@ class TestResolveClaudeAcpBin:
         bin_path.chmod(0o755)
         monkeypatch.setenv("CLAUDE_AGENT_ACP_BIN", str(bin_path))
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
-        result = _resolve_claude_acp_bin()
-        assert result is not None
-        assert str(bin_path) in result
+        argv, search_path = _resolve_claude_acp_bin()
+        assert argv is not None
+        assert str(bin_path) in argv
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_path_lookup(self, tmp_path, monkeypatch):
@@ -979,9 +987,9 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: str(bin_path) if name == "claude-agent-acp" else None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result is not None
-        assert str(bin_path) in result
+        argv, search_path = client_mod._resolve_claude_acp_bin()
+        assert argv is not None
+        assert str(bin_path) in argv
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_which_preferred(self, tmp_path, monkeypatch):
@@ -1002,8 +1010,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(script)]
+        argv, _search = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(script)]
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_installed_script_resolves_node(self, tmp_path, monkeypatch):
@@ -1030,8 +1038,8 @@ class TestResolveClaudeAcpBin:
         monkeypatch.setenv("CLAUDE_AGENT_ACP_BIN", str(script))
         monkeypatch.setattr(Path, "home", staticmethod(lambda: tmp_path))
         monkeypatch.setattr(client_mod, "_mise_which", lambda tool: None)
-        result = _resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(script.resolve())]
+        argv, _search = _resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(script.resolve())]
 
     def test_non_executable_script_falls_back_to_path_node(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
@@ -1058,8 +1066,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: str(node_bin) if name == "node" else None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(script.resolve())]
+        argv, _search = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(script.resolve())]
 
     @_POSIX_EXEC_PATHS_ONLY
     def test_mise_glob_fallback(self, tmp_path, monkeypatch):
@@ -1084,8 +1092,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result == [str(node_bin), str(acp_script.resolve())]
+        argv, _search = client_mod._resolve_claude_acp_bin()
+        assert argv == [str(node_bin), str(acp_script.resolve())]
 
     def test_returns_none_when_not_found(self, tmp_path, monkeypatch):
         from kiro_crew.acp import client as client_mod
@@ -1101,8 +1109,8 @@ class TestResolveClaudeAcpBin:
             "which",
             lambda name, path=None: None,
         )
-        result = client_mod._resolve_claude_acp_bin()
-        assert result is None
+        argv, _search = client_mod._resolve_claude_acp_bin()
+        assert argv is None
 
 
 class TestResolveClaudeCodeExecutable:
@@ -10115,3 +10123,140 @@ class TestMiseNodeInstallsDir:
         script.write_text("#!/usr/bin/env node\n")
 
         assert client_mod._resolve_node_for_script(str(script)) is None
+
+
+class TestSpawnNotFoundNamesWhatWasSearched:
+    """A "not found" spawn error must say WHERE it looked -- and say it truthfully.
+
+    #4954 gave the MCP path this treatment and added ``env.describe_search_path``
+    for it; its First Principles review counted these two ACP spawn sites as the
+    remaining siblings that still reported nothing.
+
+    The kiro-cli site is the one with teeth. It does NOT search ``augmented_path``
+    -- ``resolve_kiro_cli`` walks ``known_kiro_cli_dirs``, which is the fixed
+    install locations plus, on Windows, the RAW inherited PATH and this
+    interpreter's directory. Adopting the helper over ``augmented_path`` (the
+    literal one-line change the review suggested) would name mise / nvm / volta
+    directories that were never consulted while omitting
+    ``%ProgramFiles%\\Kiro-Cli`` -- reporting "it is not there" for somewhere
+    nothing ever looked, which is the exact distinction the report exists to draw.
+    """
+
+    @pytest.mark.asyncio
+    async def test_kiro_error_names_the_directories_actually_searched(self, tmp_path):
+        client = AcpClient(work_dir=tmp_path)
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value=None),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
+        ):
+            with pytest.raises(AcpError) as excinfo:
+                await client._spawn()
+
+        message = str(excinfo.value)
+        searched = known_kiro_cli_dirs(sys.platform, Path.home(), os.environ)
+        assert "searched" in message, (
+            "the spawn failure still names no directory at all: %r" % (message,)
+        )
+        assert str(len(searched)) in message, (
+            "the reported directory count is not the size of the set the resolver "
+            "walked (%d): %r" % (len(searched), message)
+        )
+        # The helper truncates, so the first entry is the reliable one to pin.
+        assert searched[0] in message, (
+            "the first directory the resolver walked is absent from the report: "
+            "%r not in %r" % (searched[0], message)
+        )
+
+    @pytest.mark.asyncio
+    async def test_kiro_error_does_not_name_windows_directories_it_never_searched(
+        self, tmp_path, monkeypatch
+    ):
+        """The negative half, and the reason this is not a one-line adoption.
+
+        Pinned on a synthetic Windows environment so the divergence is exercised
+        on every host: on win32 ``known_kiro_cli_dirs`` takes the RAW ``PATH``,
+        never the augmented one.
+        """
+        fake_environ = {
+            "PATH": os.pathsep.join([r"C:\Windows\System32"]),
+            "ProgramFiles": r"C:\Program Files",
+        }
+        fake_home = Path("C:/Users/example")
+
+        searched = known_kiro_cli_dirs("win32", fake_home, fake_environ)
+        augmented_only = [
+            d
+            for d in augmented_path(fake_environ["PATH"]).split(os.pathsep)
+            if d and d not in searched
+        ]
+        assert augmented_only, (
+            "this environment cannot distinguish the two sets, so the assertion "
+            "below would be vacuous"
+        )
+
+        client = AcpClient(work_dir=tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.acp.client.known_kiro_cli_dirs",
+            lambda *_a, **_k: searched,
+        )
+        with (
+            patch("kiro_crew.acp.client._resolve_kiro_bin", return_value=None),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
+        ):
+            with pytest.raises(AcpError) as excinfo:
+                await client._spawn()
+
+        message = str(excinfo.value)
+        named_but_unsearched = [d for d in augmented_only if d in message]
+        assert not named_but_unsearched, (
+            "the error claims to have searched directories the resolver never "
+            "consulted on Windows: %r" % (named_but_unsearched,)
+        )
+        assert r"C:\Program Files\Kiro-Cli" in message, (
+            "the most likely Windows install location was searched but is not "
+            "reported: %r" % (message,)
+        )
+
+    @pytest.mark.asyncio
+    async def test_claude_error_reports_the_path_that_resolve_actually_used(
+        self, tmp_path, monkeypatch
+    ):
+        """The claude-acp failure is CACHED, so the report must be cached with it.
+
+        A later spawn raises from the cache without re-resolving. Recomputing the
+        PATH at the raise site would describe whatever the environment happens to
+        be by then -- an environment this process never searched. The resolve
+        hands its own search path back, and that is what is reported.
+        """
+        import kiro_crew.acp.client as client_mod
+
+        monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", client_mod._UNRESOLVED)
+        resolved_with = os.pathsep.join([r"/opt/at-resolve-time", r"/usr/bin"])
+
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE)
+        with (
+            patch(
+                "kiro_crew.acp.client._resolve_claude_acp_bin",
+                return_value=(None, resolved_with),
+            ),
+            patch("asyncio.create_subprocess_exec", new_callable=AsyncMock),
+        ):
+            with pytest.raises(AcpError) as first:
+                await client._spawn()
+
+            # The environment moves on; the cached failure must not follow it.
+            monkeypatch.setenv("PATH", os.pathsep.join([r"/somewhere/else"]))
+            with pytest.raises(AcpError) as second:
+                await client._spawn()
+
+        for label, exc in (("first", first), ("second", second)):
+            message = str(exc.value)
+            assert "/opt/at-resolve-time" in message, (
+                "the %s failure does not name the path the resolve searched: %r"
+                % (label, message)
+            )
+            assert "/somewhere/else" not in message, (
+                "the %s failure reported a PATH that was never searched: %r"
+                % (label, message)
+            )
+        monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", client_mod._UNRESOLVED)
