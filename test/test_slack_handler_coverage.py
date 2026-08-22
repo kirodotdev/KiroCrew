@@ -23,6 +23,9 @@ import pytest
 
 from conftest import MockSlackClient
 from kiro_crew.cron import CronJob, CronSchedule, CronStoreBusy
+from kiro_crew.messaging import auto_title as auto_title_mod
+from kiro_crew.messaging import commands as mc
+from kiro_crew.messaging import privacy_mode
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.safety_override import NO_EXPIRY_TEXT, fmt_grant_duration
 from kiro_crew.slack import handler as h
@@ -747,17 +750,17 @@ class TestSpawnHelpers:
         assert h._handle_spawn_command("spawn   ", MagicMock()) is None
 
     def test_list_with_no_agents(self):
-        assert h._do_spawn("list", MagicMock(running=[])) == "No subagents running."
+        assert mc.spawn_task_reply("list", MagicMock(running=[])) == "No subagents running."
 
     def test_status_lists_running_agents(self):
         agent = MagicMock(id="a7", started=time.time() - 5, task="reindex the corpus")
-        out = _reply(h._do_spawn("status", MagicMock(running=[agent])))
+        out = _reply(mc.spawn_task_reply("status", MagicMock(running=[agent])))
         assert "a7" in out and "reindex the corpus" in out
 
     def test_capacity_reached(self):
         mgr = MagicMock(max_concurrent=3)
         mgr.spawn.return_value = None
-        assert "capacity reached (3)" in _reply(h._do_spawn("work", mgr))
+        assert "capacity reached (3)" in _reply(mc.spawn_task_reply("work", mgr))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -828,16 +831,19 @@ class TestCronHelpers:
     async def test_remove_all_empty(self):
         svc = MagicMock()
         svc.list_jobs.return_value = []
-        assert await h._remove_all_jobs(svc, user_id="U1") == "No cron jobs to remove."
+        assert await mc.cron_remove_all_reply(svc, source="slack", caller="U1") == (
+            "No cron jobs to remove."
+        )
 
     @pytest.mark.asyncio
     async def test_remove_all_reports_each_job(self):
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1"), _job("j2")]
-        # remove_jobs returns (removed_ids, missing_ids); _remove_all_jobs now
-        # unpacks it for the SEL batch audit.
+        # remove_jobs returns (removed_ids, missing_ids); the shared reply unpacks
+        # it for the SEL batch audit, which now covers every channel rather than
+        # only Slack's own copy of the command.
         svc.remove_jobs = AsyncMock(return_value=(["j1", "j2"], []))
-        out = await h._remove_all_jobs(svc, user_id="U1")
+        out = await mc.cron_remove_all_reply(svc, source="slack", caller="U1")
         assert "Removed 2 cron job(s)" in out and "`j1`" in out and "`j2`" in out
 
     @pytest.mark.asyncio
@@ -845,7 +851,7 @@ class TestCronHelpers:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job()]
         svc.remove_jobs = AsyncMock(side_effect=CronStoreBusy())
-        assert "busy" in (await h._remove_all_jobs(svc, user_id="U1"))
+        assert "busy" in (await mc.cron_remove_all_reply(svc, source="slack", caller="U1"))
 
     @pytest.mark.asyncio
     async def test_remove_all_via_cron_remove_all(self):
@@ -1083,6 +1089,47 @@ class TestThreadOverrideHydration:
 # ──────────────────────────────────────────────────────────────────────
 # privacy modifiers
 # ──────────────────────────────────────────────────────────────────────
+class TestSharedPrivacyDelegation:
+    """The Slack names are wrappers over ``messaging.privacy_mode``, and the two
+    LRU dicts are the SAME objects.
+
+    Identity is what the ~45 enforcement sites in this package, the dashboard
+    predicates, and the autouse ``_clean_slack_thread_state`` conftest fixture all
+    rely on: each reaches the tracker through the Slack spelling while the shared
+    module reads its own name. A copy would leave a session restricted on one side
+    and not the other, silently.
+    """
+
+    def test_the_trackers_are_the_shared_objects(self):
+        """Mutation: rebind ``_thread_temporary`` to a fresh ``OrderedDict()`` —
+        red, and every conftest-cleared test leaks privacy state across files."""
+        assert h._thread_temporary is privacy_mode._temporary
+        assert h._thread_incognito is privacy_mode._incognito
+        assert h._titled_threads is auto_title_mod._titled
+
+    def test_the_predicates_delegate(self):
+        assert h.is_thread_temporary is privacy_mode.is_temporary
+        assert h.is_thread_incognito is privacy_mode.is_incognito
+        assert h._TEMPORARY_TOKEN_RE is privacy_mode.TEMPORARY_TOKEN_RE
+        assert h._INCOGNITO_TOKEN_RE is privacy_mode.INCOGNITO_TOKEN_RE
+
+    def test_the_slack_restricted_predicate_is_namespace_agnostic(self):
+        """The dashboard's ``_is_restricted_session`` now reaches this for every
+        channel, so it must answer for a non-Slack key.
+
+        Mutation: narrow ``_is_slack_restricted`` to
+        ``session_key.startswith("slack:") and privacy_mode.is_restricted(...)`` —
+        red here while every Slack test stays green.
+        """
+        key = "telegram:kirocrew:direct:4242"
+        privacy_mode.mark_incognito(key)
+        assert h._is_slack_restricted(key) is True
+
+    def test_the_shared_module_sees_a_slack_mark(self):
+        h._mark_temporary("slack:1.2")
+        assert privacy_mode.is_restricted("slack:1.2") is True
+
+
 class TestPrivacyModifiers:
     def test_token_strippers(self):
         assert h._strip_temporary_token("hi there") == ("hi there", False)
@@ -1190,22 +1237,24 @@ class TestPrivacyModifiers:
         h._hydrate_conv_flags(sessions, "t1")
         assert h.is_thread_temporary("t1") and h.is_thread_incognito("t1")
 
+    # The caps live on the shared modules the Slack names now delegate to, so the
+    # monkeypatch has to land where the eviction check reads it.
     def test_temporary_lru_evicts_oldest(self, monkeypatch):
-        monkeypatch.setattr(h, "_THREAD_TEMPORARY_MAX", 2)
+        monkeypatch.setattr(privacy_mode, "PRIVACY_LRU_MAX", 2)
         for key in ("a", "b", "c"):
             h._mark_temporary(key)
         assert not h.is_thread_temporary("a")
         assert h.is_thread_temporary("c")
 
     def test_incognito_lru_evicts_oldest(self, monkeypatch):
-        monkeypatch.setattr(h, "_THREAD_INCOGNITO_MAX", 1)
+        monkeypatch.setattr(privacy_mode, "PRIVACY_LRU_MAX", 1)
         h._mark_incognito("a")
         h._mark_incognito("b")
         assert not h.is_thread_incognito("a")
         assert h.is_thread_incognito("b")
 
     def test_titled_lru_evicts_oldest(self, monkeypatch):
-        monkeypatch.setattr(h, "_TITLED_THREADS_MAX", 1)
+        monkeypatch.setattr(auto_title_mod, "TITLE_LRU_MAX", 1)
         h._mark_titled("a", "auto")
         h._mark_titled("b", "manual")
         assert "a" not in h._titled_threads
@@ -1797,15 +1846,15 @@ class TestPureHelpers:
             h.disable_yolo()
 
     def test_disable_yolo_when_inactive_is_a_no_op(self):
-        h._trusted_sessions.add("t1")
+        h.add_trusted_session("t1")
         h.disable_yolo()
-        assert "t1" in h._trusted_sessions
+        assert h.is_session_trusted("t1")
 
     def test_disable_yolo_clears_trusted_sessions(self):
         h.enable_yolo_with_ttl(600)
-        h._trusted_sessions.add("t1")
+        h.add_trusted_session("t1")
         h.disable_yolo()
-        assert not h._trusted_sessions
+        assert not h.is_session_trusted("t1")
 
     def test_is_owner_cross_matches_w_and_u_prefixes(self, monkeypatch):
         monkeypatch.setattr(h, "_owner_id", "U123")

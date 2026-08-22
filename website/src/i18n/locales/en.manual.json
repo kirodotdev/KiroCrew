@@ -4007,6 +4007,19 @@
       "script_source_failed": "Could not load the script source.",
       "script_source_truncated": "Truncated — the script is larger than the preview limit."
     },
+    "servicesTab": {
+      "channels": "Channels",
+      "connect_error": "Connection error",
+      "discord": "Discord",
+      "imessage": "iMessage",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu"
+    },
     "sessionArchive": {
       "no_matches_for_query": "No matches for \"{{query}}\".",
       "truncated_showing_first_200kb": "… truncated (showing first 200KB) …"
@@ -4698,6 +4711,12 @@
         "allowlist_description": "Numeric Telegram user IDs permitted to DM the bot. Empty = deny all (fail closed): a Telegram bot is globally reachable by @username.",
         "description": "Talk to your agent from Telegram over the Bot API (long-polling — no webhook or public address needed). Add allowed user IDs so the bot can respond.",
         "empty_allowlist_hint": "No allowed user IDs: the bot rejects every message (fail closed). Add your numeric Telegram user ID below.",
+        "forum_activation_always": "Every message",
+        "forum_activation_description": "When the bot replies inside an allow-listed topic. A direct message is always answered, whichever option is selected here.",
+        "forum_activation_hint": "Choose Only when addressed to hold a conversation with other people in the same topic — the bot then answers only when its @handle is used, or when one of its own messages is replied to.",
+        "forum_activation_label": "Answer in topics",
+        "forum_activation_mention": "Only when addressed",
+        "forum_activation_off": "Never",
         "forum_allowlist_description": "Numeric supergroup chat_ids permitted to run forum-topic sessions. These are negative (e.g. -1001234567890) — find one by adding a bot like @getidsbot to the group. Empty = deny all groups (fail closed).",
         "forum_allowlist_label": "Allowed supergroup chat IDs",
         "forum_empty_hint": "Forum enabled but no allow-listed chats: all forum traffic is denied. Add your supergroup chat_id (a negative number like -100…).",
@@ -4705,8 +4724,12 @@
         "forum_toggle_label": "Serve forum Topics as per-Topic sessions",
         "guide_body": "Message `@BotFather` on Telegram, send `/newbot`, and follow the prompts. BotFather replies with a bot token — paste it below. To find your numeric user ID, message `@userinfobot`.",
         "guide_link_label": "Open @BotFather",
+        "show_thinking_description": "After each answer, post the reasoning as a collapsed quote you can expand. Off by default: Telegram's rate limit is per chat and shared with the streaming edits the answer already spends, so this costs one extra message per turn.",
+        "show_thinking_label": "Post the model's reasoning",
         "token_description": "From @BotFather after creating your bot (looks like 110201543:AAHdqT…).",
-        "token_placeholder": "Paste Telegram bot token (123456:ABC-…)"
+        "token_placeholder": "Paste Telegram bot token (123456:ABC-…)",
+        "voice_replies_description": "Send each answer as a voice message as well as text, using your voice_reply provider settings. Off by default: it costs a second message per turn against Telegram's per-chat rate budget, and text-to-speech may not be installed. Short answers are never spoken, and the text reply always lands first. Use /voice on or /voice off to change one conversation.",
+        "voice_replies_label": "Speak the answers"
       },
       "weComPanel": {
         "allow_all_bypass_note": "Allow-all is on: the userid list above is bypassed. It is kept for when you switch back.",

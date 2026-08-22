@@ -4767,6 +4767,40 @@ class DashboardState:
         """Return the registered transport for *channel_type*, or None."""
         return self.channel_transports.get(channel_type)
 
+    def channel_status(self) -> dict[str, dict[str, Any]]:
+        """Per-channel ``{connected, error}``, keyed by ``channel_type``.
+
+        Read off the same ``<channel>_connected`` / ``<channel>_connect_error``
+        attributes each channel's own settings endpoint reports, so one page cannot
+        disagree with another about whether a channel came up. A channel with no
+        attributes yet reads as not connected with no reason, which is the honest
+        answer for one that never started.
+
+        The error string is bounded here as well as at each settings endpoint: this
+        payload is polled, and a channel that reconnects in a loop would otherwise
+        publish an unbounded reason on every tick.
+        """
+        # Imported here rather than at module scope: `channels` imports every
+        # channel package, and those import this module through the gateway.
+        try:
+            from kiro_crew.channels import builtin_channel_descriptors
+
+            names = [d.channel_type for d in builtin_channel_descriptors()]
+        except Exception:
+            logger.debug("channel status: roster unavailable", exc_info=True)
+            return {}
+        out: dict[str, dict[str, Any]] = {}
+        for name in names:
+            if name == "slack":
+                connected = self.slack_client is not None and self.slack_socket_connected
+            else:
+                connected = bool(getattr(self, f"{name}_connected", False))
+            out[name] = {
+                "connected": connected,
+                "error": str(getattr(self, f"{name}_connect_error", ""))[:120],
+            }
+        return out
+
     def wire_session_compact_callback(self) -> None:
         """Register the dashboard's compaction callback on the session manager."""
 
@@ -5112,6 +5146,13 @@ class DashboardState:
             # gateway records after _connect_slack. This is the same field
             # /api/slack/config already reports to the settings badge.
             "slack_connected": (self.slack_client is not None and self.slack_socket_connected),
+            # Every OTHER channel's live state, from the same flags each channel's
+            # settings badge reads. Only `slack_connected` reached this payload
+            # before, so System > Services was silent about a Telegram or Discord
+            # channel that failed to start — the operator saw a healthy page and a
+            # bot that never answered. Derived by roster loop, so the next channel
+            # is covered without touching this dict.
+            "channels": self.channel_status(),
             # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this

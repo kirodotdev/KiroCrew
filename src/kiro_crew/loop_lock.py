@@ -9,8 +9,9 @@ issue #4800 (and the flake trio it produced via a swallowed ``RuntimeError``:
 #4177, #4789).
 
 The repo grew ad-hoc versions of the fix shape (``_get_config_lock`` in
-``dashboard/handlers/agents.py``, ``_get_auto_title_lock`` in
-``slack/handler.py``; ``__init__._LazyShutdownEvent`` and the semaphore in
+``dashboard/handlers/agents.py``, ``get_lock`` in ``messaging/auto_title.py``,
+which every channel's auto-title now shares; ``__init__._LazyShutdownEvent``
+and the semaphore in
 ``dashboard/handlers/link_meta.py`` are cousins for other primitives, left
 as-is);  :class:`LoopBoundLock` is the shared chokepoint the module-global
 locks now route through. Declare it at module level exactly like the lock it

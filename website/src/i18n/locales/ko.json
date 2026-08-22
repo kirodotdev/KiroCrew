@@ -10302,8 +10302,11 @@
       "owning_session": "소유 세션"
     },
     "servicesTab": {
+      "channels": "채널",
+      "connect_error": "연결 오류",
       "connected": "연결됨",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "임베딩",
       "gateway_process": "게이트웨이 프로세스",
       "governance": "거버넌스",
@@ -10311,6 +10314,7 @@
       "governance_tip_degraded": "거버넌스 검사가 페일클로즈로 실패했거나, 무결성 불일치가 감지되었거나, 승인 정책이 검증되지 않았습니다(없거나 읽을 수 없음). SEL 감사 로그를 확인하세요.",
       "governance_tip_disabled": "적용할 승인 정책이 구성되어 있지 않습니다(기본 허용). 플러그인은 명시적으로 금지되지 않는 한 승인됩니다.",
       "governance_tip_unknown": "이번 세션에서는 거버넌스 상태가 아직 결정되지 않았습니다.",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}}(샌드박스 {{sandbox}} · {{providerLabel}} {{provider}} · MCP {{mcp}})",
       "mcp_process_breakdown_unique": "고유 {{total}}(샌드박스 {{sandbox}} · {{providerLabel}} {{provider}} · MCP {{mcp}})",
       "mcp_processes": "MCP 프로세스",
@@ -10327,8 +10331,15 @@
       "status_disabled": "비활성",
       "status_unknown": "알 수 없음",
       "stopped": "중지됨",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "스레드",
       "uptime": "가동 시간",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "작업 디렉터리"
     },
     "sessionArchive": {
@@ -11630,6 +11641,12 @@
         "allowlist_description": "봇에 DM을 보낼 수 있는 숫자 Telegram 사용자 ID입니다. 비워 두면 모두 거부합니다(실패 시 차단): Telegram 봇은 @username으로 전 세계에서 접근할 수 있습니다.",
         "description": "Bot API를 통해 Telegram에서 에이전트와 대화합니다(롱 폴링 — 웹후크나 공개 주소가 필요하지 않습니다). 봇이 응답할 수 있도록 허용된 사용자 ID를 추가하세요.",
         "empty_allowlist_hint": "허용된 사용자 ID가 없습니다: 봇이 모든 메시지를 거부합니다(실패 시 차단). 아래에 숫자 Telegram 사용자 ID를 추가하세요.",
+        "forum_activation_always": "모든 메시지",
+        "forum_activation_description": "허용된 주제 안에서 봇이 답변하는 시점입니다. 다이렉트 메시지는 이 설정과 무관하게 항상 답변합니다.",
+        "forum_activation_hint": "같은 주제에서 다른 사람들끼리도 대화한다면 '부를 때만'이 적합합니다. 이때는 @이름을 사용했을 때, 또는 봇이 보낸 메시지에 답장했을 때에만 답변합니다.",
+        "forum_activation_label": "주제에서 답변하기",
+        "forum_activation_mention": "부를 때만",
+        "forum_activation_off": "답변하지 않음",
         "forum_allowlist_description": "포럼 토픽 세션을 실행할 수 있는 숫자 슈퍼그룹 chat_id입니다. 이 값은 음수입니다(예: -1001234567890) — @getidsbot 같은 봇을 그룹에 추가하면 확인할 수 있습니다. 비워 두면 모든 그룹을 거부합니다(실패 시 차단).",
         "forum_allowlist_label": "허용된 슈퍼그룹 chat ID",
         "forum_empty_hint": "포럼은 켜져 있지만 허용 목록에 채팅이 없습니다: 모든 포럼 트래픽이 거부됩니다. 슈퍼그룹 chat_id를 추가하세요(-100…처럼 음수).",
@@ -11637,8 +11654,12 @@
         "forum_toggle_label": "포럼 토픽을 토픽별 세션으로 제공",
         "guide_body": "Telegram에서 `@BotFather`에게 메시지를 보내고 `/newbot`을 전송한 다음 안내를 따르세요. BotFather가 봇 토큰으로 답장하니 아래에 붙여 넣으세요. 숫자 사용자 ID를 확인하려면 `@userinfobot`에게 메시지를 보내세요.",
         "guide_link_label": "@BotFather 열기",
+        "show_thinking_description": "각 답변 뒤에 추론 과정을 펼칠 수 있는 접힌 인용으로 게시합니다. 기본값은 꺼짐: Telegram의 속도 제한은 채팅 단위이며 답변이 이미 사용하는 스트리밍 편집과 공유되므로, 턴마다 메시지 하나가 더 듭니다.",
+        "show_thinking_label": "모델의 추론 과정 게시",
         "token_description": "봇을 만든 뒤 @BotFather에서 받습니다(110201543:AAHdqT… 형태).",
-        "token_placeholder": "Telegram 봇 토큰 붙여 넣기(123456:ABC-…)"
+        "token_placeholder": "Telegram 봇 토큰 붙여 넣기(123456:ABC-…)",
+        "voice_replies_description": "voice_reply 공급자 설정을 사용해 각 답변을 텍스트와 함께 음성 메시지로도 보냅니다. 기본값은 꺼짐입니다. Telegram의 요청 빈도 제한은 대화별로 계산되므로 턴마다 메시지가 하나 늘어나고, 음성 합성이 설치되지 않은 경우도 있습니다. 짧은 답변은 읽어 주지 않으며 텍스트 답변이 항상 먼저 도착합니다. /voice on 또는 /voice off로 대화 하나만 바꿀 수 있습니다.",
+        "voice_replies_label": "답변 읽어 주기"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (클라우드)",

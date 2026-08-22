@@ -49,6 +49,33 @@ class TelegramInboundMessage(InboundMessage):
     # it via ``getattr(msg, "chat_type", "private")`` so the neutral message
     # stays channel-agnostic.
     chat_type: str = "private"
+    # The sender's Telegram @handle, already narrowed by ``prompt_safe_handle``
+    # so it is safe to interpolate into the prompt. Empty when the account has no
+    # username, which is common — a display name is a nice-to-have, never a
+    # precondition for serving the turn.
+    username: str = ""
+    # Sender of the message this one replies to, or 0. Replying to the bot is how a
+    # Telegram participant addresses it without typing its @handle, so the
+    # activation gate reads this; the comparison against the bot's own id happens in
+    # the dispatcher, the only layer that knows it.
+    reply_to_user_id: int = 0
+    # Handles Telegram marked as ``mention`` entities, lowercased and without the ``@``, plus
+    # whether the update carried an entity list at all. The activation gate reads
+    # these instead of scanning the text: Telegram classifies a handle inside a URL
+    # as a ``url`` entity rather than a ``mention``, and a text scan cannot tell the
+    # two apart. ``has_entities`` keeps "nobody was mentioned" distinguishable from
+    # "this message was synthesized and never had entities".
+    mentions: tuple[str, ...] = ()
+    has_entities: bool = False
+    # True when this message was SYNTHESIZED from a press on the bot's own inline
+    # keyboard rather than typed. Tapping a widget the bot posted is addressing the
+    # bot by construction, so the activation gate serves it unconditionally.
+    #
+    # An explicit provenance flag rather than a forged `reply_to_user_id`: a press is
+    # not a reply, and pretending otherwise would put a lie where the audit trail and
+    # the reply-threading decision both read. A future gate gets to see what this
+    # actually was.
+    from_widget: bool = False
 
 
 # A dispatch callback consumes a normalized, already-authorized message and
@@ -73,8 +100,16 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     edit=True,
     reactions=True,  # setMessageReaction — used for the steer-ack receipt
     files_inbound=True,  # photos/documents ingested via telegram/attachments.py
-    files_outbound=False,
-    rich_blocks=False,
+    # Local image references in a reply are extracted by the shared
+    # messaging/outbound_files.py and uploaded by multipart sendPhoto /
+    # sendMediaGroup, so the agent's chart arrives as a picture instead of a
+    # filesystem path. Rasters only: the extractor decides type from the leading
+    # bytes and refuses anything else.
+    files_outbound=True,
+    # sendRichMessage (Bot API 10.1+) renders structured markdown natively —
+    # tables, headings, code blocks, lists — and the renderer routes every
+    # table-bearing seal through it; inline keyboards carry the interactive half.
+    rich_blocks=True,
     threads=True,
     # sendRichMessage renders a GFM pipe table as a real table; the plain-HTML
     # fallback monospaces the run (telegram/renderer.py::_seal_table_fallback).
@@ -84,6 +119,40 @@ TELEGRAM_CAPABILITIES = TransportCapabilities(
     max_buttons=25,
     supports_proactive_send=True,
 )
+
+
+#: Telegram's own username grammar: 5-32 of ``[A-Za-z0-9_]``. Re-derived here
+#: rather than trusted, because this value is interpolated into the prompt.
+_HANDLE_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+_HANDLE_MAX = 32
+
+
+def prompt_safe_handle(raw: str) -> str:
+    """*raw* as an ``@handle`` safe to interpolate into the prompt, or ``""``.
+
+    The context builder writes the sender as a bare ``[CURRENT USER] {name}``
+    line immediately above ``[CURRENT USER REQUEST — respond to this]``, so a name
+    carrying a newline could forge that boundary and everything after it would
+    read as instructions rather than as a name. Telegram's platform grammar
+    already excludes every character that would let it — but a guard that relies
+    on a remote service continuing to enforce its own documented rule is not a
+    guard, so the grammar is re-checked here.
+
+    Whole-value: a handle that does not match is dropped rather than stripped down
+    to its legal characters. Rewriting it would put a *different* identity in front
+    of the model, which is worse than showing none — the numeric id remains in the
+    session key either way.
+
+    Telegram's ``first_name`` is deliberately NOT a fallback: it is unconstrained
+    free text, so it carries exactly the injection surface this function exists to
+    refuse.
+    """
+    handle = raw.strip().lstrip("@")
+    if not handle or len(handle) > _HANDLE_MAX:
+        return ""
+    if not set(handle) <= _HANDLE_CHARS:
+        return ""
+    return f"@{handle}"
 
 
 def forum_gate_outcome(
@@ -191,6 +260,45 @@ class TelegramTransport(MessagingTransport):
             return None
         return await self.resolve_conversation(value), None
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-decide a proactive send against the live roster. Fails closed.
+
+        Telegram can answer this authoritatively, which is why it does: a private
+        ``chat_id`` IS the peer's ``user_id``, so the persisted link carries the
+        very principal ``authorize`` checks. A forum Topic carries a supergroup
+        ``chat_id`` instead, so it is routed through the same
+        :func:`forum_gate_outcome` predicate the inbound and callback paths use --
+        a third call site rather than a second copy, so an outbound send can never
+        be permitted into a Topic that inbound would refuse.
+
+        ``thread_id`` is what distinguishes the two: Telegram private chats carry
+        no ``message_thread_id``, so a link with one is a forum Topic.
+        """
+        if not conversation_id:
+            return False
+        if thread_id:
+            # Forum Topic. int() because the shared predicate matches numeric
+            # chat_ids; a non-numeric id is malformed, and refusing is the
+            # fail-closed answer at an egress boundary.
+            try:
+                chat_id, topic_id = int(conversation_id), int(thread_id)
+            except (TypeError, ValueError):
+                return False
+            return (
+                forum_gate_outcome(
+                    "supergroup",
+                    chat_id,
+                    topic_id,
+                    allow_forum=self._allow_forum,
+                    allowed_forum_chat_ids=self._allowed_forum_chat_ids,
+                )
+                is None
+            )
+        return conversation_id in self._allowed
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()
@@ -261,7 +369,11 @@ class TelegramTransport(MessagingTransport):
             thread_id=(str(inbound.message_thread_id) if inbound.message_thread_id else None),
             message_id=inbound.message_id,
             chat_type=inbound.chat_type,
+            username=prompt_safe_handle(inbound.username),
+            reply_to_user_id=inbound.reply_to_user_id,
             attachments=list(inbound.attachments),
+            mentions=inbound.mentions,
+            has_entities=inbound.has_entities,
         )
         if not self.authorize(msg):
             return

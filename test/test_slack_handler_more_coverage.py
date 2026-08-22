@@ -689,7 +689,7 @@ class TestHandleInteractionAuthReChecks:
         )
         assert out is None
         assert calls["n"] == 2
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
         # Rejected before any Slack call is made.
         assert slack.actions == []
 
@@ -699,7 +699,7 @@ class TestHandleInteractionAuthReChecks:
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=None
         )
         assert out is None
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
 
     @pytest.mark.asyncio
     async def test_late_trust_click_denied_when_not_thread_owner(self, owner):
@@ -709,7 +709,7 @@ class TestHandleInteractionAuthReChecks:
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=slack
         )
         assert out is None
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
 
     @pytest.mark.asyncio
     async def test_late_trust_refused_when_session_map_lookup_fails(self, monkeypatch, owner):
@@ -727,7 +727,7 @@ class TestHandleInteractionAuthReChecks:
         )
         # Fail closed: no trust granted when the thread->session mapping is unknown.
         assert out is None
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
 
     @pytest.mark.asyncio
     async def test_late_trust_refused_when_ownership_fetch_raises(self, owner):
@@ -739,7 +739,7 @@ class TestHandleInteractionAuthReChecks:
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=_Boom()
         )
         assert out is None
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
 
     @pytest.mark.asyncio
     async def test_late_trust_binds_to_the_linked_dashboard_session(self, monkeypatch, owner):
@@ -759,7 +759,7 @@ class TestHandleInteractionAuthReChecks:
             "C1", "m1", h._ACTION_TRUST, owner, thread_ts="t1", slack=slack, sessions=sessions
         )
         assert out == h._ACTION_TRUST
-        assert h._trusted_sessions == {"dash:slot-1"}
+        assert h.is_session_trusted("dash:slot-1")
         assert sessions.policies == {"dash:slot-1": "auto"}
 
     @pytest.mark.asyncio
@@ -778,7 +778,7 @@ class TestHandleInteractionAuthReChecks:
         # The turn is unblocked with a rejection, trust is NOT granted, and the
         # entry is consumed so a retry cannot reuse it.
         assert pending.future.result() == h._OUTCOME_REJECTED
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
         assert sessions.policies == {}
         assert "C1:m1" not in h._pending_approvals
 
@@ -793,7 +793,7 @@ class TestHandleInteractionAuthReChecks:
         assert provider.approved == ["rq8"]
         assert pending.future.result() == h._OUTCOME_APPROVED
         # Nothing to trust — the set stays empty rather than gaining "".
-        assert h._trusted_sessions == set()
+        assert not h._trusted_sessions
 
     @pytest.mark.asyncio
     async def test_trust_with_session_key_propagates_policy_to_subagents(self, owner):
@@ -1052,7 +1052,7 @@ class TestToolHookVerdicts:
     @pytest.mark.asyncio
     async def test_trusted_session_auto_approves_in_interactive_mode(self):
         slack = MockSlackClient()
-        h._trusted_sessions.add("m1")
+        h.add_trusted_session("m1")
         builder = _Builder(ToolHookResult(action=TOOL_ALLOW))
         provider = FakeProvider(
             [

@@ -128,6 +128,7 @@ class WeixinRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # iLink has no interactive buttons. The driver only dispatches
         # prompt_choice for INTERACTIVE + a decider, and this channel runs

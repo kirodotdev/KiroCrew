@@ -5943,6 +5943,11 @@ class TestSubagentChannelTransportDelivery:
             ),
             send_message=AsyncMock(return_value="mid-1"),
             resolve_configured_target=AsyncMock(side_effect=_identity_target),
+            # Part of the MessagingTransport contract the send ladder consults: a
+            # proactive send re-checks that the link's recipient is still on the
+            # roster. Permissive here so these tests keep exercising delivery;
+            # test_channel_transport_outbound_authz owns the refusal path.
+            may_send_to=lambda conversation_id, thread_id=None, principal="": True,
         )
 
     def _make_info(self, parent_key):
@@ -6402,6 +6407,71 @@ class TestCountInFlightWork:
         undone.done.return_value = False
         orch._session_tasks = {"x": undone}
         assert orch._count_in_flight_work() == 2
+
+
+class TestUnreadyChannelBadge:
+    """An ENABLED channel that cannot start owes the operator a reason.
+
+    Its factory returns None silently, so ``channel_status`` reported
+    ``{connected: False, error: ""}``, byte-identical to a channel nobody
+    configured, which System > Services deliberately filters out. The badge is what
+    makes the two distinguishable, and it names the missing credential rather than
+    only producing a row.
+    """
+
+    def _orch_with(self, **sections):
+        from kiro_crew.messaging.registry import ChannelDescriptor
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = MagicMock()
+        for name, values in sections.items():
+            section = getattr(orch._cfg, name)
+            for key, value in values.items():
+                object.__setattr__(section, key, value)
+        orch._cfg.load_credentials = lambda: {}
+        boot = tuple(
+            ChannelDescriptor(channel_type=name, start=AsyncMock()) for name in sections
+        )
+        return orch, boot
+
+    def test_an_enabled_channel_missing_its_token_is_badged_with_the_reason(self):
+        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
+        orch._badge_unready_channels(boot)
+        error = orch.dashboard_state.telegram_connect_error
+        assert "Enabled but not started" in error
+        # The actionable half: WHICH credential, so the operator is not left
+        # guessing which of several a channel needs.
+        assert "TELEGRAM_BOT_TOKEN" in error
+
+    def test_a_disabled_channel_is_not_badged(self):
+        """It has nothing to report, and a row for it would be the noise the
+        Services filter exists to remove."""
+        orch, boot = self._orch_with(telegram={"enabled": False, "bot_token": ""})
+        orch._badge_unready_channels(boot)
+        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
+
+    def test_a_ready_channel_is_not_badged(self):
+        """A credentialed channel is the gateway's own outcome to report."""
+        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": "12345:AA"})
+        orch._badge_unready_channels(boot)
+        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
+
+    def test_a_channel_outside_the_bootable_set_is_not_badged(self):
+        """Slack is host-managed (``start=None``); its own connect path reports it."""
+        orch, _ = self._orch_with(telegram={"enabled": True, "bot_token": ""})
+        orch._badge_unready_channels(())
+        assert not isinstance(orch.dashboard_state.telegram_connect_error, str)
+
+    def test_the_badge_never_breaks_boot(self):
+        """Best-effort by construction: a diagnostic must not stop a transport."""
+        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
+        orch._cfg.load_credentials = MagicMock(side_effect=RuntimeError("cred store down"))
+        orch._badge_unready_channels(boot)  # must not raise
+
+    def test_no_dashboard_state_is_tolerated(self):
+        orch, boot = self._orch_with(telegram={"enabled": True, "bot_token": ""})
+        orch.dashboard_state = None
+        orch._badge_unready_channels(boot)  # must not raise
 
 
 class TestChannelTransportStartGate:

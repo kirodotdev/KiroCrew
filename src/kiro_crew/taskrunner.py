@@ -42,7 +42,6 @@ from kiro_crew.task_models import (  # noqa: F401
     SESSION_PREFIX,
     STALL_CANCEL_TIMEOUT,
     STALL_TIMEOUT,
-    NotifyCallback,
     Project,
     Task,
     TaskStatus,
@@ -60,7 +59,8 @@ from kiro_crew.task_planner import plan_to_chat_context as _planner_plan_to_chat
 from kiro_crew.task_planner import (
     update_plan_tasks,
 )
-from kiro_crew.task_reporter import (
+from kiro_crew.task_reporter import (  # noqa: F401  (NotifyCallback re-exported)
+    NotifyCallback,
     build_resume_context,
     build_status,
     format_completion_summary,
@@ -256,6 +256,13 @@ class TaskRunner:
         self._plan_task: asyncio.Task | None = None  # type: ignore[type-arg]
         self._on_tool_approval: Callable[[LLMEvent], Awaitable[bool]] | None = None
         self._stall_cancelled_ids: set[str] = set()
+        # task_id -> the conversation the run was started FROM, so a notification
+        # can be routed back to the surface the operator is actually watching.
+        # Deliberately in memory only and deliberately not on ``Project``: it is
+        # a routing hint for the lifetime of one process, and a persisted channel
+        # key would outlive the binding it names and send a restart's first
+        # notice into a conversation that may no longer resolve.
+        self._run_session_keys: dict[str, str] = {}
         self._agent: str = ""
         self._load_runs()
 
@@ -864,7 +871,16 @@ class TaskRunner:
     async def start_background(
         self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "",
         workspace_dir: str = "", auto_approve: bool = False,
+        *, session_key: str = "",
     ) -> str:
+        """Plan and execute *spec_path* in the background; returns the task id.
+
+        ``session_key`` is keyword-only and optional so every existing caller is
+        unchanged. It names the conversation this run was started FROM and is
+        handed to the notify sink, which is what lets a stall-worthy notice (an
+        approval request, a denial) reach the surface the operator started the
+        task on rather than one hard-wired destination.
+        """
         # Validate the per-run workspace override before entering the admission
         # lock so a bad/sensitive path fails without blocking other starts.
         _resolve_workspace_dir(workspace_dir)
@@ -908,10 +924,12 @@ class TaskRunner:
             for task_id in cron_done:
                 self._runs.pop(task_id, None)
                 self._stall_cancelled_ids.discard(task_id)
+                self._run_session_keys.pop(task_id, None)
             other_done = [task_id for task_id in completed if task_id in self._runs]
             for task_id in other_done[:-10]:
                 self._runs.pop(task_id, None)
                 self._stall_cancelled_ids.discard(task_id)
+                self._run_session_keys.pop(task_id, None)
 
             # Nanosecond IDs avoid routine same-second collisions. The guarded
             # increment is a deterministic fallback if a clock/platform returns
@@ -932,10 +950,13 @@ class TaskRunner:
                 source=source,
                 auto_approve=bool(auto_approve),
             )
+            if session_key:
+                self._run_session_keys[task_id] = session_key
             try:
                 await self._apersist_runs()  # durable before background execution
             except BaseException:
                 self._runs.pop(task_id, None)
+                self._run_session_keys.pop(task_id, None)
                 raise
 
             async def _wrapped() -> None:
@@ -1052,6 +1073,7 @@ class TaskRunner:
             bg_task.cancel()
         self._runs.pop(task_id, None)
         self._stall_cancelled_ids.discard(task_id)
+        self._run_session_keys.pop(task_id, None)
         await self._apersist_runs()
         try:
             # Resolved from ``kiro_crew.sel`` at call time, not through the
@@ -1188,7 +1210,12 @@ class TaskRunner:
     # ── Notifications ──
 
     async def _notify(self, title: str, body: str, run: Project | None = None) -> None:
-        await notify(title, body, run=run, callback=self._on_notify)
+        # The originating conversation is per-run, so it is resolved from the run
+        # rather than passed at each of the ~20 call sites. A notification with no
+        # run attached (a lesson learned, say) carries no conversation and falls
+        # back to the sink's own default destination.
+        session_key = self._run_session_keys.get(run.task_id, "") if run else ""
+        await notify(title, body, run=run, callback=self._on_notify, session_key=session_key)
 
     # ── History Integration ──
 

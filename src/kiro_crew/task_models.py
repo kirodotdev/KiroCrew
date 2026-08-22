@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable
 
 # ── Constants ──
 
@@ -125,5 +124,7 @@ class Project:
     auto_approve: bool = False  # per-run trust intent (UI flag); the live, expiring, audited grant is held in SafetyOverride (scope taskrunner:{task_id}:autoapprove)
 
 
-# Callback for notifications: (title, body, task_id) -> None
-NotifyCallback = Callable[[str, str, str], Awaitable[None]]
+# ``NotifyCallback`` moved to ``task_reporter``, which owns the notification
+# contract and now carries a union of the session-aware and legacy shapes. Two
+# aliases of that name with different shapes is how a caller ends up annotated
+# against the one the reporter does not accept.

@@ -20,14 +20,13 @@ from kiro_crew.agent_discovery import (
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.state import VALID_MEMORY_MODES, DashboardState
+from kiro_crew.messaging.link import is_channel_session_key
+from kiro_crew.messaging.privacy_mode import hydrate as _hydrate_conv_flags
+from kiro_crew.messaging.privacy_mode import is_incognito as is_thread_incognito
+from kiro_crew.messaging.privacy_mode import is_temporary as is_thread_temporary
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
 from kiro_crew.skills import skills_dir
-from kiro_crew.slack.handler import (
-    _hydrate_conv_flags,
-    is_thread_incognito,
-    is_thread_temporary,
-)
 
 if TYPE_CHECKING:
     from kiro_crew.platform.interfaces import CapabilityManager
@@ -1516,17 +1515,23 @@ def _is_restricted_session(state: DashboardState, request: "Any") -> bool:
     slot = state._slots.get(slot_name)
     if slot and slot.is_restricted:
         return True
-    if sk.startswith("slack:"):
-        # Restore the DURABLE flags before consulting the in-memory maps.
-        # ``_thread_incognito``/``_thread_temporary`` are process-local and are
-        # only populated by ``_hydrate_conv_flags`` on an INBOUND Slack message,
-        # so a turn that no inbound message drove — a cron with
-        # session="origin", a webhook-resumed session, a monitor/autonudge
-        # re-injection, a subagent — reaches this gate with empty maps after a
-        # gateway restart even though the user's !incognito is on disk. Calling
-        # the canonical restore (rather than reading the SessionMap directly)
-        # keeps one source of truth and self-heals the process-local view.
-        # Idempotent and allocation-free for unflagged keys.
+    if is_channel_session_key(sk):
+        # Restore the DURABLE flags before consulting the in-memory maps. The
+        # privacy trackers are process-local and are only populated by
+        # ``privacy_mode.hydrate`` on an INBOUND channel message, so a turn that
+        # no inbound message drove — a cron with session="origin", a
+        # webhook-resumed session, a monitor/autonudge re-injection, a subagent —
+        # reaches this gate with empty maps after a gateway restart even though
+        # the user's !incognito is on disk. Calling the canonical restore (rather
+        # than reading the SessionMap directly) keeps one source of truth and
+        # self-heals the process-local view. Idempotent and allocation-free for
+        # unflagged keys.
+        #
+        # Namespace-agnostic on purpose. A ``startswith("slack:")`` test made this
+        # branch structurally unreachable for every other channel, so a
+        # ``telegram:{agent}:direct:{user}`` session the user marked incognito
+        # could never enter it and the ~30 dashboard mutations gated on this
+        # predicate stayed open for it.
         _hydrate_conv_flags(state.sessions, sk)
         if is_thread_temporary(sk) or is_thread_incognito(sk):
             return True
@@ -1548,9 +1553,10 @@ def _blocks_reads_session(state: DashboardState, request: "Any") -> bool:
     slot = state._slots.get(slot_name)
     if slot and slot.blocks_reads:
         return True
-    if sk.startswith("slack:"):
-        # Same durable-flag restore as _is_restricted_session: a temporary
-        # thread whose flags this process never hydrated must not serve reads.
+    if is_channel_session_key(sk):
+        # Same durable-flag restore, and the same namespace-agnostic reach, as
+        # _is_restricted_session: a temporary conversation whose flags this
+        # process never hydrated must not serve reads, on any channel.
         _hydrate_conv_flags(state.sessions, sk)
         if is_thread_temporary(sk):
             return True

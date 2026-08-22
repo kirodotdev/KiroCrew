@@ -161,9 +161,16 @@ def test_slack_only_option_with_discord_is_refused(cron_caller, field: str, valu
 
 
 def test_every_slack_only_field_is_covered_by_the_refusal() -> None:
-    """The refusal list is the whole Slack option set, so none is silently kept."""
+    """The refusal list is the whole Slack option set, so none is silently kept.
+
+    ``channel_type`` is excluded alongside the routing fields because it is the
+    OTHER destination mechanism, not a Slack protocol option: it selects a non-Slack
+    transport, and combining it with these fields is refused by its own guard. A
+    genuinely new Slack option added to the schema still has to join
+    ``_SLACK_ONLY_FIELDS`` or this fails, which is the point.
+    """
     properties = set(_descriptor()["inputSchema"]["properties"])
-    assert set(_SLACK_ONLY_FIELDS) == properties - {"text", "title", "session"}
+    assert set(_SLACK_ONLY_FIELDS) == properties - {"text", "title", "session", "channel_type"}
 
 
 def test_notification_only_fallback_warns_that_discord_missed(cron_caller) -> None:

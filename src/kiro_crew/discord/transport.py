@@ -225,6 +225,55 @@ class DiscordTransport(MessagingTransport):
                 return value, None
         return None
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-check the roster the ROUTE belongs to. Fails closed on both.
+
+        Discord keeps two rosters because it has two audiences, so this dispatches
+        on the route rather than testing one id against the wrong set.
+
+        A **thread** route is recognised by its conversation id being in
+        ``_allowed_threads``, the same set ``receive`` gates inbound on. Matched on
+        the conversation id and NOT on ``thread_id``: a Discord thread's snowflake IS
+        its channel id, and the persisted link is built as
+        ``ChannelLink("discord", channel_id=...)`` with no thread id at all, so a
+        check keyed on ``thread_id`` never fires and every thread would fall to the
+        DM arm and be refused for want of a principal. Snowflakes are unique, so a
+        DM channel id cannot collide into this set.
+
+        Consulting the thread set keeps outbound exactly as tight as inbound, which
+        also settles the auto-created case: those ids are registered in memory only,
+        so after a restart such a thread can no longer drive a turn either, and
+        continuing to post into it would make outbound the more permissive of the two.
+        A thread REMOVED from the roster falls through to the DM arm, where a forum
+        session key names no principal, so revocation still refuses it.
+
+        A **DM** route is checked against ``_allowed`` via *principal*, and refuses
+        when there is none. The conversation id cannot answer that one: a DM link
+        persists the channel id returned by ``create_dm_channel``, which is
+        unrelated to the user snowflake the roster holds, and re-deriving the
+        pairing is a POST a synchronous per-send seam cannot make. So with no
+        principal there is nothing left to consult, and an unidentifiable DM
+        recipient is exactly the case that must not be waved through: this is a
+        network egress boundary, and the caller audits the refusal.
+
+        The one route that reaches that refusal is a ``unified`` DM bucket, whose
+        key names no peer by design. Refusing costs an unattended notice there and
+        is the correct trade: that bucket deliberately collapses SEVERAL peers into
+        one session, so nothing available to this seam establishes which of them the
+        link currently points at. Sessions under the default ``per-channel-peer``
+        scope carry their peer in the key and are unaffected. Serving it needs a
+        ``dm_channel_id -> user_id`` pairing persisted when the DM is opened, which
+        is a Discord-owned schema change.
+        """
+        if not conversation_id:
+            return False
+        if conversation_id in self._allowed_threads:
+            return True
+        return bool(principal) and principal in self._allowed
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()

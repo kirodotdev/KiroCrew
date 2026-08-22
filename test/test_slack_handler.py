@@ -2031,14 +2031,14 @@ class TestAutoTitleSlack:
 
     @pytest.fixture(autouse=True)
     def _clean_titled_threads(self):
-        import kiro_crew.slack.handler as _h
-        from kiro_crew.slack.handler import _titled_threads
+        # The claim LRU and its lock live in `messaging.auto_title`; `reset()` does
+        # both halves, which matters because a test that crashed mid-title leaves
+        # the claim marked AND the permit held.
+        from kiro_crew.messaging import auto_title
 
-        _titled_threads.clear()
-        _h._auto_title_lock = _h.LoopBoundLock()
+        auto_title.reset()
         yield
-        _titled_threads.clear()
-        _h._auto_title_lock = _h.LoopBoundLock()
+        auto_title.reset()
 
     @pytest.mark.asyncio
     async def test_auto_title_happy_path(self):
@@ -2075,7 +2075,11 @@ class TestAutoTitleSlack:
 
         slack = MockSlackClient()
         _mark_titled("sk-err")
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.handler"):
+        # The shared module's logger: the blanket handler this pins lives in
+        # `messaging.auto_title` now, and naming the wrong logger is not a harmless
+        # miss — `at_level` also SETS the level, so a DEBUG assertion against a
+        # logger that emits nothing passes vacuously (its sibling below did).
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.messaging.auto_title"):
             await _maybe_auto_title_slack(
                 slack, ExplodingSessionManager(), "C1", "sk-err", None, "help", "sure"
             )
@@ -2108,7 +2112,7 @@ class TestAutoTitleSlack:
 
         slack = MockSlackClient()
         _mark_titled("sk-slow")
-        with caplog.at_level(logging.DEBUG, logger="kiro_crew.slack.handler"):
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.messaging.auto_title"):
             await _maybe_auto_title_slack(
                 slack, TimingOutSessionManager(), "C1", "sk-slow", None, "help", "sure"
             )

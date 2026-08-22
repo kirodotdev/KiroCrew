@@ -86,6 +86,7 @@ class FeishuRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # Feishu has no interactive buttons in v1.  The driver dispatches this
         # only for INTERACTIVE + a decider; FeishuDispatcher runs decider-less,

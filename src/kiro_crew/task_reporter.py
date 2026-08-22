@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import re
 import time
 from pathlib import Path
+from typing import Awaitable, Callable, Protocol, Union, cast
 
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_exfiltration_urls
 from kiro_crew.task_models import (
     PROGRESS_FILE,
     SESSION_PREFIX,
-    NotifyCallback,
     Project,
     Task,
     TaskStatus,
@@ -25,11 +26,58 @@ logger = logging.getLogger(__name__)
 # ── Notifications ──
 
 
+class SessionAwareNotify(Protocol):
+    """A notification sink that also accepts the run's originating conversation.
+
+    ``session_key`` is keyword-only **with a default** so a sink can adopt it
+    without changing its positional shape. It names the conversation the run was
+    started FROM, which is what lets a sink route a stall-worthy notice back to
+    the surface the operator is watching instead of one hard-wired destination.
+    Empty means "no originating conversation" (a dashboard or CLI start), never
+    "route it anywhere".
+    """
+
+    def __call__(
+        self, title: str, body: str, task_id: str = "", *, session_key: str = ""
+    ) -> Awaitable[None]: ...
+
+
+LegacyNotify = Callable[[str, str, str], Awaitable[None]]
+
+# A union, not one widened signature, because no single signature is satisfied by
+# both shapes: a Protocol declaring ``session_key`` rejects every sink that
+# predates it (the CLI's printer, a dozen test doubles), while
+# ``Callable[[str, str, str], ...]`` rejects the caller for passing the keyword.
+# Spelling the transition in the type keeps mypy checking the arity of both,
+# where a ``Callable[..., Awaitable[None]]`` escape hatch would check neither.
+NotifyCallback = Union[SessionAwareNotify, LegacyNotify]
+
+
+def _accepts_session_key(callback: NotifyCallback) -> bool:
+    """Whether *callback* takes the ``session_key`` keyword.
+
+    Probed rather than assumed, and probed rather than discovered by letting the
+    ``TypeError`` fly: :func:`notify` swallows sink failures at debug level, so
+    an unconditional keyword handed to a legacy three-argument sink would not
+    surface anywhere — that sink's notifications would simply stop arriving. A
+    ``TypeError`` retry is no better, since it cannot tell an arity mismatch
+    from one raised inside the sink's own body. An unintrospectable callable
+    (a C builtin) reads as legacy, which is the lossless direction.
+    """
+    try:
+        inspect.signature(callback).bind("", "", "", session_key="")
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
 async def notify(
     title: str,
     body: str,
     run: Project | None = None,
     callback: NotifyCallback | None = None,
+    *,
+    session_key: str = "",
 ) -> None:
     """Send notification via callback if registered."""
     if run:
@@ -38,8 +86,17 @@ async def notify(
     title = redact_exfiltration_urls(title)[0]
     body = redact_exfiltration_urls(body)[0]
     if callback:
+        task_id = run.task_id if run else ""
         try:
-            await callback(title, body, run.task_id if run else "")
+            # Widen the call only when there is a conversation to carry, so a
+            # notification with no origin reaches every sink through the exact
+            # call it received before this parameter existed.
+            if session_key and _accepts_session_key(callback):
+                await cast(SessionAwareNotify, callback)(
+                    title, body, task_id, session_key=session_key
+                )
+            else:
+                await cast(LegacyNotify, callback)(title, body, task_id)
         except Exception:
             logger.debug("Notification failed", exc_info=True)
 

@@ -158,11 +158,22 @@ async def _deliver_via_transport(state: Any, key: str, pct: float, *, success: b
     sessions = getattr(state, "sessions", None)
     if sessions is None:
         return
-    try:
-        link = sessions.get_origin_link(key)
-    except Exception:
-        logger.debug("compact notice: origin lookup failed for %s", key, exc_info=True)
-        return
+    # ORIGIN then MIRROR, the same ladder every other proactive leg walks
+    # (``GatewayOrchestrator._channel_reply_link``). Origin alone is written by
+    # exactly one channel — Discord's resume path — so a notice for a Telegram or
+    # WeCom conversation, which binds a MIRROR on its first turn, was computed and
+    # then dropped on the `link is None` return below. The conversation got
+    # summarized silently, and on a compaction FAILURE the operator never saw the
+    # "run /compact or /new" line that is the whole point of the notice.
+    link = None
+    for getter in (sessions.get_origin_link, sessions.get_mirror_link):
+        try:
+            link = getter(key)
+        except Exception:
+            logger.debug("compact notice: link lookup failed for %s", key, exc_info=True)
+            return
+        if link is not None:
+            break
     if link is None:
         return
     # Lazy: chat_runner imports state at module scope, so a top-level import

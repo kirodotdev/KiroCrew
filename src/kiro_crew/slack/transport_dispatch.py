@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.messaging import auto_title
 from kiro_crew.messaging.dispatch import build_directive_consumer
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
@@ -41,14 +42,17 @@ from kiro_crew.slack.handler import (
     _hydrate_conv_flags,
     _hydrate_thread_overrides,
     _is_slack_restricted,
+    _maybe_auto_title_slack,
     _should_auto_approve_spawn,
     _thread_agents,
     get_dashboard_state,
     get_orch_cfg,
     is_slack_session_trusted,
+    is_thread_temporary,
     maybe_apply_privacy_modifiers,
     maybe_handle_keyword_command,
     maybe_route_linked_thread,
+    track_background_task,
 )
 from kiro_crew.slack.renderer import SlackApprovalDecider, SlackRenderer
 from kiro_crew.stats import Stats
@@ -537,6 +541,15 @@ async def handle_message_transport(
                 agent=_agent,
                 resumed=resumed,
                 user_display_name=user_display_name,
+                # Temporary mode reads NO memory, and that is the half the
+                # write-side ``_is_slack_restricted`` gates cannot cover:
+                # refusing to WRITE still leaves yesterday's memories and
+                # lessons in today's prompt, which is exactly what
+                # ``NOTICE_TEMPORARY`` tells the user will not happen. The
+                # predicate is the temporary-only one on purpose -- incognito
+                # deliberately still reads, which is the documented difference
+                # between the two modes.
+                blocks_reads=is_thread_temporary(session_key),
                 runtime_source="slack",
             )
         else:
@@ -770,6 +783,45 @@ async def handle_message_transport(
         except Exception:
             logger.warning(
                 "transport_dispatch: save_conversation_turn failed session=%s",
+                session_key,
+                exc_info=True,
+            )
+
+        # ── Auto-title the conversation (fire-and-forget) ──
+        # The native loop has always titled a thread after its first successful
+        # turn, and this path never did — while ``messaging.use_transport``
+        # defaults True, so on a default install NO Slack session got a generated
+        # title and every surface fell back to a deterministic truncation. Same
+        # claim tracker as native (``auto_title.try_claim`` is check-and-mark in
+        # one step), so a session cannot be titled twice when both paths are live.
+        #
+        # Requires ``accumulated``: a turn that produced no text has nothing to
+        # name, and titling it would spend a background turn to be told SKIP.
+        # Skipped for a restricted session, which persists nothing to title.
+        # Isolated like every other bookkeeping step here, so a failure to even
+        # SPAWN the task never re-records this successful turn as a failure.
+        try:
+            if (
+                accumulated
+                and not _is_slack_restricted(session_key)
+                and auto_title.try_claim(session_key)
+            ):
+                track_background_task(
+                    asyncio.create_task(
+                        _maybe_auto_title_slack(
+                            slack,
+                            sessions,
+                            channel,
+                            session_key,
+                            conversation_log,
+                            text,
+                            accumulated,
+                        )
+                    )
+                )
+        except Exception:
+            logger.warning(
+                "transport_dispatch: auto-title dispatch failed session=%s",
                 session_key,
                 exc_info=True,
             )

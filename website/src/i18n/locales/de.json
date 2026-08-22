@@ -10426,8 +10426,11 @@
       "owning_session": "Besitzende Sitzung"
     },
     "servicesTab": {
+      "channels": "Kanäle",
+      "connect_error": "Verbindungsfehler",
       "connected": "Verbunden",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "Gateway-Prozess",
       "governance": "Governance",
@@ -10435,6 +10438,7 @@
       "governance_tip_degraded": "Eine Governance-Prüfung ist fehlgeschlagen und hat blockiert, es wurde eine Integritätsabweichung erkannt, oder die Zulassungsrichtlinie ist nicht verifiziert (fehlt/nicht lesbar). Prüfe das SEL-Audit-Protokoll.",
       "governance_tip_disabled": "Es ist keine durchsetzende Zulassungsrichtlinie konfiguriert (permissive Voreinstellung). Plugins werden zugelassen, sofern sie nicht ausdrücklich gesperrt sind.",
       "governance_tip_unknown": "Der Governance-Status wurde in dieser Sitzung noch nicht ermittelt.",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} Sandbox · {{provider}} {{providerLabel}} · {{mcp}} MCP)",
       "mcp_process_breakdown_unique": "{{total}} eindeutig ({{sandbox}} Sandbox · {{provider}} {{providerLabel}} · {{mcp}} MCP)",
       "mcp_processes": "MCP-Prozesse",
@@ -10451,8 +10455,15 @@
       "status_disabled": "Deaktiviert",
       "status_unknown": "Unbekannt",
       "stopped": "Gestoppt",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "Threads",
       "uptime": "Betriebszeit",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "Arbeitsverzeichnis"
     },
     "sessionArchive": {
@@ -11758,6 +11769,12 @@
         "allowlist_description": "Numerische Telegram-Benutzer-IDs, die dem Bot Direktnachrichten senden dürfen. Leer = alle ablehnen (fail closed): Ein Telegram-Bot ist weltweit über @username erreichbar.",
         "description": "Sprich mit deinem Agenten aus Telegram über die Bot-API (Long-Polling — kein Webhook und keine öffentliche Adresse nötig). Füge erlaubte Benutzer-IDs hinzu, damit der Bot antworten kann.",
         "empty_allowlist_hint": "Keine erlaubten Benutzer-IDs: Der Bot weist jede Nachricht ab (fail closed). Füge unten deine numerische Telegram-Benutzer-ID hinzu.",
+        "forum_activation_always": "Jede Nachricht",
+        "forum_activation_description": "Wann der Bot in einem freigegebenen Thema antwortet. Eine Direktnachricht wird immer beantwortet, unabhängig von dieser Auswahl.",
+        "forum_activation_hint": "„Nur bei direkter Ansprache“ eignet sich für ein Thema, in dem auch andere Personen miteinander sprechen — der Bot antwortet dann nur, wenn sein @Name genannt wird oder auf eine seiner eigenen Nachrichten geantwortet wird.",
+        "forum_activation_label": "In Themen antworten",
+        "forum_activation_mention": "Nur bei direkter Ansprache",
+        "forum_activation_off": "Nie",
         "forum_allowlist_description": "Numerische chat_ids von Supergruppen, die Forum-Topic-Sitzungen ausführen dürfen. Diese sind negativ (z. B. -1001234567890) — du findest eine, indem du einen Bot wie @getidsbot zur Gruppe hinzufügst. Leer = alle Gruppen ablehnen (fail closed).",
         "forum_allowlist_label": "Erlaubte Chat-IDs von Supergruppen",
         "forum_empty_hint": "Forum aktiviert, aber keine Chats in der Zulassungsliste: Aller Forum-Verkehr wird abgelehnt. Füge die chat_id deiner Supergruppe hinzu (eine negative Zahl wie -100…).",
@@ -11765,8 +11782,12 @@
         "forum_toggle_label": "Forum-Topics als Sitzung pro Topic bereitstellen",
         "guide_body": "Schreibe `@BotFather` auf Telegram, sende `/newbot` und folge den Anweisungen. BotFather antwortet mit einem Bot-Token — füge es unten ein. Um deine numerische Benutzer-ID zu finden, schreibe `@userinfobot`.",
         "guide_link_label": "@BotFather öffnen",
+        "show_thinking_description": "Postet nach jeder Antwort den Denkprozess als eingeklapptes Zitat, das Sie ausklappen können. Standardmäßig aus: Das Ratenlimit von Telegram gilt pro Chat und wird mit den Streaming-Bearbeitungen geteilt, die die Antwort schon verbraucht — das kostet also eine zusätzliche Nachricht pro Zug.",
+        "show_thinking_label": "Denkprozess des Modells posten",
         "token_description": "Von @BotFather, nachdem du deinen Bot erstellt hast (sieht aus wie 110201543:AAHdqT…).",
-        "token_placeholder": "Telegram-Bot-Token einfügen (123456:ABC-…)"
+        "token_placeholder": "Telegram-Bot-Token einfügen (123456:ABC-…)",
+        "voice_replies_description": "Jede Antwort zusätzlich zum Text als Sprachnachricht senden, mit den Einstellungen des voice_reply-Anbieters. Standardmäßig aus: Das kostet eine zusätzliche Nachricht pro Zug im Ratenlimit, das Telegram pro Chat vergibt, und Text-to-Speech ist womöglich nicht installiert. Kurze Antworten werden nie vorgelesen, und die Textantwort kommt immer zuerst an. Mit /voice on oder /voice off lässt sich eine einzelne Unterhaltung umstellen.",
+        "voice_replies_label": "Antworten vorlesen"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (Cloud)",

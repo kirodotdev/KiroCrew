@@ -3419,11 +3419,21 @@ async def start_dashboard(
         """Notify all interfaces when safety override expires."""
         state.broadcast_ws("yolo_expired", {"source": source})
         state.push_slots_update()
+        # Slots carrying STANDING trust keep their policy: that is a separate,
+        # longer-lived decision than the expiring override, and it is also what must
+        # survive the channel-trust revoke below.
+        standing_trust: set[str] = set()
         if state.sessions is not None:
             from kiro_crew.dashboard.chat_utils import effective_session_key
 
             for slot in state._slots.values():
-                if not slot._trust and not slot._trust_reads:
+                if slot._trust or slot._trust_reads:
+                    # Excluded from the channel-trust revoke below, via the SAME
+                    # derivation the reset uses: a channel-born slot's turns run on
+                    # the channel's own session key, so a `dashboard:<slot>` spelling
+                    # names a key nothing on that path reads.
+                    standing_trust.add(effective_session_key(slot))
+                else:
                     # The SAME derivation the grant used. A channel-born slot's
                     # turns run on the channel's own session key, which is what
                     # `linked_session_key` holds, so clearing `dashboard:<slot>`
@@ -3434,11 +3444,17 @@ async def start_dashboard(
                     state.sessions.set_approval_policy(effective_session_key(slot), "")
         # Slack cleanup — isolated so failures don't block dashboard operations
         try:
-            from kiro_crew.slack.handler import (
-                _trusted_sessions,  # circular import: server.py is imported by slack/gateway.py which imports handler.py
-            )
+            # From `messaging`, not `slack.handler`: the grant is channel-neutral.
+            # This revokes the approval_policy half as well as the mapping, which is
+            # what a CHANNEL session needs -- the loop just above resets only the
+            # dashboard's own slots, and a subagent reads the policy rather than the
+            # mapping, so policy left at "auto" outlives the override it belonged to.
+            # ``keep_policy`` is what stops this from undoing the preservation above:
+            # a Trust press can file a ``dashboard:`` key in the shared grant, and
+            # resetting its policy here would revoke standing trust nobody expired.
+            from kiro_crew.messaging.session_trust import clear_trusted_sessions
 
-            _trusted_sessions.clear()
+            clear_trusted_sessions(keep_policy=standing_trust)
         except Exception:
             logger.debug("Could not clear trusted sessions", exc_info=True)
         # Slack notification (prevent GC with background_tasks set)

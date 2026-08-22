@@ -121,6 +121,7 @@ class WebexRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # The driver only dispatches prompt_choice for INTERACTIVE + a
         # decider, and Webex runs decider-less (deny-by-default), so this is

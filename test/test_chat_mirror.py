@@ -93,6 +93,11 @@ def _fake_transport(
             return_value=[ConfiguredChannelTarget("user:123", f"{channel_type.title()} DM · 123")]
         ),
         resolve_configured_target=AsyncMock(return_value=("123", None)),
+        # Part of the MessagingTransport contract the send ladder consults: a
+        # proactive send re-checks that the link's recipient is still on the
+        # roster. Permissive here so these tests keep exercising delivery;
+        # test_channel_transport_outbound_authz owns the refusal path.
+        may_send_to=lambda conversation_id, thread_id=None, principal="": True,
     )
 
 

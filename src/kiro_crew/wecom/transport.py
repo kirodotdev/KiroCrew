@@ -101,6 +101,11 @@ WECOM_CAPABILITIES = TransportCapabilities(
     max_message_chars=WECOM_SAFE_REPLY_CHARS,
     max_buttons=0,
     supports_proactive_send=True,
+    # ``aibot_send_msg`` answers with no message id, so an empty return is SUCCESS
+    # here and a failure RAISES. A caller reading the empty id as "undelivered"
+    # would report a landed cron result as lost, leave its dedup hash unadvanced,
+    # and repeat the same result on the next tick.
+    returns_message_id=False,
 )
 
 
@@ -176,6 +181,25 @@ class WeComTransport(MessagingTransport):
     async def resolve_conversation(self, user_id: str) -> str:
         # No addressable DM channel id; the userid is the logical conversation.
         return user_id
+
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Mirror :meth:`authorize` on the userid the conversation id carries.
+
+        Defence in depth rather than the live gate: WeCom declares
+        ``supports_proactive_send=False``, so the shared send ladder refuses this
+        transport before asking. Implemented anyway, and fail-closed, so the
+        answer is already correct if that capability is ever flipped -- and
+        because ``send_message`` also accepts a one-shot ``response_url`` as its
+        conversation id, which is not a roster identity and is therefore refused.
+        """
+        if not conversation_id:
+            return False
+        if self._allow_all:
+            return True
+        return conversation_id == self._owner_id or conversation_id in self._allowed
 
     async def fetch_history(
         self, conversation_id: str, thread_id: str | None = None

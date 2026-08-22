@@ -270,11 +270,14 @@ describe('a channel without the shared-channel or progress-display block', () =>
     expect(payload).not.toHaveProperty('auto_thread')
   })
 
-  it('renders no progress-display controls and sends neither new field', async () => {
+  it('renders no progress-display controls and sends no reactions field', async () => {
     renderPanel(<TelegramPanel />)
 
     await screen.findByRole('button', { name: 'Save Telegram settings' })
     expect(screen.queryByRole('switch', { name: REACTIONS })).not.toBeInTheDocument()
+    // Discord's progress-display thinking row, by ITS label. Telegram declares its
+    // own `showThinking` spec with different copy, so the absence being asserted
+    // here is the progress-display BLOCK, not the setting.
     expect(screen.queryByRole('switch', { name: THINKING })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Save Telegram settings' }))
@@ -282,6 +285,9 @@ describe('a channel without the shared-channel or progress-display block', () =>
     await waitFor(() => expect(mocks.saveTelegram).toHaveBeenCalled())
     const payload = mocks.saveTelegram.mock.calls[0][0]
     expect(payload).not.toHaveProperty('reactions_enabled')
-    expect(payload).not.toHaveProperty('show_thinking')
+    // `show_thinking` IS sent: Telegram carries its own reasoning toggle, fed by
+    // `spec.showThinking` rather than by the progress-display block this test is
+    // about. Asserted as present so the two mechanisms cannot be confused for one.
+    expect(payload).toHaveProperty('show_thinking')
   })
 })

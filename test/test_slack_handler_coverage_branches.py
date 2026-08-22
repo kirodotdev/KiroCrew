@@ -22,6 +22,8 @@ import pytest
 
 from conftest import MockSlackClient
 from kiro_crew.config.loader import ConfigReadError
+from kiro_crew.messaging import auto_title
+from kiro_crew.messaging import commands as mc
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.slack import handler as h
 
@@ -95,11 +97,12 @@ def _clean_state():
     """Reset the module globals these tests touch, before and after."""
 
     def _reset() -> None:
-        h._titled_threads.clear()
-        # The auto-title lock is a module-global LoopBoundLock that rebinds per
-        # loop on its own (#4800); swap in a fresh one anyway so a permit held
-        # by a crashed test cannot leak into the next.
-        h._auto_title_lock = h.LoopBoundLock()
+        # Through the shared module's own hook: the auto-title claim LRU and its
+        # lock live in `messaging.auto_title` now, and `reset()` does both halves.
+        # A test that crashed mid-title leaves the claim marked AND the permit held,
+        # and `LoopBoundLock` rebinding per loop covers a new loop but not a leaked
+        # permit on the same one.
+        auto_title.reset()
         h._thread_agents.clear()
         h._thread_projects.clear()
         h._hydrated_sessions.clear()
@@ -489,7 +492,7 @@ class TestUnknownBangCommand:
 class TestCommandHelperEarlyReturns:
     def test_spawn_with_no_task_declines(self):
         manager = MagicMock()
-        assert h._do_spawn("", manager) is None
+        assert mc.spawn_task_reply("", manager) is None
         manager.spawn.assert_not_called()
 
     def test_spawn_keyword_without_prefix_declines(self):

@@ -314,8 +314,13 @@ class TeamsRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         """Post the Approve / Trust session / Deny card for one tool request.
+
+        ``tool_input`` is accepted and not rendered: the card already carries the
+        tool's title and purpose, and adding its arguments is a card-layout change
+        rather than something this signature widening should decide.
 
         The nonce is armed on the decider BEFORE the card is posted: a click can
         arrive as soon as the card renders, and a resolve against an un-armed

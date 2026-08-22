@@ -125,6 +125,32 @@ class WebexTransport(MessagingTransport):
             return None
         return await self.resolve_conversation(value), None
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-check the email roster via the session's principal. Fails closed.
+
+        The conversation id cannot answer this: a session binds
+        ``inbound.room_id`` (see :meth:`receive`) while the roster holds
+        **emails**, and a room id is opaque -- nothing in this process maps one
+        back to the person in it. *principal* is that person, so the check reaches
+        the same allow-list :meth:`authorize` uses, lowercased the same way.
+
+        With no principal there is nothing else to consult, so it refuses. Webex is
+        direct-rooms-only (a non-direct room is refused inbound and audited), so
+        every route this transport serves has exactly one recipient, and an
+        unidentifiable one must not be posted to from a network egress boundary.
+
+        That refusal is reached by a ``unified`` DM bucket, which collapses several
+        peers into one session on purpose, so nothing available here establishes
+        which of them the room currently belongs to. Sessions under the default
+        ``per-channel-peer`` scope carry their peer in the key and are unaffected.
+        """
+        if not conversation_id:
+            return False
+        return bool(principal) and principal.lower() in self._allowed
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()

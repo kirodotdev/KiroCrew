@@ -95,7 +95,7 @@ class TaskRunner:
     # task_executor.execute_task()/self_review(), task_reporter.build_status()
 
     async def run(self, spec_path: str | Path, task_id: str = "", name: str = "", source: str = "file") -> TaskRun
-    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "file") -> str
+    async def start_background(self, spec_path: str | Path, agent: str = "", name: str = "", source: str = "file", *, session_key: str = "") -> str
     def cancel(self, task_id: str | None = None) -> None  # None = cancel all
     def status(self) -> dict
 
@@ -379,6 +379,40 @@ All notifications prefixed with `[spec_name]` via `_notify(title, body, run=run)
 | Possible loop | ⚠️ Possible loop | Same error repeated Nx |
 | Token budget | 💰 Token budget exceeded | Usage vs budget |
 | Branch ready | 🌿 Branch: `name` | Shown in completion summary |
+
+### Where a notification lands: the originating conversation
+
+`start_background(..., session_key=)` records the conversation the run was
+started FROM in `TaskRunner._run_session_keys` (task_id → key, in memory only —
+a persisted channel key would outlive the binding it names and send a restart's
+first notice into a conversation that may no longer resolve). `_notify` resolves
+it from `run.task_id` and hands it to `task_reporter.notify`, which forwards it
+to the sink. It is dropped when the run is pruned or deleted; a notification with
+no run attached carries no key.
+
+The sink is what decides where a notice goes, and the one notice a run cannot
+proceed without is an approval request. The gateway's `_task_notify` therefore
+tries the governed cross-surface channel ladder first (`_deliver_channel_reply`,
+see [slack-gateway](slack-gateway.md)) and keeps the owner Slack DM as the
+fallback — before this, that DM was the only escalation, so a Telegram-only
+operator's task stalled on an approval they were never told about.
+
+`task_reporter.NotifyCallback` is a **union of two shapes** during the
+transition, not one widened signature:
+
+- `SessionAwareNotify` — `(title, body, task_id="", *, session_key="")`;
+- `LegacyNotify` — `Callable[[str, str, str], Awaitable[None]]`, which the CLI's
+  printer and a dozen test doubles still are.
+
+No single signature is satisfied by both, so the union is what keeps mypy
+checking the arity of each. `notify()` widens the CALL only when there is a
+conversation to carry AND `_accepts_session_key(callback)` confirms the sink
+takes the keyword; otherwise it makes the exact three-argument call every
+pre-existing sink was written against. The probe is not paranoia:
+`notify()` swallows sink failures at debug level, so an unconditional keyword
+handed to a legacy sink would silently stop that sink's notifications with
+nothing logged above debug, and a `TypeError` retry cannot tell an arity
+mismatch from one raised inside the sink's own body.
 
 ## Git Coordination
 

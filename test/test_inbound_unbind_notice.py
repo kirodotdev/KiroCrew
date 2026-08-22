@@ -42,6 +42,16 @@ class _Transport:
             supports_proactive_send=proactive, max_message_chars=2000
         )
 
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Part of the contract the send ladder consults before a proactive send.
+
+        Permissive so these tests keep exercising the notice itself;
+        ``test_channel_transport_outbound_authz`` owns the refusal path.
+        """
+        return True
+
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:

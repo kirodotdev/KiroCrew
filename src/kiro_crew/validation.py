@@ -2398,6 +2398,12 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
             max_len=MAX_SHORT_STRING,
             pattern=re.compile(r"^(origin|slack|discord)$"),
         ),
+        # Non-Slack transport name. Shape-only here (the cheap first gate, same
+        # role as SEND_NOTIFICATION's `url` pattern); the authoritative closed set
+        # is `_SEND_MESSAGE_CHANNEL_TYPES` in dashboard/handlers/messaging.py,
+        # derived from `CHANNEL_SESSION_NAMESPACES`. Enumerating it here too would
+        # be a second copy that goes stale when a transport is added.
+        FieldSpec("channel_type", str, max_len=16, pattern=re.compile(r"^[a-z]+$")),
         FieldSpec("caller_session", str, max_len=MAX_SHORT_STRING, pattern=CRON_SESSION_RE),
     ],
 )

@@ -80,6 +80,25 @@ export interface StatusData {
   no_crons?: boolean
   /** True when the gateway has a live Slack (Socket Mode) connection. */
   slack_connected?: boolean
+  /**
+   * Live health of every messaging channel, keyed by channel type (`slack`,
+   * `wecom`, `telegram`, `discord`, `webex`, `teams`, `weixin`, `imessage`). The
+   * gateway derives it by looping its own channel roster, so a channel added
+   * there arrives here without a payload change — which is why this is a map and
+   * not eight named fields.
+   *
+   * Optional because an older gateway sends no `channels` at all. Treat that as
+   * "no answer" and fall back to `slack_connected`; reading an absent map as a
+   * set of disconnected channels would invent an outage.
+   *
+   * `error` is the last connect failure, already capped at 120 chars by the
+   * gateway, and `''` when there is none. So `{ connected: false, error: '' }` is
+   * AMBIGUOUS by construction: it is what an unconfigured channel and a
+   * configured one that never started both look like. Nothing in this payload
+   * separates them — each channel's own config endpoint reports `configured`,
+   * which is what Settings > Channels reads.
+   */
+  channels?: Record<string, { connected: boolean; error: string }>
   /** Governance enforcement health. */
   governance?: 'active' | 'degraded' | 'disabled' | 'unknown'
 }

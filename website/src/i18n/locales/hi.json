@@ -10426,8 +10426,11 @@
       "owning_session": "स्वामी सत्र"
     },
     "servicesTab": {
+      "channels": "चैनल",
+      "connect_error": "कनेक्शन त्रुटि",
       "connected": "कनेक्टेड",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "गेटवे प्रोसेस",
       "governance": "गवर्नेंस",
@@ -10435,6 +10438,7 @@
       "governance_tip_degraded": "कोई गवर्नेंस जाँच फ़ेल-क्लोज़्ड हुई, अखंडता में बेमेल मिला, या प्रवेश नीति असत्यापित है (अनुपलब्ध/अपठनीय)। SEL ऑडिट लॉग की जाँच करें।",
       "governance_tip_disabled": "कोई लागू होने वाली प्रवेश नीति कॉन्फ़िगर नहीं है (अनुमतिपूर्ण डिफ़ॉल्ट)। जब तक स्पष्ट रूप से प्रतिबंधित न हो, प्लगिन को अनुमति मिल जाती है।",
       "governance_tip_unknown": "इस सत्र में गवर्नेंस स्थिति अभी तय नहीं हुई।",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} सैंडबॉक्स · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_process_breakdown_unique": "{{total}} अद्वितीय ({{sandbox}} सैंडबॉक्स · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_processes": "MCP प्रोसेस",
@@ -10451,8 +10455,15 @@
       "status_disabled": "अक्षम",
       "status_unknown": "अज्ञात",
       "stopped": "रुका हुआ",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "थ्रेड",
       "uptime": "अपटाइम",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "कार्य डायरेक्टरी"
     },
     "sessionArchive": {
@@ -11759,6 +11770,12 @@
         "allowlist_description": "बॉट को DM करने की अनुमति प्राप्त न्यूमेरिक Telegram यूज़र ID। ख़ाली = सभी को अस्वीकार (डिफ़ॉल्ट रूप से अस्वीकार): Telegram बॉट तक @username से दुनिया में कहीं से भी पहुँचा जा सकता है।",
         "description": "Bot API के ज़रिए Telegram से अपने एजेंट से बात करें (लॉन्ग-पोलिंग — कोई वेबहुक या सार्वजनिक पता ज़रूरी नहीं)। बॉट जवाब दे सके, इसके लिए अनुमत यूज़र ID जोड़ें।",
         "empty_allowlist_hint": "कोई अनुमत यूज़र ID नहीं: बॉट हर मैसेज ठुकरा देता है (डिफ़ॉल्ट रूप से अस्वीकार)। नीचे अपनी न्यूमेरिक Telegram यूज़र ID जोड़ें।",
+        "forum_activation_always": "हर संदेश पर",
+        "forum_activation_description": "अनुमत विषय के भीतर बॉट कब उत्तर देता है। इस चयन से स्वतंत्र, सीधे संदेश का उत्तर सदा मिलता है।",
+        "forum_activation_hint": "जहाँ अन्य लोग भी परस्पर बात करते हों, वहाँ «केवल संबोधित होने पर» उपयुक्त है — तब बॉट केवल तब उत्तर देता है जब उसका @नाम लिया जाए या उसके ही किसी संदेश का उत्तर दिया जाए।",
+        "forum_activation_label": "विषयों में उत्तर देना",
+        "forum_activation_mention": "केवल संबोधित होने पर",
+        "forum_activation_off": "कभी नहीं",
         "forum_allowlist_description": "फ़ोरम-टॉपिक सत्र चलाने की अनुमति प्राप्त न्यूमेरिक सुपरग्रुप chat_id। ये ऋणात्मक होते हैं (जैसे -1001234567890) — ग्रुप में @getidsbot जैसा बॉट जोड़कर पता करें। ख़ाली = सभी ग्रुप अस्वीकार (डिफ़ॉल्ट रूप से अस्वीकार)।",
         "forum_allowlist_label": "अनुमत सुपरग्रुप chat ID",
         "forum_empty_hint": "फ़ोरम चालू है लेकिन कोई अनुमत चैट नहीं: सारा फ़ोरम ट्रैफ़िक अस्वीकार है। अपना सुपरग्रुप chat_id जोड़ें (-100… जैसा ऋणात्मक नंबर)।",
@@ -11766,8 +11783,12 @@
         "forum_toggle_label": "फ़ोरम Topics को प्रति-Topic सत्र के रूप में चलाएँ",
         "guide_body": "Telegram पर `@BotFather` को मैसेज करें, `/newbot` भेजें, और बताए गए चरणों का पालन करें। BotFather जवाब में एक बॉट टोकन देता है — उसे नीचे पेस्ट करें। अपनी न्यूमेरिक यूज़र ID पता करने के लिए `@userinfobot` को मैसेज करें।",
         "guide_link_label": "@BotFather खोलें",
+        "show_thinking_description": "हर उत्तर के बाद विचार-क्रम को एक संक्षिप्त उद्धरण के रूप में पोस्ट करता है, जिसे खोलकर पढ़ा जा सकता है। डिफ़ॉल्ट रूप से बंद: Telegram की दर सीमा प्रति चैट है और उसी स्ट्रीमिंग संपादन के साथ साझा है जो उत्तर पहले से खर्च करता है, इसलिए इसमें प्रति बारी एक अतिरिक्त संदेश लगता है।",
+        "show_thinking_label": "मॉडल का विचार-क्रम पोस्ट करें",
         "token_description": "अपना बॉट बनाने के बाद @BotFather से (कुछ ऐसा दिखता है: 110201543:AAHdqT…)।",
-        "token_placeholder": "Telegram बॉट टोकन पेस्ट करें (123456:ABC-…)"
+        "token_placeholder": "Telegram बॉट टोकन पेस्ट करें (123456:ABC-…)",
+        "voice_replies_description": "voice_reply प्रदाता की सेटिंग से हर उत्तर पाठ के साथ-साथ आवाज़ संदेश के रूप में भी भेजना। डिफ़ॉल्ट रूप से बंद: Telegram की दर सीमा हर चैट पर अलग गिनी जाती है, इसलिए हर चक्र में एक संदेश अधिक लगता है, और वाक्-संश्लेषण स्थापित न भी हो। छोटे उत्तर कभी नहीं सुनाए जाते, और पाठ उत्तर सदा पहले पहुँचता है। /voice on या /voice off से एक ही बातचीत बदली जा सकती है।",
+        "voice_replies_label": "उत्तर बोलकर सुनाना"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (क्लाउड)",

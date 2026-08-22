@@ -26,7 +26,7 @@ import os
 import re
 import shutil
 import tempfile
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import aws_consent
 from kiro_crew.deploy.engine import resolve_aws_bin
@@ -39,6 +39,8 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from kiro_crew.slack.client import SlackClientOps
 
 logger = logging.getLogger(__name__)
@@ -317,7 +319,8 @@ async def _synthesize_piper(
             )
             try:
                 _stdout, stderr = await asyncio.wait_for(
-                    proc.communicate(text.encode("utf-8")), timeout=60,
+                    proc.communicate(text.encode("utf-8")),
+                    timeout=60,
                 )
             except asyncio.TimeoutError:
                 # asyncio.wait_for cancels communicate() on timeout but does NOT
@@ -338,7 +341,11 @@ async def _synthesize_piper(
                     pass
                 return None
             if proc.returncode != 0:
-                logger.error("piper failed (rc=%d): %s", proc.returncode, stderr.decode(errors="replace")[:500])
+                logger.error(
+                    "piper failed (rc=%d): %s",
+                    proc.returncode,
+                    stderr.decode(errors="replace")[:500],
+                )
                 os.unlink(path)
                 return None
             if os.path.getsize(path) < 100:
@@ -686,9 +693,13 @@ async def streaming_voice_reply(
     response_text, cred_warns = redact_credentials(response_text)
     response_text, url_warns = redact_exfiltration_urls(response_text)
     if cred_warns:
-        logger.warning("stream_voice_chunks: redacted %d credential pattern(s) before TTS", len(cred_warns))
+        logger.warning(
+            "stream_voice_chunks: redacted %d credential pattern(s) before TTS", len(cred_warns)
+        )
     if url_warns:
-        logger.warning("stream_voice_chunks: redacted %d suspicious URL(s) before TTS", len(url_warns))
+        logger.warning(
+            "stream_voice_chunks: redacted %d suspicious URL(s) before TTS", len(url_warns)
+        )
 
     sentences = split_sentences(response_text)
     for i, sentence in enumerate(sentences):
@@ -718,6 +729,113 @@ async def streaming_voice_reply(
                 pass
 
 
+#: Keys read out of the ``voice_reply`` config section, with their defaults. One
+#: table so a channel cannot end up honouring a different set from another
+#: channel; :func:`synthesis_settings` maps it onto the kwargs
+#: :func:`synthesize_and_deliver` takes.
+_SYNTHESIS_KEYS: "tuple[tuple[str, str, Any], ...]" = (
+    ("voice_id", "voice_id", DEFAULT_VOICE),
+    ("engine", "engine", DEFAULT_ENGINE),
+    ("rate", "rate", DEFAULT_RATE),
+    ("pitch", "pitch", DEFAULT_PITCH),
+    ("aws_profile", "aws_profile", ""),
+    ("region", "region", ""),
+    ("piper_binary", "piper_binary", ""),
+    ("piper_model", "piper_model", ""),
+    ("piper_model_config", "piper_model_config", ""),
+)
+
+
+def synthesis_settings(raw: dict | None) -> dict:
+    """The ``voice_reply`` section as :func:`synthesize_and_deliver` kwargs.
+
+    *raw* is the section itself (``cfg.raw.get("voice_reply")``), so a caller with
+    a validated config and a caller reading ``config.json`` directly resolve the
+    same way.
+
+    The provider is validated here rather than at synthesis time. A typo
+    (``"ploly"``) would otherwise pass through and only fail after the user has
+    already spoken and is waiting for a spoken answer, and both the absent-key
+    default and the invalid-value fallback resolve to the LOCAL provider: reaching
+    a paid AWS service because a key was missing is not a decision an operator
+    made, and a wrong local provider costs nothing and degrades to a
+    "TTS isn't configured" notice.
+    """
+    section = raw or {}
+    provider = section.get("provider", DEFAULT_PROVIDER)
+    if provider not in VALID_PROVIDERS:
+        logger.warning(
+            "voice_reply.provider %r not in %s, defaulting to %r",
+            provider,
+            sorted(VALID_PROVIDERS),
+            DEFAULT_PROVIDER,
+        )
+        provider = DEFAULT_PROVIDER
+    out: dict = {"provider": provider}
+    for key, kwarg, default in _SYNTHESIS_KEYS:
+        out[kwarg] = section.get(key, default)
+    # Coerce to finite/positive — config.json accepts inf/NaN, which would reach
+    # synthesis and be re-serialized as non-RFC JSON, breaking the config GET.
+    out["length_scale"] = validate_length_scale(section.get("piper_length_scale", 1.0))
+    return out
+
+
+async def synthesize_and_deliver(
+    deliver: "Callable[[str], Awaitable[bool]]",
+    response_text: str,
+    provider: str = DEFAULT_PROVIDER,
+    # Polly:
+    voice_id: str = DEFAULT_VOICE,
+    engine: str = DEFAULT_ENGINE,
+    rate: str = DEFAULT_RATE,
+    pitch: str = DEFAULT_PITCH,
+    aws_profile: str = "",
+    region: str = "",
+    # Piper:
+    piper_binary: str = "",
+    piper_model: str = "",
+    piper_model_config: str = "",
+    length_scale: float = 1.0,
+) -> bool:
+    """Synthesize *response_text* and hand the audio file to *deliver*.
+
+    The channel-neutral half of the pipeline. ``synthesize_speech`` was already
+    surface-agnostic; the only Slack-shaped step was the upload, so it becomes a
+    callback taking the temp file's path and returning whether it landed.
+
+    The temp file is unlinked in a ``finally`` regardless of what *deliver* does,
+    including raising — a synthesizer that keeps its output on a delivery failure
+    leaks a decoded copy of the answer into the temp dir, which is the one place a
+    restricted session's text must not persist.
+
+    Returns False when synthesis produced nothing, so a caller can post its
+    unavailable notice rather than silently sending only text.
+    """
+    audio_path = await synthesize_speech(
+        response_text,
+        provider=provider,
+        voice_id=voice_id,
+        engine=engine,
+        rate=rate,
+        pitch=pitch,
+        aws_profile=aws_profile,
+        region=region,
+        piper_binary=piper_binary,
+        piper_model=piper_model,
+        piper_model_config=piper_model_config,
+        length_scale=length_scale,
+    )
+    if not audio_path:
+        return False
+    try:
+        return await deliver(audio_path)
+    finally:
+        try:
+            os.unlink(audio_path)
+        except OSError:
+            pass
+
+
 async def voice_reply(
     slack_client: SlackClientOps,
     channel: str,
@@ -741,8 +859,14 @@ async def voice_reply(
 
     Provider selection is controlled by the ``provider`` argument; Polly-
     specific args are ignored when ``provider="piper"`` and vice versa.
+
+    Kept as its own entry point rather than folded into
+    :func:`synthesize_and_deliver`: Slack's callers pass a channel and a thread
+    rather than a delivery callback, and preserving the signature keeps every one
+    of them — and their tests — unchanged.
     """
-    audio_path = await synthesize_speech(
+    return await synthesize_and_deliver(
+        lambda path: upload_voice_to_slack(slack_client, channel, thread_ts, path),
         response_text,
         provider=provider,
         voice_id=voice_id,
@@ -756,13 +880,3 @@ async def voice_reply(
         piper_model_config=piper_model_config,
         length_scale=length_scale,
     )
-    if not audio_path:
-        return False
-
-    try:
-        return await upload_voice_to_slack(slack_client, channel, thread_ts, audio_path)
-    finally:
-        try:
-            os.unlink(audio_path)
-        except OSError:
-            pass

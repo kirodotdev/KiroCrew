@@ -394,6 +394,7 @@ class WhatsAppRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         """Ask for approval as a numbered message the operator answers by typing.
 

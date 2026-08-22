@@ -627,6 +627,51 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "paths) at this egress before the renderer posts it.",
     ),
     (
+        "Telegram rendered-form seal",
+        "telegram/renderer.py",
+        "Every text this channel posts, scanned against the form Telegram RENDERS "
+        "rather than the bytes sent. The TurnDriver's stream scan runs before this "
+        "renderer introduces any markup, so it cannot see a credential the markup "
+        "then reassembles: `AKIA**...**` matches nothing at the byte level, and "
+        "`_md_to_telegram_html` turns it into `AKIA<b>...</b>`, which the client "
+        "displays as an intact key. A link and a zero-width character between the "
+        "halves do the same. Both live-frame and seal run "
+        "`display_safety.redact_for_display` ahead of any tag being introduced, "
+        "covering the HTML, Rich-Message and plaintext branches at once; the "
+        "reasoning blockquote and the restored upload markup run it too.",
+    ),
+    (
+        "Recent-sessions read audit",
+        "messaging/sessions_view.py",
+        "The exception text recorded when the collector fails to read the sessions "
+        "directory, which goes into a SEL audit record every surface's session list "
+        "shares. The message is filesystem error text and can quote a path or an "
+        "environment value, so it is redacted before truncation — truncating first "
+        "would let a cut split a credential pattern out of the matcher's reach.",
+    ),
+    (
+        "LLM-generated session title",
+        "messaging/auto_title.py",
+        "The 3-6 word title a background turn proposes for a session. The model "
+        "writes it FROM the conversation, so it can quote a credential or a beacon "
+        "URL the user pasted, and the title then lands in three places at once — "
+        "the conversation log, the channel's own thread/chat title, and the "
+        "dashboard sidebar. Redacted here, before the cap, because the cap is what "
+        "would otherwise split a credential pattern out of the matcher's reach; and "
+        "here rather than at each caller, because a title reaching one surface "
+        "unredacted is the whole failure.",
+    ),
+    (
+        "Channel keyword-command replies",
+        "messaging/commands.py",
+        "The reply text of the path-independent chat commands — a cron job's name, "
+        "schedule and message, a subagent's task, a task-runner spec path and a "
+        "start failure. Each is free-form text a user typed or the agent proposed, "
+        "and every reply is posted to a channel AND persisted to the conversation "
+        "log, so the credential + exfiltration-URL pair runs before the string "
+        "leaves the module rather than at each channel's own boundary.",
+    ),
+    (
         "Discord session-resume replay",
         "discord/session_resume.py",
         "Session titles in the `!sessions` picker and the transcript replayed when a "

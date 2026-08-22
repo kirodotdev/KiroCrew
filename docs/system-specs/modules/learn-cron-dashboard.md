@@ -80,6 +80,73 @@ Scheduled job execution with three schedule types: `every` (interval, min 60s), 
 - Message cap: the cron `message` has its own `MAX_CRON_MESSAGE` (50 000) cap — a cron message is a task prompt, so it does not borrow the shared `MAX_MEDIUM_STRING` (5 000). Enforced on the MCP `cron_add`/`cron_update` schemas, `POST /api/crons` and `PATCH /api/crons/{id}` (PATCH routes `message` through `validate_string_field`, 400 `code: "invalid_message"` on non-string/oversize — it was previously unvalidated on that surface), and at the `CronService` persistence chokepoint (`_build_job`/`_update_job_locked` raise `ValueError`), so the CLI and apps-SDK paths cannot admit a value the validated surfaces would reject
 - Async stop: `stop()` is now async, cancels and awaits `_running_tasks` before returning
 
+### Result delivery order, and the delivery-agnostic dedup anchor
+
+A finished `message` cron fans out to three surfaces, in this order:
+
+1. the **dashboard slot + bell** — `inject_cron_result_to_dashboard` (gated on `persistent_session and not hide_in_chat`) then `notify`;
+2. the **originating channel**, when `job.session_key` names a non-Slack conversation. `_deliver_channel_reply` runs the governed cross-surface ladder (origin link → non-Slack mirror link → a direct session's stored peer id; see [slack-gateway](slack-gateway.md)) and reports whether the send landed. Without this rung a cron created from Telegram reached only the bell and Slack, so a Telegram-only operator's scheduled jobs ran and reported nowhere they would ever see;
+3. **Slack**, only when rung 2 did NOT deliver, so a channel-born cron never double-posts.
+
+`job.last_posted_hash` / `consecutive_dupes` / `last_posted_at` are written by one
+helper, `_record_cron_delivery`, from rungs 2 and 3 — never from rung 1. That
+split is the contract:
+
+- **Any confirmed delivery advances the anchor.** The anchor is what the
+  duplicate-suppression read compares against, so a surface that delivers
+  without advancing it can never suppress. While only the Slack branch wrote it,
+  a channel-delivered cron kept `last_posted_hash == ""` forever: identical
+  output re-posted on every tick, and the "same result N times in a row"
+  reminder could never fire there at all.
+- **Suppression is therefore delivery-agnostic too.** An identical result now
+  suppresses the channel post as well as the Slack one, re-posting after
+  `_SUCCESS_REMINDER_SECS` (24h) with the "same result N times in a row"
+  caption. For a channel-delivered cron this is a behaviour change from
+  "always post" to "suppress", and the intended one — identical output is
+  equally noisy in a chat.
+- **The dashboard-notification-only path does NOT advance it.** The bell is
+  passive and the operator may never open it, so counting it as delivered would
+  suppress a result nobody has seen.
+
+The Slack branch additionally records where its post landed
+(`sessions.set_thread` / `set_channel` on the `cron:{id}` key) so a later
+subagent completion can be threaded onto it. The channel leg deliberately has no
+equivalent: its conversation was resolved FROM the creating session's own durable
+origin/mirror link rather than learned at send time, and `_channel_reply_link`
+refuses a `cron:` key outright (no channel namespace) while its stored-value rung
+expects a direct peer's user id rather than a conversation — so the write would
+be inert. Routing a cron's subagent completions back to the creating channel
+needs a `cron:{id}` → creating-key edge, which does not exist yet.
+
+### Failure alerts take the same ladder
+
+A failure reports **where the results report**. Both failure surfaces run the
+channel-first ladder above and keep Slack as the fallback:
+
+- `_alert_cron_failure` — the script/command arms, which signal failure by mutating
+  the job and returning normally, plus fire-time policy denials;
+- the `message` arm's own `except` branch, which alerts and then re-raises.
+
+An alert reaching only the dashboard bell while the results reach a chat is worse
+than a uniform gap: the success path is what taught the operator to watch the
+channel, so a job crashing every minute there reads as an idle one — the exact
+state the alert exists to prevent.
+
+- **`job.silent` gates every surface identically.** `_alert_cron_failure` returns
+  before any of them; the `message` arm gates the channel leg on `not job.silent`
+  exactly as it gates the Slack DM. A silent job still counts toward auto-pause.
+- **The channel gets an unescaped twin, not the Slack string.** mrkdwn escaping and
+  fence-neutralization are Slack-sink concerns; a ``` fence or a `&lt;` would reach
+  another channel's reader literally. Both legs compose from the same
+  already-redacted pieces, and `_deliver_channel_reply` adds the egress redaction
+  pass.
+- **The failure dedup anchor is delivery-agnostic too.** A channel-delivered alert
+  never sets `slack_failed`, so `last_failure_hash` / `last_failure_at` advance and
+  an identical failure re-alerts once per `_FAILURE_REMINDER_SECS` rather than on
+  every fire. The SEL `downstream_service` names the channel namespace that
+  actually took it, so the audit trail does not read "slack" for a Telegram
+  delivery.
+
 ### Per-Job Timezone
 
 Each job stores an optional `timezone` field (IANA name, e.g. `America/Los_Angeles`). Schedule evaluation, next-run computation, and display all use the job's timezone rather than the server timezone. The `/api/crons` response includes both the per-job `timezone` and a top-level `server_tz` field so frontends can render correctly.

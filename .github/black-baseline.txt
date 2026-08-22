@@ -239,7 +239,6 @@ src/kiro_crew/dashboard/handlers/mcp.py
 src/kiro_crew/dashboard/handlers/mcp_apps.py
 src/kiro_crew/dashboard/handlers/mcp_custom.py
 src/kiro_crew/dashboard/handlers/memory.py
-src/kiro_crew/dashboard/handlers/messaging.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/side.py
@@ -417,7 +416,6 @@ src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
-src/kiro_crew/slack/renderer.py
 src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent.py
 src/kiro_crew/subagent_persistence.py
@@ -426,14 +424,12 @@ src/kiro_crew/suggestions.py
 src/kiro_crew/task_models.py
 src/kiro_crew/task_planner.py
 src/kiro_crew/taskrunner.py
-src/kiro_crew/telegram/client.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
 src/kiro_crew/transcribe.py
 src/kiro_crew/validation.py
 src/kiro_crew/vector_memory.py
-src/kiro_crew/voice_reply.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
@@ -589,7 +585,6 @@ test/test_cc_agent_resolution.py
 test/test_changelog_handler.py
 test/test_channel_activation.py
 test/test_channel_blocked_tools.py
-test/test_channel_compaction_notice.py
 test/test_channel_connect_row.py
 test/test_channel_fixtures.py
 test/test_channel_folders.py
@@ -1135,7 +1130,6 @@ test/test_seed.py
 test/test_sel.py
 test/test_sel_dashboard_offload.py
 test/test_sel_prune_streaming.py
-test/test_send_message_targeted.py
 test/test_service.py
 test/test_serving_loop_unified.py
 test/test_session_cleanup.py
@@ -1191,7 +1185,6 @@ test/test_slack_dashboard_live_sync.py
 test/test_slack_events_coverage.py
 test/test_slack_gateway.py
 test/test_slack_gateway_coverage.py
-test/test_slack_gateway_cron_exec_coverage.py
 test/test_slack_handler_coverage.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_handler_more_coverage.py
@@ -1266,7 +1259,6 @@ test/test_taskrunner_v2_scenarios.py
 test/test_tcc_protected_dirs.py
 test/test_teams_config.py
 test/test_teams_gateway.py
-test/test_telegram.py
 test/test_telegram_album.py
 test/test_telegram_attachments.py
 test/test_telegram_config_handlers.py

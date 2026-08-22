@@ -59,6 +59,18 @@ ENFORCED = {
     # pipes. Pinned per channel by test_channel_table_rendering.py.
     "table_mode",
     "native_tables",
+    # Decides whether an EMPTY message id from ``send_message`` means "refused"
+    # (most platforms) or "delivered, this platform returns no id" (WeCom's
+    # proactive command, Feishu's reply -- both RAISE on failure instead). Read
+    # through messaging.transport.delivery_confirmed at all three proactive-send
+    # call sites: slack/gateway.py's channel reply leg and both legs in
+    # dashboard/handlers/messaging.py. Declaring it wrongly is silent in both
+    # directions -- a lost message reported as delivered, or a delivered cron
+    # result reported as lost with its dedup hash left unadvanced, repeating the
+    # same result every tick. Pinned against each transport's own send_message,
+    # by AST and in both directions, in
+    # test_channel_transport_outbound_authz.py::TestTheMessageIdConventionIsDeclared.
+    "returns_message_id",
 }
 
 #: Declared honestly, read by nothing yet. The capability-gated interface
@@ -101,6 +113,23 @@ class TestCorrectedDeclarations:
         from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
 
         assert TELEGRAM_CAPABILITIES.threads is True
+
+    def test_telegram_declares_the_outbound_files_it_uploads(self) -> None:
+        # renderer._send_uploads extracts local image references through the
+        # shared messaging/outbound_files.py and uploads them via multipart
+        # sendPhoto / sendMediaGroup. Declared False while the channel printed
+        # filesystem paths; the declaration and the upload path move together.
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+
+        assert TELEGRAM_CAPABILITIES.files_outbound is True
+
+    def test_telegram_declares_the_rich_rendering_it_performs(self) -> None:
+        # sendRichMessage carries every table-bearing seal (renderer._seal_text)
+        # and renders structured markdown natively; inline keyboards carry the
+        # interactive half. Declared False while doing both.
+        from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES
+
+        assert TELEGRAM_CAPABILITIES.rich_blocks is True
 
     def test_slack_declares_its_shipped_send_limit_not_the_platform_ceiling(self) -> None:
         # slack/format.py splits at SLACK_MSG_LIMIT (3900). The old 40000

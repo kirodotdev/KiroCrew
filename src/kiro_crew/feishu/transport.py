@@ -55,6 +55,9 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     max_message_chars=4000,
     max_buttons=0,
     supports_proactive_send=False,
+    # A Feishu reply carries no message id back, so an empty return is SUCCESS and a
+    # failure raises (see ``send_message``). Same contract as WeCom's.
+    returns_message_id=False,
 )
 
 
@@ -103,9 +106,39 @@ class FeishuTransport(MessagingTransport):
         # ``conversation_id`` carries the inbound ``message_id`` (set by
         # ``receive`` via ``FeishuInboundMessage.conversation_id``), so this
         # is a contextual reply rather than a free-standing send.
-        if conversation_id:
-            await self._client.send_reply(conversation_id, content)
+        #
+        # RAISE on a refused reply rather than returning. A Feishu reply carries no
+        # message id, so the return value cannot express failure -- which is what
+        # ``returns_message_id=False`` tells a caller, and it makes "nothing raised"
+        # the ONLY delivery signal there is. Discarding ``send_reply``'s answer left
+        # a dropped message looking exactly like a delivered one, which is how a
+        # mirror leg persists a link and reports success for a reply the user never
+        # saw. The renderer's own send already raises for this reason.
+        if not conversation_id:
+            raise RuntimeError("no Feishu message to reply to")
+        if not await self._client.send_reply(conversation_id, content):
+            raise RuntimeError(f"Feishu reply was not delivered (message_id={conversation_id})")
         return ""
+
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Never. Feishu has no proactive send in this v1 integration.
+
+        Not conservatism -- the address is wrong. ``send_message`` takes an inbound
+        ``message_id`` as its ``conversation_id``, so it is a reply anchor rather
+        than a durable destination, and a proactive send resolves a PERSISTED link
+        whose anchor named a message from some earlier turn. Answering True would
+        reply to whatever that message was, on behalf of a turn nobody connected to
+        it. ``configured_targets`` already reports every target unavailable for the
+        same reason; this is the enforcing half of that claim.
+
+        The override exists rather than inheriting the ABC's permissive default
+        because the default is a decision each transport owes explicitly -- an
+        inherited one is invisible, and this reason is the thing worth being able
+        to grep for when a proactive path is added.
+        """
+        return False
 
     async def resolve_conversation(self, user_id: str) -> str:
         # Feishu replies are anchored to an inbound message; without one there

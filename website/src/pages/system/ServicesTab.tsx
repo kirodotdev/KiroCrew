@@ -3,12 +3,13 @@
  *
  * Shaped after Task Manager's Services tab: these are NOT sessions, they are the
  * processes and integrations that serve sessions. Gateway, MCP pool, embeddings,
- * Slack transport, and governance enforcement.
+ * the messaging channel transports, and governance enforcement.
  *
  * Layout uses CSS multi-column with break-inside:avoid per section to pack tight
  * and eliminate the ~400px dead space the old card grid left.
  */
 import { useQuery } from '@tanstack/react-query'
+import { AlertTriangle } from 'lucide-react'
 import { useAppSelector } from '../../store'
 import { useUptime } from '../../hooks/useUptime'
 import { api } from '../../api/client'
@@ -54,6 +55,70 @@ function StatusDot({ on }: { on: boolean }) {
       style={{ backgroundColor: on ? 'var(--ok)' : 'var(--muted)' }}
       aria-hidden="true"
     />
+  )
+}
+
+/* ── Channels ── */
+
+/**
+ * Catalog key per channel type, in the gateway's own roster order.
+ *
+ * A flat map of FULL literal keys, indexed inline at the `i18nT()` call below:
+ * that is the one indirection `scripts/check-i18n-keys.mjs` resolves (it
+ * validates the union of a map's values), so every label here is gated for
+ * existence. A key assembled from the wire's channel type would be invisible to
+ * that gate and would render the raw dotted path the day a channel is renamed.
+ *
+ * The render walks THIS map rather than the payload's own key order, so the
+ * section keeps a stable order and a channel the gateway grows is a one-line
+ * data change here plus its label.
+ */
+const CHANNEL_LABEL_KEY: Record<string, string> = {
+  slack: 'pages.servicesTab.slack',
+  wecom: 'pages.servicesTab.wecom',
+  telegram: 'pages.servicesTab.telegram',
+  discord: 'pages.servicesTab.discord',
+  webex: 'pages.servicesTab.webex',
+  teams: 'pages.servicesTab.teams',
+  weixin: 'pages.servicesTab.weixin',
+  imessage: 'pages.servicesTab.imessage',
+  whatsapp: 'pages.servicesTab.whatsapp',
+  feishu: 'pages.servicesTab.feishu',
+}
+
+const CHANNEL_TYPES = Object.keys(CHANNEL_LABEL_KEY)
+
+/**
+ * One channel's status cell: the connected/not-connected span this page has
+ * always used for Slack, plus the gateway's connect reason when it has one.
+ *
+ * Surfacing the reason is the whole point of the payload — a channel that failed
+ * `invalid_auth` at boot reads as an ordinary "Not connected" without it, which
+ * sends the operator to look at their network instead of their token.
+ */
+function ChannelStatus({ connected, error }: { connected: boolean; error: string }) {
+  return (
+    <span className="inline-flex flex-col items-end gap-0.5">
+      <span style={{ color: connected ? 'var(--ok)' : 'var(--muted)' }}>
+        {connected ? i18nT('pages.servicesTab.connected') : i18nT('pages.servicesTab.not_connected')}
+      </span>
+      {/* `min-w-0` so the reason (up to 120 chars from the gateway) wraps inside
+          the value column instead of pushing the row wider than its
+          multi-column track. */}
+      {error !== '' && (
+        <span
+          className="inline-flex items-baseline gap-1 min-w-0"
+          style={{ color: 'var(--danger)' }}
+        >
+          <AlertTriangle
+            className="lucide-inline"
+            role="img"
+            aria-label={i18nT('pages.servicesTab.connect_error')}
+          />
+          {error}
+        </span>
+      )}
+    </span>
   )
 }
 
@@ -141,19 +206,52 @@ export default function ServicesTab() {
     },
   ]
 
+  // One row per channel, read off `status.channels` — the same
+  // `<channel>_connected` / `<channel>_connect_error` flags each channel's own
+  // settings badge reports, so this page cannot disagree with that one.
+  //
+  // WHICH channels appear: only those with something to report — connected, or
+  // carrying a connect error. `{ connected: false, error: '' }` is exactly what an
+  // UNCONFIGURED channel looks like, so rendering every key would put seven
+  // meaningless "Not connected" rows on a Slack-only install. Settings > Channels
+  // is the surface that knows `configured` (it asks each channel's own config
+  // endpoint) and is where "did I set this up?" belongs; this page answers "is
+  // what I set up running, and if not, why not?".
+  //
+  // An ENABLED channel that could not start is NOT filtered out, because it does
+  // not have that shape: the gateway badges it with a reason naming the missing
+  // credential (`_badge_unready_channels`), so it arrives carrying an `error` and
+  // renders through the same branch a crashed channel does. That distinction lives
+  // there rather than here on purpose: "enabled but not started" is a fact only
+  // the backend can establish, and the operator needs the reason, not just a row.
+  //
+  // Slack is always rendered, and is the back-compatible read: an older gateway
+  // sends no `channels` at all, so `slack_connected` remains the source for that
+  // row and the section never collapses to nothing against an absent map.
+  const channelRows: Row[] = CHANNEL_TYPES
+    .filter(type => {
+      const ch = status?.channels?.[type]
+      return type === 'slack' || Boolean(ch?.connected) || Boolean(ch?.error)
+    })
+    .map(type => {
+      const ch = status?.channels?.[type]
+      return {
+        label: i18nT(CHANNEL_LABEL_KEY[type]),
+        value: (
+          <ChannelStatus
+            connected={Boolean(
+              type === 'slack' ? ch?.connected ?? status?.slack_connected : ch?.connected,
+            )}
+            error={ch?.error ?? ''}
+          />
+        ),
+      }
+    })
+
   const integrationSections: Section[] = [
     {
-      title: i18nT('pages.servicesTab.slack'),
-      rows: [
-        {
-          label: i18nT('pages.servicesTab.status'),
-          value: (
-            <span style={{ color: status?.slack_connected ? 'var(--ok)' : 'var(--muted)' }}>
-              {status?.slack_connected ? i18nT('pages.servicesTab.connected') : i18nT('pages.servicesTab.not_connected')}
-            </span>
-          ),
-        },
-      ],
+      title: i18nT('pages.servicesTab.channels'),
+      rows: channelRows,
     },
     {
       title: i18nT('pages.servicesTab.governance'),

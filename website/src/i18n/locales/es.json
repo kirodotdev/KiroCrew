@@ -10550,8 +10550,11 @@
       "owning_session": "Sesión propietaria"
     },
     "servicesTab": {
+      "channels": "Canales",
+      "connect_error": "Error de conexión",
       "connected": "Conectado",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "Proceso del gateway",
       "governance": "Gobernanza",
@@ -10559,6 +10562,7 @@
       "governance_tip_degraded": "Una comprobación de gobernanza falló de forma restrictiva, se detectó una discrepancia de integridad o la política de admisión no está verificada (ausente o ilegible). Revisa el registro de auditoría SEL.",
       "governance_tip_disabled": "No hay ninguna política de admisión en modo de aplicación configurada (valor predeterminado permisivo). Los plugins se admiten a menos que se prohíban explícitamente.",
       "governance_tip_unknown": "El estado de gobernanza aún no se ha determinado en esta sesión.",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} en sandbox · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_process_breakdown_unique": "{{total}} únicos ({{sandbox}} en sandbox · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_processes": "Procesos MCP",
@@ -10575,8 +10579,15 @@
       "status_disabled": "Desactivado",
       "status_unknown": "Desconocido",
       "stopped": "Detenido",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "Hilos",
       "uptime": "Tiempo activo",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "Directorio de trabajo"
     },
     "sessionArchive": {
@@ -11887,6 +11898,12 @@
         "allowlist_description": "IDs numéricos de usuario de Telegram con permiso para enviar mensajes directos al bot. Vacío = denegar todo (falla cerrado): un bot de Telegram es accesible globalmente por @username.",
         "description": "Habla con tu agente desde Telegram a través de la Bot API (con long-polling: no hace falta webhook ni dirección pública). Añade los IDs de usuario permitidos para que el bot pueda responder.",
         "empty_allowlist_hint": "No hay IDs de usuario permitidos: el bot rechaza todos los mensajes (falla cerrado). Añade tu ID numérico de usuario de Telegram más abajo.",
+        "forum_activation_always": "Todos los mensajes",
+        "forum_activation_description": "Cuándo responde el bot dentro de un tema autorizado. Un mensaje directo se responde siempre, sea cual sea esta opción.",
+        "forum_activation_hint": "«Solo cuando se le menciona» sirve para un tema donde también conversan otras personas: el bot responde únicamente si se usa su @nombre o si se responde a uno de sus propios mensajes.",
+        "forum_activation_label": "Responder en los temas",
+        "forum_activation_mention": "Solo cuando se le menciona",
+        "forum_activation_off": "Nunca",
         "forum_allowlist_description": "chat_ids numéricos de supergrupo con permiso para ejecutar sesiones de temas de foro. Son negativos (p. ej. -1001234567890) — puedes obtener uno añadiendo al grupo un bot como @getidsbot. Vacío = denegar todos los grupos (falla cerrado).",
         "forum_allowlist_label": "IDs de chat de supergrupo permitidos",
         "forum_empty_hint": "El foro está activado pero no hay chats en la lista de permitidos: se deniega todo el tráfico del foro. Añade el chat_id de tu supergrupo (un número negativo como -100…).",
@@ -11894,8 +11911,12 @@
         "forum_toggle_label": "Servir los Temas de foro como sesiones por Tema",
         "guide_body": "Escribe a `@BotFather` en Telegram, envía `/newbot` y sigue las indicaciones. BotFather responde con un token de bot — pégalo más abajo. Para encontrar tu ID numérico de usuario, escribe a `@userinfobot`.",
         "guide_link_label": "Abrir @BotFather",
+        "show_thinking_description": "Después de cada respuesta, publica el razonamiento como una cita plegada que puedes expandir. Desactivado por defecto: el límite de velocidad de Telegram es por chat y se comparte con las ediciones en streaming que la respuesta ya consume, así que esto cuesta un mensaje extra por turno.",
+        "show_thinking_label": "Publicar el razonamiento del modelo",
         "token_description": "De @BotFather después de crear tu bot (tiene este aspecto: 110201543:AAHdqT…).",
-        "token_placeholder": "Pega el token de bot de Telegram (123456:ABC-…)"
+        "token_placeholder": "Pega el token de bot de Telegram (123456:ABC-…)",
+        "voice_replies_description": "Enviar cada respuesta también como mensaje de voz, con la configuración del proveedor voice_reply. Desactivado de forma predeterminada: cuesta un mensaje más por turno dentro del límite de frecuencia que Telegram aplica por chat, y puede que la síntesis de voz no esté instalada. Las respuestas cortas nunca se leen y la respuesta de texto llega siempre primero. Con /voice on o /voice off se cambia una sola conversación.",
+        "voice_replies_label": "Leer las respuestas en voz alta"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (en la nube)",

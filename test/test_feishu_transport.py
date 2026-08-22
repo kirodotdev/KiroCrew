@@ -359,6 +359,37 @@ class TestSendMessage:
         await t.send_message("msg_anchor", "reply text")
         assert client.replies == [("msg_anchor", "reply text")]
 
+    @pytest.mark.asyncio
+    async def test_a_refused_reply_RAISES_rather_than_returning(self) -> None:
+        """The load-bearing half of ``returns_message_id=False``.
+
+        A Feishu reply carries no message id, so the return value cannot express
+        failure and every caller reads "nothing raised" as delivery. Discarding
+        ``send_reply``'s answer therefore made a dropped message indistinguishable
+        from a delivered one -- and a mirror leg then persists the link and reports
+        success for a reply the user never saw.
+        """
+        client = FakeClient()
+        client.send_reply = _refusing_reply  # type: ignore[method-assign]
+        t = FeishuTransport(client, allowed_open_ids=["ou_abc"])
+        with pytest.raises(RuntimeError):
+            await t.send_message("msg_anchor", "reply text")
+
+    @pytest.mark.asyncio
+    async def test_no_anchor_raises_too(self) -> None:
+        # Same reason: returning "" here would report a send that never happened.
+        t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
+        with pytest.raises(RuntimeError):
+            await t.send_message("", "reply text")
+
+    def test_the_capability_declares_the_id_less_convention(self) -> None:
+        t = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
+        assert t.capabilities.returns_message_id is False
+
+
+async def _refusing_reply(message_id: str, text: str) -> bool:
+    return False
+
 
 def _msg(user_id: str) -> InboundMessage:
     return InboundMessage(

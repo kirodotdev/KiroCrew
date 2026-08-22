@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -3363,3 +3364,101 @@ class TestSemaphoreParallelScheduling:
             f"task 3 started at index {start3_idx} but task 1 ended at {end1_idx}; "
             "expected task 3 to start BEFORE task 1 finishes (slot refill)"
         )
+
+
+class TestNotifySessionKey:
+    """``start_background(session_key=)`` reaches the notify sink as a keyword.
+
+    The sink is what routes a stall-worthy notice (an approval request, a denial)
+    back to the surface the run was started from. ``notify`` swallows sink
+    failures at debug level, so "the keyword broke the sink" and "there was no
+    notification" look identical from the outside — which is why each of these
+    asserts the notification ARRIVED, not merely that the call was shaped right.
+    """
+
+    @staticmethod
+    def _spec(tmp_path: Path) -> Path:
+        spec = tmp_path / "spec.md"
+        spec.write_text("# Bg Task\n## Steps\n1. Do thing\n   - run: echo hi")
+        return spec
+
+    async def _start(self, tmp_path: Path, sink, session_key: str) -> tuple[TaskRunner, TaskRun]:
+        runner = TaskRunner(
+            sessions=_make_mock_sessions(), work_dir=tmp_path, on_notify=sink
+        )
+        with patch.object(runner, "run", new_callable=AsyncMock):
+            task_id = await runner.start_background(
+                self._spec(tmp_path), session_key=session_key
+            )
+            # Drain the background wrapper here rather than leaving it to be
+            # garbage-collected: a task still pending at teardown escapes into
+            # the next test and prints "Task was destroyed but it is pending".
+            background = runner._tasks.get(task_id)
+            if background is not None:
+                await background
+        return runner, runner._runs[task_id]
+
+    @pytest.mark.asyncio
+    async def test_session_aware_sink_receives_the_originating_key(self, tmp_path: Path) -> None:
+        seen: list[tuple[str, str]] = []
+
+        async def _sink(title: str, body: str, task_id: str = "", *, session_key: str = "") -> None:
+            seen.append((title, session_key))
+
+        runner, run = await self._start(tmp_path, _sink, "telegram:kirocrew:direct:U9")
+        await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
+
+        assert seen == [("[spec] Task 1 requires approval", "telegram:kirocrew:direct:U9")]
+
+    @pytest.mark.asyncio
+    async def test_omitted_session_key_leaves_the_call_shape_untouched(
+        self, tmp_path: Path
+    ) -> None:
+        """No originating conversation ⇒ the sink sees the call it always saw.
+
+        Asserted on the call SHAPE, not merely on an empty value: a sink is only
+        obliged to accept ``session_key`` once something hands it one, so a
+        notification with no origin has to arrive as the three-argument call every
+        pre-existing sink was written against.
+        """
+        calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+        async def _sink(*args: Any, **kwargs: Any) -> None:
+            calls.append((args, kwargs))
+
+        runner, run = await self._start(tmp_path, _sink, "")
+        await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
+
+        assert calls == [
+            (("[spec] Task 1 requires approval", "run the deploy?", run.task_id), {})
+        ]
+
+    @pytest.mark.asyncio
+    async def test_legacy_three_arg_sink_is_still_notified(self, tmp_path: Path) -> None:
+        """A sink that predates the keyword keeps working, present key or not.
+
+        The keyword is keyword-only WITH a default so a sink can adopt it at its
+        own pace; handing it to one that cannot take it would raise a
+        ``TypeError`` into ``notify``'s best-effort ``except``, and that sink's
+        notifications would simply stop arriving with nothing logged above debug.
+        """
+        seen: list[str] = []
+
+        async def _legacy(title: str, body: str, task_id: str = "") -> None:
+            seen.append(title)
+
+        runner, run = await self._start(tmp_path, _legacy, "telegram:kirocrew:direct:U9")
+        await runner._notify("Task 1 requires approval", "run the deploy?", run=run)
+
+        assert seen == ["[spec] Task 1 requires approval"]
+
+    @pytest.mark.asyncio
+    async def test_delete_forgets_the_originating_key(self, tmp_path: Path) -> None:
+        """The mapping is per-run bookkeeping, so deleting a run releases it."""
+        runner, run = await self._start(
+            tmp_path, AsyncMock(), "telegram:kirocrew:direct:U9"
+        )
+        assert runner._run_session_keys.get(run.task_id)
+
+        assert await runner.delete_run(run.task_id) is True
+        assert run.task_id not in runner._run_session_keys

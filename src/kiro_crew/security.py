@@ -5047,10 +5047,15 @@ _CREW_SECRET_LEAVES: list[str] = [
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
-    # Durable channel routing state (currently Teams' conversation -> serviceUrl and
-    # identity -> conversation maps). Same class of control as
-    # ``workspace/md-notebook/vaults.json`` above: it is not a secret, it is
-    # DELIVERY ADDRESSING. ``teams/transport.py`` resolves an explicit
+    # Durable channel transport state: Teams' conversation -> serviceUrl and
+    # identity -> conversation maps, and Telegram's getUpdates cursor. Two shapes of
+    # the same control -- where a message GOES, and which messages are SEEN. Calling
+    # getUpdates with an offset is also the ack for everything below it, so an agent
+    # that could write that cursor would make the gateway skip every queued and
+    # future message, durably, past the restart that would otherwise clear it.
+    #
+    # Same class of control as ``workspace/md-notebook/vaults.json`` above: neither
+    # is a secret, both are PLUMBING. ``teams/transport.py`` resolves an explicit
     # ``user:<upn>`` send target through the identity map, so an agent that could
     # write it could point one operator's UPN at a different person's conversation
     # and have the next cron result, subagent notice or ``send_message`` delivered
@@ -5069,7 +5074,8 @@ _CREW_SECRET_LEAVES: list[str] = [
     # have the rename publish its own routing. A directory entry covers every
     # child, random temp names included. (``trust``, ``profiles`` and
     # ``cron-history`` above are directories for the same reason among others.)
-    # ``ServiceUrlStore`` opens its path directly, not through this gate, so
+    # ``ServiceUrlStore`` and ``TelegramClient`` open their paths directly, not
+    # through this gate, so
     # proactive routing across a restart is unaffected.
     "routing",
     # Inbound-webhook credential store directory. It holds the bearer HASHES and

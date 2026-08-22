@@ -427,12 +427,8 @@ class TestCronScriptMode:
     async def test_timeout_on_already_paused_job_warns(self):
         """An auto-paused job's timeout logs the pause without re-auditing it."""
         orch = _make_orchestrator()
-        job = _job(
-            script="probes.py:check", timeout=3, auto_paused=True, consecutive_failures=5
-        )
-        async with _cron_cb(
-            orch, sel_obj=_blind_sel(), script_result=asyncio.TimeoutError()
-        ) as cb:
+        job = _job(script="probes.py:check", timeout=3, auto_paused=True, consecutive_failures=5)
+        async with _cron_cb(orch, sel_obj=_blind_sel(), script_result=asyncio.TimeoutError()) as cb:
             assert await cb(job) is None
         assert job.last_error == "timeout (8s)"
         assert job.auto_paused is True
@@ -904,8 +900,11 @@ class TestTheVetIsAnAccountedBudgetTerm:
         reverted silently.
         """
         orch = _make_orchestrator()
-        job = _job(**{kind: "probes.py:check" if kind == "script" else "curl example.com"},
-                   timeout=1, timeout_secs=8)
+        job = _job(
+            **{kind: "probes.py:check" if kind == "script" else "curl example.com"},
+            timeout=1,
+            timeout_secs=8,
+        )
         vet_bound, pre_fix_budget = self._budgets(job)
 
         # A vet inside its own bound, and a payload that then runs past the
@@ -1055,9 +1054,7 @@ class TestTheVetIsAnAccountedBudgetTerm:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Assign):
                 continue
-            if not any(
-                isinstance(t, ast.Name) and t.id == "deadline" for t in node.targets
-            ):
+            if not any(isinstance(t, ast.Name) and t.id == "deadline" for t in node.targets):
                 continue
             called = {
                 child.func.id
@@ -1216,9 +1213,7 @@ class TestCronMessageDenialAndWiring:
         orch.sessions = MagicMock()
         orch.ctx_builder = MagicMock()
         job = _job()
-        async with _cron_cb(
-            orch, gate_reason="capabilities.cron off", sel_obj=_blind_sel()
-        ) as cb:
+        async with _cron_cb(orch, gate_reason="capabilities.cron off", sel_obj=_blind_sel()) as cb:
             assert await cb(job) is None
         assert job.fire_time_denied is True
         assert job.consecutive_failures == 0
@@ -1406,9 +1401,418 @@ class TestDeliverChannelReply:
         for part in parts:
             prose = [ln for ln, role in iter_fence_lines(part) if role == FENCE_OUTSIDE]
             for marker in markers:
-                assert marker not in prose, (
-                    f"a code line landed outside its fence:\n{part}"
-                )
+                assert marker not in prose, f"a code line landed outside its fence:\n{part}"
         joined = "\n".join(parts)
         for marker in markers:
             assert marker in joined, "content must survive the split"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cron delivery to a non-Slack channel
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+_TG_KEY = "telegram:kirocrew:direct:U9"
+
+
+def _message_arm_sessions() -> MagicMock:
+    """A SessionManager double for the ``message`` (LLM) cron arm."""
+    sessions = MagicMock()
+    sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    sessions.release = MagicMock()
+    sessions.reset = AsyncMock()
+    sessions.set_thread = AsyncMock()
+    sessions.set_channel = AsyncMock()
+    sessions.get_origin_link = MagicMock(return_value=gw.ChannelLink("telegram", channel_id="C77"))
+    sessions.get_mirror_link = MagicMock(return_value=None)
+    sessions.get_channel = MagicMock(return_value="")
+    return sessions
+
+
+def _channel_transport() -> MagicMock:
+    """A MessagingTransport double whose only job is to record outbound sends."""
+    transport = MagicMock()
+    transport.capabilities = MagicMock(max_message_chars=4096)
+    transport.send_message = AsyncMock(return_value="m1")
+    transport.resolve_configured_target = AsyncMock(return_value=None)
+    return transport
+
+
+@asynccontextmanager
+async def _cron_message_cb(
+    orch: Any, *, result_text: str = "", error: BaseException | None = None
+) -> AsyncIterator[Any]:
+    """Yield ``on_job`` with the ``message`` arm's LLM turn stubbed out.
+
+    Everything between session acquisition and the delivery fan-out is replaced:
+    the point of these tests is which SURFACE a finished result reaches, so the
+    turn itself is a constant. ``_cron_stream_with_posttoken_resume`` is the one
+    seam that has to be patched by name — the arm resolves it from module
+    globals at call time, which is why this nests inside ``_cron_cb`` rather
+    than wrapping it.
+
+    ``error`` drives the FAILURE fan-out instead of the success one by making the
+    stubbed turn raise, which is the only way into the arm's ``except`` branch.
+    It must NOT look like a transient backend error, or the arm retries the whole
+    callback rather than alerting.
+    """
+    orch.ctx_builder = MagicMock()
+    orch.ctx_builder.hooks = MagicMock()
+    orch.subagent_mgr = MagicMock()
+    orch.subagent_mgr.has_pending_work_for = MagicMock(return_value=False)
+    _turn = (
+        AsyncMock(side_effect=error)
+        if error is not None
+        else AsyncMock(return_value=(result_text, 0))
+    )
+    with ExitStack() as stack:
+        for patcher in (
+            patch.object(gw, "_cron_stream_with_posttoken_resume", _turn),
+            patch.object(gw, "publish_turn_identity", AsyncMock()),
+            patch.object(gw, "run_in_embed_pool", AsyncMock(return_value=("full msg", None))),
+            patch.object(gw, "persist_token_record_async", AsyncMock()),
+            patch.object(gw, "read_context_tokens", MagicMock(return_value=(0, 0))),
+            patch.object(gw, "provider_last_turn_usage", MagicMock()),
+            patch.object(gw, "read_effective_agent", MagicMock(return_value="")),
+            patch.object(gw, "context_meter_reading", MagicMock(return_value=None)),
+        ):
+            stack.enter_context(patcher)
+        async with _cron_cb(orch) as callback:
+            yield callback
+
+
+class TestCronChannelDelivery:
+    """A cron created from a non-Slack channel reports back to THAT channel.
+
+    The delivery fan-out and the duplicate-suppression anchor are one mechanism:
+    the anchor is what the suppression read compares against, so a surface that
+    delivers without advancing it can never suppress. These drive the real
+    ``_deliver_channel_reply`` leg (only the governed target resolution and the
+    transport are doubled) so the argument order and the Slack-skip are both
+    observed, not asserted about a mock of the method under test.
+    """
+
+    @staticmethod
+    def _slack_double() -> MagicMock:
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_blocks = AsyncMock(return_value="ts1")
+        slack.post_message = AsyncMock()
+        return slack
+
+    def _orch(self, transport: MagicMock) -> Any:
+        orch = _make_orchestrator()
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = self._slack_double()
+        self._target = MagicMock(
+            return_value=(gw.ChannelLink("telegram", channel_id="C77"), transport)
+        )
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_channel_key_delivers_to_channel_and_skips_slack(self):
+        """A ``telegram:`` originating key routes the result to Telegram, not Slack."""
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jc1", name="channel probe", session_key=_TG_KEY)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, result_text="all clear") as callback:
+                assert await callback(job) == "all clear"
+
+        transport.send_message.assert_awaited_once()
+        sent = transport.send_message.await_args.args[1]
+        assert "⏰ Cron: channel probe" in sent and "all clear" in sent
+        orch.slack.post_blocks.assert_not_awaited()
+        orch.slack.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_channel_delivery_advances_the_dedup_anchor(self):
+        """Regression: the anchor is delivery-agnostic, so a channel post moves it.
+
+        ``slack`` is None here on purpose. With a Slack client attached the Slack
+        branch is a second writer of the same three fields, so it would keep this
+        green with the channel-path write deleted — the very defect being pinned.
+        """
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        orch.slack = None
+        job = _job(id="jc2", name="anchor probe", session_key=_TG_KEY)
+        assert job.last_posted_hash == ""
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, result_text="unchanged") as callback:
+                await callback(job)
+
+        transport.send_message.assert_awaited_once()
+        assert job.last_posted_hash == gw._result_hash("unchanged")
+        assert job.consecutive_dupes == 0
+        assert job.last_posted_at > 0
+
+    @pytest.mark.asyncio
+    async def test_identical_second_run_is_suppressed_on_the_channel(self):
+        """Regression for the spam this fixes: run two, deliver one.
+
+        With the anchor left unadvanced on this path, ``last_posted_hash`` stayed
+        ``""`` forever and every tick re-posted the same text — while Slack posted
+        once and then went quiet for a day.
+        """
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jc3", name="dupe probe", session_key=_TG_KEY)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, result_text="same every time") as callback:
+                await callback(job)
+                await callback(job)
+
+        assert transport.send_message.await_count == 1
+        assert job.consecutive_dupes == 1
+
+    @pytest.mark.asyncio
+    async def test_job_without_session_key_still_takes_the_slack_path(self):
+        """No originating conversation ⇒ the Slack branch runs exactly as before."""
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jc4", name="slack probe", session_key="", created_by="U_OWNER")
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, result_text="slack bound") as callback:
+                assert await callback(job) == "slack bound"
+
+        transport.send_message.assert_not_awaited()
+        orch.slack.post_blocks.assert_awaited_once()
+        # The Slack branch owns the same anchor write, through the same helper.
+        assert job.last_posted_hash == gw._result_hash("slack bound")
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Cron FAILURE delivery to a non-Slack channel
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestCronFailureChannelDelivery:
+    """A cron's failure alert reports where its RESULTS report.
+
+    The success leg already routes into the originating conversation, so a job
+    that reported into Telegram while it worked and only into the dashboard bell
+    once it started crashing reads as idle rather than broken — the exact state
+    the alert exists to prevent, and worse than a uniform gap because the success
+    path trained the expectation. Both failure surfaces are covered: the
+    ``message`` arm's own ``except`` branch, and ``_alert_cron_failure``, which
+    the deterministic script/command arms reach instead.
+
+    These drive the real ``_deliver_channel_reply`` leg (only the governed target
+    resolution and the transport are doubled), so the Slack-skip is observed
+    rather than asserted about a mock of the method under test.
+    """
+
+    @staticmethod
+    def _slack_double() -> MagicMock:
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_blocks = AsyncMock(return_value="ts1")
+        slack.post_message = AsyncMock()
+        return slack
+
+    def _orch(self, transport: MagicMock) -> Any:
+        orch = _make_orchestrator()
+        orch.sessions = _message_arm_sessions()
+        orch.dashboard_state = _mock_dashboard_state()
+        orch.slack = self._slack_double()
+        self._target = MagicMock(
+            return_value=(gw.ChannelLink("telegram", channel_id="C77"), transport)
+        )
+        return orch
+
+    @staticmethod
+    def _sent(transport: MagicMock) -> str:
+        return str(transport.send_message.await_args.args[1])
+
+    # ── the message (LLM) arm's own except branch ──
+
+    @pytest.mark.asyncio
+    async def test_a_crashing_message_cron_reports_into_the_channel(self):
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jf1", name="failing probe", session_key=_TG_KEY)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, error=RuntimeError("probe exploded")) as callback:
+                with pytest.raises(RuntimeError):
+                    await callback(job)
+
+        transport.send_message.assert_awaited_once()
+        sent = self._sent(transport)
+        assert "Cron: failing probe" in sent and "probe exploded" in sent
+        # The reason travels in the channel's own dialect, not Slack's: a mrkdwn
+        # fence would reach a Telegram reader as three literal backticks.
+        assert "```" not in sent
+        orch.slack.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_silent_message_cron_reports_to_neither_surface(self):
+        """``job.silent`` gates the channel leg exactly as it gates the Slack DM."""
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jf2", name="quiet probe", session_key=_TG_KEY, silent=True)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, error=RuntimeError("probe exploded")) as callback:
+                with pytest.raises(RuntimeError):
+                    await callback(job)
+
+        transport.send_message.assert_not_awaited()
+        orch.slack.post_message.assert_not_awaited()
+        # Still counted toward auto-pause — silence suppresses surfaces, not
+        # bookkeeping.
+        assert job.consecutive_failures == 1
+
+    @pytest.mark.asyncio
+    async def test_a_message_cron_without_a_channel_still_dms_slack(self):
+        """No originating conversation ⇒ the Slack DM runs exactly as before."""
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jf3", name="slack probe", session_key="", created_by="U_OWNER")
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_message_cb(orch, error=RuntimeError("probe exploded")) as callback:
+                with pytest.raises(RuntimeError):
+                    await callback(job)
+
+        transport.send_message.assert_not_awaited()
+        channel, text = orch.slack.post_message.await_args.args
+        assert channel == "D1"
+        assert "*Cron: slack probe*" in text and "probe exploded" in text
+
+    # ── _alert_cron_failure: the script / command arms' failure surface ──
+
+    @pytest.mark.asyncio
+    async def test_a_failing_command_cron_reports_into_the_channel(self):
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(id="jf4", name="cmd probe", command="false", session_key=_TG_KEY)
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_cb(orch, command_result={"status": "error", "output": ""}) as cb:
+                assert await cb(job) is None
+
+        transport.send_message.assert_awaited_once()
+        sent = self._sent(transport)
+        assert "Cron: cmd probe" in sent and "Run failed" in sent
+        assert "```" not in sent
+        orch.slack.post_message.assert_not_awaited()
+        # Delivery confirmed on a surface ⇒ the failure dedup anchor advances, so
+        # the next identical failure is suppressed instead of re-alerting.
+        assert job.last_failure_hash != ""
+
+    @pytest.mark.asyncio
+    async def test_a_failing_command_cron_without_a_channel_still_dms_slack(self):
+        transport = _channel_transport()
+        orch = self._orch(transport)
+        job = _job(
+            id="jf5", name="cmd probe", command="false", session_key="", created_by="U_OWNER"
+        )
+
+        with patch.object(gw, "_resolve_channel_target", self._target):
+            async with _cron_cb(orch, command_result={"status": "error", "output": ""}) as cb:
+                assert await cb(job) is None
+
+        transport.send_message.assert_not_awaited()
+        channel, text = orch.slack.post_message.await_args.args
+        assert channel == "D1"
+        assert "*Cron: cmd probe*" in text
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Task-runner approval notices: channel first, owner DM as the fallback
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class TestTaskNotifyChannelRouting:
+    """``_task_notify`` prefers the run's originating conversation.
+
+    An approval request is the one notification a task cannot proceed without,
+    so where it lands decides whether the run stalls silently. The owner DM is
+    Slack-only, which left a Telegram-only operator with a stalled task and no
+    notice; the channel ladder runs first and the DM stays as the fallback.
+    """
+
+    def _notify(self, orch: Any) -> Any:
+        orch.sessions = MagicMock()
+        orch.ctx_builder = MagicMock()
+        orch.conv_log = MagicMock()
+        orch.consolidator = MagicMock()
+        with patch.object(gw, "TaskRunner", MagicMock(return_value=MagicMock())) as mock_tr:
+            orch._init_task_runner()
+            return mock_tr.call_args.kwargs["on_notify"]
+
+    @staticmethod
+    def _slack_double() -> MagicMock:
+        slack = MagicMock()
+        slack.open_dm = AsyncMock(return_value="D1")
+        slack.post_message = AsyncMock()
+        return slack
+
+    @pytest.mark.asyncio
+    async def test_channel_wins_over_the_owner_dm(self):
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.slack = self._slack_double()
+        orch._owner_id = "U_OWNER"
+        deliver = AsyncMock(return_value=True)
+        notify = self._notify(orch)
+
+        with patch.object(orch, "_deliver_channel_reply", deliver):
+            await notify("Task 3 requires approval", "run the deploy?", "t-3", session_key=_TG_KEY)
+
+        deliver.assert_awaited_once_with(_TG_KEY, "*Task 3 requires approval*\nrun the deploy?")
+        orch.slack.post_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_owner_dm_is_the_fallback_when_the_channel_refuses(self):
+        """A refused channel (no link, governance deny) must not lose the notice."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.slack = self._slack_double()
+        orch._owner_id = "U_OWNER"
+        notify = self._notify(orch)
+
+        with patch.object(orch, "_deliver_channel_reply", AsyncMock(return_value=False)):
+            await notify("Task 3 denied", "policy says no", "t-3", session_key=_TG_KEY)
+
+        channel, text = orch.slack.post_message.await_args.args
+        assert (channel, text) == ("D1", "*Task 3 denied*\npolicy says no")
+
+    @pytest.mark.asyncio
+    async def test_no_session_key_never_touches_the_channel_ladder(self):
+        """A dashboard/CLI start has no originating conversation to route to."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.slack = self._slack_double()
+        orch._owner_id = "U_OWNER"
+        deliver = AsyncMock(return_value=True)
+        notify = self._notify(orch)
+
+        with patch.object(orch, "_deliver_channel_reply", deliver):
+            await notify("Task 3 requires approval", "run the deploy?", "t-3")
+
+        deliver.assert_not_awaited()
+        orch.slack.post_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_ordinary_progress_title_notifies_neither(self):
+        """The title gate is unchanged: only approval/denial escalates off-dashboard."""
+        orch = _make_orchestrator()
+        orch.dashboard_state = None
+        orch.slack = self._slack_double()
+        orch._owner_id = "U_OWNER"
+        deliver = AsyncMock(return_value=True)
+        notify = self._notify(orch)
+
+        with patch.object(orch, "_deliver_channel_reply", deliver):
+            await notify("Task 3 complete", "all good", "t-3", session_key=_TG_KEY)
+
+        deliver.assert_not_awaited()
+        orch.slack.post_message.assert_not_awaited()

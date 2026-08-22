@@ -33,8 +33,11 @@ class TestCapabilityFlag:
     def test_files_inbound_enabled(self):
         assert TELEGRAM_CAPABILITIES.files_inbound is True
 
-    def test_files_outbound_still_disabled(self):
-        assert TELEGRAM_CAPABILITIES.files_outbound is False
+    def test_files_outbound_enabled(self):
+        # Flipped in the same change that added the multipart upload path; the
+        # declaration and the path move together. Which upload methods exist and
+        # what the ceilings are is pinned in test_telegram_parity.py.
+        assert TELEGRAM_CAPABILITIES.files_outbound is True
 
 
 # ── Client _dispatch extracts attachments from Telegram updates ────────────────
@@ -50,10 +53,11 @@ class TestDispatchExtraction:
         async def on_message(inbound: TelegramInbound) -> None:
             received.append(inbound)
 
-        client = TelegramClient.__new__(TelegramClient)
+        # The REAL constructor — see the note in test_telegram_album.py: a double
+        # assembled from `__new__` breaks on every field the client gains, and the
+        # failure reads as a production AttributeError rather than a test problem.
+        client = TelegramClient(token="t:1")
         client._on_message = on_message
-        client._on_callback = None
-        client._handler_tasks = set()
         return client, received
 
     def _run(self, client: TelegramClient, update: dict) -> None:

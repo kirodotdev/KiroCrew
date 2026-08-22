@@ -143,9 +143,9 @@ class TestSlackCronListTimezone:
         svc = CronService(base_dir=tmp_path)
         svc._jobs = [_make_job(timezone="UTC")]
         with patch(
-            "kiro_crew.slack.handler.get_local_tz",
+            "kiro_crew.messaging.commands.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
-        ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
+        ), patch("kiro_crew.messaging.commands.compute_next_run_ts", return_value=None):
             result = asyncio.run(_handle_cron_command("cron list", svc, "C123", "t123"))
         assert result is not None
         assert "UTC" in result
@@ -154,9 +154,9 @@ class TestSlackCronListTimezone:
         svc = CronService(base_dir=tmp_path)
         svc._jobs = [_make_job(timezone="")]
         with patch(
-            "kiro_crew.slack.handler.get_local_tz",
+            "kiro_crew.messaging.commands.get_local_tz",
             return_value=("America/New_York", ZoneInfo("America/New_York")),
-        ), patch("kiro_crew.slack.handler.compute_next_run_ts", return_value=None):
+        ), patch("kiro_crew.messaging.commands.compute_next_run_ts", return_value=None):
             result = asyncio.run(_handle_cron_command("cron list", svc, "C123", "t123"))
         assert result is not None
         assert "EDT" in result or "EST" in result

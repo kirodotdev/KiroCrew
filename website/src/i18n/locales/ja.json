@@ -10302,8 +10302,11 @@
       "owning_session": "所有セッション"
     },
     "servicesTab": {
+      "channels": "チャネル",
+      "connect_error": "接続エラー",
       "connected": "接続済み",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "エンベディング",
       "gateway_process": "ゲートウェイプロセス",
       "governance": "ガバナンス",
@@ -10311,6 +10314,7 @@
       "governance_tip_degraded": "ガバナンスチェックがフェイルクローズで失敗したか、整合性の不一致が検出されたか、受け入れポリシーを検証できませんでした（未設定または読み取り不可）。SEL 監査ログを確認してください。",
       "governance_tip_disabled": "強制適用する受け入れポリシーは設定されていません（許可が既定）。プラグインは明示的に禁止されていない限り受け入れられます。",
       "governance_tip_unknown": "ガバナンスステータスはこのセッションではまだ決定されていません。",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}}（サンドボックス {{sandbox}} · {{providerLabel}} {{provider}} · MCP {{mcp}}）",
       "mcp_process_breakdown_unique": "一意 {{total}}（サンドボックス {{sandbox}} · {{providerLabel}} {{provider}} · MCP {{mcp}}）",
       "mcp_processes": "MCP プロセス",
@@ -10327,8 +10331,15 @@
       "status_disabled": "無効",
       "status_unknown": "不明",
       "stopped": "停止",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "スレッド",
       "uptime": "稼働時間",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "作業ディレクトリ"
     },
     "sessionArchive": {
@@ -11630,6 +11641,12 @@
         "allowlist_description": "ボットへのDMを許可された数値Telegramユーザー ID。空白 = すべて拒否 (失敗時にクローズ): Telegramボットは@usernameでグローバルに到達可能。",
         "description": "Bot API経由でTelegramからエージェントと会話 (ロングポーリング — ウェブフックやパブリックアドレス不要)。許可されたユーザー IDを追加し、ボットが応答できるようにします。",
         "empty_allowlist_hint": "許可されたユーザー IDなし: ボットはすべてのメッセージを拒否 (失敗時にクローズ)。下記に数値Telegramユーザー IDを追加。",
+        "forum_activation_always": "すべてのメッセージ",
+        "forum_activation_description": "許可済みトピック内でボットが回答する条件です。ダイレクトメッセージにはこの設定に関わらず必ず回答します。",
+        "forum_activation_hint": "同じトピックで他の人同士も会話する場合は「呼びかけられたときだけ」が向いています。この場合、@名前が使われたとき、またはボット自身のメッセージに返信されたときにのみ回答します。",
+        "forum_activation_label": "トピック内で回答する",
+        "forum_activation_mention": "呼びかけられたときだけ",
+        "forum_activation_off": "回答しない",
         "forum_allowlist_description": "フォーラムトピックセッションの実行を許可された数値スーパーグループchat_id。これらは負数 (例: -1001234567890) — @getidsbotのようなボットをグループに追加することで検索。空白 = すべてのグループを拒否 (失敗時にクローズ)。",
         "forum_allowlist_label": "許可されたスーパーグループchat ID",
         "forum_empty_hint": "フォーラム有効ですが許可リストのチャットなし: すべてのフォーラムトラフィックは拒否。スーパーグループchat_id (負の数-100…)を追加。",
@@ -11637,8 +11654,12 @@
         "forum_toggle_label": "フォーラムトピックをトピックごとセッションとして提供",
         "guide_body": "Telegramで`@BotFather`にメッセージを送信、`/newbot`を送信、プロンプトに従う。BotFatherはボットトークンで返信 — 下に貼り付け。数値ユーザー IDを検索するには、`@userinfobot`にメッセージを送信。",
         "guide_link_label": "@BotFatherを開く",
+        "show_thinking_description": "各回答のあとに、展開できる折りたたみ引用として推論を投稿します。既定はオフ: Telegram のレート制限はチャット単位で、回答自体のストリーミング編集と共有されるため、1 ターンあたりメッセージが 1 通増えます。",
+        "show_thinking_label": "モデルの推論を投稿する",
         "token_description": "ボットを作成した後の@BotFatherから (110201543:AAHdqT…のようなもの)。",
-        "token_placeholder": "Telegramボットトークンを貼り付け (123456:ABC-…)"
+        "token_placeholder": "Telegramボットトークンを貼り付け (123456:ABC-…)",
+        "voice_replies_description": "voice_reply プロバイダーの設定を使って、各回答をテキストに加えて音声メッセージでも送信します。既定では無効です。Telegram のレート制限はチャットごとに計算されるため、1 ターンにつきメッセージが 1 通増え、音声合成が導入されていない場合もあります。短い回答は読み上げられず、テキストの回答が必ず先に届きます。/voice on または /voice off で 1 つの会話だけ切り替えられます。",
+        "voice_replies_label": "回答を読み上げる"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (クラウド)",

@@ -10426,8 +10426,11 @@
       "owning_session": "মালিক সেশন"
     },
     "servicesTab": {
+      "channels": "চ্যানেল",
+      "connect_error": "কানেকশন ত্রুটি",
       "connected": "সংযুক্ত",
       "cpu": "CPU %",
+      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "গেটওয়ে প্রসেস",
       "governance": "গভর্নেন্স",
@@ -10435,6 +10438,7 @@
       "governance_tip_degraded": "একটি গভর্নেন্স চেক ফেল-ক্লোজড হয়েছে, ইন্টিগ্রিটিতে অমিল ধরা পড়েছে, অথবা অ্যাডমিশন পলিসি যাচাই করা যায়নি (নেই/পড়া যাচ্ছে না)। SEL অডিট লগ দেখে খতিয়ে দেখো।",
       "governance_tip_disabled": "প্রয়োগযোগ্য কোনো অ্যাডমিশন পলিসি কনফিগার করা নেই (উদার ডিফল্ট)। স্পষ্টভাবে নিষিদ্ধ না করা থাকলে প্লাগইন গ্রহণ করা হয়।",
       "governance_tip_unknown": "এই সেশনে গভর্নেন্স স্ট্যাটাস এখনো নির্ণয় করা হয়নি।",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}} ({{sandbox}} স্যান্ডবক্স · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_process_breakdown_unique": "{{total}} স্বতন্ত্র ({{sandbox}} স্যান্ডবক্স · {{provider}} {{providerLabel}} · {{mcp}} mcp)",
       "mcp_processes": "MCP প্রসেস",
@@ -10451,8 +10455,15 @@
       "status_disabled": "নিষ্ক্রিয়",
       "status_unknown": "অজানা",
       "stopped": "বন্ধ",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "থ্রেড",
       "uptime": "আপটাইম",
+      "webex": "Webex",
+      "wecom": "WeCom",
+      "weixin": "WeChat",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "কার্যকরী ডিরেক্টরি"
     },
     "sessionArchive": {
@@ -11759,6 +11770,12 @@
         "allowlist_description": "বটকে DM করার অনুমতি আছে যেসব সাংখ্যিক Telegram ইউজার ID-র। খালি = সবাইকে না (ফেল ক্লোজড): একটি Telegram বটে @username দিয়ে পৃথিবীর যে কেউ পৌঁছাতে পারে।",
         "description": "Bot API-র মাধ্যমে Telegram থেকে তোমার এজেন্টের সঙ্গে কথা বলো (লং-পোলিং — কোনো ওয়েবহুক বা পাবলিক অ্যাড্রেস লাগে না)। বট যাতে উত্তর দিতে পারে, তার জন্য অনুমোদিত ইউজার ID যোগ করো।",
         "empty_allowlist_hint": "কোনো অনুমোদিত ইউজার ID নেই: বট প্রতিটি মেসেজ ফিরিয়ে দেয় (ফেল ক্লোজড)। নিচে তোমার সাংখ্যিক Telegram ইউজার ID যোগ করো।",
+        "forum_activation_always": "প্রতিটি বার্তায়",
+        "forum_activation_description": "অনুমোদিত বিষয়ের ভিতরে বট কখন উত্তর দেয়। এই নির্বাচন যা-ই হোক, সরাসরি বার্তার উত্তর সবসময় মেলে।",
+        "forum_activation_hint": "যেখানে অন্যরাও পরস্পর কথা বলে, সেখানে «কেবল সম্বোধিত হলে» উপযুক্ত — তখন বট কেবল তার @নাম ব্যবহৃত হলে, বা তার নিজের কোনও বার্তার উত্তর দেওয়া হলে সাড়া দেয়।",
+        "forum_activation_label": "বিষয়ে উত্তর দেওয়া",
+        "forum_activation_mention": "কেবল সম্বোধিত হলে",
+        "forum_activation_off": "কখনও নয়",
         "forum_allowlist_description": "ফোরাম-টপিক সেশন চালানোর অনুমতি আছে যেসব সাংখ্যিক সুপারগ্রুপ chat_id-র। এগুলো ঋণাত্মক (যেমন -1001234567890) — গ্রুপে @getidsbot-এর মতো একটা বট যোগ করে একটা খুঁজে নাও। খালি = সব গ্রুপকে না (ফেল ক্লোজড)।",
         "forum_allowlist_label": "অনুমোদিত সুপারগ্রুপ chat ID",
         "forum_empty_hint": "ফোরাম চালু আছে কিন্তু কোনো অনুমোদিত চ্যাট নেই: সব ফোরাম ট্রাফিক আটকে দেওয়া হচ্ছে। নিচে তোমার সুপারগ্রুপের chat_id যোগ করো (-100… এর মতো একটি ঋণাত্মক সংখ্যা)।",
@@ -11766,8 +11783,12 @@
         "forum_toggle_label": "ফোরাম Topic-গুলোকে আলাদা সেশন হিসেবে চালাও",
         "guide_body": "Telegram-এ `@BotFather`-কে মেসেজ করো, `/newbot` পাঠাও, আর নির্দেশ অনুসরণ করো। BotFather একটি বট টোকেন দিয়ে উত্তর দেয় — সেটা নিচে পেস্ট করো। তোমার সাংখ্যিক ইউজার ID জানতে `@userinfobot`-কে মেসেজ করো।",
         "guide_link_label": "@BotFather খোলো",
+        "show_thinking_description": "প্রতিটি উত্তরের পরে বিশ্লেষণটি একটি সংকুচিত উদ্ধৃতি হিসেবে পোস্ট করে, যা আপনি প্রসারিত করতে পারেন। ডিফল্টভাবে বন্ধ: Telegram-এর রেট সীমা প্রতি চ্যাট এবং উত্তরটি ইতিমধ্যে যে স্ট্রিমিং সম্পাদনা ব্যবহার করে তার সঙ্গে ভাগ করা, তাই এতে প্রতি পালায় একটি বাড়তি বার্তা লাগে।",
+        "show_thinking_label": "মডেলের বিশ্লেষণ পোস্ট করুন",
         "token_description": "বট তৈরি করার পর @BotFather থেকে (দেখতে এমন 110201543:AAHdqT…)।",
-        "token_placeholder": "Telegram বট টোকেন পেস্ট করো (123456:ABC-…)"
+        "token_placeholder": "Telegram বট টোকেন পেস্ট করো (123456:ABC-…)",
+        "voice_replies_description": "voice_reply সরবরাহকারীর সেটিং দিয়ে প্রতিটি উত্তর লেখার পাশাপাশি কণ্ঠ বার্তা হিসেবেও পাঠানো। ডিফল্টে বন্ধ: Telegram-এর হার সীমা প্রতি চ্যাট অনুযায়ী গোনা হয়, তাই প্রতি পালায় একটি বার্তা বেশি লাগে, আর বাক্-সংশ্লেষণ ইনস্টল না-ও থাকতে পারে। ছোট উত্তর কখনও পড়ে শোনানো হয় না, এবং লেখা উত্তরই সবসময় আগে পৌঁছায়। /voice on বা /voice off দিয়ে একটি আলাপ বদলানো যায়।",
+        "voice_replies_label": "উত্তর পড়ে শোনানো"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly (ক্লাউড)",

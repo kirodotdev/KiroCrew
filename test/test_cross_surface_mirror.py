@@ -41,11 +41,16 @@ from kiro_crew.security import (
 PROACTIVE_CHANNEL = "weixin"
 
 
-def _fake_transport(channel_type: str = "telegram", proactive: bool = True):
+def _fake_transport(channel_type: str = "telegram", proactive: bool = True, may_send: bool = True):
     return SimpleNamespace(
         channel_type=channel_type,
         capabilities=SimpleNamespace(supports_proactive_send=proactive, max_message_chars=4096),
         send_message=AsyncMock(return_value="mid-1"),
+        # Part of the MessagingTransport contract the send ladder consults: a
+        # proactive send re-checks that the link's recipient is still on the
+        # roster. Permissive here so these tests keep exercising delivery;
+        # test_channel_transport_outbound_authz owns the refusal path.
+        may_send_to=lambda conversation_id, thread_id=None, principal="": may_send,
     )
 
 

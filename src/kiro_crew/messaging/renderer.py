@@ -63,6 +63,11 @@ class OutputEvent:
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     options: list[dict[str, Any]] = field(default_factory=list)  # prompt_choice
     request_id: str | int = ""  # prompt_choice correlation
+    # prompt_choice: the tool's own arguments, redacted, so a renderer can show
+    # WHAT is being approved rather than only its name. "" when the provider
+    # supplied none, which a renderer must treat as "no detail available" —
+    # never as "no arguments".
+    tool_input: str = ""
     context_usage_pct: float = 0.0  # compaction
     stop_reason: str = ""  # done
 
@@ -75,6 +80,7 @@ class OutputEvent:
             "tool_kind": self.tool_kind,
             "tool_purpose": self.tool_purpose,
             "options": [dict(o) for o in self.options],
+            "tool_input": self.tool_input,
             "request_id": self.request_id,
             "context_usage_pct": self.context_usage_pct,
             "stop_reason": self.stop_reason,
@@ -216,8 +222,19 @@ def apply_options_cap(
     sanitising sink. Dropping the list there would delete the answers to a
     question the agent just asked and leave the user no way to see what was
     offered.
+
+    **The KEPT choices are redacted, not just the overflow.** A choice label is
+    LLM-authored text rendered into a channel, exactly like the overflow list, and
+    the overflow was the only half that ran through :func:`display_safe`. So a
+    markup-split credential inside a label rendered intact on the button -- and again
+    in the press echo, which quotes the label back -- while the same string in the
+    overflow list was redacted. On a forum Topic that is every allow-listed
+    participant. Slack redacts at this same point (``slack/format.py``'s
+    ``_redact_choices``); this closes the gap for every widget channel at once
+    rather than per renderer, so a channel added later cannot miss it.
     """
     kept, overflow = cap_choices(choices, capabilities)
+    kept = [display_safe(c) for c in kept]
     if not overflow:
         return body, kept
     lines = format_overflow(overflow, start=len(kept))
@@ -397,6 +414,7 @@ class Renderer(ABC):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         """Render an interactive approval/choice prompt (first-class).
 
@@ -410,6 +428,12 @@ class Renderer(ABC):
         valid; a renderer that keeps its own fallback should prefer these when
         they are non-empty and must not pair a supplied title with a remembered
         purpose from a different tool.
+
+        ``tool_input`` is the tool's own arguments, already redacted, so a renderer
+        can show WHAT is being approved rather than only its name. Declared with a
+        safe default and passed unconditionally: a renderer that has nowhere to put
+        it ignores the argument, which keeps the call site free of a capability
+        probe. ``""`` means the provider supplied no detail, never "no arguments".
         """
 
     @abstractmethod
@@ -441,7 +465,11 @@ class Renderer(ABC):
             )
         elif event.kind == PROMPT_CHOICE:
             await self.on_prompt_choice(
-                event.options, event.request_id, event.title, event.tool_purpose
+                event.options,
+                event.request_id,
+                event.title,
+                event.tool_purpose,
+                event.tool_input,
             )
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
@@ -517,6 +545,7 @@ class SilentRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         return None
 

@@ -119,6 +119,27 @@ class SlackTransport(MessagingTransport):
             )
         return out
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Never consulted -- permits, and says why.
+
+        An override with a reason rather than an inherited default, so a reader
+        does not have to infer this transport's stance. The shared send ladder
+        (``chat_runner._resolve_channel_target``) returns early for
+        ``SLACK_NAMESPACE`` before any transport call: Slack's proactive traffic
+        goes through the gateway's own client and streaming path, which is not
+        registered in ``channel_transports``. Nothing routes here, so there is no
+        decision this method can enforce.
+
+        It could not answer anyway: a Slack link persists a **channel** id
+        (``D…``/``C…``) while the roster holds user ids, so the same
+        conversation-id-is-not-a-principal problem applies. Slack's own proactive
+        paths do their allow-list checks at their own call sites.
+        """
+        return bool(conversation_id)
+
     # -- Inbound adapter ----------------------------------------------------
     def authorize(self, msg: InboundMessage) -> bool:
         """Owner-only, deny-by-default. Empty allow-list authorizes nobody."""

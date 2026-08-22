@@ -28,17 +28,13 @@ def _make_client() -> tuple[TelegramClient, list[TelegramInbound]]:
     async def on_message(inbound: TelegramInbound) -> None:
         received.append(inbound)
 
-    client = TelegramClient.__new__(TelegramClient)
+    # The REAL constructor, not `__new__` plus a hand-listed set of fields: a double
+    # that enumerates the constructor's state drifts every time the client gains a
+    # field, and the failure lands as an AttributeError from production code rather
+    # than as anything about albums. A token is all __init__ needs; nothing here
+    # opens a session.
+    client = TelegramClient(token="t:1")
     client._on_message = on_message
-    client._on_callback = None
-    client._handler_tasks = set()
-    client._albums = {}
-    client._album_timers = {}
-    client._album_first_seen = {}
-    client._album_dropped = {}
-    client._closed = False
-    client._task = None
-    client._session = None
     return client, received
 
 

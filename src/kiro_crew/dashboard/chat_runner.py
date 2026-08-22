@@ -186,7 +186,12 @@ from kiro_crew.llm_helpers import (
 from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.members import record_activity
 from kiro_crew.messaging.identity import publish_turn_identity
-from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
+from kiro_crew.messaging.link import (
+    CHAT_TYPE_DIRECT,
+    SLACK_NAMESPACE,
+    parse_session_key,
+    telemetry_channel_of,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
@@ -2693,8 +2698,56 @@ def _extract_full_command(tool_title: str) -> str:
     return _normalize_tool_name(tool_title)
 
 
-def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
+def _session_principal(session_key: str) -> str:
+    """The platform user id a DIRECT session key names, or ``""``.
+
+    The persisted ``ChannelLink`` records a conversation, not a principal, which is
+    what made a revoked recipient unanswerable for the transports whose conversation
+    id is not their user id. The session KEY carries it: the canonical grammar is
+    ``{surface}:{agent}:{chat_type}:{scope…}`` and for a 1:1 DM the scope is exactly
+    the peer's platform id. Parsing goes through ``messaging.link.parse_session_key``
+    because that module is the ONE canonical address parser (RFC §9 rule 4); a second
+    decomposition here would drift from the grammar the keys are built with.
+
+    Derived from the KEY ALONE, deliberately. Two other records name a peer and
+    neither is safe here, because a principal is only usable if it describes the
+    conversation the link points at:
+
+    * the session's stored channel value (``{namespace}:{user_id}``) is written ONCE,
+      when the session is created, while the origin/mirror link is rewritten on
+      later turns. Under a ``unified`` bucket -- which collapses several peers' 1:1
+      DMs into one session on purpose -- the two therefore drift: the attribution can
+      name the peer who created the session while the link points at a different
+      peer's conversation. Authorizing against it would check the wrong person and
+      pass, which is worse than declining to name one.
+    * a **forum or group** scope is ``(chat_id, thread_id)``, so its audience is a
+      room and no single principal owns it. Returning ``scope[0]`` would hand a
+      supergroup id to a check that tests USER rosters.
+
+    Empty therefore means "the key does not name one principal", never "no principal
+    is authorized". A transport whose other rosters can still judge the route (a
+    Discord thread against its thread allow-list) uses them; one with nothing left to
+    consult refuses, because this feeds a network egress boundary.
+    """
+    parsed = parse_session_key(session_key)
+    if parsed is None or parsed.chat_type != CHAT_TYPE_DIRECT or len(parsed.scope) != 1:
+        return ""
+    return parsed.scope[0]
+
+
+def _resolve_channel_target(
+    state: Any, session_key: str, link: Any, *, principal: str | None = None
+) -> Any:
     """Resolve ``(link, transport)`` through the cross-surface send ladder.
+
+    *principal* lets a caller that has ALREADY established the recipient
+    authoritatively supply it, instead of having it derived from *session_key*.
+    ``handlers/messaging._deliver_channel_dm`` is the case: it addresses a
+    ``configured_targets()`` entry rather than a conversation, so its link carries a
+    ``user:<id>`` target id and its session key is a host sentinel that names nobody.
+    Deriving from that key would yield no principal and refuse a send whose
+    recipient came off the transport's own allow-list. ``None`` means derive;
+    a string is used verbatim.
 
     This is the shared capability/governance seam for both actual mirror
     delivery and the dashboard's read-only ``links[].live`` projection.  It
@@ -2759,6 +2812,46 @@ def _resolve_channel_target(state: Any, session_key: str, link: Any) -> Any:
                 "supports_proactive_send",
                 None,
             ),
+        )
+        return None
+    # Re-decide RECIPIENT authorization, not just channel-scope governance. The
+    # link is persisted, so it outlives the roster that authorized it: dropping a
+    # recipient from a channel's allow-list and restarting leaves every proactive
+    # leg (cron result, compaction notice, subagent completion) still resolving
+    # and still sending. Governance above answers "may this session use the
+    # telegram channel at all", which is a different question and stays permitted.
+    #
+    # Fail closed on a raising transport: an allow-list check that errored has not
+    # authorized anybody, and this is a network egress boundary.
+    try:
+        permitted = transport.may_send_to(
+            link.channel_id,
+            link.thread_id,
+            principal=(_session_principal(session_key) if principal is None else principal),
+        )
+    except Exception:
+        logger.warning(
+            "cross-surface: outbound authorization check failed for %s; refusing send",
+            link.channel_type,
+            exc_info=True,
+        )
+        permitted = False
+    if not permitted:
+        # Audited: a revoked recipient silently losing its notices looks exactly
+        # like an idle agent, so the refusal has to be observable.
+        try:
+            sel().log_api_access(
+                caller=str(link.channel_id or "unknown"),
+                operation="channel.proactive_send_authorize",
+                outcome="denied",
+                source=link.channel_type,
+                resources=f"{session_key} -> {link.channel_type}",
+            )
+        except Exception:
+            logger.debug("SEL logging failed for outbound authz denial", exc_info=True)
+        logger.info(
+            "cross-surface: outbound to %s refused - recipient no longer allow-listed",
+            link.channel_type,
         )
         return None
     return link, transport

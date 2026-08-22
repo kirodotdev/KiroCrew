@@ -162,6 +162,30 @@ class WeixinTransport(MessagingTransport):
             return None
         return await self.resolve_conversation(value), None
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-decide a proactive send under the live ``dm_policy``. Fails closed.
+
+        The iLink conversation id IS the peer's user id, so this asks the same
+        question :meth:`authorize` asks and answers it the same way -- including
+        denying an unrecognized policy rather than falling through to ``open``.
+
+        Deliberately consults ``_allowed`` ALONE, unlike
+        ``resolve_configured_target``, which also accepts ``_known_users``. That
+        set is learned from inbound traffic, so honouring it here would let a peer
+        who spoke once keep receiving proactive messages after being taken off the
+        roster -- which is the exact revocation this check exists to enforce.
+        """
+        if not conversation_id:
+            return False
+        if self._dm_policy == "open":
+            return True
+        if self._dm_policy == "allowlist":
+            return conversation_id in self._allowed
+        return False
+
     # -- Lifecycle -------------------------------------------------------------
     async def connect(self) -> None:
         await self._client.connect()

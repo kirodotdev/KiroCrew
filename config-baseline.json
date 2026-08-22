@@ -3911,8 +3911,11 @@
         "bot_token": "",
         "allowed_user_ids": [],
         "soft_threshold_pct": 80,
+        "show_thinking": false,
         "allow_forum": false,
         "allowed_forum_chat_ids": [],
+        "voice_replies": false,
+        "forum_activation": "always",
         "accounts": {},
         "session_folder": ""
       }
@@ -3996,6 +3999,22 @@
       "defaultValue": 80
     },
     {
+      "path": "telegram.show_thinking",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Show Thinking",
+      "help": "Post the model's reasoning after each answer as a collapsed, expandable quote. Off by default: Telegram's rate limit is per chat and shared with the streaming edits the answer already spends, so reasoning costs an extra message per turn.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "telegram.allow_forum",
       "kind": "core",
       "type": "boolean",
@@ -4040,6 +4059,38 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "telegram.voice_replies",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Voice Replies",
+      "help": "Speak each answer as a voice/audio message in addition to the text, using the global voice_reply provider settings. Off by default: it costs a second message per turn against Telegram's per-chat rate budget, and TTS may not be configured. Toggle per conversation with /voice on|off; this is the default for a new conversation.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "telegram.forum_activation",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Forum Activation",
+      "help": "When the bot answers inside an allow-listed forum Topic: 'always' (every message), 'mention' (only when its @handle is used or one of its own messages is replied to), or 'off' (never). Slack's channel equivalent defaults to 'mention'; this defaults to 'always' so an existing forum keeps working after an upgrade instead of going quiet. Does not apply to a 1:1 DM, which is always served.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "always"
     },
     {
       "path": "telegram.accounts",

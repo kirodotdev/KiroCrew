@@ -43,14 +43,27 @@ _MSG_TS = "1700000000.000100"
 
 
 class _CapturingSessions(FakeSessions):
-    """FakeSessions that records the ``agent`` passed to get_or_create."""
+    """FakeSessions that records the ``agent`` passed to get_or_create.
+
+    ``agents`` records TURN acquisitions only. The shared background session is
+    tracked separately in ``background_keys``: a successful turn now also fires
+    the fire-and-forget auto-title, which takes that session, and folding its
+    acquire into ``agents`` would turn every "exactly one acquire, under this
+    agent" assertion into a count of unrelated background work.
+    """
 
     def __init__(self, provider):
         super().__init__(provider)
         self.agents: list = []
+        self.background_keys: list = []
 
     async def get_or_create(self, session_key, agent=None, channel_id=None):
-        self.agents.append(agent)
+        from kiro_crew.session import BACKGROUND_KEY
+
+        if session_key == BACKGROUND_KEY:
+            self.background_keys.append(session_key)
+        else:
+            self.agents.append(agent)
         return await super().get_or_create(session_key, agent=agent, channel_id=channel_id)
 
 
@@ -593,6 +606,71 @@ class TestTransportNativeParity:
         assert cb.captured.get("user_display_name") == "Alice"
 
 
+class TestTransportTemporaryBlocksMemoryReads:
+    """``!temporary`` must block memory READS on the DEFAULT transport path.
+
+    ``messaging.use_transport`` defaults True, so this is the live path, and the
+    shared ``NOTICE_TEMPORARY`` promises the thread "won't read or save memory".
+    The write half is covered by the ``_is_slack_restricted`` gates; the read half
+    is one kwarg, and omitting it leaves memories and lessons in the prompt of a
+    thread the user was told reads nothing.
+    """
+
+    _KEY = canonical_key(_MSG_TS)
+
+    def _prep(self, monkeypatch):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+    def _dispatch(self, monkeypatch):
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        provider = ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=_CapturingSessions(provider),
+                channel="C1",
+                text="what did we decide yesterday",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=None,
+            )
+        )
+        return cb
+
+    def test_a_temporary_thread_blocks_memory_reads(self, monkeypatch):
+        _handler._mark_temporary(self._KEY)
+        try:
+            cb = self._dispatch(monkeypatch)
+        finally:
+            _handler._thread_temporary.pop(self._KEY, None)
+        assert cb.captured["blocks_reads"] is True
+
+    def test_an_incognito_thread_still_reads_memory(self, monkeypatch):
+        """The predicate is temporary-only, never the combined restricted one.
+
+        Incognito is documented as reading memory and refusing only to write, so
+        widening this to ``_is_slack_restricted`` would silently take memory away
+        from a mode that is supposed to keep it.
+        """
+        _handler._mark_incognito(self._KEY)
+        try:
+            cb = self._dispatch(monkeypatch)
+        finally:
+            _handler._thread_incognito.pop(self._KEY, None)
+        assert cb.captured["blocks_reads"] is False
+
+
 class TestTransportStatusIdentitySeam:
     """The `status` shortcut must use the platform identity seam
     (current_context().identity.status_line) — the CPP boundary native
@@ -923,3 +1001,197 @@ class TestConversationLogAgentMetadata:
                 make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
             ]
         )
+
+
+# ── Auto-title on the transport path ───────────────────────────────────
+
+
+class _TitlingProvider(ScriptedProvider):
+    """The turn's events on the first stream, a title on the naming turn.
+
+    ``ScriptedProvider`` deliberately returns an EMPTY stream for every call after
+    the first, which is exactly why the missing auto-title never showed up in this
+    file: an empty naming stream reads as SKIP, and SKIP is silent.
+    """
+
+    def __init__(self, events, title="Deploy the gateway"):
+        super().__init__(events)
+        self._title = title
+
+    async def stream(self, message: str):
+        self.stream_calls += 1
+        if self.stream_calls == 1:
+            for ev in self._events:
+                yield ev
+            return
+        self.title_prompt = message
+        yield make_event(EVENT_TEXT_CHUNK, text=self._title)
+        yield make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+
+
+class _TitleSessions(_CapturingSessions):
+    """Adds the two calls ``background_turn`` makes around the naming turn."""
+
+    def __init__(self, provider):
+        super().__init__(provider)
+        self.released: list = []
+        self.recycled = 0
+
+    def release(self, key):
+        self.released.append(key)
+
+    async def recycle_background(self):
+        self.recycled += 1
+
+
+def _run_transport_titling(monkeypatch, *, restricted=False, conversation_log=None):
+    """Drive one successful transport turn and drain the fire-and-forget tasks."""
+    monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+    monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+    monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: restricted)
+
+    slack = RecordingSlackClient()
+    provider = _TitlingProvider(
+        [
+            make_event(EVENT_TEXT_CHUNK, text="hi"),
+            make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+        ]
+    )
+    sessions = _TitleSessions(provider)
+
+    async def _drive():
+        await transport_dispatch.handle_message_transport(
+            slack=slack,
+            sessions=sessions,
+            channel="C1",
+            text="deploy the gateway please",
+            thread_ts=None,
+            msg_ts=_MSG_TS,
+            user_id="U_OWNER",
+            context_builder=None,
+            conversation_log=conversation_log,
+        )
+        # The auto-title is fire-and-forget through handler's tracked-task set,
+        # so draining that set is the deterministic join point.
+        #
+        # Scoped to THIS loop's tasks. The set is a process global and every test
+        # gets a fresh loop, so an earlier test in the same xdist worker can leave
+        # a task behind whose loop is already closed — gathering it raises
+        # "The future belongs to a different loop", which passes under ``-n0`` and
+        # fails only under ``-n auto``.
+        loop = asyncio.get_running_loop()
+        pending = [t for t in list(_handler._background_tasks) if t.get_loop() is loop]
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(_drive())
+    return slack, sessions, provider
+
+
+def _titles(slack):
+    return [kw["title"] for (m, kw) in slack.transcript if m == "set_thread_title"]
+
+
+class TestTransportAutoTitle:
+    """The transport path titles a conversation after its first successful turn.
+
+    It never did, while ``messaging.use_transport`` defaults True — so on a
+    default install NO Slack session was ever LLM-titled and every surface fell
+    back to a deterministic truncation.
+    """
+
+    def test_a_successful_turn_titles_the_thread(self, monkeypatch):
+        """Mutation: delete the auto-title block in ``handle_message_transport``
+        — red, which is the state this path shipped in."""
+        slack, _sessions, provider = _run_transport_titling(monkeypatch)
+        assert _titles(slack) == ["Deploy the gateway"]
+        assert provider.stream_calls == 2  # the turn, then the naming turn
+
+    def test_the_naming_turn_sees_the_exchange(self, monkeypatch):
+        _slack, _sessions, provider = _run_transport_titling(monkeypatch)
+        assert "deploy the gateway please" in provider.title_prompt
+        assert "hi" in provider.title_prompt
+
+    def test_a_restricted_session_is_not_titled(self, monkeypatch):
+        """A temporary/incognito session persists nothing, so there is nothing to
+        name and no background turn to spend on it.
+
+        Mutation: drop the ``not _is_slack_restricted(...)`` clause — red.
+        """
+        slack, _sessions, provider = _run_transport_titling(monkeypatch, restricted=True)
+        assert _titles(slack) == []
+        assert provider.stream_calls == 1
+
+    def test_a_second_turn_does_not_retitle(self, monkeypatch):
+        """The claim is shared, so the conversation is named once.
+
+        Mutation: replace ``auto_title.try_claim`` with ``mark_titled`` — red.
+        """
+        slack, _sessions, provider = _run_transport_titling(monkeypatch)
+        slack2, _s2, provider2 = _run_transport_titling(monkeypatch)
+        assert _titles(slack) == ["Deploy the gateway"]
+        assert _titles(slack2) == []
+        assert provider2.stream_calls == 1
+
+    def test_the_native_claim_suppresses_the_transport_one(self, monkeypatch):
+        """One tracker across both paths: a thread the native loop already
+        claimed is not titled again here.
+
+        Mutation: give ``auto_title`` a per-module tracker per channel — red.
+        """
+        _handler._mark_titled(canonical_key(_MSG_TS), "manual")
+        slack, _sessions, provider = _run_transport_titling(monkeypatch)
+        assert _titles(slack) == []
+        assert provider.stream_calls == 1
+
+    def test_an_auto_title_dispatch_failure_does_not_record_a_failure(self, monkeypatch):
+        """Bookkeeping isolation, same contract as every other step here.
+
+        Mutation: remove the ``try/except`` around the auto-title dispatch — red,
+        because the raise falls through to the outer handler and the
+        already-successful turn is re-recorded as a failure.
+        """
+        calls = {"success": 0, "failure": 0}
+
+        class _TrackSessions(_TitleSessions):
+            def record_success(self, key):
+                calls["success"] += 1
+
+            async def record_failure(self, key):
+                calls["failure"] += 1
+
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+        def _boom(_key):
+            raise RuntimeError("tracker exploded")
+
+        monkeypatch.setattr(transport_dispatch.auto_title, "try_claim", _boom)
+
+        slack = RecordingSlackClient()
+        sessions = _TrackSessions(
+            ScriptedProvider(
+                [
+                    make_event(EVENT_TEXT_CHUNK, text="hi"),
+                    make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            )
+        )
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=slack,
+                sessions=sessions,
+                channel="C1",
+                text="hello",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=None,
+                conversation_log=None,
+            )
+        )
+        assert calls == {"success": 1, "failure": 0}

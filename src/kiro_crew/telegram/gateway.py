@@ -76,6 +76,15 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
             agent=None,
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
+            # The services behind /cron, /spawn and /task. All three are
+            # initialized earlier in ``GatewayOrchestrator.run`` than
+            # ``_start_channel_transports``, so reading them here gets the live
+            # object rather than a captured None; ``getattr`` keeps a partially
+            # constructed orchestrator (tests, a pod without a runner) working,
+            # and each command reports its own absence rather than failing mute.
+            cron_service=getattr(orch, "cron_svc", None),
+            subagent_manager=getattr(orch, "subagent_mgr", None),
+            task_runner=getattr(orch, "task_runner", None),
         )
         client = TelegramClient(token=bot_token, on_callback=dispatcher.on_callback)
         transport = TelegramTransport(
@@ -111,6 +120,10 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
             # command addressed to a DIFFERENT bot in the same group would be
             # mistaken for ours.
             dispatcher.bot_username = me.get("username", "") or ""
+            # Gates the "replied to the bot" half of the forum activation gate
+            # (see TelegramDispatcher.bot_id): a reply to a DIFFERENT bot in the
+            # same Topic must not read as addressing us.
+            dispatcher.bot_id = int(me.get("id", 0) or 0)
         except TelegramAuthError:
             raise
         except Exception as exc:

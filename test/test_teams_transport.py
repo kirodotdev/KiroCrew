@@ -7,8 +7,6 @@ unresolved-identity fail-closed, and inbound normalization -> dispatch.
 
 from __future__ import annotations
 
-import ast
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -67,25 +65,12 @@ class TestCapabilities:
         assert TEAMS_CAPABILITIES.max_message_chars > 0
 
 
-class TestImportPurity:
-    def test_messaging_does_not_import_teams(self) -> None:
-        """The neutral messaging package must never import the teams channel."""
-        import kiro_crew.messaging as messaging_pkg
-
-        pkg_dir = Path(messaging_pkg.__file__).parent
-        offenders: list[str] = []
-        for py in pkg_dir.rglob("*.py"):
-            tree = ast.parse(py.read_text(encoding="utf-8"), filename=str(py))
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        if alias.name.startswith("kiro_crew.teams"):
-                            offenders.append(f"{py.name}: import {alias.name}")
-                elif isinstance(node, ast.ImportFrom):
-                    mod = node.module or ""
-                    if mod.startswith("kiro_crew.teams"):
-                        offenders.append(f"{py.name}: from {mod} import ...")
-        assert not offenders, f"messaging imports teams: {offenders}"
+# The messaging-package import-purity invariant is enforced for EVERY forbidden
+# package (all eight channels plus ``dashboard``) in
+# ``test/test_messaging_import_purity.py``. The teams-only copy that used to live
+# here named one package, so a ``dashboard`` edge added to ``messaging/`` while
+# hoisting shared channel code went unnoticed. One gate over the whole set is the
+# fix; adding a channel means adding its name there, not writing another test.
 
 
 class TestAuthorize:

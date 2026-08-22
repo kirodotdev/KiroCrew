@@ -575,6 +575,11 @@ class TurnDriver:
                             request_id=event.request_id,
                             title=_redact(getattr(event, "title", "") or ""),
                             tool_purpose=tool_purposes.get(_tool_call_id, ""),
+                            # The tool's own arguments, so a renderer can show what
+                            # is being approved. Provider-authored text reaching a
+                            # channel, so it takes the same redaction as everything
+                            # else on this path.
+                            tool_input=_redact(getattr(event, "tool_input", "") or ""),
                         )
                     )
                 approved = await self._approve(event)

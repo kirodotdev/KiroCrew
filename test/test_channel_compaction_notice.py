@@ -55,6 +55,16 @@ class _Transport:
             supports_proactive_send=True, max_message_chars=max_chars
         )
 
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Part of the contract the send ladder consults before a proactive send.
+
+        Permissive so these tests keep exercising the notice itself;
+        ``test_channel_transport_outbound_authz`` owns the refusal path.
+        """
+        return True
+
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None
     ) -> str:
@@ -70,10 +80,12 @@ class _Sessions:
         *,
         slack_link: tuple[str | None, str | None] = (None, None),
         origin: ChannelLink | None = None,
+        mirror: ChannelLink | None = None,
         raise_on_lookup: bool = False,
     ) -> None:
         self._slack_link = slack_link
         self._origin = origin
+        self._mirror = mirror
         self._raise = raise_on_lookup
 
     def get_slack_link(self, key: str) -> tuple[str | None, str | None]:
@@ -86,19 +98,32 @@ class _Sessions:
             raise RuntimeError("map unreadable")
         return self._origin
 
+    def get_mirror_link(self, key: str) -> ChannelLink | None:
+        if self._raise:
+            raise RuntimeError("map unreadable")
+        return self._mirror
+
 
 def _state(
     *,
     slack_client: Any = None,
     sessions: Any = None,
     transport: Any = None,
+    channel_type: str = "discord",
 ) -> Any:
+    """A fake dashboard state serving *transport* for *channel_type*.
+
+    The channel type is a parameter, not a hardcoded ``"discord"``: the notice path
+    resolves the transport BY the link's channel type, so a helper that only ever
+    answered for one channel could not express a second one — which is how the
+    origin-vs-mirror asymmetry stayed untested.
+    """
     return SimpleNamespace(
         slack_client=slack_client,
         sessions=sessions or _Sessions(),
-        channel_transports={"discord": transport} if transport is not None else {},
+        channel_transports={channel_type: transport} if transport is not None else {},
         get_channel_transport=lambda ct: (
-            transport if transport is not None and ct == "discord" else None
+            transport if transport is not None and ct == channel_type else None
         ),
     )
 
@@ -114,9 +139,10 @@ def _permit_governance():
     governance profile.
     """
     permit = SimpleNamespace(permitted=True)
-    with patch(
-        "kiro_crew.dashboard.chat_compaction_notice.vet_and_audit", return_value=permit
-    ), patch("kiro_crew.platform.governance_profiles.vet_and_audit", return_value=permit):
+    with (
+        patch("kiro_crew.dashboard.chat_compaction_notice.vet_and_audit", return_value=permit),
+        patch("kiro_crew.platform.governance_profiles.vet_and_audit", return_value=permit),
+    ):
         yield
 
 
@@ -277,9 +303,52 @@ class TestTransportDelivery:
 
         assert "!compact" in transport.sent[0][1]
 
-    async def test_noop_without_origin(self) -> None:
+    async def test_a_mirror_only_conversation_still_gets_the_notice(self) -> None:
+        # Origin links are written by exactly ONE channel (Discord's resume path).
+        # Telegram, WeCom and Weixin bind a MIRROR on their first turn, so an
+        # origin-only lookup computed this notice and dropped it: the conversation
+        # was summarized silently, and on a compaction FAILURE the operator never
+        # saw the line telling them to run /compact or /new. Every other proactive
+        # leg walks origin-then-mirror; this one now does too.
         transport = _Transport()
-        state = _state(transport=transport, sessions=_Sessions(origin=None))
+        state = _state(
+            transport=transport,
+            sessions=_Sessions(origin=None, mirror=ChannelLink("telegram", channel_id="4242")),
+            channel_type="telegram",
+        )
+
+        with _permit_governance():
+            await deliver_channel_compaction_notice(
+                state, "telegram:kirocrew:direct:7", 91.0, success=False
+            )
+
+        assert len(transport.sent) == 1
+        conversation, text, _thread = transport.sent[0]
+        assert conversation == "4242"
+        assert "/compact" in text, "the failure notice must name the manual command"
+
+    async def test_origin_wins_when_both_are_bound(self) -> None:
+        # The ladder's order is load-bearing: origin is the conversation's REAL send
+        # target, a mirror is a copy destination.
+        transport = _Transport()
+        state = _state(
+            transport=transport,
+            sessions=_Sessions(
+                origin=ChannelLink("discord", channel_id="origin-9"),
+                mirror=ChannelLink("discord", channel_id="mirror-9"),
+            ),
+        )
+
+        with _permit_governance():
+            await deliver_channel_compaction_notice(
+                state, "discord:kirocrew:direct:u1", 90.0, success=True
+            )
+
+        assert transport.sent[0][0] == "origin-9"
+
+    async def test_noop_without_any_link(self) -> None:
+        transport = _Transport()
+        state = _state(transport=transport, sessions=_Sessions(origin=None, mirror=None))
 
         with _permit_governance():
             await deliver_channel_compaction_notice(

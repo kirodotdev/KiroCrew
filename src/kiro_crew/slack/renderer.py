@@ -117,6 +117,7 @@ def _display_safe(text: str) -> str:
     """
     return redact_for_display(text, _redact_all)[0]
 
+
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
 #: This module used to carry a second literal copy of the declaration; two
 #: literals for one fact is a drift hazard, and they had already diverged once.
@@ -494,9 +495,7 @@ class SlackRenderer(Renderer):
         # The lookbehind margin is what lets the release scan see a credential the
         # rendered concatenation would spell; see _REF_HOLD_LOOKBEHIND_CHARS.
         cut = (
-            max(0, spans[0][0] - self._REF_HOLD_LOOKBEHIND_CHARS)
-            if spans
-            else len(self._ref_hold)
+            max(0, spans[0][0] - self._REF_HOLD_LOOKBEHIND_CHARS) if spans else len(self._ref_hold)
         )
         ready, self._ref_hold = self._ref_hold[:cut], self._ref_hold[cut:]
         return ready
@@ -657,9 +656,7 @@ class SlackRenderer(Renderer):
             except Exception:
                 logger.debug("slack: posting a continuation chunk failed", exc_info=True)
 
-    async def _append_task(
-        self, task_id: str, title: str, status: str, details: str = ""
-    ) -> bool:
+    async def _append_task(self, task_id: str, title: str, status: str, details: str = "") -> bool:
         """Append a task card, rotating once on failure (native ``_append_task``)."""
         if not self._stream_ts:
             return False
@@ -757,9 +754,7 @@ class SlackRenderer(Renderer):
                 # No-stream fallback: strip thinking tags for the intermediate
                 # chat.update, mirroring _flush_stream_buffer on the stream path
                 # so <thinking>…</thinking> never leaks into interim renders.
-                filtered, _ = strip_thinking_tags(
-                    self._stream_buffer, strip_whitespace=False
-                )
+                filtered, _ = strip_thinking_tags(self._stream_buffer, strip_whitespace=False)
                 if self._uploads_enabled():
                     # This path REPLACES the message on every frame, so markup
                     # can simply be hidden: the seal's rewritten text is what the
@@ -838,9 +833,7 @@ class SlackRenderer(Renderer):
             if self._active_task_id:
                 elapsed = self._tool_elapsed_str()
                 self._cancel_tool_timer()
-                ct = (
-                    f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
-                )
+                ct = f"{self._active_task_title}  {elapsed}" if elapsed else self._active_task_title
                 await self._append_task(self._active_task_id, ct, "complete")
                 self._active_task_id = ""
             # This message ends here and its accumulated source is discarded, so
@@ -860,6 +853,7 @@ class SlackRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # The tool THIS request asks about. The options are the ANSWERS ("Allow",
         # "Reject"), so falling back to the first one's label puts a verb where the

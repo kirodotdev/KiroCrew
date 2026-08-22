@@ -555,6 +555,45 @@ def hide_local_refs(text: str) -> str:
     return _apply_cuts(text, spans)
 
 
+#: Extension per sniffed mime. Keyed on the SNIFF, never on the path's own
+#: suffix: a shell script named ``.png`` is refused by extraction, and deriving
+#: the sent name from the same answer keeps the two from disagreeing about one
+#: file.
+_MIME_EXT = {
+    "image/png": "png",
+    "image/jpeg": "jpg",
+    "image/gif": "gif",
+    "image/webp": "webp",
+    "image/bmp": "bmp",
+}
+
+#: Multipart filenames are restricted before entering ``Content-Disposition``.
+_UNSAFE_FILENAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def upload_filename(file: "OutboundFile", index: int = 0) -> str:
+    """Derive and re-scan a header-safe filename from an untrusted path.
+
+    The path came out of LLM-authored reply text and the name is metadata the
+    platform echoes back, so only a sanitized basename survives, the extension
+    follows the sniffed mime, and the RESULT is re-scanned — a name that still
+    looks like a credential or a beacon URL after sanitizing is replaced outright
+    rather than sent.
+
+    Shared because every uploading channel needs the same answer to "what
+    filename is safe in a Content-Disposition header", and two answers is one too
+    many. *index* disambiguates the fallback when a path yields no usable stem.
+    """
+    ext = _MIME_EXT.get(file.mime or "", "bin")
+    stem = _UNSAFE_FILENAME_RE.sub("_", Path(file.path or "").name).lstrip(".")
+    stem = stem[: -len(Path(stem).suffix)] if Path(stem).suffix else stem
+    stem = stem.strip("._")[:64]
+    name = f"{stem or f'image_{index}'}.{ext}"
+    redacted, _ = redact_exfiltration_urls(name)
+    redacted, _ = redact_credentials(redacted)
+    return name if redacted == name else f"image_{index}.{ext}"
+
+
 def extract_local_refs(
     text: str, *, limits: ExtractLimits | None = None, within_root: str | None = None
 ) -> ExtractResult:

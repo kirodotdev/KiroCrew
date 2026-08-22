@@ -6,16 +6,24 @@ Three Slack surfaces render the same recent-sessions list:
 - ``sessions`` keyword in DMs (``handler._handle_sessions_command``)
 - App Home Tab "🧵 Sessions" section (``events._publish_home_tab``)
 
-This module owns the data-collection (:func:`_collect_recent_sessions`)
-and Block Kit rendering (:func:`_build_sessions_blocks`) so all three
-surfaces share a single code path. Living in its own module — instead
-of being defined inside ``events.py`` — also breaks the
-``events`` ↔ ``handler`` circular import that would otherwise force
-in-function imports in ``handler._handle_sessions_command``.
+The data collection is channel-neutral and lives in
+:mod:`kiro_crew.messaging.sessions_view`, shared with the chat channels'
+``/sessions``. This module owns the Slack half — the Block Kit rendering
+(:func:`_build_sessions_blocks`) — and re-exports the collector so the three
+surfaces above, and every existing monkeypatch of these names, keep resolving
+here. Living in its own module also breaks the ``events`` ↔ ``handler``
+circular import that would otherwise force in-function imports in
+``handler._handle_sessions_command``.
 
-The module has **no slack-internal dependencies** beyond
-``kiro_crew.slack.blocks.session_task_card``; it does not import
-``events`` or ``handler``, which is what keeps the import graph acyclic.
+**``_SESSIONS_DIR`` stays a Slack-module override.** The lazy-data-home ratchet
+and the Slack suites patch this name, so the wrappers below thread it into the
+neutral collector explicitly rather than shadowing the neutral module's own
+override — a patch that set an attribute nothing reads would leave those tests
+passing while the collector read the operator's real data home.
+
+Beyond ``kiro_crew.slack.blocks.session_task_card`` this module has no
+slack-internal dependencies; it does not import ``events`` or ``handler``,
+which is what keeps the import graph acyclic.
 """
 
 from __future__ import annotations
@@ -27,6 +35,17 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.messaging.sessions_view import (  # noqa: F401 — re-exported surface
+    _SESSION_KIND_DASHBOARD,
+    _SESSION_KIND_OTHER,
+    _SESSION_KIND_TASKRUNNER,
+    _SESSIONS_DEFAULT_LIMIT,
+    _classify_session_key,
+)
+from kiro_crew.messaging.sessions_view import _collect_recent_sessions as _collect_neutral
+from kiro_crew.messaging.sessions_view import (  # noqa: F401 — re-exported surface
+    _default_session_title,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.blocks import session_task_card
 
@@ -44,14 +63,7 @@ if TYPE_CHECKING:
 # existing monkeypatch call sites keep working. See config.md "Data Home";
 # dashboard/handlers/usage.py is the reference implementation.
 _SESSIONS_DIR: Path | None = None
-_SESSIONS_MAX_MSG_CHARS = 4000
-_SESSIONS_MAX_PREVIEW = 5
-_SESSIONS_DEFAULT_LIMIT = 10
 _HOME_TAB_SESSIONS_PER_KIND = 5
-
-_SESSION_KIND_DASHBOARD = "dashboard"
-_SESSION_KIND_TASKRUNNER = "taskrunner"
-_SESSION_KIND_OTHER = "other"
 
 
 def _sessions_dir() -> Path:
@@ -60,45 +72,7 @@ def _sessions_dir() -> Path:
 
 
 # ---------------------------------------------------------------------------
-# Classification + default titles
-# ---------------------------------------------------------------------------
-
-
-def _classify_session_key(key: str) -> str:
-    """Classify a session key as ``dashboard``, ``taskrunner``, or ``other``."""
-    if key.startswith("dashboard:") or key.startswith("dashboard_"):
-        return _SESSION_KIND_DASHBOARD
-    if key.startswith("taskrunner:") or key.startswith("taskrunner_"):
-        return _SESSION_KIND_TASKRUNNER
-    return _SESSION_KIND_OTHER
-
-
-def _default_session_title(key: str, kind: str) -> str:
-    """Build a default title for a session that has no metadata title.
-
-    The taskrunner branch drops the leading ``taskrunner_`` plus the next
-    segment so that on-disk keys like ``taskrunner_run_<task_id>`` (from
-    ``taskrunner.py`` after ``_safe_key`` colon→underscore mangling) render as
-    ``Task Runner <task_id>`` instead of ``Task Runner run_<task_id>``.
-    """
-    if kind == _SESSION_KIND_DASHBOARD:
-        if ":" in key:
-            return f"Dashboard {key.split(':', 1)[1]}"
-        # Defensive: _collect_recent_sessions normalises ``dashboard_xxx`` to
-        # ``dashboard:xxx`` before classifying, so this branch is unreachable
-        # via the canonical path. Kept for callers that pass raw filenames.
-        if "_" in key:
-            return f"Dashboard {key.split('_', 1)[1]}"
-    if kind == _SESSION_KIND_TASKRUNNER:
-        if ":" in key:
-            return f"Task Runner {key.split(':', 2)[-1]}"
-        if "_" in key:
-            return f"Task Runner {key.split('_', 2)[-1]}"
-    return key
-
-
-# ---------------------------------------------------------------------------
-# Collector
+# Collector (neutral implementation, Slack-owned data-home override)
 # ---------------------------------------------------------------------------
 
 
@@ -108,130 +82,13 @@ def _collect_recent_sessions(
     limit: int = _SESSIONS_DEFAULT_LIMIT,
     kind: "str | Iterable[str] | None" = None,
 ) -> list[dict]:
-    """Read JSONLs under ``<config_dir>/sessions/`` and return a sorted list.
+    """Slack's view of :func:`messaging.sessions_view._collect_recent_sessions`.
 
-    Each row: ``{key, title, agent, mtime, active, kind, msgs}`` where
-    ``msgs`` is a list of ``{"role": str, "content": str}`` dicts (last
-    ``_SESSIONS_MAX_PREVIEW`` user/assistant messages, truncated to
-    ``_SESSIONS_MAX_MSG_CHARS`` chars but **not** redacted — redaction
-    happens in ``_build_sessions_blocks`` via ``session_task_card``).
-
-    *sessions* is an optional ``SessionManager``-like object exposing
-    ``has_session(key) -> bool`` for the active marker. Pass ``None`` to
-    skip the active check (returned ``active`` will always be ``False``).
-
-    *kind* filters by ``_SESSION_KIND_*``. Accepts a single kind string,
-    an iterable of kinds (the Home Tab uses this to fetch dashboard +
-    taskrunner in a single directory scan), or ``None`` for no filter.
-
-    Sorted by mtime descending, capped at *limit*. The kind filter and the
-    mtime sort key are both derivable without opening a file (kind from the
-    filename stem, mtime from ``stat``), so only the newest *limit*
-    matching transcripts are actually read — the directory can hold an
-    unbounded number of historical sessions without the read cost growing
-    with it. Files that turn out to be empty or unreadable are skipped and
-    the scan continues down the mtime order, so the result still holds
-    *limit* rows whenever enough valid transcripts exist.
-
-    This function performs synchronous filesystem I/O (directory scan plus
-    up to *limit* whole-file reads, each bounded only by transcript size).
-    Callers on the asyncio event loop MUST use
-    :func:`_collect_recent_sessions_off_loop` instead of calling this
-    directly — a multi-MB transcript read on the loop stalls every other
-    task, including the loop-watchdog heartbeat.
+    Threads this module's ``_SESSIONS_DIR`` through explicitly so a patch of it
+    is what the read actually uses. Synchronous filesystem I/O — async callers
+    MUST use :func:`_collect_recent_sessions_off_loop`.
     """
-    sessions_dir = _sessions_dir()
-    if not sessions_dir.exists():
-        return []
-
-    if kind is None:
-        kinds_set: set[str] | None = None
-    elif isinstance(kind, str):
-        kinds_set = {kind}
-    else:
-        kinds_set = set(kind)
-
-    # Pre-scan: classify + stat every entry WITHOUT reading it, then sort
-    # newest-first so the read loop below opens at most ``limit`` valid
-    # transcripts instead of every file in the directory.
-    candidates: list[tuple[float, Path, str, str]] = []
-    for jsonl in sessions_dir.glob("*.jsonl"):
-        if jsonl.is_symlink():
-            continue
-        raw_key = jsonl.stem
-        # Restore canonical session key form (filenames replace ':' with '_').
-        if raw_key.startswith("dashboard_"):
-            key = "dashboard:" + raw_key[len("dashboard_"):]
-        else:
-            key = raw_key
-
-        row_kind = _classify_session_key(key)
-        if kinds_set is not None and row_kind not in kinds_set:
-            continue
-
-        try:
-            mtime = jsonl.stat().st_mtime
-        except OSError:
-            # Deleted between glob and stat — skip.
-            continue
-        candidates.append((mtime, jsonl, key, row_kind))
-
-    # Stable sort keyed on mtime only, so equal-mtime entries keep
-    # directory-enumeration order (same tie order the full-scan sort had).
-    candidates.sort(key=lambda c: c[0], reverse=True)
-
-    rows: list[dict] = []
-    for mtime, jsonl, key, row_kind in candidates:
-        if len(rows) >= limit:
-            break
-
-        try:
-            lines = jsonl.read_text(encoding="utf-8").splitlines()
-        except OSError:
-            continue
-        if not lines:
-            continue
-
-        title = ""
-        agent = "kirocrew"
-        msgs: list[dict] = []
-
-        for line in lines:
-            try:
-                d = json.loads(line.strip())
-            except ValueError:
-                continue
-            if d.get("_type") == "metadata":
-                title = d.get("title") or title
-                agent = d.get("agent") or agent
-                continue
-            role = d.get("role", "")
-            if role not in ("user", "assistant"):
-                continue
-            content = (d.get("content") or "")[:_SESSIONS_MAX_MSG_CHARS]
-            # Upstream truncation bounds the in-memory ``rows`` list before
-            # rendering; ``session_task_card._msg_elements`` truncates again
-            # to the same limit when building Block Kit text.
-            if content:
-                msgs.append({"role": role, "content": content})
-
-        if not title:
-            title = _default_session_title(key, row_kind)
-
-        active = bool(sessions and sessions.has_session(key))
-        rows.append(
-            {
-                "key": key,
-                "title": title[:80],
-                "agent": agent,
-                "mtime": mtime,
-                "active": active,
-                "kind": row_kind,
-                "msgs": msgs[-_SESSIONS_MAX_PREVIEW:],
-            }
-        )
-
-    return rows
+    return _collect_neutral(sessions, limit=limit, kind=kind, sessions_dir=_sessions_dir())
 
 
 async def _collect_recent_sessions_off_loop(
@@ -249,9 +106,8 @@ async def _collect_recent_sessions_off_loop(
     sustained silence. This wrapper is the single chokepoint async callers
     must use; it keeps the offload decision out of each call site.
 
-    The collector is safe to run off-loop: it is pure I/O + parsing, and
-    the only shared-state touch is ``SessionManager.has_session``, a plain
-    dict-membership read.
+    Dispatches through this module's own ``_collect_recent_sessions`` so a
+    monkeypatch of that name (several Slack suites use one) is honored.
     """
     return await asyncio.to_thread(_collect_recent_sessions, sessions, limit=limit, kind=kind)
 

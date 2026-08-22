@@ -521,7 +521,25 @@ answers `tools/list` from):
 - **Subagents:** `spawn_status`, `spawn_continue`, `spawn_steer`,
   `spawn_release`, `spawn_sub_agents`, `wait`
 - **Messaging and notification:** `send_message`, `send_notification`,
-  `delete_message`, `file_send`, `read_slack_profile`
+  `delete_message`, `file_send`, `read_slack_profile`. `send_message` is the
+  agent's only proactive egress, and it names its destination rather than
+  inferring one: `session="slack"` / `channel` / `user` / `thread_ts` are the
+  Slack fields, and `channel_type` is the non-Slack one — the transport of the
+  conversation the calling session already belongs to. Exactly one of the two
+  families may appear per call. The routing ladder and the fail-closed contract
+  behind `channel_type` are in
+  [messaging](../system-specs/modules/messaging.md) § Proactive sends. Two
+  things to know before adding a destination to it:
+  - **The governance gate must name the transport the message actually leaves
+    over.** The `channels` scope is a per-transport allowlist, so vetting
+    `"slack"` for a Telegram send evaluates a Telegram denial against Slack's
+    rule — and refuses a permitted Telegram send whenever Slack is denied.
+  - **`channel_type` is the one `send_message` argument that requires
+    `_resolve_session_key_strict()`.** It posts into one specific conversation,
+    which is the "targets a specific session" case below; the lenient walk
+    climbs process ancestors, so a sub-agent would resolve to its parent and
+    deliver into the parent's chat window. An unresolvable identity refuses the
+    call rather than guessing.
 - **Session-bound directives** (`session_directive.DIRECTIVE_TOOLS`):
   `ask_question`, `suggest_followup`, `monitor_start`, `monitor_update`,
   `autonudge_stop`, `set_project`

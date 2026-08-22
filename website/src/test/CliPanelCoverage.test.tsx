@@ -682,7 +682,7 @@ describe('CliPanel theme and font sync', () => {
     style.id = 'unrelated-style'
     act(() => { document.head.appendChild(style) })
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-    expect(term.options.theme).toBe(before) // same object → no refresh ran
+    expect(term.options.theme).toBe(before) // same object -> no refresh ran
   })
 
   it('pushes a font-size preference change onto every live terminal and refits', () => {

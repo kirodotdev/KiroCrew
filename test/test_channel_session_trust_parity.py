@@ -78,9 +78,10 @@ class _Renderer(Renderer):
     async def on_prompt_choice(
         self,
         options: list[dict[str, Any]],
-        request_id: Any,
+        request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # Recorded because a widget offered on a decider-less channel is a dead
         # control: the ladder denies whatever the user presses. The two tool

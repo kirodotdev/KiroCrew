@@ -1109,6 +1109,7 @@ class DiscordRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # Approve/Deny as a SEPARATE message so ongoing streaming edits to the
         # answer bubble don't clobber the buttons. custom_id carries a

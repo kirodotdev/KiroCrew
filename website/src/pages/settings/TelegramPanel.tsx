@@ -72,6 +72,14 @@ function telegramSpec(): BotChannelSpec {
       new: TELEGRAM_COMMANDS.new,
     }),
     emptyAllowlistHint: i18nT('pages.settings.telegramPanel.empty_allowlist_hint'),
+    showThinking: {
+      label: i18nT('pages.settings.telegramPanel.show_thinking_label'),
+      description: i18nT('pages.settings.telegramPanel.show_thinking_description'),
+    },
+    voiceReplies: {
+      label: i18nT('pages.settings.telegramPanel.voice_replies_label'),
+      description: i18nT('pages.settings.telegramPanel.voice_replies_description'),
+    },
     forum: {
       toggleLabel: i18nT('pages.settings.telegramPanel.forum_toggle_label'),
       toggleDescription: withMonoTokens(i18nT('pages.settings.telegramPanel.forum_toggle_description')),
@@ -79,6 +87,20 @@ function telegramSpec(): BotChannelSpec {
       allowlistDescription: i18nT('pages.settings.telegramPanel.forum_allowlist_description'),
       allowlistPlaceholder: '-1001234567890',
       emptyHint: i18nT('pages.settings.telegramPanel.forum_empty_hint'),
+      // POSITIONALLY paired with optionLabels, and the values are the backend's
+      // own modes — a label list that drifted out of order would silently save a
+      // different mode than the one the operator picked.
+      activation: {
+        label: i18nT('pages.settings.telegramPanel.forum_activation_label'),
+        description: i18nT('pages.settings.telegramPanel.forum_activation_description'),
+        hint: i18nT('pages.settings.telegramPanel.forum_activation_hint'),
+        options: ['always', 'mention', 'off'],
+        optionLabels: [
+          i18nT('pages.settings.telegramPanel.forum_activation_always'),
+          i18nT('pages.settings.telegramPanel.forum_activation_mention'),
+          i18nT('pages.settings.telegramPanel.forum_activation_off'),
+        ],
+      },
     },
     getConfig: api.getTelegramConfig,
     saveConfig: api.saveTelegramConfig,

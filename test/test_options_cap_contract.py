@@ -759,3 +759,72 @@ class TestTeamsEnforcement:
         asyncio.run(_go())
 
         assert "AKIAIOSFODNN7EXAMPLE" not in "\n".join(cli.sent)
+
+
+class TestKeptChoicesAreDisplayRedacted:
+    """A widget label is LLM-authored text rendered into a channel.
+
+    ``apply_options_cap`` redacted only the OVERFLOW list, so the same string was
+    sanitized when it landed as numbered text and intact when it landed on a button
+    — and again in the press echo, which quotes the label back. On a forum Topic
+    that is every allow-listed participant. Slack redacts at this same point; doing
+    it in the shared helper closes it for every widget channel at once, so a channel
+    added later cannot miss it.
+    """
+
+    @staticmethod
+    def _caps(max_buttons: int = 5):
+        from kiro_crew.messaging.transport import TransportCapabilities
+
+        return TransportCapabilities(max_buttons=max_buttons)
+
+    def test_a_credential_in_a_kept_label_is_redacted(self) -> None:
+        from kiro_crew.messaging.renderer import apply_options_cap
+
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        _body, kept = apply_options_cap("pick one", [key, "plain"], self._caps())
+        assert key not in kept[0], "a credential must not reach a button label"
+        assert "REDACTED" in kept[0]
+        assert kept[1] == "plain", "an innocuous label must survive untouched"
+
+    def test_a_markup_split_credential_is_caught_on_the_canonical_form(self) -> None:
+        # The byte-level pass alone misses this: the contiguous key only exists once
+        # the markup is flattened, which is exactly what display_safe does first.
+        from kiro_crew.messaging.renderer import apply_options_cap
+
+        head, tail = "AKIA", "IOSFODNN7EXAMPLE"
+        _body, kept = apply_options_cap("pick", [f"{head}**{tail}**"], self._caps())
+        assert "REDACTED" in kept[0]
+        assert head + tail not in kept[0]
+        assert tail not in kept[0], "the second half must not survive either"
+
+    def test_mentions_in_a_kept_label_are_defanged(self) -> None:
+        # Labels render as plain text, but the press echo puts the label back into a
+        # message body — where the platform DOES parse mentions.
+        from kiro_crew.messaging.renderer import apply_options_cap
+
+        _body, kept = apply_options_cap("pick", ["@everyone"], self._caps())
+        assert kept[0] != "@everyone"
+        assert "​" in kept[0], "the mention must be broken with a ZWSP"
+
+    def test_the_overflow_list_is_still_redacted_too(self) -> None:
+        # The half that already worked, so a regression cannot trade one for the other.
+        from kiro_crew.messaging.renderer import apply_options_cap
+
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        body, kept = apply_options_cap("pick", ["a", "b", key], self._caps(max_buttons=2))
+        assert len(kept) == 2
+        assert key not in body and "REDACTED" in body
+
+    def test_a_zero_widget_channel_takes_the_all_overflow_path(self) -> None:
+        # `max_buttons <= 0` has no branch of its own: it keeps nothing and overflows
+        # everything, so a button-less channel gets every choice as a numbered line
+        # through the same sanitising sink rather than losing the answers to a
+        # question the agent just asked.
+        from kiro_crew.messaging.renderer import apply_options_cap
+
+        key = "AKIA" + "IOSFODNN7EXAMPLE"
+        body, kept = apply_options_cap("pick", [key], self._caps(max_buttons=0))
+        assert kept == [], "a zero-widget channel keeps no choice for a widget"
+        assert "1. " in body, "the choice must still reach the user as text"
+        assert key not in body and "REDACTED" in body

@@ -116,6 +116,13 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
             state = orch.dashboard_state
             # Late-bind the webhook handler now that the client exists.
             state.teams_on_activity = client.on_activity
+            # BEFORE registering: registration is what makes this transport
+            # reachable from the proactive send ladder, whose recipient check is
+            # synchronous and refuses an unread route store. Loading first means no
+            # send is judged against an empty store, so neither a revoked recipient
+            # slips through nor a deliverable send is refused. Does not block the
+            # loop -- ensure_loaded does its own to_thread.
+            await transport.warm_routes()
             state.register_channel_transport(transport)
             # Binding a session from Teams changes what the dashboard must show, so the
             # picker needs a way to push a slots refresh.

@@ -135,6 +135,20 @@ class IMessageTransport(MessagingTransport):
             return None
         return await self.resolve_conversation(value), None
 
+    # -- Outbound authorization --------------------------------------------
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-check the handle roster before a proactive send. Fails closed.
+
+        Answerable exactly because the handle IS the conversation here, so a
+        persisted link carries the same principal ``authorize`` checks -- and it
+        is normalized the same way, so a link stored in one spelling
+        (``+1 555 0100``) still matches a roster entry in another.
+        """
+        handle = normalize_handle(conversation_id)
+        return bool(handle) and handle in self._allowed
+
     # -- Lifecycle ----------------------------------------------------------
     async def connect(self) -> None:
         await self._client.start()

@@ -78,8 +78,15 @@ def _slot(restricted: bool) -> Any:
 
 # fmt: off
 def _restricted(key: str, slot: Any = None) -> bool:
+    """Drive Discord's gate with a fake dashboard state holding *slot*.
+
+    Injects the STATE rather than stubbing the slot lookup, so the real
+    ``get_slot`` path in ``messaging/upload_gate.py`` is what answers.
+    """
     from kiro_crew.discord.transport_dispatch import DiscordDispatcher
-    dispatcher = SimpleNamespace(_live_dashboard_slot=lambda _key: slot)
+
+    state = SimpleNamespace(get_slot=lambda _name: slot)
+    dispatcher = SimpleNamespace(_session_resume=SimpleNamespace(dashboard_state=state))
     return asyncio.run(DiscordDispatcher._uploads_restricted(dispatcher, key))
 
 
@@ -239,9 +246,9 @@ class TestRestrictedGate:
 
     @pytest.mark.parametrize("restricted,events", [(True, 1), (False, 0)])
     def test_only_a_denied_upload_is_sel_audited(self, monkeypatch: pytest.MonkeyPatch, restricted: bool, events: int) -> None:
-        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.messaging import upload_gate as ug
         seen: list[dict] = []
-        monkeypatch.setattr(td, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: seen.append(kw)))
+        monkeypatch.setattr(ug, "sel", lambda: SimpleNamespace(log_api_access=lambda **kw: seen.append(kw)))
         assert _restricted("dashboard:abc", _slot(restricted)) is restricted
         assert len(seen) == events
         if events:
@@ -249,39 +256,59 @@ class TestRestrictedGate:
             assert tuple(seen[0][key] for key in keys) == ("denied", "discord", "restricted_session", "dashboard:abc")
 
     def test_no_live_slot_falls_through_to_the_persisted_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        from kiro_crew.discord import transport_dispatch as td
-        monkeypatch.setattr(td, "_persisted_mode_is_restricted", lambda key: key == "dashboard:ghost")
+        from kiro_crew.messaging import upload_gate as ug
+        monkeypatch.setattr(
+            ug, "_persisted_mode_is_restricted", lambda key, probe: key == "dashboard:ghost"
+        )
         assert _restricted("dashboard:ghost") is True
         assert _restricted("dashboard:kept") is False
 
     @pytest.mark.parametrize("mode,restricted", [("incognito", True), ("temporary", True), ("persistent", False), (None, True)])
     def test_the_persisted_mode_decides(self, monkeypatch: pytest.MonkeyPatch, mode: Any, restricted: bool) -> None:
         from kiro_crew.dashboard.handlers import _shared
-        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.messaging import upload_gate as ug
+
+        # Injected, not imported: `messaging` may not reach `dashboard`, so the
+        # probe travels as an argument and the test supplies it directly.
+        probe = _shared._probe_persisted_session
         monkeypatch.setattr(_shared, "_probe_persisted_session", lambda name: (True, mode))
-        assert td._persisted_mode_is_restricted("dashboard:abc") is restricted
+        assert ug._persisted_mode_is_restricted("dashboard:abc", lambda n: (True, mode)) is restricted
+        assert probe is not None
 
     def test_an_ambiguous_stem_denies_instead_of_taking_the_first_match(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         from kiro_crew.dashboard.handlers import _shared
-        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.messaging import upload_gate as ug
         _stage_sessions(monkeypatch, tmp_path, abc="persistent", dashboard_abc="incognito")
         assert _shared._persisted_session_memory_mode("abc") == "persistent"
         assert _shared._probe_persisted_session("abc") == (True, None)
-        assert td._persisted_mode_is_restricted("dashboard:abc") is True
+        assert (
+            ug._persisted_mode_is_restricted(
+                "dashboard:abc", _shared._probe_persisted_session
+            )
+            is True
+        )
 
     def test_a_single_unambiguous_persistent_transcript_still_allows(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.dashboard.handlers import _shared
+        from kiro_crew.messaging import upload_gate as ug
+
         _stage_sessions(monkeypatch, tmp_path, dashboard_solo="persistent")
-        assert td._persisted_mode_is_restricted("dashboard:solo") is False
+        assert (
+            ug._persisted_mode_is_restricted(
+                "dashboard:solo", _shared._probe_persisted_session
+            )
+            is False
+        )
 
     def test_an_unreadable_probe_denies(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from kiro_crew.dashboard.handlers import _shared
-        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.messaging import upload_gate as ug
 
         def _boom(name: str) -> Any:
             raise OSError("sessions dir gone")
-        monkeypatch.setattr(_shared, "_probe_persisted_session", _boom)
-        assert td._persisted_mode_is_restricted("dashboard:abc") is True
+
+        assert ug._persisted_mode_is_restricted("dashboard:abc", _boom) is True
+        assert _shared is not None  # the real probe is unused here, by design
 
 
 class TestDescriptionRedaction:

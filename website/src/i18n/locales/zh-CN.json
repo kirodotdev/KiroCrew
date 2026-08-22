@@ -10302,8 +10302,11 @@
       "owning_session": "所属会话"
     },
     "servicesTab": {
+      "channels": "渠道",
+      "connect_error": "连接错误",
       "connected": "已连接",
       "cpu": "CPU 使用率",
+      "discord": "Discord",
       "embeddings": "Embeddings",
       "gateway_process": "网关进程",
       "governance": "治理",
@@ -10311,6 +10314,7 @@
       "governance_tip_degraded": "某项治理检查按失败即拒绝处理，检测到完整性不匹配，或准入策略未经验证（缺失或不可读）。排查 SEL 审计日志。",
       "governance_tip_disabled": "未配置强制执行的准入策略（默认宽松）。除明确禁止外，插件均予准入。",
       "governance_tip_unknown": "本次会话尚未确定治理状态。",
+      "imessage": "iMessage",
       "mcp_process_breakdown": "{{total}}（{{sandbox}} 个沙箱 · {{provider}} 个 {{providerLabel}} · {{mcp}} 个 mcp）",
       "mcp_process_breakdown_unique": "{{total}} 个唯一进程（{{sandbox}} 个沙箱 · {{provider}} 个 {{providerLabel}} · {{mcp}} 个 mcp）",
       "mcp_processes": "MCP 进程",
@@ -10327,8 +10331,15 @@
       "status_disabled": "已禁用",
       "status_unknown": "未知",
       "stopped": "已停止",
+      "teams": "Microsoft Teams",
+      "telegram": "Telegram",
       "threads": "线程数",
       "uptime": "运行时长",
+      "webex": "Webex",
+      "wecom": "企业微信",
+      "weixin": "微信",
+      "whatsapp": "WhatsApp",
+      "feishu": "Feishu",
       "working_directory": "工作目录"
     },
     "sessionArchive": {
@@ -11630,6 +11641,12 @@
         "allowlist_description": "允许私聊机器人的 Telegram 数字用户 ID。留空 = 全部拒绝（失败关闭）：任何人都能通过 @username 找到 Telegram 机器人。",
         "description": "通过 Bot API 从 Telegram 与你的代理对话（长轮询 — 无需 webhook 或公网地址）。添加允许的用户 ID，机器人才能回复。",
         "empty_allowlist_hint": "没有允许的用户 ID：机器人会拒绝所有消息（失败关闭）。在下方添加你的 Telegram 数字用户 ID。",
+        "forum_activation_always": "每一条消息",
+        "forum_activation_description": "机器人在已许可的话题内何时回答。无论此处选择哪一项，私聊消息始终会得到回答。",
+        "forum_activation_hint": "如果同一话题里还有其他人在交谈，适合选“仅在被呼叫时”：此时只有用到它的 @名称，或有人回复它自己发的消息，机器人才会回答。",
+        "forum_activation_label": "在话题中回答",
+        "forum_activation_mention": "仅在被呼叫时",
+        "forum_activation_off": "从不",
         "forum_allowlist_description": "允许运行论坛话题会话的超级群组数字 chat_id。这些值是负数（例如 -1001234567890） — 把 @getidsbot 这样的机器人加入群组就能查到。留空 = 拒绝所有群组（失败关闭）。",
         "forum_allowlist_label": "允许的超级群组 chat ID",
         "forum_empty_hint": "已启用论坛，但允许列表里没有会话：所有论坛流量都会被拒绝。添加你的超级群组 chat_id（形如 -100… 的负数）。",
@@ -11637,8 +11654,12 @@
         "forum_toggle_label": "把论坛 Topic 作为独立会话提供",
         "guide_body": "在 Telegram 上给 `@BotFather` 发消息，发送 `/newbot`，然后按提示操作。BotFather 会回复一个机器人令牌 — 把它粘贴到下方。要查你的数字用户 ID，给 `@userinfobot` 发消息。",
         "guide_link_label": "打开 @BotFather",
+        "show_thinking_description": "每次回答后，将推理过程作为可展开的折叠引用发布。默认关闭：Telegram 的速率限制按聊天计算，且与回答本身的流式编辑共用，因此这会使每轮多发一条消息。",
+        "show_thinking_label": "显示模型的推理过程",
         "token_description": "创建机器人后从 @BotFather 获取（形如 110201543:AAHdqT…）。",
-        "token_placeholder": "粘贴 Telegram 机器人令牌（123456:ABC-…）"
+        "token_placeholder": "粘贴 Telegram 机器人令牌（123456:ABC-…）",
+        "voice_replies_description": "按 voice_reply 提供方的设置，把每条回答除文本之外再发一条语音消息。默认关闭：Telegram 的频率上限按每个会话计算，因此每一轮会多花一条消息，而且语音合成可能尚未安装。简短的回答不会朗读，文本回答始终先送达。用 /voice on 或 /voice off 只改一个会话。",
+        "voice_replies_label": "朗读回答"
       },
       "voicePanel": {
         "amazon_polly_cloud": "Amazon Polly（云端）",

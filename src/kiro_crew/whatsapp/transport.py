@@ -259,6 +259,34 @@ class WhatsAppTransport(MessagingTransport):
             return True
         return normalize_jid(sender_jid) in self._allowed
 
+    def may_send_to(
+        self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
+    ) -> bool:
+        """Re-decide a PROACTIVE send under the live ``dm_policy``. Fails closed.
+
+        Answerable because the conversation id IS the peer's normalized JID (see
+        :meth:`resolve_conversation`), so a persisted link carries the same principal
+        :meth:`authorize` checks. Asks the same question that method asks and answers
+        it the same way, including denying an unrecognized policy rather than falling
+        through to ``open``.
+
+        ``self`` is the default policy and admits only the linked account, so a
+        proactive send under it is authorized exactly when the conversation is that
+        account's own thread.
+        """
+        if not conversation_id:
+            return False
+        jid = normalize_jid(conversation_id)
+        if self._client.me.matches(jid):
+            return True
+        if self._dm_policy == DM_POLICY_OPEN:
+            return True
+        if self._dm_policy == DM_POLICY_ALLOWLIST:
+            return jid in self._allowed
+        # DM_POLICY_SELF reached here means a non-self conversation; DISABLED and any
+        # unrecognized value deny outright.
+        return False
+
     def authorize(self, msg: InboundMessage) -> bool:
         """Deny-by-default DM policy. ``self`` (default) admits only the
         linked account's own messages; unknown policy values deny everyone."""

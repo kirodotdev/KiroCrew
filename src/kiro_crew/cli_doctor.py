@@ -2624,6 +2624,54 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # which any other channel has, and both of which fail silently.
     _doctor_whatsapp(cfg, issues)
 
+    # ── Every other channel (optional) ──
+    # One loop over the roster rather than a section per channel: the doctor knows
+    # Slack and Discord by name, so without this an operator with
+    # `telegram.enabled: true` and no token gets a clean bill of health from the
+    # tool whose whole job is telling them what is wrong. Readiness is derived from
+    # descriptor data, so the next channel is covered by adding its descriptor.
+    print("\nOther Channels")
+    try:
+        from kiro_crew.channels import channel_readiness
+
+        # Slack, Discord and WhatsApp each have a dedicated section above reporting
+        # the same credential AND the live connection, so listing them again here
+        # would name one fault twice in the closing issue line.
+        rows = [
+            row
+            for row in channel_readiness(cfg, creds)
+            if row.channel_type not in ("slack", "discord", "whatsapp")
+        ]
+    except Exception:
+        rows = []
+        print("  status:      ⚠️  channel roster unavailable")
+    if rows and not any(row.enabled for row in rows):
+        print("  status:      ⏭  none enabled (optional)")
+        print("  setup:       connect one from the dashboard's Settings > Channels")
+    for row in rows:
+        if not row.enabled:
+            continue
+        name = row.channel_type
+        if row.ready:
+            print(f"  {name + ':':12} ✅ enabled, credentials present")
+        else:
+            # Credentials and required config are reported separately because they
+            # live in different places: a secret belongs in .env, a non-secret like
+            # an account id in config.json. One combined line would send the
+            # operator to the wrong file.
+            parts = []
+            if row.missing_credentials:
+                parts.append(", ".join(row.missing_credentials))
+            if row.missing_config:
+                parts.append(", ".join(f"{name}.{attr}" for attr in row.missing_config))
+            missing = " and ".join(parts)
+            print(f"  {name + ':':12} ❌ enabled but missing {missing}")
+            print(
+                "               The channel will not start. Set it in "
+                "Settings > Channels, or in ~/.kiro/crew/.env"
+            )
+            issues.append(f"{name}: missing {missing}")
+
     # ── Loop-stall crash dumps ──
     print("\nLoop-stall Crash Dumps")
     try:

@@ -116,6 +116,7 @@ class IMessageRenderer(Renderer):
         request_id: str | int,
         tool_title: str = "",
         tool_purpose: str = "",
+        tool_input: str = "",
     ) -> None:
         # The driver only dispatches prompt_choice for INTERACTIVE + a decider,
         # and iMessage runs decider-less (deny-by-default), so this is never
