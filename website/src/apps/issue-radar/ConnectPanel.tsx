@@ -18,26 +18,33 @@
 //      additive — the Connect action submits every selected target, so a user
 //      can add a repo that isn't in the recent list without losing their ticks.
 //
-// Both listed sources are wired to a backend (Issue Radar reads each one through
-// the user's own `gh` / `glab` CLI). Unwired sources are NOT listed: a row that
-// only carries a "Soon" badge costs the same vertical space as a usable one and
-// gives the user nothing to do, so unwired sources like Jira/Linear are left out
-// of the list rather than rendered disabled.
+// Every listed source is wired to a backend (Issue Radar reads each one through
+// the user's own `gh` / `glab` / `az` CLI). Unwired sources are NOT listed: a row
+// that only carries a "Soon" badge costs the same vertical space as a usable one
+// and gives the user nothing to do, so unwired sources like Jira/Linear are left
+// out of the list rather than rendered disabled.
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertCircle, Check, RefreshCw } from 'lucide-react'
 import {
   issueRadarApi, type GhSetupReason, type RecentRepo, type RepoRef, type SourceProvider,
 } from './api'
-import { providerTerms } from './lib/links'
+import { providerDefaultHost, providerTerms } from './lib/links'
 import { relativeTimeOrDate } from './lib/format'
 import type { ActiveRepo } from './lib/types'
+import AzureDevopsLogo from '../../components/icons/AzureDevopsLogo'
 import GithubLogo from '../../components/icons/GithubLogo'
 import GitlabLogo from '../../components/icons/GitlabLogo'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric } from '../../i18n/format'
-export type ProviderId = 'github' | 'gitlab'
+/** The provider a connect flow is pointed at.
+ *
+ * An ALIAS of `api.ts`'s `SourceProvider`, not a second union: this used to be its
+ * own `'github' | 'gitlab'`, and two independently-maintained lists of the same
+ * thing is how a provider gets added to one and not the other — the panel would
+ * compile fine and simply never offer the new source. */
+export type ProviderId = SourceProvider
 
 /** Tailwind classes for the host card in each state — exported so the carousel
  * and the modal stay dimensionally identical without duplicating the numbers.
@@ -102,20 +109,56 @@ export const RECENT_WINDOW_DAYS = 30
  * successful connect can clear the input the same way it clears a tick. */
 const URL_TARGET_PREFIX = 'url:'
 
-/** Case-folded `owner/repo` identity for a GitHub repo URL, or null when the
- * text isn't one. Used to dedupe a typed URL against the ticked repos.
+/** The `owner/repo` identity for a repo URL, or null when the text isn't one.
+ * Used to dedupe a typed URL against the ticked repos.
  *
- * A literal string compare misses every spelling that resolves to the SAME
- * repo — `WWW.`/`www.` host, a `.git` suffix, a trailing slash, or different
- * casing (GitHub names are case-preserving but not case-sensitive). Each miss
- * submits a second connect for a repo already in the list, which the server
- * then rejects as already connected — or, worse, stores under a second casing. */
-export function repoIdentity(text: string): string | null {
-  const parsed = parseRepoRef(text)
-  return parsed && `${parsed.owner}/${parsed.repo}`.toLowerCase()
+ * A literal string compare misses spellings that resolve to the SAME repo — a
+ * `WWW.`/`www.` host, a `.git` suffix, a trailing slash — so the parse normalizes
+ * those. Case is different, and is folded PER PROVIDER rather than always:
+ * GitHub names are case-preserving but not case-sensitive, so folding is what
+ * stops a second connect landing under a second casing. GitLab and Azure DevOps
+ * are matched exactly, because there two names differing only by case can be two
+ * genuinely distinct projects and folding them would drop one from the list or
+ * open the wrong one. This mirrors the backend, where `store.name_compare_key`
+ * folds for GitHub alone.
+ *
+ * `provider` is threaded through because the parse is provider-scoped: folding an
+ * Azure DevOps URL against GitHub's grammar yields null, so every Azure target
+ * would compare as "not a duplicate" and be submitted twice. */
+export function repoIdentity(text: string, provider: SourceProvider = 'github'): string | null {
+  const parsed = parseRepoRef(text, provider)
+  if (!parsed) return null
+  const slug = `${parsed.owner}/${parsed.repo}`
+  return provider === 'github' ? slug.toLowerCase() : slug
 }
 
-/** The owner/repo of a GitHub repo reference, with its ORIGINAL casing intact,
+/** The owner/repo of an Azure DevOps path, or null.
+ *
+ * `owner` is the `{org}/{project}` pair — the same overloading GitLab uses for a
+ * nested group — and the repository name sits after the literal `_git` segment.
+ * A URL that stops at the project (or points at a project-level page such as
+ * `_workitems`) names the project's DEFAULT repository, which Azure DevOps
+ * creates carrying the project's own name; that is what a user pasting the
+ * project link means, and refusing it would send them back to find a `_git` URL
+ * they may never have seen. */
+function parseAzurePath(path: string): { owner: string; repo: string } | null {
+  const parts = path.replace(/\/+$/, '').replace(/\.git$/i, '').split('/').filter(Boolean)
+  if (parts.length < 2) return null
+  const [org, project] = parts
+  const owner = `${org}/${project}`
+  const gitAt = parts.findIndex((p, i) => i >= 2 && p.toLowerCase() === '_git')
+  if (gitAt >= 0) {
+    const name = parts[gitAt + 1]
+    return name ? { owner, repo: name } : null
+  }
+  // Anything else after the project must be one of Azure DevOps' own `_`-prefixed
+  // pages. A plain third segment is a path shape this parser does not recognise,
+  // and guessing a repository out of it would connect the wrong thing.
+  if (parts.length > 2 && !parts[2].startsWith('_')) return null
+  return { owner, repo: project }
+}
+
+/** The owner/repo of a repo reference, with its ORIGINAL casing intact,
  * or null when the text isn't one.
  *
  * Case is preserved deliberately: the backend stores `owner`/`repo` verbatim,
@@ -130,13 +173,13 @@ export function parseRepoRef(
   if (!trimmed) return null
   // Tolerate a bare `owner/repo` and a scheme-less host, which is what people
   // paste about as often as a full URL. A first segment with no dot cannot be a
-  // hostname, so it is treated as an owner on github.com.
+  // hostname, so it is treated as an owner on the selected provider's host.
   const hasScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
   const looksHostless = !hasScheme && !trimmed.split('/')[0].includes('.')
   // A hostless shorthand resolves against the SELECTED provider's public host —
   // assuming github.com while the GitLab panel is open would connect a different
   // project entirely.
-  const defaultHost = provider === 'gitlab' ? 'gitlab.com' : 'github.com'
+  const defaultHost = providerDefaultHost({ provider })
   const withScheme = hasScheme
     ? trimmed
     : looksHostless ? `https://${defaultHost}/${trimmed}` : `https://${trimmed}`
@@ -155,6 +198,9 @@ export function parseRepoRef(
   // the server then rejects. Such a URL is submitted verbatim instead, and the
   // server's allowlist decision is the honest answer the user sees.
   if (host && host !== defaultHost) return null
+  // Azure DevOps' path is three levels deep and carries a literal `_git`, so it
+  // shares nothing with the `namespace/name` shape below.
+  if (provider === 'azure') return parseAzurePath(path)
   // Everything from GitLab's `/-/` routing marker onward is a page within the
   // project, not part of its path, so a pasted issues/MR tab still resolves.
   const marker = path.toLowerCase().indexOf('/-/')
@@ -170,6 +216,21 @@ export function parseRepoRef(
     : { owner: parts[0], repo: parts[1] }
 }
 
+/** The public web URL for `fullName` on `provider` — what `POST /connect` parses.
+ *
+ * Azure DevOps needs the literal `_git` between the project and the repository,
+ * so a plain `https://<host>/<full_name>` join produces a URL the server cannot
+ * parse. A two-segment Azure name is a project whose default repository carries
+ * the project's own name. */
+function publicRepoUrl(provider: ProviderId, fullName: string): string {
+  const host = providerDefaultHost({ provider })
+  if (provider !== 'azure') return `https://${host}/${fullName}`
+  const parts = fullName.split('/').filter(Boolean)
+  if (parts.length < 2) return `https://${host}/${fullName}`
+  const [org, project, ...rest] = parts
+  return `https://${host}/${org}/${project}/_git/${rest.length ? rest.join('/') : project}`
+}
+
 /** Whether picking `provider` puts the panel into its two-column body — and so
  * whether the host must grow its card to `EXPANDED_CARD`.
  *
@@ -180,7 +241,7 @@ export function parseRepoRef(
  * (repo picker BELOW the provider list, body scrolling). One predicate makes
  * that drift impossible. */
 export function expandsCard(provider: ProviderId | null): boolean {
-  return provider === 'github' || provider === 'gitlab'
+  return provider === 'github' || provider === 'gitlab' || provider === 'azure'
 }
 
 interface Provider {
@@ -189,11 +250,12 @@ interface Provider {
   icon: React.ReactNode
 }
 
-// Both sources reuse the repo's existing brand-mark components. The list holds
+// Every source reuses the repo's existing brand-mark components. The list holds
 // only sources that actually connect — see the note at the top of the file.
 const PROVIDERS: Provider[] = [
   { id: 'github', label: 'GitHub', icon: <GithubLogo size={18} /> },
   { id: 'gitlab', label: 'GitLab', icon: <GitlabLogo size={18} /> },
+  { id: 'azure', label: 'Azure DevOps', icon: <AzureDevopsLogo size={18} /> },
 ]
 
 /** One connect target: either a ticked recent repo or the manually typed URL. */
@@ -255,19 +317,19 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
    * against what was actually dispatched rather than what's left selected. */
   const targetCountRef = useRef(0)
 
-  const publicHost = provider === 'gitlab' ? 'gitlab.com' : 'github.com'
   const targets = useMemo<ConnectTarget[]>(() => {
+    const scope = provider ?? 'github'
     const out: ConnectTarget[] = [...picked].map((fullName) => ({
       key: fullName,
-      url: `https://${publicHost}/${fullName}`,
+      url: publicRepoUrl(scope, fullName),
       label: fullName,
     }))
     const typed = url.trim()
     // A typed URL that duplicates a tick is submitted once, not twice — matched
     // on normalised owner/repo identity, not raw text (see repoIdentity).
     if (typed) {
-      const typedId = repoIdentity(typed)
-      const already = typedId !== null && out.some((t) => repoIdentity(t.url) === typedId)
+      const typedId = repoIdentity(typed, scope)
+      const already = typedId !== null && out.some((t) => repoIdentity(t.url, scope) === typedId)
       if (!already) {
         // Submit the CANONICAL url when the text parses — `parseRepoRef` accepts
         // shorthand the backend does not (a bare `owner/repo`, a scheme-less
@@ -276,13 +338,13 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
         // owner/repo verbatim, so a folded name would be persisted as a second,
         // separate repo. Unparseable text is submitted as-is so the server's
         // error stays the honest one.
-        const ref = parseRepoRef(typed, provider ?? 'github')
-        const url = ref ? `https://${publicHost}/${ref.owner}/${ref.repo}` : typed
+        const ref = parseRepoRef(typed, scope)
+        const url = ref ? publicRepoUrl(scope, `${ref.owner}/${ref.repo}`) : typed
         out.push({ key: `${URL_TARGET_PREFIX}${typed}`, url, label: typed })
       }
     }
     return out
-  }, [picked, url, provider, publicHost])
+  }, [picked, url, provider])
 
   const connectMutation = useMutation({
     mutationFn: async (list: ConnectTarget[]) => {
@@ -391,6 +453,18 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
   }
 }
 
+/** The URL example for one provider.
+ *
+ * A lookup written as explicit literal `i18nT` calls rather than a key built from
+ * the provider id: an assembled key is invisible to the static key-reference gate
+ * and to the dead-key scan, so a typo in it would ship as raw
+ * `apps.issueRadar…` text in the input's placeholder. */
+function urlPlaceholderFor(provider: SourceProvider): string {
+  if (provider === 'gitlab') return i18nT('apps.issueRadar.connectPanel.https_gitlab_com_group_project')
+  if (provider === 'azure') return i18nT('apps.issueRadar.connectPanel.https_dev_azure_com_org_project_git_repo')
+  return i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo')
+}
+
 /** The panel body. Collapsed = provider rows only; expanded = rows on the left,
  * repo multi-select (or setup notice) on the right.
  *
@@ -400,22 +474,21 @@ export function useConnectFlow(onConnected: (repo: ActiveRepo) => void): Connect
  * would just fail the same way) and the whole right column becomes the setup
  * notice. */
 export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
-  // Both wired providers expand into the two-column body. Jira/Linear stay
+  // Every wired provider expands into the two-column body. Jira/Linear stay
   // collapsed because they are still placeholders.
   const expanded = expandsCard(flow.provider)
-  const scopeProvider = flow.provider === 'gitlab' ? ('gitlab' as const) : ('github' as const)
+  const scopeProvider: SourceProvider = flow.provider ?? 'github'
 
-  // One example for the SELECTED provider, never both in one string. A combined
-  // "https://github.com/<owner>/<repo> or https://gitlab.com/…"
+  // One example for the SELECTED provider, never all of them in one string. A
+  // combined "https://github.com/<owner>/<repo> or https://gitlab.com/…"
   // placeholder is ~70 characters in a ~330px monospace input, so it clips
   // mid-URL ("…or https://gitl"): the GitHub half reads as the only accepted
-  // form, and the GitLab half — the part a GitLab user needs — is never
+  // form, and the other halves — the part those users need — are never
   // legible. Each provider also has its own path shape (GitHub is
-  // `owner/repo`; a GitLab project lives under a possibly nested group), so a
-  // shared example is wrong for one of them however it is worded.
-  const urlPlaceholder = scopeProvider === 'gitlab'
-    ? i18nT('apps.issueRadar.connectPanel.https_gitlab_com_group_project')
-    : i18nT('apps.issueRadar.connectPanel.https_github_com_owner_repo')
+  // `owner/repo`; a GitLab project lives under a possibly nested group; Azure
+  // DevOps is `org/project/_git/repo`), so a shared example is wrong for all but
+  // one of them however it is worded.
+  const urlPlaceholder = urlPlaceholderFor(scopeProvider)
 
   const query = useQuery({
     // Keyed by provider: the two lists come from different accounts on different

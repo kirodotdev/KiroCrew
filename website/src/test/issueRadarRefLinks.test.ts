@@ -361,3 +361,82 @@ describe('placeholder rows', () => {
     expect(placeholderPull(gh('o', 'r'), 9, 'closed').state).toBe('closed')
   })
 })
+
+/** Azure DevOps has TWO scopes in one repo's address space: a pull request lives
+ * under the repository (`…/_git/<repo>/pullrequest/<n>`) while a work item lives
+ * under the project (`…/_workitems/edit/<n>`). A parser anchored only on the repo
+ * page's path therefore rejects every work-item link, which is the failure these
+ * cover. */
+const az = (owner: string, repo: string): RepoRef =>
+  ({ owner, repo, provider: 'azure', host: 'dev.azure.com' })
+
+describe('parseRepoRef — Azure DevOps', () => {
+  const REPO = az('contoso/Payments', 'ledger')
+
+  it('resolves a pull request under the repository’s _git path', () => {
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger/pullrequest/7', REPO))
+      .toEqual({ kind: 'pull', number: 7 })
+  })
+
+  it('resolves a work item, which hangs off the PROJECT', () => {
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_workitems/edit/42', REPO))
+      .toEqual({ kind: 'issue', number: 42 })
+    // The bare form resolves on the site too and is written by hand.
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_workitems/42', REPO))
+      .toEqual({ kind: 'issue', number: 42 })
+  })
+
+  it('rejects a PR in a SIBLING repository of the same project', () => {
+    // `_git/<repo>` names the repository, so ignoring it would open this repo's
+    // pane for another repo's pull request.
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/other/pullrequest/7', REPO))
+      .toBeNull()
+  })
+
+  it('rejects another project in the same organization', () => {
+    expect(parseRepoRef('https://dev.azure.com/contoso/Billing/_workitems/edit/42', REPO))
+      .toBeNull()
+  })
+
+  it('does not accept GitHub’s or GitLab’s path shapes', () => {
+    for (const href of [
+      'https://dev.azure.com/contoso/Payments/_git/ledger/pull/7',
+      'https://dev.azure.com/contoso/Payments/_git/ledger/issues/7',
+      'https://dev.azure.com/contoso/Payments/-/merge_requests/7',
+    ]) {
+      expect(parseRepoRef(href, REPO)).toBeNull()
+    }
+  })
+
+  it('does not fold www., which is a GitHub-only alias rule', () => {
+    expect(parseRepoRef('https://www.dev.azure.com/contoso/Payments/_workitems/edit/1', REPO))
+      .toBeNull()
+  })
+
+  it('round-trips both kinds through the builders', () => {
+    for (const ref of [{ kind: 'pull', number: 7 }, { kind: 'issue', number: 42 }] as const) {
+      expect(parseRepoRef(refUrl(REPO, ref), REPO)).toEqual(ref)
+    }
+  })
+
+  it('linkifies #<n> to the work-item page, which is what # means there', () => {
+    expect(linkifyIssueRefs('see #42', REPO))
+      .toBe('see [#42](https://dev.azure.com/contoso/Payments/_workitems/edit/42)')
+  })
+
+  // Azure repository names are not documented as case-insensitive, so `Ledger`
+  // and `ledger` may be two different repositories in one project. Folding them
+  // would let this repo's pane claim the other repo's link, which is the same
+  // reason the backend's name_compare_key folds for GitHub alone.
+  it('does not claim a link whose repo segment differs only by case', () => {
+    const repo = az('contoso/Payments', 'ledger')
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/Ledger/pullrequest/5', repo))
+      .toBeNull()
+  })
+
+  it('still claims the exact repo segment', () => {
+    const repo = az('contoso/Payments', 'ledger')
+    expect(parseRepoRef('https://dev.azure.com/contoso/Payments/_git/ledger/pullrequest/5', repo))
+      .toEqual({ kind: 'pull', number: 5 })
+  })
+})

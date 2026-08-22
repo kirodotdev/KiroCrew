@@ -41,7 +41,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -199,7 +199,19 @@ def writable_labels(settings: dict[str, Any] | None = None) -> tuple[str, ...]:
     return (CLAIM_LABEL, needs_human) if needs_human else (CLAIM_LABEL,)
 
 
-def never_block(labels: Sequence[str] = ()) -> str:
+def vocabulary(key: provider.RepoKey | None = None) -> Mapping[str, str]:
+    """The provider's display vocabulary, defaulting to GitHub's.
+
+    One place resolves it, so every prompt path either takes a key or falls back
+    identically. ``None`` means GitHub for the same reason
+    ``provider.normalize_provider`` defaults there: it is what an install that
+    predates multi-provider support is, and what a hand-built snapshot in a test
+    should read as.
+    """
+    return provider.terms(key or provider.RepoKey())
+
+
+def never_block(labels: Sequence[str] = (), terms: Mapping[str, str] | None = None) -> str:
     """The brief's ``Never`` list, compressed, naming this repo's writable labels.
 
     Repeated on EVERY turn, unlike the brief. It is cheap (~80 words) and it buys
@@ -213,14 +225,30 @@ def never_block(labels: Sequence[str] = ()) -> str:
     free text and need not carry the prefix at all, while any other
     ``crew:``-prefixed label — one left behind on an issue, or one a differently
     configured install writes — does carry it and is still not this crew's to write.
+
+    The CI clause names NO PATH. It used to say ``.github/``, which is wrong on
+    GitLab and names a directory that does not exist on an Azure DevOps repo — and
+    a per-provider path would be no better, because the prohibition is not about a
+    location: a GitHub repo can be gated by a CircleCI or Jenkins config outside
+    ``.github/``, and an Azure pipeline definition can live anywhere under any
+    filename. The crew is reading the repository and can see where its gates run
+    from; what it needs told is that those files are off limits. That is also why
+    the location is deliberately NOT a ``provider.terms`` key: terms is display
+    vocabulary, and a path is neither display nor reliably per-provider.
+
+    The merge verb takes the provider's own noun (``PR`` / ``MR``), because this is
+    the prohibition a crew is most likely to reason around, and one phrased in a
+    vocabulary its forge does not use reads as being about something else.
     """
     allowed = ", ".join(f"`{lab}`" for lab in (labels or writable_labels()))
+    vocab = terms or vocabulary()
     return (
-        "Never: modify CI or gate configuration — `.github/` or whatever this repo "
-        "uses, plus any rule file those gates read. They judge you. "
+        "Never: modify CI or gate configuration — the workflow or pipeline "
+        "definitions this repo's gates run from, wherever they live, plus any rule "
+        "file those gates read. They judge you. "
         f"Never write any label other than {allowed}. "
         "Never push to main or whichever branch this repo defaults to, and never "
-        "merge a PR yourself. Never edit another crew's "
+        f"merge a {vocab['change_request_short']} yourself. Never edit another crew's "
         "claim comment. Never hold uncommitted changes in two worktrees. Never end a "
         "turn without writing the ledger. Never put an absolute path, a host name or "
         "anything else about this machine into a progress line — progress lines go "
@@ -229,9 +257,19 @@ def never_block(labels: Sequence[str] = ()) -> str:
 
 
 def build_snapshot(
-    owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> dict[str, Any]:
-    """The volatile facts a crew must never guess — read from the store, no API calls."""
+    """The volatile facts a crew must never guess — read from the store, no API calls.
+
+    ``key`` carries the repo's PROVIDER into the rendered prompt. It is optional and
+    defaults to GitHub, which keeps every existing caller and the legacy layout
+    exactly as they were; ``sweep_repo`` — the only production path that composes a
+    prompt — always has a real key and passes it.
+    """
     crew_id = str(crew.get("id") or "")
     items = crew_store.list_work_items(owner, repo, crew_id, root, open_only=True)
     # The writable set belongs with everything else volatile rather than in a
@@ -244,6 +282,11 @@ def build_snapshot(
         "id": crew_id,
         "owner": owner,
         "repo": repo,
+        # Part of the crew's identity, exactly like owner/repo, and the one field
+        # that decides what the rest of the prompt CALLS things. Carried as the
+        # provider name rather than a pre-rendered vocabulary so the snapshot stays
+        # a set of facts and ``compose_nudge`` stays the only renderer.
+        "provider": (key or provider.RepoKey()).provider,
         "labels": list(crew.get("labels") or []),
         "writable_labels": list(writable_labels(settings)),
         "open_count": crew_store.open_slot_count(owner, repo, crew_id, root),
@@ -268,15 +311,26 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
     by a human — which is why it is re-sent every turn instead of living in the
     brief. The brief says "your name, your repository, your label scope and your
     limits arrive in the nudge"; this is that promise.
+
+    Every noun and every sigil comes from ``provider.terms`` via the snapshot's
+    ``provider`` field. The rendering an unwired version produced — ``(PR #12)`` on
+    a GitLab project, "every open issue" on a board that only has work items — is
+    not cosmetic: a crew told to work "issues" on Azure DevOps will look for a
+    primitive that does not exist, and ``#12`` addresses a DIFFERENT item than
+    ``!12`` on both GitLab and Azure, so a crew quoting the nudge back into a
+    comment points at an unrelated item.
     """
-    # An empty label list means EVERY open issue, not none. The editor defaults a
-    # new crew to no labels and does not require any, so the opposite reading —
-    # which this line used to give — told every default-configured crew to pick up
-    # nothing, and it would idle for its whole life without an error anywhere. No
-    # backend code filters on this list; it is advisory text the crew self-applies
-    # from the brief, so the wording here IS the contract, and the brief's filter
-    # step is conditioned to match.
-    scope = ", ".join(snapshot.get("labels") or []) or "(no label filter — every open issue)"
+    vocab = vocabulary(provider.RepoKey(provider=str(snapshot.get("provider") or "")))
+    # An empty label list means EVERY open tracked item, not none. The editor
+    # defaults a new crew to no labels and does not require any, so the opposite
+    # reading — which this line used to give — told every default-configured crew to
+    # pick up nothing, and it would idle for its whole life without an error
+    # anywhere. No backend code filters on this list; it is advisory text the crew
+    # self-applies from the brief, so the wording here IS the contract, and the
+    # brief's filter step is conditioned to match.
+    scope = ", ".join(snapshot.get("labels") or []) or (
+        f"(no label filter — every open {vocab['tracked_item']})"
+    )
     allowed = [str(lab) for lab in (snapshot.get("writable_labels") or ()) if str(lab).strip()]
     if not allowed:
         # A snapshot assembled without a resolved set still has to be told something
@@ -293,9 +347,20 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
     ]
     items = snapshot.get("items") or []
     if items:
+        # "Work item" here is the LEDGER's own word for a crew's tracked slot (see
+        # ``crew_store``), not Azure's noun for a board item, so this header stays
+        # provider-independent. What varies is what each line POINTS AT.
         lines.append("Open work items:")
         for it in items:
-            pr = f" (PR #{it['pr_number']})" if it.get("pr_number") else ""
+            # The change request takes the provider's noun AND its sigil; the
+            # tracked item keeps ``#``, which is correct on all three providers
+            # (see ``provider._TERMS`` — only the change-request sequence diverges).
+            pr = (
+                f" ({vocab['change_request_short']} "
+                f"{vocab['change_request_sigil']}{it['pr_number']})"
+                if it.get("pr_number")
+                else ""
+            )
             nxt = it.get("next") or "no next step recorded — decide one and record it"
             lines.append(f"- #{it.get('number')} {it.get('phase')}{pr} — next: {nxt}")
     else:
@@ -304,11 +369,16 @@ def compose_nudge(snapshot: dict[str, Any]) -> str:
         "Read the ledger first, reconcile every open item against the six unblock "
         "signals, advance ONE item, and write the ledger before the turn ends."
     )
-    return "\n".join(lines) + "\n\n" + never_block(allowed)
+    return "\n".join(lines) + "\n\n" + never_block(allowed, vocab)
 
 
 def compose_turn_prompt(
-    slot: Any, owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+    slot: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> str:
     """The full prompt for the next turn: the brief when it is missing, then the nudge.
 
@@ -321,11 +391,16 @@ def compose_turn_prompt(
     BLOCKING — :func:`build_snapshot` globs the crew's item dir and parses every
     open item. Async callers use :func:`compose_turn_prompt_async`.
     """
-    return _assemble_turn_prompt(slot, build_snapshot(owner, repo, crew, root))
+    return _assemble_turn_prompt(slot, build_snapshot(owner, repo, crew, root, key))
 
 
 async def compose_turn_prompt_async(
-    slot: Any, owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+    slot: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> str:
     """:func:`compose_turn_prompt` with the store reads off the event loop.
 
@@ -339,7 +414,7 @@ async def compose_turn_prompt_async(
     ``slot.messages``, which a running turn appends to; that is the same split
     ``rehydrate_slot_from_history_async`` documents for slot state.
     """
-    snapshot = await asyncio.to_thread(partial(build_snapshot, owner, repo, crew, root))
+    snapshot = await asyncio.to_thread(partial(build_snapshot, owner, repo, crew, root, key))
     return _assemble_turn_prompt(slot, snapshot)
 
 
@@ -600,7 +675,12 @@ async def ensure_crew_session(
 
 
 async def launch_crew(
-    state: Any, owner: str, repo: str, crew: dict[str, Any], root: Path | None = None
+    state: Any,
+    owner: str,
+    repo: str,
+    crew: dict[str, Any],
+    root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> Any:
     """Bring a crew online: ensure its session, then arm its nudge loop.
 
@@ -618,7 +698,7 @@ async def launch_crew(
         return slot
     await svc.add(
         slot_key=slot.key,
-        message=await compose_turn_prompt_async(slot, owner, repo, crew, root),
+        message=await compose_turn_prompt_async(slot, owner, repo, crew, root, key),
         idle_secs=DEFAULT_IDLE_SECS,
         max_cycles=0,
         stop_sentinel_path=str(stop_sentinel_path(owner, repo, str(crew.get("id")), root)),
@@ -689,6 +769,7 @@ async def wake_crew(
     crew: dict[str, Any],
     reason: str = "",
     root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> bool:
     """Give the crew a turn NOW because a signal moved. Returns whether a turn started.
 
@@ -707,7 +788,7 @@ async def wake_crew(
         )
         return False
     sync_trust(slot, crew)
-    prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root)
+    prompt = await compose_turn_prompt_async(slot, owner, repo, crew, root, key)
     svc = _autonudge_instance() if _autonudge_instance is not None else None
     if svc is not None:
         loop = svc.get_by_slot(slot.key)
@@ -978,6 +1059,7 @@ async def watchdog_cycle(
     repo: str,
     crews: list[dict[str, Any]],
     root: Path | None = None,
+    key: provider.RepoKey | None = None,
 ) -> None:
     """Re-establish what the process does not persist. Zero API calls, zero LLM.
 
@@ -1029,7 +1111,7 @@ async def watchdog_cycle(
         if loop is None:
             # No loop for a live crew: either it has never been launched or a
             # restart lost it. Launching is idempotent on the slot key.
-            await launch_crew(state, owner, repo, crew, root)
+            await launch_crew(state, owner, repo, crew, root, key)
             continue
         if slot is None:
             # Loop but still no slot — nothing on disk to rehydrate from (a crew
@@ -1409,7 +1491,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         # Runs BEFORE the signal pass and over ALL crews, not just the ones with a
         # due item: re-establishing trust and re-arming a lost loop is exactly what
         # a crew with nothing due needs after a restart.
-        await watchdog_cycle(state, key.owner, key.repo, crews, scope)
+        await watchdog_cycle(state, key.owner, key.repo, crews, scope, key)
     live = [c for c in crews if is_live(c)]
     if not live:
         return {}
@@ -1509,7 +1591,13 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         for crew_id, why in reasons.items():
             try:
                 await wake_crew(
-                    state, key.owner, key.repo, crews_by_id[crew_id], "; ".join(why), scope
+                    state,
+                    key.owner,
+                    key.repo,
+                    crews_by_id[crew_id],
+                    "; ".join(why),
+                    scope,
+                    key,
                 )
             except Exception:  # pragma: no cover - defensive
                 logger.warning("issue-radar: waking crew %s failed", crew_id, exc_info=True)

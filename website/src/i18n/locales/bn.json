@@ -1643,12 +1643,12 @@
           "issue_other": "{{count}}টি ইস্যু",
           "issues": "ইস্যু",
           "loading_the_rest": "বাকিটা লোড হচ্ছে…",
-          "re_fetch_issues_labels_from_github": "GitHub থেকে ইস্যু + লেবেল আবার আনুন",
           "refresh_issues": "ইস্যু রিফ্রেশ করুন",
           "search_issues": "ইস্যু সার্চ করুন…",
           "search_issues_2": "ইস্যু সার্চ করুন",
-          "time_since_the_issue_list_was_last_fetched_from": "GitHub থেকে ইস্যু তালিকা সর্বশেষ আনার পর কত সময় হয়েছে",
-          "updated": "আপডেট হয়েছে"
+          "updated": "আপডেট হয়েছে",
+          "re_fetch_issues_and_labels_from": "{{provider}} থেকে ইস্যু + লেবেল আবার আনুন",
+          "time_since_issue_list_last_fetched_from": "{{provider}} থেকে ইস্যু তালিকা সর্বশেষ আনার পর কত সময় হয়েছে"
         },
         "labelPalette": {
           "close_label_search": "লেবেল সার্চ বন্ধ করুন",
@@ -1872,8 +1872,8 @@
           "search": "{{label}} খোঁজো…",
           "search_2": "{{label}} খোঁজো",
           "select_for_bulk": "একগুচ্ছ কাজের জন্য {{subject}} #{{number}} নির্বাচন করুন",
-          "time_since_the_pr_list_was_last_fetched_from_git": "GitHub থেকে সর্বশেষ PR তালিকা আনার পর কত সময় গেছে",
-          "updated": "আপডেট হয়েছে"
+          "updated": "আপডেট হয়েছে",
+          "time_since_list_last_fetched_from": "{{provider}} থেকে সর্বশেষ {{label}} তালিকা আনার পর কত সময় গেছে"
         },
         "prRunActions": {
           "cancel_run": "{{name}} রান বাতিল করুন",
@@ -1945,7 +1945,8 @@
         "session_install_and_sign_in_to": "সেশন।\n        ইনস্টল করুন এবং সাইন ইন করুন এতে",
         "then": ", তারপর",
         "through_your_own": "আপনার নিজের মাধ্যমে",
-        "you_contributed_to": "আপনি অবদান রেখেছেন এতে"
+        "you_contributed_to": "আপনি অবদান রেখেছেন এতে",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "বন্ধ করুন",
@@ -1966,7 +1967,7 @@
         }
       },
       "manifest": {
-        "description": "মনে রাখে এমন একটি ইস্যু ট্রায়াজ সহকারী। AI-প্রস্তাবিত লেবেল আর প্রতি ইস্যুর অনুসন্ধান নোট নিয়ে GitHub ইস্যু ও GitLab ইস্যু ঘেঁটে দেখো, ছাঁকো ও ট্রায়াজ করো — ফলাফল একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না।",
+        "description": "মনে রাখে এমন একটি ইস্যু ট্রায়াজ সহকারী। AI-প্রস্তাবিত লেবেল আর প্রতিটি আইটেমের অনুসন্ধান নোট নিয়ে GitHub ইস্যু, GitLab ইস্যু ও Azure DevOps ওয়ার্ক আইটেম ঘেঁটে দেখো, ছাঁকো ও ট্রায়াজ করো — ফলাফল একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না।",
         "display_name": "Issue Radar",
         "highlight_1": "ইস্যু ও পুল রিকোয়েস্টের জন্য AI সারসংক্ষেপ ও প্রস্তাবিত লেবেল, প্রতিটির সঙ্গে তার যুক্তি",
         "highlight_2": "প্রতি ইস্যুর অনুসন্ধান নোট একটি লোকাল লেজারে রাখা থাকে, তাই একই জিনিস দুবার অনুসন্ধান করতে হয় না",
@@ -1976,7 +1977,7 @@
         "highlight_6": "প্রতিটি লেখার জন্য রিপোতে triage বা push অ্যাক্সেস দরকার; শুধু-পঠন সংযোগ কেবল প্রস্তাব দিতে পারে",
         "highlight_7": "তুমি সম্প্রতি যেসব রিপোজিটরিতে কাজ করেছ সেগুলো সামনে আনে, তাই যোগ করতে এক ক্লিকই যথেষ্ট",
         "highlight_8": "ইস্যু, লেবেল ও সদস্যদের লোকালে ক্যাশ করে রাখে, দরকারমতো রিফ্রেশ হয়",
-        "highlight_9": "GitHub-এর সঙ্গে কাজ করে; গেটওয়ে হোস্টে একটি অথেনটিকেটেড `gh` CLI দরকার",
+        "highlight_9": "GitHub, GitLab ও Azure DevOps-এর সঙ্গে কাজ করে; গেটওয়ে হোস্টে তুমি যে প্রোভাইডার যুক্ত করছ তার জন্য একটি অথেনটিকেটেড CLI (`gh`, `glab` বা `az`) দরকার — ইনস্টল করতে কোনো নির্দিষ্ট প্রোভাইডারের CLI লাগে না",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2166,14 +2167,14 @@
           "no_reply": "উত্তর নেই",
           "nothing_needs_attention": "কোনো কিছুতে মনোযোগ প্রয়োজন নেই",
           "open_issues": "খোলা ইস্যু",
-          "re_fetch_issues_labels_from_github": "GitHub থেকে ইস্যু + লেবেল আবার আনুন",
           "recently_updated": "সম্প্রতি আপডেট হয়েছে",
           "refresh_issues": "ইস্যু রিফ্রেশ করুন",
           "stale": "পুরোনো",
           "unanswered": "উত্তরহীন",
           "unassigned": "অ্যাসাইন করা হয়নি",
           "untriaged": "ট্রায়াজ হয়নি",
-          "untriaged_2": "ট্রায়াজ হয়নি"
+          "untriaged_2": "ট্রায়াজ হয়নি",
+          "re_fetch_issues_and_labels_from": "{{provider}} থেকে ইস্যু + লেবেল আবার আনুন"
         },
         "registry": {
           "overview": "ওভারভিউ",
@@ -2293,11 +2294,11 @@
             "looking_for_labels_this_repo_is_missing": "এই রেপোতে যে লেবেলগুলো নেই তা খোঁজা হচ্ছে…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "কিছুই নেই — রেপোর ট্যাক্সোনমি ইতিমধ্যেই এর খোলা ইস্যুগুলোর প্রয়োজন মেটায়।",
             "propose_labels_this_repo_is_missing_from_its_ope": "এই রেপোতে যে লেবেলগুলো নেই, এর খোলা ইস্যু থেকে সেগুলো প্রস্তাব করুন",
-            "re_fetch_this_repo_s_labels_from_github": "GitHub থেকে এই রেপোর লেবেল আবার আনুন",
             "read_only_repo_needs_triage_push_access": "রিড-অনলি রিপো — triage/push অ্যাক্সেস দরকার",
             "suggest_again": "আবার প্রস্তাব দাও",
             "suggest_new_labels": "নতুন লেবেল প্রস্তাব করো",
-            "suggested_new_labels_not_created_until_you_say_s": "প্রস্তাবিত নতুন লেবেল — আপনি না বলা পর্যন্ত তৈরি হবে না"
+            "suggested_new_labels_not_created_until_you_say_s": "প্রস্তাবিত নতুন লেবেল — আপনি না বলা পর্যন্ত তৈরি হবে না",
+            "re_fetch_this_repo_s_labels_from": "{{provider}} থেকে এই রেপোর লেবেল আবার আনুন"
           },
           "untaggedIssueCard": {
             "add": "যোগ করুন",

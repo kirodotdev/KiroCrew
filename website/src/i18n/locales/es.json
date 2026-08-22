@@ -1673,12 +1673,12 @@
           "issue_other": "{{count}} incidencias",
           "issues": "Incidencias",
           "loading_the_rest": "Cargando el resto…",
-          "re_fetch_issues_labels_from_github": "Volver a obtener incidencias y etiquetas de GitHub",
           "refresh_issues": "Actualizar incidencias",
           "search_issues": "Buscar incidencias…",
           "search_issues_2": "Buscar incidencias",
-          "time_since_the_issue_list_was_last_fetched_from": "Tiempo desde la última obtención de la lista de incidencias desde GitHub",
-          "updated": "Actualizada"
+          "updated": "Actualizada",
+          "re_fetch_issues_and_labels_from": "Volver a obtener incidencias y etiquetas de {{provider}}",
+          "time_since_issue_list_last_fetched_from": "Tiempo desde la última obtención de la lista de incidencias desde {{provider}}"
         },
         "labelPalette": {
           "close_label_search": "Cerrar la búsqueda de etiquetas",
@@ -1912,8 +1912,8 @@
           "search": "Buscar {{label}}…",
           "search_2": "Buscar {{label}}",
           "select_for_bulk": "Selecciona {{subject}} #{{number}} para una acción en lote",
-          "time_since_the_pr_list_was_last_fetched_from_git": "Tiempo desde la última obtención de la lista de PR desde GitHub",
-          "updated": "Actualizado"
+          "updated": "Actualizado",
+          "time_since_list_last_fetched_from": "Tiempo desde la última obtención de la lista de {{label}} desde {{provider}}"
         },
         "prRunActions": {
           "cancel_run": "Cancelar la ejecución de {{name}}",
@@ -1985,7 +1985,8 @@
         "session_install_and_sign_in_to": "sesión.\n        Instala e inicia sesión en",
         "then": ", luego",
         "through_your_own": "a través de tu propio",
-        "you_contributed_to": "Contribuiste a"
+        "you_contributed_to": "Contribuiste a",
+        "https_dev_azure_com_org_project_git_repo": "https://dev.azure.com/<org>/<project>/_git/<repo>"
       },
       "connectRepoModal": {
         "close": "Cerrar",
@@ -2006,7 +2007,7 @@
         }
       },
       "manifest": {
-        "description": "Un asistente de triaje de incidencias con memoria. Explora, filtra y clasifica incidencias de GitHub y de GitLab con etiquetas sugeridas por IA y notas de investigación por incidencia — con los hallazgos guardados en un registro local para que nada se investigue dos veces.",
+        "description": "Un asistente de triaje de incidencias con memoria. Explora, filtra y clasifica incidencias de GitHub, incidencias de GitLab y elementos de trabajo de Azure DevOps con etiquetas sugeridas por IA y notas de investigación por elemento — con los hallazgos guardados en un registro local para que nada se investigue dos veces.",
         "display_name": "Issue Radar",
         "highlight_1": "Resúmenes con IA y etiquetas sugeridas para incidencias y pull requests, cada una con su razonamiento",
         "highlight_2": "Notas de investigación por incidencia guardadas en un registro local para que nada se investigue dos veces",
@@ -2016,7 +2017,7 @@
         "highlight_6": "Cada escritura necesita acceso de triaje o de push en el repositorio; una conexión de solo lectura se limita a sugerir",
         "highlight_7": "Muestra los repositorios en los que has contribuido hace poco, así conectar uno es un clic",
         "highlight_8": "Guarda en caché las incidencias, las etiquetas y los miembros de forma local, y los actualiza cuando lo pides",
-        "highlight_9": "Funciona con GitHub; necesita una CLI `gh` autenticada en el host del gateway",
+        "highlight_9": "Funciona con GitHub, GitLab y Azure DevOps; necesita una CLI autenticada del proveedor que conectes (`gh`, `glab` o `az`) en el host del gateway — no hace falta la CLI de ningún proveedor concreto para instalarlo",
         "page_label": "Issue Radar"
       },
       "views": {
@@ -2208,14 +2209,14 @@
           "no_reply": "sin respuesta",
           "nothing_needs_attention": "Nada necesita atención",
           "open_issues": "Incidencias abiertas",
-          "re_fetch_issues_labels_from_github": "Volver a obtener incidencias + etiquetas de GitHub",
           "recently_updated": "Actualizadas recientemente",
           "refresh_issues": "Actualizar incidencias",
           "stale": "Inactivas",
           "unanswered": "Sin responder",
           "unassigned": "Sin asignar",
           "untriaged": "Sin clasificar",
-          "untriaged_2": "sin clasificar"
+          "untriaged_2": "sin clasificar",
+          "re_fetch_issues_and_labels_from": "Volver a obtener incidencias + etiquetas de {{provider}}"
         },
         "registry": {
           "overview": "Resumen",
@@ -2335,11 +2336,11 @@
             "looking_for_labels_this_repo_is_missing": "Buscando etiquetas que le faltan a este repositorio…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "Ninguna — la taxonomía del repositorio ya cubre lo que necesitan sus incidencias abiertas.",
             "propose_labels_this_repo_is_missing_from_its_ope": "Proponer etiquetas que le faltan a este repositorio, a partir de sus incidencias abiertas",
-            "re_fetch_this_repo_s_labels_from_github": "Volver a obtener las etiquetas de este repositorio desde GitHub",
             "read_only_repo_needs_triage_push_access": "Repositorio de solo lectura — necesita acceso de triaje/escritura",
             "suggest_again": "Sugerir de nuevo",
             "suggest_new_labels": "Sugerir etiquetas nuevas",
-            "suggested_new_labels_not_created_until_you_say_s": "Nuevas etiquetas sugeridas — no se crean hasta que lo indiques"
+            "suggested_new_labels_not_created_until_you_say_s": "Nuevas etiquetas sugeridas — no se crean hasta que lo indiques",
+            "re_fetch_this_repo_s_labels_from": "Volver a obtener las etiquetas de este repositorio desde {{provider}}"
           },
           "untaggedIssueCard": {
             "add": "Añadir",

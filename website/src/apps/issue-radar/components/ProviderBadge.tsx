@@ -11,16 +11,29 @@
 //     "gitlab.acme.internal" chip is the only thing distinguishing two projects
 //     that otherwise read the same.
 
+import AzureDevopsLogo from '../../../components/icons/AzureDevopsLogo'
 import GithubLogo from '../../../components/icons/GithubLogo'
 import GitlabLogo from '../../../components/icons/GitlabLogo'
 import { i18nT } from '../../../i18n/t'
 import { type RepoRef } from '../api'
-import { isGitlab, providerTerms } from '../lib/links'
+import { providerKeyOf, providerTerms } from '../lib/links'
+
+/** Brand mark per provider id.
+ *
+ * A lookup rather than a ternary: `isGitlab ? GitlabLogo : GithubLogo` has two
+ * arms, so a third provider silently renders under the GitHub mark — the exact
+ * class of bug this component exists to prevent, just moved one provider along.
+ * A record keyed by provider id fails to compile when a provider has no mark. */
+const LOGO_BY_PROVIDER = {
+  github: GithubLogo,
+  gitlab: GitlabLogo,
+  azure: AzureDevopsLogo,
+} as const
 
 /** The provider's brand mark for `repoRef`.
  *
- * A ref with no provider (a record persisted before GitLab support) renders the
- * GitHub mark, which is what it is.
+ * A ref with no provider (a record persisted before multi-provider support)
+ * renders the GitHub mark, which is what it is.
  */
 export function ProviderLogo({
   repoRef,
@@ -31,11 +44,12 @@ export function ProviderLogo({
   size?: number
   className?: string
 }) {
-  const Logo = isGitlab(repoRef) ? GitlabLogo : GithubLogo
+  const Logo = LOGO_BY_PROVIDER[providerKeyOf(repoRef)]
   const name = providerTerms(repoRef).providerName
-  // The mark itself is `aria-hidden` (it is a CSS-mask span), and the owner/repo
-  // text beside it does not say WHICH provider — so the name is carried on a
-  // wrapper as an accessible label rather than being dropped entirely.
+  // The mark itself is `aria-hidden` (it is a CSS-mask span, or an inline SVG for
+  // Azure DevOps), and the owner/repo text beside it does not say WHICH provider —
+  // so the name is carried on a wrapper as an accessible label rather than being
+  // dropped entirely.
   return (
     <span className="inline-flex flex-shrink-0" title={name} role="img" aria-label={name}>
       <Logo size={size} className={className} />
@@ -43,8 +57,13 @@ export function ProviderLogo({
   )
 }
 
-/** Public hosts, for which a host chip would be pure noise. */
-const DEFAULT_HOSTS = new Set(['github.com', 'gitlab.com', ''])
+/** Public hosts, for which a host chip would be pure noise.
+ *
+ * `dev.azure.com` is the ONLY host Azure DevOps repos have here — Azure DevOps
+ * Server (the self-hosted product) is a different URL shape the backend does not
+ * accept — so without it every Azure row would grow a permanent
+ * "dev.azure.com" chip claiming a self-managed instance that cannot exist. */
+const DEFAULT_HOSTS = new Set(['github.com', 'gitlab.com', 'dev.azure.com', ''])
 
 /** True when this ref lives on a self-managed instance worth naming.
  *

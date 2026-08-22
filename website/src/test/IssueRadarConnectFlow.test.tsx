@@ -88,7 +88,7 @@ describe('ConnectPanel provider rows', () => {
     for (const name of ['Jira', 'Linear']) {
       expect(screen.queryByRole('button', { name: new RegExp(name) })).toBeNull()
     }
-    for (const name of ['GitHub', 'GitLab']) {
+    for (const name of ['GitHub', 'GitLab', 'Azure DevOps']) {
       expect(screen.getByRole('button', { name: new RegExp(name) })).toBeEnabled()
     }
     // Nothing is fetched until a provider is actually opened.
@@ -123,6 +123,23 @@ describe('ConnectPanel provider rows', () => {
 
     await user.click(screen.getByRole('button', { name: /GitLab/ }))
     await waitFor(() => expect(url().placeholder).toBe('https://gitlab.com/<group>/<project>'))
+
+    // Azure DevOps' path is three levels deep and carries a literal `_git`, so
+    // neither of the other two examples tells an Azure user what to paste.
+    await user.click(screen.getByRole('button', { name: /Azure DevOps/ }))
+    await waitFor(() => expect(url().placeholder)
+      .toBe('https://dev.azure.com/<org>/<project>/_git/<repo>'))
+  })
+
+  it('asks for the Azure DevOps account when that row is opened', async () => {
+    const user = userEvent.setup()
+    renderHost()
+    await user.click(screen.getByRole('button', { name: /Azure DevOps/ }))
+    await waitFor(() => expect(mockRecentRepos).toHaveBeenCalled())
+    expect(mockRecentRepos).toHaveBeenLastCalledWith(
+      expect.any(Number),
+      expect.objectContaining({ provider: 'azure' }),
+    )
   })
 })
 

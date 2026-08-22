@@ -12,7 +12,7 @@
 // unit-testable.
 import { maskInlineCode } from '../../../hooks/useBlockAssembler'
 import type { Issue, PullRequest, RepoRef as RepoIdentity } from '../api'
-import { changeUrlFor, isGitlab, issueUrlFor, repoWebUrl } from './links'
+import { changeUrlFor, issueUrlFor, providerKeyOf, repoWebUrl } from './links'
 
 /** Which detail pane renders a reference target. */
 export type RefKind = 'issue' | 'pull'
@@ -25,17 +25,36 @@ export interface RepoRef {
 
 /** Path segment → pane, per provider. GitHub's canonical PR path is `/pull/<n>`;
  * `/pulls/<n>` is accepted because it redirects there and appears in hand-written
- * links. GitLab nests both under `/-/` and calls the change request a
- * `merge_requests`. */
+ * links. */
 const KIND_BY_SEGMENT: Record<string, RefKind> = {
   issues: 'issue',
   pull: 'pull',
   pulls: 'pull',
 }
 
+/** GitLab nests both under `/-/` and calls the change request a
+ * `merge_requests`. */
 const GITLAB_KIND_BY_SEGMENT: Record<string, RefKind> = {
   issues: 'issue',
   merge_requests: 'pull',
+}
+
+/** Azure DevOps calls a tracked item a WORK ITEM and serves it from the project
+ * (`_workitems`), while a pull request lives under the repository's own `_git`
+ * path as `pullrequest`. Two different scopes, which is why the parser cannot
+ * just swap this map in and reuse one path prefix. */
+const AZURE_KIND_BY_SEGMENT: Record<string, RefKind> = {
+  _workitems: 'issue',
+  pullrequest: 'pull',
+}
+
+/** The segment map for each provider's grammar, keyed the same way the link
+ * BUILDERS are (see `links.ts`) so a URL cannot be built in one shape and parsed
+ * in another. */
+const SEGMENT_MAPS: Record<string, Record<string, RefKind>> = {
+  github: KIND_BY_SEGMENT,
+  gitlab: GITLAB_KIND_BY_SEGMENT,
+  azure: AZURE_KIND_BY_SEGMENT,
 }
 
 /** Whether a link's host is the repo's own host.
@@ -49,7 +68,7 @@ function sameHost(hrefHost: string, repoHost: string, repo: RepoIdentity): boole
   const a = hrefHost.toLowerCase()
   const b = repoHost.toLowerCase()
   if (a === b) return true
-  if (isGitlab(repo)) return false
+  if (providerKeyOf(repo) !== 'github') return false
   const fold = (h: string) => (h === 'www.github.com' ? 'github.com' : h)
   return fold(a) === fold(b) && fold(b) === 'github.com'
 }
@@ -74,9 +93,11 @@ function sameHost(hrefHost: string, repoHost: string, repo: RepoIdentity): boole
  * Owner/repo are compared case-insensitively (both providers treat the path that
  * way for lookup, so `/KiroDotDev/KiroCrew/issues/5` is the same target as the
  * lowercase form). GitLab's nested namespace is compared as a whole, so a
- * sibling project one level up cannot match. Trailing segments (`/files`,
- * `/commits`), query strings and `#note-…` fragments are ignored — they all
- * address the same issue or change request.
+ * sibling project one level up cannot match; Azure DevOps' `{org}/{project}` pair
+ * is compared the same way, so a sibling project in the same organization cannot
+ * match either. Trailing segments (`/files`, `/commits`), query strings and
+ * `#note-…` fragments are ignored — they all address the same issue or change
+ * request.
  */
 export function parseRepoRef(
   href: string | null | undefined,
@@ -84,6 +105,7 @@ export function parseRepoRef(
 ): RepoRef | null {
   if (!href || !repo?.owner || !repo?.repo) return null
 
+  const provider = providerKeyOf(repo)
   let url: URL
   let base: URL
   try {
@@ -97,26 +119,50 @@ export function parseRepoRef(
   if (url.port !== base.port) return null
 
   const segments = url.pathname.split('/').filter(Boolean)
-  const baseSegments = base.pathname.split('/').filter(Boolean)
-  // The repo's own path prefix must match in full: on GitLab it is a nested
-  // namespace, so comparing only the first segment would accept a different
-  // project in the same group.
+  // The prefix every in-scope link shares. On GitHub and GitLab that is the
+  // repository's own path. On Azure DevOps it is the PROJECT (`owner`, which
+  // carries `{org}/{project}`): a work item is addressed off the project with no
+  // repository in the path at all, so anchoring on the repo page — whose path ends
+  // in `_git/{repo}` — would reject every work-item link.
+  const baseSegments = provider === 'azure'
+    ? repo.owner.split('/').filter(Boolean)
+    : base.pathname.split('/').filter(Boolean)
+  // The prefix must match in full: on GitLab it is a nested namespace and on Azure
+  // DevOps an org/project pair, so comparing only the first segment would accept a
+  // different project in the same group or organization.
   if (segments.length < baseSegments.length + 2) return null
   for (let i = 0; i < baseSegments.length; i++) {
     if (segments[i].toLowerCase() !== baseSegments[i].toLowerCase()) return null
   }
 
-  const rest = segments.slice(baseSegments.length)
-  const gitlab = isGitlab(repo)
+  let rest = segments.slice(baseSegments.length)
   // GitLab addresses a project's own pages under `/-/`; a link without it is not
   // an issue/MR path on that provider.
-  if (gitlab) {
+  if (provider === 'gitlab') {
     if (rest[0] !== '-') return null
-    rest.shift()
+    rest = rest.slice(1)
+  } else if (provider === 'azure' && rest[0] === '_git') {
+    // A repo-scoped Azure page. The repository name is part of the path here, so it
+    // has to match: `/{org}/{project}/_git/other/pullrequest/5` is a DIFFERENT
+    // repository in the same project, and claiming it would open this repo's pane
+    // for another repo's PR.
+    //
+    // Compared EXACTLY, not case-folded. Azure repository names are not documented
+    // as case-insensitive, so `Ledger` and `ledger` may be two repositories; folding
+    // them would let one repo's pane claim the other's link. This matches
+    // `repoIdentity` and the backend's `store.name_compare_key`, which both fold for
+    // GitHub alone.
+    if (!rest[1] || rest[1] !== repo.repo) return null
+    rest = rest.slice(2)
   }
-  const [kindSegment, numberSegment] = rest
-  const kind = (gitlab ? GITLAB_KIND_BY_SEGMENT : KIND_BY_SEGMENT)[kindSegment]
+
+  const [kindSegment, ...tail] = rest
+  const kind = SEGMENT_MAPS[provider][kindSegment]
   if (!kind) return null
+  // Azure DevOps' canonical single-work-item path inserts `edit`
+  // (`_workitems/edit/<id>`). The bare `_workitems/<id>` form also resolves and is
+  // written by hand, so both are accepted.
+  const numberSegment = provider === 'azure' && tail[0] === 'edit' ? tail[1] : tail[0]
   if (!numberSegment || !/^[0-9]+$/.test(numberSegment)) return null
   const number = Number(numberSegment)
   if (!Number.isSafeInteger(number) || number <= 0) return null

@@ -606,6 +606,23 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // URL-GRAMMAR FRAGMENTS of the Issue Radar provider table
+              // (`apps/issue-radar/lib/links.ts`): the repository-path templates, the
+              // two placeholders `String.replace` substitutes into them, and Azure
+              // DevOps' `_`-prefixed route segment. Same category as the path and
+              // query entries above — a forge's route is that forge's contract, and a
+              // translated `_workitems` is a 404, not a localized page.
+              //
+              // The slash-bearing entry above cannot cover these: `{owner}/{repo}`
+              // carries braces, which its `[\w./-]` class excludes, and `_workitems`
+              // has no slash at all — the very requirement that stops that entry from
+              // exempting single prose words. So this is ENUMERATED rather than a
+              // shape: the literals the table actually holds, whole-value anchored,
+              // which no sentence of copy can match. A general "token with braces or a
+              // leading underscore" shape was rejected for the reason stated for `mc:`
+              // above — it would start releasing real copy the moment a label
+              // interpolated a placeholder.
+              String.raw`^(?:\{owner\}(?:/_git)?/\{repo\}|\{owner\}|\{repo\}|_workitems)$`,
               // A FILE-PICKER `accept` EXTENSION LIST, e.g.
               // `,.txt,.md,.json,.har,.yaml` — the comma-joined dot-extension
               // string handed to `<input type="file" accept=…>`. These live at
@@ -731,6 +748,17 @@ export default [
               // so a sentence merely mentioning a channel is still reported —
               // only the bare name is exempt.
               '^(Slack|Discord|Telegram|Teams|Webex|WeCom|WeChat)$',
+              // The code-forge product brands, in the do-not-translate glossary for
+              // the same reason and enforced there by `glossary.test.ts`: "GitLab" is
+              // "GitLab" in every language, and a localized spelling would name a
+              // product that does not exist. They reach the UI as the provider name in
+              // Issue Radar's connect picker and as the `{{provider}}` value
+              // interpolated into its refresh tooltips, so the bare brand is the whole
+              // literal. Whole-value-anchored like the entry above, so a sentence that
+              // merely mentions a forge is still reported — only the bare name is
+              // exempt, and the sentences AROUND it stayed in the catalog (that is
+              // what `{{provider}}` is for).
+              '^(GitHub|GitLab|Azure DevOps)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal

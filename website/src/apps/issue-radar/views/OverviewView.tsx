@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from 'react'
 import { RefreshCw, MessageSquare, ThumbsUp } from 'lucide-react'
 import { relativeDate, readableText } from '../lib/format'
+import { providerTerms } from '../lib/links'
 import { useIssueRadar } from '../context'
 import type { Issue } from '../api'
 
@@ -35,8 +36,10 @@ export default function OverviewView() {
     issues, sortedRepoLabels, countByLabel,
     me, openIssues, setSelectedIssue, toggleLabel, toggleAssignedToMe,
     assignedToMe, refresh, refreshing, issuesLoading,
-    needsTriage, isGoodFirstIssue,
+    needsTriage, isGoodFirstIssue, active,
   } = useIssueRadar()
+  // The refresh tooltip names the source, which is not always GitHub.
+  const terms = providerTerms(active)
 
   // ── headline signals + backlog-age histogram, one pass over the issues ──
   const stats = useMemo(() => {
@@ -144,7 +147,7 @@ export default function OverviewView() {
           onClick={refresh}
           disabled={refreshing}
           aria-label={i18nT('apps.issueRadar.views.overviewView.refresh_issues')}
-          title={i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_labels_from_github')}
+          title={i18nT('apps.issueRadar.views.overviewView.re_fetch_issues_and_labels_from', { provider: terms.providerName })}
           className="flex-shrink-0 inline-flex items-center justify-center h-9 w-9 rounded-lg border border-border text-muted hover:text-text hover:border-border-strong disabled:opacity-40 cursor-pointer"
         >
           <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />

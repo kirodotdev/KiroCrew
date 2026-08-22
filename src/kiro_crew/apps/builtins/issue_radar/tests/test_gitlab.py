@@ -13,8 +13,10 @@ loud:
     owner/repo on a different provider or host.
   * Normalization -- the GitLab payloads must arrive in the exact GitHub-shaped
     dicts the routes, caches, and React components already consume.
-  * Client parity -- both modules must expose the same surface, so a route can
-    dispatch without knowing which provider it has.
+  * Client parity -- EVERY client module must expose the same surface, so a route
+    can dispatch without knowing which provider it has. The gate is parameterized
+    over the whole client table (GitHub, GitLab, Azure DevOps), so a new provider
+    is covered by adding one entry rather than a branch per assertion.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from unittest import mock
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.issue_radar.backend import (
+    azure_client,
     github_client,
     gitlab_client,
     provider,
@@ -1106,13 +1109,53 @@ class TestProviderDispatch(unittest.TestCase):
 
 
 class TestClientParity(unittest.TestCase):
-    """Both client modules must expose the same surface.
+    """EVERY client module must expose the same surface.
 
     A module cannot be statically checked against ``provider.ProviderClient``, so
     this is the gate that makes the dispatch safe: if a route calls a function
-    that only GitHub implements, or the two disagree about argument order, it
-    fails here rather than at runtime for a GitLab user.
+    that only GitHub implements, or two clients disagree about argument order, it
+    fails here rather than at runtime for a GitLab or Azure DevOps user.
+
+    Parameterized over :data:`CLIENTS` rather than written pairwise: a fourth
+    provider is then one entry in that table instead of a fourth branch inside
+    every assertion -- which is what a pairwise gate silently invites, since
+    adding a client module without touching this class costs nothing and the gate
+    keeps passing while the new module is never checked at all.
     """
+
+    # Every provider client the dispatch can hand to a route, keyed by the
+    # ``provider`` value that selects it.
+    #
+    # GitHub is the REFERENCE rather than one peer among three: the routes,
+    # caches and React components were all written against its names and
+    # signatures, so a disagreement is always the OTHER client drifting. Comparing
+    # each module against GitHub (not pairwise against each other) also means a
+    # failure names the provider that drifted, instead of only reporting that the
+    # three no longer agree.
+    REFERENCE = "github"
+    CLIENTS = {
+        "github": github_client,
+        "gitlab": gitlab_client,
+        "azure": azure_client,
+    }
+
+    @property
+    def others(self) -> list[str]:
+        """Every client except the reference, in a stable order."""
+        return sorted(set(self.CLIENTS) - {self.REFERENCE})
+
+    def test_the_table_covers_every_registered_provider(self):
+        """A provider registered in ``provider.py`` must be gated here.
+
+        This is what keeps the parameterization honest. Without it, a fourth
+        provider could be added to ``provider.PROVIDERS`` and to the dispatch
+        while this class still compares only three modules -- and every assertion
+        below would keep passing, having never looked at the new client.
+        """
+        self.assertEqual(set(self.CLIENTS), set(provider.PROVIDERS))
+        for name, module in self.CLIENTS.items():
+            with self.subTest(provider=name):
+                self.assertIs(provider.client_for(provider.RepoKey(provider=name)), module)
 
     # Every function the routes reach through the dispatch.
     SURFACE = (
@@ -1133,43 +1176,56 @@ class TestClientParity(unittest.TestCase):
         "cancel_workflow_run", "rerun_workflow_run",
     )
 
-    def test_both_modules_implement_the_whole_surface(self):
+    def test_every_module_implements_the_whole_surface(self):
         for name in self.SURFACE:
-            with self.subTest(name=name):
-                self.assertTrue(callable(getattr(github_client, name, None)), f"github: {name}")
-                self.assertTrue(callable(getattr(gitlab_client, name, None)), f"gitlab: {name}")
+            for client, module in self.CLIENTS.items():
+                with self.subTest(name=name, provider=client):
+                    self.assertTrue(
+                        callable(getattr(module, name, None)), f"{client}: {name}"
+                    )
+
+    @staticmethod
+    def _positional(module, name: str) -> list[str]:
+        return [
+            p.name
+            for p in inspect.signature(getattr(module, name)).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
 
     def test_positional_parameters_agree(self):
         """The POSITIONAL parameters must match name-for-name and in order.
 
         Keyword-only parameters are allowed to differ -- that is exactly where
-        ``host`` lives for GitLab and where each client's own timeouts live -- but
-        a positional disagreement would mean a route silently passing the wrong
-        argument (e.g. an issue number where a SHA is expected).
+        ``host`` lives for GitLab and Azure DevOps, and where each client's own
+        timeouts live -- but a positional disagreement would mean a route silently
+        passing the wrong argument (e.g. an issue number where a SHA is expected).
         """
         for name in self.SURFACE:
-            with self.subTest(name=name):
-                gh_params = [
-                    p.name
-                    for p in inspect.signature(getattr(github_client, name)).parameters.values()
-                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-                ]
-                gl_params = [
-                    p.name
-                    for p in inspect.signature(getattr(gitlab_client, name)).parameters.values()
-                    if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-                ]
-                self.assertEqual(gh_params, gl_params, f"{name} positional params differ")
+            reference = self._positional(self.CLIENTS[self.REFERENCE], name)
+            for client in self.others:
+                with self.subTest(name=name, provider=client):
+                    self.assertEqual(
+                        reference,
+                        self._positional(self.CLIENTS[client], name),
+                        f"{name}: {client} positional params differ from {self.REFERENCE}",
+                    )
 
     # Keyword-only parameters that are legitimately provider-local: the target
-    # host (GitLab needs it, GitHub is pinned to github.com) and each client's own
-    # timeout budget. EVERY other keyword-only parameter is caller-supplied and
-    # must match, because the routes pass the same kwargs to whichever client they
-    # hold.
+    # host (GitLab and Azure DevOps need it, GitHub is pinned to github.com) and
+    # each client's own timeout budget. EVERY other keyword-only parameter is
+    # caller-supplied and must match, because the routes pass the same kwargs to
+    # whichever client they hold.
     PROVIDER_LOCAL_KWARGS = frozenset({"host", "timeout"})
 
+    def _caller_kwargs(self, module, name: str) -> set[str]:
+        return {
+            p.name
+            for p in inspect.signature(getattr(module, name)).parameters.values()
+            if p.kind == p.KEYWORD_ONLY
+        } - self.PROVIDER_LOCAL_KWARGS
+
     def test_caller_supplied_keyword_arguments_agree(self):
-        """The kwargs a route passes must exist on BOTH clients.
+        """The kwargs a route passes must exist on EVERY client.
 
         Positional parity alone is not enough: if ``search_pulls`` is reached with
         ``assignee=`` / ``review_requested=`` / ``limit=`` that only the GitHub
@@ -1179,29 +1235,27 @@ class TestClientParity(unittest.TestCase):
         module cast), so it is caught here instead.
         """
         for name in self.SURFACE:
-            with self.subTest(name=name):
-                def kwargs(mod):
-                    return {
-                        p.name
-                        for p in inspect.signature(getattr(mod, name)).parameters.values()
-                        if p.kind == p.KEYWORD_ONLY
-                    } - self.PROVIDER_LOCAL_KWARGS
+            ref_kw = self._caller_kwargs(self.CLIENTS[self.REFERENCE], name)
+            for client in self.others:
+                with self.subTest(name=name, provider=client):
+                    other_kw = self._caller_kwargs(self.CLIENTS[client], name)
+                    self.assertEqual(
+                        ref_kw,
+                        other_kw,
+                        f"{name}: {self.REFERENCE}-only kwargs {sorted(ref_kw - other_kw)}, "
+                        f"{client}-only kwargs {sorted(other_kw - ref_kw)}",
+                    )
 
-                gh_kw, gl_kw = kwargs(github_client), kwargs(gitlab_client)
-                self.assertEqual(
-                    gh_kw,
-                    gl_kw,
-                    f"{name}: GitHub-only kwargs {sorted(gh_kw - gl_kw)}, "
-                    f"GitLab-only kwargs {sorted(gl_kw - gh_kw)}",
-                )
-
-    def test_both_raise_the_same_exception_classes(self):
+    def test_every_module_raises_the_same_exception_classes(self):
         # Aliases, not parallel hierarchies: otherwise routes.py's
-        # `except GhCliError` would miss every GitLab failure and return a 500.
-        self.assertIs(github_client.GhCliError, gitlab_client.GhCliError)
-        self.assertIs(github_client.GhSetupError, gitlab_client.GhSetupError)
-        self.assertIs(github_client.GhPermissionError, gitlab_client.GhPermissionError)
-        self.assertIs(github_client.RepoUrlError, gitlab_client.RepoUrlError)
+        # `except GhCliError` would miss every GitLab or Azure failure and return
+        # a 500 instead of the 502/403 the route intends.
+        reference = self.CLIENTS[self.REFERENCE]
+        for alias in ("GhCliError", "GhSetupError", "GhPermissionError", "RepoUrlError"):
+            expected = getattr(reference, alias)
+            for client in self.others:
+                with self.subTest(alias=alias, provider=client):
+                    self.assertIs(getattr(self.CLIENTS[client], alias, None), expected)
 
 
 class TestConnectParsesOffTheLoop(unittest.TestCase):
