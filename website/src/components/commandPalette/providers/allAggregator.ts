@@ -3,7 +3,6 @@ import type { ReactNode } from 'react'
 import { useMemo } from 'react'
 import { Sparkles } from 'lucide-react'
 
-import { makeScoreThenNameComparator } from '../../../utils/fuzzyMatch'
 import { i18nT } from '../../../i18n/t'
 import type { ResourceProvider, Result } from '../types'
 import { getProviders as getRegisteredProviders, getProvider } from './index'
@@ -52,10 +51,6 @@ function inlineIcon(): ReactNode {
   return createElement(Sparkles, { className: 'lucide-inline' })
 }
 
-const compareResults = makeScoreThenNameComparator<Result>(
-  (r) => r.score,
-  (r) => r.title,
-)
 
 /**
  * Injectable dependencies for {@link createAllAggregator}. Decoupling the
@@ -126,13 +121,14 @@ export function createAllAggregator(deps: AllAggregatorDeps): ResourceProvider {
       )
 
       // Cap each provider's contribution (top-N after its own ordering), then
-      // blend everything and re-sort by score-desc, name-asc.
+      // blend everything ordered by score-descending. Stable sort ensures
+      // each provider's established internal ranking (including backend tiebreaks
+      // for body-only hits, issue #4579) is preserved.
       const merged: Result[] = []
       for (const results of perProvider) {
-        const top = [...results].sort(compareResults).slice(0, perProviderLimit)
-        merged.push(...top)
+        merged.push(...results.slice(0, perProviderLimit))
       }
-      merged.sort(compareResults)
+      merged.sort((a, b) => b.score - a.score)
       return merged
     },
   }
