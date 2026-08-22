@@ -111,7 +111,7 @@ export function PierreWorkspaceTreeImpl({ projectDir, onFileOpen, searchQuery, m
   // and post-paint effects would flash an empty then UNFILTERED tree before
   // the search below re-applies — data, search, and reveal must all land in
   // the same pre-paint pass so the first visible frame is already correct.
-  const pathsKey = useMemo(() => paths.join('\n'), [paths])
+  const pathsKey = useMemo(() => JSON.stringify(paths), [paths])
   const lastPathsKey = useRef<string | null>(null)
   useLayoutEffect(() => {
     if (!ready) return

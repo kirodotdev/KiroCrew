@@ -21,10 +21,12 @@
  *                           Files and Artifacts are auto-pinned (PINNED_VIEWS) and
  *                           are deliberately absent from the menu — they are the
  *                           three chips already in the strip behind it.
- *   23-pr-panel-diff        the Changes tab's PullRequestPanel with one changed
- *                           file expanded, so the provider's per-file patch renders
- *                           through Pierre (PullRequestPanel.DiffView synthesizes
- *                           `diff --git`/`---`/`+++` headers around the hunk body).
+ *   23-pr-panel-diff        the Changes tab's PullRequestPanel, which is one Pierre
+ *                           CodeView holding every changed file — each file's row IS
+ *                           Pierre's stock file header, and its diff is already
+ *                           mounted (the wrapper synthesizes the
+ *                           `diff --git`/`---`/`+++` headers around each hunk body).
+ *                           `capture-pr-codeview.mjs` covers that surface in depth.
  *   24-tool-input-diff      a tool call whose INPUT is a patch: ToolDetails →
  *                           PayloadView → ToolInputText trips `isDiffText` and
  *                           renders PierrePatch with the compact inline options
@@ -250,9 +252,9 @@ const detailByKey = Object.fromEntries(Object.values(SURFACES).map(s => [
 // ── Pull-request fixture (frame 23) ─────────────────────────────────────────
 
 /* The provider hands back a per-file patch body — hunks only, no `diff --git` /
- * `---` / `+++`. That is deliberate here: DiffView synthesizes those headers
- * before handing the text to Pierre, so a fixture that already carried them
- * would not exercise the real path. */
+ * `---` / `+++`. That is deliberate here: the CodeView wrapper synthesizes those
+ * headers before handing the text to Pierre, so a fixture that already carried
+ * them would not exercise the real path. */
 const PR_FILE_PATCH = [
   '@@ -14,7 +14,12 @@',
   ' export function pierreThemeType(isDark: boolean) {',
@@ -321,9 +323,6 @@ const PR_SOURCE = {
     },
   ],
 }
-
-/** The file row expanded for frame 23. */
-const PR_EXPAND_PATH = 'website/src/pierre/config.ts'
 
 // ── Papyrus fixture (frame 25) ──────────────────────────────────────────────
 
@@ -597,29 +596,26 @@ async function main() {
   })))
   await shot(panel(), '21-links-tab-empty')
 
-  // ── Frame 23: the pull-request panel, one file expanded ───────────────────
+  // ── Frame 23: the pull-request panel's Changes tab ─────────────────────────
   await load(SURFACES.pr, { activeId: 'changes', tabs: [] })
   await panel().waitFor({ state: 'visible', timeout: 15000 })
-  // The panel's own header + file list first, then the row's diff.
-  await page.waitForFunction(
-    path => [...document.querySelectorAll('button')].some(b => b.textContent?.includes(path)),
-    PR_EXPAND_PATH,
-    { timeout: 20000 },
-  )
-  await page.locator(`button:has-text("${PR_EXPAND_PATH}")`).first().click()
-  // DiffView defers mounting Pierre by 140ms behind the drawer animation.
-  await page.waitForSelector('[data-testid="pr-diff-surface"]', { timeout: 15000 })
+  // The tab is now ONE Pierre CodeView holding every changed file, so there is
+  // no row to click: each file's row IS Pierre's own file header and its diff is
+  // already mounted. Pierre renders that header into a shadow root, which a
+  // Playwright CSS locator pierces (and a page.evaluate querySelectorAll does
+  // not) — hence the locator waits below. ChangesTab defers the mount by 140ms
+  // behind the drawer animation. The dedicated
+  // `capture-pr-codeview.mjs` covers the surface in depth (sticky headers,
+  // collapse, withheld patches); this frame just keeps it in this set.
+  const prHeaders = page.locator('[data-diffs-header]')
+  await prHeaders.first().waitFor({ state: 'visible', timeout: 20000 })
   await page.waitForTimeout(2000)
-  console.log('DIAG pr', JSON.stringify(await page.evaluate(() => {
-    const s = document.querySelector('[data-testid="pr-diff-surface"]')
-    return {
-      surface: !!s,
-      pierreHeaders: s?.querySelectorAll('[data-diffs-header]').length ?? -1,
-      titles: [...(s?.querySelectorAll('[data-title]') ?? [])].map(e => e.textContent?.trim()),
-      diffRows: s?.querySelectorAll('[data-diffs-line], [data-line]').length ?? -1,
-      addRows: s?.querySelectorAll('[data-diff-type="add"], [data-type="add"]').length ?? -1,
-    }
-  })))
+  console.log('DIAG pr', JSON.stringify({
+    headers: await prHeaders.count(),
+    titles: await page.locator('[data-title]').allInnerTexts(),
+    sticky: await page.locator('[data-diffs-header][data-sticky]').count(),
+    toggles: await page.locator('button[aria-label="Collapse file"]').count(),
+  }))
   await shot(panel(), '23-pr-panel-diff')
 
   // ── Frame 24: a tool call whose input is a patch ───────────────────────────

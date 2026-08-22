@@ -36,6 +36,7 @@ export function createFakeModel(options: Record<string, unknown>) {
     resetPaths: [] as string[][],
     gitStatus: [] as StatusEntry[][],
     search: [] as Array<string | null>,
+    setIcons: [] as Array<Record<string, unknown>>,
     focusPath: [] as string[],
     select: [] as string[],
     deselect: [] as string[],
@@ -81,6 +82,9 @@ export function createFakeModel(options: Record<string, unknown>) {
     },
     setSearch(value: string | null) {
       calls.search.push(value)
+    },
+    setIcons(icons: Record<string, unknown>) {
+      calls.setIcons.push(icons)
     },
     focusPath(path: string) {
       calls.focusPath.push(path)

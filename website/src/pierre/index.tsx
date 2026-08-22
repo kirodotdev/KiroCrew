@@ -10,14 +10,16 @@
  */
 import { Suspense, forwardRef, lazy, memo } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
-import type { PierreDiffOptions } from './config'
+import type { PierreCodeViewOptions, PierreDiffOptions } from './config'
 import type { EditorMarker, PierreEditorHandle } from './PierreEditorImpl'
+import type { PierrePatchFile, PierreCodeViewScrollHandle } from './PierreCodeViewImpl'
 import { PlainCodeFallback } from './PlainCodeFallback'
 
 const CodeImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreCodeImpl })))
 const PatchImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierrePatchImpl })))
 const FilePairImpl = lazy(() => import('./PierreImpl').then(m => ({ default: m.PierreFilePairImpl })))
 const EditorImpl = lazy(() => import('./PierreEditorImpl').then(m => ({ default: m.PierreEditorImpl })))
+const CodeViewImpl = lazy(() => import('./PierreCodeViewImpl').then(m => ({ default: m.PierreCodeViewImpl })))
 
 export type { EditorMarker, PierreEditorHandle }
 
@@ -123,3 +125,51 @@ export const PierreFilePair = memo(function PierreFilePair({ oldFile, newFile, o
 })
 
 export type { BaseCodeOptions, PierreDiffOptions, FileContents }
+
+/**
+ * Every file of a change set in ONE Pierre CodeView.
+ *
+ * The library owns the scroll container, so `className` styles the element
+ * CodeView itself scrolls and the caller's box must not scroll too. Unlike the
+ * other surfaces here the FILE HEADER is Pierre's: it draws the change icon,
+ * path and +/- counts, pins itself while its file scrolls, and exposes the three
+ * slots below for a caller's own affordances (a collapse toggle belongs in
+ * `renderHeaderPrefix`).
+ *
+ * The pre-chunk fallback lists the paths rather than the patch text: a whole
+ * change set as one plain blob is unreadable, whereas the file list is exactly
+ * what the resolved view opens on, so the panel does not flash empty.
+ */
+export const PierreCodeView = memo(forwardRef<PierreCodeViewScrollHandle, {
+  files: readonly PierrePatchFile[]
+  options?: PierreCodeViewOptions
+  className?: string
+  /** Scroll offset of CodeView's own scroller — the only way to react to the
+   *  reader moving through the change set, since the library owns that element. */
+  onScroll?: (scrollTop: number) => void
+  /** The file at the top of the viewport, reported when it changes. */
+  onViewportFileChange?: (path: string) => void
+  renderHeaderPrefix?: (path: string) => React.ReactNode
+  renderHeaderFilenameSuffix?: (path: string) => React.ReactNode
+  renderHeaderMetadata?: (path: string) => React.ReactNode
+}>(function PierreCodeView({ files, options, className, onScroll, onViewportFileChange, renderHeaderPrefix, renderHeaderFilenameSuffix, renderHeaderMetadata }, ref) {
+  return (
+    <Suspense fallback={
+      <div className={className}><PlainCodeFallback text={files.map(f => f.path).join('\n')} /></div>
+    }>
+      <CodeViewImpl
+        ref={ref}
+        files={files}
+        options={options}
+        className={className}
+        onScroll={onScroll}
+        onViewportFileChange={onViewportFileChange}
+        renderHeaderPrefix={renderHeaderPrefix}
+        renderHeaderFilenameSuffix={renderHeaderFilenameSuffix}
+        renderHeaderMetadata={renderHeaderMetadata}
+      />
+    </Suspense>
+  )
+}))
+
+export type { PierreCodeViewOptions, PierrePatchFile, PierreCodeViewScrollHandle }

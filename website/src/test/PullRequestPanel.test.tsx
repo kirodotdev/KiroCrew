@@ -31,6 +31,38 @@ import PullRequestPanel, {
   stateLabel,
   statusPollDelay,
 } from '../components/PullRequestPanel'
+import { treeOrderCompare } from '../pierre/config'
+
+describe('treeOrderCompare', () => {
+  it('orders paths the way the tree rail displays them', () => {
+    const paths = [
+      'README.md',
+      'src/app.ts',
+      '.github/ci.yml',
+      'src/.env.example',
+      'src/Zeta.ts',
+      'src/lib/util.ts',
+      'docs/guide.md',
+    ]
+    expect([...paths].sort(treeOrderCompare)).toEqual([
+      // Folders before files at every level; dot-prefixed first within each
+      // group; case-insensitive alphabetical within each subgroup.
+      '.github/ci.yml',
+      'docs/guide.md',
+      'src/lib/util.ts',
+      'src/.env.example',
+      'src/app.ts',
+      'src/Zeta.ts',
+      'README.md',
+    ])
+  })
+
+  it('keeps an ancestor directory row above its own children', () => {
+    // Identical prefix, differing depth: the shorter path is the parent side.
+    expect(treeOrderCompare('src', 'src/a.ts')).toBeLessThan(0)
+    expect(treeOrderCompare('src/a.ts', 'src')).toBeGreaterThan(0)
+  })
+})
 
 /** An ApiError-shaped rejection: the human message plus the raw body the client
  *  preserves, which is where the machine-readable code lives. */
@@ -147,16 +179,13 @@ describe('PullRequestPanel', () => {
     renderPanel()
     expect(await screen.findByText('Add source tabs')).toBeInTheDocument()
     expect(screen.getByText('Github', { exact: false })).toBeInTheDocument()
-    expect(screen.getByText('src/panel.tsx')).toBeInTheDocument()
     expect(screen.getByText('1 File Changed')).toBeInTheDocument()
-    // Diffs stay unmounted until explicitly expanded, then mount after the
-    // drawer animation deferral. Row CONTENT is not asserted here: Pierre
-    // renders it inside a shadow root, which Testing Library cannot query — the
-    // loading placeholder giving way to the diff surface is the observable
-    // contract from the light DOM.
-    expect(screen.queryByTestId('pr-diff-surface')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /src\/panel\.tsx/i }))
-    expect(await screen.findByTestId('pr-diff-surface')).toBeInTheDocument()
+    // The Changes tab is one Pierre CodeView, and the rows are Pierre's own file
+    // headers — rendered inside a shadow root that Testing Library cannot query,
+    // behind a React.lazy chunk this environment never resolves. So the light-DOM
+    // contract is the Suspense fallback's path list, which is what the resolved
+    // view opens on; it appears once ChangesTab's mount deferral elapses.
+    expect(await screen.findByText(/src\/panel\.tsx/)).toBeInTheDocument()
     expect(screen.getByRole('tab', { name: /All checks passed/i })).toBeInTheDocument()
     const githubTab = screen.getByRole('tab', { name: /PR #12/i })
     const gitlabTab = screen.getByRole('tab', { name: /MR !7/i })

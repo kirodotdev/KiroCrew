@@ -9,6 +9,10 @@ const TreeImpl = lazy(() =>
   import('./PierreWorkspaceTreeImpl').then(m => ({ default: m.PierreWorkspaceTreeImpl })),
 )
 
+const PrTreeImpl = lazy(() =>
+  import('./PierrePrTreeImpl').then(m => ({ default: m.PierrePrTreeImpl })),
+)
+
 /** Tree-shaped shimmer placeholder: [indent px, row width]. Varied depths and
  *  widths so the skeleton reads as a file tree, not a generic list. Shared by
  *  the lazy-chunk fallback here and the impl's data-loading state, so both
@@ -48,6 +52,22 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, searchQuery, mode,
   return (
     <Suspense fallback={<TreeSkeleton />}>
       <TreeImpl key={mode ?? 'all'} projectDir={projectDir} onFileOpen={onFileOpen} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} />
+    </Suspense>
+  )
+}
+
+/** Change-set tree for the pull request panel: paths, lanes, viewed checks and
+ *  selection all flow in as props (no fetching). See `PierrePrTreeImpl`. */
+export function PierrePrTree({ files, viewedPaths, currentPath, onFileClick, searchQuery }: {
+  files: readonly { path: string; status?: string }[]
+  viewedPaths: ReadonlySet<string>
+  currentPath?: string | null
+  onFileClick?: (path: string) => void
+  searchQuery?: string | null
+}) {
+  return (
+    <Suspense fallback={<TreeSkeleton />}>
+      <PrTreeImpl files={files} viewedPaths={viewedPaths} currentPath={currentPath} onFileClick={onFileClick} searchQuery={searchQuery} />
     </Suspense>
   )
 }
