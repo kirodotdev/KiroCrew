@@ -316,7 +316,19 @@ def _module_tree(module: Any) -> ast.AST:
         # the disk-touching primitive behind the publish-provider collection: a
         # future async call with an injected non-disk resolver must not trip
         # this gate, while the default resolver's file reads must.
-        (routes_mod, {"list_apps", "_provider_is_configured"}),
+        # ``_sync_builtin_config`` and ``_write_registries_config`` each end in a
+        # tmp-plus-rename. ``replace_with_retry`` declines to retry a Windows
+        # sharing violation while a loop runs in this thread, so calling either
+        # inline from a handler gates the retry off exactly where it is needed.
+        (
+            routes_mod,
+            {
+                "list_apps",
+                "_provider_is_configured",
+                "_sync_builtin_config",
+                "_write_registries_config",
+            },
+        ),
         (hooks_mod, {"list_apps"}),
         (bridges_mod, {"list_apps"}),
     ],
@@ -403,3 +415,78 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
         if is_reg_name or is_registry_call:
             offenders.append(f"{owner}:{call.lineno} calls registry .{func.attr}() on the loop")
     assert not offenders, "direct registry call on the event loop:\n" + "\n".join(offenders)
+
+
+# ---------------------------------------------------------------------------
+# App config writes (#4548's class, one module over)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "handler_name,enabled",
+    [("handle_enable_app", True), ("handle_disable_app", False)],
+)
+@pytest.mark.asyncio
+async def test_builtin_config_sync_runs_off_the_loop_thread(
+    monkeypatch: pytest.MonkeyPatch, handler_name: str, enabled: bool
+) -> None:
+    """Enabling or disabling a builtin app must hand the config sync to a worker.
+
+    ``_sync_builtin_config`` ends in a rename. On Windows that raises
+    ``PermissionError`` while any other handle is open on either path, and
+    ``replace_with_retry`` deliberately re-raises on the first attempt rather
+    than sleeping while an event loop runs in this thread. Called inline, the
+    retry is unavailable on the one path that needs it.
+
+    This drives the REAL handler: a test that awaited ``asyncio.to_thread``
+    itself would prove only that ``to_thread`` uses a worker, and would stay
+    green with the production offload reverted.
+    """
+    loop_thread = threading.current_thread()
+    sync_threads: list[threading.Thread] = []
+    monkeypatch.setattr(routes_mod, "_sync_builtin_config", _recorder(sync_threads))
+    monkeypatch.setattr(routes_mod, "_BUILTIN_SERVICE_APPS", {"demo": ("demo", "demo_attr")})
+    monkeypatch.setattr(routes_mod, "BUILTIN_NAMES", set(), raising=False)
+    monkeypatch.setattr(routes_mod, "sel", lambda: SimpleNamespace(log_api_access=lambda **k: None))
+    monkeypatch.setattr(routes_mod, "get_app", lambda name: {"origin": "builtin", "name": name})
+    monkeypatch.setattr(routes_mod, "_unregister_notification_channels", lambda *a, **k: None)
+
+    ok = SimpleNamespace(ok=True, error="", to_dict=lambda: {"ok": True})
+    verb = "enable_app" if enabled else "disable_app"
+    monkeypatch.setattr(routes_mod, verb, lambda *a, **k: ok)
+
+    request = SimpleNamespace(match_info={"name": "demo"}, app={"state": None})
+    await getattr(routes_mod, handler_name)(request)
+
+    assert sync_threads, "the builtin config sync was never invoked"
+    assert all(t is not loop_thread for t in sync_threads), (
+        "_sync_builtin_config ran synchronously on the event loop thread, "
+        "where replace_with_retry declines to retry a Windows sharing violation"
+    )
+
+
+def test_the_builtin_config_rename_uses_the_shared_retry() -> None:
+    """The rename inside ``_sync_builtin_config`` goes through
+    ``replace_with_retry``, not a bare ``Path.replace``.
+
+    Offloading alone is not enough: on a worker the helper is what actually
+    performs the retry, so a bare rename there would still lose the write.
+    """
+    src = inspect.getsource(routes_mod._sync_builtin_config)
+    assert "replace_with_retry(" in src
+    assert ".replace(path)" not in src
+
+
+def test_registries_config_write_is_a_single_offloadable_callable() -> None:
+    """``handle_registries`` hands ONE callable to ``asyncio.to_thread``.
+
+    Both the ``mkdir`` and the atomic write are blocking filesystem work, and
+    the write's rename needs a thread with no running loop for its retry to
+    apply, so they belong in the same worker hop rather than one of each.
+    """
+    helper = inspect.getsource(routes_mod._write_registries_config)
+    assert "mkdir(" in helper and "atomic_write(" in helper
+
+    handler = inspect.getsource(routes_mod.handle_registries)
+    assert "to_thread(_write_registries_config" in handler
+    assert "atomic_write(" not in handler, "the handler must not write inline"
