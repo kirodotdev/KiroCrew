@@ -22,7 +22,8 @@ import aiohttp
 import pytest
 
 from kiro_crew.dashboard.handlers import updates
-from kiro_crew.platform import update_capability, update_layout
+from kiro_crew.platform import update_capability, update_layout, update_provider
+from kiro_crew.platform.update_provider import CommandProvider, UpdateCheckResult
 
 # A well-formed manifest, shaped like the real feed document.
 _FEED_TEMPLATE = {
@@ -205,9 +206,7 @@ class TestWheelInstallCheck:
         assert info["channel"] == "insider"
         assert "--channel insider" in updates.remediation_command(info)
 
-    def test_a_switch_mid_check_cannot_pair_one_lane_with_the_other_s_command(
-        self, monkeypatch
-    ):
+    def test_a_switch_mid_check_cannot_pair_one_lane_with_the_other_s_command(self, monkeypatch):
         """The capability's command and the reported channel are read separately.
 
         `derive_capability` composes the installer command from the channel at
@@ -221,9 +220,7 @@ class TestWheelInstallCheck:
         # `release_channel` at import, while `derive_capability` imports it inside the
         # call, so patching the module attribute reaches one and not the other. That
         # asymmetry is precisely the production race — two reads, two moments.
-        monkeypatch.setattr(
-            "kiro_crew.platform.update_layout.release_channel", lambda: "stable"
-        )
+        monkeypatch.setattr("kiro_crew.platform.update_layout.release_channel", lambda: "stable")
         _stub_feed(monkeypatch, body=_manifest(version="0.1.3rc2"))
         monkeypatch.setattr(updates, "_local_version", "0.1.2rc3")
         asyncio.run(updates._do_update_check())
@@ -232,9 +229,9 @@ class TestWheelInstallCheck:
         command = updates.remediation_command(info)
         # The invariant is the PAIR, not any particular lane: whatever channel the
         # check reports, the command it offers must name that same channel.
-        assert f"--channel {info['channel']}" in command, (
-            f"reported channel {info['channel']!r} paired with command {command!r}"
-        )
+        assert (
+            f"--channel {info['channel']}" in command
+        ), f"reported channel {info['channel']!r} paired with command {command!r}"
         assert "stable" not in command
 
     def test_reports_up_to_date_only_after_a_real_comparison(self, monkeypatch):
@@ -413,9 +410,7 @@ class TestGitCheckoutStillWorks:
         monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _exec)
         return calls
 
-    def test_detects_a_prerelease_bump_the_old_comparator_missed(
-        self, _git_install, monkeypatch
-    ):
+    def test_detects_a_prerelease_bump_the_old_comparator_missed(self, _git_install, monkeypatch):
         calls = self._git_script(
             monkeypatch,
             [
@@ -817,6 +812,7 @@ class TestAutoApplyGuard:
         cfg = MagicMock()
         cfg.auto_update = auto_update
         from kiro_crew.platform.governance import UpdatePins
+
         original = dict(handlers._update_info)
         try:
             handlers._update_info.clear()
@@ -925,3 +921,96 @@ class TestAutoApplyGuard:
             auto_update=True,
         )
         assert "Already on latest version" not in capsys.readouterr().out
+
+
+class TestCommandManagedCheck:
+    """A policy-pinned command provider owns the check: no feed, no git, no channel.
+
+    Before this, ``resolve_provider`` was consulted only on the apply path, so a
+    command-managed host's badge was still computed against the feed/git
+    mechanism its policy excluded: the panel could advertise an update the
+    Update button (which honors the provider) would never deliver, and named a
+    release channel the provider never reads.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _isolated_cache(self):
+        saved_info = dict(updates._update_info)
+        saved_clock = updates._last_update_check
+        saved_generation = updates._check_generation
+        saved_flight = updates._check_in_flight
+        yield
+        updates._update_info.clear()
+        updates._update_info.update(saved_info)
+        updates._last_update_check = saved_clock
+        updates._check_generation = saved_generation
+        updates._check_in_flight = saved_flight
+
+    def _run(self, provider: CommandProvider, result: UpdateCheckResult) -> dict:
+        # ``derive_capability`` and both built-in checkers are booby-trapped:
+        # the provider branch must bypass the built-in mechanism entirely, and
+        # a silent fall-through here would be the exact badge/apply divergence
+        # this feature removes. ``_shell_exec_args`` is pinned so ``can_apply``
+        # reflects command PRESENCE on every platform — on Windows it refuses
+        # every command (fail-closed), which is its own behavior under test in
+        # test_update_provider.py, not this dispatch contract's.
+        with (
+            patch.object(updates, "resolve_provider", return_value=provider),
+            patch.object(CommandProvider, "check", AsyncMock(return_value=result)),
+            patch.object(
+                update_provider, "_shell_exec_args", return_value=["/bin/sh", "-c", "cmd"]
+            ),
+            patch.object(
+                updates,
+                "derive_capability",
+                side_effect=AssertionError("built-in derivation must not run"),
+            ),
+            patch.object(
+                updates,
+                "_check_release_feed",
+                side_effect=AssertionError("feed check must not run"),
+            ),
+            patch.object(
+                updates,
+                "_check_git_checkout",
+                side_effect=AssertionError("git check must not run"),
+            ),
+        ):
+            asyncio.run(updates._do_update_check())
+        return updates.get_update_info()
+
+    def test_an_available_update_reports_success_with_no_channel(self):
+        provider = CommandProvider(check_command="check-cmd", apply_command="apply-cmd")
+        info = self._run(provider, UpdateCheckResult(available=True, remote_version="2.0.0"))
+        assert info["update_available"] is True
+        assert info["version_newer"] is True
+        assert info["latest_version"] == "2.0.0"
+        assert info["check_status"] == "succeeded"
+        assert info["managed_by"] == "command"
+        assert info["can_apply"] is True
+        # The core invariant: a command-managed install has no release channel,
+        # which is what tells the panel to hide the channel switcher.
+        assert info["channel"] == ""
+        assert updates.status_update_fields()["update_channel"] == ""
+
+    def test_up_to_date_reports_no_update_not_an_error(self):
+        provider = CommandProvider(check_command="check-cmd", apply_command="apply-cmd")
+        info = self._run(provider, UpdateCheckResult(available=False))
+        assert info["update_available"] is False
+        assert info["check_status"] == "succeeded"
+        assert info["error_code"] is None
+        assert info["latest_version"] == ""
+
+    def test_check_only_pins_offer_no_apply_button(self):
+        provider = CommandProvider(check_command="check-cmd")
+        info = self._run(provider, UpdateCheckResult(available=True, remote_version="2.0.0"))
+        assert info["can_apply"] is False
+        assert info["update_available"] is True
+
+    def test_a_failing_provider_reports_a_failed_check_not_a_stale_verdict(self):
+        provider = CommandProvider(check_command="check-cmd", apply_command="apply-cmd")
+        info = self._run(provider, UpdateCheckResult(error="command timed out"))
+        assert info["check_status"] == "failed"
+        assert info["update_available"] is None
+        assert info["error_code"] == "unknown"
+        assert info["latest_version"] == ""

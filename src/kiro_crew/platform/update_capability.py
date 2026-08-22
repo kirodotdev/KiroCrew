@@ -36,6 +36,7 @@ MANAGED_BY_ELECTRON = "electron"
 MANAGED_BY_KIROCREW = "kirocrew"
 MANAGED_BY_GIT = "git"
 MANAGED_BY_CONTAINER = "container"
+MANAGED_BY_COMMAND = "command"
 MANAGED_BY_NONE = "none"
 
 #: Consent posture. ``notify`` tells the user; it never applies on its own.
@@ -469,6 +470,7 @@ __all__ = [
     "ERR_VERSION_UNPARSEABLE",
     "EXTERNALLY_MANAGED_MESSAGES",
     "EXTERNALLY_MANAGED_STAMPS",
+    "MANAGED_BY_COMMAND",
     "MANAGED_BY_CONTAINER",
     "MANAGED_BY_ELECTRON",
     "MANAGED_BY_GIT",

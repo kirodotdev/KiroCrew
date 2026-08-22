@@ -81,6 +81,98 @@ function resolveLinuxInstall({ env = process.env, resourcesPath = process.resour
   return { kind, format, appImagePath };
 }
 
+// The externally-managed marker, named after the PEP 668 precedent: a distro or
+// enterprise packager that owns this install's update lifecycle drops this file
+// into the packaged resources (beside `package-type` and `backend-dist`, the
+// established outside-asar packager surface). Its PRESENCE is the whole signal;
+// the JSON body only adds display metadata.
+const EXTERNALLY_MANAGED_MARKER = "EXTERNALLY-MANAGED";
+// Read cap for the marker and display caps for its fields. The marker is an
+// operator/packager-owned local file, but this code runs synchronously during
+// main-process startup: an unbounded read of a huge file (or a symlink into a
+// FIFO/device) must not be able to stall or exhaust the app. An over-cap or
+// non-regular entry still counts as MANAGED — presence is the signal — just
+// with no metadata to show.
+const EXTERNALLY_MANAGED_MAX_BYTES = 8192;
+const MANAGED_BY_MAX_CHARS = 128;
+const UPDATE_COMMAND_MAX_CHARS = 512;
+
+/**
+ * Is this install's update lifecycle owned by an external package manager?
+ *
+ * Lookup order: the `KIROCREW_EXTERNALLY_MANAGED` env var (a path to a marker
+ * file, or any other non-empty value to mark the install managed with no
+ * metadata — the test-harness seam, mirroring `KIROCREW_UPDATE_FEED`), then
+ * `<resourcesPath>/EXTERNALLY-MANAGED`. I/O-bearing and fully injectable, like
+ * resolveLinuxInstall above.
+ *
+ * The marker body is optional JSON `{managedBy, updateCommand}`: `managedBy`
+ * names the owning system for the About panel, `updateCommand` is the command
+ * the panel offers to copy. Every degenerate marker — empty, unparsable,
+ * over-cap, a directory, a symlink, a dangling symlink — still means MANAGED:
+ * an operator who dropped SOMETHING at that name gets the safe behavior
+ * (updater off) even when the metadata is wrong, never a silent fallback to
+ * self-updating. Entries are `lstat`ed and only regular files are read, so a
+ * symlink can never route this startup-path read into a FIFO or device.
+ *
+ * @param {object} [o]
+ * @param {object} [o.env=process.env]
+ * @param {string} [o.resourcesPath=process.resourcesPath]
+ * @returns {{managedBy:string, updateCommand:string}|null} null when not managed
+ */
+function readExternallyManaged({ env = process.env, resourcesPath = process.resourcesPath } = {}) {
+  let raw = null;
+  try {
+    const fs = require("fs");
+    const path = require("path");
+    // Present-but-unreadable (non-regular, over-cap, read error) = managed, no
+    // metadata. Absent = null. Never follows a symlink into the read.
+    const readMarkerAt = (p) => {
+      let st;
+      try {
+        st = fs.lstatSync(p);
+      } catch {
+        return null; // absent
+      }
+      if (!st.isFile() || st.size > EXTERNALLY_MANAGED_MAX_BYTES) return "";
+      try {
+        return fs.readFileSync(p, "utf8");
+      } catch {
+        return "";
+      }
+    };
+    const override = (env && env.KIROCREW_EXTERNALLY_MANAGED) || "";
+    if (override) {
+      // A value that names a marker file reads it; any other non-empty value
+      // (including a dangling path) marks the install managed with no metadata.
+      raw = readMarkerAt(override);
+      if (raw === null) raw = "";
+    } else {
+      raw = readMarkerAt(path.join(resourcesPath || "", EXTERNALLY_MANAGED_MARKER));
+      if (raw === null) return null;
+    }
+  } catch {
+    // fs itself unavailable (non-node runtime): nothing to read, not managed.
+    return null;
+  }
+  let managedBy = "";
+  let updateCommand = "";
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      if (typeof parsed.managedBy === "string") {
+        managedBy = parsed.managedBy.trim().slice(0, MANAGED_BY_MAX_CHARS);
+      }
+      if (typeof parsed.updateCommand === "string") {
+        updateCommand = parsed.updateCommand.trim().slice(0, UPDATE_COMMAND_MAX_CHARS);
+      }
+    }
+  } catch {
+    // Presence alone is the signal; a bare marker means managed, no metadata.
+  }
+  return { managedBy, updateCommand };
+}
+
 // Can the AppImage replace itself, i.e. is the directory HOLDING the image
 // writable? AppImageUpdater stages the new image beside the old one and `mv`s it
 // over the original, so the containing directory — not the mounted, read-only
@@ -517,6 +609,10 @@ function initAutoUpdate(deps) {
     // test without a real AppImage mount or a real /opt install.
     linuxInstall = null,
     probeAppImageWritable = isAppImageContainerWritable,
+    // Externally-managed verdict, injected for the same reason as linuxInstall:
+    // assertable in tests without a real marker file. undefined = read the
+    // marker from disk; null = not managed; object = managed.
+    externallyManaged = undefined,
     // Electron's NATIVE autoUpdater, used only to observe
     // `before-quit-for-update` -- the signal that the platform installer has
     // actually taken over (see forceExitFailsafe). electron-updater drives it
@@ -539,6 +635,13 @@ function initAutoUpdate(deps) {
   const linux = osPlatform === "linux"
     ? (linuxInstall || resolveLinuxInstall({ resourcesPath }))
     : { kind: "", format: "", appImagePath: "" };
+
+  // Externally-managed verdict. Resolved once and BEFORE getInfo() is defined,
+  // for the same temporal-dead-zone reason as `linux` above: the early-return
+  // stub below hands getInfo out, and getInfo reports the marker's metadata.
+  const managed = externallyManaged !== undefined
+    ? externallyManaged
+    : readExternallyManaged({ resourcesPath });
 
   // When the in-app UI is wired (onUpdateState provided), it owns the prompt;
   // the native dialog stays as the fallback for headless / no-renderer cases.
@@ -583,10 +686,14 @@ function initAutoUpdate(deps) {
       version: app.getVersion(),
       channel: currentChannel(),
       // Switcher inputs: the build's own lane, whether this build may switch
-      // (nightly is pinned; dev has no lane), and the stored preference.
+      // (nightly is pinned; dev has no lane; an externally-managed install has
+      // no lane the marker's owner reads), and the stored preference.
       stampedChannel: stamped,
-      channelSwitchable: stamped === "insider" || stamped === "stable",
+      channelSwitchable: !managed && (stamped === "insider" || stamped === "stable"),
       channelPreference: getChannelPreference() || "",
+      // Externally-managed metadata, both empty on a self-updating install.
+      managedBy: managed ? managed.managedBy || "" : "",
+      updateCommand: managed ? managed.updateCommand || "" : "",
       platform,
       packaged: !!app.isPackaged,
       // Escape hatch for a failed install (see manualDownloadUrl).
@@ -596,6 +703,17 @@ function initAutoUpdate(deps) {
     };
   }
 
+  // An operator or distro packager that dropped the EXTERNALLY-MANAGED marker
+  // owns this install's update lifecycle: the external package manager replaces
+  // the whole install, so a self-update would fight it (each overwriting the
+  // other's bytes) and a feed check would compare against releases the owner
+  // never ships. FIRST gate on purpose: the marker is an intentional operator
+  // override, so it wins over every runtime detection below — the updater is
+  // never armed and the feed is never contacted.
+  if (managed) {
+    log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — auto-update disabled`);
+    return { check: () => {}, download: async () => {}, install: async () => {}, getInfo, disabled: "externally-managed" };
+  }
   // Updating requires an installed, signed bundle (macOS code signature
   // validation is mandatory for Squirrel.Mac; Linux AppImage needs the
   // AppImage runtime), so dev builds have no update lane.
@@ -1198,6 +1316,7 @@ module.exports = {
   classifyError,
   manualDownloadUrl,
   resolveLinuxInstall,
+  readExternallyManaged,
   DEFAULT_FEED_BASE,
   DOWNLOAD_BASE,
   SUPPORTED_PLATFORMS,

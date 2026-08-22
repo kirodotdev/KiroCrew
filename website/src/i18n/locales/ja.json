@@ -10266,6 +10266,9 @@
     },
     "settings": {
       "aboutPanel": {
+        "updates_managed_by_policy": "このインストールの更新は、運用者が定義した更新ポリシーで管理されています。新しいバージョンはその仕組みで届きます。",
+        "updates_managed_externally": "このインストールの更新は外部のパッケージマネージャーが管理しています。新しいバージョンはそのパッケージマネージャーで取得してください。",
+        "updates_managed_externally_by": "このインストールの更新は {{managedBy}} が管理しています。新しいバージョンはそれで取得してください。",
         "a_new_version": "新しいバージョン",
         "a_newer_version_is_available": "新しいバージョンが利用可能です。",
         "apache_2_0": "Apache 2.0",

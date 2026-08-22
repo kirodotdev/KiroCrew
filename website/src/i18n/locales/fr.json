@@ -10515,6 +10515,9 @@
     },
     "settings": {
       "aboutPanel": {
+        "updates_managed_by_policy": "Les mises à jour de cette installation sont gérées par une politique de mise à jour définie par l'opérateur. Les nouvelles versions arrivent par ce mécanisme.",
+        "updates_managed_externally": "Les mises à jour de cette installation sont gérées par un gestionnaire de paquets externe. Utilisez ce gestionnaire de paquets pour obtenir les nouvelles versions.",
+        "updates_managed_externally_by": "Les mises à jour de cette installation sont gérées par {{managedBy}}. Utilisez-le pour obtenir les nouvelles versions.",
         "a_new_version": "Une nouvelle version",
         "a_newer_version_is_available": "Une version plus récente est disponible.",
         "apache_2_0": "Apache 2.0",

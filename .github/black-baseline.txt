@@ -282,7 +282,6 @@ src/kiro_crew/dashboard/session_memory.py
 src/kiro_crew/dashboard/session_transfer.py
 src/kiro_crew/dashboard/slowloris.py
 src/kiro_crew/dashboard/stale_asset_watchdog.py
-src/kiro_crew/dashboard/state.py
 src/kiro_crew/dashboard/system_notices.py
 src/kiro_crew/dashboard/tailnet_serve.py
 src/kiro_crew/dashboard/terminal_commands.py
@@ -407,7 +406,6 @@ src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py
 src/kiro_crew/platform/capability_bound.py
 src/kiro_crew/platform/update_layout.py
-src/kiro_crew/platform/update_provider.py
 src/kiro_crew/platform_compat.py
 src/kiro_crew/pod/cli.py
 src/kiro_crew/pod/config.py
@@ -1345,9 +1343,6 @@ test/test_turn_duration_task_runner.py
 test/test_turn_duration_workflow.py
 test/test_turn_stats.py
 test/test_unattended_slot_guardrails.py
-test/test_update_channel_and_restart.py
-test/test_update_check_install_aware.py
-test/test_update_provider.py
 test/test_update_venv_detection.py
 test/test_usage.py
 test/test_use_builtin_browser_config.py

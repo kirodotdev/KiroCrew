@@ -10266,6 +10266,9 @@
     },
     "settings": {
       "aboutPanel": {
+        "updates_managed_by_policy": "此安装的更新由管理员定义的更新策略管理。新版本将通过该机制到达。",
+        "updates_managed_externally": "此安装的更新由外部包管理器管理。请使用该包管理器获取新版本。",
+        "updates_managed_externally_by": "此安装的更新由 {{managedBy}} 管理。请使用它获取新版本。",
         "a_new_version": "新版本",
         "a_newer_version_is_available": "有新版本可用。",
         "apache_2_0": "Apache 2.0",

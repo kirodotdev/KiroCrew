@@ -7,6 +7,7 @@ const {
   resolveChannel,
   buildFeedBase,
   configureUpdater,
+  readExternallyManaged,
   DEFAULT_FEED_BASE,
   SUPPORTED_PLATFORMS,
 } = require("../auto-update");
@@ -246,6 +247,9 @@ function makeDeps(opts = {}) {
     // tests below drive these to the refused states.
     resourcesPath = "/Applications/Kiro Crew.app/Contents/Resources",
     bundleWritable = true,
+    // Externally-managed verdict. null (the default) = not managed, decided
+    // here so no test's outcome depends on the host filesystem.
+    externallyManaged = null,
   } = opts;
   const calls = { setFeedURL: [], checkForUpdates: 0, downloadUpdate: 0, quitAndInstall: [] };
   const handlers = {};
@@ -280,6 +284,7 @@ function makeDeps(opts = {}) {
     // Stubbed so the writable-vs-read-only axis is decided by the test, not by
     // whatever the host filesystem happens to allow.
     probeBundleWritable: () => bundleWritable,
+    externallyManaged,
     feedBase: "https://cdn.example.dev/feed",
     onUpdateState: (s) => states.push(s),
     log: { info: () => {}, warn: () => {}, error: () => {} },
@@ -496,6 +501,156 @@ test("dev (unpackaged) build returns disabled:'dev'", () => {
   const u = initAutoUpdate(deps);
   assert.strictEqual(u.disabled, "dev");
   assert.strictEqual(calls.setFeedURL.length, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Externally-managed marker (PEP 668 precedent). An operator/distro packager
+// that owns the install's update lifecycle disables the updater outright: the
+// feed is never contacted, the channel switcher loses its lane, and the About
+// panel gets the marker's metadata to display instead.
+// ---------------------------------------------------------------------------
+
+test("externally-managed install returns disabled:'externally-managed' and never arms the updater", () => {
+  const { deps, calls } = makeDeps({
+    externallyManaged: { managedBy: "internal-registry", updateCommand: "pkgtool update kirocrew" },
+  });
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, "externally-managed");
+  assert.strictEqual(calls.setFeedURL.length, 0, "the feed must never be contacted");
+  assert.strictEqual(calls.checkForUpdates, 0);
+  assert.strictEqual(deps.autoUpdater.autoDownload, undefined, "policy flags must not be applied");
+  // The whole disabled surface must stay callable (ipcMain invokes every key).
+  assert.strictEqual(typeof u.check, "function");
+  assert.strictEqual(typeof u.download, "function");
+  assert.strictEqual(typeof u.install, "function");
+  assert.strictEqual(typeof u.getInfo, "function");
+});
+
+test("externally-managed getInfo carries the marker metadata and kills the switcher", () => {
+  const { deps } = makeDeps({
+    appVersion: "1.0.0", // bare semver stamps as 'stable' -> switchable on a normal install
+    externallyManaged: { managedBy: "internal-registry", updateCommand: "pkgtool update kirocrew" },
+  });
+  const info = initAutoUpdate(deps).getInfo();
+  assert.strictEqual(info.managedBy, "internal-registry");
+  assert.strictEqual(info.updateCommand, "pkgtool update kirocrew");
+  assert.strictEqual(info.channelSwitchable, false,
+    "a managed install has no lane the marker's owner reads");
+});
+
+test("a self-updating install reports empty managed metadata", () => {
+  const { deps } = makeDeps({ appVersion: "1.0.0" });
+  const info = initAutoUpdate(deps).getInfo();
+  assert.strictEqual(info.managedBy, "");
+  assert.strictEqual(info.updateCommand, "");
+  assert.strictEqual(info.channelSwitchable, true);
+});
+
+test("externally-managed wins over the dev gate (intentional operator override)", () => {
+  const { deps } = makeDeps({
+    isPackaged: false,
+    externallyManaged: { managedBy: "", updateCommand: "" },
+  });
+  assert.strictEqual(initAutoUpdate(deps).disabled, "externally-managed");
+});
+
+test("readExternallyManaged: absent marker -> null", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  assert.strictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), null);
+});
+
+test("readExternallyManaged: JSON marker carries metadata", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(dir, "EXTERNALLY-MANAGED"),
+    JSON.stringify({ managedBy: "internal-registry", updateCommand: "pkgtool update kirocrew" }),
+  );
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
+    managedBy: "internal-registry",
+    updateCommand: "pkgtool update kirocrew",
+  });
+});
+
+test("readExternallyManaged: bare/unparsable marker still means managed", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "EXTERNALLY-MANAGED"), "not json {");
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
+    managedBy: "",
+    updateCommand: "",
+  });
+});
+
+test("readExternallyManaged: degenerate markers (oversized, symlink, directory) mean managed, no metadata", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  // Oversized: presence still wins, the body is never read into memory.
+  const big = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(big, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(big, "EXTERNALLY-MANAGED"), "x".repeat(9000));
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: big }), {
+    managedBy: "",
+    updateCommand: "",
+  });
+  // Symlink (even dangling): lstat'ed, never followed — a link into a FIFO or
+  // device must not be able to stall this startup-path read.
+  const sym = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(sym, { recursive: true, force: true }));
+  fs.symlinkSync(path.join(sym, "nowhere"), path.join(sym, "EXTERNALLY-MANAGED"));
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: sym }), {
+    managedBy: "",
+    updateCommand: "",
+  });
+  // Directory named like the marker: present = managed, nothing to parse.
+  const dirCase = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dirCase, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(dirCase, "EXTERNALLY-MANAGED"));
+  assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dirCase }), {
+    managedBy: "",
+    updateCommand: "",
+  });
+});
+
+test("readExternallyManaged: metadata fields are length-capped", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(
+    path.join(dir, "EXTERNALLY-MANAGED"),
+    JSON.stringify({ managedBy: "m".repeat(500), updateCommand: "c".repeat(2000) }),
+  );
+  const got = readExternallyManaged({ env: {}, resourcesPath: dir });
+  assert.strictEqual(got.managedBy.length, 128);
+  assert.strictEqual(got.updateCommand.length, 512);
+});
+
+test("readExternallyManaged: env override points at a marker file", (t) => {
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "kc-ext-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const marker = path.join(dir, "custom-marker.json");
+  fs.writeFileSync(marker, JSON.stringify({ managedBy: "harness", updateCommand: "" }));
+  const got = readExternallyManaged({
+    env: { KIROCREW_EXTERNALLY_MANAGED: marker },
+    resourcesPath: "/nonexistent",
+  });
+  assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "" });
 });
 
 // ---------------------------------------------------------------------------

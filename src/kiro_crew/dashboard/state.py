@@ -1371,10 +1371,10 @@ class SlotOrigin:
     regardless of their ``_app`` owner).
     """
 
-    USER = "user"       # initiated from the dashboard UI (no app token)
-    APP = "app"         # initiated by an app SDK call (carries owner _app)
-    CRON = "cron"       # initiated by a cron job
-    SYSTEM = "system"   # gateway-internal (startup, migration, etc.)
+    USER = "user"  # initiated from the dashboard UI (no app token)
+    APP = "app"  # initiated by an app SDK call (carries owner _app)
+    CRON = "cron"  # initiated by a cron job
+    SYSTEM = "system"  # gateway-internal (startup, migration, etc.)
 
 
 def request_slot_origin(app: str) -> str:
@@ -2322,9 +2322,7 @@ class _ChatSlot:
         The queue/ordering contract lives here so callers never hand-roll a
         raw ``_pending`` append at a distance.
         """
-        self._pending.append(
-            {"role": cls, "content": content, "cls": cls, "ts": ""}
-        )
+        self._pending.append({"role": cls, "content": content, "cls": cls, "ts": ""})
         self.event.set()
 
     def drain(self) -> list[dict[str, str]]:
@@ -2494,7 +2492,9 @@ class _ChatSlot:
         if len(keep_ctx) != len(self._pending_context):
             dropped += len(self._pending_context) - len(keep_ctx)
             self._pending_context[:] = keep_ctx
-        keep_msgs = [m for m in self.messages if not _note_authorized_elsewhere(m.get("meta"), live)]
+        keep_msgs = [
+            m for m in self.messages if not _note_authorized_elsewhere(m.get("meta"), live)
+        ]
         if len(keep_msgs) != len(self.messages):
             dropped += len(self.messages) - len(keep_msgs)
             self.messages[:] = keep_msgs
@@ -3357,7 +3357,9 @@ class DashboardState:
         # Cloud provisioning launch jobs (lazy-init in handlers_cloud).
         self.cloud_launch_store: Any = None  # LaunchJobStore
         self.cloud_launch_cancels: Any = None  # dict[str, threading.Event]
-        self.cloud_launch_engine: Any = None  # test-injected LaunchEngine (None -> RealLaunchEngine)
+        self.cloud_launch_engine: Any = (
+            None  # test-injected LaunchEngine (None -> RealLaunchEngine)
+        )
         self.cloud_launch_sync: bool = False  # tests set True to run launches inline
         self.cloud_launch_reaped: bool = False  # orphan reap is once per process
         self.cloud_launch_lock: Any = None  # asyncio.Lock serializing launch creation
@@ -3915,6 +3917,7 @@ class DashboardState:
         update_check_status: str = "unchecked",
         update_command: str = "",
         update_channel: str = "",
+        update_managed_by: str = "",
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -3956,6 +3959,12 @@ class DashboardState:
             # between switching channels and the new lane's build landing, so the
             # switcher must key on this one or it would snap back on every poll.
             "update_channel": update_channel,
+            # Who manages updates on this host: "" (self-managed), or the
+            # mechanism that owns them (e.g. "command" for a policy-pinned
+            # provider). The panel keys its update copy on this — a
+            # command-managed host must not render self-managed installer
+            # instructions its policy exists to bypass.
+            "update_managed_by": update_managed_by,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
@@ -3976,9 +3985,7 @@ class DashboardState:
             # Require BOTH a wired client and the real connect outcome the
             # gateway records after _connect_slack. This is the same field
             # /api/slack/config already reports to the settings badge.
-            "slack_connected": (
-                self.slack_client is not None and self.slack_socket_connected
-            ),
+            "slack_connected": (self.slack_client is not None and self.slack_socket_connected),
             # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this
@@ -6371,8 +6378,7 @@ class DashboardState:
             # connect it. Guaranteed here rather than left to hold incidentally
             # across the branches above.
             if not any(
-                row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin"
-                for row in links
+                row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin" for row in links
             ):
                 append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "out")
             return links, True, visible_slack_channel, slack_ts or ""
@@ -6850,9 +6856,7 @@ class DashboardState:
         if exc is not None:
             logger.debug("WS send failed (client likely disconnected): %s", exc)
 
-    def _ws_client_allowed(
-        self, ws: web.WebSocketResponse, msg_type: str, data: object
-    ) -> bool:
+    def _ws_client_allowed(self, ws: web.WebSocketResponse, msg_type: str, data: object) -> bool:
         """Return True if *ws* should receive an event with *msg_type* / *data*.
 
         Deny-by-default (CWE-269): every non-dashboard-user connection is gated
@@ -6988,9 +6992,7 @@ class DashboardState:
                 data[key], ws_app, allowed, self, msg_type=msg_type
             )
         except Exception:
-            self._log.warning(
-                "subagent batch filter failed; dropping items", exc_info=True
-            )
+            self._log.warning("subagent batch filter failed; dropping items", exc_info=True)
             items = []
         return json.dumps({"type": msg_type, "data": {key: items}})
 

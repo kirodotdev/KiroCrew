@@ -128,6 +128,9 @@ type UpdateInfo = {
   downloadUrl?: string | null
   packaged?: boolean
   disabled?: string
+  /** Externally-managed metadata; both empty on a self-updating install. */
+  managedBy?: string
+  updateCommand?: string
 }
 
 type UpdateAPI = {
@@ -334,6 +337,10 @@ export function AboutPanel() {
   const version = info?.version || gatewayVersion || '—'
   const channel = info?.channel
   const updatesDisabled = info?.disabled
+  // An externally-managed install (a distro/enterprise package) has no channel
+  // its owner reads and no self-update lane, so both the switcher and the
+  // channel row disappear rather than describing a control that changes nothing.
+  const isExternallyManaged = updatesDisabled === 'externally-managed'
   const checking = checkMutation.isPending || updateState?.state === 'checking'
 
   // "What's the difference?" disclosure next to the channel switcher. Collapsed
@@ -371,6 +378,10 @@ export function AboutPanel() {
   // at all — a git checkout, a desktop bundle, a container — which is exactly
   // when the switcher must not be offered, because the backend refuses it.
   const statusUpdateChannel = useAppSelector(s => s.dashboard.status?.update_channel) || ''
+  // Who manages updates on this gateway: 'command' = a policy-pinned provider
+  // owns them, so self-managed installer copy would instruct the user to run
+  // the exact mechanism the policy excluded.
+  const gwManagedByCommand = useAppSelector(s => s.dashboard.status?.update_managed_by) === 'command'
   const isPrerelease = info?.stampedChannel === undefined
     ? (!!info?.packaged && versionLooksPrerelease(info?.version))
       || (!isDesktop && !!gatewayChannel && gatewayChannel !== 'stable')
@@ -536,6 +547,7 @@ export function AboutPanel() {
   const [gwChannelError, setGwChannelError] = useState('')
   const [gwCommand, setGwCommand] = useState('')
   const [gwCommandCopied, setGwCommandCopied] = useState(false)
+  const [managedCmdCopied, setManagedCmdCopied] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
   const [applyError, setApplyError] = useState('')
   const [restarting, setRestarting] = useState(false)
@@ -756,7 +768,7 @@ export function AboutPanel() {
           </span>
         </div>
 
-        {isDesktop && channel && (
+        {isDesktop && channel && !isExternallyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
             <div className="flex flex-col" data-testid="channel-switcher">
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
@@ -976,7 +988,35 @@ export function AboutPanel() {
       <Card>
         <CardTitle><RefreshCw size={15} className="lucide-inline" /> {i18nT('pages.settings.aboutPanel.updates')}</CardTitle>
         {isDesktop ? (
-          updatesDisabled ? (
+          isExternallyManaged ? (
+            // The marker's owner (a distro/enterprise package manager) replaces
+            // the whole install, so there is no Check button and no channel —
+            // just the fact, plus the owner's own update command when the
+            // marker carries one. Same command-box + copy pattern as the
+            // gateway's manual-update instructions below.
+            <div className="flex flex-col gap-2" data-testid="externally-managed-updates">
+              <p className="text-sm text-muted">
+                {info?.managedBy
+                  ? i18nT('pages.settings.aboutPanel.updates_managed_externally_by', { managedBy: info.managedBy })
+                  : i18nT('pages.settings.aboutPanel.updates_managed_externally')}
+              </p>
+              {info?.updateCommand && (
+                <>
+                  <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+                    data-testid="managed-update-command">
+                    {info.updateCommand}
+                  </div>
+                  <div>
+                    <Btn onClick={async () => { await copyToClipboard(info.updateCommand!); setManagedCmdCopied(true) }}>
+                      <Copy size={13} className="lucide-inline" /> {managedCmdCopied
+                        ? i18nT('pages.settings.aboutPanel.copied')
+                        : i18nT('pages.settings.aboutPanel.copy_command')}
+                    </Btn>
+                  </div>
+                </>
+              )}
+            </div>
+          ) : updatesDisabled ? (
             <p className="text-sm text-muted">
               {updatesDisabled === 'dev'
                 ? i18nT('pages.settings.aboutPanel.automatic_updates_unavailable_dev_build')
@@ -1018,6 +1058,16 @@ export function AboutPanel() {
                   </p>
                 )}
                 {showManualUpdate ? (
+                  gwManagedByCommand ? (
+                    // A policy-pinned command provider owns this update, and a
+                    // check-only pin has no in-app apply. The installer copy
+                    // below would tell the user to run the exact mechanism the
+                    // policy exists to bypass — and they might actually do it,
+                    // fighting the managed install.
+                    <p className="text-[13px] text-muted" data-testid="policy-managed-update-note">
+                      {i18nT('pages.settings.aboutPanel.updates_managed_by_policy')}
+                    </p>
+                  ) : (
                   // This install cannot replace its own code (a `cli.sh` wheel
                   // install, not a git checkout), so there is no Update button to
                   // offer — pressing one would 409. Show the command that does
@@ -1073,6 +1123,7 @@ export function AboutPanel() {
                       </>
                     )}
                   </div>
+                  )
                 ) : (
                   <div>
                     <Btn primary onClick={() => { if (!gwChanges) gwCheck.mutate(); setApplyError(''); setRestarting(false); setShowConfirm(true) }}>

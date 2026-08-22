@@ -132,6 +132,27 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
   })
 
+  it('a command-managed gateway shows the policy note, never installer copy', async () => {
+    // A check-only policy pin: an update is available but there is no in-app
+    // apply. The self-managed installer instructions would tell the user to
+    // run the exact mechanism the policy excluded (UX review finding).
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_managed_by: 'command' } as never))
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      managed_by: 'command',
+      can_apply: false,
+      channel: '',
+      latest_version: '2.0.0',
+    })
+    mountWeb()
+    await pressCheck()
+    await waitFor(() => expect(screen.getByTestId('policy-managed-update-note')).toBeTruthy())
+    expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
+    expect(screen.queryByText(/re-running the installer/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+  })
+
   it('copying the command flips the button label', async () => {
     const command = "curl -fsSL --proto '=https' https://download.crew.kiro.dev/cli.sh | sh -s -- --channel stable"
     const writeText = vi.fn().mockResolvedValue(undefined)
