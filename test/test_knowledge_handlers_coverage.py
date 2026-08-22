@@ -382,6 +382,14 @@ class TestGetEntityItems:
         assert [i["title"] for i in data] == ["Roadmap"]
 
     @pytest.mark.asyncio
+    async def test_matches_cjk_entity_name(self, store):
+        store.add_item("Memory leak", "今天调查了内存里的数据泄漏问题", "note")
+        async with _client(_make_app(store)) as client:
+            data = await (await client.get(
+                "/api/knowledge/entities/by-name/内存/items")).json()
+        assert [i["title"] for i in data] == ["Memory leak"]
+
+    @pytest.mark.asyncio
     async def test_double_quote_in_name_is_escaped_not_a_syntax_error(self, store):
         store.add_item("Quoted", 'the "widget" ships', "note")
         async with _client(_make_app(store)) as client:

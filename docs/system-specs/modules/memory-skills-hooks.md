@@ -48,6 +48,27 @@ FTS5 search via `~/.kiro/crew/memory_index.db` (SQLite via `pysqlite3-binary` on
 
 Context injection includes source citations per section. Agent can update memory files via kiro-cli's file tools.
 
+## Knowledge Library (`knowledge/store.py`, `knowledge/retrieval.py`)
+
+The Knowledge Library database lives at `~/.kiro/crew/workspace/knowledge/knowledge.db`.
+Its external-content `items_fts` table indexes `items.title`, `items.content`, and
+`items.tags` with SQLite FTS5's `unicode61` tokenizer. The raw `items` columns are
+never rewritten for search. Instead, the indexed copy inserts token boundaries
+around Han, Hiragana, and Katakana characters, because `unicode61` otherwise treats
+a contiguous CJK run as one token. Existing databases rebuild `items_fts` once on
+first open after this index-format change; the rebuild is transactional and batched.
+
+`KnowledgeStore._sanitize_fts5()` keeps the store/API search's implicit-AND behavior.
+`HybridRetriever._sanitize_fts5_query()` keeps natural-language OR recall and drops
+English connective stopwords. Both builders quote user terms, split CJK runs into
+required character terms, and require at least one adjacent query bigram for runs up
+to 12 characters. This lets `内存泄漏` match `内存里的数据泄漏问题` without matching a
+document that only scatters the four characters. Longer runs use a bounded character
+gate and waive the adjacency floor so query expansion cannot hide a result. ASCII
+terms keep their existing tokenization, quoting, and join semantics. Graph lookup
+uses the same CJK character/bigram expansion, and CJK entity-item API searches
+share the store query builder while ASCII entity names retain exact-phrase matching.
+
 ### Decaying Memory (`read_recent_history`)
 
 History context uses natural decay: recent days in full detail, older days

@@ -30,6 +30,7 @@ import errno
 import os
 import socket
 import stat
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
@@ -325,6 +326,28 @@ class TestStartDashboardWiring:
             assert state.ready is True
             assert runner.app["state"] is state
             assert runner.app["port"] == 0
+
+    @pytest.mark.asyncio
+    async def test_knowledge_store_initialization_is_off_loop_and_reused(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The startup path must offload construction before route wiring reads it."""
+        import kiro_crew.dashboard.state as state_module
+
+        loop_thread = threading.get_ident()
+        constructor_threads: list[int] = []
+        real_store = state_module.KnowledgeStore
+
+        def _store_factory(path: str):
+            constructor_threads.append(threading.get_ident())
+            return real_store(path)
+
+        monkeypatch.setattr(state_module, "KnowledgeStore", _store_factory)
+
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, state, _spies):
+            assert len(constructor_threads) == 1
+            assert constructor_threads[0] != loop_thread
+            assert state.knowledge_store is state._knowledge_store
 
     @pytest.mark.asyncio
     async def test_the_mcp_and_dashboard_routes_are_both_mounted(

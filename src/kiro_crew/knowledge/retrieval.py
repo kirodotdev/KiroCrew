@@ -13,6 +13,7 @@ try:
 except ImportError:
     import sqlite3
 
+from .fts import build_fts5_query, expand_query_terms
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -261,33 +262,19 @@ class HybridRetriever:
 
     @staticmethod
     def _sanitize_fts5_query(query: str) -> str:
-        """Escape user input for safe FTS5 MATCH usage.
+        """Escape and segment a natural-language query for safe FTS5 MATCH use.
 
-        Each token is individually double-quoted (with internal quotes doubled)
-        so it is treated as a literal FTS5 string -- the user's input never
-        contributes FTS5 operators (parameterized quoting). Stopwords are dropped
-        and the remaining tokens OR-joined
-        so natural-language queries no longer require every
-        literal token to appear in a matching document.
+        ASCII terms remain individually quoted and OR-joined after stopword
+        removal. CJK runs are normalized into required character clauses with
+        an adjacency floor, matching the representation stored in ``items_fts``.
         """
-        raw_tokens = [t for t in query.split() if t]
-        if not raw_tokens:
-            return ""
-        tokens = [t for t in raw_tokens if t.lower() not in _STOPWORDS]
-        # If the query is *all* stopwords, fall back to the raw tokens rather
-        # than returning an empty match (which would drop the keyword leg).
-        if not tokens:
-            tokens = raw_tokens
-        quoted = ['"' + t.replace('"', '""') + '"' for t in tokens]
-        return " OR ".join(quoted)
+        return build_fts5_query(query, joiner="OR", stopwords=_STOPWORDS)
 
     def _graph_search(self, query: str, limit: int = 20) -> list[tuple[str, int]]:
         """Find entities matching query terms, traverse graph, rank items by mention count."""
-        words = query.split()
-        # Try individual words and consecutive pairs
-        candidates = list(words)
-        for i in range(len(words) - 1):
-            candidates.append(f"{words[i]} {words[i + 1]}")
+        # Include script-aware CJK characters and bigrams while retaining the
+        # existing raw-term and consecutive-word candidates for ASCII queries.
+        candidates = expand_query_terms(query)
 
         entity_ids = set()
         for term in candidates:

@@ -3597,7 +3597,8 @@ class DashboardState:
         self._prevent_sleep_task: asyncio.Task | None = None  # type: ignore[type-arg]
 
         # Knowledge Library
-        self._knowledge_store: "KnowledgeStore | None" = None  # Lazy-initialized on first access
+        # Startup populates this off the event loop; embedded callers may initialize lazily.
+        self._knowledge_store: "KnowledgeStore | None" = None
         self._knowledge_watcher: asyncio.Task | None = None  # type: ignore[type-arg]
         # Slack channel name resolver (lazy-initialized on first /api/slack/channels hit)
         self._channel_resolver: Any = None
@@ -4163,14 +4164,18 @@ class DashboardState:
             self._bg_turns_running -= 1
             sema.release()
 
-    @property
-    def knowledge_store(self):  # type: ignore[override]
-        """Lazy-init KnowledgeStore on first access."""
+    def _initialize_knowledge_store(self) -> KnowledgeStore:
+        """Create the shared KnowledgeStore once and return it."""
         if self._knowledge_store is None:
             db_dir = os.path.join(str(config_dir()), "workspace", "knowledge")
             os.makedirs(db_dir, exist_ok=True)
             self._knowledge_store = KnowledgeStore(os.path.join(db_dir, "knowledge.db"))
         return self._knowledge_store
+
+    @property
+    def knowledge_store(self):  # type: ignore[override]
+        """Return the shared KnowledgeStore, creating it when needed."""
+        return self._initialize_knowledge_store()
 
     def enable_yolo(self, *, from_config: bool = False) -> None:
         """Activate safety override (delegates to safety_override module)."""

@@ -72,6 +72,45 @@ class TestKnowledgeStore:
         assert len(results) >= 1
         assert results[0]["title"] == "Auth Design"
 
+    def test_fts_cjk_search_matches_separated_words(self, store):
+        store.add_item("Memory leak", "今天调查了内存里的数据泄漏问题", "note")
+        store.add_item("Unrelated", "完全无关的话题", "note")
+
+        results = store.search_items_fts("内存泄漏")
+
+        assert [item["title"] for item in results] == ["Memory leak"]
+        assert store.search_items_fts_count("内存泄漏") == 1
+
+    def test_fts_cjk_search_prefers_adjacent_match(self, store):
+        store.add_item("Scattered", "内存里的数据泄漏了", "note")
+        store.add_item("Adjacent", "内存泄漏定位完成了", "note")
+
+        results = store.search_items_fts("内存泄漏")
+
+        assert [item["title"] for item in results] == ["Adjacent", "Scattered"]
+
+    def test_fts_cjk_search_matches_single_character(self, store):
+        store.add_item("Valve", "泄压阀已检查", "note")
+
+        assert [item["title"] for item in store.search_items_fts("泄")] == ["Valve"]
+
+    def test_fts_mixed_script_token_matches_split_text(self, store):
+        store.add_item("Deployment", "kirocrew 的部署流程记录", "note")
+
+        assert [item["title"] for item in store.search_items_fts("kirocrew部署")] == [
+            "Deployment"
+        ]
+
+    def test_fts_cjk_search_requires_all_query_characters(self, store):
+        store.add_item("Memory only", "内存充足没有问题", "note")
+
+        assert store.search_items_fts("内存泄漏") == []
+
+    def test_fts_cjk_search_rejects_character_scatter(self, store):
+        store.add_item("Scattered", "内部保存了泄压阀和漏水的记录", "note")
+
+        assert store.search_items_fts("内存泄漏") == []
+
     def test_add_entity_and_relation(self, store):
         e1 = store.add_entity("AuthService", "service", description="Handles auth")
         e2 = store.add_entity("DynamoDB", "technology", description="NoSQL DB")
@@ -406,6 +445,14 @@ class TestHybridRetriever:
         assert results[0]["title"] == "Auth Design"
         assert "keyword" in results[0]["match_type"]
 
+    def test_keyword_search_cjk_recall(self, store):
+        store.add_item("Memory leak", "今天调查了内存里的数据泄漏问题", "note")
+        retriever = HybridRetriever(store)
+
+        results = retriever.search("内存泄漏")
+
+        assert [item["title"] for item in results] == ["Memory leak"]
+
     def test_rrf_fuse(self):
         list_a = [("item1", 1), ("item2", 2), ("item3", 3)]
         list_b = [("item2", 1), ("item3", 2), ("item4", 3)]
@@ -677,6 +724,35 @@ class TestKnowledgeStoreExtended:
         item = store.get_item(item_id)
         assert item["title"] == "Updated"
         assert item["content"] == "new content about dogs"
+
+    def test_update_item_fts_sync_for_cjk(self, store):
+        item_id = store.add_item("Original", "内存里的问题", "doc")
+        assert store.search_items_fts("内存")
+
+        store.update_item(item_id, content="部署流程已经完成")
+
+        assert store.search_items_fts("内存") == []
+        assert [item["id"] for item in store.search_items_fts("部署")] == [item_id]
+        store.delete_item(item_id)
+        assert store.search_items_fts("部署") == []
+
+    def test_existing_fts_rows_are_rebuilt_with_cjk_normalization(self, store_factory):
+        legacy = store_factory("legacy.db")
+        item_id = legacy.add_item("Memory leak", "今天调查了内存里的数据泄漏问题", "note")
+        row = legacy.db.execute(
+            "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
+        legacy.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
+        legacy.db.execute(
+            "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+            (row["rowid"], row["title"], row["content"], row["tags"]),
+        )
+        legacy.db.execute("PRAGMA user_version = 0")
+        legacy.close()
+
+        migrated = store_factory("legacy.db")
+
+        assert [item["id"] for item in migrated.search_items_fts("内存泄漏")] == [item_id]
 
     def test_update_item_no_fields(self, store):
         item_id = store.add_item("Doc", "content", "doc")

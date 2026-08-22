@@ -42,6 +42,7 @@ from kiro_crew.knowledge.folder_watcher import (
     max_files_prop,
     walk_filters,
 )
+from kiro_crew.knowledge.fts import build_fts5_query, script_runs
 from kiro_crew.knowledge.ingestion import (
     IngestionPipeline,
     _redact,
@@ -499,12 +500,20 @@ async def get_entity_items(request: web.Request) -> web.Response:
     """GET /api/knowledge/entities/by-name/{name}/items -- items containing entity."""
     store = _store(request)
     name = request.match_info["name"]
-    # Search items via FTS5 for the entity name
-    sanitized = name.replace('"', '""')
+    # Search items via FTS5 for the entity name. The index stores CJK
+    # characters as separate tokens, so the shared builder is required there;
+    # ASCII names retain the endpoint's existing exact-phrase behavior.
+    if any(is_cjk for _, is_cjk in script_runs(name)):
+        sanitized = build_fts5_query(name, joiner="AND")
+    else:
+        escaped = name.replace('"', '""')
+        sanitized = f'"{escaped}"'
+    if not sanitized:
+        return web.json_response([])
     rows = store.db.execute(
         "SELECT i.* FROM items i JOIN items_fts f ON i.rowid = f.rowid "
         "WHERE items_fts MATCH ? AND i.status = 'active' ORDER BY i.updated_at DESC LIMIT 50",
-        (f'"{sanitized}"',),
+        (sanitized,),
     ).fetchall()
     return web.json_response([store._serialize_item(r) for r in rows])
 

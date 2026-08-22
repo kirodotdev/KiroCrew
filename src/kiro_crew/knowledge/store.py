@@ -10,12 +10,17 @@ from collections import defaultdict
 from datetime import datetime
 from uuid import uuid4
 
+from kiro_crew.knowledge.fts import build_fts5_query, normalize_fts_text
+
 try:
     import pysqlite3 as sqlite3
 except ImportError:
     import sqlite3
 
 logger = logging.getLogger(__name__)
+
+_FTS_INDEX_VERSION = 1
+_FTS_REBUILD_BATCH_SIZE = 500
 
 
 class _NodeView:
@@ -401,8 +406,38 @@ class KnowledgeStore:
         """)
         self.db.commit()
 
+    def _migrate_fts_index(self) -> None:
+        """Rebuild the external-content FTS index when its token format changes."""
+        version = self.db.execute("PRAGMA user_version").fetchone()[0]
+        if version >= _FTS_INDEX_VERSION:
+            return
+
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
+            rows = self.db.execute("SELECT rowid, title, content, tags FROM items")
+            while batch := rows.fetchmany(_FTS_REBUILD_BATCH_SIZE):
+                self.db.executemany(
+                    "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+                    [
+                        (
+                            row["rowid"],
+                            normalize_fts_text(row["title"]),
+                            normalize_fts_text(row["content"]),
+                            normalize_fts_text(row["tags"]),
+                        )
+                        for row in batch
+                    ],
+                )
+            self.db.execute(f"PRAGMA user_version = {_FTS_INDEX_VERSION}")
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
     def _migrate(self):
         """Add columns that may be missing in older databases."""
+        self._migrate_fts_index()
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(items)").fetchall()}
         if "namespace" not in cols:
             self.db.execute("ALTER TABLE items ADD COLUMN namespace TEXT DEFAULT 'default'")
@@ -665,6 +700,14 @@ class KnowledgeStore:
             self.graph.add_edge(row["source_id"], row["target_id"],
                                 id=row["id"], relation_type=row["relation_type"], weight=row["weight"])
 
+    @staticmethod
+    def _fts_values(title: str, content: str, tags: str) -> tuple[str, str, str]:
+        return (
+            normalize_fts_text(title),
+            normalize_fts_text(content),
+            normalize_fts_text(tags),
+        )
+
     def add_item(self, title, content, item_type, source_id=None, chunk_index=0,
                  summary=None, tags=None, embedding=None, namespace="default",
                  content_hash=None) -> str:
@@ -681,7 +724,7 @@ class KnowledgeStore:
             rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[0]
             self.db.execute(
                 "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                (rowid, title, content, tags_json))
+                (rowid, *self._fts_values(title, content, tags_json)))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -724,12 +767,14 @@ class KnowledgeStore:
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
                 self.db.execute("INSERT INTO items_fts (items_fts, rowid, title, content, tags) VALUES ('delete', ?, ?, ?, ?)",
-                                (old_row["rowid"], old_row["title"], old_row["content"], old_row["tags"]))
+                                (old_row["rowid"], *self._fts_values(
+                                    old_row["title"], old_row["content"], old_row["tags"])))
                 new_row = self.db.execute(
                     "SELECT title, content, tags FROM items WHERE id = ?", (item_id,)
                 ).fetchone()
                 self.db.execute("INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                                (old_row["rowid"], new_row["title"], new_row["content"], new_row["tags"]))
+                                (old_row["rowid"], *self._fts_values(
+                                    new_row["title"], new_row["content"], new_row["tags"])))
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -740,7 +785,8 @@ class KnowledgeStore:
         row = self.db.execute("SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)).fetchone()
         if row:
             self.db.execute("INSERT INTO items_fts (items_fts, rowid, title, content, tags) VALUES ('delete', ?, ?, ?, ?)",
-                            (row["rowid"], row["title"], row["content"], row["tags"]))
+                            (row["rowid"], *self._fts_values(
+                                row["title"], row["content"], row["tags"])))
         self.db.execute("DELETE FROM source_locations WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM mentions WHERE item_id = ?", (item_id,))
         self.db.execute("DELETE FROM entity_relations WHERE source_item_id = ?", (item_id,))
@@ -1144,7 +1190,9 @@ class KnowledgeStore:
                     self.db.execute(
                         "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
                         "VALUES ('delete', ?, ?, ?, ?)",
-                        (row["rowid"], row["title"], row["content"], row["tags"]))
+                        (row["rowid"], *self._fts_values(
+                            row["title"], row["content"], row["tags"])),
+                    )
                 self.db.execute(
                     f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed)  # noqa: S608
                 self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
@@ -1237,8 +1285,7 @@ class KnowledgeStore:
 
     @staticmethod
     def _sanitize_fts5(query: str) -> str:
-        tokens = query.split()
-        return " ".join('"' + t.replace('"', '""') + '"' for t in tokens if t)
+        return build_fts5_query(query, joiner="AND")
 
     def add_entity(self, name, entity_type, description=None, aliases=None) -> str:
         eid = str(uuid4())
@@ -1555,7 +1602,9 @@ class KnowledgeStore:
                     if row:
                         self.db.execute(
                             "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-                            (row[0], item["title"], item["content"], item.get("tags", "[]")))
+                            (row[0], *self._fts_values(
+                                item["title"], item["content"], item.get("tags", "[]"))),
+                        )
             for ent in bundle.get("entities", []):
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "

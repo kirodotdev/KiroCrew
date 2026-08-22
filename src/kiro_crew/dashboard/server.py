@@ -2630,7 +2630,10 @@ async def start_dashboard(
     # Offloaded: copytree/rmtree/stat are blocking filesystem calls.
     await asyncio.to_thread(_register_deploy_skills)
 
-    # Knowledge Library
+    # KnowledgeStore construction includes synchronous SQLite schema/FTS migration
+    # and graph loading. Complete it off the event loop so route registration can
+    # reuse the initialized instance without a blocking first property access.
+    await asyncio.to_thread(state._initialize_knowledge_store)
     setup_knowledge_routes(app)
     setup_weixin_routes(app)
     setup_feedback_routes(app)

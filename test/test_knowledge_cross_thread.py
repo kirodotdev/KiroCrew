@@ -43,6 +43,41 @@ def _add_item(store: KnowledgeStore, title: str, content: str) -> None:
     )
 
 
+def test_worker_thread_constructor_migrates_legacy_fts_and_loads_graph(tmp_path):
+    """A worker-created store migrates FTS and remains usable from the loop thread."""
+    db_path = str(tmp_path / "legacy-construction.db")
+    seed = KnowledgeStore(db_path)
+    item_id = seed.add_item("Memory leak", "今天调查了内存里的数据泄漏问题", "note")
+    entity_id = seed.add_entity("SQLite", "technology")
+    related_entity_id = seed.add_entity("FTS5", "technology")
+    seed.add_entity_relation(entity_id, related_entity_id, "uses")
+    row = seed.db.execute(
+        "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+    ).fetchone()
+    seed.db.execute("INSERT INTO items_fts (items_fts) VALUES ('delete-all')")
+    seed.db.execute(
+        "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
+        (row["rowid"], row["title"], row["content"], row["tags"]),
+    )
+    seed.db.execute("PRAGMA user_version = 0")
+    seed.close()
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="knowledge-init") as pool:
+        migrated = pool.submit(KnowledgeStore, db_path).result(timeout=10)
+        worker_matches = pool.submit(
+            lambda: [item["id"] for item in migrated.search_items_fts("内存泄漏")]
+        ).result(timeout=10)
+
+    try:
+        assert worker_matches == [item_id]
+        assert [item["id"] for item in migrated.search_items_fts("内存泄漏")] == [item_id]
+        assert migrated.get_item(item_id)["content"] == "今天调查了内存里的数据泄漏问题"
+        assert migrated.db.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert migrated.graph.has_node(entity_id)
+    finally:
+        migrated.close()
+
+
 def test_db_property_returns_per_thread_connections(store):
     """Each thread must observe a distinct sqlite connection object."""
     main_conn = store.db
