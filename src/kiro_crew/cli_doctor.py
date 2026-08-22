@@ -225,17 +225,18 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     tiers.append(("global agent.model", normalize_agent_model(cfg.agent.model)))
     tiers.append(("default spec pin", default_model))
 
-    decided_by = next((label for label, value in tiers if value), "bundled defaults.json")
-    if any(value for _, value in tiers):
-        decided_value = next(value for _, value in tiers if value)
-    elif default_readable:
-        # Nothing pinned anything, so the bundled default answered and the
-        # resolver's value is legitimately ours.
-        decided_value = effective
+    # Label and value come out of the SAME tier by construction; a second lookup
+    # for the value could be filtered differently and mis-attribute the decision.
+    decided = next(((label, value) for label, value in tiers if value), None)
+    if decided is not None:
+        decided_by, decided_value = decided
     else:
-        # A spec read was REFUSED, so the resolver may have followed a link this
-        # report would not. Adopting its answer here would hide exactly that.
-        decided_value = ""
+        decided_by = "bundled defaults.json"
+        # Nothing pinned anything, so the bundled default answered and the
+        # resolver's value is legitimately ours -- unless a spec read was
+        # REFUSED, in which case the resolver may have followed a link this
+        # report would not, and adopting its answer would hide exactly that.
+        decided_value = effective if default_readable else ""
 
     print(f"  effective:   {_safe_display(effective) if effective else 'auto (backend picks)'}")
     print(f"  decided by:  {decided_by}")
@@ -292,19 +293,20 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         # Resolved the way kiro-cli itself resolves --agent, via the existing
         # helper: the DECLARED name wins and the filename is only the fallback,
         # so a project spec that declares this agent under some other filename is
-        # still found. Checking `<bound>.json` alone missed exactly that and
-        # under-reported the shadow.
+        # still found. Matching on `<bound>.json` alone would miss exactly that
+        # and under-report the shadow.
         proj_spec = next(
             (p for p in project_agent_files(project_dir) if project_agent_name(p) == bound),
             None,
         )
         if proj_spec is not None:
             proj_model, proj_usable = _spec_model(proj_spec)
-            shown = (
-                _safe_display(proj_model)
-                if proj_model
-                else ("(unreadable)" if not proj_usable else "(no model)")
-            )
+            if proj_model:
+                shown = _safe_display(proj_model)
+            elif not proj_usable:
+                shown = "(unreadable)"
+            else:
+                shown = "(no model)"
             print(f"  project spec: ⚠️  {_safe_display(str(proj_spec))} -> {shown}")
             print("                kiro-cli loads this one first; not read above")
             issues.append("project-local agent spec shadows the user-level one")
@@ -326,7 +328,7 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     """Return the OS-appropriate Fix hint (brew on macOS, winget on Windows,
     else Linux guidance).
 
-    Without a Windows arm, Windows fell through to the Linux text — telling a
+    Without a Windows arm Windows would fall through to the Linux text, telling a
     Windows user to ``pipx``/drop a static build in ``~/.local/bin``, neither of
     which applies. When *windows* is omitted the Linux text is still used, so
     callers only pass it where a Windows-specific remedy exists.
@@ -443,8 +445,8 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             # ungoverned — and leaving it in place means the ceiling applies only
             # to installs that were governed before their first launch. Every
             # other writer of this list revokes here too (agent.py's shared sync,
-            # both dashboard enable paths); doctor was the one that only declined
-            # to mint, which left `kirocrew doctor` reporting a repaired config
+            # both dashboard enable paths); declining to MINT without also
+            # revoking would leave `kirocrew doctor` reporting a repaired config
             # that still carried the exemption.
             #
             # This is the one case where doctor removes something from
@@ -1016,7 +1018,7 @@ _WINDOWS_GIT_DIRS = (
 def _windows_git_bin() -> str | None:
     """``git.exe`` from the fixed Git for Windows install roots, else ``None``.
 
-    Without this, every supported Windows source install reported "could not
+    Without this, every supported Windows source install reports "could not
     check" — :func:`platform_compat.trusted_system_bin` only probes the system
     directories, where git never is. A non-default-drive install still misses
     and degrades to "could not check", which is honest: this fallback widens
@@ -1108,8 +1110,11 @@ def _doctor_source_checkout(repo: Path) -> None:
         print(f"  branch:      ⚠️  {branch} (could not determine default branch)")
         return
 
+    # One count for both arms below; they ask git the same question and only
+    # differ in how they render the answer.
+    behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
+
     if branch == default_branch:
-        behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
         if behind is None or not behind.isdigit():
             # A failed count must not masquerade as a verified-fresh checkout:
             # "up to date" is a claim this probe could not actually establish.
@@ -1123,7 +1128,6 @@ def _doctor_source_checkout(repo: Path) -> None:
             print(f"  branch:      ✅ {default_branch} (up to date as of last fetch)")
         return
 
-    behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
     detail = (
         f", {behind} commit(s) behind origin/{default_branch}"
         if behind and behind.isdigit() and int(behind) > 0
@@ -1692,12 +1696,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Report the composed profile, and surface a boot-composition failure as a
     # blocking issue with the remediation hint rather than letting it abort the
     # whole CLI before the doctor can run.
+    print("Platform")
     if platform_boot_error is not None:
-        print("Platform")
         print(f"  edition:     ❌ composition failed: {platform_boot_error}")
         issues.append(f"platform composition failed: {platform_boot_error}")
     else:
-        print("Platform")
         # Bind the context ONCE for the whole block so the edition line and the
         # jail line describe the same PlatformContext.  A late
         # PlatformCompositionError (boot succeeded, but a lazily-composing adapter
@@ -1798,12 +1801,13 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # venv detection — used by the runtime section below. Windows venvs put the
     # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
-    # hardcoded POSIX layout misreported the venv (and the runtime section) on
+    # hardcoded POSIX layout misreports the venv (and the runtime section) on
     # every Windows install.
+    venv_root = Path(__file__).resolve().parents[2] / ".venv"
     if platform_compat.IS_WINDOWS:
-        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+        venv_py = venv_root / "Scripts" / "python.exe"
     else:
-        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python3"
+        venv_py = venv_root / "bin" / "python3"
     is_venv_install = venv_py.is_file()
 
     # ── Project ──
@@ -1865,7 +1869,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if _port:
         print(f"  dashboard:   http://{_display_host}:{_port}")
 
-    # Dashboard auth mode
+    # Dashboard auth mode. Both this section and the Slack section below key off
+    # the SAME credential read and the same token pair, so the two can never
+    # disagree about whether Slack is configured.
     creds = cfg.load_credentials()
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = is_local_only(_host, _has_slack)
@@ -2092,8 +2098,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # STT ships enabled-by-default, but neither whisper nor ffmpeg is on a stock
     # Windows box and neither is a KiroCrew dependency there. Reporting them as
-    # hard issues made `kirocrew doctor` exit 1 on a healthy first install, and
-    # the guide's `kirocrew doctor && kirocrew gateway` then never launched the
+    # hard issues makes `kirocrew doctor` exit 1 on a healthy first install, so
+    # the guide's `kirocrew doctor && kirocrew gateway` never launches the
     # gateway. On Windows treat them as non-fatal notes; POSIX keeps failing so
     # a real STT setup gap is still surfaced.
     stt_fatal = not platform_compat.IS_WINDOWS
@@ -2173,9 +2179,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Slack (optional) ──
     print("\nSlack Integration")
-    creds = cfg.load_credentials()
-    has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
-    if has_slack:
+    if _has_slack:
         has_owner = bool(creds.get("KIROCREW_OWNER_ID"))
         print("  tokens:      ✅ configured")
         if has_owner:
