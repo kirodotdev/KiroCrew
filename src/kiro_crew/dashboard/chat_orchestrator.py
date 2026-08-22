@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -126,13 +128,43 @@ async def _previous_result_paths(
     return await asyncio.to_thread(_read_previous_results, recorded)
 
 
-def _capture_stage_result(
+def _write_stage_result(slot_key: str, stage_num: int, result_text: str) -> tuple[str, str]:
+    """Write *result_text* to a uniquely-named temp file beside the target.
+
+    Returns ``(temp_path, final_path)``. Split out so the blocking syscalls
+    can be handed to a worker thread as a unit; it takes only immutable
+    values — never the slot — so nothing the loop owns is reachable from the
+    worker.
+
+    The worker deliberately never touches ``final_path``: it writes to a
+    ``uuid``-named sibling, and the caller publishes it with ``os.replace``
+    on the loop thread only after this call returns uncancelled. An
+    abandoned worker (cancelled caller, closed slot, reused slot key) can
+    therefore never overwrite a stage result — its orphan temp file is the
+    entire blast radius.
+    """
+    session_dir = config_dir() / "sessions" / slot_key
+    session_dir.mkdir(parents=True, exist_ok=True)
+    final = session_dir / f"stage_{stage_num}_result.md"
+    tmp = session_dir / f".stage_{stage_num}_result.{uuid.uuid4().hex}.tmp"
+    tmp.write_text(result_text, encoding="utf-8")
+    return str(tmp), str(final)
+
+
+async def _capture_stage_result(
     slot: "_ChatSlot",
     stage_num: int,
 ) -> str:
     """Extract assistant messages since stage start and write to disk.
 
     Returns the path to the result file.
+
+    The extraction stays on the event-loop thread because ``slot.messages`` is
+    live mutable state the loop owns; only the finished text crosses into the
+    worker, so a concurrent append cannot be read from another thread. The
+    filesystem half runs off-loop: ``_stage_loop`` is async and this runs at every
+    stage boundary, so a slow ``mkdir``/``write_text`` would stall chat streaming,
+    WebSocket frames and cron dispatch for its duration.
     """
     # Collect assistant text from the most recent messages (since last stage separator)
     result_parts: list[str] = []
@@ -154,11 +186,26 @@ def _capture_stage_result(
     result_parts.reverse()
     result_text = "\n\n".join(result_parts)
 
-    session_dir = config_dir() / "sessions" / slot.key
-    session_dir.mkdir(parents=True, exist_ok=True)
-    path = session_dir / f"stage_{stage_num}_result.md"
-    path.write_text(result_text, encoding="utf-8")
-    return str(path)
+    # The worker writes the payload to a uuid-named TEMP file and never
+    # touches the canonical path. Publication — a single atomic
+    # ``os.replace`` — happens back on the loop thread, strictly after this
+    # await returns uncancelled. That makes the whole orphan-writer class
+    # structurally unreachable: a cancellation here (stop button, slot
+    # close, slot-key reuse after deletion) abandons at most a temp file,
+    # because no code path lets an abandoned worker reach
+    # ``stage_N_result.md``. ``os.replace`` is a metadata-only syscall, so
+    # keeping it on the loop preserves the offload's purpose (the payload
+    # write is the blocking half).
+    tmp_path, final_path = await asyncio.to_thread(
+        _write_stage_result, slot.key, stage_num, result_text
+    )
+    try:
+        os.replace(tmp_path, final_path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
+        raise
+    return final_path
 
 
 def _completion_excerpts(result_paths: tuple[tuple[int, str], ...]) -> dict[int, str]:
@@ -587,10 +634,18 @@ async def _stage_loop(
 
             # Capture result to disk
             try:
-                result_path = _capture_stage_result(slot, stage_num)
+                result_path = await _capture_stage_result(slot, stage_num)
                 tracker.record_stage_result(stage_num, result_path)
             except OSError:
                 logger.warning("Failed to capture stage %d result to disk", stage_num, exc_info=True)
+
+            # The offloaded write above is a suspension point between the
+            # loop's last stop check and the next stage. A stop that lands
+            # while the worker is writing (user cancel sets tracker.stopped
+            # and slot._auto_run, but `auto_run` below is a call-time
+            # snapshot) must not let the run advance to another stage.
+            if slot._stopping or tracker.stopped:
+                break
 
             # Gate: if not auto_run, wait for user approval
             if not auto_run:
