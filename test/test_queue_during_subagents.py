@@ -164,7 +164,10 @@ class TestApiChatSubagentQueueGate:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         ran = {"called": False}
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature (it gained a
+        # keyword-only operator_authored flag); a hard-coded positional three raises
+        # TypeError and surfaces as a 500 from the chat API.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             ran["called"] = True
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -187,7 +190,10 @@ class TestApiChatSubagentQueueGate:
     async def test_not_queued_when_no_subagents_running(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature (it gained a
+        # keyword-only operator_authored flag); a hard-coded positional three raises
+        # TypeError and surfaces as a 500 from the chat API.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             return None
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)

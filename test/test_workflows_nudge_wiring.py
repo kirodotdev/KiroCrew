@@ -307,9 +307,19 @@ class FakeNudgeSvc:
         max_cycles=0,
         stop_sentinel_path="",
         max_runtime_secs=0,
+        agent="",
     ):
+        # `agent` mirrors the real signature: the chokepoint records the crew the
+        # loop was armed under so its nudge bodies resolve that crew's variables.
         self.added.append((slot_key, message, idle_secs, max_cycles))
-        return SimpleNamespace(id="loop1", slot_key=slot_key, idle_secs=idle_secs, max_cycles=max_cycles)
+        self.armed_agent = agent
+        return SimpleNamespace(
+            id="loop1",
+            slot_key=slot_key,
+            idle_secs=idle_secs,
+            max_cycles=max_cycles,
+            agent=agent,
+        )
 
 
 class FakeDiscordDispatcher:

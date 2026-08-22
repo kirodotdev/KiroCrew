@@ -22,12 +22,27 @@ def test_known_sections_equals_emitted_sections():
     in _KNOWN would be captured as "unknown" and could round-trip a stale copy.
     """
     emitted = set(KiroCrewConfig().to_dict().keys())
-    # to_dict() also stamps slack sub-keys / meta at save() time; compare only
-    # the top-level section names it writes from to_dict() itself.
     assert emitted == set(_KNOWN_CONFIG_SECTIONS), (
         "drift between to_dict() output and _KNOWN_CONFIG_SECTIONS: "
         f"emitted-only={emitted - set(_KNOWN_CONFIG_SECTIONS)}, "
         f"known-only={set(_KNOWN_CONFIG_SECTIONS) - emitted}"
+    )
+
+
+def test_a_legacy_variables_section_round_trips_instead_of_vanishing():
+    """``variables`` moved to its own store, so this core no longer models it.
+
+    It must behave like any other unmodelled section: preserved verbatim rather than
+    silently deleted by the next save. Deleting it would be data loss for anyone who
+    followed earlier config.json guidance.
+    """
+    assert "variables" not in _KNOWN_CONFIG_SECTIONS, (
+        "variables is listed as known but to_dict() does not emit it, so a legacy "
+        "key would be neither preserved nor written -- silently deleted on save"
+    )
+    assert "variables" not in KiroCrewConfig().to_dict(), (
+        "to_dict() emits variables again; a whole-config write could then clobber "
+        "the store's data"
     )
 
 

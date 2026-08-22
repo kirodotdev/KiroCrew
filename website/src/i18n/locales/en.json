@@ -7546,6 +7546,33 @@
         "tokens_count_one": "{{count}} access token",
         "tokens_count_other": "{{count}} access tokens",
         "could_not_read_webhook_status": "Could not read webhook status — check that the gateway is running"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "Global Environment Variables",
+        "workspace_environment_variables": "Workspace Environment Variables",
+        "plain_text_note": "Environment variables are not a secret store. Every value is saved as plain text in variables.json, so keep credentials out of them.",
+        "name": "Name",
+        "value": "Value",
+        "scope": "Scope",
+        "actions": "Actions",
+        "add": "Add",
+        "remove_variable": "Remove {{name}}",
+        "no_variables_yet": "No variables are defined at this scope yet.",
+        "no_workspace_variables": "No workspace defines variables of its own.",
+        "unavailable": "Environment variables could not be read from the gateway.",
+        "save_failed": "Could not save environment variables.",
+        "error_name_pattern": "A name must start with a letter and may contain only letters, digits and underscores.",
+        "error_name_reserved": "That name is reserved for a built-in prompt placeholder.",
+        "error_name_duplicate": "That name is already defined at this scope.",
+        "error_value_length": "A value may be at most {{max}} characters long.",
+        "error_value_control": "A value may not contain control characters other than tab.",
+        "scope_global": "Global",
+        "scope_workspace": "Workspace",
+        "scope_crew": "Crew",
+        "scope_session": "Session",
+        "shadowed_by": "Shadowed by {{scope}}",
+        "overrides": "Overrides {{scope}}",
+        "workspace_named": "Workspace {{name}}"
       }
     },
     "settingsPage": {
@@ -7837,6 +7864,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "Store API keys and credentials securely"
+    },
+      "variables": {
+        "label": "Environment Variables",
+        "description": "Reusable values that expand inside agent messages"
       }
     },
     "secrets": {

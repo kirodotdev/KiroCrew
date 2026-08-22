@@ -11905,6 +11905,33 @@
         "tokens_count_other": "{{count}} jetons d'accès",
         "tokens_count_many": "{{count}} jetons d'accès",
         "could_not_read_webhook_status": "Impossible de lire l'état du webhook — vérifie que la passerelle est démarrée"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "Variables d'environnement globales",
+        "workspace_environment_variables": "Variables d'environnement de l'espace de travail",
+        "plain_text_note": "Les variables d'environnement ne sont pas un coffre à secrets. Chaque valeur est enregistrée en texte brut dans variables.json, n'y mets donc pas d'identifiants.",
+        "name": "Nom",
+        "value": "Valeur",
+        "scope": "Portée",
+        "actions": "Actions",
+        "add": "Ajouter",
+        "remove_variable": "Supprimer {{name}}",
+        "no_variables_yet": "Aucune variable n'est encore définie à cette portée.",
+        "no_workspace_variables": "Aucun espace de travail ne définit ses propres variables.",
+        "unavailable": "Les variables d'environnement n'ont pas pu être lues depuis le gateway.",
+        "save_failed": "Les variables d'environnement n'ont pas pu être enregistrées.",
+        "error_name_pattern": "Un nom doit commencer par une lettre et ne peut contenir que des lettres, des chiffres et des tirets bas.",
+        "error_name_reserved": "Ce nom est réservé à un espace réservé de prompt intégré.",
+        "error_name_duplicate": "Ce nom est déjà défini à cette portée.",
+        "error_value_length": "Une valeur ne peut pas dépasser {{max}} caractères.",
+        "error_value_control": "Une valeur ne peut pas contenir de caractères de contrôle autres que la tabulation.",
+        "scope_global": "Global",
+        "scope_workspace": "Espace de travail",
+        "scope_crew": "Crew",
+        "scope_session": "Session",
+        "shadowed_by": "Remplacé par {{scope}}",
+        "overrides": "Remplace {{scope}}",
+        "workspace_named": "Espace de travail {{name}}"
       }
     },
     "settingsPage": {
@@ -12318,6 +12345,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "Stockez les clés API et identifiants en toute sécurité"
+    },
+      "variables": {
+        "label": "Variables d'environnement",
+        "description": "Valeurs réutilisables qui sont insérées dans les messages de l'agent"
       }
     },
     "secrets": {

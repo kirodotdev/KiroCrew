@@ -11780,6 +11780,33 @@
         "tokens_count_one": "{{count}} ऐक्सेस टोकन",
         "tokens_count_other": "{{count}} ऐक्सेस टोकन",
         "could_not_read_webhook_status": "webhook स्थिति नहीं पढ़ी जा सकी — देखो कि गेटवे चल रहा है"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "ग्लोबल एनवायरनमेंट वेरिएबल",
+        "workspace_environment_variables": "वर्कस्पेस के एनवायरनमेंट वेरिएबल",
+        "plain_text_note": "एनवायरनमेंट वेरिएबल सीक्रेट रखने की जगह नहीं हैं। हर मान variables.json में सादे टेक्स्ट के रूप में सेव होता है, इसलिए इनमें क्रेडेंशियल मत रखो।",
+        "name": "नाम",
+        "value": "मान",
+        "scope": "स्कोप",
+        "actions": "कार्रवाइयाँ",
+        "add": "जोड़ो",
+        "remove_variable": "{{name}} हटाओ",
+        "no_variables_yet": "इस स्कोप में अभी कोई वेरिएबल परिभाषित नहीं है।",
+        "no_workspace_variables": "कोई वर्कस्पेस अपने वेरिएबल परिभाषित नहीं करता।",
+        "unavailable": "गेटवे से एनवायरनमेंट वेरिएबल पढ़े नहीं जा सके।",
+        "save_failed": "एनवायरनमेंट वेरिएबल सेव नहीं हो सके।",
+        "error_name_pattern": "नाम अक्षर से शुरू होना चाहिए और उसमें केवल अक्षर, अंक और अंडरस्कोर हो सकते हैं।",
+        "error_name_reserved": "यह नाम बिल्ट-इन प्रॉम्प्ट प्लेसहोल्डर के लिए आरक्षित है।",
+        "error_name_duplicate": "यह नाम इस स्कोप में पहले से परिभाषित है।",
+        "error_value_length": "मान अधिकतम {{max}} अक्षर लंबा हो सकता है।",
+        "error_value_control": "मान में टैब के अलावा कोई नियंत्रण वर्ण नहीं हो सकता।",
+        "scope_global": "ग्लोबल",
+        "scope_workspace": "वर्कस्पेस",
+        "scope_crew": "Crew",
+        "scope_session": "सेशन",
+        "shadowed_by": "{{scope}} द्वारा अधिलेखित",
+        "overrides": "{{scope}} को अधिलेखित करता है",
+        "workspace_named": "वर्कस्पेस {{name}}"
       }
     },
     "settingsPage": {
@@ -12185,6 +12212,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "API कुंजियाँ और क्रेडेंशियल सुरक्षित रूप से संग्रहीत करें"
+    },
+      "variables": {
+        "label": "एनवायरनमेंट वेरिएबल",
+        "description": "एजेंट के मैसेज में विस्तारित होने वाले पुनःप्रयोज्य मान"
       }
     },
     "secrets": {

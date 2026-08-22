@@ -715,7 +715,10 @@ class TestApiChatDrainOnDisconnect:
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("s1")
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature: it gained a
+        # keyword-only operator_authored flag, and a stub that hard-codes the
+        # positional three raises TypeError the moment production grows a parameter.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             sl.append("chunk", "partial answer", "chunk")
             await asyncio.sleep(60)
 
@@ -754,7 +757,10 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature: it gained a
+        # keyword-only operator_authored flag, and a stub that hard-codes the
+        # positional three raises TypeError the moment production grows a parameter.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -782,7 +788,10 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature: it gained a
+        # keyword-only operator_authored flag, and a stub that hard-codes the
+        # positional three raises TypeError the moment production grows a parameter.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -806,7 +815,10 @@ class TestApiChatMemoryModeForwarding:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature: it gained a
+        # keyword-only operator_authored flag, and a stub that hard-codes the
+        # positional three raises TypeError the moment production grows a parameter.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)
@@ -877,7 +889,10 @@ class TestApiChatNoBrowseMarker:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
 
-        async def fake_run_chat(st, sl, msg):
+        # **kwargs so this stub tracks _run_chat's real signature: it gained a
+        # keyword-only operator_authored flag, and a stub that hard-codes the
+        # positional three raises TypeError the moment production grows a parameter.
+        async def fake_run_chat(st, sl, msg, **kwargs):
             sl.append("chunk", "ack", "chunk")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", fake_run_chat)

@@ -210,7 +210,8 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
             # sink prefix is what makes this safe -- it is precisely what a regex
             # literal (``re.search(...)``), a commit message and prose lack, so
             # they stay allowed while ``os.system(\"... token\")`` does not.
-            "|" "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
+            "|"
+            "(?:os\\.system|os\\.popen|os\\.exec\\w*|(?:asyncio\\.)?create_subprocess_\\w*"
             "|(?:\\w+\\.)?(?:run|call|check_call|check_output|popen|Popen|getoutput|getstatusoutput)"
             "|commands\\.getoutput|popen\\d?|system|shell_exec|passthru|proc_open"
             "|child_process\\.exec\\w*|exec\\w*sync|spawn\\w*"
@@ -2393,6 +2394,8 @@ _ONE_CHAR_CLASS_RE = re.compile(r"\[(\w)\]")
 def _debracket(text: str) -> str:
     """Collapse one-character bracket classes (``[k]irocrew`` -> ``kirocrew``)."""
     return _ONE_CHAR_CLASS_RE.sub(r"\1", text)
+
+
 # The product name as a WHOLE program name (bare or the tail of a path), which is
 # what distinguishes ``bin/kirocrew token`` from ``cd kirocrew-wt-x``.
 
@@ -2758,10 +2761,42 @@ _ENV_SPLIT_PROGRAMS = frozenset({"env"})
 # unrecognised program is "this could execute the name".
 _DATA_CONSUMER_PROGRAMS = frozenset(
     {
-        "echo", "printf", "print", "cat", "tac", "tee", "head", "tail", "less", "more",
-        "grep", "egrep", "fgrep", "rg", "ag", "ack", "sed", "awk", "cut", "tr", "sort",
-        "uniq", "wc", "nl", "fold", "column", "comm", "diff", "strings", "jq", "yq",
-        "base64", "md5sum", "sha256sum", "xxd", "od",
+        "echo",
+        "printf",
+        "print",
+        "cat",
+        "tac",
+        "tee",
+        "head",
+        "tail",
+        "less",
+        "more",
+        "grep",
+        "egrep",
+        "fgrep",
+        "rg",
+        "ag",
+        "ack",
+        "sed",
+        "awk",
+        "cut",
+        "tr",
+        "sort",
+        "uniq",
+        "wc",
+        "nl",
+        "fold",
+        "column",
+        "comm",
+        "diff",
+        "strings",
+        "jq",
+        "yq",
+        "base64",
+        "md5sum",
+        "sha256sum",
+        "xxd",
+        "od",
     }
 )
 # Control operators that end one command and begin another.  Used to find the
@@ -2888,9 +2923,7 @@ def _resolve_function_aliases(tokens: "list[str]") -> "list[str]":
 # ``${VAR:0}`` / ``${VAR^^}`` / ``${VAR/x/y}`` and friends TRANSFORM a variable's own
 # value.  The ``:-``/``:+``/``:=``/``:?`` default forms are deliberately NOT matched here --
 # those carry a literal of their own and are handled by ``_resolve_param_defaults``.
-_PARAM_TRANSFORM_RE = re.compile(
-    r"\$\{([A-Za-z_]\w*)(?::(?![-+=?])[^}]*|[#%^,/@][^}]*)\}"
-)
+_PARAM_TRANSFORM_RE = re.compile(r"\$\{([A-Za-z_]\w*)(?::(?![-+=?])[^}]*|[#%^,/@][^}]*)\}")
 
 
 # ``${!VAR}`` expands to the value of the variable NAMED by ``VAR`` -- one more hop
@@ -2983,9 +3016,7 @@ def _resolve_local_assignments(tokens: "list[str]") -> "list[str]":
             # matters where it is used as a program or verb, and a wrong guess there is a
             # refusal, not a bypass.  The ``:-``/``:+``/``:=``/``:?`` DEFAULT forms are
             # excluded: they carry their own literal and are resolved separately.
-            token = _PARAM_TRANSFORM_RE.sub(
-                lambda m: values.get(m.group(1), m.group(0)), token
-            )
+            token = _PARAM_TRANSFORM_RE.sub(lambda m: values.get(m.group(1), m.group(0)), token)
             token = _INDIRECT_VAR_USE_RE.sub(
                 lambda m: values.get(values.get(m.group(1), ""), m.group(0)), token
             )
@@ -3066,12 +3097,12 @@ def _pipes_into_evaluator(tokens: "list[str]") -> bool:
 
 # Constructs by which a text-processing tool RUNS a command rather than printing it:
 # ``awk``'s ``system()`` and pipe-to-command, and GNU ``sed``'s ``e`` flag.
-_SCRIPT_EXECUTES_RE = re.compile(
-    r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$"
-)
+_SCRIPT_EXECUTES_RE = re.compile(r"system\s*\(|\|\s*[\"']|\|&|print\s*\||\bclose\s*\(|/e\b|\be\s*$")
 
 
-def _data_consumer_exempt(index: int, token: str, programs: "list[str]", tokens: "list[str]") -> bool:
+def _data_consumer_exempt(
+    index: int, token: str, programs: "list[str]", tokens: "list[str]"
+) -> bool:
     """True if *token* is an ARGUMENT of a command that treats arguments as data.
 
     ``echo <name> <verb>`` prints two words -- a mention, not an invocation.
@@ -3096,8 +3127,10 @@ def _data_consumer_exempt(index: int, token: str, programs: "list[str]", tokens:
         return False
     # ``$(printf <name>) <verb>`` puts the consumer INSIDE a substitution that occupies
     # program position, so its OUTPUT is what runs -- the words are not inert data.
-    if tokens and tokens[0].lstrip("\"'").startswith("$(") or (
-        tokens and tokens[0].lstrip("\"'").startswith("`")
+    if (
+        tokens
+        and tokens[0].lstrip("\"'").startswith("$(")
+        or (tokens and tokens[0].lstrip("\"'").startswith("`"))
     ):
         return False
     # A "data consumer" that can EXECUTE is not one for this command.  ``awk`` has
@@ -4924,6 +4957,36 @@ _CREW_SECRET_LEAVES: list[str] = [
     # handler is the only writer and it opens the path directly, not through this
     # gate, so the operator's Settings toggle still works.
     "computer_use.json",
+    # The user-defined ``{{name}}`` variable store. Not a secret — values are
+    # declared non-secret and the panel says so — but every value is expanded into
+    # OPERATOR-AUTHORED text: the agent system prompt, a cron ``message``, a
+    # monitor instruction, the dashboard composer. An agent that could write this
+    # file would be choosing text that later arrives as instructions in its own
+    # prompt on the next turn, and in every scheduled turn after that. Prompt
+    # injection with persistence, which is a different and worse thing than reading
+    # a value.
+    #
+    # A DIRECTORY entry, not a leaf for the JSON file, and the distinction is the
+    # whole point: the store is never written alone. ``update_config_locked`` places a
+    # predictable ``<path>.lock`` sidecar and ``write_config_atomically`` stages a temp
+    # inode in the same directory before renaming, so fencing only the target leaves an
+    # agent able to write the staging inode or the lock while the operator saves.
+    # Classifying the directory covers target, lock and temp files together — the same
+    # reason ``.vault`` above is a directory entry.
+    #
+    # This exposure is PRE-EXISTING and not created by moving the data here:
+    # variables previously lived in ``config.json``, which the shell gate does not
+    # protect either (measured: ``is_sensitive_bash_command("echo x > …/config.json")``
+    # returns None, and ``is_sensitive_path`` is False — the same fact the
+    # ``computer_use.json`` comment above records). The difference is that a dedicated
+    # directory CAN be fenced, whereas ``config.json`` cannot: a dozen dashboard
+    # handlers write it on ordinary settings changes, so listing it would break them.
+    # Giving variables their own location is what makes this fixable.
+    #
+    # ``PUT /api/variables`` is the only writer and it opens the path directly rather
+    # than through this gate, so the Settings panel keeps working — the same pattern
+    # every entry above relies on.
+    "variables",
     # Browser Mode's durable ENABLE gate. Same class of control as
     # ``computer_use.json`` directly above: while it is present the browse proxy
     # is registered and the ``browser_*`` tools are in the agent's tool list,
@@ -5394,8 +5457,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # alone. The name run is length-capped to bound backtracking.
     win_gsep = rf"(?:{win_sep}(?:\.|[^\\/\s'\"]{{1,64}}{win_sep}\.\.))*{win_sep}"
     win_dirs_pattern = "|".join(
-        win_gsep.join(re.escape(part) for part in d.split("/"))
-        for d in _SENSITIVE_HOME_DIRS
+        win_gsep.join(re.escape(part) for part in d.split("/")) for d in _SENSITIVE_HOME_DIRS
     )
     generic_win_home = rf"[A-Za-z]:{win_sep}(?:Users|home){win_sep}[^\\/\s'\"]+"
     unc_prefix = r"\\\\[^\s'\"]+"
@@ -5413,16 +5475,12 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"|{re.escape('$env:HOMEDRIVE$env:HOMEPATH')}"
         rf"|{re.escape('${env:HOMEDRIVE}${env:HOMEPATH}')})"
     )
-    win_home_alts = (
-        f"(?:{home}|{generic_win_home}|{unc_prefix}|{userprofile}|{tilde}|{home_var})"
-    )
+    win_home_alts = f"(?:{home}|{generic_win_home}|{unc_prefix}|{userprofile}|{tilde}|{home_var})"
     # Between the anchor and the fenced remainder, accept the same
     # canonical-no-op chains (``\.\``, ``\X\..\``): they are equivalent to a
     # plain separator, so ``%APPDATA%\.\kiro-cli\data.sqlite3`` and
     # ``...\AppData\Roaming\..\Roaming\kiro-cli\...`` still name the store.
-    win_sensitive_path = (
-        rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})(?:{win_sep}|\s|$|['\"])"
-    )
+    win_sensitive_path = rf"{win_home_alts}{win_gsep}(?:{win_dirs_pattern})(?:{win_sep}|\s|$|['\"])"
     # ``%APPDATA%`` already points INTO ``AppData\Roaming``, so a spelling like
     # ``%APPDATA%\kiro-cli\data.sqlite3`` names a fenced store WITHOUT the
     # ``AppData\Roaming`` text the branch above anchors on. Map the variable
@@ -5453,8 +5511,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
     # generalized separator, so both spellings of every leaf are gated
     # identically and a leaf added to the tuple is covered in both.
     win_wp_prefixes = "|".join(
-        win_gsep.join(re.escape(part) for part in p.split("/"))
-        for p in _CREW_HOME_PREFIXES
+        win_gsep.join(re.escape(part) for part in p.split("/")) for p in _CREW_HOME_PREFIXES
     )
     win_wp_leaves = "|".join(
         win_gsep.join(re.escape(part) for part in leaf.split("/"))
@@ -5500,9 +5557,7 @@ def _build_sensitive_regex() -> re.Pattern[str]:
         rf"(?:{home_alts}/(?:{agents_dir_alt})"
         rf"|{kiro_home_var}/(?:{agents_leaf_alt}))(?:/|\s|$|['\"])"
     )
-    win_agents_dir_alt = win_gsep.join(
-        re.escape(part) for part in _KIRO_AGENTS_DIR.split("/")
-    )
+    win_agents_dir_alt = win_gsep.join(re.escape(part) for part in _KIRO_AGENTS_DIR.split("/"))
     # cmd.exe ``%KIRO_HOME%`` (with expansion modifiers) and the two PowerShell
     # spellings, mirroring ``userprofile``/``appdata_var`` above.
     win_kiro_home_var = (
@@ -6017,8 +6072,7 @@ _SENSITIVE_SEGMENT_ALT = "|".join(re.escape(d) for d in _SENSITIVE_HOME_DIRS)
 # the traversal matcher below alongside the POSIX one. Forward-slash-only
 # entries still match (the class includes ``/``), so this strictly widens.
 _SENSITIVE_SEGMENT_ALT_ANYSEP = "|".join(
-    r"[\\/]".join(re.escape(part) for part in d.split("/"))
-    for d in _SENSITIVE_HOME_DIRS
+    r"[\\/]".join(re.escape(part) for part in d.split("/")) for d in _SENSITIVE_HOME_DIRS
 )
 _RELATIVE_SENSITIVE_RE = re.compile(
     rf"(?:^|[\s'\"=:,;])(?:\.\.?[\\/])+(?:{_SENSITIVE_SEGMENT_ALT_ANYSEP})(?:[\\/]|\s|$|['\"])",
@@ -6160,8 +6214,7 @@ _SHELL_ASSIGN_RE = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\+?)=(.*)$", re.DOTALL
 # saw it and the path resolved clean. The body admits one level of nesting so
 # `${V:-${W}}` resolves on the outer name rather than the inner one.
 _SHELL_VAR_REF_RE = re.compile(
-    r"\$\{[!#]?([A-Za-z_][A-Za-z0-9_]*)(?:[^{}]|\$\{[^{}]*\})*\}"
-    r"|\$([A-Za-z_][A-Za-z0-9_]*)"
+    r"\$\{[!#]?([A-Za-z_][A-Za-z0-9_]*)(?:[^{}]|\$\{[^{}]*\})*\}" r"|\$([A-Za-z_][A-Za-z0-9_]*)"
 )
 
 #: Shell keywords whose whole job is to assign. The name they set persists just as
@@ -6513,9 +6566,7 @@ def _expansion_readings(token: str, assignments: dict[str, str]) -> list[str]:
 _BRACE_OPERATOR_RE = re.compile(r"^(?::[-+=?]|##?|%%?|\^\^?|,,?|[-+=?]|/)")
 #: ``${NAME<operator><operand>}``, with the tail captured so the operand can be
 #: read out of it. One level of nesting, matching `_SHELL_VAR_REF_RE`.
-_BRACE_WITH_OPERAND_RE = re.compile(
-    r"\$\{[!#]?[A-Za-z_][A-Za-z0-9_]*((?:[^{}]|\$\{[^{}]*\})+)\}"
-)
+_BRACE_WITH_OPERAND_RE = re.compile(r"\$\{[!#]?[A-Za-z_][A-Za-z0-9_]*((?:[^{}]|\$\{[^{}]*\})+)\}")
 
 
 def _brace_operand_reading(token: str) -> str | None:
@@ -6589,8 +6640,7 @@ _GENERAL_PURPOSE_PARENT_DIRS: frozenset[str] = frozenset(
 #: Single-segment entries are excluded on purpose: their parent is the home
 #: directory, and treating ``~`` as holding a secret would taint ``cd ~``.
 _SENSITIVE_LEAF_PARENT_DIRS: list[str] = sorted(
-    {d.rsplit("/", 1)[0] for d in _SENSITIVE_HOME_DIRS if "/" in d}
-    - _GENERAL_PURPOSE_PARENT_DIRS
+    {d.rsplit("/", 1)[0] for d in _SENSITIVE_HOME_DIRS if "/" in d} - _GENERAL_PURPOSE_PARENT_DIRS
 )
 
 
@@ -7185,8 +7235,12 @@ def _check_sensitive_cd_taint(command: str) -> str | None:
             # A cd target containing a command substitution with separators may
             # assemble a sensitive path piecemeal that static analysis cannot
             # reconstruct.  Fail closed: taint the command.
-            if ("$(" in target or "`" in target):
-                inner = target[target.index("$(") + 2:] if "$(" in target else target[target.index("`") + 1:]
+            if "$(" in target or "`" in target:
+                inner = (
+                    target[target.index("$(") + 2 :]
+                    if "$(" in target
+                    else target[target.index("`") + 1 :]
+                )
                 if any(sep in inner for sep in (";", "&&", "||", "\n")):
                     tainted_by = target
                     break
@@ -7247,10 +7301,10 @@ def _check_sensitive_cd_taint(command: str) -> str | None:
             for idx, tok in enumerate(seg_tokens):
                 if os.path.basename(_strip_grouping(tok)).lower() not in ("cd", "pushd"):
                     continue
-                tgt = next((t for t in seg_tokens[idx + 1:] if t and not t.startswith("-")), None)
+                tgt = next((t for t in seg_tokens[idx + 1 :] if t and not t.startswith("-")), None)
                 if not tgt:
                     continue
-                if ("$(" in tgt or "`" in tgt):
+                if "$(" in tgt or "`" in tgt:
                     inner_start = tgt.index("$(") + 2 if "$(" in tgt else tgt.index("`") + 1
                     inner_text = tgt[inner_start:]
                     if any(sep in inner_text for sep in (";", "&&", "||", "\n")):
@@ -7260,7 +7314,7 @@ def _check_sensitive_cd_taint(command: str) -> str | None:
             if taint_idx >= 0:
                 break
         if taint_idx >= 0:
-            for seg in aware_segments[taint_idx + 1:]:
+            for seg in aware_segments[taint_idx + 1 :]:
                 seg = seg.strip()
                 if not seg:
                     continue
@@ -7481,9 +7535,7 @@ def _valid_oauth_extension_path(path: str) -> bool:
 # a gateway restart, while repeated checks against an unchanged file cost one
 # ``stat`` instead of a read+parse+validate pass. (path, None) memoizes the
 # absent-file case; any stat/read error bypasses the memo and fails soft.
-_OAUTH_EXTENSION_MEMO: dict[
-    tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]
-] = {}
+_OAUTH_EXTENSION_MEMO: dict[tuple[str, tuple[int, int] | None], frozenset[tuple[str, str]]] = {}
 
 
 def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
@@ -7518,9 +7570,7 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
             return frozenset()
         raw = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        logger.debug(
-            "oauth_endpoints.json unreadable; ignoring extension file", exc_info=True
-        )
+        logger.debug("oauth_endpoints.json unreadable; ignoring extension file", exc_info=True)
         return frozenset()
 
     approved = _validate_operator_oauth_entries(raw)
@@ -7969,9 +8019,9 @@ def _exfil_url_warning(
         if next_payload == decoded_payload:
             break
         decoded_payload = next_payload
-        if _HARD_CREDENTIAL_RE.search(
+        if _HARD_CREDENTIAL_RE.search(decoded_payload) or _contains_fixed_credential(
             decoded_payload
-        ) or _contains_fixed_credential(decoded_payload):
+        ):
             return f"Suspicious URL with encoded credential in path/query: {domain}"
 
     # Fail closed when the budget above ran out with layers still to go. A
@@ -8605,10 +8655,7 @@ _PKCE_S256_CHALLENGE_RE = re.compile(r"[A-Za-z0-9_-]{43}\Z")
 
 def _text_contains_bare_secret(text: str) -> bool:
     """Return True when *text* contains an isolated bare AWS-secret run."""
-    return any(
-        _contains_bare_secret(match.group())
-        for match in _BARE_SECRET_RUN_RE.finditer(text)
-    )
+    return any(_contains_bare_secret(match.group()) for match in _BARE_SECRET_RUN_RE.finditer(text))
 
 
 def _oauth_credential_scan_target(
@@ -8698,9 +8745,7 @@ def oauth_url_contains_credential(url: str) -> bool:
         approved_endpoint=approved_endpoint,
     )
     for candidate in (scan_target, unquote(scan_target)):
-        if _contains_fixed_credential(candidate) or _text_contains_bare_secret(
-            candidate
-        ):
+        if _contains_fixed_credential(candidate) or _text_contains_bare_secret(candidate):
             return True
 
     # Provider consent URLs need neither path params nor fragments. Keep these

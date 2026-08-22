@@ -419,7 +419,6 @@ src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
 src/kiro_crew/safety_override.py
-src/kiro_crew/security.py
 src/kiro_crew/seed.py
 src/kiro_crew/sel.py
 src/kiro_crew/service/apparmor.py
@@ -439,7 +438,6 @@ src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/gateway.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/renderer.py

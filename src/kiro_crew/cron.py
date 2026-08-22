@@ -48,12 +48,13 @@ except ImportError:
 from croniter import croniter  # type: ignore[import-untyped]
 
 from kiro_crew import cron_script, platform_compat, sel, shutdown_event
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home, resolve_variables
 from kiro_crew.constants import env_flag_enabled
 from kiro_crew.cron_history import CronHistoryStore, CronRunRecord
 from kiro_crew.executors import _CRON_QUEUE_WAIT_SECS, cron_gate_budget, subprocess_executor
 from kiro_crew.resource_status import admission_check
 from kiro_crew.validation import MAX_CRON_MESSAGE
+from kiro_crew.variables import expand as expand_variables
 
 logger = logging.getLogger(__name__)
 
@@ -527,7 +528,47 @@ class CronJob:
 # ── Session-context helper ──
 
 
-def build_cron_session_context(job: CronJob) -> tuple[str, str]:
+def _expand_job_variables(job: CronJob, agent: str | None = None) -> str:
+    """Return ``job.message`` with the job's crew variables substituted.
+
+    Called at DISPATCH time only. ``job.message`` on the stored record keeps its
+    literal variable tokens, so editing a variable changes what the NEXT run
+    receives without rewriting any job — and a variable rename never corrupts the
+    job the user typed.
+
+    Resolution uses the job's own crew (``agent_id``), so a job bound to a crew
+    sees that crew's and its workspace's values. A configuration failure must not
+    stop a scheduled run, so any error dispatches the message unexpanded.
+
+    *agent* overrides that crew. A multi-agent job carries ``agent_sequence``,
+    which TAKES PRECEDENCE over ``agent_id`` at dispatch, so expanding once from
+    ``agent_id`` served every sequence member the wrong crew's values — and for a
+    job that sets only ``agent_sequence`` it silently served the default crew's.
+    The dispatcher therefore expands per member.
+    """
+    if not job.message:
+        return job.message
+    try:
+        values = resolve_variables(
+            KiroCrewConfig.load(), agent or job.agent_id or None
+        ).values
+    except Exception:
+        logger.debug("crew-variable resolution failed for job %s", job.id, exc_info=True)
+        return job.message
+    if not values:
+        return job.message
+    expanded, unresolved = expand_variables(job.message, values)
+    if unresolved:
+        # Left in place on purpose (see variables.expand); a typo hint only.
+        logger.debug(
+            "cron job %s references undefined crew variables: %s",
+            job.id,
+            ", ".join(sorted(unresolved)),
+        )
+    return expanded
+
+
+def build_cron_session_context(job: CronJob, agent: str | None = None) -> tuple[str, str]:
     """Compute (session_key, prompt) for one cron run.
 
     When ``job.persistent_session`` is True (default, legacy behaviour):
@@ -543,12 +584,23 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
     The key prefix ``cron:{job.id}`` is preserved in both modes so the
     reaper's existing session-matching logic continues to work.
 
+    Crew variables are expanded here — the dispatch boundary — and
+    only over ``job.message``. ``last_result`` is a PREVIOUS RUN'S MODEL OUTPUT,
+    so it is prepended after expansion and never scanned.
+
+    *agent* overrides the crew used for expansion, for a multi-agent job whose
+    ``agent_sequence`` takes precedence over ``agent_id``. The dispatcher calls this
+    per sequence member rather than expanding once, and must call THIS function
+    rather than ``_expand_job_variables`` directly: only this one prepends the
+    ``last_result`` carry-over, so bypassing it silently drops the prior-run context
+    and the do-not-repeat instruction from every run after the first.
+
     This is a pure function — all side effects (session creation, Slack
     delivery, acked_items handling) happen in the caller. Keep it that way
     so it stays trivially unit-testable.
     """
     if job.persistent_session:
-        msg = job.message
+        msg = _expand_job_variables(job, agent)
         if job.last_result:
             last = job.last_result
             if job.minimal_context and len(last) > 2000:
@@ -563,7 +615,7 @@ def build_cron_session_context(job: CronJob) -> tuple[str, str]:
 
     # Stateless: fresh key, bare message.
     run_id = uuid.uuid4().hex[:8]
-    return f"cron:{job.id}:{run_id}", job.message
+    return f"cron:{job.id}:{run_id}", _expand_job_variables(job, agent)
 
 
 # ── Cron expression matching (via croniter) ──

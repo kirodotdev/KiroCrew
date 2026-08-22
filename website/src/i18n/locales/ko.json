@@ -11654,6 +11654,33 @@
         "manage_webhooks": "Webhook 관리",
         "tokens_count_other": "액세스 토큰 {{count}}개",
         "could_not_read_webhook_status": "Webhook 상태를 읽을 수 없습니다 — 게이트웨이가 실행 중인지 확인하세요"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "전역 환경 변수",
+        "workspace_environment_variables": "워크스페이스 환경 변수",
+        "plain_text_note": "환경 변수는 비밀 저장소가 아닙니다. 모든 값은 variables.json에 평문으로 저장되므로 자격 증명은 넣지 마세요.",
+        "name": "이름",
+        "value": "값",
+        "scope": "범위",
+        "actions": "작업",
+        "add": "추가",
+        "remove_variable": "{{name}} 제거",
+        "no_variables_yet": "이 범위에는 아직 정의된 변수가 없습니다.",
+        "no_workspace_variables": "자체 변수를 정의한 워크스페이스가 없습니다.",
+        "unavailable": "게이트웨이에서 환경 변수를 읽을 수 없습니다.",
+        "save_failed": "환경 변수를 저장할 수 없습니다.",
+        "error_name_pattern": "이름은 문자로 시작해야 하며 문자, 숫자, 밑줄만 포함할 수 있습니다.",
+        "error_name_reserved": "이 이름은 기본 제공 프롬프트 자리표시자용으로 예약되어 있습니다.",
+        "error_name_duplicate": "이 이름은 이 범위에 이미 정의되어 있습니다.",
+        "error_value_length": "값은 최대 {{max}}자까지 입력할 수 있습니다.",
+        "error_value_control": "값에는 탭 이외의 제어 문자를 포함할 수 없습니다.",
+        "scope_global": "전역",
+        "scope_workspace": "워크스페이스",
+        "scope_crew": "Crew",
+        "scope_session": "세션",
+        "shadowed_by": "{{scope}}에 의해 덮어써짐",
+        "overrides": "{{scope}}을(를) 덮어씀",
+        "workspace_named": "워크스페이스 {{name}}"
       }
     },
     "settingsPage": {
@@ -12051,6 +12078,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "API 키와 자격 증명을 안전하게 저장"
+    },
+      "variables": {
+        "label": "환경 변수",
+        "description": "에이전트 메시지 안에서 확장되는 재사용 가능한 값"
       }
     },
     "secrets": {

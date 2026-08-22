@@ -22,6 +22,7 @@ from kiro_crew.dashboard.handlers.mcp_discover import (
     api_mcp_discover_detail,
     api_mcp_discover_install,
 )
+from kiro_crew.dashboard.handlers.variables import api_variables
 
 
 def register(app: web.Application) -> None:
@@ -37,6 +38,10 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/config/kirocrew", handlers.api_kirocrew_config_patch)
     app.router.add_get("/api/config/theme", handlers.api_theme_config)
     app.router.add_put("/api/config/theme", handlers.api_theme_config)
+    # Crew variables: one path for both verbs, GET reporting every scope and PUT
+    # replacing exactly one of them.
+    app.router.add_get("/api/variables", api_variables)
+    app.router.add_put("/api/variables", api_variables)
     app.router.add_get(
         "/api/onboarding/import/scan",
         handlers.api_onboarding_import_scan,

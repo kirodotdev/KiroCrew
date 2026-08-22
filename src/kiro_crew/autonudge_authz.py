@@ -376,6 +376,14 @@ async def authorize_and_add_nudge(
     except Exception:  # noqa: BLE001 - fail closed: no audit ⇒ no loop
         logger.error("autonudge arm denied: SEL audit unavailable", exc_info=True)
         return None, "audit log unavailable — nudge loop not armed", 503
+    # Record the crew this loop is armed under so its nudge bodies resolve that
+    # crew's variables rather than the default crew's. Only a dashboard slot names
+    # a crew here; a channel binding key does not, and an empty value means
+    # "resolve the default crew", which is the pre-existing behaviour.
+    armed_agent = ""
+    _slot = (getattr(state, "_slots", None) or {}).get(slot_key)
+    if _slot is not None:
+        armed_agent = getattr(_slot, "agent", "") or ""
     try:
         loop = await svc.add(
             slot_key=slot_key,
@@ -384,6 +392,7 @@ async def authorize_and_add_nudge(
             max_cycles=int(max_cycles),
             stop_sentinel_path=stop_sentinel_path,
             max_runtime_secs=int(max_runtime_secs),
+            agent=armed_agent,
         )
     except Exception as exc:  # noqa: BLE001 - audit the failure, then propagate
         _audit("error", f"svc.add failed: {type(exc).__name__}")

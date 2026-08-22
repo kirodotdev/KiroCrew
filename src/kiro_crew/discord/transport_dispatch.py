@@ -501,6 +501,10 @@ class DiscordDispatcher:
             # X-Session-Key; one shared writer lives in messaging.identity.
             await publish_turn_identity(self.sessions, session_key)
             # Off-loop: build_message embeds the episodic query (blocking urllib).
+            # Crew variables are NOT expanded on inbound channel text: a value is
+            # operator configuration and this text comes from a channel participant,
+            # so expanding it would let anyone allowed to message the bot read that
+            # config by typing {{NAME}}.
             full_message, _ = await run_in_embed_pool(
                 self.ctx_builder.build_message,
                 text,
@@ -508,6 +512,13 @@ class DiscordDispatcher:
                 session_key,
                 channel_id=chan_id,
                 agent=agent,
+                crew=agent,
+                # Present only for a synthetic injection whose text was already
+                # rewritten upstream (an auto-nudge body, rendered with the loop's
+                # armed crew). Matching triggers on the rewritten text would let a
+                # variable's VALUE select a skill; None for a real inbound message,
+                # where build_message falls back to the text itself.
+                trigger_text=msg.trigger_text,
                 resumed=resumed,
                 runtime_source="discord",
             )

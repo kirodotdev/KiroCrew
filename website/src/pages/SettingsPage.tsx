@@ -1,6 +1,6 @@
 import { useEffect } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Bell, Code, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
+import { Bell, Braces, Code, Fingerprint, Globe, History, Import, Info, Keyboard, KeyRound, Link2, MessageSquare, Mic, Palette, PanelsTopLeft, Server, ShieldCheck, Sparkles, SquareMousePointer, Webhook } from 'lucide-react'
 import { useAppSelector } from '../store'
 import SidePanelLayout from '../components/SidePanelLayout'
 import { useSettingHighlight } from '../hooks/useSettingHighlight'
@@ -10,6 +10,7 @@ import { isEmbeddedPane } from '../lib/embedded'
 import { DisplayPanel } from './settings/DisplayPanel'
 import { ChatPanel } from './settings/ChatPanel'
 import { SkillsPanel } from './settings/SkillsPanel'
+import { VariablesPanel } from './settings/VariablesPanel'
 import { VoicePanel } from './settings/VoicePanel'
 import { DeveloperPanel } from './settings/DeveloperPanel'
 import { SecurityPanel } from './settings/SecurityPanel'
@@ -56,6 +57,7 @@ function buildTabs() {
     { key: 'notifications', label: i18nT('settings.tabs.notifications.label'), icon: <Bell size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.notifications.description') },
     { key: 'shortcuts', label: i18nT('settings.tabs.shortcuts.label'), icon: <Keyboard size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.shortcuts.description') },
     { key: 'skills', label: i18nT('settings.tabs.skills.label'), icon: <Sparkles size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.skills.description') },
+    { key: 'variables', label: i18nT('settings.tabs.variables.label'), icon: <Braces size={16} />, group: GROUP_PREFERENCES, description: i18nT('settings.tabs.variables.description') },
     { key: 'channels', label: i18nT('settings.tabs.channels.label'), icon: <Link2 size={16} />, description: i18nT('settings.tabs.channels.description') },
     { key: 'browser', label: i18nT('settings.tabs.browser.label'), icon: <Globe size={16} />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.browser.description') },
     { key: 'computer-use', label: i18nT('settings.tabs.computerUse.label'), icon: <SquareMousePointer className="lucide-inline" />, group: GROUP_SYSTEM, description: i18nT('settings.tabs.computerUse.description') },
@@ -149,6 +151,7 @@ export default function SettingsPage() {
         {tab === 'notifications' && <NotificationsPanel />}
         {tab === 'shortcuts' && <ShortcutsPanel />}
         {tab === 'skills' && <SkillsPanel />}
+        {tab === 'variables' && <VariablesPanel />}
         {tab === 'channels' && <ChannelsPanel />}
         {tab === 'browser' && <BrowserPanel />}
         {tab === 'computer-use' && <ComputerUsePanel />}

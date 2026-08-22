@@ -18,14 +18,46 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_update_nudge,
     resolve_stop_sentinel,
 )
+from kiro_crew.config.loader import KiroCrewConfig, resolve_variables
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
+from kiro_crew.variables import expand as expand_variables
 
 logger = logging.getLogger(__name__)
 
 
-def render_nudge_message(message: str, stop_sentinel_path: str | None) -> str:
-    """Replace {{STOP_FILE}} template with the resolved sentinel path."""
+def render_nudge_message(
+    message: str, stop_sentinel_path: str | None, agent_name: str | None = None
+) -> str:
+    """Render one nudge body: crew variables first, then ``{{STOP_FILE}}``.
+
+    The loop's stored ``message`` keeps its literal tokens, so editing a variable
+    changes what the next cycle receives. Variables are substituted FIRST and
+    ``{{STOP_FILE}}`` last, which is what makes the sentinel path
+    unforgeable from a variable: ``STOP_FILE`` is in
+    :data:`kiro_crew.variables.RESERVED_TOKENS` so no variable may be named it,
+    and expansion is single-pass, so a value that itself contained
+    ``{{STOP_FILE}}`` is inserted verbatim and then resolved by the gateway's own
+    replace to the same sentinel every other cycle uses — never to an
+    attacker-chosen path.
+
+    *agent_name* is the loop's crew; ``None`` resolves the default crew's layers.
+    A configuration failure leaves the message unexpanded rather than stopping
+    the loop.
+    """
+    try:
+        values = resolve_variables(KiroCrewConfig.load(), agent_name or None).values
+    except Exception:
+        logger.debug("crew-variable resolution failed for nudge; left unexpanded", exc_info=True)
+        values = {}
+    if values:
+        message, unresolved = expand_variables(message, values)
+        if unresolved:
+            # Left in place on purpose (see variables.expand); a typo hint only.
+            logger.debug(
+                "nudge message references undefined crew variables: %s",
+                ", ".join(sorted(unresolved)),
+            )
     return message.replace("{{STOP_FILE}}", stop_sentinel_path or "")
 
 

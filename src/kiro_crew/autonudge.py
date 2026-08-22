@@ -275,6 +275,13 @@ class NudgeLoop:
     last_fire_ts: float = 0.0
     created_ts: float = 0.0
     stop_sentinel_path: str = ""  # optional absolute path; if present loop halts
+    # The crew this loop was armed under. Recorded at arm time because it is
+    # NOT derivable at fire time: the fire paths call get_or_create without an
+    # agent, so the session's own binding governs the turn and nothing in scope
+    # names the crew. Variable expansion in the nudge body resolves against
+    # this, so without it a loop armed on a non-default crew would silently get
+    # the DEFAULT crew's values. Empty = resolve the default crew.
+    agent: str = ""
     # Wall-clock budget in seconds, measured from ``created_ts`` (0 = unlimited).
     # A cycle cap alone cannot bound COST: a loop whose turns are slow or whose
     # idle gap is long can run for days within its cycle budget. Anchoring on
@@ -583,6 +590,7 @@ class AutoNudgeService:
         max_cycles: int = 0,
         stop_sentinel_path: str = "",
         max_runtime_secs: int = 0,
+        agent: str = "",
     ) -> NudgeLoop:
         # CANCELLATION SAFETY: the mutate+persist runs as a SHIELDED task. If
         # the awaiting caller is cancelled mid-write, a bare await would release
@@ -604,6 +612,7 @@ class AutoNudgeService:
                 max_cycles=max_cycles,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max_runtime_secs,
+                agent=agent,
             )
         )
         self._inflight_adds.add(inner)
@@ -625,6 +634,7 @@ class AutoNudgeService:
         max_cycles: int,
         stop_sentinel_path: str,
         max_runtime_secs: int = 0,
+        agent: str = "",
     ) -> NudgeLoop:
         idle_secs = max(_MIN_IDLE_SECS, min(_MAX_IDLE_SECS, int(idle_secs)))
         async with self._lock:
@@ -644,6 +654,7 @@ class AutoNudgeService:
                 created_ts=now,
                 stop_sentinel_path=stop_sentinel_path,
                 max_runtime_secs=max(0, int(max_runtime_secs)),
+                agent=agent,
                 # Anchor the first deadline at arm time (set BEFORE the
                 # snapshot below so it persists): the countdown starts the
                 # moment the loop is armed, and user turns from here on only

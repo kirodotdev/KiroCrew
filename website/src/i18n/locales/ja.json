@@ -11654,6 +11654,33 @@
         "manage_webhooks": "Webhooks を管理",
         "tokens_count_other": "アクセストークン {{count}} 個",
         "could_not_read_webhook_status": "webhook の状態を取得できませんでした — ゲートウェイが起動していない可能性があります"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "グローバル環境変数",
+        "workspace_environment_variables": "ワークスペースの環境変数",
+        "plain_text_note": "環境変数はシークレットの保管場所ではありません。すべての値は variables.json に平文で保存されるため、認証情報は入れないでください。",
+        "name": "名前",
+        "value": "値",
+        "scope": "スコープ",
+        "actions": "操作",
+        "add": "追加",
+        "remove_variable": "{{name}} を削除",
+        "no_variables_yet": "このスコープにはまだ変数が定義されていません。",
+        "no_workspace_variables": "独自の変数を定義しているワークスペースはありません。",
+        "unavailable": "ゲートウェイから環境変数を読み取れませんでした。",
+        "save_failed": "環境変数を保存できませんでした。",
+        "error_name_pattern": "名前は英字で始まり、英字、数字、アンダースコアのみを含められます。",
+        "error_name_reserved": "その名前は組み込みのプロンプトプレースホルダー用に予約されています。",
+        "error_name_duplicate": "その名前はこのスコープで既に定義されています。",
+        "error_value_length": "値の長さは最大 {{max}} 文字です。",
+        "error_value_control": "値にタブ以外の制御文字を含めることはできません。",
+        "scope_global": "グローバル",
+        "scope_workspace": "ワークスペース",
+        "scope_crew": "Crew",
+        "scope_session": "セッション",
+        "shadowed_by": "{{scope}} によって上書きされています",
+        "overrides": "{{scope}} を上書きします",
+        "workspace_named": "ワークスペース {{name}}"
       }
     },
     "settingsPage": {
@@ -12051,6 +12078,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "APIキーと資格情報を安全に保存"
+    },
+      "variables": {
+        "label": "環境変数",
+        "description": "エージェントのメッセージ内に展開される再利用可能な値"
       }
     },
     "secrets": {

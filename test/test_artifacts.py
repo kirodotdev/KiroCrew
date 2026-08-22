@@ -1078,12 +1078,24 @@ class TestRoundThirteenFixes:
         monkeypatch.setattr(artifacts_mod, "MAX_CONTENT_BYTES", 50)
         f = tmp_path / "big.txt"
         f.write_text("x" * 5000, encoding="utf-8")
-        # Ensure read_text isn't used (the OOM-prone path).
+        # Ensure read_text isn't used ON THIS FILE (the OOM-prone path).
+        #
+        # Scoped to `f` deliberately. The counter used to increment for read_text on
+        # ANY path, because the patch replaces the method on the PosixPath class, so
+        # any unrelated file read anywhere in the call graph failed this test — which
+        # is a false positive: reading a small config file has nothing to do with
+        # whether the artifact's own content was slurped whole. The property under
+        # test is about THIS file, so the counter is too.
         original_read_text = type(f).read_text
         calls = {"count": 0}
+        target = f.resolve()
 
         def tracked_read_text(self, *args, **kwargs):
-            calls["count"] += 1
+            try:
+                if Path(self).resolve() == target:
+                    calls["count"] += 1
+            except OSError:
+                pass
             return original_read_text(self, *args, **kwargs)
 
         monkeypatch.setattr(type(f), "read_text", tracked_read_text)

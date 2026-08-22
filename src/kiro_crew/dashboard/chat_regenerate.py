@@ -95,6 +95,11 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "vary phrasing, structure, or angle. Do not say you already answered or "
             "reference the prior reply."
         )
+        # NOT operator_authored. A stored user row is not proof the OPERATOR
+        # wrote it: on a linked Slack thread, slack/handler.py appends the channel
+        # PARTICIPANT's message as a user row, so replaying a stored row can
+        # replay participant text and mirror the expansion back to the thread they
+        # read. Only an authenticated dashboard request body is known-operator.
         task = asyncio.create_task(_run_chat(state, slot, user_msg, regenerate_hint=hint))
         slot.task = task
         state._background_tasks.add(task)
@@ -253,6 +258,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
             resources=slot.key,
         )
 
+        # NOT operator_authored. A stored user row is not proof the OPERATOR
+        # wrote it: on a linked Slack thread, slack/handler.py appends the channel
+        # PARTICIPANT's message as a user row, so replaying a stored row can
+        # replay participant text and mirror the expansion back to the thread they
+        # read. Only an authenticated dashboard request body is known-operator.
         task = asyncio.create_task(_run_chat(state, slot, _bc))
         slot.task = task
         state._background_tasks.add(task)

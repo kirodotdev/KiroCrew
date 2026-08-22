@@ -136,6 +136,17 @@ class InboundMessage:
     conversation_id: str
     text: str
     thread_id: str | None = None
+    trigger_text: str | None = None
+    """The text skill-trigger matching should read, when it differs from ``text``.
+
+    Set only by a synthetic injection whose ``text`` has ALREADY been rewritten
+    before reaching this transport — today that is an auto-nudge body, which is
+    rendered with the loop's armed crew and therefore has its ``{{name}}`` tokens
+    resolved upstream. Without this, trigger matching reads the resolved text and a
+    variable's VALUE can pull in a skill body the loop's author never referenced.
+
+    ``None`` for every real inbound message, where ``text`` IS what the user
+    sent and no separate trigger source exists."""
     attachments: list[Any] = field(default_factory=list)
     is_mention: bool = False
 

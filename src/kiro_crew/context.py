@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 from kiro_crew import model_registry
 from kiro_crew.agent import _prompt_path
 from kiro_crew.agent_discovery import agent_skill_globs
-from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
+from kiro_crew.config.loader import KiroCrewConfig, resolve_variables, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
 from kiro_crew.hooks import (
@@ -41,6 +41,7 @@ from kiro_crew.security import (
 )
 from kiro_crew.session_surface import has_dashboard_surface
 from kiro_crew.skills import SkillsLoader
+from kiro_crew.variables import expand as expand_variables
 
 if TYPE_CHECKING:
     from kiro_crew.channel_history import ChannelHistory
@@ -1792,6 +1793,52 @@ class ContextBuilder:
         return prompt.replace("{bot_name}", self._bot_name)
 
     @staticmethod
+    def _expand_crew_variables(prompt: str, agent: str | None) -> str:
+        """Substitute the session's crew variables in *prompt*.
+
+        *agent* must be a CREW alias — a key in ``config.agents`` — not a resolved
+        kiro-agent runtime name. ``resolve_variables`` falls back to the default
+        crew for a name it does not know, by design and without an error, so
+        passing a runtime name here does not fail loudly: it quietly serves the
+        wrong crew's values. :meth:`build_message` therefore takes a dedicated
+        ``crew`` argument and does not reuse its own overloaded ``agent``.
+
+        Called ONLY on the agent system prompt — the built-in prompt file or a
+        custom agent's own ``prompt`` field — and only after every built-in
+        token pass has already run. Ordering is the security argument:
+        ``RESERVED_TOKENS`` refuses a variable named ``MAX_SUBAGENTS`` /
+        ``VERBOSITY_BLOCK`` / ``WIDGET_BLOCK`` / ``bot_name`` at config-write
+        time, and running last means even a value that somehow carried such a
+        token could not reopen one, since substitution is single-pass and the
+        inserted text is never rescanned.
+
+        Deliberately NOT applied to steering files, SKILL.md bodies or
+        ``@prompt`` includes: those are assembled by
+        :meth:`build_session_context` into separate parts and can arrive from a
+        cloned repo or the public skill registry, so their variable-shaped text
+        stays byte-identical.
+
+        A configuration failure must not cost the session its identity prompt,
+        so any error returns the prompt unchanged.
+        """
+        try:
+            resolution = resolve_variables(KiroCrewConfig.load(), agent or None)
+        except Exception:
+            logger.debug("crew-variable resolution failed; prompt left unexpanded", exc_info=True)
+            return prompt
+        if not resolution.values:
+            return prompt
+        expanded, unresolved = expand_variables(prompt, resolution.values)
+        if unresolved:
+            # DEBUG: an unknown token is left in place on purpose (see
+            # variables.expand), so this is a typo hint, not a failure.
+            logger.debug(
+                "agent prompt references undefined crew variables: %s",
+                ", ".join(sorted(unresolved)),
+            )
+        return expanded
+
+    @staticmethod
     def _resolve_prompt_templates(prompt: str, session_key: str) -> str:
         """Resolve conditional template blocks in prompt text.
 
@@ -2509,6 +2556,8 @@ class ContextBuilder:
         user_span_out: list[int] | None = None,
         needs_reinjection: bool = False,
         context_groups: frozenset[str] | None = None,
+        trigger_text: str | None = None,
+        crew: str | None = None,
     ) -> tuple[str, HookResult]:
         """Build the full message with context and hook processing.
 
@@ -2575,6 +2624,29 @@ class ContextBuilder:
             if agent_prompt:
                 agent_prompt = self._resolve_prompt_templates(agent_prompt, session_key or "")
                 agent_prompt = self._substitute_bot_name(agent_prompt)
+                # LAST of the token passes, and after _load_agent_prompt, so a
+                # custom agent's prompt is covered too and a user variable can
+                # never alter a built-in token's substituted value.
+                #
+                # Resolution uses *crew* when the caller supplied one, else falls
+                # back to *agent*.
+                #
+                # The two are not interchangeable. Most callers (Slack, Discord,
+                # Telegram, cron, the channel dispatcher) pass a real crew alias in
+                # ``agent``, so the fallback is correct for them. The dashboard turn
+                # path deliberately passes the resolved KIRO AGENT name
+                # ("kirocrew") because build_message's own is_custom check needs the
+                # runtime name — and that is never a key in ``config.agents``, so
+                # resolve_variables silently selected the DEFAULT crew and every
+                # non-default crew's prompt got the wrong values. That path now
+                # passes ``crew`` explicitly.
+                #
+                # Resolving from ``crew`` ALONE would invert the bug: every caller
+                # that correctly passes a crew alias in ``agent`` and no ``crew``
+                # would start resolving the default crew instead.
+                agent_prompt = self._expand_crew_variables(
+                    agent_prompt, crew if crew is not None else agent
+                )
                 parts.append(
                     f"[AGENT SYSTEM PROMPT]\n{agent_prompt}\n[END AGENT SYSTEM PROMPT]\n\n"
                 )
@@ -2903,7 +2975,14 @@ class ContextBuilder:
         # context, and ACP replays native history so a body already sent earlier
         # in the conversation is still in the window.
         if not is_custom and not minimal_context:
-            triggered = self.skills.get_triggered_skills(text, project_dir=project)
+            # Match on what the USER wrote, not on what crew variables
+            # expanded it into. Word-overlap matching means a value holding
+            # an ordinary word (a URL path, a queue name) would otherwise
+            # pull in an unrelated skill BODY that the user never referenced.
+            # Callers that expand variables pass the pre-expansion text;
+            # everyone else gets the existing behaviour via the default.
+            trigger_source = text if trigger_text is None else trigger_text
+            triggered = self.skills.get_triggered_skills(trigger_source, project_dir=project)
             if triggered:
                 enforced, pointer_only = self.skills.split_triggered(triggered)
                 # Log the split, not just the match: a pointed-at skill the

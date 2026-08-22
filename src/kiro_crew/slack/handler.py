@@ -3250,6 +3250,10 @@ async def handle_message(
                     )
 
             # Off-loop: build_message embeds the episodic query (blocking urllib).
+                # Crew variables are NOT expanded on inbound channel text: a
+                # value is operator configuration and this text comes from a
+                # channel participant, so expanding it would let anyone allowed
+                # to message the bot read that config by typing {{NAME}}.
             full_message, _ = await run_in_embed_pool(
                 context_builder.build_message,
                 text,
@@ -3258,6 +3262,13 @@ async def handle_message(
                 channel_id=channel,
                 thread_ts=thread_ts or msg_ts,
                 agent=_agent,
+                # ``_agent`` here IS a crew alias, but pass it explicitly rather
+                # than relying on the fallback: this argument's meaning is then
+                # local to the call instead of depending on what another caller
+                # happens to put in ``agent``.
+                crew=_agent,
+                # Skill triggers and $skill/@prompt match the message as the user
+                # SENT it, so a variable value can never select a skill.
                 resumed=resumed,
                 user_display_name=user_display_name,
                 compressed_history=compressed,

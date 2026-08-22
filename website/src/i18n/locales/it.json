@@ -11904,6 +11904,33 @@
         "tokens_count_other": "{{count}} token di accesso",
         "tokens_count_many": "{{count}} token di accesso",
         "could_not_read_webhook_status": "Impossibile leggere lo stato del webhook — verifica che il gateway sia in esecuzione"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "Variabili d'ambiente globali",
+        "workspace_environment_variables": "Variabili d'ambiente del workspace",
+        "plain_text_note": "Le variabili d'ambiente non sono un archivio di segreti. Ogni valore viene salvato come testo semplice in variables.json, quindi non inserirvi credenziali.",
+        "name": "Nome",
+        "value": "Valore",
+        "scope": "Ambito",
+        "actions": "Azioni",
+        "add": "Aggiungi",
+        "remove_variable": "Rimuovi {{name}}",
+        "no_variables_yet": "Non è ancora definita nessuna variabile in questo ambito.",
+        "no_workspace_variables": "Nessun workspace definisce variabili proprie.",
+        "unavailable": "Non è stato possibile leggere le variabili d'ambiente dal gateway.",
+        "save_failed": "Non è stato possibile salvare le variabili d'ambiente.",
+        "error_name_pattern": "Un nome deve iniziare con una lettera e può contenere solo lettere, cifre e trattini bassi.",
+        "error_name_reserved": "Questo nome è riservato a un segnaposto di prompt integrato.",
+        "error_name_duplicate": "Questo nome è già definito in questo ambito.",
+        "error_value_length": "Un valore può essere lungo al massimo {{max}} caratteri.",
+        "error_value_control": "Un valore non può contenere caratteri di controllo diversi dalla tabulazione.",
+        "scope_global": "Globale",
+        "scope_workspace": "Workspace",
+        "scope_crew": "Crew",
+        "scope_session": "Sessione",
+        "shadowed_by": "Sostituito da {{scope}}",
+        "overrides": "Sostituisce {{scope}}",
+        "workspace_named": "Workspace {{name}}"
       }
     },
     "settingsPage": {
@@ -12317,6 +12344,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "Archivia chiavi API e credenziali in modo sicuro"
+    },
+      "variables": {
+        "label": "Variabili d'ambiente",
+        "description": "Valori riutilizzabili che vengono inseriti nei messaggi dell'agente"
       }
     },
     "secrets": {

@@ -11654,6 +11654,33 @@
         "manage_webhooks": "管理 webhook",
         "tokens_count_other": "{{count}} 个访问令牌",
         "could_not_read_webhook_status": "无法读取 webhook 状态 — 检查网关是否正在运行"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "全局环境变量",
+        "workspace_environment_variables": "工作区环境变量",
+        "plain_text_note": "环境变量不是密钥保管库。每个值都以纯文本形式保存在 variables.json 中，因此请勿在其中存放凭据。",
+        "name": "名称",
+        "value": "值",
+        "scope": "范围",
+        "actions": "操作",
+        "add": "添加",
+        "remove_variable": "移除 {{name}}",
+        "no_variables_yet": "此范围内尚未定义任何变量。",
+        "no_workspace_variables": "没有工作区定义自己的变量。",
+        "unavailable": "无法从网关读取环境变量。",
+        "save_failed": "无法保存环境变量。",
+        "error_name_pattern": "名称必须以字母开头，且只能包含字母、数字和下划线。",
+        "error_name_reserved": "该名称已保留给内置提示占位符。",
+        "error_name_duplicate": "该名称已在此范围内定义。",
+        "error_value_length": "值最多 {{max}} 个字符。",
+        "error_value_control": "值不能包含除制表符以外的控制字符。",
+        "scope_global": "全局",
+        "scope_workspace": "工作区",
+        "scope_crew": "Crew",
+        "scope_session": "会话",
+        "shadowed_by": "已被 {{scope}} 覆盖",
+        "overrides": "覆盖 {{scope}}",
+        "workspace_named": "工作区 {{name}}"
       }
     },
     "settingsPage": {
@@ -12051,6 +12078,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "安全存储 API 密钥和凭据"
+    },
+      "variables": {
+        "label": "环境变量",
+        "description": "在代理消息中展开的可复用值"
       }
     },
     "secrets": {

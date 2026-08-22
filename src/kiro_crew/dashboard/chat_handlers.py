@@ -651,8 +651,15 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # FIX 2: an unattended app-owned turn runs under the background concurrency
     # cap; run_background_turn passes an attended slot straight through, so the
     # interactive path is unchanged (no semaphore is even created).
+    # operator_authored: this is the dashboard composer, the one path whose text the
+    # operator typed themselves. Expansion is opt-in at _run_chat precisely so a
+    # channel-inbound caller cannot get it by default.
     task = spawn_guarded_turn(
-        state, slot, state.run_background_turn(slot, _run_chat(state, slot, message))
+        state,
+        slot,
+        state.run_background_turn(
+            slot, _run_chat(state, slot, message, operator_authored=True)
+        ),
     )
     slot.task = task
     slot._recovery_retrigger_count = 0

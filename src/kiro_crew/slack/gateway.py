@@ -2187,9 +2187,7 @@ class GatewayOrchestrator:
             await self._kill_startup_child(proc)
             await self._reap_startup_child(proc)
             print("❌ pip install timed out — run manually: kirocrew update")
-            logger.error(
-                "Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS
-            )
+            logger.error("Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS)
             return
         except asyncio.CancelledError:
             # Gateway shutdown / Ctrl-C mid-install: leaving pip running would
@@ -2729,9 +2727,7 @@ class GatewayOrchestrator:
                 # (learned conversation on Teams, DM-channel creation on
                 # Discord, identity on Telegram) — or None when the peer has
                 # no reachable conversation, which fails closed here.
-                dm_target = await transport.resolve_configured_target(
-                    f"user:{resolved.channel_id}"
-                )
+                dm_target = await transport.resolve_configured_target(f"user:{resolved.channel_id}")
                 # Audit the allow-list decision (allowed/denied) BEFORE
                 # branching, matching chat_mirror's configured-target resolve:
                 # a peer the resolver rejects is an authorization outcome and
@@ -3006,13 +3002,9 @@ class GatewayOrchestrator:
                         downstream_service="slack" if self.slack else "none",
                     )
                 except Exception:
-                    logger.debug(
-                        "SEL logging failed in cron run-failure alert path", exc_info=True
-                    )
+                    logger.debug("SEL logging failed in cron run-failure alert path", exc_info=True)
             except Exception:
-                logger.warning(
-                    "Cron '%s': run-failure alert failed", job.name, exc_info=True
-                )
+                logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
 
         async def _cron_callback(job: CronJob) -> str | None:
             # True once ANY prompt has been handed to the provider this
@@ -3023,7 +3015,9 @@ class GatewayOrchestrator:
             _prompt_dispatched = False
             # helper picks stable vs ephemeral session key and
             # decides whether to prepend last_result, based on job.persistent_session.
-            session_key, msg = build_cron_session_context(job)
+            # Off-loop: this does a config load, a variables-store read and a JSON
+            # parse, and the cron callback runs on the gateway's event loop.
+            session_key, msg = await asyncio.to_thread(build_cron_session_context, job)
 
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
@@ -3557,9 +3551,7 @@ class GatewayOrchestrator:
                     # busy for the whole budget so this never ran a line.  The
                     # distinct text is what makes the next saturation legible
                     # instead of looking like N scripts that each overran.
-                    logger.warning(
-                        "Script cron '%s' never got a worker slot: %s", job.name, exc
-                    )
+                    logger.warning("Script cron '%s' never got a worker slot: %s", job.name, exc)
                     job.clear_carried_result()
                     job.last_error = str(exc)
                     job.last_status = "error"
@@ -3875,13 +3867,37 @@ class GatewayOrchestrator:
                         # empty parent ("notification only (parent=)") unless an
                         # unrelated surface happened to be mid-turn.
                         await publish_turn_identity(self.sessions, agent_session_key)
+                        # Off-loop, and the ARGUMENT has to be too: this is evaluated
+                        # before run_in_embed_pool is even called, so leaving it inline
+                        # ran a config load, a variables-store read and a JSON parse on
+                        # the event loop for every sequence member.
+                        #
+                        # Expanded PER MEMBER: agent_sequence takes precedence over
+                        # agent_id, so the single expansion computed above from
+                        # agent_id resolves the wrong crew here (the DEFAULT crew for
+                        # a job that sets only a sequence).
+                        #
+                        # Through build_cron_session_context, NOT the bare expander:
+                        # only this path prepends the last_result carry-over, so
+                        # calling the expander directly dropped the prior-run context
+                        # and the do-not-repeat instruction from every run after the
+                        # first.
+                        _member_msg = (
+                            await asyncio.to_thread(build_cron_session_context, job, agent)
+                        )[1]
                         # Off-loop: build_message embeds the episodic query.
                         full_message, _ = await run_in_embed_pool(
                             self.ctx_builder.build_message,
-                            msg,
+                            _member_msg,
                             True,
                             interactive=False,
                             agent=agent,
+                            crew=agent,
+                            # ``msg`` has already had crew variables expanded by
+                            # build_cron_session_context, so trigger matching gets
+                            # the author's own text instead: a variable VALUE must
+                            # never be able to pull in a skill body.
+                            trigger_text=job.message,
                         )
                         # Wall clock for the cron agent turn: acp never assigns
                         # TurnUsage.duration_ms, so the row falls back to this.
@@ -3929,7 +3945,9 @@ class GatewayOrchestrator:
                                 # model_source, which reports what actually ran.
                                 "" if _seq_downgraded else (job.model or ""),
                                 _turn_usage,
-                                provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                                provider=(
+                                    self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                                ),
                                 surface="cron",
                                 agent=read_effective_agent(client) or agent or "",
                                 context_used=_used,
@@ -3938,9 +3956,7 @@ class GatewayOrchestrator:
                                 model_source=client,
                             )
                         except Exception:
-                            logger.debug(
-                                "usage row (cron seq) persist failed", exc_info=True
-                            )
+                            logger.debug("usage row (cron seq) persist failed", exc_info=True)
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
@@ -4015,6 +4031,9 @@ class GatewayOrchestrator:
                     True,
                     interactive=False,
                     agent=job.agent_id or None,
+                    # Expanded upstream; triggers see the authored text. See the
+                    # sequential site above.
+                    trigger_text=job.message,
                     provider_type=_provider,
                     minimal_context=job.minimal_context,
                 )
@@ -4131,7 +4150,9 @@ class GatewayOrchestrator:
                             and self.dashboard_state.has_slot(f"cron-{job.id}")
                         ):
                             inject_cron_result_to_dashboard(
-                                self.dashboard_state, job, result_text,
+                                self.dashboard_state,
+                                job,
+                                result_text,
                                 context_reading=_ctx_reading,
                             )
                         return result_text
@@ -4153,7 +4174,9 @@ class GatewayOrchestrator:
                         and self.dashboard_state.has_slot(f"cron-{job.id}")
                     ):
                         inject_cron_result_to_dashboard(
-                            self.dashboard_state, job, result_text,
+                            self.dashboard_state,
+                            job,
+                            result_text,
                             context_reading=_ctx_reading,
                         )
                     return result_text
@@ -4182,7 +4205,10 @@ class GatewayOrchestrator:
                             else []
                         )
                         inject_cron_result_to_dashboard(
-                            self.dashboard_state, job, result_text, history=history,
+                            self.dashboard_state,
+                            job,
+                            result_text,
+                            history=history,
                             context_reading=_ctx_reading,
                         )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
@@ -4342,9 +4368,7 @@ class GatewayOrchestrator:
                                     self.sessions.release(session_key)
                                     _acquired = False
                             except Exception:
-                                logger.debug(
-                                    "release before transient retry failed", exc_info=True
-                                )
+                                logger.debug("release before transient retry failed", exc_info=True)
                             await asyncio.sleep(_delay)
                             return await _cron_callback(job)
                         finally:
@@ -4566,8 +4590,7 @@ class GatewayOrchestrator:
                     # queued behind the concurrency/stagger gate, or
                     # mid-injection — _subagent_done will reset after the last one.
                     has_pending = bool(
-                        self.subagent_mgr
-                        and self.subagent_mgr.has_pending_work_for(session_key)
+                        self.subagent_mgr and self.subagent_mgr.has_pending_work_for(session_key)
                     )
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
@@ -4815,7 +4838,11 @@ class GatewayOrchestrator:
             if self.autonudge_svc:
                 await self.autonudge_svc.remove(loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        # Off-loop: render_nudge_message resolves variables, which does a config
+        # load plus a store read and JSON parse; this fires on the event loop.
+        msg_body = await asyncio.to_thread(
+            render_nudge_message, loop.message, loop.stop_sentinel_path, loop.agent
+        )
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         # Fail closed: an unattended turn MUST run under the HookManager
         # PreToolUse governance gate (mirrors cron's default approval path).
@@ -4835,7 +4862,17 @@ class GatewayOrchestrator:
             _acquired = True
             _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
             full_msg, _ = await run_in_embed_pool(
-                self.ctx_builder.build_message, tagged, is_new, key, provider_type=_provider
+                self.ctx_builder.build_message,
+                tagged,
+                is_new,
+                key,
+                provider_type=_provider,
+                # ``tagged`` wraps a body render_nudge_message already expanded, so
+                # triggers match the loop's authored instruction instead.
+                trigger_text=loop.message,
+                # The loop's armed crew, so the system prompt resolves the same
+                # crew's variables the body was rendered with.
+                crew=loop.agent or None,
             )
             # Clock started outside wait_for so BOTH the success path and the
             # TimeoutError branch below can report the real elapsed time. acp
@@ -4996,7 +5033,11 @@ class GatewayOrchestrator:
         if sessions is not None and sessions.is_busy(key):
             logger.info("AutoNudge skip: discord session %s busy (loop %s)", key, loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        # Off-loop: render_nudge_message resolves variables, which does a config
+        # load plus a store read and JSON parse; this fires on the event loop.
+        msg_body = await asyncio.to_thread(
+            render_nudge_message, loop.message, loop.stop_sentinel_path, loop.agent
+        )
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         try:
             conversation_id = await transport.resolve_conversation(user_id)
@@ -5005,6 +5046,11 @@ class GatewayOrchestrator:
                 user_id=user_id,
                 conversation_id=conversation_id,
                 text=tagged,
+                # ``tagged`` wraps a body whose {{name}} tokens render_nudge_message
+                # already resolved using the loop's armed crew. Skill selection must
+                # read the loop's own instruction instead, or a variable's VALUE
+                # could pull in a skill the author never referenced.
+                trigger_text=loop.message,
             )
             await asyncio.wait_for(
                 dispatcher.handle_message(synthetic, interpret_commands=False),
@@ -5087,7 +5133,11 @@ class GatewayOrchestrator:
                 loop.slot_key,
                 loop.id,
             )
-        msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        # Off-loop: render_nudge_message resolves variables, which does a config
+        # load plus a store read and JSON parse; this fires on the event loop.
+        msg = await asyncio.to_thread(
+            render_nudge_message, loop.message, loop.stop_sentinel_path, loop.agent
+        )
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
@@ -5135,7 +5185,7 @@ class GatewayOrchestrator:
             self.dashboard_state,
             slot,
             self.dashboard_state.run_background_turn(
-                slot, _run_chat(self.dashboard_state, slot, tagged)
+                slot, _run_chat(self.dashboard_state, slot, tagged, trigger_text=loop.message)
             ),
         )
         # Mirror dashboard /api/chat/send path so slot.running == True and sidebar
@@ -6375,8 +6425,7 @@ class GatewayOrchestrator:
                                     if not _injection_slot._subagents_inline_collected:
                                         _injection_slot._pending_synthesis = False
                                     logger.info(
-                                        "Subagent %s: skipping queue "
-                                        "(already collected inline)",
+                                        "Subagent %s: skipping queue " "(already collected inline)",
                                         info.id,
                                     )
                                     return
@@ -6869,11 +6918,7 @@ class GatewayOrchestrator:
             """Resolve slot from spawn request_id (spawn:{agent_id})."""
             agent_id = request_id.removeprefix("spawn:")
             info = self.subagent_mgr.get(agent_id) if self.subagent_mgr is not None else None
-            slot = (
-                _event_slot(info.parent_session_key)
-                if info and info.parent_session_key
-                else ""
-            )
+            slot = _event_slot(info.parent_session_key) if info and info.parent_session_key else ""
             logger.info(
                 "_spawn_slot_resolver: rid=%s agent_id=%s info=%s slot=%s",
                 request_id,
@@ -7840,9 +7885,7 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.platform.update_provider import resolve_provider
 
-            provider = await asyncio.get_running_loop().run_in_executor(
-                None, resolve_provider
-            )
+            provider = await asyncio.get_running_loop().run_in_executor(None, resolve_provider)
         except Exception:
             # ONLY resolution is tolerated here. If reading the policy fails we
             # cannot know an operator selected a provider, so the built-in
@@ -7942,9 +7985,7 @@ class GatewayOrchestrator:
                 min_version(),
             )
             if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "pulling", "Applying mandatory update…"
-                )
+                self.dashboard_state.push_update_progress("pulling", "Applying mandatory update…")
             success = await provider.apply()
             if success:
                 await self._restart_after_update()
@@ -7966,9 +8007,7 @@ class GatewayOrchestrator:
             if cfg.auto_update:
                 logger.info("Auto-update enabled — applying update via provider")
                 if self.dashboard_state:
-                    self.dashboard_state.push_update_progress(
-                        "pulling", "Downloading update…"
-                    )
+                    self.dashboard_state.push_update_progress("pulling", "Downloading update…")
                 success = await provider.apply()
                 if success:
                     await self._restart_after_update()
@@ -8579,9 +8618,7 @@ class GatewayOrchestrator:
             return
 
         if self.dashboard_state:
-            self.dashboard_state.push_update_progress(
-                "pulling", "Downloading update from CDN…"
-            )
+            self.dashboard_state.push_update_progress("pulling", "Downloading update from CDN…")
 
         logger.info("Auto-update (wheel): running installer")
         # Resolve sh through the trusted system dirs, not the gateway's PATH
@@ -8636,9 +8673,7 @@ class GatewayOrchestrator:
             # Bounded: the installer's stdout is chatter and only a capped
             # stderr is logged, so a verbose CDN script cannot exhaust the
             # gateway's memory buffering it.
-            stdout, stderr = await _read_bounded_output(
-                proc, timeout=300, want_stdout=False
-            )
+            stdout, stderr = await _read_bounded_output(proc, timeout=300, want_stdout=False)
         except asyncio.CancelledError:
             # Shutdown (SIGTERM) cancels this task. Without this branch the
             # installer keeps mutating the installation after the gateway exits,
@@ -8691,8 +8726,7 @@ class GatewayOrchestrator:
             if self.dashboard_state:
                 self.dashboard_state.push_update_progress(
                     "failed",
-                    f"Installer failed (exit {proc.returncode}) — "
-                    "run manually: kirocrew update",
+                    f"Installer failed (exit {proc.returncode}) — " "run manually: kirocrew update",
                 )
             return
 
@@ -8931,9 +8965,7 @@ class GatewayOrchestrator:
 
             if self._dashboard_port:
                 _marker_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        self._write_marker_worker, run_marker, self._dashboard_port
-                    )
+                    asyncio.to_thread(self._write_marker_worker, run_marker, self._dashboard_port)
                 )
                 self._marker_write_task = _marker_task
                 self._background_tasks.add(_marker_task)
@@ -9061,9 +9093,7 @@ class GatewayOrchestrator:
 
                 # Auto-open dashboard — skip on headless remote sessions
                 _is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
-                _has_display = bool(
-                    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-                )
+                _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
                 _skip_open = _is_ssh and not _has_display and sys.platform != "darwin"
                 if self._no_open or not self._cfg.dashboard.auto_open_browser:
                     pass  # suppressed via --no-open flag or config
@@ -9195,9 +9225,7 @@ class GatewayOrchestrator:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
         try:
-            await asyncio.wait_for(
-                self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS
-            )
+            await asyncio.wait_for(self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS)
         except (asyncio.TimeoutError, Exception):
             logger.warning("Graceful shutdown timed out — force exiting")
 
@@ -9252,15 +9280,13 @@ class GatewayOrchestrator:
             descriptors = builtin_channel_descriptors()
         boot = registry.bootable(descriptors)
         enabled = {
-            d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False))
-            for d in boot
+            d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False)) for d in boot
         }
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
             maintenance_executor(),
             lambda: {
-                m: (_channel_transport_permitted(m) if enabled[m] else False)
-                for m in enabled
+                m: (_channel_transport_permitted(m) if enabled[m] else False) for m in enabled
             },
         )
         self._channel_handles = await registry.start_channels(self, descriptors, permitted)
@@ -9323,9 +9349,7 @@ async def run_gateway(
                     "aggregate cgroup ceiling apply failed", exc_info=True
                 )
 
-        _SLICE_LIMITS_TASK = asyncio.create_task(
-            _apply_slice_limits(), name="agents-slice-limits"
-        )
+        _SLICE_LIMITS_TASK = asyncio.create_task(_apply_slice_limits(), name="agents-slice-limits")
 
     # ── Agents-dir janitor (fire-and-forget) ──
     # Sweep aged orphaned atomic-write temps + stale backups from the shared
@@ -9360,9 +9384,7 @@ async def run_gateway(
                     "agents-dir janitor sweep failed at boot", exc_info=True
                 )
 
-        _AGENTS_JANITOR_TASK = asyncio.create_task(
-            _run_agents_janitor(), name="agents-dir-janitor"
-        )
+        _AGENTS_JANITOR_TASK = asyncio.create_task(_run_agents_janitor(), name="agents-dir-janitor")
 
     # ── Agent scratch sweep (fire-and-forget, boot + hourly) ──
     # Reclaim per-process agent scratch dirs whose owner process is dead
@@ -9387,9 +9409,7 @@ async def run_gateway(
                 try:
                     await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
                 except Exception:
-                    logging.getLogger(__name__).debug(
-                        "agent-scratch sweep failed", exc_info=True
-                    )
+                    logging.getLogger(__name__).debug("agent-scratch sweep failed", exc_info=True)
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"

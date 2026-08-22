@@ -419,6 +419,11 @@ class _Loop:
         self.max_cycles = 24
         self.cycle_count = 3
         self.stop_sentinel_path = ""
+        # The armed crew. Read by the dashboard fire path, which renders the nudge
+        # body with this crew's variables and passes the loop's own instruction as
+        # the skill-trigger source. A double missing it raises AttributeError
+        # rather than failing an assertion, so it reads as an unrelated crash.
+        self.agent = ""
 
 
 def _bg_slot(key: str) -> MagicMock:

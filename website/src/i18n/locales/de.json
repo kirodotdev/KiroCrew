@@ -11779,6 +11779,33 @@
         "tokens_count_one": "{{count}} Zugriffstoken",
         "tokens_count_other": "{{count}} Zugriffstoken",
         "could_not_read_webhook_status": "Webhook-Status konnte nicht gelesen werden — prüfe, ob das Gateway läuft"
+      },
+      "variablesPanel": {
+        "global_environment_variables": "Globale Umgebungsvariablen",
+        "workspace_environment_variables": "Umgebungsvariablen des Workspace",
+        "plain_text_note": "Umgebungsvariablen sind kein Speicher für Geheimnisse. Jeder Wert wird als Klartext in variables.json gespeichert, halte Zugangsdaten also heraus.",
+        "name": "Name",
+        "value": "Wert",
+        "scope": "Bereich",
+        "actions": "Aktionen",
+        "add": "Hinzufügen",
+        "remove_variable": "{{name}} entfernen",
+        "no_variables_yet": "In diesem Bereich sind noch keine Variablen definiert.",
+        "no_workspace_variables": "Kein Workspace definiert eigene Variablen.",
+        "unavailable": "Umgebungsvariablen konnten nicht vom Gateway gelesen werden.",
+        "save_failed": "Umgebungsvariablen konnten nicht gespeichert werden.",
+        "error_name_pattern": "Ein Name muss mit einem Buchstaben beginnen und darf nur Buchstaben, Ziffern und Unterstriche enthalten.",
+        "error_name_reserved": "Dieser Name ist für einen integrierten Prompt-Platzhalter reserviert.",
+        "error_name_duplicate": "Dieser Name ist in diesem Bereich schon definiert.",
+        "error_value_length": "Ein Wert darf höchstens {{max}} Zeichen lang sein.",
+        "error_value_control": "Ein Wert darf außer Tabulator keine Steuerzeichen enthalten.",
+        "scope_global": "Global",
+        "scope_workspace": "Workspace",
+        "scope_crew": "Crew",
+        "scope_session": "Sitzung",
+        "shadowed_by": "Wird von {{scope}} überschrieben",
+        "overrides": "Überschreibt {{scope}}",
+        "workspace_named": "Workspace {{name}}"
       }
     },
     "settingsPage": {
@@ -12184,6 +12211,10 @@
       "secrets": {
         "label": "Secrets",
         "description": "API-Schlüssel und Anmeldedaten sicher speichern"
+    },
+      "variables": {
+        "label": "Umgebungsvariablen",
+        "description": "Wiederverwendbare Werte, die in Agentennachrichten eingesetzt werden"
       }
     },
     "secrets": {

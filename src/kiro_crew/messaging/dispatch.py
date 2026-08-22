@@ -241,6 +241,19 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
+        # Crew variables are deliberately NOT expanded here.
+        #
+        # A variable's value is OPERATOR configuration, but this text arrives from a
+        # channel participant — ``allowed_users`` admits several people, and this
+        # layer carries no operator-vs-participant distinction. Expanding here would
+        # let anyone permitted to message the bot read operator config by typing
+        # ``{{NAME}}`` and reading the reply, which is a disclosure the operator
+        # never opted into and does not depend on the values being secrets.
+        #
+        # So expansion is confined to operator-authored text: the dashboard
+        # composer, the agent system prompt, a cron message, a monitor instruction.
+        # Restoring it for a channel would need a trustworthy sender identity at
+        # this boundary, which is a security decision, not a plumbing one.
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             ctx_builder.build_message,
