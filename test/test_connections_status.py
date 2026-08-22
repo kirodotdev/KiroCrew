@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import mcp_grant
 from kiro_crew.connections import mint, status
 from kiro_crew.dashboard.handlers import connections
 
@@ -25,7 +26,7 @@ _LINEAR = {"slug": "linear", "mcp_url": "https://mcp.linear.app/mcp"}
 
 #: The real function, captured before any test patches it, for tests that need
 #: genuine path resolution against a monkeypatched cache directory.
-_REAL_GRANT_ARTIFACT_PATHS = mint.grant_artifact_paths
+_REAL_GRANT_ARTIFACT_PATHS = mcp_grant.grant_artifact_paths
 
 #: A real regular file's stat result, served by the fake artifacts below.
 _REGULAR_FILE_STAT = Path(__file__).stat()
@@ -46,7 +47,7 @@ class _FakeArtifact:
 def _install_grants_fake(monkeypatch: pytest.MonkeyPatch) -> None:
     """Route the status probe's artifact stats through the ``_grants`` set."""
     monkeypatch.setattr(
-        mint,
+        mcp_grant,
         "grant_artifact_paths",
         lambda url, **kw: (_FakeArtifact(url), _FakeArtifact(url)),
     )
@@ -56,9 +57,9 @@ def _install_grants_fake(monkeypatch: pytest.MonkeyPatch) -> None:
 def isolated_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A scratch sidecar, a fixed visible-provider set, and controllable facts.
 
-    ``grant_artifact_paths`` and ``pending_mint_for`` are function-locally
-    imported from the mint module inside status, so patching the mint attributes
-    is what the call sites read.
+    ``grant_artifact_paths`` is reached through its module and
+    ``pending_mint_for`` is imported per call, so each defining module stays
+    patchable.
     """
     monkeypatch.setattr(status, "_CONNECTION_STATE_PATH", tmp_path / "connected-since.json")
     monkeypatch.setattr(status, "_UNPERSISTED_RECORD", None)
@@ -69,7 +70,7 @@ def isolated_status(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     # resolution; with the grants fake installed it is not consulted.
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
-    monkeypatch.setattr(mint, "kiro_oauth_cache_dir", lambda **kw: cache_dir)
+    monkeypatch.setattr(mcp_grant, "kiro_oauth_cache_dir", lambda **kw: cache_dir)
     _set_facts()  # start each test from empty, controllable facts
     return tmp_path
 
@@ -222,7 +223,7 @@ def _unreadable_cache_dir(monkeypatch: pytest.MonkeyPatch, errno_cls=PermissionE
             return False  # what Path.is_file() answers when its stat raises
 
     monkeypatch.setattr(
-        mint,
+        mcp_grant,
         "grant_artifact_paths",
         lambda url, **kw: (_UnreadableArtifact(), _UnreadableArtifact()),
     )
@@ -296,8 +297,12 @@ async def test_a_true_absence_still_prunes(isolated_status):
 def test_a_missing_artifact_directory_is_a_definitive_absence(isolated_status, monkeypatch):
     # ENOENT means no grant was ever written — an answer, not an error. Real
     # path resolution restored so this exercises the genuine ENOENT branch.
-    monkeypatch.setattr(mint, "grant_artifact_paths", _REAL_GRANT_ARTIFACT_PATHS)
-    monkeypatch.setattr(mint, "kiro_oauth_cache_dir", lambda **kw: isolated_status / "absent")
+    monkeypatch.setattr(mcp_grant, "grant_artifact_paths", _REAL_GRANT_ARTIFACT_PATHS)
+    monkeypatch.setattr(
+        mcp_grant,
+        "kiro_oauth_cache_dir",
+        lambda **kw: isolated_status / "absent",
+    )
     assert status._grant_presence_map([dict(_NOTION)]) == {"notion": False}
 
 
@@ -319,7 +324,7 @@ def test_pair_semantics_from_one_stat_pass(isolated_status, monkeypatch):
             return _REGULAR_FILE_STAT
 
     def probe(pair):
-        monkeypatch.setattr(mint, "grant_artifact_paths", lambda url, **kw: pair)
+        monkeypatch.setattr(mcp_grant, "grant_artifact_paths", lambda url, **kw: pair)
         return status._provider_grant_presence("https://mcp.notion.com/mcp")
 
     assert probe((_Boom(), _Absent())) is False  # absence decides the pair

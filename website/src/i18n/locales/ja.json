@@ -9467,7 +9467,13 @@
         "undo": "元に戻す",
         "uninstall": "アンインストール",
         "unknown": "不明",
-        "declared": "宣言のみ"
+        "declared": "宣言のみ",
+        "sign_in_required": "サインインが必要",
+        "sign_in_required_help": "このサーバーは OAuth を使用しており、まだ誰もサインインしていません。<chatLink>チャットに移動し</chatLink>、新しいセッションを開始してメッセージを送信すると、チャットでサインインの承認を求められます。",
+        "oauth_not_a_static_token": "このサーバーは OAuth でサインインするため、静的な Authorization ヘッダーでは接続できません。このサーバーを削除してヘッダーなしで再追加し、有効にしてから、新しいチャットセッションを開始してサインインしてください。",
+        "sign_in_required_next": "承認したら、この表の上にある「MCP サーバーをプローブ」ボタンを使用します。行は「サインイン済み」に変わります。",
+        "signed_in": "サインイン済み",
+        "signed_in_help": "{{provider}} のサインインは Kiro CLI が保持しています。プローブはそのトークンなしで実行されるため、{{productName}} はサインインが有効なままかどうかを確認できません。"
       },
       "memoryGraphTab": {
         "all_count": "すべて（{{count}}）",

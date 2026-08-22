@@ -3631,7 +3631,13 @@
         "pending_enable_click_to_revert": "Pending: enable (click to revert)",
         "pending_uninstall": "{{label}} — pending uninstall",
         "unknown": "Unknown",
-        "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply."
+        "servers_scope_tip": "MCP servers across Kiro Crew and your interactive {{provider}}/Kiro globals. The Kiro Crew badge shows if it'll load in Kiro Crew sessions; the Globals badge shows if it's shared to your interactive Kiro global. Click to toggle, then Apply.",
+        "sign_in_required": "Sign-in required",
+        "sign_in_required_help": "This server uses OAuth and nobody has signed in yet. <chatLink>Go to chat</chatLink>, start a new session, and send a message — you'll be asked to approve the sign-in in chat.",
+        "oauth_not_a_static_token": "This server signs in with OAuth, so a static Authorization header cannot satisfy it. Remove and re-add this server without the header, enable it, then start a new chat session to sign in.",
+        "sign_in_required_next": "Once you have approved it, use the Probe MCP servers button above this table; this row will then read Signed in.",
+        "signed_in": "Signed in",
+        "signed_in_help": "Kiro CLI holds a sign-in for {{provider}}. The probe runs without that token, so {{productName}} cannot confirm the sign-in is still valid."
       },
       "memoryGraphTab": {
         "all_count": "All ({{count}})",

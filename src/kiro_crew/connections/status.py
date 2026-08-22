@@ -40,6 +40,7 @@ from pathlib import Path
 from stat import S_ISREG
 from typing import TypedDict
 
+from kiro_crew import mcp_grant
 from kiro_crew.config.loader import data_home
 from kiro_crew.connections.registry import Provider, get_visible_providers
 
@@ -272,8 +273,9 @@ def _reconcile_connected_since_locked(statuses: list[ConnectionStatus], now: str
     if fresh:
         # The credential-store observation this module ACTS on: a first-observed
         # grant became a persisted timestamp and a Connected badge. Mirrors the
-        # mint engine's ``_grant_observed`` convention -- audited on the acted-on
-        # observation only (not once per poll sweep), best-effort rather than
+        # shared ``mcp_grant.grant_observed`` convention -- audited on the acted-on
+        # observation only (this module polls, so not once per sweep), best-effort
+        # rather than
         # fail-closed because nothing sensitive crosses this boundary (the
         # artifacts are stat-ed, never opened); an SEL outage must not turn the
         # status read into an error, but it does leave a warning behind.
@@ -322,9 +324,7 @@ def _provider_grant_presence(mcp_url: str) -> bool | None:
     either artifact definitively absent decides the pair (both must exist), any
     remaining failed stat makes the pair unknowable, otherwise present.
     """
-    from kiro_crew.connections.mint import grant_artifact_paths
-
-    verdicts = [_artifact_presence(path) for path in grant_artifact_paths(mcp_url)]
+    verdicts = [_artifact_presence(path) for path in mcp_grant.grant_artifact_paths(mcp_url)]
     if False in verdicts:
         return False
     if None in verdicts:

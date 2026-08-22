@@ -9699,7 +9699,13 @@
         "undo": "Deshacer",
         "uninstall": "Desinstalar",
         "unknown": "Desconocido",
-        "declared": "Declarado"
+        "declared": "Declarado",
+        "sign_in_required": "Inicio de sesión necesario",
+        "sign_in_required_help": "Este servidor usa OAuth y todavía nadie ha iniciado sesión. <chatLink>Ve al chat</chatLink>, inicia una sesión nueva y envía un mensaje: se te pedirá que apruebes el inicio de sesión en el chat.",
+        "oauth_not_a_static_token": "Este servidor inicia sesión con OAuth, por lo que una cabecera Authorization estática no le sirve. Quita y vuelve a añadir este servidor sin la cabecera, actívalo y luego inicia una sesión de chat nueva para iniciar sesión.",
+        "sign_in_required_next": "Una vez aprobado, usa el botón Sondear servidores MCP situado encima de esta tabla; la fila pasará entonces a Sesión iniciada.",
+        "signed_in": "Sesión iniciada",
+        "signed_in_help": "Kiro CLI conserva un inicio de sesión para {{provider}}. El sondeo se ejecuta sin ese token, por lo que {{productName}} no puede confirmar que el inicio de sesión siga siendo válido."
       },
       "memoryGraphTab": {
         "all_count": "Todos ({{count}})",
