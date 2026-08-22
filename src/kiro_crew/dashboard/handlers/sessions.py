@@ -1245,6 +1245,15 @@ async def api_session_delete(request: web.Request) -> web.Response:
     key = request.match_info["key"]
     if not state.conversation_log:
         return web.json_response({"error": "no conversation log"}, status=400)
+    # A transcript reserved by an in-flight merge-back transition cannot be
+    # deleted mid-flight (GPT round 5): the transition's durable save would
+    # recreate the file this delete just unlinked, resurrecting removed
+    # conversation data. The reservation lasts seconds; retry after it clears.
+    if key in getattr(state, "merge_reserved_keys", frozenset()):
+        return web.json_response(
+            {"error": "a merge back is in progress for this session", "code": "merge_in_progress"},
+            status=409,
+        )
     # delete_session enters _locked (flock acquire + os.close); offload off the
     # loop so a wedged cross-process peer can't freeze chat/WS/heartbeat.
     ok = await asyncio.to_thread(state.conversation_log.delete_session, key)

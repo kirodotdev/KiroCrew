@@ -128,7 +128,7 @@ from kiro_crew.dashboard.port_reclaim import (
 )
 from kiro_crew.dashboard.routes import register_all
 from kiro_crew.dashboard.slowloris import build_hardened_runner
-from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
+from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState, SlotMergedError
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
     _is_spa_shell_request,
@@ -2773,6 +2773,26 @@ async def start_dashboard(
                 return await handlers.index(request)
             raise
 
+    # Merged-fork write gate translation (merge-back restructure round): the
+    # mutation boundary itself (``_ChatSlot.append``) refuses live rows on a
+    # merged/merging fork by raising ``SlotMergedError`` — that is what makes
+    # the read-only guarantee hold for endpoints nobody enumerated. This one
+    # middleware translates that refusal into the same 409 the deliberate
+    # gates answer, so an unenumerated live-append endpoint fails with a clean
+    # conflict instead of a 500.
+    @web.middleware  # type: ignore[misc]
+    async def merged_slot_error_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        try:
+            return await handler(request)  # type: ignore[operator]
+        except SlotMergedError:
+            return web.json_response(
+                {"error": "this session was merged into its parent", "code": "session_merged"},
+                status=409,
+            )
+
     # CSRF: block state-mutating requests from cross-origin pages
     _safe_methods = {"GET", "HEAD", "OPTIONS"}
 
@@ -2922,6 +2942,7 @@ async def start_dashboard(
             spa_shell_handler=handlers.index,
             tailnet_trust=_tailnet_trust,
         ),
+        merged_slot_error_middleware,
         sel_audit_middleware,
         spa_fallback,
     ]

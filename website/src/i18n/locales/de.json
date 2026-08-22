@@ -4858,12 +4858,17 @@
       "earlier_messages_open_session": "Frühere Nachrichten — vollständige Sitzung öffnen (schließt die geteilte Ansicht)",
       "earlier_messages_unavailable": "Frühere Nachrichten sind im Verlauf dieser Sitzung nicht mehr verfügbar.",
       "forked_from": "Verzweigt von {{name}}",
+      "merge_back": "Zurückführen",
+      "merge_back_confirm": "Die Zusammenfassung dieses Forks in {{name}} zurückführen und den Fork archivieren? Der Fork wird schreibgeschützt.",
+      "merge_back_merging": "Wird zurückgeführt…",
+      "merge_back_title": "Die Zusammenfassung dieses Forks in {{name}} zurückführen und den Fork archivieren",
       "model_list": "Modellliste",
       "session_ready_type_a_message_to_start": "Sitzung bereit. Geben Sie eine Nachricht ein, um zu beginnen.",
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
       "split_right_d": "Nach rechts teilen (⌘D)",
-      "type_to_filter": "Zum Filtern tippen…"
+      "type_to_filter": "Zum Filtern tippen…",
+      "pane_actions": "Bereichsaktionen"
     },
     "cliPanel": {
       "copied": "Kopiert",
@@ -6904,10 +6909,19 @@
     },
     "useSessionActions": {
       "close_this_session": "Diese Sitzung schließen?",
+      "merge_back_failed": "Zurückführen fehlgeschlagen. Die übergeordnete Sitzung ist möglicherweise nicht mehr vorhanden oder das Gateway nicht erreichbar; versuchen Sie es erneut.",
+      "merge_back_failed_already_merged": "Dieser Fork wurde bereits in seine übergeordnete Sitzung zurückgeführt.",
+      "merge_back_failed_archive": "Die Zusammenfassung wurde in die übergeordnete Sitzung übernommen, aber der Fork konnte nicht archiviert werden. Klicken Sie erneut auf „Zurückführen“, um den Vorgang abzuschließen.",
+      "merge_back_failed_no_summary": "Dieser Fork konnte nicht zusammengefasst werden — möglicherweise gibt es zu wenige Runden zum Zurückführen.",
+      "merge_back_failed_parent_missing": "Die übergeordnete Sitzung ist geschlossen oder existiert nicht mehr. Öffnen Sie sie zuerst über den Verlauf erneut.",
+      "merge_back_failed_parent_save": "Die zusammengeführte Zusammenfassung konnte nicht in der übergeordneten Sitzung gespeichert werden; es wurde nichts übernommen. Versuchen Sie es erneut.",
+      "merge_back_failed_running": "Dieser Fork hat eine laufende Runde. Versuchen Sie es erneut, wenn er inaktiv ist.",
       "reload_failed": "Sitzung konnte nicht neu geladen werden. Der Agent ist möglicherweise mitten in einem Zug oder das Gateway ist nicht erreichbar; versuchen Sie es erneut, wenn die Sitzung inaktiv ist.",
       "reload_failed_subagents": "Unteragenten arbeiten noch an dieser Sitzung. Versuchen Sie es erneut, wenn sie fertig sind.",
       "switch_to_autopilot_mode_future_messages_will_us": "In den Autopilot-Modus wechseln? Zukünftige Nachrichten verwenden das Autopilot-Verhalten (planen → genehmigen → ausführen).",
-      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten."
+      "switch_to_normal_chat_mode_future_messages_will": "In den normalen Chat-Modus wechseln? Zukünftige Nachrichten verwenden das Standard-Chat-Verhalten.",
+      "merge_back_failed_parent_busy": "Die übergeordnete Sitzung hat gerade einen Turn in Arbeit. Versuche es erneut, sobald er abgeschlossen ist.",
+      "merge_back_failed_nothing": "Dieser Fork hat noch keine eigene Arbeit zum Zurückführen. Sende ihm zuerst eine Nachricht und führe dann zusammen."
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "Audio-Worklet nicht verfügbar",
@@ -7814,9 +7828,30 @@
         "acknowledged_this_won_t_be_repeated_in_future_no": "Bestätigt — dies wird in künftigen Benachrichtigungen nicht wiederholt",
         "delete": "Löschen"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "Frühere Nachrichten laden",
+        "error_retry": "Frühere Nachrichten konnten nicht geladen werden — erneut versuchen"
+      },
       "errorCard": {
         "continue": "Fortsetzen",
         "continue_hint": "Ab der Unterbrechung fortsetzen. Bereits auf die Festplatte geschriebene Arbeit bleibt unberührt."
+      },
+      "fileBrowserRail": {
+        "all_files": "Alle Dateien",
+        "changed": "Geändert",
+        "close_search": "Suche schließen",
+        "filter_placeholder": "Dateien filtern…",
+        "refresh": "Aktualisieren",
+        "resize": "Dateibrowser-Größe ändern",
+        "tree_mode": "Dateilisten-Modus"
+      },
+      "filesHome": {
+        "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",
+        "refresh": "Aktualisieren",
+        "reveal_in_finder": "Im Dateimanager anzeigen",
+        "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
+        "title": "Dateien",
+        "tree_error": "Der Dateibaum konnte nicht geladen werden"
       },
       "folderPanel": {
         "clear_search": "Suche löschen",
@@ -7870,6 +7905,14 @@
         "remote_gateway_hint": "Auf einem entfernten Gateway schlägt der localhost-Callback des Browsers fehl — das ist zu erwarten. Kopiere die vollständige Adresse, auf der der Browser gelandet ist, und füge sie hier ein, um die Autorisierung abzuschließen.",
         "requires_authentication": "erfordert Authentifizierung."
       },
+      "mergedSummaryCard": {
+        "gap_note_one": "Die übergeordnete Sitzung ist seit diesem Fork um {{count}} Nachricht weitergegangen; am aktuellen Ende zusammengeführt.",
+        "gap_note_other": "Die übergeordnete Sitzung ist seit diesem Fork um {{count}} Nachrichten weitergegangen; am aktuellen Ende zusammengeführt.",
+        "merged_from_a_fork": "Aus einem Fork zurückgeführt",
+        "merged_from_fork": "Zurückgeführt aus {{name}}",
+        "summary_covers_full_fork": "Zusammenfassung der gesamten Fork-Sitzung",
+        "summary_of_forks_work": "Zusammenfassung der Arbeit des Forks"
+      },
       "notificationItem": {
         "acknowledged": "Bestätigt",
         "delete": "Löschen"
@@ -7885,6 +7928,24 @@
         "collapse_pinned_prompt": "Angeheftete Nachricht einklappen",
         "expand_pinned_prompt": "Angeheftete Nachricht ausklappen",
         "jump_to_this_turn": "Zu diesem Zug springen"
+      },
+      "pins": {
+        "pinned_messages": "Angeheftete Nachrichten",
+        "loading": "Wird geladen…",
+        "no_pinned_messages": "Noch keine angehefteten Nachrichten. Zeige auf eine Nachricht im Chat und klicke auf das Stecknadel-Symbol, um sie hier zu speichern.",
+        "message_unavailable": "Diese angeheftete Nachricht ist im geladenen Verlauf nicht mehr verfügbar.",
+        "pin_failed": "Die Nachricht konnte nicht angeheftet werden. Versuche es erneut.",
+        "unpin_failed": "Die Nachricht konnte nicht gelöst werden. Versuche es erneut.",
+        "you": "Du",
+        "assistant": "Assistent",
+        "just_now": "Gerade eben",
+        "minutes_ago": "vor {{count}} Min.",
+        "hours_ago": "vor {{count}} Std.",
+        "days_ago": "vor {{count}} T.",
+        "copy_preview": "Text kopieren",
+        "copy_link": "Link zur Nachricht kopieren",
+        "unpin": "Loslösen",
+        "jump_to_message": "Zur Nachricht springen"
       },
       "recoveryCard": {
         "action_not_taken": "Aktion nicht ausgeführt",
@@ -7924,6 +7985,47 @@
         "new_chat": "Neuer Chat",
         "recent_sessions": "Kürzliche Sitzungen",
         "show_all_sessions": "Alle Sitzungen anzeigen"
+      },
+      "sessionSummary": {
+        "empty_body": "Die Zusammenfassung entsteht am Ende eines Zugs. Sende eine Nachricht, um eine für diese Sitzung zu erhalten.",
+        "empty_generate_body": "Diese Sitzung wurde noch nicht zusammengefasst.",
+        "empty_title": "Noch keine Zusammenfassung",
+        "empty_too_few": "Sende zuerst ein paar Nachrichten — hier ist noch nicht genug zum Zusammenfassen.",
+        "failed": "Versuchen Sie es erneut oder laden Sie die Seite neu, wenn es weiterhin fehlschlägt.",
+        "failed_title": "Zusammenfassung konnte nicht geladen werden",
+        "from_intent": "Teil von {{intent}}",
+        "generate": "Zusammenfassen",
+        "generate_failed": "Diese Sitzung konnte nicht zusammengefasst werden. Versuche es gleich noch einmal.",
+        "generate_in_flight": "Eine Zusammenfassung wird bereits geschrieben.",
+        "generate_turn_running": "Während ein Zug läuft, kann nicht zusammengefasst werden. Warte, bis dieser Zug fertig ist.",
+        "generating": "Wird zusammengefasst…",
+        "loading": "Zusammenfassung wird geladen…",
+        "most_recent_first": "Zuletzt bearbeitet zuerst",
+        "not_generated": "Noch nicht erstellt",
+        "nothing_outstanding": "Nichts offen.",
+        "off_body": "Beim Aktivieren werden neue Züge zusammengefasst; frühere Züge werden nicht nachgetragen.",
+        "off_title": "Sitzungszusammenfassungen sind aus",
+        "open_items_heading": "Offene Punkte",
+        "open_items_less": "Weniger anzeigen",
+        "open_items_more": "+{{n}} weitere",
+        "open_items_one": "{{count}} offener Punkt",
+        "open_items_other": "{{count}} offene Punkte",
+        "pivoted_from_turn": "Entstand aus deiner Frage in Zug {{turn}}",
+        "project_notes": "Wie dieses Projekt läuft",
+        "reload": "Erneut prüfen",
+        "retry": "Erneut versuchen",
+        "returned_to": "Wieder aufgenommen ×{{times}}",
+        "state_active": "Aktiv",
+        "state_done": "Fertig",
+        "state_dropped": "Verworfen",
+        "state_needs_you": "Braucht dich",
+        "suggested_next": "Vorgeschlagene nächste Schritte",
+        "title": "Zusammenfassung",
+        "turns": "Züge {{ranges}}",
+        "updated": "Aktualisiert",
+        "updated_behind": "Aktualisiert {{when}} — hinter dem Gespräch",
+        "where_it_stands": "Aktueller Stand",
+        "you_asked_for": "Deine Anfrage"
       },
       "sideChat": {
         "ago": "her",
@@ -8105,86 +8207,6 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Snapshot konnte nicht geladen werden:",
         "events": "Ereignisse"
-      },
-      "pins": {
-        "pinned_messages": "Angeheftete Nachrichten",
-        "loading": "Wird geladen…",
-        "no_pinned_messages": "Noch keine angehefteten Nachrichten. Zeige auf eine Nachricht im Chat und klicke auf das Stecknadel-Symbol, um sie hier zu speichern.",
-        "message_unavailable": "Diese angeheftete Nachricht ist im geladenen Verlauf nicht mehr verfügbar.",
-        "pin_failed": "Die Nachricht konnte nicht angeheftet werden. Versuche es erneut.",
-        "unpin_failed": "Die Nachricht konnte nicht gelöst werden. Versuche es erneut.",
-        "you": "Du",
-        "assistant": "Assistent",
-        "just_now": "Gerade eben",
-        "minutes_ago": "vor {{count}} Min.",
-        "hours_ago": "vor {{count}} Std.",
-        "days_ago": "vor {{count}} T.",
-        "copy_preview": "Text kopieren",
-        "copy_link": "Link zur Nachricht kopieren",
-        "unpin": "Loslösen",
-        "jump_to_message": "Zur Nachricht springen"
-      },
-      "earlierMessagesBar": {
-        "load_earlier_messages": "Frühere Nachrichten laden",
-        "error_retry": "Frühere Nachrichten konnten nicht geladen werden — erneut versuchen"
-      },
-      "sessionSummary": {
-        "empty_body": "Die Zusammenfassung entsteht am Ende eines Zugs. Sende eine Nachricht, um eine für diese Sitzung zu erhalten.",
-        "empty_generate_body": "Diese Sitzung wurde noch nicht zusammengefasst.",
-        "empty_title": "Noch keine Zusammenfassung",
-        "empty_too_few": "Sende zuerst ein paar Nachrichten — hier ist noch nicht genug zum Zusammenfassen.",
-        "failed": "Versuchen Sie es erneut oder laden Sie die Seite neu, wenn es weiterhin fehlschlägt.",
-        "failed_title": "Zusammenfassung konnte nicht geladen werden",
-        "from_intent": "Teil von {{intent}}",
-        "generate": "Zusammenfassen",
-        "generate_failed": "Diese Sitzung konnte nicht zusammengefasst werden. Versuche es gleich noch einmal.",
-        "generate_in_flight": "Eine Zusammenfassung wird bereits geschrieben.",
-        "generate_turn_running": "Während ein Zug läuft, kann nicht zusammengefasst werden. Warte, bis dieser Zug fertig ist.",
-        "generating": "Wird zusammengefasst…",
-        "loading": "Zusammenfassung wird geladen…",
-        "most_recent_first": "Zuletzt bearbeitet zuerst",
-        "not_generated": "Noch nicht erstellt",
-        "nothing_outstanding": "Nichts offen.",
-        "off_body": "Beim Aktivieren werden neue Züge zusammengefasst; frühere Züge werden nicht nachgetragen.",
-        "off_title": "Sitzungszusammenfassungen sind aus",
-        "open_items_heading": "Offene Punkte",
-        "open_items_less": "Weniger anzeigen",
-        "open_items_more": "+{{n}} weitere",
-        "open_items_one": "{{count}} offener Punkt",
-        "open_items_other": "{{count}} offene Punkte",
-        "pivoted_from_turn": "Entstand aus deiner Frage in Zug {{turn}}",
-        "project_notes": "Wie dieses Projekt läuft",
-        "reload": "Erneut prüfen",
-        "retry": "Erneut versuchen",
-        "returned_to": "Wieder aufgenommen ×{{times}}",
-        "state_active": "Aktiv",
-        "state_done": "Fertig",
-        "state_dropped": "Verworfen",
-        "state_needs_you": "Braucht dich",
-        "suggested_next": "Vorgeschlagene nächste Schritte",
-        "title": "Zusammenfassung",
-        "turns": "Züge {{ranges}}",
-        "updated": "Aktualisiert",
-        "updated_behind": "Aktualisiert {{when}} — hinter dem Gespräch",
-        "where_it_stands": "Aktueller Stand",
-        "you_asked_for": "Deine Anfrage"
-      },
-      "fileBrowserRail": {
-        "all_files": "Alle Dateien",
-        "changed": "Geändert",
-        "close_search": "Suche schließen",
-        "filter_placeholder": "Dateien filtern…",
-        "refresh": "Aktualisieren",
-        "resize": "Dateibrowser-Größe ändern",
-        "tree_mode": "Dateilisten-Modus"
-      },
-      "filesHome": {
-        "no_project_dir": "Für diesen Chat ist kein Projektverzeichnis festgelegt",
-        "refresh": "Aktualisieren",
-        "reveal_in_finder": "Im Dateimanager anzeigen",
-        "select_file_hint": "Wähle eine Datei im Baum, um sie in einem neuen Tab zu öffnen",
-        "title": "Dateien",
-        "tree_error": "Der Dateibaum konnte nicht geladen werden"
       }
     },
     "chatPage": {

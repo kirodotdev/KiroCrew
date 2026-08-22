@@ -7,6 +7,7 @@ import logging
 
 from aiohttp import web
 
+from kiro_crew.dashboard.chat_handlers import merged_slot_response
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
@@ -36,6 +37,11 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     async with slot._lock:
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         msgs = slot.messages
         ai_idx = -1
@@ -134,6 +140,11 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     async with slot._lock:
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         target = None
         for m in reversed(slot.messages):
@@ -215,6 +226,11 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     async with slot._lock:
         if slot.running:
             return web.json_response({"error": "slot is running"}, status=409)
+        # Merged/merging forks are read-only (restructure round): this endpoint
+        # both rewrites persisted history and dispatches a turn.
+        merged_409 = merged_slot_response(slot)
+        if merged_409 is not None:
+            return merged_409
 
         msgs = slot.messages
 

@@ -4785,12 +4785,17 @@
       "earlier_messages_open_session": "以前のメッセージ — セッション全体を開く（分割表示を閉じます）",
       "earlier_messages_unavailable": "以前のメッセージはこのセッションの履歴では利用できなくなりました。",
       "forked_from": "{{name}} からフォーク",
+      "merge_back": "マージして戻す",
+      "merge_back_confirm": "このフォークのサマリーを {{name}} にマージして戻し、フォークをアーカイブしますか？ フォークは読み取り専用になります。",
+      "merge_back_merging": "マージ中…",
+      "merge_back_title": "このフォークのサマリーを {{name}} にマージして戻し、フォークをアーカイブします",
       "model_list": "モデルリスト",
       "session_ready_type_a_message_to_start": "セッション準備完了。メッセージを入力して開始してください。",
       "split_down": "下に分割",
       "split_right": "右に分割",
       "split_right_d": "右に分割 (⌘D)",
-      "type_to_filter": "フィルタリングするには入力…"
+      "type_to_filter": "フィルタリングするには入力…",
+      "pane_actions": "ペインの操作"
     },
     "cliPanel": {
       "copied": "コピーしました",
@@ -6815,10 +6820,19 @@
     },
     "useSessionActions": {
       "close_this_session": "このセッションを閉じますか？",
+      "merge_back_failed": "マージして戻す処理に失敗しました。親セッションが失われたか、ゲートウェイに接続できない可能性があります。もう一度お試しください。",
+      "merge_back_failed_already_merged": "このフォークはすでに親セッションにマージされています。",
+      "merge_back_failed_archive": "要約は親セッションにマージされましたが、フォークをアーカイブできませんでした。完了するには、もう一度「マージして戻す」をクリックしてください。",
+      "merge_back_failed_no_summary": "このフォークをサマリーできませんでした — マージして戻すにはターンが少なすぎる可能性があります。",
+      "merge_back_failed_parent_missing": "親セッションは閉じられているか、存在しません。先に履歴から再度開いてください。",
+      "merge_back_failed_parent_save": "マージした要約を親セッションに保存できませんでした。何もマージされていません。もう一度お試しください。",
+      "merge_back_failed_running": "このフォークではターンが進行中です。アイドル状態になってからもう一度お試しください。",
       "reload_failed": "セッションの再読み込みに失敗しました。エージェントが応答中かゲートウェイに接続できない可能性があります。セッションがアイドルのときに再試行してください。",
       "reload_failed_subagents": "このセッションのサブエージェントがまだ動作中です。完了してから再試行してください。",
       "switch_to_autopilot_mode_future_messages_will_us": "オートパイロットモードに切り替えますか？今後のメッセージはオートパイロット動作（プラン→承認→実行）を使用します。",
-      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。"
+      "switch_to_normal_chat_mode_future_messages_will": "通常のチャットモードに切り替えますか？今後のメッセージは標準チャット動作を使用します。",
+      "merge_back_failed_parent_busy": "親セッションでターンが進行中です。完了してからもう一度お試しください。",
+      "merge_back_failed_nothing": "このフォークにはまだマージして戻す独自の作業がありません。まずメッセージを送ってからマージしてください。"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "オーディオワークレットが利用できません",
@@ -7712,9 +7726,30 @@
         "acknowledged_this_won_t_be_repeated_in_future_no": "確認済み — 今後の通知では繰り返されません",
         "delete": "削除"
       },
+      "earlierMessagesBar": {
+        "load_earlier_messages": "以前のメッセージを読み込む",
+        "error_retry": "以前のメッセージを読み込めませんでした — 再試行"
+      },
       "errorCard": {
         "continue": "続行",
         "continue_hint": "停止した箇所から再開します。ディスクに書き込まれた作業内容はそのまま残ります。"
+      },
+      "fileBrowserRail": {
+        "all_files": "すべてのファイル",
+        "changed": "変更あり",
+        "close_search": "検索を閉じる",
+        "filter_placeholder": "ファイルを絞り込む…",
+        "refresh": "更新",
+        "resize": "ファイルブラウザーのサイズを変更",
+        "tree_mode": "ファイル一覧モード"
+      },
+      "filesHome": {
+        "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
+        "refresh": "更新",
+        "reveal_in_finder": "ファイルマネージャーで表示",
+        "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
+        "title": "ファイル",
+        "tree_error": "ファイルツリーを読み込めませんでした"
       },
       "folderPanel": {
         "clear_search": "検索をクリア",
@@ -7768,6 +7803,13 @@
         "remote_gateway_hint": "リモートゲートウェイでは、ブラウザーのlocalhostコールバックは失敗します — これは想定どおりです。ブラウザーが到達した完全なアドレスをコピーしてここに貼り付け、認可を完了してください。",
         "requires_authentication": "には認証が必要です。"
       },
+      "mergedSummaryCard": {
+        "gap_note_other": "このフォーク以降、親セッションは{{count}}件のメッセージ分進みました。現在の末尾にマージしました。",
+        "merged_from_a_fork": "フォークからマージ",
+        "merged_from_fork": "{{name}} からマージ",
+        "summary_covers_full_fork": "フォークセッション全体のサマリー",
+        "summary_of_forks_work": "フォークの作業のサマリー"
+      },
       "notificationItem": {
         "acknowledged": "確認済み",
         "delete": "削除"
@@ -7783,6 +7825,24 @@
         "collapse_pinned_prompt": "固定したプロンプトを折りたたむ",
         "expand_pinned_prompt": "固定したプロンプトを展開",
         "jump_to_this_turn": "このターンへ移動"
+      },
+      "pins": {
+        "pinned_messages": "ピン留めされたメッセージ",
+        "loading": "読み込み中…",
+        "no_pinned_messages": "ピン留めされたメッセージはまだありません。チャットのメッセージにカーソルを合わせ、ピンのアイコンをクリックするとここに保存されます。",
+        "message_unavailable": "このピン留めメッセージは読み込まれた履歴では利用できなくなりました。",
+        "pin_failed": "メッセージをピン留めできませんでした。もう一度お試しください。",
+        "unpin_failed": "メッセージのピン留めを解除できませんでした。もう一度お試しください。",
+        "you": "あなた",
+        "assistant": "アシスタント",
+        "just_now": "たった今",
+        "minutes_ago": "{{count}}分前",
+        "hours_ago": "{{count}}時間前",
+        "days_ago": "{{count}}日前",
+        "copy_preview": "テキストをコピー",
+        "copy_link": "メッセージへのリンクをコピー",
+        "unpin": "ピン留めを解除",
+        "jump_to_message": "メッセージに移動"
       },
       "recoveryCard": {
         "action_not_taken": "アクションは実行されませんでした",
@@ -7822,6 +7882,46 @@
         "new_chat": "新しいチャット",
         "recent_sessions": "最近のセッション",
         "show_all_sessions": "すべてのセッションを表示"
+      },
+      "sessionSummary": {
+        "empty_body": "サマリーはターンの終了時に作成されます。このセッションのサマリーを得るにはメッセージを送信してください。",
+        "empty_generate_body": "このセッションのサマリーはまだ作成されていません。",
+        "empty_title": "まだサマリーはありません",
+        "empty_too_few": "まずメッセージをいくつか送信してください — サマリーを作成するにはまだ情報が足りません。",
+        "failed": "もう一度お試しください。続く場合はページを再読み込みしてください。",
+        "failed_title": "サマリーを読み込めませんでした",
+        "from_intent": "「{{intent}}」の一部",
+        "generate": "サマリーを作成",
+        "generate_failed": "このセッションのサマリーを作成できませんでした。しばらくしてからもう一度お試しください。",
+        "generate_in_flight": "サマリーはすでに作成中です。",
+        "generate_turn_running": "ターンの実行中はサマリーを作成できません。このターンの終了をお待ちください。",
+        "generating": "サマリーを作成中…",
+        "loading": "サマリーを読み込み中…",
+        "most_recent_first": "最近作業したものから順に",
+        "not_generated": "未生成",
+        "nothing_outstanding": "未対応の項目はありません。",
+        "off_body": "有効にすると以降のターンが要約されます。過去のターンは遡って作成されません。",
+        "off_title": "セッションサマリーは無効です",
+        "open_items_heading": "未対応の項目",
+        "open_items_less": "表示を減らす",
+        "open_items_more": "他 {{n}} 件",
+        "open_items_other": "未対応 {{count}} 件",
+        "pivoted_from_turn": "ターン {{turn}} のあなたの質問から派生",
+        "project_notes": "このプロジェクトの進め方",
+        "reload": "もう一度確認",
+        "retry": "再試行",
+        "returned_to": "再開 ×{{times}}",
+        "state_active": "進行中",
+        "state_done": "完了",
+        "state_dropped": "中止",
+        "state_needs_you": "対応が必要",
+        "suggested_next": "次のステップの提案",
+        "title": "サマリー",
+        "turns": "ターン {{ranges}}",
+        "updated": "更新",
+        "updated_behind": "{{when}}に更新 — 会話に追いついていません",
+        "where_it_stands": "現在の状況",
+        "you_asked_for": "依頼した内容"
       },
       "sideChat": {
         "ago": "前",
@@ -8002,85 +8102,6 @@
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",
         "events": "イベント"
-      },
-      "pins": {
-        "pinned_messages": "ピン留めされたメッセージ",
-        "loading": "読み込み中…",
-        "no_pinned_messages": "ピン留めされたメッセージはまだありません。チャットのメッセージにカーソルを合わせ、ピンのアイコンをクリックするとここに保存されます。",
-        "message_unavailable": "このピン留めメッセージは読み込まれた履歴では利用できなくなりました。",
-        "pin_failed": "メッセージをピン留めできませんでした。もう一度お試しください。",
-        "unpin_failed": "メッセージのピン留めを解除できませんでした。もう一度お試しください。",
-        "you": "あなた",
-        "assistant": "アシスタント",
-        "just_now": "たった今",
-        "minutes_ago": "{{count}}分前",
-        "hours_ago": "{{count}}時間前",
-        "days_ago": "{{count}}日前",
-        "copy_preview": "テキストをコピー",
-        "copy_link": "メッセージへのリンクをコピー",
-        "unpin": "ピン留めを解除",
-        "jump_to_message": "メッセージに移動"
-      },
-      "earlierMessagesBar": {
-        "load_earlier_messages": "以前のメッセージを読み込む",
-        "error_retry": "以前のメッセージを読み込めませんでした — 再試行"
-      },
-      "sessionSummary": {
-        "empty_body": "サマリーはターンの終了時に作成されます。このセッションのサマリーを得るにはメッセージを送信してください。",
-        "empty_generate_body": "このセッションのサマリーはまだ作成されていません。",
-        "empty_title": "まだサマリーはありません",
-        "empty_too_few": "まずメッセージをいくつか送信してください — サマリーを作成するにはまだ情報が足りません。",
-        "failed": "もう一度お試しください。続く場合はページを再読み込みしてください。",
-        "failed_title": "サマリーを読み込めませんでした",
-        "from_intent": "「{{intent}}」の一部",
-        "generate": "サマリーを作成",
-        "generate_failed": "このセッションのサマリーを作成できませんでした。しばらくしてからもう一度お試しください。",
-        "generate_in_flight": "サマリーはすでに作成中です。",
-        "generate_turn_running": "ターンの実行中はサマリーを作成できません。このターンの終了をお待ちください。",
-        "generating": "サマリーを作成中…",
-        "loading": "サマリーを読み込み中…",
-        "most_recent_first": "最近作業したものから順に",
-        "not_generated": "未生成",
-        "nothing_outstanding": "未対応の項目はありません。",
-        "off_body": "有効にすると以降のターンが要約されます。過去のターンは遡って作成されません。",
-        "off_title": "セッションサマリーは無効です",
-        "open_items_heading": "未対応の項目",
-        "open_items_less": "表示を減らす",
-        "open_items_more": "他 {{n}} 件",
-        "open_items_other": "未対応 {{count}} 件",
-        "pivoted_from_turn": "ターン {{turn}} のあなたの質問から派生",
-        "project_notes": "このプロジェクトの進め方",
-        "reload": "もう一度確認",
-        "retry": "再試行",
-        "returned_to": "再開 ×{{times}}",
-        "state_active": "進行中",
-        "state_done": "完了",
-        "state_dropped": "中止",
-        "state_needs_you": "対応が必要",
-        "suggested_next": "次のステップの提案",
-        "title": "サマリー",
-        "turns": "ターン {{ranges}}",
-        "updated": "更新",
-        "updated_behind": "{{when}}に更新 — 会話に追いついていません",
-        "where_it_stands": "現在の状況",
-        "you_asked_for": "依頼した内容"
-      },
-      "fileBrowserRail": {
-        "all_files": "すべてのファイル",
-        "changed": "変更あり",
-        "close_search": "検索を閉じる",
-        "filter_placeholder": "ファイルを絞り込む…",
-        "refresh": "更新",
-        "resize": "ファイルブラウザーのサイズを変更",
-        "tree_mode": "ファイル一覧モード"
-      },
-      "filesHome": {
-        "no_project_dir": "このチャットにはプロジェクトディレクトリが設定されていません",
-        "refresh": "更新",
-        "reveal_in_finder": "ファイルマネージャーで表示",
-        "select_file_hint": "ツリーからファイルを選択すると新しいタブで開きます",
-        "title": "ファイル",
-        "tree_error": "ファイルツリーを読み込めませんでした"
       }
     },
     "chatPage": {

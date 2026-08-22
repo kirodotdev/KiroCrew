@@ -448,3 +448,64 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('same text'))
   })
 })
+
+describe('ChatPane header — fork panes fold actions into one overflow menu (AUTOSDE max-two-buttons-per-row)', () => {
+  function renderPaneWithActions(slotKey: string, handlers: { onSplitRight?: () => void; onSplitDown?: () => void; onRemove?: () => void }, opts?: { forkedFrom?: string }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const store = configureStore({
+      reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+      preloadedState: {
+        dashboard: {
+          status: null, connected: true,
+          slots: [{ key: slotKey, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(opts?.forkedFrom ? { forked_from: opts.forkedFrom } : {}) }],
+          unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
+          subagentRunning: {}, subagentDetails: {}, subagentText: {},
+        } as unknown as RootState['dashboard'],
+      } as Partial<RootState>,
+    })
+    return render(
+      <Provider store={store}>
+        <QueryClientProvider client={qc}>
+          <ThemeProvider>
+            <MemoryRouter>
+              <ChatPane slotKey={slotKey} {...handlers} />
+            </MemoryRouter>
+          </ThemeProvider>
+        </QueryClientProvider>
+      </Provider>,
+    )
+  }
+
+  it('fork pane: split/close are menu items behind one trigger, never peer header buttons', async () => {
+    const onSplitRight = vi.fn()
+    const onSplitDown = vi.fn()
+    const onRemove = vi.fn()
+    renderPaneWithActions('pane-a', { onSplitRight, onSplitDown, onRemove }, { forkedFrom: 'dashboard:parent-a' })
+
+    // Not peer buttons — with the breadcrumb trigger present, the row stays
+    // under the two-control cap.
+    expect(screen.queryByRole('button', { name: /split right/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /split down/i })).toBeNull()
+    expect(screen.queryByRole('button', { name: /close pane/i })).toBeNull()
+
+    // One overflow trigger holds all three, one keypress away.
+    const trigger = screen.getByRole('button', { name: /pane actions/i })
+    fireEvent.keyDown(trigger, { key: 'Enter' })
+    await waitFor(() => expect(screen.getByRole('menuitem', { name: /split right/i })).toBeTruthy())
+    expect(screen.getByRole('menuitem', { name: /split down/i })).toBeTruthy()
+    const close = screen.getByRole('menuitem', { name: /close pane/i })
+    fireEvent.click(close)
+    await waitFor(() => expect(onRemove).toHaveBeenCalled())
+  })
+
+  it('non-fork pane: keeps the grandfathered direct one-click actions, no overflow trigger', () => {
+    const onSplitRight = vi.fn()
+    renderPaneWithActions('pane-b', { onSplitRight, onSplitDown: vi.fn(), onRemove: vi.fn() })
+    // Design review: collapsing every pane would trade everyday ergonomics
+    // across Split View for a cap problem only fork panes have.
+    expect(screen.queryByRole('button', { name: /pane actions/i })).toBeNull()
+    const split = screen.getByRole('button', { name: /split right/i })
+    fireEvent.click(split)
+    expect(onSplitRight).toHaveBeenCalled()
+  })
+})

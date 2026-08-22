@@ -1393,6 +1393,18 @@ def request_slot_origin(app: str) -> str:
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 
+class SlotMergedError(RuntimeError):
+    """A live write reached a merged (or merging-out) fork.
+
+    Raised by :meth:`_ChatSlot.append`'s write gate — the single mutation
+    boundary that makes "a merged fork is read-only" true for every caller,
+    including endpoints and work sources that carry no gate of their own.
+    HTTP handlers that can reach it deliberately (send, continue, regenerate)
+    answer 409 from their own pre-checks first; this exception is the
+    fail-closed backstop for the paths nobody enumerated.
+    """
+
+
 class _ChatSlot:
     """Independent chat session that runs server-side."""
 
@@ -1505,6 +1517,9 @@ class _ChatSlot:
         "_pending_variants",
         "_lock",
         "forked_from",
+        "_merged",
+        "_merging",
+        "_archive_pending",
         "_fork_lock",
         "_tab_id",
         "_channel_window_mtime",
@@ -1886,6 +1901,18 @@ class _ChatSlot:
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
         self.forked_from: str | None = None  # parent slot key if this is a fork
+        # Set once this fork has been merged back into its parent (chat_merge_back).
+        # ``_merged`` makes the session read-only (a merged fork's turn path is
+        # rejected) and, via the ``merged``→``closed`` fold at save time,
+        # non-continuable. The parent is named by ``forked_from``.
+        self._merged: bool = False
+        # Transient (never persisted): a merge-back transition is in flight
+        # under ``_fork_lock`` — chat_send rejects new turns so nothing lands
+        # mid-merge, gets omitted from the summary, and is archived unread.
+        self._merging: bool = False
+        # Transient (never persisted): a merge-back persisted the parent block
+        # but the fork's archive save failed; the retry re-runs ONLY the archive.
+        self._archive_pending: bool = False
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         self._tab_id: str = ""  # permanent tab identity for cross-restart session chaining
         # Transcript mtime the in-memory window was last brought up to date
@@ -2162,6 +2189,21 @@ class _ChatSlot:
         broadcast_user: bool = False,
         meta: dict | None = None,
     ) -> None:
+        # WRITE GATE (the merge-back invariant, restructure round): a merged or
+        # merging-out fork rejects every LIVE append at the mutation boundary,
+        # so an endpoint that forgot its own ``_merged`` check — or a work
+        # source no gate enumerated (crew ingress, a future injector) — fails
+        # closed here instead of writing into an archived transcript. Replays
+        # are exempt by the same ``broadcast`` split the question-retiring
+        # logic below relies on: hydration, fork copies and session transfers
+        # re-append historical rows with ``broadcast=False``, and the merge
+        # transition's own parent-receipt append is broadcast=False on a slot
+        # that is neither merged nor merging.
+        if broadcast and (self._merged or self._merging):
+            raise SlotMergedError(
+                f"slot {self.key} is {'merged' if self._merged else 'merging'}; "
+                "live appends are refused"
+            )
         # A LIVE turn-consuming row retires every unanswered STATELESS question:
         # the card's own submit path sends one, and anything else that starts the
         # slot's next turn consumes the answer channel the card was waiting on.
@@ -3276,6 +3318,11 @@ class _ChatSlot:
             "theme_consent_sha": self.theme_consent_sha,
             "memory_mode": self.memory_mode,
             "forked_from": self.forked_from,
+            # ``merged`` drives the breadcrumb's read-only rendering. The parent
+            # KEY deliberately stays out of the snapshot: its only readers are
+            # the restore paths, which take it from persisted history meta
+            # (First Principles review — zero client consumers).
+            "merged": self._merged,
             "linked_session_key": self.linked_session_key,
             "app": self._app,
             "origin": self._origin,
@@ -3319,6 +3366,13 @@ class DashboardState:
     # assign a fresh set(), so mutation only ever touches an instance attribute.
     unrestored_slot_keys: "frozenset[str] | set[str]" = frozenset()
     crew: Any = None  # Crew Mode control plane (set by gateway; None = unavailable)
+    # History keys reserved by an in-flight merge-back transition (the fork
+    # being summarized + the parent about to receive the row). Deletion paths
+    # check membership so a permanent delete cannot race the transition's
+    # durable save and be silently undone by it (GPT round 5). Class-level
+    # frozenset as the immutable baseline; the merge coordinator swaps in a
+    # fresh set per reservation window.
+    merge_reserved_keys: "frozenset[str] | set[str]" = frozenset()
 
     def __init__(
         self,
