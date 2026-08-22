@@ -247,25 +247,31 @@ class WeComClient:
         """
         self._closed = True
         if self._ws and not self._ws.closed:
-            await self._ws.close()
-        if self._task:
-            self._task.cancel()
             try:
-                await self._task
-            except asyncio.CancelledError:
+                await self._ws.close()
+            except Exception:
                 pass
-            self._task = None
-        # Fail any push still waiting on an ACK: the socket is going away, so the
-        # answer is "not delivered", and leaving the future pending would hang the
-        # caller until its timeout for no reason.
-        for waiter in list(self._pending_acks.values()):
-            if not waiter.done():
-                waiter.set_result(-1)
-        self._pending_acks.clear()
-        await self._drain_handler_tasks()
-        if self._session and not self._session.closed:
-            await self._session.close()
-            self._session = None
+        try:
+            if self._task:
+                self._task.cancel()
+                try:
+                    await self._task
+                except asyncio.CancelledError:
+                    pass
+                finally:
+                    self._task = None
+        finally:
+            # Fail any push still waiting on an ACK: the socket is going away, so the
+            # answer is "not delivered", and leaving the future pending would hang the
+            # caller until its timeout for no reason.
+            for waiter in list(self._pending_acks.values()):
+                if not waiter.done():
+                    waiter.set_result(-1)
+            self._pending_acks.clear()
+            await self._drain_handler_tasks()
+            if self._session and not self._session.closed:
+                await self._session.close()
+                self._session = None
 
     async def _drain_handler_tasks(self) -> None:
         """Cancel and await the in-flight turn tasks.
