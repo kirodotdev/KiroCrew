@@ -184,6 +184,7 @@ from kiro_crew.messaging.link import SLACK_NAMESPACE, telemetry_channel_of
 from kiro_crew.messaging.renderer import chunk_text
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.name_grant import Refusal, name_grant_refusal, pin_human_approval
 from kiro_crew.platform import redact_via_context
 from kiro_crew.providers.acp import is_claude_backend
 from kiro_crew.providers.base import (
@@ -1969,6 +1970,46 @@ def _split_command_segments(
                 restored = restored.replace(ph, ch)
         segments.append(restored)
     return normalized, segments
+
+
+async def _name_grant_refusal_off_loop(command: str) -> Refusal | None:
+    """The ONE place this module's tiers reach the name-grant check.
+
+    It resolves names against ``PATH`` and digests the file behind each one, so
+    it runs on a worker thread: the gateway's loop must not stat a stalled
+    network mount or read a large binary. Every tier goes through here rather
+    than calling ``asyncio.to_thread`` itself, so there is a single place to
+    reason about (and, for the rung tests, a single place to stub -- three tiers
+    each spawning their own thread is what crashed the Windows xdist workers).
+    """
+
+    if not command:
+        return None
+    return await asyncio.to_thread(name_grant_refusal, command)
+
+
+async def _name_grant_refusal_for(event: object) -> Refusal | None:
+    """Why a shell *event* may not be auto-approved by program NAME, or ``None``.
+
+    Every auto-approve tier is a statement about a PROGRAM, and the shell
+    resolves the name itself afterwards through a ``PATH`` that legitimately
+    leads with directories the agent can write.
+
+    This lives here rather than inside ``HookManager.on_tool_call``, which is
+    synchronous and called ON the loop. The hook layer decides its own tiers and
+    this downgrades an auto-approve it granted, so a refusal costs one
+    interactive prompt and never blocks.
+
+    ``None`` for a non-shell tool or an unrecoverable command: there is no
+    program name to vouch for, and those tiers are unchanged.
+    """
+
+    if not getattr(event, "is_shell", False):
+        return None
+    command = getattr(event, "shell_command", None)
+    if not command:
+        return None
+    return await _name_grant_refusal_off_loop(command)
 
 
 def _matches_trusted_pattern(tool_title: str, patterns: set[str]) -> str | None:
@@ -6266,6 +6307,30 @@ async def _run_chat(
                             )
                             tool_result = ToolHookResult(action=TOOL_ALLOW)
                     if tool_result.action == TOOL_AUTO_APPROVE:
+                        # The hook layer granted this by NAME (its
+                        # `auto_approve_tools` globs, or the read-only allowlist).
+                        # Ask off-loop whether the names still identify the
+                        # programs they appear to name; a shadowed, agent-tree or
+                        # unidentified resolution falls through to the interactive
+                        # card instead. Done HERE rather than inside the hook
+                        # because the answer needs filesystem work that its
+                        # synchronous, loop-bound method must not perform.
+                        _hook_shim = await _name_grant_refusal_for(event)
+                        if _hook_shim is not None:
+                            logger.warning(
+                                "declining a hook auto-approve: %s; the request "
+                                "falls through to interactive approval",
+                                _hook_shim.log_text,
+                            )
+                            slot.append(
+                                "system",
+                                "🛡️ Auto-approve not applied — "
+                                f"{_redact_display_text(_hook_shim.detail)}. "
+                                "Approve this command explicitly.",
+                                "msg msg-info",
+                            )
+                            tool_result = ToolHookResult(action=TOOL_ALLOW)
+                    if tool_result.action == TOOL_AUTO_APPROVE:
                         try:
                             validated_tool = _validate_tool_name(
                                 event.title, is_shell=event.is_shell
@@ -6432,6 +6497,28 @@ async def _run_chat(
                         if _tp_check_title is not None
                         else None
                     )
+                    if matched and _tp_cmd:
+                        # The user granted a PROGRAM NAME. Do not honour it when
+                        # that name no longer identifies the program it appears
+                        # to name — the shell resolves it again, through a PATH
+                        # that can lead with directories the agent writes.
+                        # Declining costs one interactive prompt; the command is
+                        # neither blocked nor rewritten.
+                        _tp_shim = await _name_grant_refusal_off_loop(_tp_cmd)
+                        if _tp_shim:
+                            # The CODE, not the detail and not the pattern: both
+                            # are derived from user/agent input, and a log sink is
+                            # where that becomes a disclosure. The detail still
+                            # reaches the person, on the card below.
+                            logger.warning("trusted pattern not applied: %s", _tp_shim.log_text)
+                            slot.append(
+                                "system",
+                                "🛡️ Trusted pattern not applied — "
+                                f"{_redact_display_text(_tp_shim.detail)}. "
+                                "Approve this command explicitly.",
+                                "msg msg-info",
+                            )
+                            matched = None
                     if matched:
                         try:
                             validated_tool = _validate_tool_name(
@@ -6573,7 +6660,7 @@ async def _run_chat(
                     and cmd
                     and not _child_low_fidelity
                 ):
-                    if is_read_only_bash(cmd):
+                    if is_read_only_bash(cmd) and (await _name_grant_refusal_off_loop(cmd)) is None:
                         try:
                             validated_tool = _validate_tool_name(
                                 event.title, is_shell=event.is_shell
@@ -6986,6 +7073,12 @@ async def _run_chat(
                             metadata={"reason": "interactive"},
                         )
                     else:
+                        # BEFORE approve_tool, not after: the approval response
+                        # is what starts execution, so a file swapped in that
+                        # window would be the one pinned -- recording a file the
+                        # human never saw. Off-loop because it digests the file.
+                        if cmd:
+                            await asyncio.to_thread(pin_human_approval, cmd)
                         await client.approve_tool(event.request_id)
                         _approved_title = _redact_display_text(event.title)
                         slot.append(

@@ -2335,6 +2335,33 @@ class TestRunChatRecoveryLadders:
 
 
 class TestRunChatAutoApproveRungs:
+    @pytest.fixture(autouse=True)
+    def _vouch_for_the_program(self):
+        """Let these tests exercise the RUNG, not the host's program layout.
+
+        Each rung now re-judges its own auto-approve by asking whether the
+        command's program names still identify the programs they name
+        (``name_grant``), which resolves against the real ``PATH`` and reads the
+        file behind each name. That made these tests depend on the machine: they
+        use ``ls -la``, which passes on Linux because ``ls`` lives in a trusted
+        system directory and FAILS on Windows, where there is no such ``ls`` --
+        so the rung declined, `approve_tool` was never called, and the assertions
+        below broke on one platform only. The thread hop the real check needs also
+        outlives these tests' event loop and crashed the xdist worker.
+
+        Stubbing it keeps each test measuring what its name claims -- does the
+        rung approve, reject, and render -- while the check itself is covered
+        directly in ``test/test_name_grant.py``. It patches the ONE off-loop
+        entry point every rung goes through; patching only the event-shaped
+        wrapper left two rungs spawning real threads, which is why the Windows
+        workers kept crashing after the first attempt at this.
+        """
+
+        with patch.object(
+            chat_runner, "_name_grant_refusal_off_loop", new=AsyncMock(return_value=None)
+        ):
+            yield
+
     @pytest.mark.asyncio
     async def test_trusted_pattern_auto_approves_a_matching_command(self, tmp_path):
         state, client = _runner_state(tmp_path)
