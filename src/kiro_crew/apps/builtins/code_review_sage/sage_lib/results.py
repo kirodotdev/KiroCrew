@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import threading
 from pathlib import Path
 
@@ -73,13 +72,12 @@ def write_reviewed(index: dict, root: Path | None = None) -> Path:
     store.ensure_layout(root)
     path = reviewed_path(root)
     data = json.dumps(index, indent=2).encode("utf-8")
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    fd, tmp = store.open_locked_temp(path.parent)
     try:
         try:
             os.write(fd, data)
         finally:
             os.close(fd)
-        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -248,13 +246,12 @@ def write_result(record: dict, root: Path | None = None,
         store.ensure_layout(root)
     path = result_path(record["change_id"], root, run_id)
     data = json.dumps(record, indent=2).encode("utf-8")
-    fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
+    fd, tmp = store.open_locked_temp(path.parent)
     try:
         try:
             os.write(fd, data)
         finally:
             os.close(fd)  # always close the fd, even if os.write raised
-        os.chmod(tmp, 0o600)
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
@@ -468,10 +465,9 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
     # and the rename replaces the NAME without following a link planted there.
     tmp = None
     try:
-        fd, tmp = tempfile.mkstemp(dir=str(dst.parent), prefix=".adopt-", suffix=".json")
+        fd, tmp = store.open_locked_temp(dst.parent, prefix=".adopt-", suffix=".json")
         with open(fd, "wb") as fh:
             fh.write(raw)
-        os.chmod(tmp, 0o600)
         os.replace(tmp, dst)
         tmp = None
     except OSError:
@@ -529,10 +525,9 @@ def publish_to_shared(change_id: str, root: Path | None = None,
                 max_bytes=_RECORD_MAX_BYTES)
         if raw is None:
             return False
-        fd, tmp = tempfile.mkstemp(dir=str(shared), prefix=".publish-", suffix=".json")
+        fd, tmp = store.open_locked_temp(shared, prefix=".publish-", suffix=".json")
         with open(fd, "wb") as fh:
             fh.write(raw)
-        os.chmod(tmp, 0o600)
         os.replace(tmp, dst)
         tmp = None
     except OSError:

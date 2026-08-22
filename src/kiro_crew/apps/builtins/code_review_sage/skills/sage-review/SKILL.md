@@ -19,10 +19,20 @@ supplied as context, not baked in:
 2. **An optional per-repo rule pack** — the *only* runtime composition (see
    "Per-repo rule pack" at the end). The generic core stays clean for any repo.
 
+## The interpreter in every command below
+
+Commands here are written as `<python> …`. Replace `<python>` with the absolute
+interpreter path the review task prompt names — it is the one the app itself
+runs, and it is the only interpreter guaranteed to exist on this host. Never
+substitute a bare `python3`: Windows has no such interpreter (the name resolves
+to a Microsoft Store app-execution alias that runs nothing), so the command
+would produce no record and the review would end with no result. Outside a
+review session, use the interpreter running the app.
+
 ## Self-heal (run first, always — idempotent)
 
 ```bash
-python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/store.py --ensure
+<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/store.py --ensure
 ```
 
 ## Load learning context (before reviewing)
@@ -31,7 +41,7 @@ Load patterns from all **active namespaces** (configured in config.json →
 `review.active_namespaces`). The CLI command unions them for you:
 
 ```bash
-python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-for-review
+<python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py list-for-review
 ```
 
 Or read them manually — the "default" namespace maps to `common/`, others live
@@ -445,7 +455,7 @@ from the `learn-from-sage` skill:
 3. If it passes the quality gate (general, non-trivial, fits a dimension),
    **stage** it into the candidate file (`source=fix_introduce`):
    ```bash
-   python3 ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py stage \
+   <python> ~/.kiro/crew/apps/code-review-sage/sage_lib/learning.py stage \
        --file /tmp/pattern.json --source fix_introduce
    ```
    This appends to `learned-patterns.candidate.md` only — it does NOT touch the
@@ -513,7 +523,7 @@ the durable source of truth the Focus Report reads. **Findings JSON contract**
 }
 ```
 
-> Use the `change_id` emitted by `python3 sage_lib/pipeline.py prepare` **verbatim** — do NOT invent or reformat it (it must match the driver's `_cid`, or the record write and read hit different files).
+> Use the `change_id` emitted by `<python> sage_lib/pipeline.py prepare` **verbatim** — do NOT invent or reformat it (it must match the driver's `_cid`, or the record write and read hit different files).
 
 **One record, written in one pass.** Every review writes exactly ONE record with
 `deep_reviewed: true` and a fully populated `phase1` block (design dimension) —

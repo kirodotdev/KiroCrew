@@ -1,6 +1,7 @@
 """Unit tests for the code-enforced two-stage review driver (gap A + phase switch)."""
 import re
 import shutil
+import sys
 import tempfile
 import threading
 import unittest
@@ -410,10 +411,10 @@ class TestReviewDriver(unittest.TestCase):
 
 
 class TestWorkerPromptScriptPaths(unittest.TestCase):
-    """Guard: every ``python3 <path>`` the worker prompts instruct must point at a
-    script that actually ships in the app. This catches a rename (e.g. the
-    ``lib`` -> ``sage_lib`` move) that misses a prompt string — which would make
-    the worker run a non-existent path and silently produce no verdict."""
+    """Guard: every script path the worker prompts instruct must point at a script
+    that actually ships in the app. This catches a rename (e.g. the ``lib`` ->
+    ``sage_lib`` move) that misses a prompt string — which would make the worker
+    run a non-existent path and silently produce no verdict."""
 
     def test_prompts_reference_existing_script_paths(self):
         app_root = Path(__file__).resolve().parents[1]
@@ -421,11 +422,100 @@ class TestWorkerPromptScriptPaths(unittest.TestCase):
                    D.build_review_followup_task("CR-12345678")]
         refs = set()
         for p in prompts:
-            refs.update(re.findall(r"python3 ([\w./-]+\.py)", p))
+            refs.update(re.findall(r"(sage_lib/[\w./-]+\.py)", p))
         self.assertTrue(refs, "expected the worker prompts to reference a script")
         for rel in sorted(refs):
             self.assertTrue((app_root / rel).is_file(),
                             f"worker prompt references a missing path: {rel}")
+
+
+class TestWorkerPromptInterpreter(unittest.TestCase):
+    """The worker runs the app's scripts through a shell on an unknown host, so the
+    prompts must name an interpreter that exists there. ``python3`` does not on
+    Windows — the name is a Microsoft Store app-execution alias, not an
+    interpreter — and the failure is silent: the command runs no Python, no result
+    record is written, and the review ends with no verdict."""
+
+    LINK = "https://github.com/o/r/pull/12345678"
+
+    def _prompts(self):
+        return [D.build_review_task(self.LINK), D.build_review_followup_task(self.LINK)]
+
+    def test_no_prompt_names_a_bare_interpreter(self):
+        for p in self._prompts():
+            self.assertNotIn("python3 ", p)
+            self.assertNotIn("`python ", p)
+
+    def test_every_script_command_carries_the_resolved_interpreter(self):
+        py = D.python_command()
+        for p in self._prompts():
+            for cmd in re.findall(r"`([^`]*sage_lib/[\w./-]+\.py[^`]*)`", p):
+                self.assertTrue(cmd.startswith(py + " "),
+                                f"script command does not name the interpreter: {cmd}")
+
+    def test_prompt_states_the_interpreter_for_the_skill_commands(self):
+        # The shipped skills write their commands as `<python> ...`; the prompt is
+        # the only place that can tell the worker what to substitute.
+        for p in self._prompts():
+            self.assertIn("<python>", p)
+            self.assertIn(D.python_command(), p)
+
+    def test_resolved_interpreter_is_an_absolute_path(self):
+        self.assertTrue(Path(D.python_command()).is_absolute())
+
+    def test_unresolvable_app_root_falls_back_to_the_running_interpreter(self):
+        with mock.patch.object(D.store, "app_root", side_effect=RuntimeError("no home")):
+            self.assertEqual(D.python_command(), sys.executable)
+
+
+class TestInterpreterIsHandedOverRaw(unittest.TestCase):
+    """The prompts do NOT shell-quote the interpreter, and that is deliberate.
+
+    Quoting needs the worker's shell, which is not pinned: a Windows session may
+    get PowerShell or cmd, and a form valid in one is a syntax error in the
+    other. Three separate defects came out of guessing (``$`` expanding inside a
+    double-quoted PowerShell string, ``\\`` consumed as an escape by a POSIX
+    shell, and the PowerShell call operator breaking cmd), so the responsibility
+    moved to the worker, which knows its own shell.
+    """
+
+    LINK = "https://github.com/o/r/pull/12345678"
+
+    def test_the_resolved_path_is_not_quoted_or_escaped(self):
+        for exe in (r"C:\Program Files\Py\python.exe",
+                    r"C:\tools\$python v2\python.exe",
+                    "/home/u/my py/bin/python3",
+                    r"/home/u/kiro\home/bin/python3"):
+            with mock.patch.object(D, "resolve_app_python", lambda _root, e=exe: e):
+                self.assertEqual(D.python_command(), exe)
+
+    def test_the_prompt_tells_the_worker_to_quote_for_its_own_shell(self):
+        # Without this instruction a space-containing path -- ordinary on Windows,
+        # where profiles are named "First Last" -- would be split by the shell and
+        # the command would run nothing, which is the failure this PR removes.
+        for prompt in (D.build_review_task(self.LINK),
+                       D.build_review_followup_task(self.LINK)):
+            self.assertIn("quote it as YOUR shell requires", prompt)
+
+
+class TestShippedSkillsNameNoBareInterpreter(unittest.TestCase):
+    """The skills ship in the wheel and the worker is told to load them, so a
+    ``python3`` command left in one reaches the worker exactly as a prompt string
+    would — the prompt guard above cannot see it."""
+
+    def test_no_skill_command_names_a_bare_interpreter(self):
+        # Matches an interpreter name followed by a script path ANYWHERE in the
+        # line, not just at its start: the one surviving `python3` in these files
+        # was inside a `>` blockquote, which a line-anchored pattern cannot see.
+        # The lookbehind keeps `<python> foo.py` (the placeholder) from matching.
+        bare = re.compile(r"(?<![<\w])python3?\s+\S*\.py\b")
+        skills = Path(__file__).resolve().parents[1] / "skills"
+        found = list(skills.glob("*/SKILL.md"))
+        self.assertTrue(found, "expected the app to ship skills")
+        for md in found:
+            for i, line in enumerate(md.read_text(encoding="utf-8").splitlines(), 1):
+                self.assertNotRegex(line, bare,
+                                    f"{md.name}:{i} names a bare interpreter")
 
 
 class TestDeterministicPosting(unittest.TestCase):

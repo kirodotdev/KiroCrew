@@ -546,6 +546,30 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # completion. No child process, and every payload is a literal in the test
         # file.
         "apps/builtins/issue_radar/tests/test_assignees.py::_await",
+        # NOT subprocess spawns: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``). These four TEST functions drive Code Review
+        # Sage's ``_save_runs`` coroutine to completion without a running loop --
+        # the registry write is a coroutine because its owner-only lockdown spawns
+        # ``icacls`` on Windows and so must be offloaded off the event loop (that
+        # real spawn is ``platform_compat.py::restrict_to_owner``, allowlisted
+        # below). No child process is created here and nothing is
+        # agent-influenced: every run record in these tests is a literal dict.
+        # Same classification as the other ``asyncio.run`` sites in this list.
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py"
+        "::test_save_then_load_roundtrip",
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py"
+        "::test_orphaned_running_becomes_interrupted_on_load",
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py" "::test_runs_file_is_0600",
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py"
+        "::test_the_lockdown_never_runs_on_the_event_loop",
+        # Same construct and classification: these two drive ``_save_runs`` to prove
+        # the registry write no longer targets a predictable ``runs.json.tmp`` that a
+        # prompt-injected worker could pre-plant a symlink at. The pre-planted path is
+        # built by the test itself, so nothing here is agent-influenced either.
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py"
+        "::test_a_planted_tmp_symlink_is_not_followed",
+        "apps/builtins/code_review_sage/tests/test_backend_routes.py"
+        "::test_the_predictable_tmp_name_is_never_used",
         # md-notebook shells out to the real git binary rather than a pure-Python
         # implementation, because a server refuses a push from the shallow clone
         # isomorphic-git produces. The command is the literal "git"; the remote

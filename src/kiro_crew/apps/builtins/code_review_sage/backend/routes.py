@@ -145,15 +145,46 @@ def _runs_file() -> Path:
     return store.data_dir() / "runs.json"
 
 
-def _save_runs() -> None:
-    """Atomically persist the run registry (0600). Never raises."""
+def _write_runs(payload: str) -> None:
+    """Blocking half of :func:`_save_runs` — never call this on the event loop.
+
+    The owner-only lockdown spawns ``icacls`` on Windows, so this whole function
+    is a blocking syscall sequence and belongs in a worker thread (the same
+    reason ``_write_review_section`` and ``store.remove_run_dir`` are offloaded).
+    """
+    f = _runs_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    # A randomly-named mkstemp temp, not a predictable "<name>.tmp": the review
+    # worker writes into this tree and is prompt-injectable, so a fixed name it
+    # can guess lets it pre-plant a symlink that ``touch``/``chmod``/``write``
+    # would each follow to an arbitrary user-owned file. mkstemp's O_EXCL create
+    # cannot open a path that already exists, symlink included, and the lockdown
+    # lands before the payload -- on Windows a new file inherits the directory
+    # DACL, so writing first would expose the registry for the write's duration.
+    fd, tmp = store.open_locked_temp(f.parent, prefix=f.name + ".", suffix=".tmp")
     try:
-        f = _runs_file()
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_name(f.name + ".tmp")
-        tmp.write_text(json.dumps(_RUNS, indent=2), encoding="utf-8")
-        os.chmod(tmp, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
         os.replace(tmp, f)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        raise
+
+
+async def _save_runs() -> None:
+    """Atomically persist the run registry (owner-only). Never raises.
+
+    The registry is serialized HERE, on the loop, so the payload is a consistent
+    snapshot taken under whatever lock the caller holds; only the file write and
+    the lockdown are offloaded. Serializing inside the thread instead would let
+    ``_RUNS`` mutate mid-iteration.
+    """
+    try:
+        payload = json.dumps(_RUNS, indent=2)
+        await asyncio.to_thread(_write_runs, payload)
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to persist runs.json", exc_info=True)
 
@@ -236,7 +267,7 @@ async def _record(run: dict) -> None:
             else:
                 evicted.append(str(r.get("run_id") or ""))
         _RUNS[:] = keep
-        _save_runs()
+        await _save_runs()
     for run_id in evicted:
         if run_id:
             await asyncio.to_thread(store.remove_run_dir, run_id)
@@ -493,7 +524,7 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
             _release_claims(run)
         _CANCELLED.discard(run_id)
         async with _LOCK:
-            _save_runs()
+            await _save_runs()
         await _notify_finished(run)
 
 
@@ -913,7 +944,7 @@ async def _handle_run_cancel(request: web.Request) -> web.Response:
                 {"code": "run_not_running", "error": f"run is {run.get('status')}, not running"}, status=409)
         _CANCELLED.add(run_id)
         run["cancel_requested_at"] = _now()
-        _save_runs()
+        await _save_runs()
     return web.json_response({
         "ok": True, "run_id": run_id, "status": "cancelling",
         "message": "queued changes dropped; a review already in progress will finish",
@@ -944,7 +975,7 @@ async def _handle_run_delete(request: web.Request) -> web.Response:
                           "it to finish"},
                 status=409)
         _RUNS.remove(run)
-        _save_runs()
+        await _save_runs()
     await asyncio.to_thread(store.remove_run_dir, run_id)
     return web.json_response({"ok": True, "run_id": run_id})
 
@@ -1025,7 +1056,7 @@ async def _post_comments_bg(run_id: str, run: dict,
                 rec = by_cid.get(str(r.get("change_id")))
                 if rec is not None:
                     review_driver.apply_post_outcome(rec, r)
-            _save_runs()
+            await _save_runs()
         # Indexing is what stops the re-review; do it on the retry path too, and
         # only after the records above reflect what actually landed.
         await asyncio.to_thread(_record_reviewed, run)
@@ -1035,7 +1066,7 @@ async def _post_comments_bg(run_id: str, run: dict,
         async with _LOCK:
             run["posting"] = False
             run["post_error"] = str(e)
-            _save_runs()
+            await _save_runs()
     finally:
         # Same contract as a review's claims: release on EVERY terminal path, or
         # the change stays unreviewable until the gateway restarts.
@@ -1171,7 +1202,7 @@ async def _handle_run_post(request: web.Request) -> web.Response:
                 _INFLIGHT[_stage_key(cid)] = run_id
         run["posting"] = True
         run["post_error"] = None
-        _save_runs()
+        await _save_runs()
 
     # Keep a strong ref like the review path does, so the poster cannot be
     # garbage-collected mid-flight and leave `posting` set with nothing to clear
@@ -1289,7 +1320,7 @@ async def _handle_run_archive(request: web.Request) -> web.Response:
         run = _find_run(run_id)
         if run is not None:
             run["report_slug"] = slug
-        _save_runs()
+        await _save_runs()
     return web.json_response({"ok": True, "run_id": run_id, "report_slug": slug,
                               "created": True})
 
@@ -1581,10 +1612,21 @@ def _write_review_section(patch: dict) -> dict:
         review["max_concurrent"] = max(1, min(mc, review_pool.MAX_CONCURRENT_CEIL))
 
     cfg["review"] = review
-    tmp = cfg_path.with_name(cfg_path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, cfg_path)
+    # Randomly-named + O_EXCL + locked before the payload -- see ``_write_runs``
+    # for why a predictable "<name>.tmp" is unsafe in a worker-writable tree.
+    fd, tmp = store.open_locked_temp(
+        cfg_path.parent, prefix=cfg_path.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(cfg, indent=2))
+        os.replace(tmp, cfg_path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        raise
     return review
 
 

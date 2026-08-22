@@ -59,6 +59,13 @@ try:
 except ImportError:  # pragma: no cover - standalone fallback
     redact_credentials = redact_exfiltration_urls = None  # type: ignore
 
+# Shared app-interpreter policy (prefer the app's own venv, else the gateway's
+# ``sys.executable``, never a bare PATH name) — see ``python_command``.
+try:
+    from kiro_crew.apps.interpreter import resolve_app_python  # type: ignore
+except ImportError:  # pragma: no cover - standalone fallback
+    resolve_app_python = None  # type: ignore
+
 # Every loopback call below carries X-Internal-Secret, and urlopen honours
 # HTTP_PROXY for loopback addresses, so a proxied environment would send the
 # secret to the proxy in cleartext. The fallback must therefore stay
@@ -267,6 +274,36 @@ def _confirmed_host(link: str) -> str:
         return ""
 
 
+def python_command() -> str:
+    """Absolute interpreter the worker must use for the app's ``sage_lib/...`` commands.
+
+    The prompts hand a session on some host shell a command line, so they have to
+    name an interpreter that exists there. ``python3`` does not: neither the
+    python.org installer nor ``python -m venv`` creates a ``python3.exe`` on
+    Windows, where the name instead resolves to a Microsoft Store app-execution
+    alias that runs no Python — the command then produces no result record and
+    the review yields nothing while looking like it ran. Resolving through the
+    shared app policy keeps this in step with how the app's other spawns pick an
+    interpreter.
+
+    This returns the path RAW, and deliberately does no shell quoting. Quoting
+    requires knowing the worker's shell, which is not pinned: on Windows the
+    session may get PowerShell or cmd, and the two disagree — a quoted path is a
+    string literal needing PowerShell's call operator in one and a syntax error
+    with that operator in the other. Since a Windows profile with a space in it
+    (``C:\\Users\\First Last\\...``) is ordinary rather than exceptional, guessing
+    wrong would restore the same silent no-result failure for a large share of
+    Windows users. The worker knows its own shell, so the prompt tells it to
+    quote as that shell requires.
+    """
+    if resolve_app_python is not None:
+        try:
+            return resolve_app_python(store.app_root())
+        except Exception:  # unresolvable app root -> the running interpreter
+            return sys.executable
+    return sys.executable
+
+
 def _fetch_instruction(link: str) -> str:
     """Platform-aware FETCH instruction for the gate/deep prompts (GitHub only),
     carrying the link's confirmed host so the worker pulls the PR from ITS
@@ -360,17 +397,22 @@ def build_review_task(change_link: str) -> str:
     separate gated stage; the driver runs neither a gate turn nor a convergence
     loop. The session RECORDS findings only — it never posts (the driver builds the
     Python-redacted bodies and a separate poster publishes them verbatim)."""
+    py = python_command()
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "Do the COMPLETE review of EXACTLY ONE change in a SINGLE thorough pass: "
         + change_link + ". There is NO separate gate and NO follow-up round — cover "
         "everything now, carefully, at maximum thinking effort.\n"
+        "Run every `sage_lib/...` command — the ones below AND the ones the skill "
+        "writes as `<python> ...` — with this interpreter: `" + py + "`. Use that "
+        "absolute path verbatim (quote it as YOUR shell requires if it contains "
+        "spaces); do NOT substitute `python3` or `python`.\n"
         "Load the `sage-review` skill and follow its per-change review ruleset:\n"
         "  1. Self-heal the store; load patterns from active namespaces "
-        "(`python3 sage_lib/learning.py list-for-review`).\n"
+        "(`" + py + " sage_lib/learning.py list-for-review`).\n"
         "  2. Resolve the per-repo rule pack (if any) and apply it as additional rules.\n"
         "  3. Fetch the change — " + _fetch_instruction(change_link) + " — and "
-        "normalize via `python3 sage_lib/pipeline.py prepare --link " + change_link
+        "normalize via `" + py + " sage_lib/pipeline.py prepare --link " + change_link
         + " --payload-file <file>`.\n"
         "  4. DESIGN dimension (THINK DEEPLY — highest leverage): work the change "
         "through the skill's `Deep design reasoning` lenses (architectural fit, "
@@ -417,7 +459,7 @@ def build_review_task(change_link: str) -> str:
         "  8. If this change is itself a FIX (is_fix), run INLINE miss-analysis "
         "(learn-from-sage): trace the introducing change, ask which dimension was "
         "blind, and STAGE the learning "
-        "(`python3 sage_lib/learning.py stage --file <pattern.json> --source fix_introduce`) "
+        "(`" + py + " sage_lib/learning.py stage --file <pattern.json> --source fix_introduce`) "
         "— NOT applied to the live ruleset until a human consolidates.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
@@ -429,16 +471,21 @@ def build_review_followup_task(change_link: str) -> str:
     changed files and APPENDS only net-new findings (never repeats/removes existing
     ones), then marks coverage complete. It runs at most one targeted pass,
     signal-driven, not count-delta-driven."""
+    py = python_command()
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "A prior pass reviewed EXACTLY ONE change: " + change_link + " but reported "
         "INCOMPLETE file coverage (coverage_complete=false) in data/results/<id>.json.\n"
+        "Run every `sage_lib/...` command — the ones below AND the ones the skill "
+        "writes as `<python> ...` — with this interpreter: `" + py + "`. Use that "
+        "absolute path verbatim (quote it as YOUR shell requires if it contains "
+        "spaces); do NOT substitute `python3` or `python`.\n"
         "Load the `sage-review` skill and follow its per-change review ruleset:\n"
         "  1. Self-heal the store; load patterns "
-        "(`python3 sage_lib/learning.py list-for-review`).\n"
+        "(`" + py + " sage_lib/learning.py list-for-review`).\n"
         "  2. Resolve the per-repo rule pack (if any) and apply it as additional rules.\n"
         "  3. Fetch the change — " + _fetch_instruction(change_link) + " — and "
-        "normalize via `python3 sage_lib/pipeline.py prepare --link " + change_link
+        "normalize via `" + py + " sage_lib/pipeline.py prepare --link " + change_link
         + " --payload-file <file>`. READ the existing record: its `findings` and "
         "`files_covered`.\n"
         "  4. Review ONLY the changed files NOT already in `files_covered`, against "

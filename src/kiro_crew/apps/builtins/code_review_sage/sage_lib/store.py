@@ -28,6 +28,7 @@ import json
 import os
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 # Canonical KiroCrew data-root accessor. Imported at module top but kept guarded
@@ -38,6 +39,13 @@ try:
     from kiro_crew.config.paths import config_dir as _config_dir
 except ImportError:  # pragma: no cover - standalone fallback
     _config_dir = None  # type: ignore[assignment]
+
+# Owner-only lockdown, same guard shape as ``config_dir`` above: a raw
+# ``os.chmod`` cannot express one on Windows (see ``restrict_to_owner``).
+try:
+    from kiro_crew.platform_compat import restrict_to_owner as _runtime_restrict
+except ImportError:  # pragma: no cover - standalone fallback
+    _runtime_restrict = None  # type: ignore[assignment]
 
 APP_NAME = "code-review-sage"
 
@@ -121,6 +129,60 @@ def app_root() -> Path:
     default, honoring ``KIROCREW_HOME``); ``crew_home`` keeps a standalone
     fallback so the store stays importable outside the KiroCrew runtime."""
     return crew_home() / "apps" / APP_NAME
+
+
+def restrict_to_owner(path: str | os.PathLike) -> None:
+    """Lock a file this app stages down to its owner, before it takes its name.
+
+    Every record, report and cache written here carries change content, so each
+    one is restricted while it is still a private temp file. ``os.chmod(0o600)``
+    expresses that only on POSIX: on Windows it toggles the read-only attribute,
+    leaves the inherited DACL untouched, and *succeeds* — so the file stays
+    readable by every other local account and nothing is raised to notice.
+    Delegating to the runtime's helper applies a real owner-only DACL there,
+    while the POSIX path stays the same chmod, including the fail-loud
+    ``OSError`` the callers' temp-file cleanup relies on.
+
+    The standalone fallback is that bare chmod, matching the guard on
+    ``config_dir`` above: outside the Kiro Crew runtime there is no stdlib way to
+    set a Windows DACL, and refusing the write would be worse than the POSIX
+    behaviour this app has always had.
+    """
+    if _runtime_restrict is not None:
+        _runtime_restrict(path)
+        return
+    os.chmod(path, 0o600)  # pragma: no cover - standalone fallback
+
+
+def open_locked_temp(directory: str | os.PathLike, *,
+                     prefix: str = "", suffix: str = ".tmp") -> tuple[int, str]:
+    """Create a temp file in ``directory`` that is ALREADY owner-only, and return
+    ``(fd, path)`` with the file still open for writing.
+
+    The lockdown has to happen before the caller writes a byte. ``mkstemp`` gives
+    a POSIX file mode ``0600`` from creation, but on Windows access comes from the
+    DACL, and a new file simply inherits the directory's -- so restricting only
+    after the payload is written leaves a window in which the content is readable
+    by everyone the parent grants. Nothing in this app tightens its data
+    directories, so that window is real rather than theoretical.
+
+    The returned fd is opened before the DACL changes, and Windows checks access
+    at open time, so the caller's write still succeeds. If the lockdown itself
+    fails the caller never receives either handle, so this closes the descriptor
+    AND removes the temp file here -- the exception escapes before the caller's
+    own ``try/finally`` is entered, so nothing downstream would clean either up.
+    """
+    fd, tmp = tempfile.mkstemp(dir=str(directory), prefix=prefix, suffix=suffix)
+    try:
+        restrict_to_owner(tmp)
+    except BaseException:
+        os.close(fd)
+        try:
+            os.unlink(tmp)
+        except OSError:  # pragma: no cover - best-effort cleanup
+            pass
+        raise
+    return fd, tmp
 
 
 # Optional Kiro Crew redaction. Lives here rather than in `pipeline` because readers
