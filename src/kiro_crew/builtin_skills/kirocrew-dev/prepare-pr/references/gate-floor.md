@@ -1,11 +1,19 @@
 # Why the gate floor looks the way it does
 
-Maintainer-facing rationale for `profiles/kirocrew.json` `gates[]`. The loop does
+Maintainer-facing rationale for `profiles/kirocrew.json` `setup[]` and `gates[]`. The loop does
 not need to read this to run — `SKILL.md` Phase 2 carries the rules it executes.
-Read this when **adding, changing or removing a gate**, because every entry below
+Read this when **adding, changing or removing setup or a gate**, because every entry below
 is shaped by a failure that cost review rounds, and the shapes are not obvious.
 
-The three constraints every gate must satisfy at once:
+The two lists have different contracts:
+
+- **`setup[]` provisions prerequisites once per worktree.** It may add to a
+  per-user, version-scoped tool cache. Failure means the environment is not
+  ready; it is not a verdict on the diff.
+- **`gates[]` contains pure checks run on every review iteration.** A gate must
+  not provision prerequisites. Failure means the diff is not ready.
+
+Every command in either list must still satisfy three constraints:
 
 1. **No privilege.** A gate that needs root either blocks on a password prompt or
    changes the machine.
@@ -18,11 +26,9 @@ The three constraints every gate must satisfy at once:
 3. **CI's exact version.** A different version diverges from CI in *both*
    directions — newer reports findings CI will not, older misses findings CI will.
 
-Provisioning that satisfies all three may live in `gates[]`; provisioning that
-cannot (the Playwright **system libraries**, which need root) belongs to
-documented one-time setup instead. Splitting the floor into explicit `setup[]`
-and `gates[]` keys would make that boundary structural rather than conventional —
-worth doing, and tracked separately (#2599) rather than smuggled into a docs change.
+Provisioning that satisfies all three belongs in `setup[]`; checks belong in
+`gates[]`. Provisioning that cannot satisfy them (the Playwright **system
+libraries**, which need root) belongs to documented one-time host setup instead.
 
 ## Copy the whole CI step, not the half that looks like the check
 
@@ -30,7 +36,7 @@ A workflow step is often two commands: the detector's own self-test, then the
 scan. CI runs `check_brand_name.py --test` before the scan and `docs_lint.py
 --test` before `docs-lint.sh`. A PR that *changes a detector* fails the self-test
 while the scan stays clean, so a floor carrying only the scan passes locally and
-fails after push. Both self-tests sit ahead of their scans in the profile.
+fails after push. Both self-tests sit ahead of their scans in `gates[]`.
 
 ## Derive a ratchet; never transcribe it
 
@@ -70,12 +76,12 @@ when `sudo` is absent). A review gate would then either block on a password
 prompt or silently change the machine's system packages. CI can use it because CI
 *is* root in a disposable container; a workstation is neither.
 
-The floor therefore installs the **browser binary** only — no privilege required —
-and a genuinely missing system library surfaces at launch with Playwright's own
-message naming the exact `apt-get install` line. The **system libraries** are
-per-machine and privileged, so they belong to one-time setup: on a fresh Linux
-host run `sudo npx playwright install --with-deps chromium` once, alongside
-`npm ci`.
+The profile's `setup[]` therefore installs the **browser binary** only — no
+privilege required — and a genuinely missing system library surfaces at launch
+with Playwright's own message naming the exact `apt-get install` line. The
+**system libraries** are per-machine and privileged, so they belong to documented
+one-time host setup: on a fresh Linux host run
+`sudo npx playwright install --with-deps chromium` once, alongside `npm ci`.
 
 ## For a pinned external tool, run it ephemerally rather than installing it
 
@@ -123,7 +129,7 @@ before trusting a green from it.
 
 ## Scan by every shape a step can take
 
-`test/test_prepare_pr_profiles.py` holds the floor to `ci.yml` so that CI gaining
+`test/test_prepare_pr_profiles.py` holds both floor lists to `ci.yml` so that CI gaining
 a blocking scan fails a test rather than surfacing as a review round on a later
 PR. A check written as a bare binary (`cfn-lint`, `mypy`, `flake8`) is invisible to
 a `scripts/`-and-`npm run` scan, so the parity test also enumerates the **tool

@@ -2,8 +2,8 @@
 """resolve_profile.py - resolve the prepare-pr project profile for a repo.
 
 Emits the resolved profile as JSON on stdout so the prepare-pr skill can read
-gates / reviewers / conventions from DATA instead of hardcoding one project's
-conventions in prose.
+setup / gates / reviewers / conventions from DATA instead of hardcoding one
+project's conventions in prose.
 
 Resolution order (most-specific-wins):
   1. .prepare-pr.toml at the repo root   -> explicit config
@@ -19,6 +19,7 @@ Every resolved profile has the SAME shape:
     "source":        "config" | "kirocrew" | "auto-detect" | "generic",
     "base_branch":   str | null,
     "single_commit": bool,
+    "setup":         [str, ...],
     "gates":         [str, ...],
     "rule_files":    [str, ...],
     "reviewers":     [{"name","model","model_tier","contract","rubric"}, ...],
@@ -121,14 +122,19 @@ def load_toml(path):
 def normalize(raw, source):
     """Coerce a raw profile dict into the canonical shape with defaults.
 
-    Accepts both the JSON bundled-profile shape (top-level ``gates`` /
+    Accepts both the JSON bundled-profile shape (top-level ``setup`` / ``gates`` /
     ``reviewers`` / ``rule_files`` / ``readiness``) and the TOML
-    ``.prepare-pr.toml`` shape ([project], [gates].commands, [review] with
-    [[review.reviewers]], [readiness]).
+    ``.prepare-pr.toml`` shape ([project], [setup].commands, [gates].commands,
+    [review] with [[review.reviewers]], [readiness]).
     """
     proj = raw.get("project") if isinstance(raw.get("project"), dict) else {}
     base_branch = raw.get("base_branch", proj.get("base_branch"))
     single_commit = _as_bool(raw.get("single_commit", proj.get("single_commit", False)))
+
+    setup = raw.get("setup")
+    if isinstance(setup, dict):  # TOML [setup].commands
+        setup = setup.get("commands")
+    setup = list(setup or [])
 
     gates = raw.get("gates")
     if isinstance(gates, dict):  # TOML [gates].commands
@@ -165,6 +171,7 @@ def normalize(raw, source):
         "source": source,
         "base_branch": base_branch,
         "single_commit": single_commit,
+        "setup": setup,
         "gates": gates,
         "rule_files": rule_files,
         "reviewers": reviewers,

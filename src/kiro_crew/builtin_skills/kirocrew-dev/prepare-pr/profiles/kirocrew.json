@@ -2,6 +2,9 @@
   "name": "kirocrew",
   "base_branch": "main",
   "single_commit": true,
+  "setup": [
+    "(cd website && npx playwright install chromium)"
+  ],
   "gates": [
     "python -m pytest -q",
     "python3 scripts/check_black_formatting.py",
@@ -26,7 +29,6 @@
     "(cd website && npx tsc -b)",
     "MW=\"$(grep -oE 'npx eslint src/ --max-warnings [0-9]+' .github/workflows/ci.yml | grep -oE '[0-9]+$')\" && [ -n \"$MW\" ] && (cd website && npx eslint src/ --max-warnings \"$MW\")",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:check",
-    "(cd website && npx playwright install chromium)",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:render",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website test",
     "(cd website && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build --mode analyze && node scripts/check-bundle-size.mjs)"
