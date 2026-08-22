@@ -119,6 +119,8 @@ def register(app: web.Application) -> None:
 
     # Local token bootstrap (file-based secret auth in handler, bypasses middleware)
     app.router.add_get("/api/token/local", handlers.api_token_local)
+    # Secrets-CLI vault-floor query (loopback + X-Local-Secret in the handler).
+    app.router.add_get("/api/secrets/vault-floor", handlers.api_secrets_vault_floor)
 
     # Tunnel status
     app.router.add_get("/api/tunnel/status", api_tunnel_status)

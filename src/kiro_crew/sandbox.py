@@ -2597,6 +2597,32 @@ _IN_SANDBOX_LEVEL_VAR = "KIROCREW_SANDBOX_LEVEL"
 _TIER_ORDINALS: dict[str, int] = {"standard": 1, "cc": 2, "strict": 3}
 
 
+def hidden_dirs_for_mode(mode: str) -> list[str]:
+    """Absolute directories the sandbox bind-mount-hides at *mode*'s tier.
+
+    Resolution mirrors the backend-wrap site exactly — the same
+    :func:`_mode_to_level` tier mapping, the same per-tier list (including the
+    ``_sandbox_policy()`` extension points a companion can widen), and the same
+    ``os.path.join(Path.home(), entry)`` join. Kept beside those lists so the
+    two cannot drift: a caller that needs to know whether a given path is
+    actually protected must not re-derive this join itself.
+
+    Exposed because the hide-lists are **home-relative literals**. A path that
+    lives outside ``~`` — or under a relocated ``KIROCREW_HOME`` — is therefore
+    NOT hidden even when a sandbox is built, and a caller that only checked
+    "does a backend exist?" would wrongly conclude it was protected.
+    """
+    level = _mode_to_level(mode)
+    if level == "standard":
+        dirs = _STANDARD_DIRS
+    elif level == "cc":
+        dirs = _sandbox_policy().cc_dirs()
+    else:
+        dirs = _sandbox_policy().strict_dirs()
+    home = str(Path.home())
+    return [os.path.join(home, d) for d in dirs]
+
+
 def _mode_to_level(mode: str) -> str:
     """Map a ``wrap_argv`` mode to the sandbox tier it resolves to.
 

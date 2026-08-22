@@ -28,6 +28,7 @@ _ensure_ssl_certs()
 import argparse
 import asyncio
 import faulthandler
+import getpass
 import importlib
 import logging
 import os
@@ -605,6 +606,496 @@ def _knowledge(args) -> None:
     for r in results:
         print(f"  {verb}: {r['loser']}  ({r['items_deleted']} chunks)")
         print(f"      keep: {r['winner']}   [{r['reason']}]")
+
+
+#: Actions that MUTATE the vault. These require the OS-level vault floor to be
+#: in force (see :func:`_vault_floor_unavailable`); ``list`` does not, because a
+#: names-only read discloses nothing the dashboard does not already show.
+_SECRETS_MUTATING_ACTIONS = ("set", "rm")
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    """True when *child* is inside *parent*. Both must already be resolved.
+
+    Uses ``Path.relative_to`` rather than string prefixing so that
+    ``/home/u/.kiro/crew/.vault-backup`` is NOT treated as living inside
+    ``/home/u/.kiro/crew/.vault`` — a prefix match would say yes and hand back
+    the very bypass this check exists to close.
+    """
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def _gateway_vault_floor() -> tuple[bool, str] | None:
+    """Ask the LIVE gateway whether the vault floor is in force for the sessions
+    it spawns, over the authenticated ``X-Local-Secret`` loopback channel.
+
+    Returns ``(in_force, reason)`` from the gateway's in-memory boot posture, or
+    ``None`` if no gateway is reachable / the query fails. The gateway resolves
+    this once at boot from its OWN process state (see
+    ``dashboard.server._set_vault_floor_posture``): an agent — even an
+    unconfined one under ``sandbox=off`` — cannot forge that in-memory value the
+    way it could a ``.vault/.boot_sandbox_mode`` file on disk, and it cannot
+    impersonate the gateway without the ``.local_secret`` and the listening
+    socket. This is the authoritative signal for the mutation gate; the local
+    disk check is only a fallback when no gateway is up.
+    """
+    try:
+        import json as _json
+        import urllib.request as _urllib
+
+        from kiro_crew.cli_server import _CLI_LOOPBACK, loopback_urlopen, resolve_client_port
+        from kiro_crew.config.loader import read_local_secret
+
+        port = resolve_client_port(None)
+        secret = read_local_secret(port)
+        if not secret:
+            return None
+        req = _urllib.Request(
+            f"http://{_CLI_LOOPBACK}:{port}/api/secrets/vault-floor",
+            headers={"X-Local-Secret": secret},
+        )
+        with loopback_urlopen(req, timeout=5) as resp:
+            data = _json.loads(resp.read())
+        return bool(data.get("in_force")), str(data.get("reason") or "")
+    except Exception:
+        # No reachable gateway (or the query failed) -> caller falls back to the
+        # local disk check, which fails closed on its own.
+        return None
+
+
+def _vault_floor_unavailable(skip_boot_marker: bool = False) -> str | None:
+    """Why the OS-level vault hide is NOT in force, or ``None`` if it is.
+
+    The authorization boundary for a vault mutation is NOT anything this process
+    can attest about itself. It is ``sandbox.py``'s bind-mount hide of
+    ``.kiro/crew/.vault``, applied in every sandbox tier (``_STRICT_DIRS``,
+    ``_STANDARD_DIRS``, ``_CC_DIRS``): an agent subprocess runs in a mount
+    namespace where that directory does not exist, so ``open()`` returns ENOENT.
+    That cannot be forged from inside the process — ``env -i`` rewrites the
+    environment, ``setsid -f`` rewrites the session, ``script`` allocates a PTY,
+    and none of the three escapes a mount namespace.
+
+    The floor has seven ways to be absent, and all are checked here:
+
+    * the operator set ``agent.sandbox`` to ``"off"``, so no namespace is built;
+    * the host has no sandbox backend at all (no user namespaces, Windows,
+      macOS >= 26), so ``detect_backend`` reports ``"none"``;
+    * the operator opted into ``agent.sandbox_allow_unsandboxed_exec``, which
+      makes the spawn path fail OPEN — a transient sandbox-build failure launches
+      an unconfined agent instead of raising — so no live agent can be proven
+      confined even with a backend available;
+    * the backend is macOS ``sandbox-exec`` (Seatbelt): the mount-namespace hide
+      this check models is a Linux mechanism, and on macOS the enforcing layer
+      may be a delegated/internal sandbox rather than Kiro Crew's own Seatbelt
+      profile — so this in-process check cannot PROVE ``.vault`` is masked in a
+      running agent. Refuse rather than assume;
+    * a sandbox IS built, but the vault does not live under any path that
+      sandbox actually hides. The hide-lists are home-relative literals
+      (``.kiro/crew/.vault``, ``.kirocrew/.vault``), so a relocated
+      ``KIROCREW_HOME`` puts the real vault somewhere the bind mount never
+      covers — the namespace exists and the vault is still readable by an agent
+      subprocess. Asserting "a backend exists" is not the same as asserting
+      "this vault is hidden";
+    * the vault directory does NOT yet exist on disk. A mount namespace can only
+      mask a path that existed when the agent was spawned; an agent started
+      before the directory was created (pre-upgrade namespace, or before the
+      boot-time pre-create ran) has nothing masked, so first-creating the store
+      via ``set`` would be readable by that already-running agent. Refuse until
+      the directory exists (the gateway pre-creates it at boot);
+    * the posture could not be resolved at all.
+
+    Why this is sound against the sandbox-flip race (an operator changing
+    ``agent.sandbox`` from ``"off"`` to ``"auto"`` while an agent spawned under
+    ``off`` — hence unconfined — is still live): the sandbox tier is read into
+    the running gateway's config ONCE and passed to every agent spawn from that
+    boot-time value. Changing ``agent.sandbox`` writes the config file but
+    triggers no session reload (the dashboard reloads sessions only for
+    ``agent.provider``/``agent.model``/reasoning-effort changes, never for
+    ``agent.sandbox``), so a tier change takes effect ONLY on a gateway restart
+    — which re-spawns every agent under the new tier. There is therefore no
+    execution path in which the floor reports enforced here while a
+    still-running agent remains unconfined: the floor being enforced means the
+    gateway booted with it enforced, and every agent it spawned inherited it.
+
+    Returns a short machine-readable token naming the reason, or ``None`` when
+    the floor is enforced. **Fails CLOSED**: any error resolving the posture
+    returns a token (deny) rather than ``None`` (allow), so an unreadable config
+    or a probe failure refuses the mutation instead of waving it through.
+    """
+    try:
+        # Resolved lazily for the same reason as SecretVault below: cli.py is on
+        # the gateway boot path and this helper runs only for `secrets`.
+        sandbox = importlib.import_module("kiro_crew.sandbox")
+        mode = sandbox.configured_sandbox_mode()
+        if mode == "off":
+            return "sandbox_off"
+        # `detect_backend` short-circuits to "none" for mode="off" (already
+        # handled) and otherwise reports real host capability.
+        backend = sandbox.detect_backend(mode)
+        if backend == "none":
+            return "no_sandbox_backend"
+        # The path-containment proof below models the LINUX mount-namespace hide.
+        # macOS `sandbox-exec` (Seatbelt) enforces isolation differently and may
+        # be delegated to an internal sandbox, so we cannot prove `.vault` is
+        # masked in a running agent there — refuse fail-closed.
+        if backend == "sandbox-exec":
+            return "sandbox_backend_delegated"
+        # A backend being AVAILABLE is not the same as it being ENFORCED on every
+        # spawn. The `agent.sandbox_allow_unsandboxed_exec` opt-in makes the
+        # spawn path FAIL OPEN: on a transient sandbox-build failure the gateway
+        # launches the agent with unmodified (unconfined) argv instead of
+        # raising. Such an agent runs with the vault UNHIDDEN even though this
+        # check sees a mode + backend that "should" confine it — the very skew
+        # that lets `secrets set` expose a new secret to a live unconfined agent.
+        # When the operator has opted into that fail-open behavior we cannot
+        # prove any given live agent is confined, so refuse fail-closed.
+        if sandbox._allow_unsandboxed_exec():
+            return "unsandboxed_exec_permitted"
+    except Exception:
+        # Cannot establish the posture -> cannot claim the floor is in force.
+        return "sandbox_posture_unknown"
+
+    # A backend exists. Now verify THIS vault is actually inside it. Compared as
+    # resolved paths, never as strings: a symlinked home or a trailing slash
+    # would defeat a textual match and hand back the bypass.
+    try:
+        vault_dir = (Path(config_dir()) / ".vault").resolve()
+        # The mount namespace can only mask a path that already exists. If the
+        # directory is absent, an already-running agent spawned before it was
+        # created masks nothing, so first-creating the store here would be
+        # readable by that agent. The gateway pre-creates the directory at boot;
+        # until it exists, refuse the mutation.
+        if not vault_dir.is_dir():
+            return "vault_dir_absent"
+        # The disk `agent.sandbox` this check just read can be NEWER than what
+        # the running gateway actually booted under — the gateway does not
+        # hot-apply that key, so an operator who flips "off"→"auto" after boot
+        # leaves live agents spawned under the OLD (unconfined) tier while this
+        # check now sees "auto" and would wrongly consider the floor in force.
+        # The gateway records its resolved boot posture in .vault/.boot_sandbox_mode
+        # at startup; require it to MATCH the current disk mode. Fail closed if
+        # the record is absent/unreadable or differs (a stale-vs-live posture
+        # skew): the operator must restart the gateway so every live agent is
+        # re-spawned under the current tier before the floor can be trusted.
+        # Non-forgeable in the direction that matters — forging the record to
+        # MATCH current config only reproduces the safe state (config enforcing
+        # ⇒ agents confined), and any other value keeps the refusal.
+        # The disk boot-marker comparison is how the CLI detects a post-boot
+        # sandbox-tier flip. The gateway itself has no need for it — when this
+        # runs at gateway boot (skip_boot_marker=True) the resolved mode IS the
+        # gateway's own boot posture, so there is nothing to compare against and
+        # the marker (agent-writable, hence not trustworthy as an authority) is
+        # not consulted. The CLI path (skip_boot_marker=False) does NOT rely on
+        # the marker for authorization either: it queries the live gateway's
+        # in-memory posture over the authenticated channel (see the caller). The
+        # marker read remains only as a best-effort local hint when no gateway
+        # is reachable.
+        if not skip_boot_marker:
+            boot_marker = vault_dir / ".boot_sandbox_mode"
+            try:
+                boot_mode = boot_marker.read_text(encoding="utf-8").strip()
+            except OSError:
+                return "gateway_boot_posture_unknown"
+            if boot_mode != mode:
+                return "sandbox_posture_changed_since_boot"
+        hidden = [Path(p).resolve() for p in sandbox.hidden_dirs_for_mode(mode)]
+        if not any(vault_dir == h or _is_within(vault_dir, h) for h in hidden):
+            return "vault_outside_sandbox_hide"
+    except Exception:
+        # Cannot prove the vault is covered -> refuse.
+        return "vault_outside_sandbox_hide"
+    return None
+
+
+#: Refusal text per vault-floor reason token. Each names the ACTUAL cause and a
+#: remedy that helps: telling a Windows user to edit `agent.sandbox` would be
+#: false advice, since no config value builds a namespace on that host.
+_VAULT_FLOOR_MESSAGES = {
+    "sandbox_off": (
+        "secrets set refused: the OS sandbox is disabled, so the vault is not hidden "
+        'from agent subprocesses. Remove the "sandbox" key from your config, or set it '
+        'to "auto", to restore the protection and manage secrets.'
+    ),
+    "no_sandbox_backend": (
+        "secrets set refused: this host cannot build a sandbox, so the vault can never "
+        "be hidden from a subprocess here. Vault writes are unavailable on this "
+        "platform; use the dashboard Settings secrets page instead."
+    ),
+    "sandbox_posture_unknown": (
+        "secrets set refused: the sandbox posture could not be determined, so the "
+        "vault protection cannot be confirmed. This refusal is fail-closed by design."
+    ),
+    "sandbox_backend_delegated": (
+        "secrets set refused: this host uses the macOS sandbox, where the vault hide "
+        "cannot be verified from the CLI. Vault writes are unavailable here; use the "
+        "dashboard Settings secrets page instead."
+    ),
+    "unsandboxed_exec_permitted": (
+        "secrets set refused: agent.sandbox_allow_unsandboxed_exec is enabled, which "
+        "lets the gateway launch an unconfined agent on a transient sandbox failure — "
+        "the vault would not be hidden from it. Remove that opt-in (set "
+        "agent.sandbox_allow_unsandboxed_exec=false) and restart the gateway to "
+        "manage secrets."
+    ),
+    # {path} is filled in at refusal time. It is the operator's own vault
+    # directory, not a secret, and naming it is what makes the cause diagnosable.
+    "vault_dir_absent": (
+        "secrets set refused: the vault directory at {path} does not exist yet, so a "
+        "sandbox spawned before it was created cannot hide it. Restart the gateway "
+        "(which pre-creates the directory at boot), then try again."
+    ),
+    # {path} is filled in at refusal time. It is the operator's own vault
+    # directory, not a secret, and naming it is what makes the cause diagnosable.
+    "vault_outside_sandbox_hide": (
+        "secrets set refused: the vault at {path} is outside the paths the sandbox "
+        "hides, so an agent subprocess could read it. This happens when "
+        "KIROCREW_HOME points outside the default location."
+    ),
+    "gateway_boot_posture_unknown": (
+        "secrets set refused: the running gateway did not record the sandbox posture "
+        "it booted under, so the CLI cannot confirm live agents are confined. Restart "
+        "the gateway, then try again. This refusal is fail-closed by design."
+    ),
+    "sandbox_posture_changed_since_boot": (
+        "secrets set refused: agent.sandbox was changed after the gateway started, so "
+        "agents already running were spawned under the previous tier and may not be "
+        "confined. The gateway does not apply this change until it restarts — restart "
+        "the gateway so every session is re-spawned under the new tier, then try again."
+    ),
+}
+
+
+def _secrets_denied(reason: str, message: str) -> NoReturn:
+    """Audit and refuse a secrets request. Never returns.
+
+    ``reason`` is a short machine-readable token (not prose) so the SEL row is
+    greppable. No secret name or value is ever recorded on the deny path — the
+    caller was not authorized to name one.
+    """
+    sel().log_tool_invocation(
+        session_key="cli",
+        source="cli",
+        tool_name="secrets",
+        outcome="denied",
+        metadata={"reason": reason},
+    )
+    print(message, file=sys.stderr)
+    sys.exit(1)
+
+
+def _escape_control_chars(text: str) -> str:
+    """Render C0/C1 control characters in *text* as visible ``\\xNN`` escapes.
+
+    Secret names are operator-settable and surface in ``secrets list``. A name
+    containing raw ESC/CSI/OSC/BEL bytes could rewrite the terminal, spoof
+    output, or set the window title when printed. This maps every control byte
+    to an inert visible form so listing names cannot become a terminal-control
+    injection vector. Printable characters (including ordinary Unicode) pass
+    through unchanged.
+
+    Covers C0 (``\\x00``–``\\x1f``), DEL (``\\x7f``), and C1 (``\\x80``–``\\x9f``)
+    — the last matters because a lone ``\\x9b`` is a single-byte CSI introducer.
+    """
+    return "".join(
+        ch if not (ord(ch) < 0x20 or 0x7F <= ord(ch) <= 0x9F) else f"\\x{ord(ch):02x}"
+        for ch in text
+    )
+
+
+def _secrets(args) -> None:
+    """``kirocrew secrets list|set|rm`` — manage the encrypted vault."""
+    action = getattr(args, "secrets_action", None)
+
+    # Advisory UX fast-fail, NOT a security boundary. A caller that wants to
+    # strip this marker trivially can (`env -i`, `env -u`, `unset`), and nothing
+    # here pretends otherwise — the actual authorization is the OS mount-namespace
+    # hide checked below, which no in-process manoeuvre can reach. This check
+    # exists only so the common in-agent mistake fails with a clear message
+    # instead of an ENOENT from a hidden directory.
+    if "KIROCREW_SPAWNED" in os.environ:
+        _secrets_denied(
+            "agent_env_marker",
+            "Error: `kirocrew secrets` is not available to an agent session. "
+            "Run it from your own terminal.",
+        )
+
+    if action in _SECRETS_MUTATING_ACTIONS:
+        # Authorization for a MUTATION: require the vault floor to actually be
+        # in force. This refuses for EVERYONE — including a human at a real
+        # terminal — because the question is not "who is asking?" (unanswerable
+        # from inside the process) but "is the vault hidden from agent
+        # subprocesses on this host?". If it is not, writing a secret would
+        # create material the agent tree can read, so we decline to create it.
+        # Prefer the LIVE gateway's authoritative in-memory posture: it knows
+        # the tier every agent it spawned actually runs under, and that value
+        # cannot be forged by an agent (unlike an on-disk marker an unconfined
+        # agent could rewrite). Fall back to the local disk check only when no
+        # gateway is reachable — that path fails closed on its own.
+        gw = _gateway_vault_floor()
+        if gw is not None:
+            in_force, gw_reason = gw
+            floor_missing = None if in_force else (gw_reason or "sandbox_posture_unknown")
+        else:
+            floor_missing = _vault_floor_unavailable()
+        if floor_missing:
+            # The message names the ACTUAL reason: a remedy that does not apply
+            # (edit the config on a host that cannot sandbox at all) would be
+            # worse than no remedy.
+            text = _VAULT_FLOOR_MESSAGES[floor_missing].replace("secrets set", f"secrets {action}")
+            if "{path}" in text:
+                # Best-effort: naming the path is diagnostic, so a failure to
+                # resolve it must not turn a clean refusal into a traceback.
+                try:
+                    shown = str(Path(config_dir()) / ".vault")
+                except Exception:
+                    shown = "<unresolved>"
+                text = text.replace("{path}", shown)
+            _secrets_denied(floor_missing, text)
+
+    sel().log_tool_invocation(
+        session_key="cli",
+        source="cli",
+        tool_name="secrets",
+        outcome="allowed",
+        metadata={"action": action},
+    )
+
+    # Resolved lazily, NOT at module scope: `kiro_crew.secrets.vault` imports
+    # `cryptography.hazmat.primitives.ciphers.aead.AESGCM` at ITS module scope,
+    # so a top-level import here would pull the crypto stack into every gateway
+    # launch (cli.py is on the boot path) for a subcommand almost no launch
+    # uses. `importlib.import_module` is a call, not an `import` statement, so
+    # the top-level-imports lint is satisfied either way.
+    SecretVault = importlib.import_module("kiro_crew.secrets").SecretVault
+    vault = SecretVault(config_dir())
+
+    if action == "list":
+        names = vault.list_names()
+        if not names:
+            print("No secrets stored.")
+            return
+        for name in sorted(names):
+            # Secret names are operator-settable (including via the dashboard),
+            # so a name could carry ANSI/OSC/CSI terminal-control sequences that
+            # rewrite the terminal, spoof output, or set the window title. Escape
+            # every C0/C1 control byte (ESC, CSI, OSC, BEL, ...) to a visible
+            # backslash form before printing so `secrets list` cannot be a
+            # terminal-injection vector.
+            print(_escape_control_chars(name))
+
+    elif action == "set":
+        name = args.name
+        if getattr(args, "stdin", False):
+            # A pipe carrying non-UTF-8 bytes makes the text-mode `sys.stdin`
+            # raise UnicodeDecodeError at read time — before the encodability
+            # guard below — which would dump a traceback. Catch it here and
+            # emit the same clean invalid-UTF-8 error with a non-zero exit.
+            try:
+                value = sys.stdin.read()
+            except UnicodeDecodeError:
+                print("error: secret value is not valid UTF-8", file=sys.stderr)
+                sys.exit(1)
+            if value.endswith("\r\n"):
+                value = value[:-2]
+            elif value.endswith("\n"):
+                value = value[:-1]
+            if not value:
+                print("Error: no value received on stdin.", file=sys.stderr)
+                sys.exit(1)
+        elif sys.stdin.isatty():
+            # Escape the name for display: it is operator-settable (incl. via
+            # the dashboard) and could carry ANSI/OSC/CSI control sequences that
+            # rewrite the terminal when echoed in the prompt.
+            value = getpass.getpass(f"Value for {_escape_control_chars(name)}: ")
+            if not value:
+                print("Error: empty value, secret not stored.", file=sys.stderr)
+                sys.exit(1)
+        else:
+            print(
+                "Error: not a TTY and --stdin not passed. Use --stdin to read from a pipe.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Both stdin and the prompt hand us a `str`, but a value piped from a
+        # non-UTF-8 source arrives carrying surrogate escapes (or lone
+        # surrogates), which survive here and only blow up later inside
+        # `vault.set` at `value.encode("utf-8")` — an uncaught UnicodeEncodeError
+        # that dumps a traceback and stores nothing. The NAME has the same
+        # hazard: a POSIX argv byte that isn't valid UTF-8 reaches the vault as
+        # a surrogate-bearing `str` and crashes at AAD/key encoding. Validate
+        # BOTH at this boundary so every path fails with a clean CLI error and
+        # nothing is written.
+        try:
+            name.encode("utf-8")
+        except UnicodeError:
+            print("error: secret name is not valid UTF-8", file=sys.stderr)
+            sys.exit(1)
+        try:
+            value.encode("utf-8")
+        except UnicodeError:
+            print("error: secret value is not valid UTF-8", file=sys.stderr)
+            sys.exit(1)
+        try:
+            asyncio.run(vault.set(name, value))
+        except (OSError, ValueError) as exc:
+            # A restored/corrupt `secrets.enc` (e.g. store present but its key
+            # missing, or an undecryptable envelope) raises ValueError/OSError
+            # from the vault's key/store handling. Surface it as a clean CLI
+            # error with a nonzero exit instead of an uncaught traceback — the
+            # operator must repair or remove the store before writing.
+            print(
+                f"error: could not write to the secrets vault "
+                f"({exc.__class__.__name__}: {exc}); repair or remove the vault "
+                f"store, then try again.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        # Name only — the VALUE is never written to the audit log.
+        sel().log_tool_invocation(
+            session_key="cli",
+            source="cli",
+            tool_name="secrets_set",
+            outcome="stored",
+            metadata={"name": name},
+        )
+        # Escaped for display only — the raw name was already stored above.
+        print(f"Secret '{_escape_control_chars(name)}' stored.")
+
+    elif action == "rm":
+        name = args.name
+        # Same non-UTF-8 argv hazard as `set`: a surrogate-bearing name would
+        # crash inside `vault.delete` at AAD/key encoding. Reject cleanly first.
+        try:
+            name.encode("utf-8")
+        except UnicodeError:
+            print("error: secret name is not valid UTF-8", file=sys.stderr)
+            sys.exit(1)
+        try:
+            asyncio.run(vault.delete(name))
+        except (OSError, ValueError) as exc:
+            print(
+                f"error: could not update the secrets vault "
+                f"({exc.__class__.__name__}: {exc}); repair or remove the vault "
+                f"store, then try again.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sel().log_tool_invocation(
+            session_key="cli",
+            source="cli",
+            tool_name="secrets_rm",
+            outcome="deleted",
+            metadata={"name": name},
+        )
+        # Escaped for display only — the raw name was already deleted above.
+        print(f"Secret '{_escape_control_chars(name)}' deleted.")
+
+    else:
+        print("Usage: kirocrew secrets <list|set|rm>")
 
 
 def _consolidate_cmd(args) -> None:
@@ -1368,6 +1859,16 @@ Examples:
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
+
+    # secrets — vault management
+    secrets_parser = sub.add_parser("secrets", help="Manage encrypted secrets vault")
+    secrets_sub = secrets_parser.add_subparsers(dest="secrets_action")
+    secrets_sub.add_parser("list", help="List stored secret names")
+    secrets_set = secrets_sub.add_parser("set", help="Store or update a secret")
+    secrets_set.add_argument("name", help="Secret name")
+    secrets_set.add_argument("--stdin", action="store_true", help="Read secret value from stdin (for scripting)")
+    secrets_rm = secrets_sub.add_parser("rm", help="Delete a secret")
+    secrets_rm.add_argument("name", help="Secret name")
 
     # policy — governance model inspection (read-only; MCP-safe)
     tn_parser = sub.add_parser(
@@ -2403,6 +2904,8 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         from kiro_crew.cli_commands import _security
 
         _security(args)
+    elif args.command == "secrets":
+        _secrets(args)
     elif args.command == "tailnet":
         from kiro_crew.cli_commands import _tailnet
 

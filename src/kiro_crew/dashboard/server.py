@@ -1478,6 +1478,34 @@ def _write_instance_credentials(secret_path: Path, port: int, secret: str) -> No
     _write_secret_file(secret_path, secret)
 
 
+def _set_vault_floor_posture(app) -> None:
+    """Resolve the vault-floor posture ONCE, in-memory, and cache it on *app*.
+
+    Records whether the OS sandbox floor that hides ``.vault`` from agent
+    subprocesses is actually in force for the sessions THIS gateway spawns.
+    Every agent this gateway launches inherits the tier captured here, and this
+    value lives only in the gateway's process memory — an agent (even an
+    unconfined one) cannot forge it the way it could a ``.vault/.boot_sandbox_mode``
+    file on disk. The secrets CLI queries it over the authenticated
+    ``X-Local-Secret`` loopback channel (``/api/secrets/vault-floor``) before
+    ``set``/``rm``, failing closed. Resolved at boot rather than lazily so the
+    answer reflects boot state, not a config the operator may have edited
+    post-boot without re-confining the already-running agents.
+
+    Fails CLOSED: any error resolving the posture caches "not in force" so the
+    CLI refuses mutations rather than trusting an unknown state.
+    """
+    try:
+        from kiro_crew import cli as _cli
+
+        reason = _cli._vault_floor_unavailable(skip_boot_marker=True)
+        app["vault_floor_in_force"] = reason is None
+        app["vault_floor_reason"] = reason or ""
+    except Exception:
+        app["vault_floor_in_force"] = False
+        app["vault_floor_reason"] = "sandbox_posture_unknown"
+
+
 def _write_secret_file(secret_path: Path, secret: str) -> None:
     """Write *secret* to *secret_path* with mode 0o600.
 
@@ -2878,6 +2906,7 @@ async def start_dashboard(
     _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
+    _set_vault_floor_posture(app)
 
     # Host canonicalization: converge loopback aliases (127.0.0.1 / localhost /
     # kirocrew.localhost) onto a single origin so the SPA's per-origin
@@ -3522,6 +3551,7 @@ async def start_api_server(
     _secret_path = data_home() / ".local_secret"
     _internal_secret = os.urandom(16).hex()
     app["local_secret"] = _internal_secret
+    _set_vault_floor_posture(app)
 
     # SEL audit middleware — log mutating MCP tool calls
     _sel_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
