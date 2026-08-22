@@ -1068,15 +1068,12 @@ _TMP_RESIDUE_ALLOWED_PREFIXES: tuple[str, ...] = (
     ".org.chromium.",
 )
 
-#: Make temp residue FAIL the run rather than warn.
+#: Make ALL temp residue fail the run rather than warning for leftover files.
 #:
-#: Off by default, and that is a staged rollout rather than a soft opinion. The guard
-#: found real residue on CI surfaces this host cannot reach, and the entries that remain
-#: after the exclusions above are single ``mkstemp`` FILES rather than the ``mkdtemp``
-#: directories the rule is written about -- one inode each, several of them created by
-#: production code a test merely reached. Failing the suite on that set today would block
-#: every unrelated change while the set is attributed, and a guard that blocks unrelated
-#: work is a guard somebody deletes.
+#: Directory residue is fatal by default: it is the recursively unbounded leak class this
+#: guard exists to stop. The entries still observed on remote-only CI surfaces are single
+#: ``mkstemp`` FILES -- one inode each, several created by production behaviour a test
+#: legitimately reaches -- so those keep the staged warning unless this variable is set.
 #:
 #: So: the residue is removed either way (which is the whole inode win), and it is
 #: REPORTED either way. Set this to make it fatal -- in a burn-down branch, or in CI once
@@ -1210,13 +1207,14 @@ def _isolate_tempfile_base(tmp_path_factory):
                 os.environ[name] = value
         per_test = bool(os.environ.get(_TMP_PER_TEST_ENV))
         leaked = _tmp_residue(base, per_test=per_test)
+        directory_leaks = _tmp_residue_directories(base, leaked)
         # Removed even when it is empty, and even when the report below raises:
         # leaving the root behind would itself be the accumulation this guards.
         _remove_tree(base)
         if not leaked:
             return
         report = _tmp_residue_report(base, leaked, per_test=per_test)
-        if os.environ.get(_TMP_RESIDUE_STRICT_ENV):
+        if directory_leaks or os.environ.get(_TMP_RESIDUE_STRICT_ENV):
             raise AssertionError(report)
         warnings.warn(report, stacklevel=1)
 
@@ -1245,6 +1243,11 @@ def _tmp_residue(base: pathlib.Path, *, per_test: bool) -> list[str]:
         except OSError:
             continue
     return residue
+
+
+def _tmp_residue_directories(base: pathlib.Path, leaked: list[str]) -> list[str]:
+    """Return residue entries whose on-disk target is a directory."""
+    return [name for name in leaked if (base / name).is_dir()]
 
 
 def _tmp_residue_report(base: pathlib.Path, leaked: list[str], *, per_test: bool) -> str:
