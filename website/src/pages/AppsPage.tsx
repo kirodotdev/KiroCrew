@@ -23,6 +23,7 @@ import {
   AlertTriangle, PowerOff,
 } from 'lucide-react'
 import { api } from '../api/client'
+import { appNavTarget } from '../appNav'
 import { Btn, EmptyState, PageHeader, SearchInput } from '../components/ui'
 import SimpleSelect from '../components/SimpleSelect'
 import { recordEvent } from '../rum'
@@ -1203,7 +1204,7 @@ export default function AppsPage() {
                       app={app}
                       actionLoading={updatingAll ? `${app.name}:update` : actionLoading}
                       onAction={handleAction}
-                      onOpen={() => navigate(app.manifest?.ui?.pages?.[0]?.route || `/apps/${app.name}`)}
+                      onOpen={() => navigate(appNavTarget(app)?.route || `/apps/${app.name}`)}
                       onDetail={() => openDetail(app.name)}
                     />
                   </ErrorBoundary>

@@ -120,7 +120,6 @@ function renderPage() {
           <Route path="/apps" element={<AppsPage />} />
           <Route path="/apps/detail/:name" element={<DetailProbe />} />
           <Route path="/apps/:name" element={<DetailProbe />} />
-          <Route path="/secretary-ui" element={<div data-testid="app-ui-route" />} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -372,12 +371,17 @@ describe('AppsPage — query failures and empty states', () => {
 })
 
 describe('AppsPage — Library actions', () => {
-  it('opens the app UI page from the card and the detail page from its name', async () => {
+  it('opens the app at its AppHost route from the card, and the detail page from its name', async () => {
     renderPage()
     await catalogReady()
     goLibrary()
+    // Open must resolve through the same appNavTarget derivation the sidebar and
+    // command palette use: a third-party (non-builtin) app is AppHost-routed at
+    // /apps/<name>, NOT its raw manifest page route (which only a native builtin
+    // serves, and which otherwise dead-ends at BuiltinAppRoute -> /chat).
     fireEvent.click(await screen.findByRole('button', { name: 'Open' }))
-    expect(await screen.findByTestId('app-ui-route')).toBeInTheDocument()
+    const probe = await screen.findByTestId('detail-route')
+    expect(probe).toHaveAttribute('data-path', '/apps/secretary')
   })
 
   it('routes to the detail page when the card name is clicked', async () => {
