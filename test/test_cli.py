@@ -3608,6 +3608,40 @@ class TestDoctorMcpTools:
         # No probe attempted since no server spec survived the parse failure.
         probe_mock.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "content", ["[1, 2, 3]", "42", "null", "true", '"a string"']
+    )
+    def test_valid_json_non_object_agent_config_does_not_crash(
+        self, tmp_path, capsys, content
+    ):
+        """A spec that is valid JSON but not an object (a list, a scalar,
+        null) parses fine, so the json.loads try/except never fires — but
+        every .get() on the result would raise AttributeError. Doctor must
+        coerce it to an empty config, say what is wrong, and report cleanly,
+        same as the truncated case above — and it must never rewrite the
+        user's file with the coerced empty config."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        agent_path.write_text(content)
+
+        issues: list[str] = []
+        with self._mock_probe({}) as probe_mock:
+            _doctor_mcp_tools(agent_path, issues)
+
+        out = capsys.readouterr().out
+        # The defect itself is named, not just its downstream symptoms.
+        assert "agent spec is not a JSON object" in out
+        # Empty config → both managed servers report missing from mcpServers.
+        assert "@kirocrew-core: ❌ missing from mcpServers" in out
+        assert "@kirocrew-cron: ❌ missing from mcpServers" in out
+        # No probe attempted since no server spec survived the coercion.
+        probe_mock.assert_not_called()
+        # The no-clobber contract: doctor diagnoses the broken spec, it never
+        # persists the coerced empty config over the user's original file.
+        assert agent_path.read_text() == content
+        assert "Auto-fixed" not in out
+
 
 class TestDoctorStt:
     """Tests for doctor Speech-to-Text section."""

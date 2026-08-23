@@ -486,10 +486,21 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
        the error head plus any captured stderr tail from the child — which
        usually contains the real cause (FindupException, ImportError, etc.)
        that would otherwise only exist in kiro-cli's per-session log.
+
+    A spec that cannot be read as a JSON object — unreadable, unparseable,
+    or valid JSON that is not an object — degrades to an empty config: every
+    managed server then reports as missing and the file is never rewritten.
     """
     try:
         agent_data = json.loads(agent_path.read_text(encoding="utf-8"))
     except Exception:
+        agent_data = {}
+    if not isinstance(agent_data, dict):
+        # Valid JSON that is not an object (a list, a scalar) parses fine but
+        # every .get() below would raise. Doctor exists to diagnose a broken
+        # config, not die on one — treat it like the unparseable case, but say
+        # what is actually wrong so the missing-server lines below make sense.
+        print("  ❌ agent spec is not a JSON object — re-run `kirocrew setup`")
         agent_data = {}
 
     tools = agent_data.get("tools", [])
