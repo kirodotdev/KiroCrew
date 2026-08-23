@@ -42,9 +42,19 @@ The electron-builder configuration lives in
   restricts them, so the accent is one tone. Nothing is painted behind the icon
   captions either — Finder draws them in dark text even under Dark Mode, so they
   read on the accent directly.
-- Windows target: assisted NSIS. A 164×314 welcome/finish sidebar and a 150×57
-  page header reuse the Kiro Crew logo while preserving native NSIS controls,
-  localization, the per-user default, and the no-UAC default path.
+- Windows target: assisted NSIS. Its borderless, theme-aware 1280×860
+  composition fits proportionally inside the Windows work area and puts native
+  localized controls over light/dark frosted-glass artwork, with
+  current/all-user scope, destination, shortcut and startup choices on one page.
+  Current user remains the no-UAC default; all users elevates into Program Files.
+  A fresh custom destination is normalized to an app-owned product-name leaf,
+  because the generated uninstaller recursively removes its install directory.
+  The options and completion pages reuse all eight opening characters with a
+  staggered entrance and calm bob. The native extraction page replays the same
+  entrance before its progress bar advances; twelve theme-paired 24-bit
+  whole-scene bitmap frames provide the motion without embedding a browser or
+  WebView. When Windows animation effects are disabled, every page settles on a
+  still frame instead.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend
   tree is packaged three times, with `scripts/stamp-distribution.sh` re-run
   between electron-builder invocations so each artifact's beacon `dist` names
@@ -288,7 +298,10 @@ Step by step:
    and run `node packaging/installer-assets/build-assets.mjs` to regenerate the
    TIFF and BMPs. That script is the only place that knows the output shapes
    the two installers require — a multi-representation TIFF for Retina, and
-   24-bit BMPs, which NSIS cannot read at the 32-bit depth `sips` emits.
+   24-bit BMPs, which NSIS cannot read at the 32-bit depth `sips` emits. Windows
+   uses two full light/dark surfaces plus twelve theme-paired, whole-scene
+   1280×860 animation frames. Rendering each state as one surface keeps native
+   scaling coherent and avoids seams between independently stretched crops.
 
 ### Build flags
 

@@ -35,11 +35,23 @@ Current status:
   `win.signtoolOptions.publisherName`, so a mis-signed publish would break every
   client's update at once rather than degrade quietly — which is why the publish
   lane verifies the signature before the bytes become immutable.
-- **Assisted installer, per user by default** — `nsis.oneClick` is false and
-  `perMachine` is false, so the installer offers an install-mode page whose
-  default is a per-user install into a directory named from the product name,
-  with no UAC prompt. Choosing "for all users" on that page opts into an
-  elevated install under Program Files instead. The per-user default is what
+- **Full-window assisted installer, per user by default** — the themed setup
+  surface combines install scope, destination, desktop-shortcut and Windows
+  startup choices on one frosted-glass page. It follows the Windows light/dark
+  app theme, fits the full composition proportionally inside the available work
+  area, keeps every functional label and control native (including all 26 bundled
+  installer languages), and replays all eight Kiro characters with the opening
+  animation's staggered entrance. The custom pages continue a calm bob, while
+  the native extraction page plays the entrance once before its
+  progress bar advances. Turning off animation effects in Windows keeps the
+  characters still on every page.
+  New installs default to the current user and a desktop shortcut. Starting
+  Kiro Crew with Windows is an explicit opt-in; both checkboxes can be changed
+  before installing. A current-user install needs no UAC prompt. Choosing "all
+  users" switches the destination to Program Files and requests elevation. The
+  installer keeps a custom destination inside a channel-specific app folder, so
+  uninstalling Kiro Crew cannot recursively remove a shared folder selected in
+  the Browse dialog. The per-user default is what
   keeps a nightly install (`KiroCrew Nightly`) side by side with a stable one
   rather than replacing it; nightly additionally pins its own `nsis.guid` so
   the two channels do not share an uninstall registry key, and its own
@@ -53,12 +65,15 @@ Current status:
   missing even though its `.exe` is untouched. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
-- **Guided Kiro Crew artwork** — the welcome and finish pages use the existing
-  Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
-  pages retain a compact branded header. Buttons, progress, install-mode copy,
-  keyboard behavior, and localization remain the standard Windows experience.
+- **Guided Kiro Crew artwork** — the upper brand field uses the shipped app mark
+  and leaves only “Kiro Crew” in the center. The lower glass plane is
+  deliberately text-free artwork, so native fonts and longer translations sit
+  above it without being obscured. Both themes use WCAG-AA control colors; the
+  raster glass is also the visual fallback where Windows 11's system backdrop
+  is unavailable.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
-  the install directory, the Start Menu shortcut, the uninstall registry key,
+  the install directory, the Start Menu and desktop shortcuts, the uninstall
+  registry key, this channel's “start with Windows” Run entry,
   and — via the `customUnInstall` macro in `website/electron/build/installer.nsh`
   — this channel's electron-updater cache under
   `%LOCALAPPDATA%\<package-name>-updater`, which holds a full installer payload
