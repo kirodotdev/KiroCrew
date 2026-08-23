@@ -950,12 +950,20 @@ def _restart(cli_port: int | None = None) -> None:
     _print_token_url(port)
 
 
-def _update() -> None:
+def _update(force: bool = False) -> None:
     """Update Kiro Crew — dispatches based on install layout.
 
     Three install layouts, three update paths:
 
     * **git checkout** — fetch + reset --hard + rebuild (existing path).
+      The reset only runs for a FAST-FORWARDABLE checkout (behind its
+      upstream, not ahead). A checkout that has DIVERGED (committed local
+      work both ahead of and behind ``origin/<branch>``) is refused: the
+      hard reset would discard the local commits, and the tracked-change
+      prompt only covers uncommitted edits. ``force=True`` (the ``--force``
+      CLI flag) is the explicit opt-in that lets the reset discard them.
+      An ahead-only checkout has nothing to pull and is reported as up to
+      date without resetting.
     * **wheel / cli.sh** — fetch the release feed, compare versions, and
       re-run the installer if newer. This is the path that was missing and
       caused the ``KIROCREW_PROJECT_DIR not set`` error for cli.sh installs.
@@ -1062,6 +1070,84 @@ def _update() -> None:
         print("\n✅ Already up to date!")
         return
 
+    # Divergence guard. The hard reset below discards local COMMITTED work,
+    # and the tracked-change prompt after this only sees uncommitted edits —
+    # a checkout carrying its own commits passes that prompt silently.
+    # Mirror the dashboard check's verdict: only a fast-forwardable checkout
+    # (behind and not ahead) proceeds to the reset; ahead-only has nothing to
+    # pull and returns without resetting; true divergence refuses unless the
+    # operator explicitly opted in with --force. Counted against
+    # origin/<branch> — the exact ref the reset targets, freshly updated by
+    # the fetch above.
+    #
+    # This runs TWICE — once here, once immediately before the reset — because
+    # the prompt below makes the gap to the destructive step unbounded. Both
+    # calls go through one classifier so the two sites differ only in what they
+    # PRINT, never in which states they recognise: a state handled in one and
+    # forgotten in the other is how a guard grows a hole.
+    def _divergence_verdict() -> tuple[str, int, int]:
+        """Classify HEAD against ``origin/<branch>`` for the reset decision.
+
+        Returns ``(verdict, ahead, behind)`` where verdict is one of:
+
+        * ``"unreadable"`` — the comparison could not be read; the caller must
+          refuse, since a guard that cannot count must not wave a destructive
+          reset through.
+        * ``"up_to_date"`` — nothing to pull (``behind == 0``), so
+          origin/<branch> is an ancestor of HEAD and the reset could only
+          REMOVE commits. Never resettable, ``--force`` included: that flag
+          exists to let a real update discard diverged work, not to delete
+          commits when there is nothing to update to.
+        * ``"diverged"`` — ahead AND behind; resettable only under ``--force``.
+        * ``"fast_forward"`` — behind and not ahead; nothing of its own to lose.
+        """
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "--left-right", f"HEAD...origin/{branch}"],
+            cwd=proj,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            print(f"  ❌ Could not compare HEAD against origin/{branch}:")
+            print(f"     {result.stderr.strip() or result.stdout.strip()}")
+            return "unreadable", -1, -1
+        # ``--left-right`` with the three-dot range prints "<ahead>\t<behind>":
+        # left is reachable from HEAD only, right from origin/<branch> only.
+        try:
+            ahead_text, behind_text = result.stdout.split()
+            ahead, behind = int(ahead_text), int(behind_text)
+        except ValueError:
+            print(f"  ❌ Could not parse the commit counts against origin/{branch}:")
+            print(f"     {result.stdout.strip()!r}")
+            return "unreadable", -1, -1
+        if behind == 0:
+            return "up_to_date", ahead, behind
+        if ahead > 0:
+            return "diverged", ahead, behind
+        return "fast_forward", ahead, behind
+
+    def _report_up_to_date(ahead: int) -> None:
+        suffix = f" ({ahead} local commit(s) ahead of origin/{branch})" if ahead else ""
+        print(f"\n✅ Already up to date!{suffix}")
+
+    verdict, ahead, behind = _divergence_verdict()
+    if verdict == "unreadable":
+        sys.exit(1)
+    if verdict == "up_to_date":
+        _report_up_to_date(ahead)
+        return
+    if verdict == "diverged":
+        if not force:
+            print(f"  ⚠️  This checkout has diverged from origin/{branch}:")
+            print(f"      {ahead} local commit(s) not on origin/{branch}, {behind} behind.")
+            print("  A hard reset would discard the local commits. Reconcile instead:")
+            print(f"      git rebase origin/{branch}    (or: git merge origin/{branch})")
+            print("  Or discard the local commits explicitly:")
+            print("      kirocrew update --force")
+            sys.exit(1)
+        print(f"  ⚠️  --force: discarding {ahead} local commit(s) not on origin/{branch}.")
+
     # Warn about local tracked-file changes before discarding
     status = subprocess.run(
         ["git", "status", "--porcelain"],
@@ -1081,6 +1167,29 @@ def _update() -> None:
         if resp != "y":
             print("  Aborted.")
             sys.exit(0)
+
+    # Re-classify immediately before the reset. The verdict above is a
+    # snapshot, and the prompt makes the gap to the reset unbounded:
+    # committing the listed changes in another terminal is the natural way to
+    # rescue them, and rebasing them onto the upstream afterwards is the
+    # natural next step — the first leaves the snapshot stale, the second
+    # turns the checkout ahead-only, and both end in the reset deleting the
+    # commits the operator just made to save that work. Only HEAD can move
+    # here (origin/<branch> is a local ref that only a fetch rewrites), so
+    # this needs no second network round trip.
+    verdict, ahead, behind = _divergence_verdict()
+    if verdict == "unreadable":
+        sys.exit(1)
+    if verdict == "up_to_date":
+        # Not an error: the operator's own commits made the update unnecessary.
+        # Unresettable even under --force, exactly as in the first pass.
+        _report_up_to_date(ahead)
+        return
+    if verdict == "diverged" and not force:
+        print(f"  ⚠️  Refusing to reset: {ahead} local commit(s) appeared on HEAD while")
+        print("      this update was waiting, which a hard reset would discard.")
+        print(f"      Reconcile with: git rebase origin/{branch}")
+        sys.exit(1)
 
     print(f"  🔄 git reset --hard origin/{branch}…")
     result = subprocess.run(

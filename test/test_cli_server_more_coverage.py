@@ -937,6 +937,9 @@ class _GitStub:
         self.rc = rc
         self.calls: list[list[str]] = []
         self.status_out = ""
+        # Behind-only by default: these tests model a fast-forwardable
+        # checkout, which the divergence guard waves through.
+        self.rev_list_out = "0\t5\n"
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
@@ -946,6 +949,10 @@ class _GitStub:
             return subprocess.CompletedProcess(argv, self.rc.get("fetch", 0), "", "no remote")
         if argv[:2] == ["git", "diff"]:
             return subprocess.CompletedProcess(argv, self.rc.get("diff", 1), "", "")
+        if argv[:2] == ["git", "rev-list"]:
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("rev_list", 0), self.rev_list_out, ""
+            )
         if argv[:2] == ["git", "status"]:
             return subprocess.CompletedProcess(argv, 0, self.status_out, "")
         if argv[:2] == ["git", "reset"]:

@@ -796,6 +796,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cli_server.py::_logs_cmd",
         "cli_server.py::_spawn_detached_gateway",
         "cli_server.py::_update",
+        # Nested helper inside ``_update``, keyed separately because the audit
+        # keys by function name. Same class as its enclosing function, already
+        # allowlisted above: a read-only ``git rev-list --count --left-right
+        # HEAD...origin/<branch>`` on the install's own checkout, run on the
+        # one-shot ``kirocrew update`` path. Fixed argv with no shell; the only
+        # interpolated value is the branch name ``git rev-parse --abbrev-ref
+        # HEAD`` just reported, and it sits after the ``origin/`` prefix so it
+        # cannot become an option. Nothing agent-supplied, nothing written.
+        "cli_server.py::_divergence_verdict",
         "cli_server.py::_update_wheel",
         "cli_setup.py::_setup_electron",
         # Cursor Motion overlay renderer: `<this interpreter> -m

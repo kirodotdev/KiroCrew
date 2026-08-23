@@ -148,7 +148,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew token` | Print a dashboard access URL with auth token |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |
 | `kirocrew manifest` | Generate Slack manifest with user alias auto-populated |
-| `kirocrew update` | Update to latest version (git pull + rebuild) |
+| `kirocrew update` | Update to latest version (git fetch + hard reset to upstream + rebuild; a diverged checkout is refused — `--force` discards its local commits) |
 | `kirocrew status` | Show runtime stats from running gateway |
 | `kirocrew stop` | Stop a running gateway (service-aware: stops the systemd/launchd service if active, otherwise terminates the gateway found by a cross-platform port lookup — lsof on POSIX, netstat on Windows). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
@@ -579,7 +579,25 @@ Each step checks if the tool is already installed and skips if present.
 
 `kirocrew update` pulls the latest source and rebuilds:
 
-1. `git pull` from `KIROCREW_PROJECT_DIR`
+1. `git fetch` + `git reset --hard origin/<branch>` from `KIROCREW_PROJECT_DIR`.
+   The reset only runs for a FAST-FORWARDABLE checkout — behind its upstream
+   and not ahead of it (`git rev-list --count --left-right
+   HEAD...origin/<branch>` shows behind > 0, ahead = 0) — mirroring the
+   dashboard check's verdict, because the hard reset discards committed local
+   work and the uncommitted-changes prompt does not cover it. A DIVERGED
+   checkout (both sides non-zero) is refused with a non-zero exit and a
+   rebase-or-merge instruction; `--force` is the explicit opt-in that lets the
+   reset discard the local commits. An ahead-only checkout has nothing to pull
+   and is reported as up to date without resetting (even under `--force` — the
+   flag lets a real update discard diverged work, it does not delete commits
+   when there is nothing to update to). An unreadable comparison refuses
+   (fail closed). Uncommitted tracked changes still prompt before being
+   discarded — and because that prompt makes the gap to the reset unbounded,
+   the divergence count is re-taken immediately before the reset and refuses
+   commits that appeared while the update was waiting (committing the listed
+   edits in another terminal to rescue them is the natural response to the
+   prompt, and is exactly what would otherwise be reset away). Only `HEAD` can
+   move in that window, so the re-check needs no second fetch.
 2. Rebuilds the dashboard via `build_frontend_sync()` (npm; non-fatal on failure)
 3. Reinstalls backend via `pip install -e .`
 
