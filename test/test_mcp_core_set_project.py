@@ -467,6 +467,13 @@ class TestApplierAuditAndFailSoft:
         )
         assert "Project set to" in result
         assert slot.project == str(tmp_path)
+        # The history-reset flag is load-bearing: it is what cold-starts the
+        # retargeted transcript. With ``linked_session_key`` unset it derives
+        # from the ``_history_key_for(slot.key)`` fallback branch of
+        # ``effective_session_key`` — the slot's own key (already
+        # ``dashboard:``-prefixed, so the helper is identity here). A
+        # channel-LINKED slot derives its linked channel key instead.
+        assert slot._pending_reset_history_key == slot.key
         assert [c["outcome"] for c in sel_spy.calls] == ["success"]
 
     @pytest.mark.asyncio
