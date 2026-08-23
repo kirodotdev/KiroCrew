@@ -33,6 +33,10 @@ def _lessons_request(body: object) -> MagicMock:
     """Build a /api/lessons request that passes the session-key + restricted
     gates so execution reaches body validation (the code under test)."""
     mock_state = MagicMock()
+    # The route now reports which outcome the store produced, and puts that word in
+    # the response body -- so the mocked store has to answer with the string its real
+    # counterpart returns rather than a MagicMock.
+    mock_state.lessons.save_or_enrich.return_value = "inserted"
     request = MagicMock()
     request.app = {"state": mock_state}
     request.headers = {"X-Session-Key": "dashboard:ui"}

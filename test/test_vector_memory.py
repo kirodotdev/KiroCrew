@@ -2427,7 +2427,7 @@ class TestSharedConnectionLockDiscipline:
         assert store.set_semantic("project.notes.findings_doc", "v2 final", 0.9, "consolidation") is None
 
         # Remaining writers: lessons (incl. embedding backfill), deletes, rotation.
-        assert store.write_lesson("prefer explicit transactions over implicit ones") is True
+        assert store.write_lesson("prefer explicit transactions over implicit ones").wrote is True
         store.delete_semantic("project.notes.findings_doc", "user_explicit")
         rows = store.get_episodic_list(limit=1)
         if rows:
@@ -3053,7 +3053,7 @@ class TestSemanticWriteTimeEmbedding:
         store.embed_fn = embed
 
         rule = "always drink coffee before reviews"
-        assert store.write_lesson(rule) is True
+        assert store.write_lesson(rule).wrote is True
         lessons = store.get_lessons()
         assert len(lessons) == 1
         blob = lessons[0]["embedding"]

@@ -184,9 +184,52 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         # sentence naming the instance mix-up -- so every tool gets that copy,
         # not just this one.
         return f"Error: {err_val}"
-    if repo_scope:
-        return f"Saved lesson (applies only in {repo_scope}): {rule}"
-    return f"Saved lesson: {rule}"
+    scope_note = f" (applies only in {repo_scope})" if repo_scope else ""
+    # The route used to answer ``{"ok": true}`` on every success path, so this tool
+    # reported "Saved lesson" even when the store had REFUSED the value or a dedup
+    # rule had dropped it -- the model was told its correction was persisted when
+    # nothing had been. ``outcome`` names what actually happened; an older gateway
+    # that does not send it falls through to the saved wording, which is what this
+    # tool said unconditionally before.
+    outcome = d.get("outcome")
+    reason = d.get("reason")
+    detail = f" ({reason})" if isinstance(reason, str) and reason else ""
+    if outcome == "refused":
+        return (
+            f"Lesson was NOT saved{scope_note}: the memory store refused this "
+            f"value{detail}. Nothing was stored, so the correction is not in effect. "
+            "Re-state it in plainer wording, or tell the user it could not be saved."
+        )
+    if outcome == "deduped":
+        return (
+            f"Lesson was NOT saved as a new entry{detail}: an existing stored lesson "
+            f"already covers it, and that lesson stays in effect. Rule: {rule}"
+        )
+    if outcome == "unchanged":
+        # No exact-match claim here, because ``unchanged`` does not mean the stored row
+        # equals the submission. It means nothing was WRITTEN, and the store keeps
+        # several fields on a re-submit rather than rewriting them: the category is
+        # write-once (correcting it means delete then re-add), and a bare re-submit
+        # keeps a stored NOT-clause instead of deleting it. So a re-submit carrying a
+        # NEW category, or omitting a clause that is stored, still lands here -- and
+        # telling the caller it was saved "exactly as submitted" would be false in
+        # both cases. Name what was kept instead, so the model knows why the value it
+        # sent did not take effect.
+        if reason == "kept_stored_clause":
+            return (
+                f"Lesson was already stored{scope_note}, and it carries a NOT-clause "
+                f"this submission did not include -- the stored clause was kept, not "
+                f"removed. Nothing was written, and the lesson remains in effect: {rule}"
+            )
+        return (
+            f"Lesson was already stored{scope_note} and nothing was written. A "
+            f"re-submit does not rewrite the stored category or NOT-clause, so those "
+            f"keep the values they already had -- changing one means removing the "
+            f"lesson and adding it again. It remains in effect: {rule}"
+        )
+    if outcome == "enriched":
+        return f"Updated the stored lesson{scope_note} with the new clause: {rule}"
+    return f"Saved lesson{scope_note}: {rule}"
 
 
 def learn_list(name: str, args: dict[str, Any]) -> str:

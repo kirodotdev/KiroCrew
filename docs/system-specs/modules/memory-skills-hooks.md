@@ -511,6 +511,31 @@ whose `repo_scope` is present but unusable counts as neither.
 - Topic-overlap dedup: "use light mode" replaces "use dark mode" (>50% keyword overlap → newer wins)
 - Allowlist validation, injection scanning, audit logging
 
+**What a write reports.** `write_lesson()` returns a `LessonWriteResult` naming WHICH
+outcome occurred: `inserted` / `enriched` / `unchanged` / `deduped` / `refused`, plus a
+short reason code (a `SemanticRejectCode` value for a refusal, the dedup rule's name for
+a dedup, `kept_stored_clause` for the one `unchanged` case that is not a byte-identical
+re-submit). The vocabulary is shared with `LessonStore.save_or_enrich()`, which already
+returned the first three words, so both stores describe the same events the same way.
+The distinction matters because two outcomes mean "your lesson did not land"
+(`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
+(`unchanged`, and the kept-clause variant) — a caller reading only a bool cannot tell
+them apart, and the `learn add` CLI guessed wrong, writing a second `lessons.jsonl`
+record on every one of them.
+
+**The result's truth value is the old bool, deliberately.** `bool(result)` is `wrote`,
+byte-for-byte the predicate the previous `-> bool` return answered, so the three callers
+that only branch on success (`history.py` consolidation counting, the
+`vector_memory` migration loop, the task runner discarding it) and ~55 bare
+`assert store.write_lesson(...)` assertions are semantically unchanged. That is what
+allowed the bool to be REPLACED rather than kept beside a second reporting method:
+without `__bool__`, an ordinary return object is truthy by default, so every positive
+bare assertion would keep passing while asserting nothing — a silent hazard mypy cannot
+flag, since a bare `if` on any object is legal. `stored` is the separate property for
+"is my lesson in the store" (true for a no-op re-submit, which is NOT a write). Surfaces
+that report to a human or a model — the `learn add` CLI, the `POST /api/lessons` response
+(`ok` / `outcome` / `reason`), the `learn_add` tool result — read `outcome` and `reason`.
+
 **Write sources**:
 1. **`learn_add` MCP tool** (immediate): user says "remember X" → LLM calls tool → `POST /api/lessons` → `write_lesson()`
 2. **Task runner** (on failure): step fails → LLM extracts lesson → `write_lesson(source="task_runner")`

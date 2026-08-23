@@ -536,7 +536,7 @@ class TestLessonDedup:
         assert store.write_lesson(
             "Always pin the release tag before publishing a wheel to the CDN"
         )
-        assert store.write_lesson("pin the release tag") is False
+        assert store.write_lesson("pin the release tag").wrote is False
         assert len(store.get_lessons()) == 1
 
     def test_a_longer_rule_replaces_the_lesson_it_contains(self, tmp_path: Path) -> None:

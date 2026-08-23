@@ -31,6 +31,7 @@ from kiro_crew import cli_commands as cc
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, WorkspaceConfig
 from kiro_crew.cron import CronSchedule
 from kiro_crew.eval.scenario import AssertionType
+from kiro_crew.vector_memory import LessonWriteOutcome, LessonWriteResult
 
 # ── helpers ──
 
@@ -1352,21 +1353,53 @@ class _LearnHarness:
 class TestLearnCli:
     def test_add_prefers_vector_store(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _LearnHarness() as h:
-            h.vs.write_lesson.return_value = True
+            h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.INSERTED)
             cc._learn(_ns(learn_action="add", rule="do x", category="tool", negative="not y"))
         h.vs.write_lesson.assert_called_once_with("do x", "tool", "not y")
         h.jsonl.save.assert_not_called()
         h.vs.close.assert_called_once()
         assert "Saved: do x (not y) [tool]" in capsys.readouterr().out
 
-    def test_add_falls_back_to_jsonl_store(self, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_add_does_not_write_jsonl_when_the_store_declines(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """This replaces a test that PINNED the defect (issue #2325).
+
+        It asserted the JSONL fallback fires whenever the vector store returns a
+        falsy value -- which is most often "the lesson is already stored exactly as
+        submitted". So the old contract was: write a duplicate record for a lesson
+        that was fine, and print "Saved:" when nothing needed saving. The declining
+        outcomes are now distinguished, and none of them routes to the other store.
+        """
         with _LearnHarness() as h:
-            h.vs.write_lesson.return_value = False
+            h.vs.write_lesson.return_value = LessonWriteResult(LessonWriteOutcome.UNCHANGED)
             cc._learn(_ns(learn_action="add", rule="do x", category="knowledge", negative=None))
-        h.jsonl.save_or_enrich.assert_called_once()
-        saved = h.jsonl.save_or_enrich.call_args[0][0]
-        assert saved.rule == "do x" and saved.category == "knowledge"
-        assert "Saved: do x [knowledge]" in capsys.readouterr().out
+        h.jsonl.save_or_enrich.assert_not_called()
+        h.jsonl.save.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Already stored, nothing written: do x" in out
+        # The store keeps the stored category on a re-submit, so echoing the submitted
+        # one would show a value it may not hold.
+        assert "[knowledge]" not in out
+
+    def test_add_refusal_exits_non_zero_without_writing_jsonl(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A refusal stored nothing anywhere, so the command must fail loudly.
+
+        Routing it to the JSONL store was the sharper half of the defect: that store
+        validates no content, so a value the vector store rejected landed there and
+        the context builder reads it whenever the vector store holds no lessons.
+        """
+        with _LearnHarness() as h:
+            h.vs.write_lesson.return_value = LessonWriteResult(
+                LessonWriteOutcome.REFUSED, "injection_blocked"
+            )
+            with pytest.raises(SystemExit) as exc:
+                cc._learn(_ns(learn_action="add", rule="do x", category="knowledge", negative=None))
+        assert exc.value.code == 1
+        h.jsonl.save_or_enrich.assert_not_called()
+        assert "NOT saved" in capsys.readouterr().err
 
     def test_list_from_vector_store(self, capsys: pytest.CaptureFixture[str]) -> None:
         with _LearnHarness() as h:

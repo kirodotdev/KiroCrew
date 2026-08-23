@@ -65,7 +65,7 @@ from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
-from kiro_crew.learn import Lesson, LessonStore
+from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.memory import MemoryStore
 from kiro_crew.port_resolution import resolve_client_port_ex
@@ -87,7 +87,7 @@ from kiro_crew.validation import (
     WORKSPACE_NAME_RE,
     normalize_lesson_category,
 )
-from kiro_crew.vector_memory import VectorMemoryStore, _lesson_display_text
+from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore, _lesson_display_text
 
 # Workspace dirs are confined to the data home: a workspace is agent-writable
 # working state, so letting --dir escape would let it be pointed at ~/.ssh or the
@@ -1680,23 +1680,57 @@ def _learn(args: argparse.Namespace) -> None:
             rule = args.rule
             category = args.category
             negative = getattr(args, "negative", None)
-            if vs.write_lesson(rule, category, negative):
-                neg = f" ({negative})" if negative else ""
+            # The reporting form, not the bool. This command used to read EVERY falsy
+            # return as "the vector store did not take it" and write a second record
+            # into lessons.jsonl. Most of those returns mean the opposite -- the
+            # lesson is already stored exactly as submitted -- so the fallback wrote a
+            # redundant record for a lesson that was fine, and printed "Saved:" when
+            # nothing needed saving.
+            #
+            # The one return that really does mean "nothing was stored" is a REFUSAL,
+            # and routing that into the JSONL store was worse than redundant: that
+            # store validates no content at all, so a value this store rejected (an
+            # injection-pattern clause) landed there anyway, and the context builder
+            # reads lessons.jsonl whenever the vector store holds no lessons.
+            #
+            # So the fallback is REMOVED, not narrowed. There is no "vector store
+            # unavailable" state to fall back from here: ``vs`` is constructed and
+            # ``init()``-ed unconditionally above, which means a falsy return was the
+            # only way into that branch.
+            result = vs.write_lesson(rule, category, negative)
+            neg = f" ({negative})" if negative else ""
+            # The category is echoed ONLY where the store adopted the submitted one.
+            # It is write-once (vector_memory.py builds an enrichment with the STORED
+            # category, falling back to the submitted one only when the row has none),
+            # so an insert is the single outcome where what was typed is what is held.
+            # Anything else printing it would show a value the store may not have --
+            # the same defect this PR fixes on the reporting side. `learn list` is
+            # where stored values belong.
+            if result.outcome is LessonWriteOutcome.INSERTED:
                 print(f"Saved: {rule}{neg} [{category}]")
-            else:
-                lesson = Lesson(
-                    ts=datetime.now(timezone.utc).isoformat(),
-                    rule=rule,
-                    category=category,
-                    negative=negative,
+            elif result.outcome is LessonWriteOutcome.ENRICHED:
+                print(
+                    f"Updated the stored lesson with this clause: {rule}{neg}\n"
+                    "  The stored category is kept; `learn list` shows it."
                 )
-                # save_or_enrich, not save: `learn add --negative` is explicit user
-                # intent, so a re-submitted rule should get the clause attached
-                # rather than be skipped as a duplicate. save() keeps the skip
-                # semantics for automatic writers.
-                jsonl_store.save_or_enrich(lesson)
-                neg = f" ({lesson.negative})" if lesson.negative else ""
-                print(f"Saved: {lesson.rule}{neg} [{lesson.category}]")
+            elif result.outcome is LessonWriteOutcome.UNCHANGED:
+                # Nothing was written, and the store keeps the stored category and
+                # NOT-clause rather than rewriting them on a re-submit.
+                print(
+                    f"Already stored, nothing written: {rule}\n"
+                    "  A re-submit keeps the stored category and NOT-clause; "
+                    "changing one means `learn remove` then `learn add`."
+                )
+            elif result.outcome is LessonWriteOutcome.DEDUPED:
+                print(f"Not saved: an existing lesson already covers this ({result.reason})")
+            else:
+                # REFUSED -- and any outcome a later change adds, which is deliberate:
+                # every branch above names ONE outcome, so a new one lands here and
+                # exits non-zero rather than being silently reported as a success. A
+                # non-zero exit so a script driving this command sees the failure.
+                reason = f" ({result.reason})" if result.reason else ""
+                print(f"NOT saved: the memory store refused this lesson{reason}", file=sys.stderr)
+                sys.exit(1)
 
         elif action == "list":
             vs_lessons = vs.get_lessons()
