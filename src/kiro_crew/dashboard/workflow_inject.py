@@ -18,7 +18,7 @@ import re
 from typing import Any, Callable, Optional
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -159,7 +159,12 @@ def inject_workflow_result(
         # Dedup: don't double-inject the same result on a re-fire.
         already = any(m.get("content") == msg for m in getattr(slot, "messages", []))
         if not already:
-            slot.append("assistant", msg, "msg msg-a")
+            # Carry the window copy's minted ``meta.mid`` (read off the append's
+            # return via ``row_mid``) onto the durable copy below: one logical
+            # message, one identity, so the bounded-read identity walk
+            # recognises the persisted row instead of re-appending the
+            # injection.
+            window_mid = row_mid(slot.append("assistant", msg, "msg msg-a"))
             # Live: surface it in the open chat without a reload (mirrors how a
             # normal assistant turn is pushed). slot.append already broadcasts via
             # _pending flush, but an explicit chat_message guarantees the live UI
@@ -190,7 +195,7 @@ def inject_workflow_result(
                     # under the SAME per-session lock the slot save takes, so the
                     # write collapses to a no-op when the save already landed it.
                     append_if_absent_off_loop(
-                        state.conversation_log, session_key, "assistant", msg
+                        state.conversation_log, session_key, "assistant", msg, mid=window_mid
                     )
             except Exception:  # noqa: BLE001
                 pass

@@ -41,8 +41,23 @@ def _make_state(history_messages=None):
             slot.messages = []
             slot.title = ""
 
-            def append(role, content, cls, broadcast=True):
-                slot.messages.append({"role": role, "content": content, "cls": cls})
+            def append(role, content, cls, broadcast=True, meta=None):
+                # Mirror the real ``_ChatSlot.append`` contract: preserve a
+                # supplied ``meta.mid``, mint one otherwise, and hand the
+                # appended row back — the injector reads the id off the return
+                # to stamp the durable transcript copy.
+                supplied = meta.get("mid") if isinstance(meta, dict) else None
+                msg = {
+                    "role": role,
+                    "content": content,
+                    "cls": cls,
+                    "meta": {
+                        **(meta if isinstance(meta, dict) else {}),
+                        "mid": supplied or f"m-test-{len(slot.messages)}",
+                    },
+                }
+                slot.messages.append(msg)
+                return msg
 
             slot.append = append
             slots[name] = slot
@@ -212,6 +227,18 @@ class TestPersistsResultToConversationLog:
         state.conversation_log.append_if_absent.assert_called_once()
         state.conversation_log.append.assert_not_called()
 
+    def test_durable_copy_carries_the_window_rows_id(self):
+        # The durable transcript copy must ride with the SAME ``meta.mid`` the
+        # window copy was minted; a re-minted or absent id leaves a bounded
+        # slot-detail read unable to reconcile the two copies as one message.
+        state = _make_state()
+        job = _make_job(job_id="job5", name="my-cron")
+        inject_cron_result_to_dashboard(state, job, "the result")
+        slot = state.get_or_create_slot(name=f"cron-{job.id}")
+        window_mid = slot.messages[-1]["meta"]["mid"]
+        kwargs = state.conversation_log.append_if_absent.call_args.kwargs
+        assert kwargs["mid"] == window_mid, "the durable copy did not carry the window row's id"
+
     def test_empty_result_does_not_persist(self):
         state = _make_state()
         job = _make_job(job_id="job3")
@@ -279,6 +306,27 @@ class TestHydrateSlotFromHistory:
         hydrate_slot_from_history(slot, history)
         assert slot.messages[0]["cls"] == "msg msg-u"
         assert slot.messages[1]["cls"] == "msg msg-a"
+
+    def test_preserves_persisted_row_ids(self):
+        # A hydrated row must keep the ``meta.mid`` its disk copy carries.
+        # Minting fresh ids here leaves the window and the disk holding
+        # disjoint id sets for the same rows while the durable injection
+        # copies make the region read all-id — the identity walk then marks
+        # every hydrated row owed and a bounded read serves the history twice.
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
+
+        history = [
+            {"role": "user", "content": "hello", "meta": {"mid": "m-disk-1"}},
+            {"role": "assistant", "content": "world", "meta": {"mid": "m-disk-2"}},
+            {"role": "assistant", "content": "pre-id row"},
+        ]
+        state = _make_state(history_messages=history)
+        slot = state.get_or_create_slot(name="cron-abc")
+        hydrate_slot_from_history(slot, history)
+        assert [m["meta"]["mid"] for m in slot.messages[:2]] == [
+            "m-disk-1",
+            "m-disk-2",
+        ], "hydration re-minted ids the disk rows already carry"
 
 
 class TestHasSlot:

@@ -305,7 +305,11 @@ class _IntgSlot:
         self.turns: list[str] = []  # prompts that started an agent turn
 
     def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
-        self.messages.append({"role": role, "content": content})
+        # Mirror the real ``_ChatSlot.append`` contract: the injector reads the
+        # appended row off the return value.
+        msg = {"role": role, "content": content}
+        self.messages.append(msg)
+        return msg
 
     def enqueue_or_run_prompt(self, prompt, run_chat_coro, state) -> bool:
         # Mirror the real state.py primitive: busy -> queue (False), else run (True).

@@ -1632,12 +1632,12 @@ class TestSlotDetailPagination:
     ):
         """A disk window holding BOTH id-carrying and id-less rows must not duplicate.
 
-        A durable injection is written twice by design: ``slot.append`` puts it in the
-        window, where an id is minted, and ``append_if_absent`` persists the durable
-        copy with no ``meta`` at all (``history.py:2204-2245`` delegates to ``append``,
-        which has no ``meta`` parameter). When that durable copy lands before the next
-        slot save, the disk window holds earlier saved rows WITH ids plus this row
-        WITHOUT one.
+        The dual-write injectors stamp both copies of an injection with one id, so
+        a NEW injection no longer produces this state — but transcripts written
+        before the append path accepted an id hold exactly it, as does any caller
+        that passes no id: earlier saved rows WITH ids plus a durable row WITHOUT
+        one. The id-less ``append_if_absent`` call below is that legacy writer
+        shape, and it must keep working unmigrated.
 
         Selecting id matching because SOME row carries an id then applies it to a row
         that structurally cannot match, so the injection is treated as un-flushed and
@@ -1693,6 +1693,107 @@ class TestSlotDetailPagination:
         assert contents.count("injected result") == 1, (
             f"the durable injection was appended twice; got {contents}"
         )
+
+    @pytest.mark.asyncio
+    async def test_durable_injection_carrying_the_window_rows_id_matches_by_identity(
+        self, tmp_path, monkeypatch
+    ):
+        """Both copies of an injection carry ONE id, so the identity walk matches.
+
+        The dual-write shape: the window copy is appended through ``slot.append``,
+        which mints ``meta.mid`` and returns the row; the durable copy passes that
+        same id to ``append_if_absent``. The on-disk window region then holds ONLY
+        id-carrying rows, so the bounded read reconciles by identity rather than a
+        body heuristic, and the injection appears exactly once.
+
+        Guarded on the all-id premise: if the durable copy ever stops carrying the
+        id, the fixture degrades to the mixed shape and the guard names that,
+        instead of the count assertion passing by way of the ordered fallback.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("dualid")
+        key = "dashboard:dualid"
+
+        slot.append("user", "q1")
+        slot.append("assistant", "a1")
+        slot.drain()
+        # Real save: these disk rows carry the window's own ids.
+        _save_slot_to_history(state, slot, force=True)
+
+        # The injector shape: one id minted in the window, the SAME id persisted
+        # on the durable copy.
+        window_row = slot.append("assistant", "injected result")
+        slot.drain()
+        mid = window_row["meta"]["mid"]
+        assert state.conversation_log.append_if_absent(
+            key, "assistant", "injected result", mid=mid
+        ) is True
+
+        disk = state.conversation_log.read_messages_chained(key)
+        region_mids = [
+            m["meta"].get("mid") if isinstance(m.get("meta"), dict) else None
+            for m in disk
+        ]
+        assert all(isinstance(x, str) and x for x in region_mids), (
+            f"the durable copy dropped the id — the region is mixed, not all-id: {region_mids}"
+        )
+        assert mid in region_mids, "the durable copy's id is not the window row's id"
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/dualid?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        assert contents.count("injected result") == 1, (
+            f"the identity walk failed to match the durable copy; got {contents}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_hydrated_slot_over_an_all_id_transcript_is_not_served_twice(
+        self, tmp_path, monkeypatch
+    ):
+        """Hydration must keep the disk rows' ids, or an all-id region doubles.
+
+        With durable injection copies id-carrying, a cron transcript's window
+        region can be ALL-id — the condition that selects the identity walk.
+        ``hydrate_slot_from_history`` re-appends those rows into a fresh slot;
+        if it dropped their ``meta``, every hydrated row would be re-minted a
+        fresh id, no window id would match the disk, and the walk would mark
+        the WHOLE history owed — a bounded read then serves every row twice
+        until the next flush rewrites the file.
+        """
+        from kiro_crew.dashboard.cron_inject import hydrate_slot_from_history
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        key = "dashboard:cronhyd"
+
+        # An all-id transcript: what a session looks like once every writer
+        # (slot save and id-carrying durable appends) stamps meta.mid.
+        state.conversation_log.append(key, "user", "q1", mid="m-disk-0000000001")
+        state.conversation_log.append(key, "assistant", "a1", mid="m-disk-0000000002")
+        state.conversation_log.append(
+            key, "assistant", "cron result", mid="m-disk-0000000003"
+        )
+
+        slot = state.get_or_create_slot("cronhyd")
+        hydrate_slot_from_history(slot, state.conversation_log.read_messages(key))
+        slot.drain()
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.get("/api/chat/slots/cronhyd?limit=10")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+
+        contents = [m["content"] for m in data["messages"]]
+        for body in ("q1", "a1", "cron result"):
+            assert contents.count(body) == 1, (
+                f"a hydrated row was served twice; got {contents}"
+            )
 
     @pytest.mark.asyncio
     async def test_interleaved_foreign_row_does_not_duplicate_the_persisted_suffix(

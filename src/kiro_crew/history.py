@@ -571,6 +571,7 @@ def append_if_absent_off_loop(
     *,
     agent: str | None = None,
     cls: str = "",
+    mid: str | None = None,
 ) -> Any:
     """Idempotent, loop-safe variant of :func:`append_off_loop`.
 
@@ -591,7 +592,7 @@ def append_if_absent_off_loop(
     """
 
     def _do() -> None:
-        conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls)
+        conversation_log.append_if_absent(key, role, content, agent=agent, cls=cls, mid=mid)
 
     try:
         loop = asyncio.get_running_loop()
@@ -2743,6 +2744,7 @@ class ConversationLog:
         agent: str | None = None,
         tab_id: str | None = None,
         cls: str = "",
+        mid: str | None = None,
     ) -> None:
         """Append a message with optional provenance to the session log.
 
@@ -2750,6 +2752,18 @@ class ConversationLog:
         carries one (``_ChatSlot.append``) but this durable copy had nowhere to
         put it, so any class-borne distinction silently vanished the moment a
         session's rows had to be replayed from disk after a restart.
+
+        *mid* persists the row's delivery identity as ``meta.mid`` — the SAME
+        field shape the dashboard slot save writes
+        (``chat_persistence._build_message_entry`` copies the window row's
+        ``meta`` dict to disk). A dual-writer that reflects a message in the
+        in-memory slot (``_ChatSlot.append``, which mints the id) AND persists
+        it here must pass that minted id, so both copies carry one identity and
+        the bounded-read reconciliation (``_append_unflushed_tail``'s
+        ``meta.mid`` walk) recognises the durable copy instead of treating the
+        window copy as still owed. Optional: a row appended without one carries
+        no ``meta`` at all, which is what pre-id transcripts hold — readers keep
+        their id-less fallback for exactly those rows.
 
         If the session file does not yet exist, it will be created with an
         initial metadata line.  When *agent* is supplied, the agent name is
@@ -2809,6 +2823,14 @@ class ConversationLog:
                 msg["source_thread"] = source_thread
             if source_user:
                 msg["source_user"] = source_user
+            if isinstance(mid, str) and mid:
+                # ``meta`` holding ``mid`` is the identity shape every reader of
+                # this file already matches on (the slot save writes it, the
+                # bounded-read walk consumes it); a second spelling would be
+                # invisible to both. Only a non-empty ``str`` counts, matching
+                # the read side — persisting any other shape would store an id
+                # the reader is structurally unable to honour.
+                msg["meta"] = {"mid": mid}
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
@@ -2839,11 +2861,14 @@ class ConversationLog:
         agent: str | None = None,
         tab_id: str | None = None,
         cls: str = "",
+        mid: str | None = None,
     ) -> bool:
         """Append a message only if an identical one is not already persisted.
 
-        Returns ``True`` if the message was written, ``False`` if a message
-        with the same ``(role, content)`` already exists on disk.
+        Returns ``True`` if the message was written, ``False`` if it is already
+        on disk — judged by ``(role, content)`` when the caller supplies no
+        *mid*, and by ``(role, content)`` plus the SAME ``meta.mid`` when it
+        does (see below).
 
         The disk check and the append run together under ``_locked`` so they
         are ATOMIC against a concurrent writer of the same session file — in
@@ -2857,7 +2882,19 @@ class ConversationLog:
         agent turns. This is the workflow-result / cron-result double-append
         race: the read-modify-write must be one locked critical section, not a
         separate unlocked existence check followed by a later append.
+
+        What counts as "already persisted" depends on whether the caller holds
+        an identity. Without *mid*, any row with the same ``(role, content)``
+        does — body equality is all an id-less writer can check. WITH *mid*,
+        only a body-equal row carrying the SAME ``meta.mid`` does: that row is
+        this very message, landed by the slot save or an earlier attempt of
+        this write. A body-equal row under another id (or none) is a DIFFERENT
+        occurrence that happens to repeat the text — an id-carrying twin of an
+        earlier injection, or a pre-id legacy row — and skipping on it would
+        drop THIS occurrence's only durable copy: the in-memory window is lost
+        on restart, so nothing would replay the newer message.
         """
+        supplied_mid = mid if isinstance(mid, str) and mid else None
         with self._locked(key):
             if self._path(key).exists():
                 # Compare against the form ``append`` actually stores: the
@@ -2866,12 +2903,19 @@ class ConversationLog:
                 # that contained a credential and would append it twice.
                 persisted = _redact_at_write_boundary(role, content)
                 for m in self._read_messages(key):
-                    if m.get("role") == role and m.get("content") == persisted:
+                    if m.get("role") != role or m.get("content") != persisted:
+                        continue
+                    if supplied_mid is None:
+                        return False
+                    m_meta = m.get("meta")
+                    if isinstance(m_meta, dict) and m_meta.get("mid") == supplied_mid:
                         return False
             # Reentrant: ``append`` re-enters ``_locked`` for the same key on
             # this thread (RLock + refcounted flock), so the write stays inside
-            # the critical section we already hold.
-            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls)
+            # the critical section we already hold. The skip paths above leave
+            # the persisted rows untouched — an id is never retrofitted onto a
+            # row already on disk.
+            self.append(key, role, content, agent=agent, tab_id=tab_id, cls=cls, mid=mid)
             return True
 
     def recent(

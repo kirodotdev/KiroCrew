@@ -741,6 +741,23 @@ class TestAnswerMarking:
         assert ("crew-reply" in cls) is expect_marker
         assert cls.startswith("msg msg-a")
 
+    def test_the_durable_copy_carries_the_window_rows_id(self) -> None:
+        # `_post` appends the window copy — where ``meta.mid`` is minted — and
+        # then persists a durable transcript copy; both must carry ONE id or a
+        # bounded slot-detail read cannot reconcile them as the same message.
+        orch = _orch()
+        slot = _slot()
+        slot.append.return_value = {
+            "role": "assistant",
+            "content": "an answer",
+            "meta": {"mid": "m-feedfacefeedface"},
+        }
+        with patch.object(crew_mod, "append_if_absent_off_loop") as durable:
+            assert orch._post(slot, "an answer", kind="crew_result") is True
+        assert durable.call_args.kwargs["mid"] == "m-feedfacefeedface", (
+            "the durable copy did not carry the window row's id"
+        )
+
 
 class TestUnsettledEntriesAreNotStranded:
     """A decision pass can return valid JSON that settles nothing."""

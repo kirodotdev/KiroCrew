@@ -1285,9 +1285,12 @@ def _append_unflushed_tail(
     capturing inside this thread, which is weaker — see that helper.
 
     Prefer message identity. A save copies each window row's ``meta.mid`` to disk,
-    so a window row whose id appears in the disk read is persisted. Rows written by
-    any other writer carry no id — ``ConversationLog.append`` persists no ``meta``
-    — so they cannot be mistaken for a flushed window row.
+    so a window row whose id appears in the disk read is persisted. A durable
+    injector passes the window row's own id to ``ConversationLog.append``, which
+    persists it in the same ``meta.mid`` shape — that copy carrying the id is the
+    point: it IS the window row's flushed form and must match. A writer that passes
+    no id persists no ``meta``, so its rows cannot be mistaken for a flushed window
+    row.
 
     A disk read holding no ids at all needs a different boundary: a session
     persisted before ids existed, or rows a durable injector appended without
@@ -1332,10 +1335,11 @@ def _append_unflushed_tail(
     The fallback below already starts its disk cursor at the same offset.
 
     Id matching is selected only when EVERY row in that region carries a valid id, not
-    merely when some row does. A durable injection is written by two writers — the
-    window copy through ``slot.append``, where an id is minted, and the durable copy
-    through ``append_if_absent``, which persists no ``meta`` at all — so the region can
-    legitimately hold a MIX. Choosing id matching on the strength of one id-carrying
+    merely when some row does. The dual-write injectors stamp both copies with one id
+    (``slot.append`` mints it for the window copy and ``append_if_absent`` persists it
+    on the durable copy), but the region can still legitimately hold a MIX: transcripts
+    written before ids existed, and callers that pass no id. Choosing id matching on the
+    strength of one id-carrying
     row then applies it to a row that structurally cannot match, which reads as
     un-flushed and appends the injection a second time. A mixed region belongs on the
     ordered path, which compares the fields both writers do record.

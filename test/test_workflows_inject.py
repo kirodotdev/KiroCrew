@@ -25,7 +25,16 @@ class _FakeSlot:
         self.title = ""
 
     def append(self, role, content, cls="", ts="", *, broadcast=True, meta=None):
-        self.messages.append({"role": role, "content": content})
+        # Mirror the real ``_ChatSlot.append`` contract: mint ``meta.mid`` and
+        # hand the appended row back — the injector reads the id off the return
+        # to stamp the durable transcript copy with the same identity.
+        msg = {
+            "role": role,
+            "content": content,
+            "meta": {**(meta or {}), "mid": f"m-test-{len(self.messages)}"},
+        }
+        self.messages.append(msg)
+        return msg
 
 
 class _FakeState:
@@ -159,6 +168,28 @@ def test_inject_no_session_key_returns_false() -> None:
     state = _FakeState({})
     snap = {"name": "x", "run_id": "wf_0", "status": "finished", "result": {}, "session_key": ""}
     assert inject_workflow_result(state, "wf_0", snap) is False
+
+
+def test_durable_copy_carries_the_window_rows_id() -> None:
+    # The durable transcript copy must ride with the SAME ``meta.mid`` the
+    # window copy was minted; a re-minted or absent id leaves a bounded
+    # slot-detail read unable to reconcile the two copies as one message.
+    from unittest.mock import MagicMock, patch
+
+    origin = _FakeSlot("chat-2-123")
+    state = _FakeState({"chat-2-123": origin})
+    state.conversation_log = MagicMock()
+    snap = {
+        "name": "pizza", "run_id": "wf_2", "status": "finished",
+        "session_key": "dashboard:chat-2-123", "result": {"ok": True},
+    }
+    with patch("kiro_crew.dashboard.workflow_inject.append_if_absent_off_loop") as durable:
+        assert inject_workflow_result(state, "wf_2", snap) is True
+    assert len(origin.messages) == 1
+    window_mid = origin.messages[0]["meta"]["mid"]
+    assert durable.call_args.kwargs["mid"] == window_mid, (
+        "the durable copy did not carry the window row's id"
+    )
 
 
 def test_inject_dedups_on_refire() -> None:

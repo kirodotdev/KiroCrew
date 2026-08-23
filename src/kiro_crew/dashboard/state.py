@@ -868,6 +868,26 @@ _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles pe
 #: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
 #: They get no ``meta.mid`` — see ``_ChatSlot.append``.
 _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
+
+
+def row_mid(row: Any) -> str | None:
+    """The delivery identity stamped on an appended window row, or ``None``.
+
+    The ONE extraction of ``meta.mid`` shared by every dual-writer that reads
+    the id off a ``_ChatSlot.append`` return to stamp its durable transcript
+    copy. Mirrors the read side (``_append_unflushed_tail`` matches only a
+    non-empty ``str``): any other shape reads as "no identity" here rather than
+    being persisted as an id the reader is structurally unable to match.
+    Tolerates a non-dict *row* so a caller handed a test double degrades to
+    ``None`` (an id-less durable copy) instead of raising.
+    """
+    if not isinstance(row, dict):
+        return None
+    meta = row.get("meta")
+    mid = meta.get("mid") if isinstance(meta, dict) else None
+    return mid if isinstance(mid, str) and mid else None
+
+
 #: Roles whose LIVE append starts the slot's next turn, and so consumes the answer
 #: channel an unanswered stateless question card was waiting on. Mirrors the
 #: frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a session reports
@@ -2161,7 +2181,7 @@ class _ChatSlot:
         broadcast: bool = True,
         broadcast_user: bool = False,
         meta: dict | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         # A LIVE turn-consuming row retires every unanswered STATELESS question:
         # the card's own submit path sends one, and anything else that starts the
         # slot's next turn consumes the answer channel the card was waiting on.
@@ -2309,6 +2329,13 @@ class _ChatSlot:
                 )
             # The frozen prefix grew → its cached bytes are stale.
             self._frozen_prefix_cache = None
+        # Hand back the row as appended (id included): a dual-writer that also
+        # persists this message through ``ConversationLog.append`` needs the
+        # ``meta.mid`` minted above so BOTH copies carry the same identity —
+        # re-minting at the durable copy would give the reconciliation walk two
+        # ids for one logical message. Read the id off the return with
+        # :func:`row_mid`, never an inline ``meta`` poke.
+        return msg
 
     def push_wire_frame(self, cls: str, content: str) -> None:
         """Queue an ephemeral wire-only frame for live SSE readers.

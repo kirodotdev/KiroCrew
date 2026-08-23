@@ -6,7 +6,7 @@ Persistent conversation history with provenance tracking and LLM-driven consolid
 
 ## ConversationLog (`history.py`)
 
-Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`.
+Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line is metadata, subsequent lines are messages with `role`, `content`, `ts`, `tools`, `source_thread`, `source_user`. A writer can also supply `cls` (presentation class) and `mid` — persisted as `meta.mid`, the same field shape the dashboard slot save writes, so a dual-write injector's durable copy carries the SAME delivery identity as its in-memory window copy and a bounded slot-detail read reconciles the two as one message instead of re-appending the injection. A row appended without an id carries no `meta` at all (the pre-id shape readers keep an id-less fallback for; existing transcripts are never migrated).
 
 - Append-only for LLM cache efficiency
 - Rotation at 2MB (keeps metadata + last 200 messages, atomic write)
@@ -298,7 +298,10 @@ no longer destroy older turns.
     `append_if_absent` durable copy persisted with a fresh `ts` (the workflow/
     cron-result injectors reflect the message in the slot AND write it via
     `append_if_absent_off_loop`, so the same message legitimately exists twice
-    with different timestamps and must NOT be double-persisted). A line matching
+    with different timestamps and must NOT be double-persisted; both copies
+    carry one `meta.mid` — the injectors pass the window row's minted id
+    through the append path — though this fold matches by `(role, content)`,
+    not by id). A line matching
     NEITHER is foreign and preserved.
   - **Count-bounded, exact-first identity (the fix for GPT 5.6's HIGH data-loss
     findings).** `(role, content)` is only a bounded tiebreak in which **each
