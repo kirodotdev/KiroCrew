@@ -439,6 +439,20 @@ _COMPACT_FAILURE_COOLDOWN_SECS = 60.0
 # land above ``autocompact_pct`` while still having freed real headroom.
 _COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
 
+# A compaction whose SETTLED verdict is ineffective (see
+# _COMPACT_MIN_EFFECT_PCT_POINTS) while the confirmed reading is still AT OR
+# ABOVE this percentage has not restored usable headroom: the very next turn
+# re-crosses the trigger threshold, and on the task runner the next prompt
+# itself may no longer fit. Such a session is reset — with its native resume
+# sid cleared, so the overflowed conversation is not reloaded — instead of
+# limping through compact/cooldown cycles. Promoted from the task runner's
+# post-compaction verification so every compaction caller gets it (#4686).
+# The escalation rides the verdict settle (not a raw re-read after compact())
+# because only a settled reading has passed the measurability rules — a raw
+# re-read can be unknown (kiro zeroes + flags stats) or stale (a backend that
+# never reset them), and resetting on either would destroy a healthy session.
+_POST_COMPACT_RESET_PCT = 95.0
+
 
 class _CompactCallback(Protocol):
     async def __call__(self, key: str, pct: float, *, success: bool) -> None: ...  # noqa: E704
@@ -3162,6 +3176,7 @@ class SessionManager:
         *,
         expect_session: _Session | None = None,
         skip_if_busy: bool = False,
+        clear_conversation: bool = False,
     ) -> bool:
         """Kill and recreate a session (context overflow recovery).
 
@@ -3181,6 +3196,15 @@ class SessionManager:
             (semaphore held), so a live stream is never cut mid-turn. This is
             enforced here, atomically with the pop, rather than in a caller's
             separate lock acquisition (which reopens the window).
+
+        ``clear_conversation`` additionally drops the session map's native
+        resume sid (the entry itself — and the channel bindings it carries —
+        survives, exactly as in ``_recycle_held``): used by the still-critical
+        post-compaction escalation, where resuming the overflowed conversation
+        would reload the very context the reset exists to shed. The clear runs
+        in the SAME event-loop tick as the pop (no await between them), so a
+        racing cold-start can never have registered a replacement sid for this
+        key in between — the clear cannot erase a successor's pointer.
         """
         key = self._fold_key(key)
         async with self._lock:
@@ -3195,6 +3219,9 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+        if clear_conversation and session is not None:
+            # Same tick as the pop — see the docstring.
+            self._session_map.clear_sid(key)
         if session:
             # Capture PID and child tree before shutdown clears them
             client = getattr(session.provider, "_client", None)
@@ -3295,7 +3322,12 @@ class SessionManager:
         # Settle a deferred compaction verdict on the first CONFIRMED reading
         # after the attempt (see _settle_compact_cooldown). Runs BEFORE the
         # trigger decision below so an ineffective compaction's cooldown
-        # suppresses the immediate re-trigger in this very call.
+        # suppresses the immediate re-trigger in this very call. Deliberately
+        # damping-only: this reading includes the following turn's own growth,
+        # so it cannot distinguish a failed compaction from a successful one
+        # regrown by a large turn — safe to damp on, never safe to reset on
+        # (the promoted #4686 escalation fires only on immediately-measured
+        # verdicts inside _compact_session).
         baseline = self._compact_pending_verdict.get(key)
         if baseline is not None and not _context_pct_is_unknown(provider):
             del self._compact_pending_verdict[key]
@@ -3340,6 +3372,97 @@ class SessionManager:
         elif pct > 0:
             logger.info("Session %s context at %.0f%%", key, pct)
         return pct
+
+    async def compact_if_needed(self, key: str) -> str:
+        """Awaitable twin of the ``check_context_usage`` compaction trigger.
+
+        For callers that must not start their next turn while a compaction is
+        pending — the task runner checks context BETWEEN turns and needs the
+        attempt finished before it feeds the next prompt (#4686). Runs the
+        same trigger decision and the same gates as ``check_context_usage`` →
+        ``_trigger_compaction`` (pending-verdict settle, CC-managed skip,
+        threshold, unconfirmed-pct guard, ``_compacting`` dedup, failure/
+        ineffective cooldown — in that order), then AWAITS
+        ``_compact_session`` instead of scheduling it, so the caller inherits
+        the turn-semaphore exclusion, the post-compaction verification, and
+        skills reinjection without reaching into private helpers.
+
+        Returns the outcome for observability:
+
+        - ``"absent"``: no live session under *key* — nothing to compact.
+        - ``"reset"``: this call's own attempt completed but the
+          immediately-measured verdict was ineffective-and-still-critical,
+          and the promoted post-compaction escalation reset the session —
+          AWAITED, so the caller's next turn cold-starts on a fresh process.
+        - ``"cc_managed"``: CC ``per_session`` compacts natively — skipped
+          (checked before the threshold, so a CC session below threshold
+          also reports this, mirroring ``check_context_usage``).
+        - ``"below_threshold"``: usage below ``session.autocompact_pct``.
+        - ``"unconfirmed"``: over threshold but no telemetry has confirmed the
+          reading for the current session binding (same defensive gate as
+          ``check_context_usage`` — never compact on an unproven number).
+        - ``"in_progress"``: another trigger is already compacting this key;
+          the concurrent attempt is collapsed, not queued.
+        - ``"cooldown"``: a failed/ineffective attempt armed the cooldown.
+        - ``"ok"`` / ``"busy"`` / ``"recycled"`` / ``"failed"``: terminal
+          outcomes of the awaited attempt (see ``_compact_session``). A
+          ``"busy"`` decline means a turn holds the semaphore — the caller
+          must leave the session alone and retry on a later check, never
+          fall back to a direct ``provider.compact()``.
+        """
+        key = self._fold_key(key)
+        session = self._sessions.get(key)
+        if session is None:
+            return "absent"
+        provider = session.provider
+        pct = provider.context_usage_pct()
+
+        # Settle a deferred compaction verdict on a confirmed reading, exactly
+        # as check_context_usage does, so an ineffective prior attempt arms
+        # its cooldown before the trigger decision below. Damping-only for
+        # the same reason as there: a deferred reading includes later turn
+        # growth and cannot prove the compaction failed — the promoted #4686
+        # escalation fires only on immediately-measured verdicts inside
+        # _compact_session (this call's own attempt reports it as "reset").
+        baseline = self._compact_pending_verdict.get(key)
+        if baseline is not None and not _context_pct_is_unknown(provider):
+            del self._compact_pending_verdict[key]
+            self._judge_compact_effect(key, baseline, pct)
+
+        # CC per_session handles its own compaction natively — skip Kiro
+        # Crew's (same guard as check_context_usage).
+        if (
+            ClaudeCodeProvider is not None
+            and isinstance(provider, ClaudeCodeProvider)
+            and provider.connection_mode == "per_session"
+        ):
+            return "cc_managed"
+        if pct < self._cfg.session.autocompact_pct:
+            return "below_threshold"
+        if _context_pct_is_unknown(provider):
+            logger.info(
+                "Session %s context %.0f%% is unconfirmed for this session — "
+                "skipping compaction until telemetry reports",
+                key,
+                pct,
+            )
+            return "unconfirmed"
+        if key in self._compacting:
+            logger.info("Session %s compaction already in progress", key)
+            return "in_progress"
+        cooldown_until = self._compact_cooldown_until.get(key, 0.0)
+        if cooldown_until > time.monotonic():
+            logger.info(
+                "Session %s compaction skipped — cooldown active for %.0fs more",
+                key,
+                cooldown_until - time.monotonic(),
+            )
+            return "cooldown"
+        logger.warning("Session %s compacting — context at %.0f%% (awaited)", key, pct)
+        # No await between the membership check above and this add, so the
+        # dedup handshake with _trigger_compaction stays atomic on the loop.
+        self._compacting.add(key)
+        return await self._compact_session(key, pct)
 
     def set_compact_callback(self, cb: _CompactCallback | None) -> None:
         """Register a callback fired after a compact attempt.
@@ -3422,7 +3545,7 @@ class SessionManager:
         self._background_tasks.add(t)
         t.add_done_callback(self._background_tasks.discard)
 
-    async def _compact_session(self, key: str, pct: float) -> None:
+    async def _compact_session(self, key: str, pct: float) -> str:
         """Compact a session that hit the context threshold.
 
         Both backends compact **in place** first, so the kiro-cli process (or
@@ -3439,6 +3562,13 @@ class SessionManager:
         and the kill. A recycle is never forced through a live turn: if the turn
         semaphore cannot be acquired within the budget, the attempt is skipped
         and the next turn-end ``check_context_usage`` re-triggers it.
+
+        Returns the terminal outcome — ``"ok"``, ``"reset"`` (completed but
+        the immediately-measurable verdict was ineffective-and-still-critical,
+        so the promoted escalation reset the session here, awaited),
+        ``"busy"``, ``"recycled"``, ``"failed"``, or ``"absent"`` — so the
+        awaited entry point (:meth:`compact_if_needed`) can report it. The
+        fire-and-forget trigger path ignores the return value, unchanged.
         """
         try:
             session = self._sessions.get(key)
@@ -3469,13 +3599,26 @@ class SessionManager:
                         time.monotonic() + _COMPACT_FAILURE_COOLDOWN_SECS
                     )
                     await self._fire_compact_callback(key, pct, success=False)
-                    return
+                    return "failed"
                 # Completed: decide the cooldown from the measured effect —
-                # an ineffective compaction keeps it, an effective one clears it.
-                self._settle_compact_cooldown(key, claude_session.provider, pct)
+                # an ineffective compaction keeps it, an effective one clears
+                # it, and an ineffective-and-still-critical one escalates to
+                # the promoted reset (#4686). The reset runs BEFORE the
+                # compaction callback: the callback awaits arbitrary surface
+                # I/O, and a queued turn completing inside that window must
+                # not be erased by a verdict measured before it ran (a turn
+                # that started meanwhile is caught by skip_if_busy).
+                did_reset = False
+                if self._settle_compact_cooldown(key, claude_session.provider, pct):
+                    did_reset = await self._reset_still_critical(
+                        key,
+                        pct,
+                        claude_session.provider.context_usage_pct(),
+                        expect=claude_session,
+                    )
                 logger.info("Compacted session %s (context overflow)", key)
                 await self._fire_compact_callback(key, pct, success=True)
-                return
+                return "reset" if did_reset else "ok"
 
             # ── kiro-cli: in-place /compact, recycling on failure ──
             # Every outcome is terminal. _compact_in_place owns the turn
@@ -3483,7 +3626,7 @@ class SessionManager:
             # recycle — so there is no window here in which a queued turn can
             # be dispatched into a session that is mid-compaction or mid-kill.
             if session is None:
-                return
+                return "absent"
             outcome = await self._compact_in_place(key, session, pct)
             if outcome == "busy":
                 # A turn is still running. NEVER kill a live turn for
@@ -3497,8 +3640,10 @@ class SessionManager:
                     key,
                     COMPACT_WAIT_TIMEOUT_SECS,
                 )
+            return outcome
         except Exception:
             logger.exception("Session compaction/recycle failed for %s", key)
+            return "failed"
         finally:
             self._compacting.discard(key)
 
@@ -3553,6 +3698,11 @@ class SessionManager:
           The success callback has been fired and the cooldown settled from
           the measured effect (cleared when effective, armed when
           ineffective, deferred when not yet measurable).
+        - ``"reset"``: compaction completed, but the immediately-measured
+          verdict was ineffective-and-still-critical and the promoted #4686
+          escalation tore the session down HERE — before the compaction
+          callback, so a turn completing inside the callback's await window
+          can never be erased by it.
         - ``"busy"``: the turn semaphore could not be acquired within
           ``COMPACT_WAIT_TIMEOUT_SECS`` — a turn is still running. Nothing was
           attempted; the caller must NOT recycle (no mid-turn kill).
@@ -3643,13 +3793,38 @@ class SessionManager:
             return "recycled"
         finally:
             session.semaphore.release()
-        self._settle_compact_cooldown(key, session.provider, pct)
+        escalate = self._settle_compact_cooldown(key, session.provider, pct)
         logger.info("Compacted session %s in place (context overflow)", key)
+        # Escalate BEFORE the compaction callback: the callback awaits
+        # arbitrary surface I/O (e.g. a channel notice), and a queued turn
+        # completing inside that window must not be erased by a verdict
+        # measured before it ran. With the reset here, no event-loop yield
+        # separates the semaphore release from the guarded pop (the settle is
+        # sync and an uncontended manager-lock acquire does not yield), so
+        # the interleave window is closed rather than merely narrowed; under
+        # lock contention a turn that started meanwhile is caught by
+        # skip_if_busy. The callback still fires afterwards — its
+        # mark_needs_reinjection no-ops for the popped session (a reset
+        # cold-starts with re-seeded context, same rationale as the recycle
+        # exclusion), and the surface notice stays accurate.
+        did_reset = False
+        if escalate:
+            did_reset = await self._reset_still_critical(
+                key, pct, session.provider.context_usage_pct(), expect=session
+            )
         await self._fire_compact_callback(key, pct, success=True)
-        return "ok"
+        return "reset" if did_reset else "ok"
 
-    def _settle_compact_cooldown(self, key: str, provider: LLMProvider, pct_before: float) -> None:
+    def _settle_compact_cooldown(self, key: str, provider: LLMProvider, pct_before: float) -> bool:
         """Set, clear, or defer the failure cooldown from a compaction's effect.
+
+        Returns ``True`` when the immediately-measurable verdict is
+        ineffective-and-still-critical (see :meth:`_judge_compact_effect`) —
+        the async compaction caller must then AWAIT the promoted reset
+        escalation before reporting its outcome (#4686). A deferred verdict
+        returns ``False``; it settles at the next confirmed reading in
+        ``check_context_usage`` / ``compact_if_needed``, which own their own
+        escalation.
 
         Re-reads ``context_usage_pct()`` and compares it with *pct_before* (the
         reading that triggered the attempt). A completed compaction that freed
@@ -3696,31 +3871,108 @@ class SessionManager:
                 pct_after,
                 ", unconfirmed" if unknown else "",
             )
-            return
+            return False
         self._compact_pending_verdict.pop(key, None)
-        self._judge_compact_effect(key, pct_before, pct_after)
+        return self._judge_compact_effect(key, pct_before, pct_after)
 
-    def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> None:
+    def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> bool:
         """Arm the cooldown on an ineffective measured drop; clear it otherwise.
 
         The test is the measured drop, not "still above the threshold": a
         legitimately good compaction of a very long turn can land above
         ``autocompact_pct`` while still having freed real headroom, and what
         the cooldown damps is the no-progress case.
+
+        Returns ``True`` when the verdict is ineffective AND the reading is
+        still at or above ``_POST_COMPACT_RESET_PCT`` — the promoted
+        task-runner post-compaction check (#4686). Only the
+        IMMEDIATELY-MEASURED settle (``_settle_compact_cooldown`` called
+        right after the attempt, inside ``_compact_session``) may act on that
+        ``True`` by awaiting :meth:`_reset_still_critical`: the deferred
+        settle sites (turn-end ``check_context_usage`` and the
+        ``compact_if_needed`` pre-check) deliberately IGNORE it, because
+        their reading includes the following turn's own growth and cannot
+        distinguish a failed compaction from a successful one regrown by a
+        large turn — damping on that ambiguity is safe, destroying a valid
+        conversation on it is not. The cooldown is armed either way, so a
+        declined or deferred escalation stays damped and the still-critical
+        session re-attempts the whole compact-and-escalate cycle at its next
+        threshold crossing.
         """
         if pct_before - pct_after < _COMPACT_MIN_EFFECT_PCT_POINTS:
             self._compact_cooldown_until[key] = time.monotonic() + _COMPACT_FAILURE_COOLDOWN_SECS
+            still_critical = pct_after >= _POST_COMPACT_RESET_PCT
             logger.warning(
                 "Session %s compaction ineffective — context %.1f%% -> %.1f%% "
-                "(freed %.1f < %.1f points); cooldown applied",
+                "(freed %.1f < %.1f points); %s",
                 key,
                 pct_before,
                 pct_after,
                 pct_before - pct_after,
                 _COMPACT_MIN_EFFECT_PCT_POINTS,
+                ("still critical — escalating to reset" if still_critical else "cooldown applied"),
             )
-            return
+            return still_critical
         self._compact_cooldown_until.pop(key, None)
+        return False
+
+    async def _reset_still_critical(
+        self, key: str, pct_before: float, pct_after: float, *, expect: "_Session | None"
+    ) -> bool:
+        """Reset a session whose immediately-measured verdict is
+        ineffective-and-critical.
+
+        The promoted task-runner post-compaction escalation (#4686): a
+        compaction that completed but left the context confirmed at or above
+        ``_POST_COMPACT_RESET_PCT`` has not bought usable headroom — the next
+        prompt may no longer fit — so the session is torn down and re-seeded.
+        Reached ONLY from ``_compact_session`` on a verdict measured directly
+        after the attempt: a deferred (next-reading) verdict includes later
+        turn growth and cannot prove the compaction failed, so it is never
+        allowed to reach this reset — it damps via the cooldown instead.
+
+        *expect* is the session the verdict was measured on, forwarded as
+        ``reset(expect_session=...)``: awaits sit between the measurement and
+        this teardown (the compaction callback, the lock acquisition), so the
+        key may have been replaced by a fresh cold-start in the window — a
+        stale escalation must never destroy the replacement or clear ITS
+        resume sid. ``skip_if_busy`` keeps the never-cut-a-live-turn
+        contract: if a queued turn won the semaphore in that same window, the
+        escalation declines and the caller reports plain ``"ok"`` — the
+        still-critical context re-crosses the trigger threshold at the next
+        check, so after the cooldown the whole compact-and-escalate attempt
+        re-runs and completes once the session is idle (the mid-stream
+        overflow guard covers the interim). ``clear_conversation`` drops the
+        native resume sid in the same tick as the registry pop (same
+        rationale as ``_recycle_held``): the overflowed conversation must not
+        be resumed, while the session-map entry — and the channel bindings it
+        carries — survives.
+        """
+        logger.warning(
+            "Session %s still at %.0f%% after compaction (was %.0f%%) — resetting",
+            key,
+            pct_after,
+            pct_before,
+        )
+        try:
+            did = await self.reset(
+                key, expect_session=expect, skip_if_busy=True, clear_conversation=True
+            )
+        except Exception:
+            logger.exception("Session %s critical reset failed", key)
+            return False
+        if not did:
+            logger.info(
+                "Session %s critical reset skipped — %s; the next threshold "
+                "crossing re-attempts after the cooldown",
+                key,
+                (
+                    "session replaced since the verdict"
+                    if expect is not None and self._sessions.get(key) is not expect
+                    else "turn in flight"
+                ),
+            )
+        return did
 
     async def _fire_compact_callback(self, key: str, pct: float, *, success: bool) -> None:
         """Invoke ``_on_compacted`` if registered, swallowing exceptions."""

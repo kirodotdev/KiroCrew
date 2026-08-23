@@ -561,7 +561,17 @@ Only fires when there is truly ZERO activity for the stall period.
   - Returns `{"steps": [...], "acceptance_criteria": [...]}` — criteria shown in final acceptance step
   - Backward compatible with plain JSON arrays (no criteria → step-title fallback)
 - Self-review: `taskrunner:{task_id}:review` (separate session, reset in finally) (owned by `task_executor.py`)
-- Context compaction at ≥80%, session reset if still ≥95% after compact
+- Context compaction between steps routes through the shared
+  `SessionManager.compact_if_needed(key)` path (#4686) — same dedup, failure/
+  ineffective cooldown, turn-semaphore exclusion, and skills reinjection as
+  gateway compaction; a `"busy"` decline is left alone and retried on a later
+  check (no direct `provider.compact()` fallback). The reset-if-still-≥95%
+  post-check now lives in the shared path: it fires on the attempt's own
+  IMMEDIATELY-MEASURED effect verdict (`_POST_COMPACT_RESET_PCT`), awaited
+  on this seam (outcome `"reset"`) so the next step cold-starts instead of
+  racing the recovery; deferred next-reading settles only damp (they cannot
+  distinguish a failed compaction from later turn growth), with the
+  mid-stream overflow guard covering the interim.
 
 Every step gets `is_new=True` on its first message, which triggers full `ContextBuilder`
 injection: user preferences, active projects, recent history, semantic memory, lessons,

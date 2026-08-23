@@ -797,20 +797,21 @@ async def build_task_prompt(run: Project, task: Task, attempt: int, work_dir: Pa
 
 
 async def check_context(session_key: str, sessions: "SessionManager") -> None:
-    """Compact the session if context usage is high."""
+    """Compact the session if context usage is high.
+
+    Routed through :meth:`SessionManager.compact_if_needed` — the same shared
+    path gateway compaction uses — so the task runner inherits concurrent-
+    trigger dedup, the failure/ineffective cooldown, turn-semaphore exclusion,
+    the still-critical post-compaction reset, and skills-index reinjection,
+    instead of bypassing them all with a direct ``provider.compact()``
+    (#4686). A ``"busy"`` decline (a turn holds the semaphore) is final for
+    this check: never fall back to a direct compact — the next check retries
+    once the turn drains.
+    """
     try:
-        async with sessions._lock:
-            sess = sessions._sessions.get(session_key)
-        if not sess:
-            return
-        pct = sess.provider.context_usage_pct()
-        if pct >= sessions._cfg.session.autocompact_pct:
-            logger.info("TaskRunner: context at %.0f%%, compacting", pct)
-            await sess.provider.compact()
-            new_pct = sess.provider.context_usage_pct()
-            if new_pct >= 95:
-                logger.warning("TaskRunner: still at %.0f%% after compact, resetting", new_pct)
-                await sessions.reset(session_key)
+        outcome = await sessions.compact_if_needed(session_key)
+        if outcome not in ("absent", "below_threshold"):
+            logger.info("TaskRunner: context check for %s — %s", session_key, outcome)
     except Exception:
         logger.debug("Context check failed", exc_info=True)
 
