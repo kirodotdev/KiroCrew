@@ -218,11 +218,17 @@ class SlackRenderer(Renderer):
         self.slack = slack
         self.channel = channel
         self.thread_ts = thread_ts
-        # The sending user — passed to DashboardContributor.decorate_reply on the
-        # final outbound text so a composed edition can refresh its auth window /
-        # append an expiry footer on the transport reply path too (native
-        # handle_message already wires decorate_reply; this closes the gap so the
-        # DEFAULT non-review Slack traffic gets the same treatment). "" in OSS.
+        # The sending user. Two consumers:
+        #   * DashboardContributor.decorate_reply on the final outbound text, so a
+        #     composed edition can refresh its auth window / append an expiry
+        #     footer on the transport reply path too (native handle_message
+        #     already wires decorate_reply; this closes the gap so the DEFAULT
+        #     non-review Slack traffic gets the same treatment).
+        #   * chat.startStream recipient routing. Slack rejects the call with
+        #     ``missing_recipient_user_id`` when it is absent, and the renderer
+        #     then silently demotes to the non-streaming chat.update surface, so
+        #     dropping this value kills streaming for the whole transport path.
+        # Empty when the caller has no sender id; both consumers no-op on "".
         self._user_id = user_id
         # Message ts to react to (the user's triggering message). Falls back
         # to thread_ts so reactions still attach when not supplied separately.
@@ -304,7 +310,9 @@ class SlackRenderer(Renderer):
 
     async def _ensure_stream(self) -> str:
         if self._stream_ts is None:
-            ts = await self.slack.start_stream(self.channel, self.thread_ts or "")
+            ts = await self.slack.start_stream(
+                self.channel, self.thread_ts or "", user_id=self._user_id or None
+            )
             if ts:
                 self._stream_ts = ts
                 self._use_slack_stream = True
@@ -321,7 +329,9 @@ class SlackRenderer(Renderer):
         """Stop the dead stream and start a fresh one (native ``_rotate_stream``)."""
         if self._stream_ts:
             await self.slack.stop_stream(self.channel, self._stream_ts)
-        new_ts = await self.slack.start_stream(self.channel, self.thread_ts or "")
+        new_ts = await self.slack.start_stream(
+            self.channel, self.thread_ts or "", user_id=self._user_id or None
+        )
         if new_ts:
             self._stream_ts = new_ts
         else:
