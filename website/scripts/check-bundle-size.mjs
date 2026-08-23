@@ -98,8 +98,10 @@ function fail(message, code = 1) {
 }
 
 // Exit-code mapping for this gate: 2 = report missing, 3 = report malformed or
-// unsupported version. The contract itself (existence/shape/version) lives in
-// the shared loadBundleSummary.
+// unsupported version, 4 = report valid but lists no chunks. The contract itself
+// (existence/shape/version) lives in the shared loadBundleSummary; 4 is checked
+// here rather than there because an empty report is legitimate for
+// bundle-report.mjs, which simply has nothing to render.
 function loadSummary(file) {
   const { summary, error } = loadBundleSummary(file, {
     hint:
@@ -117,6 +119,22 @@ export function main(argv = process.argv.slice(2)) {
     budgets: CHUNK_BUDGETS,
     defaultBudget: DEFAULT_BUDGET_BYTES,
   })
+
+  // A report that lists no chunks measured NOTHING, and the summary below would
+  // call that "0 chunks within budget" and exit 0 -- a green gate over an unbuilt
+  // tree. The build steps that feed it can fail this way silently: an analyze
+  // build whose plugin stops emitting, a config change that empties the chunk
+  // list, or a report written before the bundle exists. Refuse ahead of the
+  // unused-budget warnings, so the actionable line is not buried under one
+  // warning per allowlist entry (11 of them today).
+  if (checkedCount === 0) {
+    fail(
+      `no chunks in ${reportPath} -- the gate measured nothing, so it cannot ` +
+        'certify anything. Re-run `vite build --mode analyze` and check it ' +
+        'emitted a bundle.',
+      4
+    )
+  }
 
   for (const name of unusedBudgets) {
     process.stderr.write(

@@ -139,6 +139,21 @@ describe('check-bundle-size.mjs as a process (the CI entry point)', () => {
     return spawnSync(process.execPath, [scriptPath, file], { encoding: 'utf-8' })
   }
 
+  it('refuses a valid report that lists no chunks, rather than certifying it', () => {
+    // The failure this closes is a GREEN one: with an empty chunk list the summary
+    // read "0 chunks within budget" and exited 0, so a build that emitted nothing
+    // measurable passed the gate that exists to measure it.
+    const res = run(JSON.stringify({ version: 1, chunks: [] }))
+
+    expect(res.status).toBe(4)
+    expect(res.stderr).toContain('measured nothing')
+    // Actionable: name the command that produces a real report.
+    expect(res.stderr).toContain('--mode analyze')
+    // The refusal must come BEFORE the unused-budget warnings, or it arrives
+    // under one warning per allowlist entry and reads as noise.
+    expect(res.stdout).not.toContain('within budget')
+  })
+
   it('exits non-zero on an over-budget non-allowlisted chunk, naming size, budget and overage', () => {
     const res = run(JSON.stringify(report([{ fileName: 'assets/rogue-AAAAAAAA.js', size: 700 * KB }])))
     expect(res.status).toBe(1)
