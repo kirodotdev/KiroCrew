@@ -4840,6 +4840,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     "workspace/md-notebook/settings.json",
     "browser-cookies.txt",
     "playwright-storage-state.json",
+    # Per-session work ledgers (session_ledger.py). Not credentials, but each
+    # directory is one session's private work state, and the ledger's whole
+    # authorization model is "a session reaches only its OWN ledger" (the HTTP
+    # routes derive the target from the vetted caller identity). An agent's
+    # auto-approved file tools would bypass that boundary sideways — any
+    # session could read or corrupt any other session's ledger straight off
+    # disk. Unlike the transcript files beside it, the ledger has no
+    # legitimate file-tool reader: every legitimate access goes through the
+    # backend module, which opens paths directly rather than through this
+    # gate, so nothing breaks by fencing the whole subtree.
+    "ledger",
     # The optional Playwright extension token. It removes the browser-side approval
     # click for an attach, so a process that could read it could attach to the
     # operator's logged-in browser without them seeing a prompt. The gateway hands

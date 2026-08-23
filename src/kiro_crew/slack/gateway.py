@@ -106,7 +106,7 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
-from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
+from kiro_crew.dashboard.handlers.autonudge import compose_nudge_body
 from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
@@ -4815,7 +4815,7 @@ class GatewayOrchestrator:
             if self.autonudge_svc:
                 await self.autonudge_svc.remove(loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         # Fail closed: an unattended turn MUST run under the HookManager
         # PreToolUse governance gate (mirrors cron's default approval path).
@@ -4996,7 +4996,7 @@ class GatewayOrchestrator:
         if sessions is not None and sessions.is_busy(key):
             logger.info("AutoNudge skip: discord session %s busy (loop %s)", key, loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         try:
             conversation_id = await transport.resolve_conversation(user_id)
@@ -5087,7 +5087,7 @@ class GatewayOrchestrator:
                 loop.slot_key,
                 loop.id,
             )
-        msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)

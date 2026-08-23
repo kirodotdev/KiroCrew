@@ -255,7 +255,6 @@ src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/prompts.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/session_storage.py
-src/kiro_crew/dashboard/handlers/sessions.py
 src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/skill_budget.py
 src/kiro_crew/dashboard/handlers/source_providers.py

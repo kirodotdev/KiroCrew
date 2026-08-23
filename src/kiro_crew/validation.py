@@ -1068,6 +1068,31 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
     ],
 )
 
+# Session work ledger (session_ledger.py). Field caps mirror the core module's
+# own clamps so the route refuses loudly what the primitive would otherwise
+# truncate silently. ``artifacts`` inner shape (str->str, bounded) is enforced
+# by the core module's merge. No slot-key field on purpose: the backend
+# resolves the calling session's identity from the request, never the body.
+SESSION_LEDGER_RECORD_SCHEMA = ToolSchema(
+    tool_name="session_ledger_record",
+    fields=[
+        FieldSpec("goal", str, max_len=2000),
+        FieldSpec("phase", str, max_len=128),
+        FieldSpec("next", str, max_len=2000),
+        FieldSpec("tried_approach", str, max_len=2000),
+        FieldSpec("tried_rejected_because", str, max_len=2000),
+        FieldSpec("artifacts", dict),
+        FieldSpec("event", str, max_len=2000),
+        FieldSpec("event_kind", str, max_len=32),
+    ],
+)
+# Empty on purpose, and REGISTERED on purpose: with no schema in
+# MCP_CORE_SCHEMAS an unexpected argument passes through unvalidated
+# (the learn_list gap), while an empty registered schema rejects it
+# (the spawn_list / resource_status precedent). The tool takes no
+# arguments; the schema's job is to enforce exactly that.
+SESSION_LEDGER_READ_SCHEMA = ToolSchema(tool_name="session_ledger_read")
+
 SPAWN_STATUS_SCHEMA = ToolSchema(
     tool_name="spawn_status",
     fields=[
@@ -2523,6 +2548,8 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "spawn_status": SPAWN_STATUS_SCHEMA,
     "learn_add": LEARN_ADD_SCHEMA,
     "learn_remove": LEARN_REMOVE_SCHEMA,
+    "session_ledger_read": SESSION_LEDGER_READ_SCHEMA,
+    "session_ledger_record": SESSION_LEDGER_RECORD_SCHEMA,
     "skill_search": SKILL_SEARCH_SCHEMA,
     "skill_discover": SKILL_DISCOVER_SCHEMA,
     "skill_fetch": SKILL_FETCH_SCHEMA,

@@ -318,6 +318,12 @@ from kiro_crew.dashboard.handlers.prompts import (  # noqa: E402, F401
     api_skills_pending_dismiss_all,
 )
 
+# ── Session work ledger (handlers/session_ledger.py) ──
+from kiro_crew.dashboard.handlers.session_ledger import (  # noqa: E402, F401
+    api_session_ledger_get,
+    api_session_ledger_record,
+)
+
 # ── Sessions (extracted to handlers/sessions.py) ──
 from kiro_crew.dashboard.handlers.session_storage import (  # noqa: E402, F401
     api_session_inventory,
