@@ -6173,6 +6173,149 @@ _DECLARATION_BUILTINS: frozenset[str] = frozenset(
 #: Ceiling on the never-pruned base-directory set, so a pathological command line
 #: cannot make the operand check quadratic. Well above any real one.
 _MAX_TRACKED_BASES = 64
+
+#: Every spelling of "change the working directory" the passes below have to
+#: recognise, in ONE place so the two of them cannot drift apart.
+#:
+#: This gate runs on the raw command string of every shell tool call, whatever
+#: shell will execute it -- ``hooks.py`` hands it the title and the command with
+#: no per-platform branch -- and the absolute-path pass in
+#: `_build_sensitive_regex` already models cmd.exe and PowerShell spellings
+#: (``%USERPROFILE%``, ``$env:USERPROFILE``, backslash separators). The
+#: working-directory tracker knew only bash's two verbs, so the Windows spelling
+#: of the cd-then-relative chain was unmodelled and read clean::
+#:
+#:     Set-Location ~; Get-Content .aws/credentials
+#:     chdir %USERPROFILE%; type .kiro/crew/token_signing.key
+#:
+#: ``sl`` is also a real (joke) program on some Linux boxes. Reading it as a
+#: chdir there can only ADD a base directory, and a base only ever produces more
+#: denials, so the collision fails in the safe direction -- the same posture the
+#: rest of this gate takes, where naming a fenced path is itself the signal.
+#:
+#: ``popd`` / ``Pop-Location`` are deliberately absent. Modelling them would
+#: REMOVE a tracked base, and `_remember_bases` keeps every base seen precisely
+#: so that undoing a move cannot walk a denial back.
+_CHDIR_VERBS: frozenset[str] = frozenset(
+    {
+        "cd",  # bash builtin; also a PowerShell alias and a cmd.exe builtin
+        "pushd",  # bash builtin; PowerShell alias of Push-Location; cmd.exe
+        "chdir",  # cmd.exe builtin; PowerShell alias of Set-Location
+        "sl",  # PowerShell alias of Set-Location
+        "set-location",
+        "push-location",
+    }
+)
+
+#: cmd.exe and PowerShell spellings of the home directory, as a ``cd`` target can
+#: write them. `_unresolved_home_hypothesis` cannot stand in for these: it reads
+#: ``$env:USERPROFILE`` as the variable ``$env`` followed by a literal
+#: ``:USERPROFILE``, so the hypothesis it forms is ``~:USERPROFILE`` -- a path
+#: `expanduser` leaves untouched, which then matches nothing.
+#:
+#: The alternation accepts EXACTLY the spellings the ``userprofile`` group in
+#: `_build_sensitive_regex` accepts, and a parametrized drift test pins both
+#: directions on one list. Notably that means a BARE ``%HOMEPATH%`` is not here:
+#: it omits the drive letter, the absolute pass does not accept it either, and
+#: covering it on this side alone would leave the same anchor half-fenced --
+#: the asymmetry this whole change exists to remove.
+#:
+#: Longest first, so ``%HOMEDRIVE%%HOMEPATH%`` is not consumed as
+#: ``%HOMEDRIVE%`` plus a stray tail.
+_WINDOWS_HOME_ANCHOR_RE = re.compile(
+    r"^(?:%HOMEDRIVE(?::[^%\s]*)?%%HOMEPATH(?::[^%\s]*)?%"
+    r"|\$\{env:HOMEDRIVE\}\$\{env:HOMEPATH\}"
+    r"|\$env:HOMEDRIVE\$env:HOMEPATH"
+    r"|%USERPROFILE(?::[^%\s]*)?%"
+    r"|\$\{env:USERPROFILE\}"
+    r"|\$env:USERPROFILE)",
+    re.IGNORECASE,
+)
+
+
+def _is_chdir_verb(token: str) -> bool:
+    """Does *token* name a program that changes the working directory?
+
+    Compared on the basename so an absolute spelling (``/usr/bin/chdir``) is
+    recognised, and case-folded because PowerShell cmdlet names are
+    case-insensitive (``set-location`` and ``Set-Location`` are one verb).
+    """
+    return os.path.basename(token).lower() in _CHDIR_VERBS
+
+
+def _is_chdir_switch(token: str) -> bool:
+    """Is *token* a flag on a chdir verb rather than the directory it moves to?
+
+    Only ``-``-prefixed flags, which covers bash and PowerShell. cmd.exe's ``/D``
+    switch is deliberately NOT classified here, and that took two review rounds
+    arguing opposite sides of the same line to settle:
+
+    * Classifying it as a switch reads ``cd /d %USERPROFILE%`` correctly, but a
+      single-letter absolute path is also a perfectly real POSIX directory -- and
+      one that can be the crew home, so discarding it turned
+      ``KIROCREW_HOME=/d`` + ``cd /d; cat token_signing.key`` from denied into
+      allowed. That is a keystone read, so the classification cost more than it
+      bought.
+    * Not classifying it needs nothing extra, because the selectors keep EVERY
+      non-switch argument as a candidate target. ``cd /d %USERPROFILE%`` still
+      reaches the real directory through the second candidate, and ``cd /d`` alone
+      simply bases on ``/d`` -- which is what a POSIX shell does and what the
+      fence needs.
+
+    So the switch is handled by the candidate rule rather than by a special case,
+    and neither reading of ``/d`` has to be guessed.
+    """
+    return token.startswith("-")
+
+
+def _chdir_candidates(tokens: list[str]) -> list[str]:
+    """Every token after a chdir verb that might name the directory it moves to.
+
+    Three shapes count, and all three were learned one review round at a time:
+
+    * a plain operand -- the ordinary ``cd ~/.aws``;
+    * EVERY plain operand rather than the first, because a PowerShell common
+      parameter's value is not switch-shaped, so
+      ``Set-Location -ErrorAction Stop ~`` otherwise tracked ``Stop``;
+    * the payload BOUND to a flag by ``:`` or ``=``, because PowerShell accepts
+      ``-Path:<value>`` and the whole token then begins with ``-``, so
+      ``Set-Location -Path:$env:USERPROFILE/.aws`` was read as a pure flag and
+      dropped.
+
+    Split at the FIRST separator only, which is what keeps ``$env:USERPROFILE``
+    intact inside the payload. Naming the parameters that carry a path would mean
+    maintaining a list that grows with the cmdlet surface (``-Path``,
+    ``-LiteralPath``, ...); taking any bound payload needs no list. A payload that
+    turns out not to be a directory only ADDS a candidate, and a candidate only
+    ever produces more denials.
+
+    Lives in one function because the same question is asked in three places --
+    the segment walk and both loops of the taint pass -- and those had already
+    drifted apart once.
+    """
+    out: list[str] = []
+    for token in tokens:
+        if not token or token == "--":
+            continue
+        if not _is_chdir_switch(token):
+            out.append(token)
+            continue
+        positions = [token.find(sep) for sep in (":", "=")]
+        bound = min((p for p in positions if p > 0), default=-1)
+        if bound > 0 and bound + 1 < len(token):
+            out.append(token[bound + 1 :])
+    return out
+
+
+def _rewrite_windows_home_anchor(token: str) -> str:
+    """Rewrite a leading cmd.exe / PowerShell home anchor in *token* as ``~``.
+
+    Returns *token* unchanged when it carries no such anchor, so every caller can
+    apply this unconditionally before the ``~``/absolute/relative split.
+    """
+    return _WINDOWS_HOME_ANCHOR_RE.sub("~", token, count=1)
+
+
 # A command substitution, in both spellings. Its value needs the command to run,
 # so it is unresolvable from the text in exactly the way an unassigned variable
 # is -- and it can carry a `cd` target: `cd "$(printf %s ~)/.kiro/crew"`.
@@ -6946,16 +7089,20 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
         # word is not always the first operand. Unwrapping is required rather than
         # cosmetic: the wrapped form was not recognised as a `cd` at all, so the
         # base was never tracked and the bare filename after it read clean. Only
-        # these two are unwrapped — they are the shell keywords that mean "run the
-        # builtin", and neither takes an option before its command word.
+        # these three are unwrapped — they are the words that mean "run the thing
+        # that follows", and none takes an option before its command word.
+        # `&` is PowerShell's call operator, which prefixes the cmdlet the same
+        # way (`& Set-Location ~`); in bash it never appears as a leading operand,
+        # so unwrapping it costs the POSIX reading nothing.
         while len(operands) > 1 and os.path.basename(operands[0]).lower() in (
             "builtin",
             "command",
+            "&",
         ):
             operands = operands[1:]
 
         # `cd <target>` moves the base directory for everything after it.
-        if os.path.basename(operands[0]).lower() in ("cd", "pushd"):
+        if _is_chdir_verb(operands[0]):
             args = [token for token in operands[1:] if token != "--"]
             # `cd -` returns to the previous directory. The shell remembers it,
             # so the tracker has to as well: skipping `-` as a flag left the base
@@ -6963,13 +7110,21 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             if args and args[0] == "-":
                 base_dirs, prev_bases = prev_bases, base_dirs
                 continue
-            raw_target = next((token for token in args if not token.startswith("-")), None)
+            # EVERY candidate the shared rule finds, not just the first operand:
+            # see `_chdir_candidates` for the three shapes and why enumerating
+            # path-carrying parameters is the direction that does not converge.
+            raw_targets = _chdir_candidates(args)
             prev_bases = list(base_dirs)
-            if raw_target is None:
+            if not raw_targets:
                 # A bare `cd` goes to the home directory.
                 base_dirs = [os.path.expanduser("~")]
                 _remember_bases(seen_bases, base_dirs)
                 continue
+            # A Windows home anchor becomes `~` BEFORE anything else looks at the
+            # token: the hypothesis below reads `$env:USERPROFILE` as the variable
+            # `$env` plus a literal tail, so it would form a `~:USERPROFILE`
+            # non-path and lose the anchor entirely.
+            raw_targets = [_rewrite_windows_home_anchor(t) for t in raw_targets]
             # EVERY reading becomes a base. Picking one always lost the other: the
             # value reading is what catches `cd ${D:-/tmp}` when D is the sensitive
             # directory, and the unresolved reading is what catches
@@ -6977,26 +7132,27 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             # both is the fail-closed answer and needs no guess about which
             # operator bash will take.
             next_bases: list[str] = []
-            for reading in _expansion_readings(raw_target, readings):
-                hypothesis = _unresolved_home_hypothesis(reading)
-                if hypothesis is not None:
-                    # Carries a variable or command substitution this command
-                    # cannot resolve. Fail closed on the hypothesis that it names a
-                    # home directory, so the reads that follow still join onto the
-                    # literal tail: `cd "$(printf %s ~)/.kiro/crew"` otherwise left
-                    # the base on a literal that matched nothing.
-                    resolved = [os.path.expanduser(hypothesis)]
-                elif reading.startswith("~"):
-                    resolved = [os.path.expanduser(reading)]
-                elif os.path.isabs(reading):
-                    resolved = [reading]
-                elif base_dirs:
-                    resolved = [os.path.join(b, reading) for b in base_dirs]
-                else:
-                    resolved = [reading]
-                for path in resolved:
-                    if path not in next_bases:
-                        next_bases.append(path)
+            for raw_target in raw_targets:
+                for reading in _expansion_readings(raw_target, readings):
+                    hypothesis = _unresolved_home_hypothesis(reading)
+                    if hypothesis is not None:
+                        # Carries a variable or command substitution this command
+                        # cannot resolve. Fail closed on the hypothesis that it names
+                        # a home directory, so the reads that follow still join onto
+                        # the literal tail: `cd "$(printf %s ~)/.kiro/crew"` otherwise
+                        # left the base on a literal that matched nothing.
+                        resolved = [os.path.expanduser(hypothesis)]
+                    elif reading.startswith("~"):
+                        resolved = [os.path.expanduser(reading)]
+                    elif os.path.isabs(reading):
+                        resolved = [reading]
+                    elif base_dirs:
+                        resolved = [os.path.join(b, reading) for b in base_dirs]
+                    else:
+                        resolved = [reading]
+                    for path in resolved:
+                        if path not in next_bases:
+                            next_bases.append(path)
             # Bound the working set. Each `cd ${D:-x}` segment can multiply the
             # base count (two relative readings joined onto every existing base),
             # so a chain of them grows `base_dirs` exponentially and hangs this
@@ -7177,40 +7333,59 @@ def _check_sensitive_cd_taint(command: str) -> str | None:
                 break
 
         for index, token in enumerate(tokens):
-            if os.path.basename(_strip_grouping(token)).lower() not in ("cd", "pushd"):
+            if not _is_chdir_verb(_strip_grouping(token)):
                 continue
-            target = next((t for t in tokens[index + 1 :] if t and not t.startswith("-")), None)
-            if not target:
+            # Every candidate the shared rule finds, for the reasons given in
+            # `_chdir_candidates`. Over-tainting is safe here by construction.
+            candidates = _chdir_candidates(tokens[index + 1 :])
+            if not candidates:
                 continue
-            # A cd target containing a command substitution with separators may
-            # assemble a sensitive path piecemeal that static analysis cannot
-            # reconstruct.  Fail closed: taint the command.
-            if ("$(" in target or "`" in target):
-                inner = target[target.index("$(") + 2:] if "$(" in target else target[target.index("`") + 1:]
-                if any(sep in inner for sep in (";", "&&", "||", "\n")):
-                    tainted_by = target
-                    break
-            # Expand variable references from tracked assignments before probing.
-            expanded = _expand_known_vars(target, taint_assignments)
-            probe = os.path.expanduser(expanded) if expanded.startswith("~") else expanded
-            if (
-                is_sensitive_path(probe)
-                or _dir_holds_sensitive_leaf(expanded)
-                or _sensitive_under_unresolved_var(expanded)
-            ):
-                tainted_by = target
-                break
-            # Also check the unexpanded form in case the variable is not tracked
-            # but _sensitive_under_unresolved_var can still flag it.
-            if target != expanded:
-                probe_orig = os.path.expanduser(target) if target.startswith("~") else target
+            for target in candidates:
+                # A cd target containing a command substitution with separators may
+                # assemble a sensitive path piecemeal that static analysis cannot
+                # reconstruct.  Fail closed: taint the command.
+                if ("$(" in target or "`" in target):
+                    inner = (
+                        target[target.index("$(") + 2:]
+                        if "$(" in target
+                        else target[target.index("`") + 1:]
+                    )
+                    if any(sep in inner for sep in (";", "&&", "||", "\n")):
+                        tainted_by = target
+                        break
+                # Expand variable references from tracked assignments before probing,
+                # then fold a cmd.exe / PowerShell home anchor down to `~`. The probe
+                # forms are separate from `target` so the reported reason still quotes
+                # what the command actually wrote.
+                expanded = _rewrite_windows_home_anchor(
+                    _expand_known_vars(target, taint_assignments)
+                )
+                probe = os.path.expanduser(expanded) if expanded.startswith("~") else expanded
                 if (
-                    is_sensitive_path(probe_orig)
-                    or _dir_holds_sensitive_leaf(target)
-                    or _sensitive_under_unresolved_var(target)
+                    is_sensitive_path(probe)
+                    or _dir_holds_sensitive_leaf(expanded)
+                    or _sensitive_under_unresolved_var(expanded)
                 ):
                     tainted_by = target
                     break
+                # Also check the unexpanded form in case the variable is not tracked
+                # but _sensitive_under_unresolved_var can still flag it.
+                if target != expanded:
+                    unexpanded = _rewrite_windows_home_anchor(target)
+                    probe_orig = (
+                        os.path.expanduser(unexpanded)
+                        if unexpanded.startswith("~")
+                        else unexpanded
+                    )
+                    if (
+                        is_sensitive_path(probe_orig)
+                        or _dir_holds_sensitive_leaf(unexpanded)
+                        or _sensitive_under_unresolved_var(unexpanded)
+                    ):
+                        tainted_by = target
+                        break
+            if tainted_by is not None:
+                break
 
         # `bash -c '...'` / `sh -c '...'`: the string argument is a nested command
         # that inherits the parent's exported variables.  Expand tracked assignments
@@ -7245,18 +7420,23 @@ def _check_sensitive_cd_taint(command: str) -> str | None:
             except Exception:
                 continue
             for idx, tok in enumerate(seg_tokens):
-                if os.path.basename(_strip_grouping(tok)).lower() not in ("cd", "pushd"):
+                if not _is_chdir_verb(_strip_grouping(tok)):
                     continue
-                tgt = next((t for t in seg_tokens[idx + 1:] if t and not t.startswith("-")), None)
-                if not tgt:
-                    continue
-                if ("$(" in tgt or "`" in tgt):
+                # Every candidate the shared rule finds, matching the primary
+                # taint loop. This scan is the only one that can see a `cd` target
+                # which IS a separator-carrying substitution, so reaching it past a
+                # parameter value or a bound payload changes the verdict.
+                for tgt in _chdir_candidates(seg_tokens[idx + 1 :]):
+                    if "$(" not in tgt and "`" not in tgt:
+                        continue
                     inner_start = tgt.index("$(") + 2 if "$(" in tgt else tgt.index("`") + 1
                     inner_text = tgt[inner_start:]
                     if any(sep in inner_text for sep in (";", "&&", "||", "\n")):
                         taint_idx = seg_i
                         tainted_by = tgt
                         break
+                if taint_idx >= 0:
+                    break
             if taint_idx >= 0:
                 break
         if taint_idx >= 0:

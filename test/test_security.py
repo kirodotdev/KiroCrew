@@ -4453,6 +4453,249 @@ class TestIsSensitiveBashCommand:
             assert result is None, f"Unexpected denial for: {cmd}"
 
 
+class TestChdirVerbSpellings:
+    """The working-directory tracker across bash, PowerShell and cmd.exe verbs.
+
+    `is_sensitive_bash_command` runs on the raw command string of every shell
+    tool call with no per-platform branch, and the absolute-path pass already
+    accepts cmd.exe / PowerShell spellings. Tracking only ``cd`` and ``pushd``
+    therefore left the Windows spelling of cd-then-relative unmodelled.
+    """
+
+    #: Every verb that moves the working directory, in each shell's spelling.
+    CHDIR_VERBS = (
+        "cd",
+        "pushd",
+        "chdir",
+        "sl",
+        "Set-Location",
+        "set-location",
+        "Push-Location",
+    )
+
+    #: Home anchors a `cd` target can carry. Exactly the set the absolute-path
+    #: pass accepts, so the drift test below can hold both to one list. A bare
+    #: ``%HOMEPATH%`` is absent on purpose: neither pass accepts it (a
+    #: pre-existing, drive-letter-less gap in the absolute pass, out of scope
+    #: here) and listing it on one side only is the asymmetry being closed.
+    HOME_ANCHORS = (
+        "~",
+        "$HOME",
+        "%USERPROFILE%",
+        "%HOMEDRIVE%%HOMEPATH%",
+        "$env:USERPROFILE",
+        "${env:USERPROFILE}",
+        "$env:HOMEDRIVE$env:HOMEPATH",
+        "${env:HOMEDRIVE}${env:HOMEPATH}",
+    )
+
+    @pytest.mark.parametrize("verb", CHDIR_VERBS)
+    def test_every_chdir_verb_moves_the_base(self, verb: str) -> None:
+        """A relative read after the move resolves against the directory entered."""
+        assert security.is_sensitive_bash_command(f"{verb} ~; cat .aws/credentials")
+        assert security.is_sensitive_bash_command(f"{verb} ~ && cat .ssh/id_rsa")
+        assert security.is_sensitive_bash_command(f"{verb} $HOME; cat .kiro/crew/token_signing.key")
+
+    @pytest.mark.parametrize("verb", CHDIR_VERBS)
+    def test_every_chdir_verb_into_a_fenced_dir_taints_the_read(self, verb: str) -> None:
+        """Entering the fenced directory itself, then reading a bare filename."""
+        assert security.is_sensitive_bash_command(f"{verb} ~/.aws; cat credentials")
+        assert security.is_sensitive_bash_command(f"{verb} ~/.kiro/crew; cat token_signing.key")
+
+    @pytest.mark.parametrize("verb", CHDIR_VERBS)
+    def test_chdir_verbs_do_not_over_block_benign_targets(self, verb: str) -> None:
+        """Recognising more verbs must not deny ordinary relative reads."""
+        assert security.is_sensitive_bash_command(f"{verb} /tmp; cat notes.txt") is None
+        assert security.is_sensitive_bash_command(f"{verb} ./build; cat log.txt") is None
+        assert security.is_sensitive_bash_command(f"{verb} ~/project; cat main.py") is None
+
+    @pytest.mark.parametrize("anchor", HOME_ANCHORS)
+    def test_home_anchor_as_a_chdir_target(self, anchor: str) -> None:
+        """Every home anchor the absolute pass accepts also anchors a `cd`.
+
+        ``$env:USERPROFILE`` is why this cannot lean on the unresolved-variable
+        hypothesis: that reads it as the variable ``$env`` plus a literal
+        ``:USERPROFILE`` tail, so the hypothesis it forms is a ``~:USERPROFILE``
+        non-path that `expanduser` leaves alone and nothing matches.
+        """
+        assert security.is_sensitive_bash_command(f"cd {anchor}; type .aws/credentials")
+        assert security.is_sensitive_bash_command(f"Set-Location {anchor}; Get-Content .ssh/id_rsa")
+        assert security.is_sensitive_bash_command(f"chdir {anchor}/.aws; type credentials")
+
+    @pytest.mark.parametrize("anchor", HOME_ANCHORS)
+    def test_absolute_pass_and_chdir_tracker_accept_the_same_anchors(self, anchor: str) -> None:
+        """Drift guard: the two anchor lists must not diverge.
+
+        `_WINDOWS_HOME_ANCHOR_RE` mirrors the ``userprofile`` alternation inside
+        `_build_sensitive_regex`. Adding a spelling to one and not the other
+        leaves a half-covered anchor, which is exactly the asymmetry this class
+        exists to close, so pin both directions on one list.
+        """
+        # Absolute spelling: the anchor names the fenced path outright.
+        assert security.is_sensitive_bash_command(f"type {anchor}/.aws/credentials")
+        # Relative spelling: the anchor is the `cd` target, the fenced path the tail.
+        assert security.is_sensitive_bash_command(f"cd {anchor}; type .aws/credentials")
+
+    def test_benign_anchor_is_not_read_as_a_home(self) -> None:
+        """The rewriter is anchored, so it cannot fire mid-token or on a lookalike."""
+        assert security.is_sensitive_bash_command("cd /tmp/%USERPROFILE%; cat notes.txt") is None
+        assert security.is_sensitive_bash_command("cd ./%USERPROFILE%; cat main.py") is None
+        assert security.is_sensitive_bash_command("echo %USERPROFILE%") is None
+
+    def test_undoing_the_move_does_not_clear_the_denial(self) -> None:
+        """`popd` / `Pop-Location` are deliberately not modelled.
+
+        Modelling them would REMOVE a tracked base, and the base set is kept
+        monotone precisely so that adding syntax cannot walk a denial back.
+        """
+        assert security.is_sensitive_bash_command("pushd ~/.aws; popd; cat credentials")
+        assert security.is_sensitive_bash_command("Push-Location ~/.aws; Pop-Location; cat credentials")
+
+    def test_cmd_exe_drive_switch_is_not_the_target(self) -> None:
+        """`cd /d <dir>` must track <dir>, via the candidate rule.
+
+        cmd.exe's only `cd` switch sits before the target and is forward-slash
+        prefixed, so it does not look like a flag. It is NOT classified as one
+        either: a single-letter absolute path is a real POSIX directory that can
+        be the crew home, and discarding it turned `KIROCREW_HOME=/d` plus
+        `cd /d; cat token_signing.key` from denied into allowed. Keeping every
+        non-switch argument as a candidate reaches the real directory without
+        having to decide which reading of `/d` was meant.
+        """
+        assert security.is_sensitive_bash_command("chdir /d %USERPROFILE% && type .aws/credentials")
+        assert security.is_sensitive_bash_command("cd /d %USERPROFILE%; type .aws/credentials")
+        assert security.is_sensitive_bash_command("cd /D $env:USERPROFILE; type .ssh/id_rsa")
+        assert security.is_sensitive_bash_command("cd /d ~/.aws && cat credentials")
+
+    def test_slash_letter_path_stays_a_directory(self) -> None:
+        """A `/X` token is a candidate target, never a discarded flag."""
+        assert security.is_sensitive_bash_command("cd /data; cat notes.txt") is None
+        assert security.is_sensitive_bash_command("cd /d/project; cat main.py") is None
+        assert security.is_sensitive_bash_command("cd /tmp; cat notes.txt") is None
+        assert security.is_sensitive_bash_command("cd /d /tmp; cat notes.txt") is None
+        # Ratchet: the switch classification is gone, so nothing can discard a
+        # single-letter absolute path again. Only `-` prefixes are flags.
+        assert not hasattr(security, "_CHDIR_SWITCH_RE")
+        assert security._is_chdir_switch("-Path")
+        assert not security._is_chdir_switch("/d")
+
+    def test_powershell_call_operator_prefix_is_unwrapped(self) -> None:
+        """`& Set-Location ~` invokes the cmdlet, so the verb is not operand 0.
+
+        PowerShell's call operator prefixes the command the same way bash's
+        `builtin` / `command` keywords do. In bash a leading `&` never appears as
+        an operand, so unwrapping it costs the POSIX reading nothing.
+        """
+        amp = chr(38)
+        assert security.is_sensitive_bash_command(
+            amp + " Set-Location ~; Get-Content .aws/credentials"
+        )
+        assert security.is_sensitive_bash_command(amp + " cd ~; cat .aws/credentials")
+        assert security.is_sensitive_bash_command(
+            amp + " chdir %USERPROFILE%; type .kiro/crew/token_signing.key"
+        )
+
+    def test_every_non_switch_argument_is_a_candidate_target(self) -> None:
+        """A parameter's VALUE must not be mistaken for the directory.
+
+        A PowerShell common parameter takes a value that is not switch-shaped, so
+        selecting the first non-switch token picked the value and never looked at
+        the real directory. Keeping every candidate needs no list of which
+        parameters take values -- that set only grows -- and a spurious candidate
+        only adds a base, which only ever produces more denials.
+        """
+        assert security.is_sensitive_bash_command(
+            "Set-Location -ErrorAction Stop ~; Get-Content .aws/credentials"
+        )
+        assert security.is_sensitive_bash_command(
+            "Set-Location -ErrorAction Stop %USERPROFILE%; type .aws/credentials"
+        )
+        assert security.is_sensitive_bash_command(
+            "Set-Location -WarningAction SilentlyContinue ~; Get-Content .ssh/id_rsa"
+        )
+        # A parameter whose value IS the directory still works.
+        assert security.is_sensitive_bash_command(
+            "Set-Location -Path ~; Get-Content .aws/credentials"
+        )
+        assert security.is_sensitive_bash_command(
+            "Set-Location -LiteralPath ~; Get-Content .aws/credentials"
+        )
+
+    def test_extra_candidates_do_not_over_block(self) -> None:
+        """Carrying every candidate must not deny ordinary command lines."""
+        assert (
+            security.is_sensitive_bash_command(
+                "Set-Location -ErrorAction Stop /tmp; Get-Content notes.txt"
+            )
+            is None
+        )
+        assert security.is_sensitive_bash_command("cd -- ~/project; cat main.py") is None
+        assert security.is_sensitive_bash_command("cd ~/project src; cat main.py") is None
+
+    def test_secondary_taint_scan_also_reads_every_candidate(self) -> None:
+        """The substitution-aware scan must match the primary loop's selector.
+
+        A `cd` target that IS a command substitution carrying separators is only
+        visible to the segment-aware secondary scan -- the primary scan splits
+        inside `$( )` and garbles the token. Reaching it past a common
+        parameter's value needs that scan to inspect every candidate too, which
+        is a real difference in verdict and not just consistency for its own sake.
+        """
+        sub = '"$(printf %s ~; printf %s /.aws)"'
+        assert security.is_sensitive_bash_command(
+            "Set-Location -ErrorAction Stop " + sub + "; cat credentials"
+        )
+        assert security.is_sensitive_bash_command(
+            "Set-Location -WarningAction SilentlyContinue " + sub + "; cat credentials"
+        )
+        assert security.is_sensitive_bash_command("cd /d " + sub + "; cat credentials")
+
+    def test_colon_bound_parameter_payload_is_a_candidate(self) -> None:
+        """PowerShell binds a value with `:`, so the whole token starts with `-`.
+
+        `Set-Location -Path:$env:USERPROFILE/.aws` is one token beginning with a
+        dash, so the flag filter discarded it and the directory was never seen.
+        The payload after the FIRST separator is kept instead -- first, so that
+        `$env:USERPROFILE` survives intact inside it.
+        """
+        assert security.is_sensitive_bash_command(
+            "Set-Location -Path:$env:USERPROFILE/.aws; Get-Content credentials"
+        )
+        assert security.is_sensitive_bash_command(
+            "Set-Location -LiteralPath:~/.aws; Get-Content credentials"
+        )
+        assert security.is_sensitive_bash_command("Set-Location -Path:~; Get-Content .ssh/id_rsa")
+        assert security.is_sensitive_bash_command("sl -Path:%USERPROFILE%; type .aws/credentials")
+        # The `=` binder too, and a parameter name this code has never heard of.
+        assert security.is_sensitive_bash_command("cd -Path=~/.aws; cat credentials")
+        assert security.is_sensitive_bash_command("Set-Location -Somewhere:~/.aws; cat credentials")
+
+    def test_bound_payload_rule_does_not_over_block(self) -> None:
+        """A bound payload that is not a fenced directory stays allowed."""
+        assert (
+            security.is_sensitive_bash_command("Set-Location -Path:/tmp; Get-Content notes.txt")
+            is None
+        )
+        assert (
+            security.is_sensitive_bash_command("cd -Path:~/project; cat main.py") is None
+        )
+        assert security.is_sensitive_bash_command("cd -ErrorAction:Stop /tmp; cat notes.txt") is None
+        # A flag with no payload contributes no candidate at all.
+        assert security._chdir_candidates(["-Force"]) == []
+        assert security._chdir_candidates(["-Path:"]) == []
+        assert security._chdir_candidates(["--", "~/x"]) == ["~/x"]
+        assert security._chdir_candidates(["-Path:a:b"]) == ["a:b"]
+
+    def test_verb_set_has_one_home(self) -> None:
+        """Both passes read the same set, so a new spelling lands in both."""
+        assert "set-location" in security._CHDIR_VERBS
+        assert "push-location" in security._CHDIR_VERBS
+        assert "chdir" in security._CHDIR_VERBS
+        assert security._is_chdir_verb("Set-Location")
+        assert security._is_chdir_verb("/usr/bin/chdir")
+        assert not security._is_chdir_verb("cat")
+
+
 class TestWindowsPathShapes:
     """Native Windows path spellings must be recognized as path-like so the
     normalizer pass routes them through is_sensitive_path() -- on Windows
