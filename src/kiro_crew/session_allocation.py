@@ -183,6 +183,8 @@ class _AllocationOwner(Protocol):
 
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
+    async def _cwd_has_trusted_devcontainer(self, cwd: str | None) -> bool: ...
+
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
@@ -1370,6 +1372,14 @@ class SessionAllocationService:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif await owner._cwd_has_trusted_devcontainer(cwd):
+            # A warm runtime was spawned against the pool's own cwd before any
+            # Dev Container trust was known, so its execution locus is the
+            # host. Handing one to a work dir that should run inside the
+            # project's container would leave the operator believing the
+            # session is containerized when it is not. Cold-starting is what
+            # makes the container real.
+            pool_decision = "bypass_devcontainer"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run

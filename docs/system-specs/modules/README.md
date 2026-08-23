@@ -38,6 +38,7 @@ agent loads only the one it needs.
 |---|---|
 | [security.md](security.md) | Sensitive paths, denied commands, credential redaction, the sandbox, and the keystone. |
 | [dashboard-token-auth.md](dashboard-token-auth.md) | Signed, IP-pinned dashboard tokens, session TTLs, and the refresh chain. Owns the mechanism; `security.md` owns the threat model. |
+| [devcontainers.md](devcontainers.md) | Running a session's agent inside the project's Dev Container: the trust store, the closed screen, container lifecycle, and exec plumbing. Product contract: [devcontainer-product-readiness](../../architecture/design-notes/devcontainer-product-readiness.md). |
 | [governance.md](governance.md) | The two-level governance model, the scope catalog, and the PreToolUse gate. |
 | [platform-context.md](platform-context.md) | The Composed Platform Providers seam, edition resolution, and signed-plugin admission. |
 | [computer-use.md](computer-use.md) | Native desktop GUI automation, its keystone opt-in, and the in-band refusals. |

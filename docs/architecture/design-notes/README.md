@@ -18,6 +18,7 @@ grows into a subsystem should become a spec under
 | [profiling.md](profiling.md) | The debug-only stack sampler and desktop app metrics. |
 | [tool-stall-watchdog-placement.md](tool-stall-watchdog-placement.md) | Which stall checks belong in the ACP read loop and which must be judged out of band. |
 | [memory-benchmarks.md](memory-benchmarks.md) | Measuring the memory layer against LongMemEval and LoCoMo, and why the retrieval ruler is deterministic. |
+| [devcontainer-product-readiness.md](devcontainer-product-readiness.md) | Near-production opt-in Dev Containers: Docker Desktop, dual MCP transport, auth copy, one-file agent inject, and the security floor that stays closed. |
 
 Connections is a subsystem, not a narrow decision record, so its status
 vocabulary, mint contract, warm table, disconnect authorization and launch-gate

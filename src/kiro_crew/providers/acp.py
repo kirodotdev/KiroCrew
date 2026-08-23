@@ -823,7 +823,17 @@ class AcpProvider(LLMProvider):
         work_dir = self._client._work_dir
         agent = getattr(self._client, "_agent", None) or ""
         sandbox_mode = getattr(self._client, "_sandbox_mode", "auto")
-        extra_env = getattr(self._client, "_extra_env", None) or {}
+        extra_env = dict(getattr(self._client, "_extra_env", None) or {})
+        # The runtime containerize path forwards extra_env into docker exec
+        # and into the host MCP bridge children. AcpClient puts these on the
+        # process env itself; without copying them here a containerized
+        # runtime session has no KIROCREW_SESSION_KEY.
+        session_key = getattr(self._client, "_session_key", None)
+        if session_key and "KIROCREW_SESSION_KEY" not in extra_env:
+            extra_env["KIROCREW_SESSION_KEY"] = session_key
+        channel_id = getattr(self._client, "_channel_id", None)
+        if channel_id and "KIROCREW_CHANNEL_ID" not in extra_env:
+            extra_env["KIROCREW_CHANNEL_ID"] = channel_id
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
         mcp_gateway_socket = getattr(self._client, "_mcp_gateway_socket", None)
         if self._private_memory:

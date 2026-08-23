@@ -3370,6 +3370,7 @@ class KiroCrewConfig:
                         unsandboxed_exec_platform_default(),
                     )
                 ),
+                devcontainer=agent_data.get("devcontainer", "off"),
                 apps_allow_third_party=_safe_bool(
                     agent_data.get("apps_allow_third_party", False), False
                 ),

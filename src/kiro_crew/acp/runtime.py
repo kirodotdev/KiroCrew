@@ -80,6 +80,7 @@ from kiro_crew.acp.session_handle import (
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKENDS_DEVCONTAINER,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
     ACP_BACKENDS_INTERNAL_SANDBOX,
     ACP_BACKENDS_POD_HOME_REMAP,
@@ -130,6 +131,7 @@ from kiro_crew.sandbox import (
     delegated_workspace_exposes_agents_dir,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
+    scrub_agent_denied_env,
     scrub_agent_subprocess_env,
     wrap_argv,
     wrap_argv_async,
@@ -796,6 +798,13 @@ class AcpRuntime:
         self._sandbox_cleanup: str | None = None
         self._bound_workspace_fd: int | None = None
         self._spawn_work_dir = str(self._work_dir)
+        # Dev Container state: set in spawn() when this runtime's work dir
+        # resolves to a trusted devcontainer. exec_id names the in-container
+        # pidfile/environ marker that kill() signals through.
+        self._devcontainer_info: Any = None
+        self._devcontainer_exec_id: str | None = None
+        self._execution_locus: Any = None
+        self._mcp_bridge: Any = None
 
         # Recycling thresholds — see _is_stale(). Long-lived multiplexed
         # runtimes (e.g. the kirocrew-lite background runtime) have no
@@ -1074,6 +1083,83 @@ class AcpRuntime:
 
         return bool(self._session_queues) or self._session_inits_in_flight > 0
 
+    # ── Dev Container ──
+
+    async def _maybe_devcontainer_info(self) -> Any:
+        """Resolve this runtime's devcontainer, or None to run on the host.
+
+        Thin seam over the shared resolver: the eligibility rules (config mode,
+        platform, config presence, docker, trust) are security-sensitive and
+        have a second caller in AcpClient, so they live in one place rather than
+        being restated per spawn path.
+
+        The backend check belongs HERE rather than at the call site so a later
+        spawn path cannot containerize by forgetting it. Containerizing rebuilds
+        the argv as a ``docker exec`` running kiro-cli from the image, so for any
+        other harness it would discard the selected one and run a different agent
+        while still reporting the chosen backend -- the lowest-common-denominator
+        collapse harness parity exists to prevent.
+        """
+        if self._acp_backend not in ACP_BACKENDS_DEVCONTAINER:
+            return None
+        from kiro_crew.devcontainer import resolve_with_locus
+
+        info, locus = await resolve_with_locus(self._work_dir)
+        self._execution_locus = locus
+        return info
+
+    async def _injected_mcp_servers(self, agent: str | None) -> list[dict[str, Any]]:
+        """``session/new`` MCP entries for this runtime.
+
+        A containerized runtime uses the host stdio bridge: pooling stubs
+        dial a host-only socket and import ``kiro_crew``, so they cannot be
+        the path kiro-cli inside the image takes. Same-name override still
+        shadows the agent spec.
+        """
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
+            return list(bridge.session_servers())
+        return await asyncio.to_thread(
+            pooled_session_servers, self._mcp_gateway_overlay, agent or self._agent
+        )
+
+    async def _session_cwd(self, cwd: str | Path | None) -> str:
+        """The cwd to send over ACP for a session on this runtime.
+
+        Host runtime: the caller's cwd (or the runtime's work dir).
+
+        Containerized runtime: the container-side workspace folder. One runtime
+        hosts MANY ACP sessions (session sharing) but exactly ONE container, so
+        a session whose cwd is not this runtime's work dir has no correct path
+        inside it. That case is REFUSED rather than silently mapped: handing the
+        agent a path that does not exist in the container — or worse, one that
+        exists and belongs to a different project — is a correctness bug the
+        caller can recover from by cold-starting its own runtime.
+
+        In practice the refusal should not fire: a project-scoped session cannot
+        claim a pooled runtime (``cwd_blocks_pool`` in session.py), so it gets a
+        runtime whose work_dir IS its project. The check enforces that invariant
+        instead of assuming it.
+        """
+        info = getattr(self, "_devcontainer_info", None)
+        if info is None:
+            return str(cwd if cwd else self._work_dir)
+        if cwd is None:
+            return str(info.remote_workspace_folder)
+        # Off-loop: two realpath walks, and this runs inside session creation on
+        # the event loop. Async rather than a sync helper with a hidden blocking
+        # call, because the latter is how the loop-blocking read got here.
+        same = await asyncio.to_thread(
+            lambda: os.path.realpath(str(cwd)) == os.path.realpath(str(self._work_dir))
+        )
+        if same:
+            return str(info.remote_workspace_folder)
+        raise AcpRuntimeError(
+            f"cannot host a session for {cwd} on a runtime containerized for "
+            f"{self._work_dir}: one runtime has one Dev Container, so this "
+            f"session needs its own runtime"
+        )
+
     # ── Lifecycle ──
 
     def _discard_sandbox_cleanup(self) -> None:
@@ -1303,60 +1389,118 @@ class AcpRuntime:
         except _KiroExecutableTrustError as exc:
             raise AcpRuntimeError(str(exc)) from exc
 
-        # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
-        # MCP-gateway overlay is NOT delivered through the sandbox: its broker
-        # stubs are injected at ACP session/new (see new_session), so pooling
-        # needs no bind-mount and works with sandbox mode "off". strip_python_env
-        # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
-        # foreign MCP subprocesses (which bundle their own interpreter + deps).
-        # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on
-        # macOS wrap_argv skips its seatbelt because the two cannot nest; on
-        # Windows the official Kiro backend delegates by default because Crew
-        # has no native OS sandbox there. Granted by membership in
-        # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7), never as "not KAS":
-        # this test fails OPEN, so a harness that inherited a negative test would
-        # have Crew's seatbelt skipped in favour of an internal sandbox that never
-        # starts. KAS is a Node process with no internal sandbox, so it takes
-        # Crew's seatbelt directly, and so does every harness added later.
+        # Dev Container path (VS Code parity): when the work dir carries a
+        # trusted devcontainer config, this runtime's kiro-cli runs INSIDE the
+        # project's container. This is the path real sessions take —
+        # AcpProvider.start() routes every non-claude session through
+        # _start_kiro_runtime().
         #
-        # Inside a pod apply_pod_bundle_spawn answers both questions instead, from
-        # the single reason recorded on that function: the pod HOME remap breaks
-        # the toolbox shim's own sandbox, so the child runs the bundle binary the
-        # shim itself falls back to and Crew's launcher wraps it. Off-loop because
-        # the resolution stats the candidate path.
-        argv, delegate_internal_sandbox = await asyncio.to_thread(
-            apply_pod_bundle_spawn, argv, backend=self._acp_backend
-        )
-        private_kwargs: dict[str, Any] = (
-            {
-                "private_memory": True,
-                "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
-                "private_mcp_gateway_socket_overrides": tuple(
-                    self._extra_env[name]
-                    for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
-                    if self._extra_env.get(name)
-                ),
-            }
-            if self._private_memory
-            else {}
-        )
-        argv, self._sandbox_cleanup = await wrap_argv_async(
-            argv,
-            mode=self._sandbox_mode,
-            strip_python_env=True,
-            is_kiro_cli=delegate_internal_sandbox,
-            _prepare=wrap_argv,
-            **private_kwargs,
-        )
-        # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
-        # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
-        # No-op + loud warning where cgroup delegation is unavailable. --scope
-        # execs into the target, so self._pid below is still the real child.
-        # Off-loop: first call probes /proc + /sys and the config read touches
-        # the config dir (mkdir + file read) — blocking syscalls that must not
-        # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
-        # file, so a cancellation here must not orphan it.
-        argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
+        # Mutually exclusive with the host sandbox + cgroup wrappers below: both
+        # are host mechanisms that cannot cross the container boundary. The
+        # container's namespaces stand in for the isolation, but NOT for
+        # everything the host path does, so the pieces that still apply are
+        # carried over explicitly rather than assumed:
+        #   - the environment is scrubbed here too, because the gateway's channel
+        #     credentials live in the inherited env and a namespace does nothing
+        #     about them;
+        #   - the config's own bind mounts are screened against
+        #     is_sensitive_path before a container is ever built (see
+        #     devcontainer.assert_no_sensitive_host_mounts), since a bind can
+        #     hand the agent exactly the paths the sandbox withholds;
+        #   - the DoS ceilings are re-applied as container limits
+        #     (devcontainer._apply_default_resource_caps), because namespaces
+        #     isolate what a process can SEE and do not cap what it can CONSUME:
+        #     a fork bomb or RSS balloon inside the container still lands on the
+        #     shared host kernel.
+        #
+        # The eligibility gate, the exec-id mint and the kill are shared with
+        # AcpClient's spawn path (kiro_crew.devcontainer) so the two cannot
+        # drift; only the inner argv differs between them.
+        devc_info = await self._maybe_devcontainer_info()
+        if devc_info is not None:
+            from kiro_crew.devcontainer import (
+                containerize_spawn,
+                ensure_agent_definition_available,
+            )
+
+            devc_env: dict[str, str] = scrub_agent_denied_env(dict(self._extra_env or {}))
+            # Parity with AcpClient: the in-container process (and the host
+            # MCP children the stdio bridge spawns for it) identify the
+            # session from these. extra_env carries them when the provider
+            # copied the client's session/channel onto it.
+            # The container's own PATH resolves kiro-cli; the host-resolved
+            # kiro_bin path is meaningless inside the image.
+            inner = [KIRO_CLI_BIN, KIRO_CLI_SUBCMD, "--agent", self._agent]
+            if self._model:
+                inner += ["--model", self._model]
+            # Refuses with the fix in the message when the container cannot
+            # resolve --agent: the definition is a FILE, and the host's
+            # ~/.kiro/agents does not exist inside the image.
+            await ensure_agent_definition_available(devc_info, self._agent)
+            # Off-loop: containerize_spawn resolves the docker binary, which
+            # walks PATH stat-ing every candidate and its ancestors, so a
+            # stale network-mounted entry would stall the gateway heartbeat
+            # here -- during a session spawn, on every containerized turn.
+            spawned = await asyncio.to_thread(containerize_spawn, devc_info, inner, env=devc_env)
+            argv = spawned.argv
+            self._devcontainer_exec_id = spawned.exec_id
+            self._devcontainer_info = spawned.info
+            self._sandbox_cleanup = None
+        else:
+            # OSS sandbox.wrap_argv supports (argv, mode, strip_python_env). The
+            # MCP-gateway overlay is NOT delivered through the sandbox: its broker
+            # stubs are injected at ACP session/new (see new_session), so pooling
+            # needs no bind-mount and works with sandbox mode "off". strip_python_env
+            # IS applied to keep the host PYTHONPATH/PYTHONHOME out of kiro-cli's
+            # foreign MCP subprocesses (which bundle their own interpreter + deps).
+            # is_kiro_cli drives the reviewed Kiro internal-sandbox delegation: on
+            # macOS wrap_argv skips its seatbelt because the two cannot nest; on
+            # Windows the official Kiro backend delegates by default because Crew
+            # has no native OS sandbox there. Granted by membership in
+            # ACP_BACKENDS_INTERNAL_SANDBOX (harness-parity H7), never as "not KAS":
+            # this test fails OPEN, so a harness that inherited a negative test would
+            # have Crew's seatbelt skipped in favour of an internal sandbox that never
+            # starts. KAS is a Node process with no internal sandbox, so it takes
+            # Crew's seatbelt directly, and so does every harness added later.
+            #
+            # Inside a pod apply_pod_bundle_spawn answers both questions instead, from
+            # the single reason recorded on that function: the pod HOME remap breaks
+            # the toolbox shim's own sandbox, so the child runs the bundle binary the
+            # shim itself falls back to and Crew's launcher wraps it. Off-loop because
+            # the resolution stats the candidate path.
+            argv, delegate_internal_sandbox = await asyncio.to_thread(
+                apply_pod_bundle_spawn, argv, backend=self._acp_backend
+            )
+            private_kwargs: dict[str, Any] = (
+                {
+                    "private_memory": True,
+                    "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
+                    "private_mcp_gateway_socket_overrides": tuple(
+                        self._extra_env[name]
+                        for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
+                        if self._extra_env.get(name)
+                    ),
+                }
+                if self._private_memory
+                else {}
+            )
+            argv, self._sandbox_cleanup = await wrap_argv_async(
+                argv,
+                mode=self._sandbox_mode,
+                strip_python_env=True,
+                is_kiro_cli=delegate_internal_sandbox,
+                _prepare=wrap_argv,
+                **private_kwargs,
+            )
+            # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
+            # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
+            # No-op + loud warning where cgroup delegation is unavailable. --scope
+            # execs into the target, so self._pid below is still the real child.
+            # Off-loop: first call probes /proc + /sys and the config read touches
+            # the config dir (mkdir + file read) — blocking syscalls that must not
+            # run on the loop. Guarded: wrap_argv above allocated the sandbox temp
+            # file, so a cancellation here must not orphan it.
+            argv = await self._to_thread_guarding_sandbox(cgroup_scope_argv, argv)
 
         env = {**os.environ}
         if self._extra_env:
@@ -1508,6 +1652,29 @@ class AcpRuntime:
         # Minted with the process it names — random, not pid-derived, so it
         # cannot false-match a later spawn that the OS handed a recycled pid.
         self._process_instance = uuid.uuid4().hex[:16]
+        # Start the host stdio MCP bridge for a containerized runtime, before the
+        # spawn-completion guard below: the in-container agent reaches managed MCP
+        # only through this bridge (the pooled broker socket is host-only). Failure
+        # is non-fatal — the session runs without managed MCP rather than not at
+        # all — matching AcpClient._spawn.
+        exec_id = self._devcontainer_exec_id
+        info = self._devcontainer_info
+        if info is not None and exec_id is not None and self._mcp_bridge is None:
+            from kiro_crew.devcontainer_mcp import start_bridge
+
+            try:
+                self._mcp_bridge = await start_bridge(
+                    info.project_dir,
+                    exec_id,
+                    session_env=scrub_agent_denied_env(dict(self._extra_env or {})),
+                )
+            except Exception:
+                logger.exception(
+                    "devcontainer mcp-bridge failed to start for %s; "
+                    "managed MCP will be unavailable in this session",
+                    info.project_dir,
+                )
+                self._mcp_bridge = None
         # The subprocess is LIVE from here on but nothing has recorded it yet, so
         # this window needs the same guard AcpClient._spawn has. finish_suspended_spawn
         # documents its own resume failure as FATAL, and _get_start_time can raise;
@@ -1701,6 +1868,27 @@ class AcpRuntime:
         # waiters learn the runtime died. Calling it after setting _dead=True
         # would hit its early-return guard and skip all cleanup.
         self._mark_dead("killed", expected=expected)
+
+        # Containerized runtime: killing the host-side `docker exec` client only
+        # detaches it — the in-container kiro-cli keeps running. Signal that tree
+        # first, then fall through to the normal host teardown (which reaps the
+        # docker exec client process itself).
+        #
+        # getattr defaults: some test fixtures build a runtime without running
+        # __init__, so these attributes may be absent.
+        from kiro_crew.devcontainer import kill_containerized_tree
+
+        await kill_containerized_tree(
+            getattr(self, "_devcontainer_info", None),
+            getattr(self, "_devcontainer_exec_id", None),
+        )
+        bridge = getattr(self, "_mcp_bridge", None)
+        if bridge is not None:
+            try:
+                await bridge.close()
+            except Exception:
+                logger.debug("devcontainer mcp-bridge close failed", exc_info=True)
+            self._mcp_bridge = None
 
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
