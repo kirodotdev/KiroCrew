@@ -984,6 +984,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # through the sandbox helper because sandbox imports platform_compat.
         "platform_compat.py::process_owner_uid",
         "platform_compat.py::process_matches",
+        # Same class as process_matches: a read-only process-attribute query
+        # (macOS ``ps -ww -o command= -p <pid>``; Linux reads /proc without
+        # spawning) whose only interpolated value is an int-guarded pid — the
+        # expected argv is compared IN PYTHON, never passed to the child. It is
+        # the strict identity check consulted before reclaiming a recorded
+        # forwarder pid, and cannot route through the sandbox helper because
+        # sandbox imports platform_compat.
+        "platform_compat.py::process_argv_matches_exact",
         # The single icacls chokepoint shared by restrict_to_owner (file shape)
         # and restrict_dir_to_owner (directory shape, inheritable grants). Both
         # public helpers delegate here, so this one entry covers the owner-only

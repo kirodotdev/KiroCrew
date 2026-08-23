@@ -998,6 +998,93 @@ class TestProcessIdentityPosix:
             assert result is False
 
 
+class TestProcessArgvMatchesExact:
+    """The strict identity check behind reclaiming a recorded-but-orphaned
+    child: the WHOLE argv must match, element for element, and every failure
+    answers False — an unconfirmable identity must never be signalled."""
+
+    def _spawn(self, token: str):
+        argv = [
+            sys.executable,
+            "-c",
+            f"import sys, time; sys.stdout.write('R'); sys.stdout.flush(); "
+            f"time.sleep(30)  # {token}",
+        ]
+        child = subprocess.Popen(
+            argv,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        ready = child.stdout.read(1)
+        assert ready == b"R", f"child did not signal readiness: {ready!r}"
+        return child, argv
+
+    @staticmethod
+    def _reap(child):
+        child.kill()
+        try:
+            child.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def test_exact_argv_matches_and_near_misses_do_not(self):
+        if pc.IS_POSIX:
+            # A plain binary that does NOT re-exec, so its kernel-visible argv
+            # is exactly the spawn argv on Linux AND macOS (a macOS framework
+            # python re-execs Python.app and rewrites argv[0], which is a
+            # property of the interpreter stand-in, not of the production
+            # targets — ssh and the aws v2 binary do not re-exec).
+            sleep_bin = shutil.which("sleep") or "/bin/sleep"
+            argv = [sleep_bin, "300"]
+            child = subprocess.Popen(
+                argv, start_new_session=True, stderr=subprocess.DEVNULL
+            )
+        else:
+            child, argv = self._spawn("kirocrew-argvexact-probe")
+        try:
+            if pc.IS_POSIX:
+                # Exact match: retry briefly for slow /proc population on
+                # loaded runners (same shape as the process_matches test).
+                deadline = time.monotonic() + 10.0
+                result = pc.process_argv_matches_exact(child.pid, argv)
+                while not result and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                    result = pc.process_argv_matches_exact(child.pid, argv)
+                assert result is True
+                # Anything less than the whole argv is a different process:
+                # a subset (prefix), a superset, and a one-element difference
+                # must all answer False — substring semantics are exactly what
+                # this function exists to NOT have.
+                assert pc.process_argv_matches_exact(child.pid, argv[:-1]) is False
+                assert pc.process_argv_matches_exact(child.pid, argv + ["-x"]) is False
+                changed = list(argv)
+                changed[-1] = changed[-1] + " "
+                assert pc.process_argv_matches_exact(child.pid, changed) is False
+            else:
+                # Windows: element-exact argv equality is not verifiable (the
+                # raw command line carries shell quoting, not a vector) — the
+                # guard fails closed even for the true argv.
+                assert pc.process_argv_matches_exact(child.pid, argv) is False
+        finally:
+            self._reap(child)
+
+    def test_unconfirmable_identities_answer_false(self):
+        # A pid that cannot exist, reserved pids, and an empty expectation all
+        # fail closed rather than raising.
+        assert pc.process_argv_matches_exact(2_000_000_000, ("x",)) is False
+        assert pc.process_argv_matches_exact(0, ("x",)) is False
+        assert pc.process_argv_matches_exact(1, ("x",)) is False
+        assert pc.process_argv_matches_exact(-5, ("x",)) is False
+        assert pc.process_argv_matches_exact(os.getpid(), ()) is False
+
+    def test_own_process_with_wrong_argv_is_false(self):
+        result = pc.process_argv_matches_exact(
+            os.getpid(), ("zzz-not-this-interpreter", "--nope")
+        )
+        assert result is False
+
+
 class TestProcessStartTime:
     """The identity source every PID-reuse guard compares before signalling.
 

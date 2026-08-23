@@ -27,7 +27,7 @@ import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional, Sequence
 
 from kiro_crew.executors import subprocess_executor
 
@@ -1829,6 +1829,61 @@ def _win_process_image_name(pid: int) -> str | None:
             kernel32.CloseHandle(snap)
     except Exception:
         return None
+
+
+def process_argv_matches_exact(pid: int, expected_argv: Sequence[str]) -> bool:
+    """Return True iff *pid*'s FULL command line is exactly *expected_argv*.
+
+    The strict identity check behind reclaiming a child this process's own
+    lineage spawned and then lost (a recorded pid surviving a supervisor
+    hard-kill): a recorded pid may have been recycled onto an unrelated
+    process, and :func:`process_matches`-style substring needles cannot tell
+    the two apart — partial argv matching against the process table is exactly
+    what once killed forwards operators had started themselves. So the whole
+    argv must match, element for element, and every failure answers False.
+
+    For a DESTRUCTIVE decision this check must be paired with a
+    :func:`process_start_time` pin recorded when the child was spawned: argv
+    equality alone cannot rule out a recycled pid running an identical
+    command line, and on macOS the comparison basis below makes equality
+    necessary but not sufficient for vector equality. The pair fails toward
+    "do not signal" on either mismatch.
+
+    Linux: ``/proc/<pid>/cmdline`` NUL-split and compared element-wise (an
+    empty cmdline — a zombie — never matches). macOS: ``ps -ww -o command=``
+    reports the argv space-joined, so the comparison is against
+    ``" ".join(expected_argv)``; exact only when no expected element contains
+    a space, which holds for the argv shapes this guards (option tokens and
+    validated host/target strings). Windows: always False — the raw
+    ``Win32_Process.CommandLine`` string (see :func:`process_command_line`)
+    carries shell quoting rather than an argv vector, so element-exact
+    equality is not verifiable there; the guard fails closed and callers must
+    not signal.
+    """
+    if type(pid) is not int or pid <= 1 or not expected_argv:
+        return False
+    try:
+        if sys.platform == "linux":
+            raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+            if not raw:
+                return False  # zombie / kernel thread: no argv to confirm
+            parts = raw.split(b"\0")
+            if parts and parts[-1] == b"":
+                parts.pop()  # trailing NUL terminator
+            return parts == [a.encode() for a in expected_argv]
+        if sys.platform == "darwin":
+            ps_bin = trusted_system_bin("ps")
+            if ps_bin is None:
+                return False
+            out = subprocess.check_output(
+                [ps_bin, "-ww", "-o", "command=", "-p", str(pid)],
+                stderr=subprocess.DEVNULL,
+                timeout=2,
+            )
+            return out.decode(errors="replace").strip() == " ".join(expected_argv)
+    except Exception:
+        return False
+    return False
 
 
 def listening_pid_tool() -> str:

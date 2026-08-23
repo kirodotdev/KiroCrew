@@ -106,6 +106,12 @@ _DEFAULT_CONNECTION_METHOD = "ssh"
 # allocator (Stage 3) assigns a real port at connect time.
 _UNALLOCATED_PORT = 0
 
+# ``forwarder_pid == 0`` is the sentinel for "no forwarder child recorded".
+# Connect records the spawned tunnel child's pid so a forwarder orphaned by a
+# gateway hard-kill can later be reclaimed by identity (its own pid) instead of
+# a process-table match; disconnect resets it together with ``local_port``.
+_NO_FORWARDER_PID = 0
+
 
 class InstancesError(Exception):
     """Base error for registry operations."""
@@ -187,6 +193,22 @@ class Instance:
     # (showing an error / click-to-reconnect state) instead of dropping it.
     # Startup uses it to decide which instances to auto-reconnect.
     was_connected: bool = False
+    # Pid of the tunnel forwarder child this manager spawned for the recorded
+    # ``local_port`` (0 = none recorded), paired with the opaque start-time
+    # identity ``platform_compat.process_start_time`` reported for it ("" =
+    # unknown). Persisted so a forwarder orphaned by a gateway hard-kill can be
+    # reclaimed by its OWN identity — pid + start time + exact argv — never by
+    # matching the process table, which cannot distinguish our child from an
+    # operator's own forward (#1972). Either half missing means the identity
+    # cannot be confirmed and no reclaim happens (fail closed).
+    forwarder_pid: int = _NO_FORWARDER_PID
+    forwarder_start: str = ""
+    # HMAC over (id, forwarder_pid, forwarder_start, local_port) under a
+    # gateway-held key ("" = unsigned). The registry file is agent-writable, so
+    # the identity above gates but cannot authorize by itself; the signature is
+    # what makes it the GATEWAY's own claim — a record an agent wrote or
+    # redirected fails verification and is never reclaimed (fail closed).
+    forwarder_sig: str = ""
 
     def validate(self) -> None:
         """Raise :class:`InvalidInstanceError` if any field is malformed."""
@@ -235,6 +257,21 @@ class Instance:
                     f"invalid {label} {port!r}: must be an int in "
                     f"[{lo}, 65535]" + (" (0 = unallocated)" if allow_zero else "")
                 )
+        if not isinstance(self.forwarder_pid, int) or self.forwarder_pid < 0:
+            raise InvalidInstanceError(
+                f"invalid forwarder_pid {self.forwarder_pid!r}: must be an int "
+                f">= 0 (0 = no forwarder recorded)"
+            )
+        if not isinstance(self.forwarder_start, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_start {self.forwarder_start!r}: must be a "
+                f"string ('' = unknown)"
+            )
+        if not isinstance(self.forwarder_sig, str):
+            raise InvalidInstanceError(
+                f"invalid forwarder_sig {self.forwarder_sig!r}: must be a "
+                f"string ('' = unsigned)"
+            )
 
     def to_dict(self) -> dict:
         """Serialize to the JSON shape stored in ``instances.json``."""
@@ -252,6 +289,9 @@ class Instance:
             "aws_region": self.aws_region,
             "ssm_run_as": self.ssm_run_as,
             "was_connected": self.was_connected,
+            "forwarder_pid": self.forwarder_pid,
+            "forwarder_start": self.forwarder_start,
+            "forwarder_sig": self.forwarder_sig,
         }
 
     @classmethod
@@ -285,6 +325,12 @@ class Instance:
             # empty string would fail validation — both mean "use the default".
             ssm_run_as=str(data.get("ssm_run_as", "") or _DEFAULT_SSM_RUN_AS),
             was_connected=bool(data.get("was_connected", False)),
+            # max(): a hand-edited negative pid normalizes to the sentinel
+            # rather than poisoning every later update() with a validate error
+            # — matching this loader's documented key tolerance.
+            forwarder_pid=max(_NO_FORWARDER_PID, _as_int(data.get("forwarder_pid"), 0)),
+            forwarder_start=str(data.get("forwarder_start", "") or ""),
+            forwarder_sig=str(data.get("forwarder_sig", "") or ""),
         )
 
 
@@ -462,7 +508,9 @@ class InstancesRegistry:
         Accepts any of: ``name``, ``ssh_host``, ``remote_port``, ``local_port``,
         ``ttl``, ``remote_bin``, ``connection_method``, ``ssm_target``,
         ``ssm_run_as``,
-        ``aws_profile``, ``aws_region``, ``was_connected``. The ``id`` is
+        ``aws_profile``, ``aws_region``, ``was_connected``, ``forwarder_pid``,
+        ``forwarder_start``, ``forwarder_sig``.
+        The ``id`` is
         immutable. ``mark_last_active=True`` additionally records the instance
         as the auto-revive target in the SAME read-modify-write, so callers that
         need both (a connect persisting its hints) get one atomic file rewrite
@@ -482,6 +530,9 @@ class InstancesRegistry:
             "aws_profile",
             "aws_region",
             "was_connected",
+            "forwarder_pid",
+            "forwarder_start",
+            "forwarder_sig",
         }
         unknown = set(changes) - allowed
         if unknown:
@@ -515,16 +566,6 @@ class InstancesRegistry:
             self._write(doc)
             logger.info("Removed instance %s", instance_id)
             return True
-
-    def set_was_connected(self, instance_id: str, value: bool) -> None:
-        """Set the ``was_connected`` hint (no-op if the instance is gone)."""
-        with self._lock:
-            doc = self._read()
-            inst = _find(doc, instance_id)
-            if inst is None:
-                return
-            inst.was_connected = bool(value)
-            self._write(doc)
 
     def set_last_active(self, instance_id: str) -> None:
         """Mark *instance_id* as the one to auto-revive on next startup.

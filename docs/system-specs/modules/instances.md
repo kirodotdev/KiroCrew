@@ -285,7 +285,8 @@ to gain).
 
 ```
 id, name, ssh_host, remote_port (default 5476), local_port (0 = unallocated),
-ttl (default "20h"), remote_bin, was_connected
+ttl (default "20h"), remote_bin, was_connected, forwarder_pid (0 = none),
+forwarder_start ("" = unknown), forwarder_sig ("" = unsigned)
 ```
 
 plus a top-level `last_active_id`. `id` is a slug (`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -309,8 +310,49 @@ Two persisted hints drive lazy reconnect:
   not just one, and the active pane is frontend state. `get_last_active()` is the
   only reader and has no production caller.
 
+A third hint pair, `forwarder_pid` + `forwarder_start`, exists for crash
+recovery rather than reconnect intent: `connect()` records the spawned
+forwarder child's pid and its opaque `platform_compat.process_start_time`
+identity next to `local_port` (one write), and a successful self-heal rebuild
+moves both to the replacement child. A gateway hard-kill (SIGKILL/crash) never
+runs teardown, so the forwarder survives, reparented to init, still holding its
+port and its session to the remote. The next `connect()` reclaims exactly that
+child, best-effort (a failed reclaim never fails the connect). The registry is
+agent-writable state, so a recorded claim is honored only when it
+authenticates: the record must carry `forwarder_sig`, the gateway's own HMAC
+over (instance id, pid, start time, port) under a key derived from the SEL
+trust root (`sel_hmac_key_path()`, domain-separated exactly like the
+`session_pid_sig` sidecar protocol) — a root an agent can neither read nor
+replace, so a record written, edited, or re-pointed by anything but the
+gateway fails verification outright and nothing is ever signalled for it.
+Behind the MAC, defense in depth from kernel-owned facts: the candidate must
+be a genuine ORPHAN — not a pid this manager currently supervises, and
+reparented to init (`get_ppid == 1`), which no live gateway's forwarder is
+(subreaper hosts read as non-orphaned and merely miss the reclaim). Then, iff
+the recorded
+`local_port` probes occupied AND both identity halves are recorded AND the
+pid's live start time equals the recorded one AND its **full argv exactly
+equals** the forward command line the manager would construct for the recorded
+port (`platform_compat.process_argv_matches_exact`), it is signalled — SIGTERM
+escalating to SIGKILL on a bounded grace, with the start-time identity
+**re-verified before the SIGKILL** (the grace window is exactly where a pid can
+exit and be recycled); pid-scoped for ssh, whose child shares the dead
+gateway's process group; group-scoped for SSM, whose child owns its group, with
+completion judged by the whole group being gone and the port actually
+releasing. Anything short of full identity — either hint missing, start time
+differing or unreadable, argv unreadable (always the case on Windows, so the
+guard fails closed there), or any argv element differing — means the identity
+cannot be confirmed: the process is left alone (logged, and SEL-audited when
+anything was signalled) and allocation simply skips its port; the freed port
+returns to the pool at the next allocation rather than being re-taken by the
+same connect. Reclamation is keyed on the manager's OWN recorded identity,
+never a process-table scan — matching the table by argv pattern is what once
+SIGTERMed forwards operators had opened themselves (#1972).
+
 `disconnect()` resets `local_port` to the unallocated sentinel together with
-`was_connected` in one write, so a freed port is never left reserved.
+`was_connected` and the forwarder identity pair in one write, so a freed port
+is never left reserved and a stale identity never reaches a later reclaim's
+checks.
 
 ---
 
