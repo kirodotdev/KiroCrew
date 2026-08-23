@@ -128,7 +128,15 @@ movement and conflicts are handled before any local work.
 
 ### Phase 2 — Local review = THE GATE (bounded inner loop, cap 10)
 The PR is **never pushed until this is locally green** (no open Critical/High).
-1. **Canonical local gates.** Run the profile's `gates[]`. For KiroCrew that is the worktree skill's Rule 2 gate: pytest / isort / flake8 / mypy, and (for frontend changes) `tsc -b` / vitest. All must exit 0 before review.
+1. **Canonical local gates.** Run the profile's `gates[]`. For Kiro Crew that is the worktree skill's Rule 2 gate: the diff-scoped test runner / isort / flake8 / mypy, and (for frontend changes) `tsc -b`. All must exit 0 before review.
+
+   **The test gates skip the suite your change cannot affect, and never narrow the one it can.** `scripts/run_scoped_tests.py` replaces the OTHER surface's full suite with the cross-surface set `ci.yml` runs for a single-surface diff — 62k collected backend tests and ~1.4k frontend specs are not worth re-running serially on ten inner-loop iterations for a signal CI produces on the merge ref anyway. It prints one of three verdicts, and all three are normal:
+
+   - `cross-surface: N file(s)` — the diff touches only the other surface, so this surface runs the set CI runs for that case (measured: 350 backend files, or 146 frontend specs).
+   - `full suite: the diff touches this surface` — the expected verdict whenever you edit this surface. Narrowing **within** a surface needs a real import graph, not a text scan; it is deliberately not attempted here.
+   - `full suite: <other reason>` — a broad-impact file changed, the diff is empty, or a selector could not be trusted.
+
+   Do **not** "fix" a full-suite verdict by narrowing it by hand; the escalation is the invariant. A missing base ref exits **2** rather than reducing the wrong suite.
 
    **The gate list is data, not prose — read it from the profile, and let a test hold it to CI.** The gates live in `profiles/kirocrew.json` `gates[]`, because a gate an LLM has to notice in a paragraph is followed exactly as unreliably as the gates this loop keeps missing. If a CI-blocking gate is absent from the floor, **add it to the profile**, not here. `test/test_prepare_pr_profiles.py` pins the floor to `ci.yml`: every script, npm script and tool `ci.yml` runs must appear in `gates[]` or be named exempt with a reason, and every gate must name a target that exists — so CI gaining a blocking scan fails that test instead of surfacing as a review round on a later PR.
 

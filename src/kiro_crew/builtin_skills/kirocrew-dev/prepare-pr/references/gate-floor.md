@@ -137,6 +137,105 @@ well as running them — the Type check step's comment explains why it spells ou
 `npm run <script>` "finds" scripts no step invokes, the same trap as reading a
 ratchet number out of a comment.
 
+## A test gate may SKIP a surface, but must not narrow within one
+
+The two test gates are the most expensive entries on the floor by orders of
+magnitude: 62,108 collected backend tests — collection alone takes ~100s before a
+single test executes — and ~1,444 frontend spec files. CI shards that across eight
+backend runners plus several frontend shards and runs it on `refs/pull/<N>/merge`
+regardless, so paying for it serially on a workstation, once per iteration of a
+ten-round inner loop, buys a signal CI produces anyway.
+
+`scripts/run_scoped_tests.py` therefore does exactly one reduction, and it is CI's
+own: when a diff touches only ONE surface, the other surface runs the
+cross-surface set instead of its full suite. Measured on this checkout, that is
+**350** backend files for a frontend-only diff and **146** frontend specs for a
+backend-only one. Four verdicts, and every one that is not a reduction runs
+everything:
+
+| condition | verdict |
+|---|---|
+| base ref absent or unresolvable | **exit 2** — fail closed, run nothing |
+| broad-impact file changed (fixtures, collection config, workflows, lockfiles, the vitest setup graph, the runner itself) | full suite |
+| the diff touches CI **meta** paths (`.github/**`, `scripts/**`) | full suite |
+| the diff touches THIS surface | full suite |
+| the diff touches only the OTHER surface | cross-surface set |
+
+**The surface split is transcribed from `ci.yml`'s `changes` job, buckets and veto
+alike, because that job is the authority for the question.** Its three buckets are
+`frontend: website/**`, `meta: .github/** scripts/**`, and `backend: **` minus the
+other two, and it disables BOTH reductions whenever `meta` is touched. An earlier
+revision folded `meta` into `backend`, which is invisible until it bites:
+`.github/scripts/frontend-blob-reconcile.mjs` is asserted on by
+`website/src/test/frontendBlobReconcile.wireFormat.test.ts`, so a reduced frontend
+run dropped that spec, and `scripts/` and `docs/` are read by several i18n and
+settings specs too. Meta paths belong to neither surface and can be read from
+both. Note the corollary: this runner lives under `scripts/`, so any change to it
+disables its own reduction.
+
+### Why it does not narrow within a surface, and why that is not timidity
+
+The obvious next step is to run only the tests that reference what the diff
+touched. That was implemented, reviewed six times, and removed. Nine findings
+came back, all real, and all one impossibility: **a text scan cannot enumerate the
+ways a test can reach a module.** The spellings found were absolute import,
+relative import (`from .store import ...`), barrel re-export, in-package fixture,
+global vitest setup, data-file read, cross-surface parity comparison, and
+documentation contract. Nothing suggested that list was finished.
+
+Every remedy also shrank the allowlist — "fall back to the full suite here",
+"escalate `index.ts`", "documentation is not inert". Extrapolated, the allowlist
+converges on "escalate everything", which is the gate this was meant to replace.
+Doing it soundly needs a real import graph: a Python AST pass, and a TS resolver
+that follows barrel re-exports. That is tracked separately, deliberately not
+smuggled in here.
+
+The measured traps from that attempt are recorded because they are not obvious and
+any future import-graph work will meet the same ones:
+
+| trap | what went wrong |
+|---|---|
+| matching a module by its **bare stem** | `session` and `config` occur in nearly every test file's prose, so a one-file diff selected 621 of ~700 test files — the full suite wearing a smaller number |
+| matching a broad-impact marker as a **bare substring** | `clone_setup.py` contains `setup.py`, so an ordinary module was escalated as packaging config. Markers now match on file NAME (exact, or a prefix for `tsconfig*`/`vite.config*`/`requirements*`) or on a path prefix |
+| matching a data file by its **bare basename** | `prepare-pr/profiles/kirocrew.json` selected 38 test files that all mention `kirocrew.json` meaning Kiro Crew's own config file in a different directory |
+| matching a barrel module by its stem | `store/index.ts` has **128** real consumers, while **235** specs merely contain the word `index` — simultaneously too wide and missing the right ones |
+| classifying a file by **location** instead of role | `src/kiro_crew/apps/builtins` is a source tree AND a configured testpath, so "inside a root" was read as "is a test", making production modules look like helpers |
+| assuming an extension makes a file **inert** | `.md` under `docs/` is prose, but `test/test_build_target_parity.py` reads `docs/`, and `.md` under `src/` is packaged skill content with contract tests. Nothing is classified inert now |
+| mixing **path spaces** | `vitest` runs with `cwd=website` and needs `src/…`, while a repo-wide scan answers `website/src/…`. Handing the runner the latter fails the gate with a file-not-found that looks nothing like a test failure |
+| adding `--` to **both** runners | correct for pytest; for vitest, `run -- <paths>` silently stops filtering and runs the WHOLE suite (measured: 1,474 files / 22,939 tests) while the gate still reported a narrow scope |
+| keeping only the **new** side of a rename | hid the old path's disappearance, so a rename with a stale importer looked like an ordinary edit. `--no-renames` reports both endpoints |
+
+### Rules this section leaves behind
+
+**Roots and paths are read, never transcribed, and every hardcoded path is
+asserted to exist.** `ALWAYS_ON` carried such an assertion from the start; the
+broad-impact prefixes did not, and one of them — `website/src/test/setup` —
+resolved to nothing at all, so the real vitest setup graph (`integration/setup.ts`
+per `vite.config.ts`, plus the global MSW handlers in `integration/mocks/server.ts`
+that every integration spec inherits without naming) was never treated as
+broad-impact. That gap survived four review rounds because a dead path is
+indistinguishable from a working one. The self-test now walks the whole tuple.
+
+**Reuse CI's selector rather than inventing a second answer.** The cross-surface
+set comes from `scripts/ci-surface-tests.py`, the same script and the same
+post-processing `ci.yml` uses (strip `website/`, drop the `electron/` lane, which
+runs under `node --test`). A skip would have been unsafe — a frontend-only change
+can break a backend test that reads a frontend module — and a locally-invented
+selector would be one more thing that can silently disagree with CI.
+
+**Targets are validated before they reach argv.** They come from a selector's
+stdout, so a file committed as `--config=evil.ini` would otherwise arrive as an
+OPTION. There is no shell (argv is a list, never `shell=True`), so this is
+argument injection rather than command injection, but a test runner's own flags are
+quite enough to do damage. `validated_targets()` requires a plain relative path
+resolving to a real file inside the runner's root.
+
+**Narrowing un-bundles what `npm --prefix website test` ran for free.** That
+script is `pretest` (jscpd) + `test:website` (vitest) + `test:electron`; the
+cross-surface path runs only vitest, so **jscpd and the Electron specs are
+explicit floor entries**. Without them they would disappear from the floor as a
+side effect of a speed change.
+
 ## Checks with no local entry point
 
 Deliberately absent from the floor, because nothing local reproduces them: the

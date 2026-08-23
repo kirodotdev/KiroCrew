@@ -3,7 +3,8 @@
   "base_branch": "main",
   "single_commit": true,
   "gates": [
-    "python -m pytest -q",
+    "python3 scripts/run_scoped_tests.py --test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface backend",
     "python3 scripts/check_black_formatting.py",
     "isort --check-only src/kiro_crew test",
     "flake8 src/kiro_crew test",
@@ -28,7 +29,9 @@
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:check",
     "(cd website && npx playwright install chromium)",
     "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website run i18n:render",
-    "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" npm --prefix website test",
+    "BASE=\"$(git merge-base HEAD origin/main)\" && I18N_BASE_REF=\"$BASE\" SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface frontend",
+    "npm --prefix website run jscpd",
+    "npm --prefix website run test:electron",
     "(cd website && node --max-old-space-size=6144 ./node_modules/vite/bin/vite.js build --mode analyze && node scripts/check-bundle-size.mjs)"
   ],
   "rule_files": [

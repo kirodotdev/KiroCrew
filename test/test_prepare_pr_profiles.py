@@ -14,6 +14,7 @@ because tomllib is 3.11+.
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -296,9 +297,11 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
                 "the script scan above",
         "npm": "covered by the npm-script scan above",
         "npx": "covered by the npm-script scan and the tsc/eslint assertions",
-        "python": "covered by the scripts/ scan and the pytest gate",
-        "python3": "covered by the scripts/ scan and the pytest gate",
-        "unshare": "namespace wrapper around the pytest gate",
+        "python": "covered by the scripts/ scan and the scoped-test gate, which "
+                  "runs pytest (or falls back to the full suite)",
+        "python3": "covered by the scripts/ scan and the scoped-test gate, which "
+                   "runs pytest (or falls back to the full suite)",
+        "unshare": "namespace wrapper around the backend test gate",
         # node runs two kinds of step: the diagnostic blob-reconcile step in
         # frontend-coverage-merge (always exits 0, never a gate) and the
         # bundle-size gate. The latter IS a gate and is carried in gates[]
@@ -316,6 +319,80 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         f"ci.yml runs these tools but the gate floor does not: {tool_missing}. "
         "Add each to profiles/kirocrew.json gates[] in its CI-exact form, or "
         "add it to exempt_tools here with the reason it is not a local gate."
+    )
+
+
+def test_test_gates_are_diff_scoped_and_carry_a_base_ref():
+    """The test gates must be diff-aware, and that means a base ref is mandatory.
+
+    A diff-aware gate whose base ref is missing cannot know which surface the
+    change touches, so it would reduce the wrong suite -- a sibling of the
+    "no-op that always passes" failure `references/gate-floor.md` calls worse
+    than a missing gate. The runner fails closed on an empty base, so the floor's
+    job is to always supply one.
+    """
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    gates = data["gates"]
+
+    for surface in ("backend", "frontend"):
+        entries = [g for g in gates if f"run_scoped_tests.py --surface {surface}" in g]
+        assert len(entries) == 1, f"expected exactly one {surface} test gate, got {entries}"
+        entry = entries[0]
+        assert "SCOPED_TESTS_BASE_REF=" in entry, (
+            f"the {surface} test gate must pass SCOPED_TESTS_BASE_REF; without it "
+            "the runner cannot know which surface the diff touches"
+        )
+        # Resolve-then-use, so an unresolvable base returns nonzero instead of
+        # inlining an empty substitution and reducing on nothing.
+        assert entry.startswith('BASE="$(git merge-base HEAD origin/main)" &&'), (
+            f"the {surface} test gate must resolve the base first and short-circuit"
+        )
+
+    assert "python3 scripts/run_scoped_tests.py --test" in gates, (
+        "the runner's self-test must sit ahead of its scans -- a PR that changes "
+        "the reducer has to fail the self-test, not silently reduce"
+    )
+
+
+def test_scoped_frontend_gate_keeps_the_lanes_npm_test_used_to_carry():
+    """A reduced frontend run must not silently drop jscpd or the Electron specs.
+
+    `npm --prefix website test` ran three things: `pretest` (jscpd), `test:website`
+    (vitest) and `test:electron`. The cross-surface path runs only vitest, so the
+    other two have to appear as gates in their own right or they vanish from the
+    floor without anyone deciding that they should.
+    """
+    data = json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))
+    gates = "\n".join(data["gates"])
+    for script in ("jscpd", "test:electron"):
+        assert f"run {script}" in gates, (
+            f"{script!r} was covered transitively by `npm test`; the reduced "
+            "frontend gate does not run it, so it needs its own floor entry"
+        )
+
+
+def test_scoped_runner_self_test_passes():
+    """The runner's escalations are its whole contract, so CI runs its self-test.
+
+    Its `--test` mode asserts that an unresolvable base fails closed, that every
+    hardcoded broad-impact path resolves on disk, that surface ownership treats
+    documentation as backend-owned rather than inert, that the cross-surface list
+    arrives in each runner's own path space, and that a hostile target cannot
+    reach argv as an option. A green suite that never exercises those is not
+    evidence.
+    """
+    script = REPO_ROOT / "scripts" / "run_scoped_tests.py"
+    assert script.is_file(), "scripts/run_scoped_tests.py is missing"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--test"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, (
+        f"run_scoped_tests.py --test failed (rc={proc.returncode}):\n"
+        f"{proc.stdout}\n{proc.stderr}"
     )
 
 
