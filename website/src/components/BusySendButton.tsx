@@ -171,8 +171,11 @@ export default function BusySendButton({
   return (
     <div className="relative flex items-center" ref={splitRef}>
       <div className={`flex items-stretch h-8 rounded-full overflow-hidden transition-colors ${mode === 'steer' ? 'bg-accent text-accent-fg' : 'bg-warn text-warn-fg'}`}>
+        {/* Only the fire half dims when disabled: the caret (mode toggle) stays
+            live because picking steer-vs-queue before typing is a real workflow,
+            and a dimmed control that still works would read as broken. */}
         <button
-          className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer hover:bg-black/15 transition-all text-inherit"
+          className="w-8 h-8 bg-transparent border-none flex items-center justify-center cursor-pointer disabled:cursor-not-allowed disabled:opacity-40 hover:bg-black/15 transition-all text-inherit"
           onClick={onFire}
           disabled={disabled}
           title={mode === 'steer' ? i18nT('components.chatInput.steer_act_on_this_as_soon_as_possible_enter') : i18nT('components.chatInput.queue_run_after_the_current_work_finishes_enter')}

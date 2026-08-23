@@ -5261,7 +5261,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // then dispatch the seed. Fall back to dispatching after a cap so the
     // feature still works even if the input never resolves.
     const trySeed = (attempt = 0) => {
-      const mounted = document.querySelector('textarea[data-side-chat-input]')
+      const mounted = document.querySelector('[data-side-chat-input] textarea[data-composer-input]')
       if (mounted || attempt >= 20) {
         window.dispatchEvent(new CustomEvent('side-seed', { detail: { text } }))
       } else {

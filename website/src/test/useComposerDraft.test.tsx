@@ -74,15 +74,20 @@ describe('SideChat consumes the SDK draft behaviour', () => {
     expect(src).not.toContain('new Blob([q]).size')
   })
 
-  it('routes Enter through the hook, so an IME commit is never a send', () => {
-    expect(src).toContain('submitOnEnter(')
-    // A hand-rolled Enter branch is what missed the IME guard in the first place.
+  it('delegates Enter and IME to the native composer, so an IME commit is never a send', () => {
+    // ChatInput owns the keydown path and its IME guard (useImeGuard). A
+    // hand-rolled Enter branch here is what missed the IME guard originally.
+    expect(src).toContain('<ChatInput')
+    expect(src).not.toContain('submitOnEnter(')
     expect(src).not.toMatch(/e\.key === 'Enter' && !e\.shiftKey/)
   })
 
-  it('wires the composition handlers onto the textarea', () => {
-    // Without these the guard sees only the two unreliable browser signals.
-    expect(src).toContain('{...composition}')
+  it('resolves the composer textarea for the Select-to-Ask seed through its own wrapper', () => {
+    // The seed handler places the caret by querying the native composer's
+    // textarea inside SideChat's own wrapper — no dedicated ref prop on
+    // ChatInput. Without this the side-seed event prefills a draft the user
+    // cannot see focused.
+    expect(src).toContain("composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')")
   })
 })
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Send, MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
+import { MessageCircleQuestionMark, RotateCcw } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { api } from '../../api/client'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -9,7 +9,9 @@ import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
-import BusySendButton, { useBusySendMode } from '../../components/BusySendButton'
+import ChatInput from '../../components/ChatInput'
+import { SlotProvider } from '../../providers/SlotContext'
+import { useConnected } from '../../hooks/useConnected'
 import type { SideMessage } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 
@@ -54,6 +56,7 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
 }
 
 export default function SideChat({ slot }: { slot: string }) {
+  const connected = useConnected()
   const dispatch = useAppDispatch()
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
@@ -76,9 +79,9 @@ export default function SideChat({ slot }: { slot: string }) {
   const messages = reduxSide?.messages ?? []
   const isPending = reduxSide?.pending ?? false
   const queue = reduxSide?.queue ?? []
-  // Same slot key as the main composer, so the side panel and the main chat of
-  // ONE session share the mode while other sessions keep their own.
-  const [busySendMode, setBusySendMode] = useBusySendMode(slot)
+  // Steer-vs-queue mode lives inside ChatInput's own split button, keyed by the
+  // same slot as the main composer — the side panel and the main chat of ONE
+  // session share the mode while other sessions keep their own.
   // A turn is in flight, so a submit can no longer just start one. Derived from
   // the same signal the thinking indicator uses, so the composer's affordance and
   // what the server will actually do can't disagree.
@@ -115,9 +118,14 @@ export default function SideChat({ slot }: { slot: string }) {
    *  here from `followUpOptions`, so the hook has to be called after that. */
   const composer = useComposerDraft({ followUpOptions, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H })
   const {
-    draft, setDraft, textareaRef, composition,
-    picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit, submitOnEnter,
+    draft, setDraft,
+    picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
   } = composer
+
+  /** Wrapper around the native composer; the Select-to-Ask seed resolves the
+   *  textarea through it (`textarea[data-composer-input]`) instead of a
+   *  dedicated ref prop on ChatInput. */
+  const composerWrapRef = useRef<HTMLDivElement | null>(null)
 
   // Drain any text a cancel released, from EITHER convergence path. Merged, not
   // replaced: the released text has no other home once the server let it go, and
@@ -453,7 +461,7 @@ export default function SideChat({ slot }: { slot: string }) {
       setDraft(prev => (prev.trim() ? `${prev.trimEnd()}\n\n${quoted}\n\n` : `${quoted}\n\n`))
       // Focus + place caret at the end so the user immediately types the question.
       requestAnimationFrame(() => {
-        const el = textareaRef.current
+        const el = composerWrapRef.current?.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')
         if (el) {
           el.focus()
           const len = el.value.length
@@ -466,9 +474,9 @@ export default function SideChat({ slot }: { slot: string }) {
     }
     window.addEventListener('side-seed', onSeed)
     return () => window.removeEventListener('side-seed', onSeed)
-    // `setDraft` and `textareaRef` come from the SDK hook now, so their stability is
-    // no longer something the linter can see for itself — declared rather than assumed.
-  }, [setDraft, textareaRef])
+    // `setDraft` comes from the SDK hook, so its stability is not something the
+    // linter can see for itself — declared rather than assumed.
+  }, [setDraft])
 
   // Auto-grow of the input is the SDK hook's job — the `min-h-[52px]` class below
   // still floors an empty box at ~2 rows, so this surface keeps its own resting size.
@@ -476,7 +484,7 @@ export default function SideChat({ slot }: { slot: string }) {
   /** `override` carries the text a follow-up chip's send arrow supplies; without it the draft
    *  is the source of truth. Every call site wraps this in an arrow, so a click event can never
    *  arrive here as the override. */
-  const send = useCallback((override?: string) => {
+  const send = useCallback((override?: string, steerRequested = false) => {
     const q = (override ?? draft).trim()
     if (!q || sendMutation.isPending || !slot) return
     if (exceedsByteLimit(q)) {
@@ -498,19 +506,14 @@ export default function SideChat({ slot }: { slot: string }) {
       }))
       return
     }
-    // While a turn runs, the split button decides: steer injects into it, queue
-    // defers. From idle both collapse to "start a turn", so the flag is dropped.
-    // An optimistic bubble belongs only to a turn this submit STARTS — a steer's
-    // bubble has to land above the streaming answer and a queued one is a card,
-    // so the server frame places both.
-    const steer = isBusy && busySendMode === 'steer'
+    // While a turn runs, ChatInput's split button decides: steer injects into
+    // it, queue defers. From idle both collapse to "start a turn", so the flag
+    // is dropped. An optimistic bubble belongs only to a turn this submit
+    // STARTS — a steer's bubble has to land above the streaming answer and a
+    // queued one is a card, so the server frame places both.
+    const steer = isBusy && steerRequested
     sendMutation.mutate({ q, steer, optimistic: !isBusy, slot, override: override != null })
-  }, [draft, slot, sendMutation, isBusy, busySendMode, exceedsByteLimit])
-
-  const onKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLTextAreaElement>) => submitOnEnter(e, () => { void send() }),
-    [submitOnEnter, send],
-  )
+  }, [draft, slot, sendMutation, isBusy, exceedsByteLimit])
 
   const sendErr = sendMutation.error
   const displayError = sendErr
@@ -605,42 +608,30 @@ export default function SideChat({ slot }: { slot: string }) {
           />
         </div>
       )}
-      <div className="border-t border-border p-2 flex items-end gap-2 shrink-0">
-        <textarea
-          ref={textareaRef}
-          {...composition}
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
-          onKeyDown={onKeyDown}
-          /* Mount signal for Select-to-Ask, which polls for this input before
-             dispatching its `side-seed` event. An attribute, not the aria-label:
-             the label is translated, so a selector built from its English text
-             matches in one language out of twelve. */
-          data-side-chat-input=""
-          aria-label={i18nT('pages.chat.sideChat.ask_a_side_question')}
-          placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
-          rows={2}
-          style={{ maxHeight: MAX_INPUT_H }}
-          className="flex-1 resize-none overflow-y-auto min-h-[52px] rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-text focus:outline-none focus-visible:border-accent disabled:opacity-60"
-        />
-        {isBusy ? (
-          <BusySendButton
-            mode={busySendMode}
-            onModeChange={setBusySendMode}
-            onFire={() => void send()}
-            disabled={!draft.trim() || sendMutation.isPending}
+      {/* The REAL native composer, scoped to this session's slot. The wrapper
+          carries the Select-to-Ask mount signal (an attribute, not the
+          aria-label: the label is translated, so a selector built from its
+          English text matches in one language out of twelve); the seed handler
+          resolves the textarea through a wrapper query. Capability shaping is by
+          omission: no upload/voice/agent/model props, so the slim surface
+          renders none of that chrome — same component, fewer capabilities. */}
+      <div ref={composerWrapRef} data-side-chat-input="" className="border-t border-border p-2 shrink-0">
+        <SlotProvider slotId={slot}>
+          <ChatInput
+            value={draft}
+            onChange={setDraft}
+            onSend={() => { void send() }}
+            canSteer
+            onSteer={() => { void send(undefined, true) }}
+            isRunning={isBusy}
+            placeholder={i18nT('pages.chat.sideChat.ask_a_side_question_2')}
+            inputAriaLabel={i18nT('pages.chat.sideChat.ask_a_side_question')}
+            typedCommandMenus={false}
+            slotApprovalChrome={false}
+            promptOptimizer={false}
+            connected={connected}
           />
-        ) : (
-          <button
-            onClick={() => void send()}
-            disabled={sendMutation.isPending || !draft.trim()}
-            className="shrink-0 px-2.5 py-1.5 rounded-md bg-accent text-accent-fg text-[12px] font-medium cursor-pointer hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed border-none"
-            title={i18nT('pages.chat.sideChat.send')}
-            aria-label={i18nT('pages.chat.sideChat.send')}
-          >
-            <Send size={13} />
-          </button>
-        )}
+        </SlotProvider>
       </div>
     </div>
   )

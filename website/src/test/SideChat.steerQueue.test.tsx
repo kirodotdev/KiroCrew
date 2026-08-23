@@ -7,6 +7,7 @@ import reducer, {
   sideClose as sideCloseAction,
 } from '../store/chatSlice'
 import { renderWithProviders, createTestStore } from './helpers'
+import dashboardReducer from '../store/dashboardSlice'
 
 vi.mock('../api/client', () => ({
   api: {
@@ -22,6 +23,10 @@ vi.mock('../api/client', () => ({
 import SideChat from '../pages/chat/SideChat'
 import { api } from '../api/client'
 
+// The composer blocks sends while the gateway reads as offline, so every
+// scene runs against a connected dashboard unless it tests the offline path.
+const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
+
 const SLOT = 'test-slot-1'
 const initial = reducer(undefined, { type: '@@INIT' })
 
@@ -29,6 +34,7 @@ const initial = reducer(undefined, { type: '@@INIT' })
  *  steer or queue. */
 function busyState(extra: Record<string, unknown> = {}) {
   return createTestStore({
+    dashboard: dashInitial,
     chat: {
       ...initial,
       activeSlot: SLOT,
@@ -80,7 +86,7 @@ describe('SideChat busy-send: steer vs queue', () => {
 
   it('an idle side keeps the plain send button and never sends a steer flag', async () => {
     const user = userEvent.setup()
-    const store = createTestStore({ chat: { ...initial, activeSlot: SLOT } })
+    const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
 
     await user.type(screen.getByLabelText('Ask a side question'), 'fresh question')

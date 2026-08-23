@@ -3,6 +3,7 @@ import { act, screen } from '@testing-library/react'
 import { useRef } from 'react'
 import type { RootState } from '../store'
 import { renderWithProviders, createTestStore } from './helpers'
+import dashboardReducer from '../store/dashboardSlice'
 import SelectionToolbar, { useSelectionActions } from '../components/SelectionToolbar'
 
 // SideChat pulls the api client — stub the side-* calls it may touch.
@@ -18,6 +19,10 @@ vi.mock('../api/client', () => ({
 }))
 
 import SideChat from '../pages/chat/SideChat'
+
+// The composer blocks sends while the gateway reads as offline, so scenes run
+// against a connected dashboard.
+const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
 
 // Harness that mounts the toolbar from an external selection so the actions
 // render deterministically without simulating a real DOM range.
@@ -54,6 +59,7 @@ describe('Select-to-Ask', () => {
   it('SideChat seeds the draft as a grounding quote on the side-seed event', () => {
     const SLOT = 'seed-slot'
     const store = createTestStore({
+      dashboard: dashInitial,
       chat: {
         activeSlot: SLOT,
         messages: [],

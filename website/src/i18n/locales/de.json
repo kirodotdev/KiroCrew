@@ -8095,7 +8095,6 @@
         "refresh_context": "Kontext aktualisieren",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
-        "send": "Senden",
         "steer_demoted_to_queue": "Der Zug endete — stattdessen in die Warteschlange gestellt",
         "thinking": "Denkt nach…",
         "turn_one": "{{count}} Zug",

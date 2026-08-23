@@ -8095,7 +8095,6 @@
         "refresh_context": "संदर्भ ताज़ा करें",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
-        "send": "भेजें",
         "steer_demoted_to_queue": "टर्न समाप्त हो गया — इसके बजाय कतार में डाला गया",
         "thinking": "सोच रहा है…",
         "turn_one": "{{count}} टर्न",

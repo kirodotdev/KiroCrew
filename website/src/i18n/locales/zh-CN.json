@@ -7991,7 +7991,6 @@
         "refresh_context": "刷新上下文",
         "refresh_blocked_queued": "Finish or cancel the queued questions first — refreshing would discard them",
         "refresh_blocked_busy": "Wait for the current answer to finish — refreshing now would discard the pending question",
-        "send": "发送",
         "steer_demoted_to_queue": "本轮已结束 — 已改为排队",
         "thinking": "思考中…",
         "turn_other": "{{count}} 轮"

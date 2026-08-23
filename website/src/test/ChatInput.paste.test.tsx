@@ -191,6 +191,58 @@ describe('ChatInput optimize: forwards paste content', () => {
   })
 })
 
+describe('ChatInput optimize: promptOptimizer capability gates the keyboard shortcut', () => {
+  // The promptOptimizer opt-out must cover EVERY optimize entry point, not just
+  // the button and plus-menu row. A host that passed promptOptimizer={false}
+  // (the side panel) treats the draft as literal text; Cmd/Ctrl+Shift+Enter
+  // reaching optimizePrompt() there would rewrite that draft and lock the box
+  // readOnly mid-flight. Pinned by both review lanes on PR #5128 round 9.
+  const setup = (promptOptimizer: boolean) => {
+    const fetchMock = vi.fn((url: string) => {
+      if (typeof url === 'string' && url.includes('/api/optimizer/optimize')) {
+        return Promise.resolve({ ok: true, json: async () => ({ changed: false, optimized: 'x' }) })
+      }
+      return Promise.resolve({ ok: true, json: async () => [] })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    ;(document as unknown as { execCommand: () => boolean }).execCommand = vi.fn(() => true)
+    renderWithProviders(
+      <ChatInput
+        value="a literal side question"
+        onChange={vi.fn()}
+        onSend={vi.fn()}
+        connected={true}
+        promptOptimizer={promptOptimizer}
+      />,
+    )
+    return fetchMock
+  }
+  const pressOptimizeCombo = () =>
+    fireEvent.keyDown(screen.getByRole('textbox'), {
+      key: 'Enter',
+      metaKey: true,
+      shiftKey: true,
+    })
+  const optimizerCalls = (fetchMock: ReturnType<typeof vi.fn>) =>
+    fetchMock.mock.calls.filter(
+      (c) => typeof c[0] === 'string' && (c[0] as string).includes('/api/optimizer/optimize'),
+    )
+
+  it('does NOT call the optimizer on Cmd+Shift+Enter when promptOptimizer is off', async () => {
+    const fetchMock = setup(false)
+    pressOptimizeCombo()
+    // Give any wrongly-fired request a tick to land before asserting absence.
+    await new Promise((r) => setTimeout(r, 0))
+    expect(optimizerCalls(fetchMock)).toHaveLength(0)
+  })
+
+  it('still calls the optimizer on Cmd+Shift+Enter when promptOptimizer is on (default)', async () => {
+    const fetchMock = setup(true)
+    pressOptimizeCombo()
+    await vi.waitFor(() => expect(optimizerCalls(fetchMock).length).toBeGreaterThan(0))
+  })
+})
+
 describe('ChatInput paste: strip trailing blank lines', () => {
   const pasteText = (textarea: HTMLElement, text: string) =>
     fireEvent.paste(textarea, {

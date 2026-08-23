@@ -21,6 +21,7 @@ import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage
 import UserMessage from '../pages/chat/UserMessage'
 import { renderMcpOAuthMessage } from '../pages/chat/McpOAuthBanner'
 import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
+import NudgeCard from '../pages/chat/NudgeCard'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import MarkdownRenderer from '../components/MarkdownRenderer'
 import MessageErrorBoundary from '../components/MessageErrorBoundary'
@@ -352,6 +353,14 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
       if (!banner) return null
       return ctx.row(banner)
     },
+  },
+  {
+    // Auto-nudge cycle marker. `onOpenLoop` (jump to the loop popover) is
+    // ChatPage chrome and is deliberately absent here: the card renders its
+    // full content without it, only the affordance is page-specific.
+    id: 'nudge',
+    roles: ['nudge'],
+    render: (m, ctx) => ctx.row(<NudgeCard message={m} disclosureKey={ctx.key} />),
   },
 ]
 

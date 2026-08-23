@@ -11,7 +11,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import reducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
 import { renderWithProviders, createTestStore } from './helpers'
+
+// The composer blocks sends while the gateway reads as offline, so every
+// scene runs against a connected dashboard unless it tests the offline path.
+const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
 
 const sideTurn = vi.fn()
 const sideOpen = vi.fn()
@@ -23,6 +28,8 @@ vi.mock('../api/client', () => ({
         ? sideTurn
         : prop === 'sideOpen'
           ? sideOpen
+          : prop === 'slashCommands'
+          ? vi.fn().mockResolvedValue([])
           : vi.fn().mockResolvedValue(prop === 'sideClose' ? { ok: true, was_open: true } : {})
       Object.defineProperty(_t, prop, { value: fn, writable: true, configurable: true })
       return fn
@@ -39,7 +46,7 @@ describe('SideChat oversize-question refusal', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 
   const render = (draft: string) => {
-    const store = createTestStore({ chat: { ...initial, activeSlot: SLOT } })
+    const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
     const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     fireEvent.change(box, { target: { value: draft } })

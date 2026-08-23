@@ -13,7 +13,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import reducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
 import { renderWithProviders, createTestStore } from './helpers'
+
+// The composer blocks sends while the gateway reads as offline, so every
+// scene runs against a connected dashboard unless it tests the offline path.
+const dashInitial = { ...dashboardReducer(undefined, { type: '@@INIT' }), connected: true }
 
 const sideTurn = vi.fn()
 const sideOpen = vi.fn()
@@ -25,6 +30,8 @@ vi.mock('../api/client', () => ({
         ? sideTurn
         : prop === 'sideOpen'
           ? sideOpen
+          : prop === 'slashCommands'
+          ? vi.fn().mockResolvedValue([])
           : vi.fn().mockResolvedValue(prop === 'sideClose' ? { ok: true, was_open: true } : {})
       Object.defineProperty(_t, prop, { value: fn, writable: true, configurable: true })
       return fn
@@ -41,7 +48,7 @@ describe('SideChat Enter key', () => {
   const initial = reducer(undefined, { type: '@@INIT' })
 
   const render = () => {
-    const store = createTestStore({ chat: { ...initial, activeSlot: SLOT } })
+    const store = createTestStore({ dashboard: dashInitial, chat: { ...initial, activeSlot: SLOT } })
     renderWithProviders(<SideChat slot={SLOT} />, { store })
     const box = screen.getByLabelText('Ask a side question') as HTMLTextAreaElement
     fireEvent.change(box, { target: { value: 'a question' } })
@@ -126,6 +133,11 @@ describe('SideChat Enter key', () => {
     const box = render()
     fireEvent.compositionStart(box)
     fireEvent.keyDown(box, { key: 'Escape' })
+    // A real browser fires compositionend when Escape cancels the candidate;
+    // the guard then holds Enter for a further 50ms (the commit-Enter window)
+    // before a genuinely separate Enter may submit again.
+    fireEvent.compositionEnd(box)
+    await new Promise(r => setTimeout(r, 60))
     fireEvent.keyDown(box, { key: 'Enter' })
     await waitFor(() => expect(sideTurn).toHaveBeenCalledTimes(1))
     expect(sideTurn.mock.calls[0][1]).toBe('a question')

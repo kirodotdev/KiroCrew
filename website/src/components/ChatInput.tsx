@@ -229,6 +229,9 @@ function applyHeight(
   }
 }
 
+/** Stable empty result for suppressed spawn-approval reads — a fresh [] per render would churn every dependent memo. */
+const EMPTY_SPAWN_APPROVALS: ReturnType<typeof selectSlotPendingSpawnApprovals> = []
+
 interface ChatInputProps {
   value: string
   onChange: (v: string) => void
@@ -406,6 +409,36 @@ interface ChatInputProps {
    *  composerFocus one-shot (consumeComposerRelease) or macOS keyboard
    *  switches will autofocus through the release — see composerFocus.ts. */
   autoFocusKey?: string | null
+  /**
+   * Accessible name for the textarea. Defaults to the main chat's "Message
+   * input". A host mounting a SECOND composer on the same screen (the side
+   * panel) must pass a distinct name, or a screen-reader user tabbing between
+   * the two hears the same announcement for both.
+   */
+  inputAriaLabel?: string
+  /**
+   * The typed '/' command and '$' skill triggers, their pickers, and their
+   * rows in the plus menu. Defaults on. A host whose sends bypass command
+   * handling (the side panel's isolated Q&A turns treat text literally)
+   * turns this off so the menus cannot offer commands that would be sent as
+   * plain text.
+   */
+  typedCommandMenus?: boolean
+  /**
+   * The slot's approval chrome (tool-approval bar, spawn-approval banner).
+   * Defaults on. These are store-driven for the composer's slot, so a second
+   * composer on the SAME slot (the side panel) must opt out or the main
+   * turn's approvals render twice on one screen.
+   */
+  slotApprovalChrome?: boolean
+  /**
+   * The prompt-optimizer button. Defaults on. Its slot-mismatch completion
+   * path routes a late result through `onOptimizeResult`; a host whose
+   * displayed slot can change mid-optimize and that supplies no such route
+   * (the side panel) must opt out, or an optimize finished after a session
+   * switch silently discards the draft it produced.
+   */
+  promptOptimizer?: boolean
   /** Gateway WebSocket connection state. When false, send is blocked and a
    *  warning banner appears above the input. Defaults to true so callers that
    *  don't track connectivity (e.g. tests, embedded previews) keep working. */
@@ -682,13 +715,20 @@ function ChatInput({
   onPasteBlocksChange,
   knowledgeChip,
   autoFocusKey,
+  inputAriaLabel,
+  typedCommandMenus = true,
+  slotApprovalChrome = true,
+  promptOptimizer = true,
   connected = true,
   onOptimizeResult,
 }: ChatInputProps) {
   const disabled = disabledProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
-  const pendingApproval = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
+  const pendingApprovalRaw = useAppSelector(s => selectSlotPendingApproval(s, slotId), shallowEqual)
+  // Suppressed at the READ so every consumer (bar, ghost, pill, rounded-corner
+  // class) follows one judgment instead of each render site re-deciding.
+  const pendingApproval = slotApprovalChrome ? pendingApprovalRaw : null
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
   // Non-null while the last approval decision failed. Rendered as a one-line
@@ -828,7 +868,8 @@ function ChatInput({
   // Subagents tab for the fuller per-agent view (task + streaming output).
   // Resolution goes through the same api.resolveApproval + markSubagentApproving
   // path the panel uses, so the two surfaces stay consistent for a given id.
-  const pendingSpawnApprovals = useAppSelector(s => selectSlotPendingSpawnApprovals(s, slotId), shallowEqual)
+  const pendingSpawnApprovalsRaw = useAppSelector(s => selectSlotPendingSpawnApprovals(s, slotId), shallowEqual)
+  const pendingSpawnApprovals = slotApprovalChrome ? pendingSpawnApprovalsRaw : EMPTY_SPAWN_APPROVALS
   const reviewSpawnApprovals = useCallback(() => { dispatch(openActivityToTab('subagents')) }, [dispatch])
   // True once every pending spawn is mid-resolution — swaps the header buttons
   // for a "Resolving…" note. Cards stay in the pending list (status is still
@@ -1285,8 +1326,12 @@ function ChatInput({
     inputRef.current?.focus()
   }, [autoFocusKey, disabled, isMobile])
 
-  // Global "/" shortcut to focus chat input (like GitHub, YouTube, Slack)
+  // Global "/" shortcut to focus chat input (like GitHub, YouTube, Slack).
+  // Only the primary command composer claims it: with a second instance
+  // mounted (the side panel), two document-level listeners would contend and
+  // the last-registered one would silently win the focus.
   useEffect(() => {
+    if (!typedCommandMenus) return
     const onSlashFocus = (e: KeyboardEvent) => {
       if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return
       const tag = (e.target as HTMLElement)?.tagName
@@ -1296,7 +1341,7 @@ function ChatInput({
     }
     document.addEventListener('keydown', onSlashFocus)
     return () => document.removeEventListener('keydown', onSlashFocus)
-  }, [])
+  }, [typedCommandMenus])
 
   const inputResize = usePointerDrag({
     threshold: 0,
@@ -1831,11 +1876,15 @@ function ChatInput({
     }
 
     // Cmd+Shift+Enter (or Ctrl+Shift+Enter) → optimize prompt.
+    // Gated on `promptOptimizer` like the Optimize button and plus-menu row:
+    // a host that opted out (e.g. the side panel) has no optimize affordance,
+    // so the combo falls through to ordinary Enter/Shift+Enter handling there
+    // instead of rewriting a draft the surface meant to treat literally.
     // preventDefault always fires when the combo is detected so the browser's
     // default Enter behavior (newline insert) doesn't leak through when the
     // gateway is offline. The action itself is gated on `connected` to match
     // the disabled-state on the Optimize button (line ~1734).
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
+    if (promptOptimizer && e.key === 'Enter' && (e.metaKey || e.ctrlKey) && e.shiftKey) {
       e.preventDefault()
       if (connected) optimizePrompt()
       return
@@ -2443,7 +2492,7 @@ function ChatInput({
 
       <input id={fileInputId} ref={fileInputRef} type="file" aria-label={i18nT('components.chatInput.attach_files')} multiple accept={FILE_ACCEPT} className="sr-only" onChange={handleFileInputChange} />
 
-      <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />
+      {typedCommandMenus && <SlashCommandMenu input={value} anchorRef={inputRef as React.RefObject<HTMLElement>} open={slashMenuOpen} sendOnEnter={sendOnEnter} onSelect={cmd => { onChange(cmd); setSlashMenuOpen(false) }} onClose={() => setSlashMenuOpen(false)} />}
 
       {onFileSelect && (
         <FilePickerMenu
@@ -2465,7 +2514,7 @@ function ChatInput({
         />
       )}
 
-      <SkillPickerMenu
+      {typedCommandMenus && <SkillPickerMenu
         query={skillQuery}
         anchorRef={inputRef as React.RefObject<HTMLElement>}
         open={skillPickerOpen}
@@ -2488,7 +2537,7 @@ function ChatInput({
           setTrustPrompt({ requestId, leaf, slotKey: skillSlotKey, project })
         }}
         onClose={() => { setSkillPickerOpen(false); setSkillQuery('') }}
-      />
+      />}
       <ProjectSkillsTrustDialog
         key={trustPrompt?.requestId ?? 0}
         open={trustPrompt !== null}
@@ -2571,11 +2620,11 @@ function ChatInput({
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
           ref={inputRef}
-          aria-label={i18nT('components.chatInput.message_input')}
+          aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           aria-describedby={pastePreviewPanelId ?? undefined}
           data-composer-typo
-          className={`relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
+          className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
           placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
@@ -2586,7 +2635,7 @@ function ChatInput({
           onDrop={e => { e.preventDefault(); onDrop?.(e); e.stopPropagation() }}
           onChange={e => {
             valueFromUserRef.current = true // real DOM edit, not a parent-driven draft restore
-            const val = e.target.value; onChange(val); setSlashMenuOpen(val.startsWith('/'))
+            const val = e.target.value; onChange(val); setSlashMenuOpen(typedCommandMenus && val.startsWith('/'))
             // Anchor @/$ detection to the token being edited AT THE CARET, not the
             // end of the whole input. `before` ends at the caret, so a match means
             // "the token ends where my cursor is" — which makes both pickers fire
@@ -2598,7 +2647,7 @@ function ChatInput({
             else { setFilePickerOpen(false); setFileQuery('') }
             // $ and @ are mutually exclusive (a token starts with one sigil); @ wins.
             const skillQ = fileQ === null ? matchSkillToken(before) : null
-            if (skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
+            if (typedCommandMenus && skillQ !== null) { setSkillPickerOpen(true); setSkillQuery(skillQ) }
             else { setSkillPickerOpen(false); setSkillQuery('') }
             recordCaret()
           }}
@@ -2683,7 +2732,7 @@ function ChatInput({
                     {/* In-input trigger shortcuts: clicking inserts the sigil
                      *  and opens the matching picker (same as typing /, @, $). */}
                     <div className="mt-2 pt-2 border-t border-border flex flex-col gap-0.5">
-                      <button
+                      {typedCommandMenus && <button
                         type="button"
                         onClick={() => openTrigger('/')}
                         title={i18nT('components.chatInput.slash_commands')}
@@ -2694,7 +2743,7 @@ function ChatInput({
                           <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.command')}</div>
                           <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.quick_actions_like_clearing_the_chat_or_checking')}</div>
                         </div>
-                      </button>
+                      </button>}
                       {onFileSelect && (
                         <button
                           type="button"
@@ -2709,7 +2758,7 @@ function ChatInput({
                           </div>
                         </button>
                       )}
-                      <button
+                      {typedCommandMenus && <button
                         type="button"
                         onClick={() => openTrigger('$')}
                         title={i18nT('components.chatInput.use_a_skill')}
@@ -2720,7 +2769,7 @@ function ChatInput({
                           <div className="text-[12px] font-medium text-text">{i18nT('components.chatInput.skill')}</div>
                           <div className="text-[11px] text-muted leading-snug">{i18nT('components.chatInput.apply_a_ready_made_set_of_instructions')}</div>
                         </div>
-                      </button>
+                      </button>}
                     </div>
                   </div>,
                   document.body
@@ -2788,7 +2837,11 @@ function ChatInput({
                 {voiceTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
               </button>
             )}
-            {(isRunning || stopState === 'soft_pending' || stopState === 'killing') && onStop ? (
+            {/* The busy branch is reachable with EITHER a stop affordance or a
+                steer path: a host without onStop (the side panel — stopping the
+                main turn from there would be misdirected) still needs the
+                split steer/queue button while a turn runs. */}
+            {(isRunning || stopState === 'soft_pending' || stopState === 'killing') && (onStop || (canSteer && onSteer)) ? (
               stopState === 'killing' ? (
                 killingEscaped ? (
                   <div className="flex items-center gap-1.5">
@@ -2850,13 +2903,23 @@ function ChatInput({
                     <ArrowUpFromLine size={18} />
                   </button>
                 )
-              ) : (
+              ) : onStop ? (
                 <button className="w-8 h-8 rounded-lg bg-transparent border-none text-danger hover:bg-danger/10 flex items-center justify-center cursor-pointer transition-all" onClick={onStop} title={i18nT('components.chatInput.stop_generation')} aria-label={i18nT('components.chatInput.stop_generation')} data-testid="stop-button-armed">
                   <Square size={18} fill="currentColor" />
                 </button>
+              ) : (
+                // No stop affordance and nothing typed: keep the split button
+                // in place (disabled) so the composer's shape does not jump
+                // when the first character lands.
+                <BusySendButton
+                  mode={busySendMode}
+                  onModeChange={setBusySendMode}
+                  onFire={fireComposer}
+                  disabled
+                />
               )
             ) : (<>
-              <button
+              {promptOptimizer && <button
                 className={`w-8 h-8 rounded-lg border-none flex items-center justify-center cursor-pointer transition-all disabled:cursor-not-allowed ${optimizing ? 'bg-accent/20 text-accent animate-pulse' : 'bg-transparent text-muted hover:text-accent hover:bg-accent/10 disabled:opacity-40 disabled:hover:text-muted disabled:hover:bg-transparent'}`}
                 onClick={(e) => { e.stopPropagation(); e.preventDefault(); optimizePrompt() }}
                 // A single mutation backs this instance, so only one optimize can
@@ -2872,7 +2935,7 @@ function ChatInput({
                 {...offlineProps(connected, 'optimize', 'Optimize')}
               >
                 {optimizing ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
-              </button>
+              </button>}
               {/* 'primary' is a stable theming hook (button.primary) — see website/docs/theming-contract.md */}
               {/*
                 Sixth state of this button. The first five are send / stop /
