@@ -58,13 +58,13 @@ function wrap(ui: React.ReactElement) {
 describe('ModelEffortDropdown — global fallback link', () => {
   it('is absent when the call site passes no handler', () => {
     wrap(<ModelEffortDropdown {...baseProps} />)
-    expect(screen.queryByText(/Global fallback for new sessions/)).toBeNull()
+    expect(screen.queryByText(/Global default for new sessions/)).toBeNull()
   })
 
   it('renders and fires when a handler is supplied', () => {
     const onSetDefault = vi.fn()
     wrap(<ModelEffortDropdown {...baseProps} onSetDefault={onSetDefault} />)
-    const link = screen.getByText(/Global fallback for new sessions/)
+    const link = screen.getByText(/Global default for new sessions/)
     fireEvent.click(link)
     expect(onSetDefault).toHaveBeenCalledTimes(1)
   })
@@ -72,7 +72,7 @@ describe('ModelEffortDropdown — global fallback link', () => {
   it('coexists with the reasoning-effort footer', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort onSetDefault={vi.fn()} />)
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
-    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
 
@@ -130,7 +130,7 @@ describe('ModelEffortDropdown — per-agent default row', () => {
     )
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set as default model for oncall' })).toBeInTheDocument()
-    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
 
@@ -161,7 +161,7 @@ describe('ModelEffortDropdown — effort footer value', () => {
 
 describe('SETTINGS_DEFAULT_MODEL_ID', () => {
   it('resolves to a real entry in the generated settings registry', () => {
-    // Registry ids derive from the setting's LABEL. If the fallback-model row
+    // Registry ids derive from the setting's LABEL. If the default-model row
     // is renamed without regenerating/updating this constant, the deep link
     // silently loses its highlight — fail here instead.
     const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_DEFAULT_MODEL_ID)

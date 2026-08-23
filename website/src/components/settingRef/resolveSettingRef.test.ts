@@ -12,8 +12,8 @@ import type { SchemaEntry } from './resolveSettingRef'
 vi.mock('../commandPalette/settingsRegistry.gen', () => ({
   SETTINGS_REGISTRY: [
     {
-      id: 'chat.fallback-model',
-      label: 'Fallback Model',
+      id: 'chat.default-model',
+      label: 'Default Model',
       tab: 'chat',
       type: 'select',
       occurrence: 1,
@@ -36,7 +36,7 @@ describe('resolveSettingRef', () => {
       const result = resolveSettingRef('chat.default_model')
       expect(result.mode).toBe('ui')
       if (result.mode === 'ui') {
-        expect(result.entry.id).toBe('chat.fallback-model')
+        expect(result.entry.id).toBe('chat.default-model')
         expect(result.entry.tab).toBe('chat')
         expect(result.entry.configKey).toBe('chat.default_model')
       }

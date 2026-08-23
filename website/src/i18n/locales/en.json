@@ -4011,7 +4011,7 @@
       "pin_model_unavailable": "<model/> isn't offered right now",
       "reasoning": "Reasoning",
       "set_default_for_agent": "Set <model/> as default model for <agent/>",
-      "set_default_for_new_sessions": "Global fallback for new sessions…",
+      "set_default_for_new_sessions": "Global default for new sessions…",
       "type_to_filter": "Type to filter…"
     },
     "monacoCodeBlock": {
@@ -6888,8 +6888,8 @@
         "content_width": "Content Width",
         "context": "Context",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
-        "default_defers_to_your_agent_config_and_then_to": "Fallback only: agents with a configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
-        "default_model": "Fallback Model",
+        "default_defers_to_your_agent_config_and_then_to": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
+        "default_model": "Default Model",
         "default_normal_length": "Default — normal length",
         "default_reasoning_effort": "Default Reasoning Effort",
         "default_to_autopilot_mode": "Default to Autopilot Mode",

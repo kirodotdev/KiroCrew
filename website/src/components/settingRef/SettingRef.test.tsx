@@ -21,8 +21,8 @@ vi.mock('./useConfigSchema', () => ({
 vi.mock('../commandPalette/settingsRegistry.gen', () => ({
   SETTINGS_REGISTRY: [
     {
-      id: 'chat.fallback-model',
-      label: 'Fallback Model',
+      id: 'chat.default-model',
+      label: 'Default Model',
       tab: 'chat',
       type: 'select',
       occurrence: 1,

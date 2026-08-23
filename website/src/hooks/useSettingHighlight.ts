@@ -15,6 +15,8 @@ import { i18nT } from '../i18n/t'
  *   again when the qualifier was corrected to the service's real name,
  *   Amazon Polly — so BOTH the positional id and the short-form id have to
  *   land on the current one.
+ * - `chat.fallback-model` — the row was relabeled from "Fallback Model" to
+ *   "Default Model", the tier it actually is.
  */
 const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-profile': 'voice.aws-profile-transcribe',
@@ -23,10 +25,10 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   'voice.aws-region-2': 'voice.aws-region-amazon-polly',
   'voice.aws-profile-polly': 'voice.aws-profile-amazon-polly',
   'voice.aws-region-polly': 'voice.aws-region-amazon-polly',
-  // The "Default Model" row is labeled "Fallback Model", and registry ids
+  // The "Default Model" row was labeled "Fallback Model", and registry ids
   // derive from the label — without this, links saved or bookmarked against
   // the old id silently lose their highlight.
-  'chat.default-model': 'chat.fallback-model',
+  'chat.fallback-model': 'chat.default-model',
   // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
   // the derived id with it.
   'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
@@ -59,7 +61,7 @@ export function resolveLegacyHighlightId(id: string): string {
  * `ModelEffortDropdown.defaultLink.test.tsx` asserts it still resolves in
  * SETTINGS_REGISTRY — so a rename fails a test instead of shipping a dead link.
  */
-export const SETTINGS_DEFAULT_MODEL_ID = 'chat.fallback-model'
+export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
 
 /**
  * useSettingHighlight — deep-link + highlight hook for Settings.

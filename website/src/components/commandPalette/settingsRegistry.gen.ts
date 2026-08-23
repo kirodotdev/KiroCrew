@@ -15,6 +15,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "dashboard.use_builtin_browser"
   },
   {
+    "id": "channels.app-client-id-teams",
+    "label": "App (Client) ID (Teams)",
+    "labelKey": "pages.settings.teamsPanel.app_client_id",
+    "labelSuffix": "Teams",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    },
+    "configKey": "teams.app_id"
+  },
+  {
     "id": "channels.enable-imessage-channel-imessage",
     "label": "Enable iMessage channel (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.enable",
@@ -254,6 +267,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.hard-context-threshold-teams",
+    "label": "Hard context threshold % (Teams)",
+    "labelKey": "pages.settings.channels.hard_threshold_label",
+    "labelSuffix": "Teams",
+    "description": "Compact automatically at this percentage, even without a reply, so the context window never overflows.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    },
+    "configKey": "teams.hard_threshold_pct"
+  },
+  {
     "id": "channels.messages-database-path-imessage",
     "label": "Messages database path (iMessage)",
     "labelKey": "pages.settings.iMessagePanel.db_path",
@@ -344,6 +371,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.soft-context-threshold-teams",
+    "label": "Soft context threshold % (Teams)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "Teams",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    },
+    "configKey": "teams.soft_threshold_pct"
+  },
+  {
     "id": "channels.soft-context-threshold-telegram",
     "label": "Soft context threshold % (Telegram)",
     "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
@@ -366,6 +406,20 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "channel": "wecom"
     }
+  },
+  {
+    "id": "channels.tenant-id-teams",
+    "label": "Tenant ID (Teams)",
+    "labelKey": "pages.settings.teamsPanel.tenant_id",
+    "labelSuffix": "Teams",
+    "description": "Optional — only for single-tenant bots.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "teams"
+    },
+    "configKey": "teams.tenant_id"
   },
   {
     "id": "chat.auto-compact-threshold",
@@ -438,6 +492,15 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.default-model",
+    "label": "Default Model",
+    "labelKey": "pages.settings.chatPanel.default_model",
+    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1
+  },
+  {
     "id": "chat.default-reasoning-effort",
     "label": "Default Reasoning Effort",
     "labelKey": "pages.settings.chatPanel.default_reasoning_effort",
@@ -462,15 +525,6 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Kiro uses this description to adapt vocabulary and examples to your role.",
     "tab": "chat",
     "type": "input",
-    "occurrence": 1
-  },
-  {
-    "id": "chat.fallback-model",
-    "label": "Fallback Model",
-    "labelKey": "pages.settings.chatPanel.default_model",
-    "description": "Which model new sessions start with when their agent pins none. Set a model per agent under Capabilities → Agents, or pick one inside a session to override it there.",
-    "tab": "chat",
-    "type": "select",
     "occurrence": 1
   },
   {

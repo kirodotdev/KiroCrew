@@ -4128,13 +4128,13 @@
         "role_subagents": "Sub-agents",
         "background_effort": "Background Effort",
         "subagent_effort": "Subagent Effort",
-        "role_effort_hint": "Applies only on reasoning-capable models; empty inherits the chat default effort.",
+        "role_effort_hint": "Applies only on reasoning-capable models. 'Model default' applies no override — this work does not inherit your Default Reasoning Effort.",
         "failed_to_save_role_effort": "Failed to save role effort",
         "background_model": "Background Model",
         "subagent_model": "Subagent Model",
         "model_for_background_lite_heartbeat_work": "Model for background work — title generation, history compaction, and heartbeat polling.",
         "model_for_spawned_sub_agents": "Model for spawned sub-agents.",
-        "role_model_auto_hint": "'Default' lets the provider pick — it does not inherit your chat model. Pin a model to run this work on it.",
+        "role_model_auto_hint": "'Auto' lets the provider pick — it does not inherit your Default Model. Pin a model to run this work on it.",
         "failed_to_save_role_model": "Failed to save role model",
         "disabled_by_instance_config_tips_enabled_false": "Disabled by instance config (tips_enabled: false)",
         "enter_for_newline": "Enter for newline",
@@ -4180,7 +4180,9 @@
         "failed_to_save_knowledge_setting": "Failed to save knowledge setting",
         "session_summaries": "Session summaries",
         "summarize_each_session_by_intent_in_the_right_pa": "Summarize each session by intent. Uses tokens on turns that change the session.",
-        "failed_to_save_session_summaries": "Failed to save session summaries setting"
+        "failed_to_save_session_summaries": "Failed to save session summaries setting",
+        "role_model_auto": "Auto (provider picks)",
+        "effort_needs_reasoning_model": "Applies only on reasoning-capable models, so it has no effect on the model selected above."
       },
       "displayPanel": {
         "color": "Color {{n}}",

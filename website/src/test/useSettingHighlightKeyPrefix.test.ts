@@ -16,8 +16,8 @@ import { useSettingHighlight, resolveLegacyHighlightId } from '../hooks/useSetti
 vi.mock('../components/commandPalette/settingsRegistry.gen', () => ({
   SETTINGS_REGISTRY: [
     {
-      id: 'chat.fallback-model',
-      label: 'Fallback Model',
+      id: 'chat.default-model',
+      label: 'Default Model',
       tab: 'chat',
       type: 'select',
       occurrence: 1,
@@ -63,7 +63,7 @@ describe('useSettingHighlight key: prefix', () => {
     // Create DOM element with matching data-setting-key (direct path)
     const el = document.createElement('div')
     el.setAttribute('data-setting-key', 'chat.default_model')
-    el.setAttribute('data-setting-label', 'Fallback Model')
+    el.setAttribute('data-setting-label', 'Default Model')
     document.body.appendChild(el)
 
     renderHook(() => useSettingHighlight(), {
@@ -86,7 +86,7 @@ describe('useSettingHighlight key: prefix', () => {
 
     // Element only has data-setting-label, no data-setting-key
     const el = document.createElement('div')
-    el.setAttribute('data-setting-label', 'Fallback Model')
+    el.setAttribute('data-setting-label', 'Default Model')
     document.body.appendChild(el)
 
     renderHook(() => useSettingHighlight(), {
@@ -167,7 +167,7 @@ describe('useSettingHighlight key: prefix', () => {
   })
 
   it('legacy id format still works (resolveLegacyHighlightId)', () => {
-    expect(resolveLegacyHighlightId('chat.default-model')).toBe('chat.fallback-model')
+    expect(resolveLegacyHighlightId('chat.fallback-model')).toBe('chat.default-model')
     expect(resolveLegacyHighlightId('slack.phase-reactions')).toBe('channels.phase-reactions')
   })
 
