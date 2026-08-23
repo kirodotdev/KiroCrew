@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "現在の応答を停止してプロジェクトを切り替え",
       "stopping": "停止中…",
       "stopping_2": "停止中",
+      "switch_not_confirmed": "切り替えはまだ確認されていません。接続が回復すると適用されます。",
       "taking_longer_than_expected": "予想より時間がかかっています",
       "that_approval_expired_the_turn_it_belonged_to_is": "関連付けられたターンが承認待ちではなくなったため、この承認リクエストは期限切れになりました。",
       "that_request_already_timed_out_and_was_denied": "その {{source}} リクエストはすでにタイムアウトし、拒否されました — ジョブはもう待機していません。記録は承認フィードで確認できます。",

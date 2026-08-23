@@ -4838,6 +4838,7 @@
       "stop_the_current_response_to_switch_project": "প্রজেক্ট বদলাতে বর্তমান উত্তর থামাও",
       "stopping": "থামানো হচ্ছে…",
       "stopping_2": "থামানো হচ্ছে",
+      "switch_not_confirmed": "সুইচ এখনও নিশ্চিত হয়নি — সংযোগ পুনরুদ্ধার হলে এটি প্রযোজ্য হবে।",
       "taking_longer_than_expected": "প্রত্যাশার চেয়ে বেশি সময় নিচ্ছে",
       "that_approval_expired_the_turn_it_belonged_to_is": "সম্পর্কিত টার্নটি আর অনুমোদনের অপেক্ষায় নেই বলে এই অনুমোদনের অনুরোধের মেয়াদ শেষ হয়েছে।",
       "that_request_already_timed_out_and_was_denied": "সেই {{source}} রিকোয়েস্টের সময় আগেই শেষ হয়ে গেছে এবং তা প্রত্যাখ্যাত হয়েছে — কাজটি আর অপেক্ষা করছে না। রেকর্ডের জন্য অনুমোদনের ফিড দেখো।",

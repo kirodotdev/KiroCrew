@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Detén la respuesta actual para cambiar de proyecto",
       "stopping": "Deteniendo…",
       "stopping_2": "Deteniendo",
+      "switch_not_confirmed": "Cambio aún sin confirmar: se aplicará si se recupera la conexión.",
       "taking_longer_than_expected": "está tardando más de lo esperado",
       "that_approval_expired_the_turn_it_belonged_to_is": "Esta solicitud de aprobación venció porque el turno asociado ya no está esperando aprobación.",
       "that_request_already_timed_out_and_was_denied": "Esa solicitud de {{source}} ya expiró y se denegó — el trabajo ya no está esperando. Consulta el feed de aprobaciones para ver el registro.",

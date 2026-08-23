@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "프로젝트를 전환하려면 현재 응답을 중지하세요",
       "stopping": "중지 중…",
       "stopping_2": "중지 중",
+      "switch_not_confirmed": "전환이 아직 확인되지 않았습니다. 연결이 복구되면 적용됩니다.",
       "taking_longer_than_expected": "예상보다 오래 걸리고 있습니다",
       "that_approval_expired_the_turn_it_belonged_to_is": "연결된 턴이 더 이상 승인을 기다리지 않아 이 승인 요청이 만료되었습니다.",
       "that_request_already_timed_out_and_was_denied": "해당 {{source}} 요청은 이미 시간이 초과되어 거부되었습니다 — 작업은 더 이상 대기하지 않습니다. 기록은 승인 피드에서 확인하세요.",

@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "停止当前回复以切换项目",
       "stopping": "正在停止…",
       "stopping_2": "正在停止",
+      "switch_not_confirmed": "切换尚未确认——连接恢复后将自动生效。",
       "taking_longer_than_expected": "耗时超出预期",
       "that_approval_expired_the_turn_it_belonged_to_is": "关联轮次不再等待批准，因此此批准请求已过期。",
       "that_request_already_timed_out_and_was_denied": "此 {{source}} 请求已超时，系统已拒绝 — 任务不再等待。在审批动态中查看记录。",

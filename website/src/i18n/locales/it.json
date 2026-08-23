@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Ferma la risposta corrente per cambiare progetto",
       "stopping": "Arresto in corso…",
       "stopping_2": "Arresto in corso",
+      "switch_not_confirmed": "Cambio non ancora confermato: verrà applicato se la connessione viene ripristinata.",
       "taking_longer_than_expected": "sta richiedendo più tempo del previsto",
       "that_approval_expired_the_turn_it_belonged_to_is": "Questa richiesta di approvazione è scaduta perché il turno associato non è più in attesa di approvazione.",
       "that_request_already_timed_out_and_was_denied": "Quella richiesta {{source}} è già scaduta ed è stata rifiutata — il job non è più in attesa. Controlla il feed delle approvazioni per il registro.",

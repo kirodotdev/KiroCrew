@@ -4838,6 +4838,7 @@
       "stop_the_current_response_to_switch_project": "प्रोजेक्ट बदलने के लिए मौजूदा जवाब रोकें",
       "stopping": "रोका जा रहा है…",
       "stopping_2": "रोका जा रहा है",
+      "switch_not_confirmed": "स्विच की अभी पुष्टि नहीं हुई है — कनेक्शन बहाल होने पर यह लागू हो जाएगा।",
       "taking_longer_than_expected": "अपेक्षा से अधिक समय ले रहा है",
       "that_approval_expired_the_turn_it_belonged_to_is": "यह मंज़ूरी अनुरोध समाप्त हो गया क्योंकि संबद्ध टर्न अब मंज़ूरी की प्रतीक्षा में नहीं है।",
       "that_request_already_timed_out_and_was_denied": "वह {{source}} अनुरोध पहले ही टाइम आउट होकर अस्वीकार हो गया — जॉब अब प्रतीक्षा नहीं कर रही। रिकॉर्ड के लिए मंज़ूरी फ़ीड देखो।",

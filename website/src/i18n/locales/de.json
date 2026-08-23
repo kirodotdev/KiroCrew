@@ -4838,6 +4838,7 @@
       "stop_the_current_response_to_switch_project": "Aktuelle Antwort stoppen, um das Projekt zu wechseln",
       "stopping": "Wird gestoppt…",
       "stopping_2": "Wird gestoppt",
+      "switch_not_confirmed": "Wechsel noch nicht bestätigt – er wird übernommen, sobald die Verbindung wiederhergestellt ist.",
       "taking_longer_than_expected": "dauert länger als erwartet",
       "that_approval_expired_the_turn_it_belonged_to_is": "Diese Genehmigungsanfrage ist abgelaufen, weil der zugehörige Zug nicht mehr auf Genehmigung wartet.",
       "that_request_already_timed_out_and_was_denied": "Diese Anfrage von {{source}} ist bereits abgelaufen und wurde abgelehnt — der Job wartet nicht mehr. Den Eintrag findest du im Genehmigungs-Feed.",

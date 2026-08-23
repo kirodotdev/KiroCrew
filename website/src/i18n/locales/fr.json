@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Arrête la réponse en cours pour changer de projet",
       "stopping": "Arrêt…",
       "stopping_2": "Arrêt",
+      "switch_not_confirmed": "Changement non confirmé pour l'instant — il s'appliquera si la connexion est rétablie.",
       "taking_longer_than_expected": "délai plus long que prévu",
       "that_approval_expired_the_turn_it_belonged_to_is": "Cette demande d’approbation a expiré car le tour associé n’attend plus d’approbation.",
       "that_request_already_timed_out_and_was_denied": "Cette demande {{source}} a déjà expiré et a été refusée — la tâche n’attend plus. Consulte le flux des approbations pour la trace.",

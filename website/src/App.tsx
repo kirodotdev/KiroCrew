@@ -3,7 +3,8 @@ import { createPortal } from 'react-dom'
 import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
-import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode } from './store/dashboardSlice'
+import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot } from './store/dashboardSlice'
+import { pendingSlotSwitch, performSlotSwitch } from './lib/slotSwitch'
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
@@ -1695,29 +1696,60 @@ export default function App() {
       const prev = APPROVAL_MODE_LEVELS[(idx - 1 + APPROVAL_MODE_LEVELS.length) % APPROVAL_MODE_LEVELS.length]
       store.dispatch(changeApprovalMode({ mode: prev, slot: activeSlot }))
     },
-    onCycleModel: () => {
+    onCycleModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
       const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const currentModel = currentSlot?.model || ''
-      const idx = currentModel ? models.findIndex(m => m.name === currentModel) : -1
+      // Step from the newest IN-FLIGHT target when one exists: each press of a
+      // burst must advance one step even though the store base has not
+      // settled yet — recomputing from the store made a rapid triple-press
+      // send the same "next" three times and land one step ahead (#4523).
+      const base = pendingSlotSwitch('model', activeSlot) || currentSlot?.model || ''
+      const idx = base ? models.findIndex(m => m.name === base) : -1
       const nextIdx = (idx + 1) % models.length
-      api.chatSlotModel(activeSlot, models[nextIdx].name)
+      const name = models[nextIdx].name
+      // Same protocol as ChatPage.switchModel (#4523): without the store
+      // write a dead websocket wedges the cycle on one step; the shared
+      // per-slot registry means neither the other cycle direction, the
+      // dropdown, nor another slot's press can interleave stale.
+      try {
+        await performSlotSwitch('model', activeSlot, name,
+          async () => {
+            const r = await api.chatSlotModel(activeSlot, name)
+            return r?.model ?? name
+          },
+          (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
+      } catch (e) {
+        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        console.error('onCycleModel failed', e)
+      }
     },
-    onCyclePrevModel: () => {
+    onCyclePrevModel: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
       const models = queryClient.getQueryData<{ name: string }[]>(['available-models', provider.id])
       if (!models || models.length === 0) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const currentModel = currentSlot?.model || ''
-      const idx = currentModel ? models.findIndex(m => m.name === currentModel) : -1
+      // See onCycleModel above.
+      const base = pendingSlotSwitch('model', activeSlot) || currentSlot?.model || ''
+      const idx = base ? models.findIndex(m => m.name === base) : -1
       const prevIdx = idx <= 0 ? models.length - 1 : idx - 1
-      api.chatSlotModel(activeSlot, models[prevIdx].name)
+      const name = models[prevIdx].name
+      try {
+        await performSlotSwitch('model', activeSlot, name,
+          async () => {
+            const r = await api.chatSlotModel(activeSlot, name)
+            return r?.model ?? name
+          },
+          (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
+      } catch (e) {
+        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        console.error('onCyclePrevModel failed', e)
+      }
     },
   })
   // Cmd+1..9 (⌘ mac / Ctrl win-linux) switches instance panes: 1=Local,

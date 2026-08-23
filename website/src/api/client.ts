@@ -1830,7 +1830,7 @@ export const api = {
   chatSlotAgent: (slot: string, agent: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/agent', { agent }).then(j),
   chatSlotModel: (slot: string, model: string) =>
-    post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j),
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/model', { model }).then(j) as Promise<{ ok?: boolean; model?: string }>,
   chatSlotsModel: (model: string, skip_running: boolean) =>
     post('/api/chat/slots/model', { model, skip_running }).then(j) as Promise<{ ok: boolean; model: string; switched: string[]; skipped_running: string[]; unchanged: string[]; failed: string[] }>,
   chatSlotReasoningEffort: (slot: string, reasoning_effort: string) =>
@@ -1842,7 +1842,7 @@ export const api = {
   chatSlotReload: (slot: string) =>
     post('/api/chat/slots/' + encodeURIComponent(slot) + '/reload', {}).then(j) as Promise<{ ok?: boolean; error?: string }>,
   chatSlotProject: (slot: string, project: string) =>
-    post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j),
+    post('/api/chat/slots/' + encodeURIComponent(slot) + '/project', { project }).then(j) as Promise<{ ok?: boolean; project?: string }>,
   // Follow-up card: create a sibling git worktree of `repo` on a new `branch`.
   // Resolves with the created path, or rejects with the server's message
   // (branch/dir already exists, not a git repo, git unavailable).
