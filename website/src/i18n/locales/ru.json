@@ -6700,6 +6700,7 @@
       "trust": "Доверять",
       "trust_all_base": "Доверять всем командам <mono>{{base}}</mono>",
       "trust_all_tools": "Доверять всем инструментам",
+      "trust_all_tools_channel": "Доверять всем инструментам в этом канале — сохраняется после перезапуска",
       "trust_this_command": "Доверять «<mono>{{cmd}}</mono>»"
     },
     "tunnelStatus": {

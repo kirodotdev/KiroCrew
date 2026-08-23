@@ -157,10 +157,14 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
             redaction and truncation (channel.py), which must never serve as an
             exact-match trust pattern. The approve endpoint also accepts only
             approved/rejected/trust, so command-scoped tiers stay off this
-            surface until the message schema actually carries a command. */}
+            surface until the message schema actually carries a command.
+            trustAllLabelKey: the channel `trust` decision is channel-wide and
+            persisted to disk (it sets the channel's trusted flag and saves it),
+            so the trust-all option must say so — the default label reads as
+            session-scoped. */}
         {msg.msgType === 'approval' && onApprove && (
           <div className="mt-2">
-            <ApprovalCard title={msg.fromRole} hasCommand={false} toolInput={msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')} showButtons={approvalMode === 'normal'} onApprove={onApprove} />
+            <ApprovalCard title={msg.fromRole} hasCommand={false} toolInput={msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')} showButtons={approvalMode === 'normal'} trustAllLabelKey="components.trustDropdown.trust_all_tools_channel" onApprove={onApprove} />
           </div>
         )}
         {/* Thread badge + reply */}

@@ -6610,6 +6610,7 @@
       "trust": "Approuver",
       "trust_all_base": "Faire confiance à toutes les commandes <mono>{{base}}</mono>",
       "trust_all_tools": "Approuver tous les outils",
+      "trust_all_tools_channel": "Approuver tous les outils de ce canal — persiste après redémarrage",
       "trust_this_command": "Faire confiance à « <mono>{{cmd}}</mono> »"
     },
     "tunnelStatus": {

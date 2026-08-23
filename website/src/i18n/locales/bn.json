@@ -6520,6 +6520,7 @@
       "trust": "বিশ্বাস করুন",
       "trust_all_base": "সব <mono>{{base}}</mono> কমান্ড বিশ্বাস করুন",
       "trust_all_tools": "সব টুল বিশ্বাস করুন",
+      "trust_all_tools_channel": "এই চ্যানেলের সব টুল বিশ্বাস করুন — রিস্টার্টের পরেও বজায় থাকে",
       "trust_this_command": "«<mono>{{cmd}}</mono>» বিশ্বাস করুন"
     },
     "tunnelStatus": {

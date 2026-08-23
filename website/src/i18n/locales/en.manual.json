@@ -2326,6 +2326,7 @@
     },
     "trustDropdown": {
       "trust_all_base": "Trust all <mono>{{base}}</mono> commands",
+      "trust_all_tools_channel": "Trust all tools in this channel — persists across restarts",
       "trust_this_command": "Trust “<mono>{{cmd}}</mono>”"
     },
     "searchableSelect": {

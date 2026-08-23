@@ -21,10 +21,15 @@ interface TrustDropdownProps {
   hasCommand?: boolean
   disabled?: boolean
   className?: string
+  // Overrides the catalog key for the "trust all tools" option. The default
+  // label reads as session-scoped; a surface whose `trust` decision grants
+  // something wider (e.g. channel-wide and persisted to disk) must pass a key
+  // that names the actual grant, so consent matches what is being consented to.
+  trustAllLabelKey?: string
   onAction: (action: string, pattern?: string) => void
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, trustAllLabelKey, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -88,7 +93,9 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCo
           onSelect={() => onAction('trust')}
         >
           <ShieldCheck size={12} className="shrink-0 text-warn" />
-          <span>{i18nT('components.trustDropdown.trust_all_tools')}</span>
+          {/* min-w-0 lets a long scope-qualified label wrap inside the menu's
+              viewport-aware width cap instead of overflowing it. */}
+          <span className="min-w-0">{trustAllLabelKey ? i18nT(trustAllLabelKey) : i18nT('components.trustDropdown.trust_all_tools')}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

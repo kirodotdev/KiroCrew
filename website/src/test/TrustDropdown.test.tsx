@@ -128,6 +128,59 @@ describe('TrustDropdown', () => {
     expect(onAction).toHaveBeenCalledWith('trust')
   })
 
+  // The channels surface's `trust` decision is channel-wide and persisted, so
+  // it overrides the session-scoped default label with one naming the real
+  // grant. These pin both sides: the override renders, and the default is
+  // untouched when the prop is absent.
+  describe('trustAllLabelKey override', () => {
+    const channelKey = 'components.trustDropdown.trust_all_tools_channel'
+    const channelLabel = 'Trust all tools in this channel — persists across restarts'
+
+    it('renders the channel-scoped label instead of the default', () => {
+      render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell trustAllLabelKey={channelKey} className={btnClass} onAction={() => {}} />)
+      fireEvent.click(screen.getByText('Trust'))
+      expect(screen.getByText(channelLabel)).toBeInTheDocument()
+      // Exact-string match: the default label must not render alongside.
+      expect(screen.queryByText('Trust all tools')).not.toBeInTheDocument()
+    })
+
+    it('keeps the default label when the prop is absent', () => {
+      render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
+      fireEvent.click(screen.getByText('Trust'))
+      expect(screen.getByText('Trust all tools')).toBeInTheDocument()
+      expect(screen.queryByText(channelLabel)).not.toBeInTheDocument()
+    })
+
+    it('still emits the plain trust action under the override', () => {
+      const onAction = vi.fn()
+      render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell trustAllLabelKey={channelKey} className={btnClass} onAction={onAction} />)
+      fireEvent.click(screen.getByText('Trust'))
+      fireEvent.click(screen.getByText(channelLabel))
+      expect(onAction).toHaveBeenCalledWith('trust')
+    })
+
+    it('resolves the override key through the active locale', async () => {
+      await i18next.changeLanguage('zh-CN')
+      render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell trustAllLabelKey={channelKey} className={btnClass} onAction={() => {}} />)
+      fireEvent.click(screen.getByRole('button'))
+      expect(screen.getByText('信任此频道中的所有工具 — 重启后仍然有效')).toBeInTheDocument()
+    })
+
+    // The shipped channels surface passes both props: no command tiers, and the
+    // remaining tier labelled with its real scope. Pinning the combination
+    // catches either prop silently disabling the other.
+    it('labels the sole remaining tier when the surface has no command', () => {
+      const onAction = vi.fn()
+      render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} trustAllLabelKey={channelKey} className={btnClass} onAction={onAction} />)
+      fireEvent.click(screen.getByText('Trust'))
+      const items = screen.getAllByRole('menuitem')
+      expect(items).toHaveLength(1)
+      expect(items[0]).toHaveTextContent(channelLabel)
+      fireEvent.click(items[0])
+      expect(onAction).toHaveBeenCalledWith('trust')
+    })
+  })
+
   it('disables button when disabled prop is true', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell disabled className={btnClass} onAction={() => {}} />)
     expect(screen.getByText('Trust').closest('button')).toBeDisabled()

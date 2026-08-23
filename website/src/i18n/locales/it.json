@@ -6610,6 +6610,7 @@
       "trust": "Considera attendibile",
       "trust_all_base": "Fidati di tutti i comandi <mono>{{base}}</mono>",
       "trust_all_tools": "Considera attendibili tutti gli strumenti",
+      "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
       "trust_this_command": "Fidati di «<mono>{{cmd}}</mono>»"
     },
     "tunnelStatus": {

@@ -6430,6 +6430,7 @@
       "trust": "信任",
       "trust_all_base": "信任所有 <mono>{{base}}</mono> 命令",
       "trust_all_tools": "信任所有工具",
+      "trust_all_tools_channel": "信任此频道中的所有工具 — 重启后仍然有效",
       "trust_this_command": "信任“<mono>{{cmd}}</mono>”"
     },
     "tunnelStatus": {

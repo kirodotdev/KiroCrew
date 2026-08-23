@@ -199,7 +199,7 @@ describe('ChannelPage — message list', () => {
     await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
     const items = screen.getAllByRole('menuitem')
     expect(items).toHaveLength(1)
-    expect(items[0].textContent).toContain('Trust all tools')
+    expect(items[0].textContent).toContain('Trust all tools in this channel — persists across restarts')
     // Neither tier may describe the role string the card is titled with.
     expect(items.some(b => b.textContent?.includes('Researcher'))).toBe(false)
   })
@@ -213,7 +213,7 @@ describe('ChannelPage — message list', () => {
     })])
     await renderPage()
     await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
-    await userEvent.click(screen.getByText('Trust all tools'))
+    await userEvent.click(screen.getByText('Trust all tools in this channel — persists across restarts'))
     await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
       .toHaveBeenCalledWith('ch1', 'a1', 'trust'))
     // trust_command / trust_base must never reach the API from this surface.
