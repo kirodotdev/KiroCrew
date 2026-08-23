@@ -4,10 +4,11 @@
  * Adding a language is a DATA change, not a code change — exactly three edits:
  *   1. add `src/i18n/locales/<code>.json` (same key set as `en.json`)
  *   2. add one entry here
- *   3. register the catalog in `src/i18n/index.ts` `CATALOGS`
+ *   3. register the catalog in `src/i18n/catalogs.ts` `AUTHORED_CATALOGS`
  *
  * No component changes, and no test changes: `catalogParity.test.ts` derives its
- * cases from this list and reads catalogs from the runtime `CATALOGS` map, so a
+ * cases from this list and reads catalogs from the `CATALOGS` map in
+ * `src/i18n/catalogs.ts` — the map registration is fed from — so a
  * new language automatically gains its own parity/placeholder/empty-value tests.
  * A half-added language therefore fails CI (naming the missing piece) instead of
  * silently rendering English.

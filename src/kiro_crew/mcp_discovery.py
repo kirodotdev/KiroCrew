@@ -32,9 +32,11 @@ import aiohttp
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.env import (
+    MCP_PATH_HINT,
     denied_spec_env_keys,
     describe_search_path,
     emit_env,
+    mcp_search_path,
     sanitize_spec_env,
     spec_env_path,
     spec_path_key,
@@ -150,7 +152,13 @@ def _warn_unresolvable_once(name: str, command: str, search_path: str = "") -> N
         )
         return
     _unresolvable_warned.add(key)
-    logger.warning("MCP probe failed [%s]: command not found: %s%s", name, command, searched)
+    logger.warning(
+        "MCP probe failed [%s]: command not found: %s%s; %s",
+        name,
+        command,
+        searched,
+        MCP_PATH_HINT,
+    )
 
 
 #: Servers whose probe has already reported a missing sandbox backend. Keyed by
@@ -1559,6 +1567,7 @@ async def probe_server(
     server.probe_mode = "handshake"
     proc = None
     sandbox_cleanup: str | None = None
+    probe_tmp: "Path | None" = None
     try:
         env = dict(os.environ)
         # The same expression backs command resolution and the PATH emitted into
@@ -1572,7 +1581,7 @@ async def probe_server(
         # "PATH" here would probe with a different path than the session gets.
         _path_key = spec_path_key(server.env)
         _declared_path = server.env.get(_path_key, "") if _path_key else ""
-        env["PATH"] = spec_env_path(_declared_path if isinstance(_declared_path, str) else "")
+        env["PATH"] = mcp_search_path(_declared_path if isinstance(_declared_path, str) else "")
         # The declared env is untrusted config text applied to the environment
         # the SANDBOX LAUNCHER starts under, so loader/interpreter injection
         # keys must not pass through — they would execute before confinement
@@ -1625,19 +1634,82 @@ async def probe_server(
                 server.name, server.command, server.args or [], server.env or {}
             ),
         )
-        proc = await create_subprocess_limited(
-            *wrapped_argv,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=env,
-            limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
-            # POSIX: setsid so the probe owns a dedicated process group and
-            # teardown can killpg launcher grandchildren (a leader-only kill
-            # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
-            # ignored (mirrors AcpRuntime / AcpClient._spawn).
-            start_new_session=platform_compat.IS_POSIX,
-        )
+        # Probe temp containment (#5064): each probe gets its OWN private dir
+        # under the managed root, cleaned in this function's finally -- unlike
+        # a backend, a probe knows exactly when its lifecycle ends, so no
+        # shared directory and no sweep race exist. Lazily imported
+        # (mcp_gateway.preflight imports this module, so a module-level import
+        # would cycle), created off-loop, and fail-open: a probe must run even
+        # when containment cannot be set up.
+        #
+        # Mirrors the backend chokepoint: a spec-DECLARED temp wins -- the
+        # operator pointed this server at chosen storage, and overriding it
+        # would trade litter for ENOSPC on the data-home volume. Checked
+        # case-insensitively (Windows env keys are case-insensitive and the
+        # sanitized spec preserves the author's spelling).
+        try:
+            _declared_temp_upper = {
+                key.upper()
+                for key in (server.env or {})
+                if key.upper() in ("TMPDIR", "TMP", "TEMP")
+            }
+            if not _declared_temp_upper:
+                from kiro_crew.mcp_gateway.backend_tmp import allocate_probe_tmp, tmp_env
+
+                probe_tmp = await asyncio.to_thread(allocate_probe_tmp)
+                env = {**env, **tmp_env(probe_tmp)}
+            else:
+                # Yielding alone is not enough: ambient temp keys are still in
+                # ``env`` and ``tempfile`` consults TMPDIR before TMP, so a
+                # spec declaring only TMP would silently write through the
+                # inherited ambient TMPDIR. Strip the canonical keys the spec
+                # did NOT declare (mirrors the backend chokepoint).
+                env = {
+                    key: value
+                    for key, value in env.items()
+                    if not (
+                        key in ("TMPDIR", "TMP", "TEMP")
+                        and key not in _declared_temp_upper
+                    )
+                }
+        except Exception:
+            logger.debug("probe temp containment unavailable", exc_info=True)
+        try:
+            proc = await create_subprocess_limited(
+                *wrapped_argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                limit=1024 * 1024,  # 1 MB — some MCP servers return large responses
+                # POSIX: setsid so the probe owns a dedicated process group and
+                # teardown can killpg launcher grandchildren (a leader-only kill
+                # leaked ``npx @playwright/mcp`` -> node trees). Windows: silently
+                # ignored (mirrors AcpRuntime / AcpClient._spawn).
+                start_new_session=platform_compat.IS_POSIX,
+            )
+        except BaseException:
+            # Spawn failed: the probe never existed, so reclaim its fresh dir
+            # here and now -- ownerless-or-provisional dirs are deliberately
+            # never deleted by the sweeps, making this the ONLY reclamation
+            # point for it (mirrors spawn_backend's failure path).
+            if probe_tmp is not None:
+                from kiro_crew.mcp_gateway.backend_tmp import sweep_backend_tmp
+
+                await asyncio.to_thread(sweep_backend_tmp, probe_tmp)
+            raise
+        if probe_tmp is not None:
+            # Re-record the owner as the PROBE's pid. The provisional owner
+            # written at allocation is THIS gateway process, which stays alive
+            # indefinitely -- on the Windows path (finally-sweep deferred) the
+            # daemon sweep would then retain the dir forever, accumulating one
+            # per probe. The probe pid dies with the probe, so owner-dead+idle
+            # reclamation works there. Off-loop, fail-open (record_owner
+            # swallows OSError; a stale provisional owner then keeps the dir
+            # until this gateway exits, bounded by gateway lifetime).
+            from kiro_crew.mcp_gateway.backend_tmp import record_owner
+
+            await asyncio.to_thread(record_owner, probe_tmp, proc.pid)
 
         # Send initialize request
         init_req = (
@@ -1960,6 +2032,37 @@ async def probe_server(
                     )
         if sandbox_cleanup:
             Path(sandbox_cleanup).unlink(missing_ok=True)
+        if probe_tmp is not None:
+            if platform_compat.IS_POSIX:
+                # POSIX: the probe's dedicated process GROUP was reaped above
+                # (killpg is tree-faithful), so its private temp dir dies with
+                # it. Off-loop, fail-open (a failed cleanup is picked up by
+                # the daemon sweep once the dir is owner-dead and idle).
+                try:
+                    from kiro_crew.mcp_gateway.backend_tmp import sweep_backend_tmp
+
+                    await asyncio.to_thread(sweep_backend_tmp, probe_tmp)
+                except Exception:
+                    logger.debug("probe temp cleanup failed", exc_info=True)
+            else:
+                # Windows: taskkill /T walks PPID links and can miss a child
+                # whose wrapper already exited, so tree death is UNPROVABLE
+                # here. Deleting THIS dir now could remove temp storage under
+                # a live survivor -- instead run the root-wide dual-condition
+                # sweep (owner dead AND 1h+ whole-tree idle) from THIS
+                # process: it reclaims prior probes' dead dirs while never
+                # touching the fresh one (its tree is seconds old). Running
+                # it here, not only in the mcp-tmp daemon, matters because a
+                # topology with no stub servers never starts that daemon --
+                # probes must not depend on it for reclamation. Concurrent
+                # with a daemon sweep it is benign: both sides lstat-recheck
+                # and rmtree(ignore_errors=True).
+                try:
+                    from kiro_crew.mcp_gateway.backend_tmp import sweep_all_backend_tmp
+
+                    await asyncio.to_thread(sweep_all_backend_tmp)
+                except Exception:
+                    logger.debug("probe-side backend-tmp sweep failed", exc_info=True)
 
     # A probe run under a SYNTHETIC identity must not become the cached truth:
     # the per-name cache is what ``GET /api/mcp`` renders, and a pre-flight's

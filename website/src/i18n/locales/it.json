@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Ferma la risposta corrente per cambiare progetto",
       "stopping": "Arresto in corso…",
       "stopping_2": "Arresto in corso",
+      "switch_not_confirmed": "Cambio non ancora confermato: verrà applicato se la connessione viene ripristinata.",
       "taking_longer_than_expected": "sta richiedendo più tempo del previsto",
       "that_approval_expired_the_turn_it_belonged_to_is": "Questa richiesta di approvazione è scaduta perché il turno associato non è più in attesa di approvazione.",
       "that_request_already_timed_out_and_was_denied": "Quella richiesta {{source}} è già scaduta ed è stata rifiutata — il job non è più in attesa. Controlla il feed delle approvazioni per il registro.",
@@ -6432,7 +6433,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Caricamento delle skill…",
-      "no_matching_skills": "Nessuna skill corrispondente"
+      "no_matching_skills": "Nessuna skill corrispondente",
+      "no_matching_skills_ctrl_enter_sends": "Nessuna skill corrispondente — Ctrl+Invio invia il messaggio",
+      "no_matching_skills_enter_sends": "Nessuna skill corrispondente — Invio invia il messaggio"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambia o gestisci l’agente attivo",
@@ -6461,7 +6464,9 @@
       "desc_tangent": "Avvia una conversazione tangente",
       "desc_todos": "Mostra o gestisci l’elenco delle attività",
       "desc_tools": "Mostra gli strumenti disponibili",
-      "desc_usage": "Mostra informazioni su fatturazione e utilizzo"
+      "desc_usage": "Mostra informazioni su fatturazione e utilizzo",
+      "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
+      "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
     },
     "slotTagPopover": {
       "assign_tags": "Assegna tag",
@@ -7984,8 +7989,8 @@
         "show_nudge_instructions": "Mostra le istruzioni del sollecito"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Comprimi messaggio fissato",
-        "expand_pinned_prompt": "Espandi messaggio fissato",
+        "collapse_pinned_prompt": "Comprimi turno fissato",
+        "expand_pinned_prompt": "Espandi turno fissato",
         "jump_to_this_turn": "Vai a questo turno"
       },
       "recoveryCard": {
@@ -9203,7 +9208,10 @@
         "nodes": "nodi,",
         "all_sources": "Tutte le fonti",
         "filter_by_source": "Filtra per fonte",
-        "recenter": "Ricentra"
+        "recenter": "Ricentra",
+        "start_physics": "Fisica",
+        "pause_physics": "Pausa",
+        "graph_region_label": "Grafo delle entità di conoscenza"
       },
       "sourceGroup": {
         "items_added_directly": "Elementi aggiunti direttamente",
@@ -10514,6 +10522,17 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Divergente",
+        "checkout_diverged_from_upstream": "Questo checkout è divergente dal suo upstream ({{distance}}). Esegui un rebase o un merge per aggiornare — nulla viene applicato automaticamente, quindi i tuoi commit locali sono al sicuro.",
+        "commits_ahead_one": "{{count}} commit avanti",
+        "commits_ahead_many": "{{count}} commit avanti",
+        "commits_ahead_other": "{{count}} commit avanti",
+        "commits_behind_one": "{{count}} commit indietro",
+        "commits_behind_many": "{{count}} commit indietro",
+        "commits_behind_other": "{{count}} commit indietro",
+        "updates_managed_by_policy": "Gli aggiornamenti di questa installazione sono gestiti da una politica di aggiornamento definita dall'operatore. Le nuove versioni arrivano tramite quel meccanismo.",
+        "updates_managed_externally": "Gli aggiornamenti di questa installazione sono gestiti da un gestore di pacchetti esterno. Usa quel gestore di pacchetti per ottenere le nuove versioni.",
+        "updates_managed_externally_by": "Gli aggiornamenti di questa installazione sono gestiti da {{managedBy}}. Usalo per ottenere le nuove versioni.",
         "a_new_version": "Una nuova versione",
         "a_newer_version_is_available": "È disponibile una versione più recente.",
         "apache_2_0": "Apache 2.0",

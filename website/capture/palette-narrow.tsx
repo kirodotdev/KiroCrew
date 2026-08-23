@@ -24,7 +24,7 @@ import { MemoryRouter } from 'react-router-dom'
 // Initialise i18next exactly as main.tsx does. Importing the module only DEFINES
 // initI18n — without calling it every label in the frame is blank, which
 // silently produces screenshots that misrepresent the real UI.
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { ThemeProvider } from '../src/hooks/useTheme'
 import CommandPalette from '../src/components/CommandPalette'

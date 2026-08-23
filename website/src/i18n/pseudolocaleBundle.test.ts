@@ -25,7 +25,7 @@ const AUTHORED = SUPPORTED_LANGUAGES.filter(l => !l.devOnly).map(l => l.code)
 async function catalogsWithDev(dev: boolean): Promise<Record<string, unknown>> {
   vi.stubEnv('DEV', dev)
   vi.resetModules()
-  const mod = await import('./index')
+  const mod = await import('./catalogs')
   return mod.CATALOGS as Record<string, unknown>
 }
 

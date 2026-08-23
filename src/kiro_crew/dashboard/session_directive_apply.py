@@ -1,12 +1,21 @@
 """Apply a decoded session directive against the consumer's OWN session.
 
 Called from ``dashboard/chat_runner.py``'s ``EVENT_TOOL_RESULT`` handler — the
-single shared turn loop for every interactive surface (dashboard, Slack,
-Discord, taskrunner, …). The caller supplies the AUTHORITATIVE ``slot`` and
-``session_key`` for the turn, so a stateless tool's directive is applied to the
-exact session that produced it. Effects run IN-PROCESS via the same cores the
-HTTP endpoints call (no loopback HTTP, no user-token dance): the consumer is
-the authoritative session, so cross-session misattribution is unrepresentable.
+shared turn loop for every dashboard-driven surface (dashboard, Slack mirror,
+taskrunner, …) — and from ``messaging/driver.py``'s ``TurnDriver`` directive
+consumer, which covers the standalone channel transports (Telegram, Discord,
+standalone Slack, iMessage, Teams, Webex, WeCom, Weixin). The caller supplies
+the AUTHORITATIVE ``session_key`` for the turn, so a stateless tool's directive
+is applied to the exact session that produced it. Effects run IN-PROCESS via
+the same cores the HTTP endpoints call (no loopback HTTP, no user-token dance):
+the consumer is the authoritative session, so cross-session misattribution is
+unrepresentable.
+
+``slot`` is the dashboard chat slot when the caller has one (chat_runner) and
+``None`` for a channel turn (TurnDriver). A missing slot NEVER weakens a
+boundary: the dashboard-only directives are refused outright for a slot-less
+caller (they act on a slot, so there is nothing to apply them to), and the
+monitor trio only reads ``slot`` through fail-safe ``getattr``.
 
 Every branch returns a human-readable confirmation string and NEVER raises into
 the runner. NOTE: gateway-off (the default), the MODEL already received the
@@ -39,20 +48,45 @@ from kiro_crew.apps.builtins.auto_research.session_keys import (
     is_owned_research_slot,
 )
 from kiro_crew.autonudge import APPROVAL_STALL_REASON, AUTONUDGE_STOP_REASON
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.session_surface import has_dashboard_surface
 
 logger = logging.getLogger(__name__)
 
-# Directives whose effect targets a DASHBOARD chat slot (its project/CWD, its
-# follow-up card, its question card). The HTTP endpoints they replaced were
-# dashboard-scoped, so the applier keeps that boundary; the monitor trio is
-# intentionally NOT here because it binds by session and supports Slack/Discord.
-_DASHBOARD_ONLY_DIRECTIVES = frozenset({"set_project", "suggest_followup", "ask_question"})
+# Directives whose effect targets a DASHBOARD chat slot (its follow-up card,
+# its question card). The HTTP endpoints they replaced were dashboard-scoped,
+# so the applier keeps that boundary; the monitor trio is intentionally NOT
+# here because it binds by session and supports Slack/Discord. ``set_project``
+# is also not here — it renders no card, so any USER-FACING surface (dashboard,
+# Slack, Telegram, Discord, ...) may retarget its own session's CWD — but it is
+# gated below on the same positive predicate, so headless callers (cron,
+# subagent, hook, taskrunner, background, empty key) are still refused.
+_DASHBOARD_ONLY_DIRECTIVES = frozenset({"suggest_followup", "ask_question"})
+
+# Directives allowed from any USER-FACING surface but refused for headless
+# callers. A cron turn can run ON A USER'S DASHBOARD SLOT (cron
+# ``session="origin"`` injection), and a sub-agent inherits its parent's slot —
+# letting those retarget ``slot.project`` would silently repoint the user's own
+# session out from under them. The gate is POSITIVE (dashboard surface or a
+# known channel namespace), so a key minted by any other subsystem (``hook:``,
+# ``secretary:``, ``wf-pool:``, an empty key, ...) fails closed instead of
+# silently qualifying.
+_USER_SURFACE_DIRECTIVES = frozenset({"set_project"})
+
+
+def _has_user_surface(session_key: str) -> bool:
+    """True when *session_key* names a user-facing conversation surface: a
+    dashboard slot (open tab or dashboard-born key) or a messaging-channel
+    session (Slack, Telegram, Discord, ...)."""
+    return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
 
 
 class _DirectiveDenied(Exception):
-    """Raised by an applier when it refuses on a permission decision (e.g. a
-    sensitive-path block). Audited as ``outcome="denied"`` by the wrapper."""
+    """Raised by an applier when the directive is REFUSED — a permission
+    decision (e.g. a sensitive-path block), an unsupported session type, or an
+    authorizer refusal. Audited as ``outcome="denied"`` by the wrapper. The
+    distinction from a plain returned string matters for the SEL chain: every
+    path where the effect was NOT applied must never audit ``success``."""
 
 
 def _audit(session_key: str, kind: str, outcome: str) -> None:
@@ -85,20 +119,39 @@ async def apply_session_directive(
 ) -> str:
     """Apply directive *kind* with *args* to *slot*/*session_key*; return a
     confirmation string for the model. Fail-soft: any error is returned as a
-    readable message, never raised. Every path emits a SEL audit event."""
-    if kind in _DASHBOARD_ONLY_DIRECTIVES and not has_dashboard_surface(session_key):
+    readable message, never raised. Every path emits a SEL audit event.
+    ``slot`` is ``None`` for a channel (TurnDriver) caller — see the module
+    docstring."""
+    if kind in _DASHBOARD_ONLY_DIRECTIVES and (
+        slot is None or not has_dashboard_surface(session_key)
+    ):
         # These three act on a dashboard chat SLOT (its project/CWD, its
         # follow-up card, its question card), so the boundary is whether an open
         # tab exists to receive the effect — not where the conversation started.
         # A channel-born session displayed in a tab qualifies; a cron, sub-agent
         # or otherwise tabless caller does not, and must not silently retarget a
-        # slot's project or address a card nothing will render. The consumer is
-        # the only layer that knows the authoritative session, so the check
-        # belongs HERE.
+        # slot's project or address a card nothing will render. A slot-less
+        # caller (a channel transport's TurnDriver) is refused for the same
+        # reason even when a tab happens to be open: the effect targets the
+        # SLOT, and this turn does not hold one. The consumer is the only layer
+        # that knows the authoritative session, so the check belongs HERE.
         _audit(session_key, kind, "denied")
         return (
             f"Error: {kind} only works from a dashboard chat session "
             f"(this turn is {session_key!r}). Nothing was changed."
+        )
+    if kind in _USER_SURFACE_DIRECTIVES and not _has_user_surface(session_key):
+        # set_project needs no dashboard tab (it renders no card), but it DOES
+        # need a user-facing conversation: a cron turn injected into a user's
+        # slot or a sub-agent sharing its parent's slot must not repoint that
+        # slot's project/CWD out from under the user. Positive predicate — an
+        # unrecognized key shape fails closed.
+        _audit(session_key, kind, "denied")
+        return (
+            f"Error: {kind} only works from a user-facing session (dashboard "
+            f"or a messaging channel); headless callers such as cron jobs and "
+            f"sub-agents are refused (this turn is {session_key!r}). "
+            "Nothing was changed."
         )
     try:
         if kind == "monitor_start":
@@ -146,11 +199,14 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
     from kiro_crew.autonudge_authz import authorize_and_add_nudge
 
     svc = get_instance()
+    # Not-applied paths RAISE so the wrapper audits them as denied — a plain
+    # return here would be derived as ``success`` and corrupt the SEL chain
+    # for an effect that never happened (the loop was not armed).
     if svc is None:
-        return "Monitor loop NOT armed: auto-nudge is disabled on this host."
+        raise _DirectiveDenied("Monitor loop NOT armed: auto-nudge is disabled on this host.")
     binding = _binding(session_key)
     if not binding:
-        return "monitor_start is not supported from this session type."
+        raise _DirectiveDenied("monitor_start is not supported from this session type.")
     idle_secs = int(args.get("idle_secs") or 300)
     max_cycles = int(args.get("max_cycles") or 0)
     max_runtime_secs = int(args.get("max_runtime_secs") or 0)
@@ -167,7 +223,9 @@ async def _monitor_start(state: Any, session_key: str, args: dict[str, Any]) -> 
         caller="session-directive",
     )
     if error is not None:
-        return f"Failed to start monitor loop: {error}"
+        # The authorizer already audited its own refusal; the wrapper's record
+        # for THIS directive must agree (denied), not overwrite it as success.
+        raise _DirectiveDenied(f"Failed to start monitor loop: {error}")
     cap = f", stopping after {max_cycles} cycles" if max_cycles else ", with NO cycle cap"
     if max_runtime_secs:
         cap += f", wall-clock budget {max_runtime_secs}s"
@@ -185,14 +243,15 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
     from kiro_crew.autonudge_authz import authorize_and_update_nudge
 
     svc = get_instance()
+    # Not-applied paths raise (audited denied) — see _monitor_start.
     if svc is None:
-        return "Cannot update monitor loop: auto-nudge is disabled on this host."
+        raise _DirectiveDenied("Cannot update monitor loop: auto-nudge is disabled on this host.")
     binding = _binding(session_key)
     if not binding:
-        return "monitor_update is not supported from this session type."
+        raise _DirectiveDenied("monitor_update is not supported from this session type.")
     loop = svc.get_by_slot(binding)
     if not loop:
-        return "No active monitor loop on this session to update."
+        raise _DirectiveDenied("No active monitor loop on this session to update.")
     patch = dict(args.get("patch") or {})
     cycle_count = int(getattr(loop, "cycle_count", 0) or 0)
     current_cap = int(getattr(loop, "max_cycles", 0) or 0)
@@ -285,7 +344,8 @@ async def _monitor_update(session_key: str, args: dict[str, Any]) -> str:
         caller="session-directive",
     )
     if error is not None:
-        return f"Failed to update monitor loop: {error}"
+        # The authorizer already audited its own refusal; agree with it.
+        raise _DirectiveDenied(f"Failed to update monitor loop: {error}")
     fields = ", ".join(sorted(k for k in patch if k != "active"))
     return (
         f"Monitor loop {loop.id} updated on this session ({fields})."
@@ -297,11 +357,15 @@ async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> 
     from kiro_crew.autonudge import get_instance
 
     svc = get_instance()
+    # "Nothing to stop" is an IDEMPOTENT success — the goal (no loop running on
+    # this session) already holds — so the disabled-service and no-loop paths
+    # keep returning. The unsupported-session path is a refusal like its
+    # siblings: the caller asked for an effect this session can never carry.
     if svc is None:
         return "No auto-nudge loop to stop (auto-nudge is disabled on this host)."
     binding = _binding(session_key)
     if not binding:
-        return "autonudge_stop is not supported from this session type."
+        raise _DirectiveDenied("autonudge_stop is not supported from this session type.")
     loop = svc.get_by_slot(binding)
     if not loop:
         return "No active auto-nudge loop on this session — nothing to stop."

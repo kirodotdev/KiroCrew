@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest'
-import { CATALOGS as RUNTIME_CATALOGS } from '../index'
+import { CATALOGS as RUNTIME_CATALOGS } from '../catalogs'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
   const out: Record<string, string> = {}

@@ -1111,11 +1111,13 @@ def _validate_theme_dir(
     ``_validate_theme_data`` for the colour values so the 43-var allowlist and
     per-value CSS sanitisation match editor-created themes.
 
-    ``installing`` marks the install path, where a pack may still be REFUSED for
-    pinning the UI font in ``overrides.css``. This function also runs when an
-    already-installed pack is re-read (the theme-detail route), and a pack that
-    predates that rule must keep loading there — so the font-pin layer is opt-in
-    rather than applied to every read. See ``_validate_overrides_css``.
+    ``installing`` marks the install path, where a pack may still be REFUSED
+    for pinning the UI font in ``overrides.css``, or for a ``fonts`` entry
+    declaring an unrecognised ``role``. This function also runs when an
+    already-installed pack is re-read (the theme-detail route), and a pack
+    that predates either rule must keep loading there — so both layers are
+    opt-in rather than applied to every read. See ``_validate_overrides_css``
+    and ``_theme_asset_descriptor``.
     """
     if not path.is_dir() or path.is_symlink():
         return None, "theme path is not a directory"
@@ -1160,6 +1162,42 @@ def _validate_theme_dir(
     emoji = manifest.get("emoji", _THEME_DEFAULT_EMOJI)
     if not isinstance(emoji, str):
         return None, "theme.json 'emoji' must be a string"
+
+    # Font role: reject an unrecognised value at INSTALL time only. The read
+    # path (`_theme_asset_descriptor`, which this function also feeds when an
+    # already-installed pack is re-read by the theme-detail route) stays
+    # lenient and coerces an unknown role to "sans" -- only an absent `role`
+    # is the deliberate default case; an explicit ``null`` is rejected.
+    # Rejecting it only at install
+    # keeps a pack that predates this rule loading, matching the font-pin
+    # check below. "monospace" (the CSS keyword) is the likeliest typo for
+    # exactly the role most likely to be mistyped, and the failure is
+    # otherwise silent: the mono face quietly renders as Sans while Mono keeps
+    # the built-in JetBrains Mono (#2750).
+    if installing:
+        fonts_manifest = manifest.get("fonts")
+        if isinstance(fonts_manifest, list):
+            for f in fonts_manifest:
+                if not isinstance(f, dict):
+                    continue
+                # Skip only a genuinely ABSENT role (the deliberate
+                # default case). An explicit JSON `null` is a present,
+                # non-string value and falls through to rejection like any
+                # other bad role, instead of silently coercing to "sans".
+                if "role" not in f:
+                    continue
+                role = f["role"]
+                # isinstance FIRST, same as the read path: `role in
+                # _THEME_FONT_ROLES` against an unhashable value (a list, a
+                # dict) raises TypeError before the membership test runs.
+                if isinstance(role, str) and role in _THEME_FONT_ROLES:
+                    continue
+                fam = f.get("family")
+                fam_label = fam if isinstance(fam, str) and fam else "<unnamed>"
+                return None, (
+                    f"font entry '{fam_label}' has role {role!r}; "
+                    "valid roles are 'sans' and 'mono'"
+                )
 
     max_entries = _THEME_ENTRIES_BY_LEVEL.get(level, 160)
     max_total = _THEME_TOTAL_BYTES_BY_LEVEL.get(level, 5 * 1024 * 1024)

@@ -589,6 +589,31 @@ class TestReplyParsing:
         _stub_llm(monkeypatch, f"Here you go:\n{_GOOD_REPLY}\nHope that helps.")
         assert await chat_summary.generate_session_summary(state, slot, cfg=_cfg()) is True
 
+    async def test_stray_brace_in_prose_does_not_corrupt_the_payload(self):
+        # The old outermost find('{') .. rfind('}') span started at the
+        # {placeholder} aside and swallowed the trailing "{}" echo, so the
+        # slice never parsed and a valid payload was silently lost.
+        reply = (
+            "Using the {title, ranges} shape as asked:\n"
+            f"{_GOOD_REPLY}\n"
+            'Emit {} if the transcript is empty.'
+        )
+        parsed = chat_summary._parse_reply(reply)
+        assert isinstance(parsed, dict)
+        assert parsed == json.loads(_GOOD_REPLY)
+
+    async def test_two_different_payloads_refuse_the_guess(self):
+        # The shared extractor's ambiguity contract: two DIFFERENT
+        # payload-shaped dicts mean the caller cannot know which is real.
+        a = json.dumps({"intents": [{"title": "a", "ranges": [[1, 1]], "status": "active"}]})
+        b = json.dumps({"intents": [{"title": "b", "ranges": [[2, 2]], "status": "active"}]})
+        assert chat_summary._parse_reply(f"Either:\n{a}\nor:\n{b}") is None
+
+    async def test_garbage_and_empty_replies_yield_none(self):
+        assert chat_summary._parse_reply("") is None
+        assert chat_summary._parse_reply("no json at all") is None
+        assert chat_summary._parse_reply("{not valid json}") is None
+
     async def test_caps_from_config_are_applied_to_the_reply(self, env, monkeypatch):
         state, slot = env
         many = {

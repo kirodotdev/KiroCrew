@@ -1383,6 +1383,11 @@ async def _gitlab_settled_merge_state(
 
 
 async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
+    # `statusCheckRollup` is deliberately ABSENT from this field set: `gh`
+    # resolves a `--json` field set atomically, so bundling the rollup (which
+    # needs Checks read access that fine-grained tokens commonly lack) would
+    # fail the whole panel read over the one section the token cannot see. The
+    # rollup rides a separate degradable read below (#5115).
     fields = ",".join(
         [
             "additions",
@@ -1403,7 +1408,6 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
             "number",
             "reviews",
             "state",
-            "statusCheckRollup",
             "title",
             "updatedAt",
             "url",
@@ -1420,7 +1424,14 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
     review_comments_raw: Any
     review_threads_raw: Any
     merge_state_raw: Any
-    files_raw, review_comments_raw, review_threads_raw, merge_state_raw = await asyncio.gather(
+    rollup_raw: Any
+    (
+        files_raw,
+        review_comments_raw,
+        review_threads_raw,
+        merge_state_raw,
+        rollup_raw,
+    ) = await asyncio.gather(
         _run_json(
             "gh",
             "api",
@@ -1450,6 +1461,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         # Runs alongside the secondary calls so its re-read wait overlaps with
         # fetches this request was making anyway.
         _github_settled_merge_state(ref, details),
+        _github_rollup_read(ref),
         return_exceptions=True,
     )
     partial_sections: list[str] = []
@@ -1459,6 +1471,31 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         review_threads_raw, BaseException
     ):
         _mark_partial(partial_sections, "inline review comments")
+    checks: list[dict[str, Any]] = []
+    if isinstance(rollup_raw, BaseException):
+        # The rollup is read separately from the core fields precisely so a
+        # token without Checks read access (or a transient rollup failure)
+        # costs the checks SECTION, never the panel. Name it in
+        # `partialSections` so the empty list cannot read as "no checks": the
+        # frontend banner surfaces the degraded section, and
+        # `record_full_payload_status` keeps a known CI glyph alive while
+        # `checks` is partial instead of erasing it.
+        _mark_partial(partial_sections, "checks")
+    else:
+        rollup_checks, rollup_head = rollup_raw
+        head_oid = str(details.get("headRefOid") or "")
+        # A missing sha on either side DELIBERATELY fails open (accepts the
+        # rollup): treating it as unverifiable would degrade every read where
+        # the provider omits the field, which is worse than the narrow race
+        # this guard exists for.
+        if head_oid and rollup_head and rollup_head != head_oid:
+            # The core read and the rollup read straddled a push: these checks
+            # describe a different commit than the rest of the payload. Mark
+            # the section unavailable rather than pin another head's CI to
+            # this one; the next refresh re-pairs them.
+            _mark_partial(partial_sections, "checks")
+        else:
+            checks = rollup_checks
     files = _or_empty(files_raw)
     review_comments = _or_empty(review_comments_raw)
     thread_map = _github_thread_map(_or_empty(review_threads_raw))
@@ -1547,7 +1584,7 @@ async def _fetch_github(ref: SourceRef) -> dict[str, Any]:
         "deletions": details.get("deletions") or 0,
         "changedFiles": details.get("changedFiles") or len(normalized_files),
         "commits": commits,
-        "checks": _github_checks(_as_list(details.get("statusCheckRollup"))),
+        "checks": checks,
         "comments": comments,
         "files": normalized_files,
         "partialSections": partial_sections,
@@ -1793,23 +1830,44 @@ async def _fetch_gitlab(ref: SourceRef) -> dict[str, Any]:
     return payload
 
 
-async def _fetch_github_checks(ref: SourceRef) -> list[dict[str, Any]]:
+async def _github_rollup_read(ref: SourceRef) -> tuple[list[dict[str, Any]], str]:
+    """Read the check rollup ALONE, paired with the head sha it was read at.
+
+    ``gh pr view`` resolves a ``--json`` field set atomically: one unreadable
+    field fails the whole read. ``statusCheckRollup`` needs Checks read access
+    that fine-grained tokens commonly lack, so it must never share a field set
+    with data the token IS authorized for (#5115) — every rollup consumer
+    routes through this one isolated query instead of growing its own copy.
+    ``headRefOid`` rides along (core pull-request data, readable whenever the
+    PR itself is) so callers that pair this read with a separate core read can
+    detect the two straddling a push and refuse to render another commit's
+    checks.
+    """
     data = await _run_json(
         "gh",
         "pr",
         "view",
         ref.url,
         "--json",
-        "statusCheckRollup",
+        "statusCheckRollup,headRefOid",
         max_output_bytes=_CHECKS_OUTPUT_BYTES,
     )
     if not isinstance(data, dict):
         raise SourceProviderError("GitHub returned an invalid checks payload")
-    # The panel polls this endpoint while checks are pending and writes the result
-    # straight over the full payload's `checks`, so it MUST collapse identically —
-    # an uncollapsed reply here would re-inflate the counts and resurrect a
-    # superseded CANCELLED failure on the first poll after the panel opens.
-    return _github_checks(_as_list(data.get("statusCheckRollup")))
+    # The panel polls the checks endpoint while checks are pending and writes
+    # the result straight over the full payload's `checks`, so every consumer
+    # MUST collapse identically — an uncollapsed reply would re-inflate the
+    # counts and resurrect a superseded CANCELLED failure on the first poll
+    # after the panel opens.
+    return (
+        _github_checks(_as_list(data.get("statusCheckRollup"))),
+        str(data.get("headRefOid") or ""),
+    )
+
+
+async def _fetch_github_checks(ref: SourceRef) -> list[dict[str, Any]]:
+    checks, _head = await _github_rollup_read(ref)
+    return checks
 
 
 async def _fetch_gitlab_checks(ref: SourceRef) -> list[dict[str, Any]]:
@@ -4758,6 +4816,16 @@ def request_check_refresh_now(
     return refreshing
 
 
+# Internal marker `_fetch_check_status` sets when the core chip read succeeded
+# but the isolated rollup read alone failed (or described a different head).
+# `_refresh_check_status` — the sole consumer — POPS it before the status is
+# cached or compared, so only the documented chip keys
+# ({state, ci, mergeable, mergeStateStatus}) ever reach slot serialization.
+# It exists because "rollup unavailable" and "rollup empty" are otherwise the
+# same absent `ci` key, and only the former may keep a previously known glyph.
+_CHIP_CI_UNAVAILABLE = "ciUnavailable"
+
+
 async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None = None) -> None:
     previous = _check_cache.get(url)
     generation = _check_generations.get(url, 0)
@@ -4782,10 +4850,33 @@ async def _refresh_check_status(url: str, on_update: _CheckUpdateCallback | None
         # result describes the pre-mutation state. Drop it rather than let it
         # overwrite the invalidated entry.
         return
+    ci_unavailable = False
+    if status is not None:
+        # Strip the internal marker BEFORE the status is cached or compared:
+        # cache entries feed owner slot serialization, which must only ever
+        # carry the documented chip keys.
+        ci_unavailable = bool(status.pop(_CHIP_CI_UNAVAILABLE, None))
+        if not status:
+            status = None
     # A transient provider failure must not erase a known status. It still
     # refreshes the timestamp so repeated slots requests respect the TTL.
     if status is None and previous:
         status = previous[1]
+    elif (
+        ci_unavailable
+        and status is not None
+        and "ci" not in status
+        and previous
+        and previous[1]
+        and "ci" in previous[1]
+    ):
+        # The CI portion ALONE was unavailable this round (rollup read failed
+        # or straddled a push) while the authorized core fields survived.
+        # Mirror `record_full_payload_status`'s keep-known rule for a partial
+        # `checks` section: a degraded read must not erase a glyph the cache
+        # already knows — but a SUCCESSFUL rollup with zero checks (no marker)
+        # must still be allowed to clear a stale one.
+        status = {**status, "ci": previous[1]["ci"]}
     # Re-read the cache AFTER the provider await. The turn-boundary design makes
     # a concurrent full fetch the COMMON case: on `chat_done` the client
     # invalidates the detail payload (starting a full fetch) at the same moment
@@ -4851,25 +4942,52 @@ async def _fetch_check_status(url: str) -> dict[str, str] | None:
     ref = _require_change_ref(parse_source_url(url))
     result: dict[str, str] = {}
     if ref.provider == "github":
-        data = await _run_json(
-            "gh",
-            "pr",
-            "view",
-            ref.url,
-            "--json",
-            "statusCheckRollup,state,isDraft,mergeable,mergeStateStatus",
+        # The rollup is read separately from the core fields (#5115): `gh`
+        # resolves a `--json` field set atomically, so bundling
+        # `statusCheckRollup` here made a token without Checks read access lose
+        # the state/draft/merge data it WAS authorized to read. The two reads
+        # run concurrently; only the core read is load-bearing.
+        data_raw, rollup_raw = await asyncio.gather(
+            _run_json(
+                "gh",
+                "pr",
+                "view",
+                ref.url,
+                "--json",
+                "state,isDraft,mergeable,mergeStateStatus,headRefOid",
+            ),
+            _github_rollup_read(ref),
+            return_exceptions=True,
         )
+        if isinstance(data_raw, BaseException):
+            raise data_raw
+        data = data_raw
         if not isinstance(data, dict):
             return None
-        # Same projection AND the same latest-run collapsing as the full payload
-        # (`_github_checks`), so the chip glyph cannot disagree with the panel's
-        # own rollup — a superseded CANCELLED row must not paint either red.
-        buckets = [
-            check["bucket"] for check in _github_checks(_as_list(data.get("statusCheckRollup")))
-        ]
-        ci = _rollup_ci(buckets)
-        if ci is not None:
-            result["ci"] = ci
+        if isinstance(rollup_raw, BaseException):
+            # Core data survives; flag the CI portion unavailable so the cache
+            # writer can keep a previously known glyph instead of erasing it.
+            result[_CHIP_CI_UNAVAILABLE] = "1"
+        else:
+            checks, rollup_head = rollup_raw
+            head_oid = str(data.get("headRefOid") or "")
+            # A missing sha on either side deliberately fails open, same as
+            # the full-payload guard: unverifiable must not mean unavailable.
+            if head_oid and rollup_head and rollup_head != head_oid:
+                # The two reads straddled a push — this rollup describes a
+                # different commit. Treat it as unavailable rather than paint
+                # another head's CI on this one; the next refresh re-pairs.
+                result[_CHIP_CI_UNAVAILABLE] = "1"
+            else:
+                # Same projection AND the same latest-run collapsing as the
+                # full payload (`_github_checks`, applied inside
+                # `_github_rollup_read`), so the chip glyph cannot disagree
+                # with the panel's own rollup — a superseded CANCELLED row must
+                # not paint either red.
+                buckets = [check["bucket"] for check in checks]
+                ci = _rollup_ci(buckets)
+                if ci is not None:
+                    result["ci"] = ci
         raw_state = str(data.get("state") or "").upper()
         state = _project_state(raw_state, draft=bool(data.get("isDraft")))
         if state is not None:

@@ -42,6 +42,7 @@ from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
     _valid_override_home,
     kiro_agents_dir,
+    project_agents_dir,
 )
 from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.crash_dump_store import (
@@ -71,6 +72,7 @@ from kiro_crew.mcp_cleanup import ALWAYS_ON_BIN_MCP_SERVERS as _ALWAYS_ON_MCPS
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS as _MANAGED_MCPS
 from kiro_crew.mcp_cleanup import OPT_IN_BIN_MCP_SERVERS as _OPT_IN_MCPS
 from kiro_crew.mcp_discovery import McpServerInfo, probe_server
+from kiro_crew.model_registry import acp_id_correction
 from kiro_crew.platform import (
     PlatformCompositionError,
     current_context,
@@ -78,6 +80,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.platform.governance import CU_MCP_SERVER, may_skip_gate_now
 from kiro_crew.sandbox import warm_backend
+from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 from kiro_crew.service import apparmor
 from kiro_crew.service import common as common_service
@@ -225,17 +228,18 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
     tiers.append(("global agent.model", normalize_agent_model(cfg.agent.model)))
     tiers.append(("default spec pin", default_model))
 
-    decided_by = next((label for label, value in tiers if value), "bundled defaults.json")
-    if any(value for _, value in tiers):
-        decided_value = next(value for _, value in tiers if value)
-    elif default_readable:
-        # Nothing pinned anything, so the bundled default answered and the
-        # resolver's value is legitimately ours.
-        decided_value = effective
+    # Label and value come out of the SAME tier by construction; a second lookup
+    # for the value could be filtered differently and mis-attribute the decision.
+    decided = next(((label, value) for label, value in tiers if value), None)
+    if decided is not None:
+        decided_by, decided_value = decided
     else:
-        # A spec read was REFUSED, so the resolver may have followed a link this
-        # report would not. Adopting its answer here would hide exactly that.
-        decided_value = ""
+        decided_by = "bundled defaults.json"
+        # Nothing pinned anything, so the bundled default answered and the
+        # resolver's value is legitimately ours -- unless a spec read was
+        # REFUSED, in which case the resolver may have followed a link this
+        # report would not, and adopting its answer would hide exactly that.
+        decided_value = effective if default_readable else ""
 
     print(f"  effective:   {_safe_display(effective) if effective else 'auto (backend picks)'}")
     print(f"  decided by:  {decided_by}")
@@ -292,19 +296,20 @@ def _doctor_effective_model(cfg: KiroCrewConfig, project_dir: str, issues: list[
         # Resolved the way kiro-cli itself resolves --agent, via the existing
         # helper: the DECLARED name wins and the filename is only the fallback,
         # so a project spec that declares this agent under some other filename is
-        # still found. Checking `<bound>.json` alone missed exactly that and
-        # under-reported the shadow.
+        # still found. Matching on `<bound>.json` alone would miss exactly that
+        # and under-report the shadow.
         proj_spec = next(
             (p for p in project_agent_files(project_dir) if project_agent_name(p) == bound),
             None,
         )
         if proj_spec is not None:
             proj_model, proj_usable = _spec_model(proj_spec)
-            shown = (
-                _safe_display(proj_model)
-                if proj_model
-                else ("(unreadable)" if not proj_usable else "(no model)")
-            )
+            if proj_model:
+                shown = _safe_display(proj_model)
+            elif not proj_usable:
+                shown = "(unreadable)"
+            else:
+                shown = "(no model)"
             print(f"  project spec: ⚠️  {_safe_display(str(proj_spec))} -> {shown}")
             print("                kiro-cli loads this one first; not read above")
             issues.append("project-local agent spec shadows the user-level one")
@@ -326,7 +331,7 @@ def _os_fix_hint(mac: str, linux: str, windows: str | None = None) -> str:
     """Return the OS-appropriate Fix hint (brew on macOS, winget on Windows,
     else Linux guidance).
 
-    Without a Windows arm, Windows fell through to the Linux text — telling a
+    Without a Windows arm Windows would fall through to the Linux text, telling a
     Windows user to ``pipx``/drop a static build in ``~/.local/bin``, neither of
     which applies. When *windows* is omitted the Linux text is still used, so
     callers only pass it where a Windows-specific remedy exists.
@@ -356,6 +361,112 @@ _CLAUDE_ACP_BIN = "claude-agent-acp"
 # command must not silently undo that.  Doctor still repairs the ``tools`` entry,
 # which only makes the server's tools *reachable*, never pre-approved.
 _NO_BLANKET_ALLOW_MCPS = frozenset({CU_MCP_SERVER}) | frozenset(_OPT_IN_MCPS)
+
+
+def _strict_agent_json_specs(directory: Path) -> list[Path]:
+    """Enumerate real spec candidates while preserving directory-read failures."""
+    try:
+        with os.scandir(directory) as entries:
+            return sorted(
+                (
+                    Path(entry.path)
+                    for entry in entries
+                    if entry.name.endswith(".json") and not entry.name.startswith("._")
+                ),
+                key=lambda path: path.stem,
+            )
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+
+
+def _agent_spec_model_problems(
+    agents_dir: Path | None = None,
+    project_dir: str | Path | None = None,
+    provider: str = "acp",
+) -> list[tuple[str, str, str]] | None:
+    """Agent specs whose ``model`` names a model kiro-cli does not serve.
+
+    Returns ``(agent name, pinned value, correct id)`` for each spec the registry
+    can positively correct, an EMPTY list when every pin checked out, or ``None``
+    when the check could not run at all. That third state is deliberate: a
+    diagnostic that reports green for a check it never performed is worse than
+    one that admits it could not look, which is the whole failure class this
+    audit exists to close.
+
+    *project_dir* is forwarded so project-scoped specs are audited too. A project
+    spec SHADOWS a user-level agent of the same name, so a global-only scan can
+    miss the exact spec a session in that project runs.
+
+    Read through the hardened spec reader rather than opening files here, so a
+    spec symlinked at something sensitive is refused the same way every other
+    consumer refuses it.
+
+    Reports only ids the registry recognizes under a different spelling. An
+    unrecognized id is deliberately NOT reported: a real-but-unregistered id (a
+    regional profile, or a model newer than this build's registry) is
+    legitimate, and entitlement cannot be judged offline at all — that needs a
+    live session's advertised set.
+    """
+    # The retained claude_code seam accepts its own registered wire ids. The
+    # correction below is specifically an ACP/kiro-cli spelling audit.
+    if provider == "claude_code":
+        return []
+
+    problems: list[tuple[str, str, str]] = []
+    try:
+        global_dir = agents_dir or _agents_dir()
+        global_specs = _strict_agent_json_specs(global_dir)
+        if project_dir:
+            if is_sensitive_path(str(project_dir)):
+                return None
+            project_specs = _strict_agent_json_specs(project_agents_dir(project_dir))
+        else:
+            project_specs = []
+
+        # Normal discovery deliberately skips malformed or denied specs so one
+        # bad file cannot break the agent picker. Doctor has the opposite
+        # contract: a skipped candidate makes the audit incomplete, so read each
+        # candidate directly through discovery's hardened reader and fail the
+        # check to UNKNOWN when any one is refused.
+        for path, project_scoped in (
+            *((path, False) for path in global_specs),
+            *((path, True) for path in project_specs),
+        ):
+            data = _read_agent_spec(path)
+            if data is None:
+                return None
+            model = normalize_agent_model(data.get("model"))
+            correction = acp_id_correction(model)
+            if not correction:
+                continue
+            if project_scoped:
+                raw_name = data.get("name")
+                name = raw_name if isinstance(raw_name, str) and raw_name else path.stem
+            else:
+                raw_name = data.get("name")
+                name = raw_name if isinstance(raw_name, str) else path.stem
+            problems.append((name, model, correction))
+    except Exception:
+        return None
+    return problems
+
+
+def _format_model_pin_problem(name: str, pin: str, correction: str) -> tuple[str, str]:
+    """The two report lines for one unusable pin.
+
+    Every field is repr'd, including the NAME: all three come from an agent
+    spec's own contents, so a planted or packaged spec could otherwise carry
+    terminal control sequences (cursor moves, screen clears, OSC) and rewrite or
+    hide this report. ``repr`` escapes every control character, and is what the
+    pin and correction already relied on.
+
+    Separated from the printing so the escaping is a testable contract rather
+    than a property of how far ``doctor()`` happens to get.
+    """
+    return (
+        f"  model pin:   ❌ {name!r}: {pin!r} is not a model kiro-cli serves",
+        f"                  the registry maps that spelling to {correction!r}",
+    )
 
 
 def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
@@ -443,8 +554,8 @@ def _doctor_mcp_tools(agent_path: Path, issues: list[str]) -> None:
             # ungoverned — and leaving it in place means the ceiling applies only
             # to installs that were governed before their first launch. Every
             # other writer of this list revokes here too (agent.py's shared sync,
-            # both dashboard enable paths); doctor was the one that only declined
-            # to mint, which left `kirocrew doctor` reporting a repaired config
+            # both dashboard enable paths); declining to MINT without also
+            # revoking would leave `kirocrew doctor` reporting a repaired config
             # that still carried the exemption.
             #
             # This is the one case where doctor removes something from
@@ -1016,7 +1127,7 @@ _WINDOWS_GIT_DIRS = (
 def _windows_git_bin() -> str | None:
     """``git.exe`` from the fixed Git for Windows install roots, else ``None``.
 
-    Without this, every supported Windows source install reported "could not
+    Without this, every supported Windows source install reports "could not
     check" — :func:`platform_compat.trusted_system_bin` only probes the system
     directories, where git never is. A non-default-drive install still misses
     and degrades to "could not check", which is honest: this fallback widens
@@ -1108,8 +1219,11 @@ def _doctor_source_checkout(repo: Path) -> None:
         print(f"  branch:      ⚠️  {branch} (could not determine default branch)")
         return
 
+    # One count for both arms below; they ask git the same question and only
+    # differ in how they render the answer.
+    behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
+
     if branch == default_branch:
-        behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
         if behind is None or not behind.isdigit():
             # A failed count must not masquerade as a verified-fresh checkout:
             # "up to date" is a claim this probe could not actually establish.
@@ -1123,7 +1237,6 @@ def _doctor_source_checkout(repo: Path) -> None:
             print(f"  branch:      ✅ {default_branch} (up to date as of last fetch)")
         return
 
-    behind = _git_line(repo, "rev-list", "--count", f"HEAD..origin/{default_branch}")
     detail = (
         f", {behind} commit(s) behind origin/{default_branch}"
         if behind and behind.isdigit() and int(behind) > 0
@@ -1692,12 +1805,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # Report the composed profile, and surface a boot-composition failure as a
     # blocking issue with the remediation hint rather than letting it abort the
     # whole CLI before the doctor can run.
+    print("Platform")
     if platform_boot_error is not None:
-        print("Platform")
         print(f"  edition:     ❌ composition failed: {platform_boot_error}")
         issues.append(f"platform composition failed: {platform_boot_error}")
     else:
-        print("Platform")
         # Bind the context ONCE for the whole block so the edition line and the
         # jail line describe the same PlatformContext.  A late
         # PlatformCompositionError (boot succeeded, but a lazily-composing adapter
@@ -1798,12 +1910,13 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # venv detection — used by the runtime section below. Windows venvs put the
     # interpreter under .venv\Scripts\python.exe, not .venv/bin/python3, so a
-    # hardcoded POSIX layout misreported the venv (and the runtime section) on
+    # hardcoded POSIX layout misreports the venv (and the runtime section) on
     # every Windows install.
+    venv_root = Path(__file__).resolve().parents[2] / ".venv"
     if platform_compat.IS_WINDOWS:
-        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "Scripts" / "python.exe"
+        venv_py = venv_root / "Scripts" / "python.exe"
     else:
-        venv_py = Path(__file__).resolve().parents[2] / ".venv" / "bin" / "python3"
+        venv_py = venv_root / "bin" / "python3"
     is_venv_install = venv_py.is_file()
 
     # ── Project ──
@@ -1834,6 +1947,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     elif not stale_project:
         print("  project dir: ⚠️  not set (run kirocrew setup from project root)")
 
+    cfg = KiroCrewConfig.load()
+
     # ── Agent config ──
     print("\nAgent")
     agent_path = _agents_dir() / AGENT_FILENAME
@@ -1843,10 +1958,31 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("  config:      ❌ not found (run kirocrew setup)")
         issues.append("agent config")
 
+    # Model pins across ALL specs, not just the default one. A pin kiro-cli
+    # cannot serve kills every session and subagent using that agent seconds
+    # after startup, and nothing else reports it before something spawns: the
+    # entitlement guards all sit behind session init, while kiro-cli reads this
+    # field when the child starts.
+    #
+    # The project dir is threaded through because a project spec SHADOWS a
+    # user-level agent of the same name — scanning only the global scope would
+    # miss the very spec a session in this project actually runs, and report a
+    # clean bill of health for it.
+    _bad_pins = _agent_spec_model_problems(project_dir=proj or None, provider=cfg.agent.provider)
+    if _bad_pins is None:
+        print("  model pins:  ⚠️  could not check (agent specs unreadable)")
+        issues.append("agent model pins unchecked")
+    elif _bad_pins:
+        for _agent_name, _pin, _correction in _bad_pins:
+            for _line in _format_model_pin_problem(_agent_name, _pin, _correction):
+                print(_line)
+        issues.append("agent model pin")
+    else:
+        print("  model pins:  ✅ no unusable spellings in agent specs")
+
     # ── Config ──
     print("\nConfiguration")
     cfg_dir = config_dir()
-    cfg = KiroCrewConfig.load()
     if cfg_dir.exists():
         print(f"  config dir:  ✅ {cfg_dir}")
     else:
@@ -1865,7 +2001,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if _port:
         print(f"  dashboard:   http://{_display_host}:{_port}")
 
-    # Dashboard auth mode
+    # Dashboard auth mode. Both this section and the Slack section below key off
+    # the SAME credential read and the same token pair, so the two can never
+    # disagree about whether Slack is configured.
     creds = cfg.load_credentials()
     _has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
     _local = is_local_only(_host, _has_slack)
@@ -2092,17 +2230,18 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # STT ships enabled-by-default, but neither whisper nor ffmpeg is on a stock
     # Windows box and neither is a KiroCrew dependency there. Reporting them as
-    # hard issues made `kirocrew doctor` exit 1 on a healthy first install, and
-    # the guide's `kirocrew doctor && kirocrew gateway` then never launched the
+    # hard issues makes `kirocrew doctor` exit 1 on a healthy first install, so
+    # the guide's `kirocrew doctor && kirocrew gateway` never launches the
     # gateway. On Windows treat them as non-fatal notes; POSIX keeps failing so
     # a real STT setup gap is still surfaced.
     stt_fatal = not platform_compat.IS_WINDOWS
+    stt_mark = "❌" if stt_fatal else "⚠️ "
 
     whisper_bin = _find_whisper(cfg.stt.whisper_path)
     if whisper_bin:
         print(f"  whisper:     ✅ {whisper_bin}")
     elif needs_whisper:
-        mark = "❌" if stt_fatal else "⚠️ "
+        mark = stt_mark
         print(f"  whisper:     {mark} not found")
         print(
             "               Fix: "
@@ -2122,7 +2261,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if ffmpeg_bin:
         print(f"  ffmpeg:      ✅ {ffmpeg_bin}")
     elif needs_ffmpeg:
-        mark = "❌" if stt_fatal else "⚠️ "
+        mark = stt_mark
         print(f"  ffmpeg:      {mark} not found")
         print(
             "               Fix: "
@@ -2165,7 +2304,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         if parakeet_bin:
             print(f"  parakeet:    ✅ {parakeet_bin}")
         else:
-            mark = "❌" if stt_fatal else "⚠️ "
+            mark = stt_mark
             print(f"  parakeet:    {mark} parakeet-mlx not found")
             print("               Fix: pipx install parakeet-mlx  (Apple Silicon only)")
             if stt_fatal:
@@ -2173,9 +2312,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Slack (optional) ──
     print("\nSlack Integration")
-    creds = cfg.load_credentials()
-    has_slack = bool(creds.get("SLACK_APP_TOKEN") and creds.get("SLACK_BOT_TOKEN"))
-    if has_slack:
+    if _has_slack:
         has_owner = bool(creds.get("KIROCREW_OWNER_ID"))
         print("  tokens:      ✅ configured")
         if has_owner:

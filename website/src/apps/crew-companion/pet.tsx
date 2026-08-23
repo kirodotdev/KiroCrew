@@ -24,7 +24,8 @@ import { createRoot } from 'react-dom/client'
 // this side supplies the sentence — and without init they resolved to nothing, so
 // the companion stayed silent while reminders (which carry their own text) worked.
 import { adoptDashboardTheme, watchThemeChanges } from './dashboardTheme'
-import { initI18n } from '../../i18n'
+// The all-languages entry: plain `../../i18n` registers English only.
+import { initI18n } from '../../i18n/all'
 import { i18nT } from '../../i18n/t'
 import { PENDING_PATH, PRESENCE_PATH } from './constants'
 import { nudgeTextFor } from './nudgeKeys'

@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import threading
 from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 
@@ -33,6 +34,161 @@ _EXTRA_PATH_DIRS = (
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins
 )
+
+
+# --- extending the MCP binary search path -------------------------------------
+#
+# ``_EXTRA_PATH_DIRS`` above is a fixed set of guesses and can never be
+# complete: WHICH directory a package manager drops an MCP launcher into is
+# ecosystem-, distribution- and site-specific. A launcher installed outside that
+# list is invisible to every consumer of :func:`augmented_path` — the MCP probe,
+# the agent-config command resolver, and gatewayd's rewriter — so a server
+# declared by bare name never launches and the session simply comes up short of
+# tools, which reads as a missing capability rather than a launch failure.
+#
+# So the list is extensible from two sides, merged in :func:`mcp_search_path`
+# (issue #5083). Fixing it at that one function is deliberate: it is the path all
+# three of those consumers resolve against, so one contributed directory reaches
+# all of them without any of them knowing it exists.
+#
+# * ``mcp.extra_path_dirs`` in the config — an operator on one host.
+# * :func:`register_mcp_path_dirs` — a packaged/downstream build or an embedding
+#   runtime, which has no per-user config file to edit.
+#
+# Both go through the same absolute-only :func:`_validated_bin_dir` gate as this
+# module's own entries, and both rank ahead of :func:`augmented_path`'s guesses:
+# a directory somebody named explicitly is more specific than a built-in guess,
+# so it must win when the same command name exists in both. A spec's own
+# ``env.PATH`` still outranks everything -- an operator pin cannot be displaced.
+#
+# The contribution reaches ONLY the resolution path, never
+# :func:`spec_env_path` (whose result :func:`emit_env` persists into consumed
+# config files) and never :func:`augmented_path` (the generic composition). Both
+# exclusions are load-bearing and are argued at :func:`mcp_search_path`.
+#
+# The config value is PUSHED here by the loader (:func:`publish_config_path_dirs`,
+# called from ``KiroCrewConfig.load``) rather than read here. That is not
+# indirection for its own sake: :func:`mcp_search_path` is reached from the event
+# loop by every MCP probe (``probe_server``) and by the agent-config resolver, so
+# pulling the config here would stat/read/validate ``config.json`` on the loop.
+# Pushing keeps this module's whole search-path construction free of IO, and
+# costs nothing: every process that spawns an MCP server loads the config at
+# startup, and each later ``load()`` refreshes the snapshot, so an edited setting
+# takes effect without a restart.
+_registered_path_dirs: tuple[str, ...] = ()
+_config_path_dirs: object = ()
+_path_dirs_lock = threading.Lock()
+
+#: Rejected operator-supplied bin dirs already logged, so a per-spawn call site
+#: does not re-log the same bad entry on every subprocess launch. Bounded by the
+#: number of distinct bad values an operator authored.
+_warned_bad_bin_dirs: set[str] = set()
+
+
+def _warn_rejected_bin_dir(raw: object, source: str) -> None:
+    """Log a rejected bin dir once per distinct value.
+
+    Silently dropping it would reproduce the failure this seam exists to fix:
+    a directory that looks configured but contributes nothing, with no trace.
+    """
+    key = f"{source}\0{raw!r}"
+    if key in _warned_bad_bin_dirs:
+        return
+    _warned_bad_bin_dirs.add(key)
+    logger.warning(
+        "%s: ignoring %r — expected a single absolute directory path",
+        source,
+        raw,
+    )
+
+
+def _validated_bin_dirs(values: object, source: str) -> list[str]:
+    """Validate an operator-supplied LIST of bin directories, dropping bad ones.
+
+    ``~`` is expanded first (a config file is where a human writes
+    ``~/.pixi/bin``), then each entry passes the same
+    :func:`_validated_bin_dir` gate as this module's own well-known dirs — one
+    absolute directory, no path separator, no NUL. A rejected entry is dropped
+    rather than failing the whole list: one typo must not cost an operator every
+    other directory they declared, nor abort PATH construction for every spawn.
+
+    *values* is typed ``object`` because both sources are hand-editable and can
+    legally parse as something other than a list of strings.
+    """
+    if not isinstance(values, (list, tuple)):
+        if values not in (None, ""):
+            _warn_rejected_bin_dir(values, source)
+        return []
+    out: list[str] = []
+    for raw in values:
+        entry = _validated_bin_dir(os.path.expanduser(raw)) if isinstance(raw, str) else None
+        if entry is None:
+            _warn_rejected_bin_dir(raw, source)
+            continue
+        out.append(entry)
+    return out
+
+
+def register_mcp_path_dirs(*dirs: str) -> tuple[str, ...]:
+    """Contribute directories to the MCP binary search path. Returns the accepted ones.
+
+    The programmatic half of the seam described above: a downstream build, a
+    packaged distribution, or a host embedding Kiro Crew can name the directories
+    ITS package manager installs MCP launchers into, without forking this module
+    and without a per-user config file. Call it during startup, before the first
+    session or MCP probe; :func:`augmented_path` reads the registry on every
+    call, so a later registration still takes effect (nothing is cached).
+
+    Entries are validated (:func:`_validated_bin_dirs`) and deduped, so calling
+    this twice with the same directory is a no-op rather than a doubled PATH
+    entry — an idempotent installer hook can just call it again. Registration
+    order is precedence order, and the whole registry ranks behind
+    ``mcp.extra_path_dirs``: an operator's own host setting outranks a
+    distribution default.
+    """
+    global _registered_path_dirs
+    accepted = _validated_bin_dirs(list(dirs), "register_mcp_path_dirs")
+    with _path_dirs_lock:
+        merged = _dedup_dirs([*_registered_path_dirs, *accepted])
+        _registered_path_dirs = tuple(merged)
+    return tuple(accepted)
+
+
+def publish_config_path_dirs(values: object) -> None:
+    """Record ``mcp.extra_path_dirs`` for :func:`augmented_path` to merge.
+
+    Called by ``KiroCrewConfig.load`` on every load, which is what keeps the
+    snapshot current without this module ever reading the config -- see the
+    section comment above for why the direction matters. Stores the value AS
+    AUTHORED and validates it at use: validation is pure string work, so keeping
+    it out of here keeps the load path's cost to one tuple assignment.
+
+    Idempotent and safe from any thread; a load that reports no setting clears
+    the snapshot, so removing the setting takes effect too. A malformed value is
+    stored as-is and rejected (with a warning) at use, so this cannot turn a
+    scalar into a directory entry.
+    """
+    global _config_path_dirs
+    # Copied to a tuple so a caller mutating its list afterwards cannot mutate
+    # the search path; a non-sequence is kept as-is for _validated_bin_dirs to
+    # reject and report.
+    snapshot: object = tuple(values) if isinstance(values, (list, tuple)) else values
+    with _path_dirs_lock:
+        _config_path_dirs = snapshot
+
+
+def _extra_mcp_path_dirs() -> list[str]:
+    """Operator/downstream-contributed MCP bin dirs, highest precedence first.
+
+    Pure: no IO and no config read, so it is safe on the event loop (the MCP
+    probe and the agent-config resolver both reach it from there). Validation of
+    the config-supplied entries happens here rather than at publish time because
+    it is string-only work.
+    """
+    return [
+        *_validated_bin_dirs(_config_path_dirs, "mcp.extra_path_dirs"),
+        *_registered_path_dirs,
+    ]
 
 
 # --- node build toolchain -----------------------------------------------------
@@ -489,6 +645,13 @@ def augmented_path(base_path: str = "") -> str:
     agent's own ``python``/``pip`` shell calls) to the gateway's venv
     interpreter. As a pure fallback it resolves only names found nowhere
     else — exactly the console-script-wrapper case.
+
+    Deliberately NOT extended by ``mcp.extra_path_dirs`` /
+    :func:`register_mcp_path_dirs`: callers here include the resolvers for the
+    trusted agent runtime (``kiro_cli.known_kiro_cli_dirs``,
+    ``acp.client``'s claude-backend resolvers), which must not consume a
+    contributed directory. That contribution lives on :func:`mcp_search_path` —
+    see the section comment near ``_registered_path_dirs``.
     """
     home = os.path.expanduser("~")
     mise_data = mise_data_dir(home)
@@ -514,6 +677,12 @@ def augmented_path(base_path: str = "") -> str:
 #: view.
 _SEARCH_PATH_REPORT_LIMIT = 40
 
+#: Appended to "MCP command not found" warnings. Naming the directories searched
+#: tells a reader the binary is installed somewhere uncovered; this tells them
+#: what to do about it, so the diagnosis and the remedy arrive together instead
+#: of the remedy living only in the source (issue #5083).
+MCP_PATH_HINT = "if it is installed elsewhere, add that directory to mcp.extra_path_dirs"
+
 
 def describe_search_path(path: str) -> str:
     """Render *path* as a human-readable list of searched directories.
@@ -536,25 +705,20 @@ def describe_search_path(path: str) -> str:
     return f"searched {len(dirs)} directories: {', '.join(shown)}{suffix}"
 
 
-def dedup_path(path: str) -> str:
-    """Drop repeated entries from a ``PATH`` string, keeping the first of each.
-
-    First-wins so precedence is preserved, and so :func:`spec_env_path` is
-    idempotent: feeding an already-expanded value back in contributes only
-    duplicates, which collapse to the same string.
+def _dedup_dirs(dirs: Iterable[str]) -> list[str]:
+    """Drop repeated (and empty) directory entries, keeping the first of each.
 
     Entries are compared through ``normcase(normpath(...))`` but emitted in
-    their original spelling. On Windows ``os.path`` IS ``ntpath``, so that
-    folds case and separator flavour together -- ``C:\\Tools`` and
-    ``C:/tools`` name one directory, and emitting both would put two spellings
-    of it on the child's PATH. Matches the normalization
-    :func:`node_bin_dirs` applies for the same reason. The original spelling is
-    kept rather than the normalized one so the value stays byte-comparable
-    against what a caller authored.
+    their original spelling. On Windows ``os.path`` IS ``ntpath``, so that folds
+    case and separator flavour together -- ``C:\\Tools`` and ``C:/tools`` name
+    one directory, and emitting both would put two spellings of it on the
+    child's PATH. Matches the normalization :func:`node_bin_dirs` applies for
+    the same reason. The original spelling is kept rather than the normalized
+    one so the value stays byte-comparable against what a caller authored.
     """
     seen: set[str] = set()
     out: list[str] = []
-    for entry in path.split(os.pathsep):
+    for entry in dirs:
         if not entry:
             continue
         key = os.path.normcase(os.path.normpath(entry))
@@ -562,7 +726,18 @@ def dedup_path(path: str) -> str:
             continue
         seen.add(key)
         out.append(entry)
-    return os.pathsep.join(out)
+    return out
+
+
+def dedup_path(path: str) -> str:
+    """Drop repeated entries from a ``PATH`` string, keeping the first of each.
+
+    First-wins so precedence is preserved, and so :func:`spec_env_path` is
+    idempotent: feeding an already-expanded value back in contributes only
+    duplicates, which collapse to the same string. Comparison rules are
+    :func:`_dedup_dirs`'.
+    """
+    return os.pathsep.join(_dedup_dirs(path.split(os.pathsep)))
 
 
 def _spec_path_entries(env_path: str) -> list[str]:
@@ -612,7 +787,7 @@ def spec_env_path(env_path: str) -> str:
     Expanding the value before it is written into the agent config closes the
     gap: the child is launched with the PATH the probe validates and the command
     resolves against, so "probes healthy" and "works in a session" cannot
-    diverge. The spec's own entries stay FIRST, ahead of both the inherited PATH
+    diverge.     The spec's own entries stay FIRST, ahead of both the inherited PATH
     and the augmentation, so a spec that pins a toolchain still wins.
 
     Idempotent: re-expanding an already-expanded value contributes only
@@ -641,6 +816,49 @@ def spec_env_path(env_path: str) -> str:
         logger.debug("ignoring non-string MCP spec PATH: %s", type(env_path).__name__)
         env_path = ""
     parts = [*_spec_path_entries(env_path), augmented_path(os.environ.get("PATH", ""))]
+    return dedup_path(os.pathsep.join(filter(None, parts)))
+
+
+def mcp_search_path(env_path: str) -> str:
+    """:func:`spec_env_path` plus the contributed MCP directories (issue #5083).
+
+    The path an MCP command is RESOLVED against -- the probe, the agent-config
+    command resolver, and gatewayd's rewriter all use this one. Separate from
+    :func:`spec_env_path` on purpose, and the separation is the whole safety
+    argument for the feature, on two counts:
+
+    * :func:`spec_env_path`'s result is PERSISTED. :func:`emit_env` writes it into
+      consumed config files (the agent config, the kiro-global ``mcp.json``, the
+      Claude Code sidecar), and those files are read back as a spec's authored
+      ``env.PATH`` on the next rebuild -- which is why that function documents
+      being idempotent under re-expansion. A contributed directory written there
+      would become indistinguishable from an authored entry, so clearing
+      ``mcp.extra_path_dirs`` could never remove it again. Resolution is
+      recomputed every time and stored nowhere, so a removed directory stops
+      being searched immediately.
+    * It also keeps the contribution off :func:`augmented_path`, whose callers
+      include the resolvers for the trusted agent runtime -- see the section
+      comment near ``_registered_path_dirs``.
+
+    Contributed dirs sit BETWEEN the spec's own entries and the generic
+    augmentation: a spec that pins a toolchain still wins, while a directory an
+    operator or a packaged build named explicitly outranks this module's built-in
+    guesses. ``dedup_path`` collapses the overlap a contributed directory has
+    with the built-in list.
+    """
+    extra = _extra_mcp_path_dirs()
+    if not extra:
+        # Byte-identical to the unextended path when nothing is contributed, so
+        # an install that never uses the setting cannot be perturbed by it.
+        return spec_env_path(env_path)
+    if not isinstance(env_path, str):
+        logger.debug("ignoring non-string MCP spec PATH: %s", type(env_path).__name__)
+        env_path = ""
+    parts = [
+        *_spec_path_entries(env_path),
+        *extra,
+        augmented_path(os.environ.get("PATH", "")),
+    ]
     return dedup_path(os.pathsep.join(filter(None, parts)))
 
 

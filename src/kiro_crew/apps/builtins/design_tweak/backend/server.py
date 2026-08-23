@@ -214,10 +214,6 @@ _ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")  # queue file id safety
 
 # The only hosts this backend will ever fetch from (dev-server reverse proxy).
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1"})
-# Characters left unescaped when re-composing a proxied request path. "%" is
-# safe so an already-percent-encoded path is not double-encoded; CR/LF are
-# rejected outright before this point.
-_PROXY_PATH_SAFE = "%/@:~!$&()*+,;="
 # Credential dirs a previewed "project" folder may never be. The shared
 # `is_sensitive_path()` floor covers the crew home and the governance trust
 # root; these are the plain dot-dirs it does not need to know about.

@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Arrête la réponse en cours pour changer de projet",
       "stopping": "Arrêt…",
       "stopping_2": "Arrêt",
+      "switch_not_confirmed": "Changement non confirmé pour l'instant — il s'appliquera si la connexion est rétablie.",
       "taking_longer_than_expected": "délai plus long que prévu",
       "that_approval_expired_the_turn_it_belonged_to_is": "Cette demande d’approbation a expiré car le tour associé n’attend plus d’approbation.",
       "that_request_already_timed_out_and_was_denied": "Cette demande {{source}} a déjà expiré et a été refusée — la tâche n’attend plus. Consulte le flux des approbations pour la trace.",
@@ -6432,7 +6433,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Chargement des compétences…",
-      "no_matching_skills": "Aucune compétence correspondante"
+      "no_matching_skills": "Aucune compétence correspondante",
+      "no_matching_skills_ctrl_enter_sends": "Aucune compétence correspondante — Ctrl+Enter envoie le message",
+      "no_matching_skills_enter_sends": "Aucune compétence correspondante — Enter envoie le message"
     },
     "slashCommandMenu": {
       "desc_agent": "Changer ou gérer l’agent actif",
@@ -6461,7 +6464,9 @@
       "desc_tangent": "Démarrer une conversation en aparté",
       "desc_todos": "Afficher ou gérer la liste des tâches",
       "desc_tools": "Afficher les outils disponibles",
-      "desc_usage": "Afficher les informations de facturation et d’utilisation"
+      "desc_usage": "Afficher les informations de facturation et d’utilisation",
+      "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
+      "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
     },
     "slotTagPopover": {
       "assign_tags": "Attribuer des étiquettes",
@@ -7984,8 +7989,8 @@
         "show_nudge_instructions": "Afficher les instructions de relance"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Réduire le message épinglé",
-        "expand_pinned_prompt": "Développer le message épinglé",
+        "collapse_pinned_prompt": "Réduire le tour épinglé",
+        "expand_pinned_prompt": "Développer le tour épinglé",
         "jump_to_this_turn": "Aller à ce tour"
       },
       "recoveryCard": {
@@ -9203,7 +9208,10 @@
         "nodes": "nœuds,",
         "all_sources": "Toutes les sources",
         "filter_by_source": "Filtrer par source",
-        "recenter": "Recentrer"
+        "recenter": "Recentrer",
+        "start_physics": "Physique",
+        "pause_physics": "Pause",
+        "graph_region_label": "Graphe d'entités de connaissances"
       },
       "sourceGroup": {
         "items_added_directly": "Éléments ajoutés directement",
@@ -10515,6 +10523,17 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Divergent",
+        "checkout_diverged_from_upstream": "Ce checkout a divergé de son upstream ({{distance}}). Faites un rebase ou un merge pour mettre à jour — rien n'est appliqué automatiquement, vos commits locaux sont donc préservés.",
+        "commits_ahead_one": "{{count}} commit d'avance",
+        "commits_ahead_many": "{{count}} commits d'avance",
+        "commits_ahead_other": "{{count}} commits d'avance",
+        "commits_behind_one": "{{count}} commit de retard",
+        "commits_behind_many": "{{count}} commits de retard",
+        "commits_behind_other": "{{count}} commits de retard",
+        "updates_managed_by_policy": "Les mises à jour de cette installation sont gérées par une politique de mise à jour définie par l'opérateur. Les nouvelles versions arrivent par ce mécanisme.",
+        "updates_managed_externally": "Les mises à jour de cette installation sont gérées par un gestionnaire de paquets externe. Utilisez ce gestionnaire de paquets pour obtenir les nouvelles versions.",
+        "updates_managed_externally_by": "Les mises à jour de cette installation sont gérées par {{managedBy}}. Utilisez-le pour obtenir les nouvelles versions.",
         "a_new_version": "Une nouvelle version",
         "a_newer_version_is_available": "Une version plus récente est disponible.",
         "apache_2_0": "Apache 2.0",

@@ -30,7 +30,7 @@ import type {
 } from '../src/apps/issue-radar/api'
 import IssueDetail from '../src/apps/issue-radar/components/IssueDetail'
 import { IssueRadarProvider } from '../src/apps/issue-radar/context'
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import '../src/index.css'
 

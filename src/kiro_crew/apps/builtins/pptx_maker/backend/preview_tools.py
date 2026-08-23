@@ -41,11 +41,10 @@ from kiro_crew.atomic_write import atomic_write
 
 logger = logging.getLogger("kirocrew.app.pptx-maker")
 
-#: The tool this module can provide, and the module that implements it.
+#: The tool this module can provide.
 PDFTOPPM = "pdftoppm"
 #: The tool it deliberately cannot — a system package, reported with a hint.
 SOFFICE = "soffice"
-_SHIM_MODULE = "kiro_crew.apps.builtins.pptx_maker.backend.pdftoppm_shim"
 
 #: Mode for the generated launcher: OWNER-ONLY rwx. It lives under the data home and
 #: is executed by the gateway's own engine children, so nothing else needs to read or

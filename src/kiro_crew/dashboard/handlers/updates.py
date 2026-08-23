@@ -41,8 +41,10 @@ from kiro_crew.platform.update_capability import (
     ERR_UNKNOWN,
     ERR_VERSION_UNPARSEABLE,
     EXTERNALLY_MANAGED_MESSAGES,
+    MANAGED_BY_COMMAND,
     MANAGED_BY_GIT,
     MODE_NONE,
+    MODE_NOTIFY,
     UpdateCapability,
     derive_capability,
 )
@@ -56,6 +58,7 @@ from kiro_crew.platform.update_layout import cdn_bases as _cdn_bases
 from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
+from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -95,6 +98,15 @@ _update_info: dict[str, object] = {
     #: it only did so at a release. Requiring both keeps that path firing no more
     #: often than it did while the verdict was version-only.
     "version_newer": False,
+    #: Commit distance from the tracked upstream, BOTH directions. A DIVERGED
+    #: checkout (ahead and behind at once) reports ``update_available: False``
+    #: exactly like a current one — offering it an update would feed the
+    #: destructive ``git reset --hard`` apply path commits to discard — so
+    #: without the counts the two states are indistinguishable on the wire and
+    #: the panel can only say "up to date" to a user who actually needs to
+    #: rebase or merge. 0/0 everywhere except a successful git-checkout check.
+    "commits_ahead": 0,
+    "commits_behind": 0,
     "error_code": None,
     "unavailable_reason": None,
     "remediation": None,
@@ -199,12 +211,25 @@ def status_update_fields() -> dict[str, object]:
     "never checked reads as current" bug at the last step.
     """
     available = _update_info.get("update_available")
+    ahead = _update_info.get("commits_ahead")
+    behind = _update_info.get("commits_behind")
     return {
         "update_available": available if isinstance(available, bool) else None,
         "update_can_apply": bool(_update_info.get("can_apply")),
         "update_check_status": str(_update_info.get("check_status") or CHECK_UNCHECKED),
         "update_command": remediation_command(_update_info),
         "update_channel": str(_update_info.get("channel") or ""),
+        # The panel needs WHO manages the update to speak honestly: a
+        # command-managed host must not render the self-managed installer
+        # instructions its policy exists to bypass.
+        "update_managed_by": str(_update_info.get("managed_by") or ""),
+        # Commit distance for a git checkout, both directions, so the About
+        # panel's badge can tell DIVERGED (ahead and behind at once — reported
+        # as ``update_available: False`` because the apply path must never be
+        # offered local commits) from genuinely current without waiting for a
+        # manual check. 0/0 everywhere except a successful git-checkout check.
+        "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
+        "update_commits_behind": behind if isinstance(behind, int) else 0,
     }
 
 
@@ -371,6 +396,8 @@ def _set_update_info(**fields: object) -> None:
             "check_status": CHECK_UNCHECKED,
             "update_available": None,
             "version_newer": False,
+            "commits_ahead": 0,
+            "commits_behind": 0,
             "error_code": None,
             "unavailable_reason": None,
             "remediation": None,
@@ -462,22 +489,35 @@ async def _do_update_check() -> None:
     )
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
     try:
-        # Offloaded INSIDE the guard's try: the derivation shells out to git, so
-        # it must not run on the event loop, and it must not run where a raise
-        # would skip the finally — a leaked single-flight flag stops every future
-        # check for the process's lifetime, which is a silently dead updater.
-        capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
-        if capability.defers:
-            reason = capability.unavailable_reason or ""
-            _set_update_info(
-                **_capability_fields(capability),
-                check_status=CHECK_DEFERRED,
-            )
-            logger.debug("Update check deferred: %s", EXTERNALLY_MANAGED_MESSAGES.get(reason, ""))
-        elif capability.managed_by == MANAGED_BY_GIT:
-            await _check_git_checkout(proj, capability)
+        # A policy-defined provider OWNS the update on this host, the check
+        # included. Consulted before the built-in capability derivation for the
+        # same reason the apply path consults it first (see api_update_apply):
+        # a host whose policy routes updates through an external command must
+        # not have its badge computed against the feed/git mechanism that
+        # policy excluded — the badge would then advertise updates the Update
+        # button (which honors the provider) can never deliver.
+        provider = resolve_provider()
+        if provider is not None:
+            await _check_via_provider(provider)
         else:
-            await _check_release_feed(capability)
+            # Offloaded INSIDE the guard's try: the derivation shells out to git, so
+            # it must not run on the event loop, and it must not run where a raise
+            # would skip the finally — a leaked single-flight flag stops every future
+            # check for the process's lifetime, which is a silently dead updater.
+            capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
+            if capability.defers:
+                reason = capability.unavailable_reason or ""
+                _set_update_info(
+                    **_capability_fields(capability),
+                    check_status=CHECK_DEFERRED,
+                )
+                logger.debug(
+                    "Update check deferred: %s", EXTERNALLY_MANAGED_MESSAGES.get(reason, "")
+                )
+            elif capability.managed_by == MANAGED_BY_GIT:
+                await _check_git_checkout(proj, capability)
+            else:
+                await _check_release_feed(capability)
     except Exception:
         logger.debug("Update check failed", exc_info=True)
         _set_update_info(
@@ -751,6 +791,11 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         changes=changes,
         latest_version=remote_version,
         version_newer=bool(version_newer),
+        # The raw distance travels with the verdict so a consumer can tell the
+        # diverged ``available: False`` from the current one and render "rebase
+        # or merge" instead of "up to date".
+        commits_ahead=ahead,
+        commits_behind=behind,
         check_status=CHECK_SUCCEEDED,
     )
 
@@ -773,6 +818,45 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
             # resolve on the first buffered chunk of a chunked feed and hand
             # back a truncated document.
             return resp.status, await read_capped_response(resp, _FEED_MAX_BYTES)
+
+
+async def _check_via_provider(provider: CommandProvider) -> None:
+    """Populate the cache from a policy-pinned command provider.
+
+    A command-managed install has no release channel: the operator's commands
+    decide what an update is and where it comes from, so ``channel`` is left to
+    ``_set_update_info``'s empty reset and the panel hides the channel switcher
+    instead of offering lanes the provider never reads. ``can_apply`` mirrors
+    :meth:`CommandProvider.can_apply` — an ``apply_command`` exists AND can run
+    on this platform — so the Update button is only offered when POST
+    /api/update (which honors the provider first) can actually act. A True
+    here does NOT imply a git checkout; git-reset callers gate on
+    :func:`resolve_provider` themselves.
+
+    The provider's error verdict maps to a FAILED check, never a raise: this
+    runs inside :func:`_do_update_check`'s single-flight guard, and the honesty
+    contract wants "the check failed" on the panel, not a silent dead badge.
+    """
+    fields: dict[str, object] = {
+        "supported": True,
+        "managed_by": MANAGED_BY_COMMAND,
+        "mode": MODE_NOTIFY,
+        "can_download": False,
+        "can_apply": provider.can_apply(),
+        "requires_restart": True,
+    }
+    result = await provider.check()
+    if result.error:
+        logger.debug("Policy-defined update check failed: %s", result.error)
+        _set_update_info(**fields, check_status=CHECK_FAILED, error_code=ERR_UNKNOWN)
+        return
+    _set_update_info(
+        **fields,
+        update_available=result.available,
+        latest_version=result.remote_version,
+        version_newer=result.available,
+        check_status=CHECK_SUCCEEDED,
+    )
 
 
 async def _check_release_feed(capability: UpdateCapability) -> None:
@@ -1213,12 +1297,106 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # Diverged precondition, enforced at the layer that owns the destructive
+    # action. The dashboard's own render-site guards can only cover the clients
+    # that ran a fresh check; a stale client (an Update button armed before the
+    # checkout gained local commits, a cached-changelog modal whose pre-apply
+    # check never re-ran) still POSTs here. Fetch FIRST, fail closed: the
+    # counts below read the remote-tracking refs, and refs from an old fetch
+    # can report behind=0 for a checkout whose remote has since moved — which
+    # would wave through the very state this guard exists to refuse.
+    fetch = await asyncio.create_subprocess_exec(
+        "git",
+        "fetch",
+        "--quiet",
+        cwd=proj,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(fetch.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        try:
+            fetch.kill()
+        except ProcessLookupError:
+            pass
+        await fetch.communicate()
+        return web.json_response(
+            {
+                "error": "Timed out refreshing the remote before updating",
+                "code": "git_fetch_failed",
+            },
+            status=500,
+        )
+    if fetch.returncode != 0:
+        logger.warning("Update refused: pre-apply git fetch failed (rc=%s)", fetch.returncode)
+        return web.json_response(
+            {
+                "error": "Could not reach the remote to verify the update",
+                "code": "git_fetch_failed",
+            },
+            status=409,
+        )
+    count = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-list",
+        "--count",
+        "--left-right",
+        "HEAD...@{u}",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        count_out, _ = await asyncio.wait_for(count.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            count.kill()
+        except ProcessLookupError:
+            pass
+        await count.communicate()
+        return web.json_response(
+            {"error": "Timed out checking upstream distance", "code": "git_read_failed"},
+            status=500,
+        )
+    try:
+        ahead_text, behind_text = count_out.decode(errors="replace").split()
+        ahead, behind = int(ahead_text), int(behind_text)
+    except ValueError:
+        logger.warning("Update refused: could not count commits against upstream in %s", proj)
+        return web.json_response(
+            {
+                "error": "Could not compare against upstream — check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
+    if ahead > 0 and behind > 0:
+        logger.warning(
+            "Update refused: checkout diverged from upstream (%d ahead, %d behind)", ahead, behind
+        )
+        return web.json_response(
+            {
+                "error": "Checkout has diverged from its upstream — rebase or merge in a terminal",
+                "code": "checkout_diverged",
+                "commits_ahead": ahead,
+                "commits_behind": behind,
+            },
+            status=409,
+        )
+
     async def _apply() -> None:
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
+            # --ff-only makes the non-fast-forward classes unreachable at the
+            # action primitive itself, not just at the precondition above: a
+            # remote that moves in the window between the guard's fetch and
+            # this pull fails the pull instead of minting an unrequested merge
+            # commit into the user's branch.
             pull = await asyncio.create_subprocess_exec(
                 "git",
                 "pull",
+                "--ff-only",
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1627,7 +1805,10 @@ async def api_update_channel(request: web.Request) -> web.Response:
 
     **Not a governance bypass.** ``UpdatePins`` constrains the git ``source`` and
     a ``min_version`` floor; it has no release-channel key, so there is no pin
-    for this to escape. Nor does the endpoint grant a new capability: the channel
+    for this to escape. When the pins define a command provider the endpoint
+    refuses outright — the provider's commands never read the channel file, so
+    a "successful" switch would be the lying switcher described above. Nor does
+    the endpoint grant a new capability: the channel
     file is an ordinary file in the data home that the operator can already
     write. What it adds is an authenticated, allowlist-validated path to the same
     write. Introducing an enterprise channel pin is a governance change in its
@@ -1652,6 +1833,19 @@ async def api_update_channel(request: web.Request) -> web.Response:
     if not isinstance(requested, str):
         return web.json_response(
             {"error": "channel must be a string", "code": "invalid_channel"}, status=400
+        )
+
+    # A policy-defined provider OWNS updates on this host, and its commands do
+    # not read the channel file — the switch would "succeed" and change nothing,
+    # which is exactly the lying switcher the layout refusals below exist to
+    # prevent. Checked before the layout probe because it needs no git shell-out.
+    if resolve_provider() is not None:
+        return web.json_response(
+            {
+                "error": "Updates on this install are managed by policy, not a release channel.",
+                "code": "channel_not_applicable_command_managed",
+            },
+            status=409,
         )
 
     # Offloaded: the layout derivation shells out to git, and this handler runs on

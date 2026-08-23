@@ -20,7 +20,7 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
 /**
- * English source = the SAME two files the runtime merges (`src/i18n/index.ts`).
+ * English source = the SAME two files the runtime merges (`src/i18n/enCatalog.ts`).
  *
  * Reading only `en.json` was a real bug: the 43 hand-authored keys in
  * `en.manual.json` (nav labels, Settings tab labels/descriptions, the language

@@ -62,6 +62,41 @@ describe('AboutPanel disabled-update reasons', () => {
     expect(screen.queryByText(/unavailable in this build on this platform/i)).toBeNull()
   })
 
+  it('shows the externally-managed message with the owner and its update command', async () => {
+    mountWithUpdateApi({
+      version: '0.1.0',
+      platform: 'darwin-arm64',
+      packaged: true,
+      channel: 'stable',
+      channelSwitchable: false,
+      disabled: 'externally-managed',
+      managedBy: 'internal-registry',
+      updateCommand: 'pkgtool update kirocrew',
+    })
+    expect(await screen.findByText(/managed by internal-registry/i)).toBeTruthy()
+    expect(screen.getByTestId('managed-update-command').textContent).toBe(
+      'pkgtool update kirocrew',
+    )
+    // No channel surface: the switcher AND the read-only channel row both
+    // describe a lane the marker's owner never reads.
+    expect(screen.queryByTestId('channel-switcher')).toBeNull()
+    // The platform message would blame the OS for an operator decision.
+    expect(screen.queryByText(/unavailable in this build on this platform/i)).toBeNull()
+  })
+
+  it('shows the generic externally-managed message when the marker has no metadata', async () => {
+    mountWithUpdateApi({
+      version: '0.1.0',
+      platform: 'darwin-arm64',
+      packaged: true,
+      disabled: 'externally-managed',
+      managedBy: '',
+      updateCommand: '',
+    })
+    expect(await screen.findByText(/managed by an external package manager/i)).toBeTruthy()
+    expect(screen.queryByTestId('managed-update-command')).toBeNull()
+  })
+
   it('still names the platform when the platform itself has no lane', async () => {
     mountWithUpdateApi({
       version: '0.1.0',

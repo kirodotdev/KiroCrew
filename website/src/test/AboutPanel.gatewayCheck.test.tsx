@@ -10,10 +10,14 @@
 // - an UNRECOGNISED error code     -> generic reason, still not the success line
 // - check_status:'succeeded' + update_available:false -> the success line (the only
 //   case that earns it)
+// - succeeded + no update + commits_ahead>0 AND commits_behind>0 -> the DIVERGED
+//   line (counts + rebase/merge instruction), never the success line and never
+//   an Update button: `update_available:false` there is the no-auto-apply
+//   safety property, not currency
 // - available + !self_updatable    -> the installer command, and NO Update button
 // - available + self_updatable     -> the Update button, unchanged
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, cleanup, act, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { store } from '../store'
@@ -107,6 +111,168 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.queryByTestId('check-failed')).toBeNull()
   })
 
+  it('a diverged checkout renders the counts and a rebase/merge instruction, not "up to date"', async () => {
+    // update_available:false is the no-auto-apply property doing its job (the
+    // apply path is a hard reset), so this state must read as diverged, never
+    // as current — and it must not grow an Update button either.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: false,
+      error_code: null,
+      managed_by: 'git',
+      can_apply: true,
+      commits_ahead: 3,
+      commits_behind: 219,
+    })
+    mountWeb()
+    await pressCheck()
+
+    const diverged = await screen.findByTestId('diverged')
+    expect(diverged.textContent).toContain('diverged')
+    expect(diverged.textContent).toContain('3')
+    expect(diverged.textContent).toContain('219')
+    expect(diverged.textContent?.toLowerCase()).toContain('rebase')
+    expect(screen.queryByTestId('up-to-date')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    // The hero badge must not contradict the warning on the same screen: the
+    // green "Up to date" pill yields to a warn "Diverged" pill.
+    expect(screen.getByTestId('hero-diverged')).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+  })
+
+  it('a checkout merely ahead (or behind) is not diverged: the success line stays', async () => {
+    // Only the BOTH-non-zero pair means diverged. Ahead-only is the user's own
+    // unpushed work and must keep reading as up to date, exactly as before the
+    // counts existed on the wire.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: false,
+      error_code: null,
+      managed_by: 'git',
+      commits_ahead: 2,
+      commits_behind: 0,
+    })
+    mountWeb()
+    await pressCheck()
+
+    const ok = await screen.findByTestId('up-to-date')
+    expect(ok.textContent).toContain('latest version')
+    expect(screen.queryByTestId('diverged')).toBeNull()
+    // Ahead-only must not flip the hero badge either.
+    expect(screen.queryByTestId('hero-diverged')).toBeNull()
+    expect(screen.getByTestId('hero-up-to-date')).toBeTruthy()
+  })
+
+  it('a fresh diverged verdict outranks a stale redux update_available flag', async () => {
+    // The redux flag refreshes on the slower WS status push, so a push carrying
+    // `true` from a background check that ran before the checkout gained local
+    // commits can land around a fresh manual check that says diverged. Letting
+    // the flag win would render an Update button whose backend path is a bare
+    // `git pull` — a silent merge into the user's branch — for up to one push
+    // interval. The fresh check's diverged verdict must win: warning line, no
+    // Update button, no update card.
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: false,
+      error_code: null,
+      managed_by: 'git',
+      can_apply: true,
+      commits_ahead: 3,
+      commits_behind: 219,
+    })
+    mountWeb()
+    await pressCheck()
+    await screen.findByTestId('diverged')
+
+    // The stale status push lands AFTER the fresh check's verdict.
+    act(() => {
+      store.dispatch(sseStatus({ ...BLANK_STATUS, update_available: true, update_can_apply: true } as never))
+    })
+
+    expect(await screen.findByTestId('diverged')).toBeTruthy()
+    expect(screen.queryByTestId('up-to-date')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
+    // The hero badge must show diverged too, not the stale "Update available".
+    expect(screen.getByTestId('hero-diverged')).toBeTruthy()
+  })
+
+  it('the status push alone flips the hero badge to diverged on first visit', async () => {
+    // Before any manual check the local counts are 0, so the badge reads the
+    // background check's counts from the status push. Without them a fresh
+    // visit to a diverged install painted the green "Up to date" pill — the
+    // exact symptom the fix exists to kill, surviving one element over.
+    stubFetch({})
+    mountWeb()
+    act(() => {
+      store.dispatch(sseStatus({
+        ...BLANK_STATUS,
+        update_available: false,
+        update_check_status: 'succeeded',
+        update_commits_ahead: 3,
+        update_commits_behind: 219,
+      } as never))
+    })
+
+    expect(await screen.findByTestId('hero-diverged')).toBeTruthy()
+    expect(screen.queryByTestId('hero-up-to-date')).toBeNull()
+  })
+
+  it('the confirm modal never offers apply while its pre-apply check is pending', async () => {
+    // The check's answer may be "diverged"; an enabled apply during the wait
+    // is a race the user can win against their own safety check.
+    const never = new Promise<never>(() => {})
+    const json = (body: unknown) => ({
+      ok: true, status: 200, json: async () => body,
+      text: async () => JSON.stringify(body),
+      headers: new Headers({ 'content-type': 'application/json' }),
+    })
+    vi.stubGlobal('fetch', vi.fn(async (input: unknown) => {
+      const url = String(input)
+      if (url.includes('/api/update/check')) return never
+      if (url.includes('/api/changelog')) return json({ content: '' })
+      return json({})
+    }))
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_available: true, update_can_apply: true } as never))
+    mountWeb()
+
+    const trigger = await screen.findByRole('button', { name: /update/i })
+    fireEvent.click(trigger)
+
+    const dialog = await screen.findByRole('dialog')
+    // Scoped to the dialog: the page's own trigger button behind the backdrop
+    // legitimately still exists in the DOM.
+    expect(within(dialog).queryByRole('button', { name: /^Update now$/i })).toBeNull()
+  })
+
+  it('the confirm modal opened from a stale flag disarms once the check says diverged', async () => {
+    // The other half of the same race: the stale flag renders the "Update to
+    // vX" trigger, the user clicks it, and the modal's own pre-apply check
+    // comes back diverged. The modal must explain and offer only Close — its
+    // apply button POSTs /api/update, whose git path is a bare `git pull`.
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_available: true, update_can_apply: true } as never))
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: false,
+      error_code: null,
+      managed_by: 'git',
+      can_apply: true,
+      commits_ahead: 3,
+      commits_behind: 219,
+    })
+    mountWeb()
+
+    const trigger = await screen.findByRole('button', { name: /update/i })
+    fireEvent.click(trigger)
+
+    const note = await screen.findByTestId('diverged-modal')
+    expect(note.textContent?.toLowerCase()).toContain('rebase')
+    expect(screen.queryByRole('button', { name: /^Update now$/i })).toBeNull()
+    const dialog = screen.getByRole('dialog')
+    expect(dialog).toBeTruthy()
+    fireEvent.click(screen.getByTestId('diverged-modal-close'))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+  })
+
   it('offers the installer command instead of a broken Update button on a wheel install', async () => {
     const command = "curl -fsSL --proto '=https' https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider"
     stubFetch({
@@ -130,6 +296,27 @@ describe('AboutPanel gateway update check', () => {
     // The Update button would 409 on this layout, so it must not be offered.
     expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
+  })
+
+  it('a command-managed gateway shows the policy note, never installer copy', async () => {
+    // A check-only policy pin: an update is available but there is no in-app
+    // apply. The self-managed installer instructions would tell the user to
+    // run the exact mechanism the policy excluded (UX review finding).
+    store.dispatch(sseStatus({ ...BLANK_STATUS, update_managed_by: 'command' } as never))
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      managed_by: 'command',
+      can_apply: false,
+      channel: '',
+      latest_version: '2.0.0',
+    })
+    mountWeb()
+    await pressCheck()
+    await waitFor(() => expect(screen.getByTestId('policy-managed-update-note')).toBeTruthy())
+    expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
+    expect(screen.queryByText(/re-running the installer/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Update/ })).toBeNull()
   })
 
   it('copying the command flips the button label', async () => {

@@ -28,7 +28,7 @@ import { join } from 'node:path'
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS } from './index'
+import { CATALOGS } from './catalogs'
 
 const SHARED_KEY = 'pages.chatPage.send_failed_with_error'
 const RETIRED_KEY = 'apps.designTweak.status.send_failed'

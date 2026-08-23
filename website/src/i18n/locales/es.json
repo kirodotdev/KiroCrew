@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Detén la respuesta actual para cambiar de proyecto",
       "stopping": "Deteniendo…",
       "stopping_2": "Deteniendo",
+      "switch_not_confirmed": "Cambio aún sin confirmar: se aplicará si se recupera la conexión.",
       "taking_longer_than_expected": "está tardando más de lo esperado",
       "that_approval_expired_the_turn_it_belonged_to_is": "Esta solicitud de aprobación venció porque el turno asociado ya no está esperando aprobación.",
       "that_request_already_timed_out_and_was_denied": "Esa solicitud de {{source}} ya expiró y se denegó — el trabajo ya no está esperando. Consulta el feed de aprobaciones para ver el registro.",
@@ -6432,7 +6433,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Cargando skills…",
-      "no_matching_skills": "No hay skills coincidentes"
+      "no_matching_skills": "No hay skills coincidentes",
+      "no_matching_skills_ctrl_enter_sends": "No hay skills coincidentes: Ctrl+Enter envía el mensaje",
+      "no_matching_skills_enter_sends": "No hay skills coincidentes: Enter envía el mensaje"
     },
     "slashCommandMenu": {
       "desc_agent": "Cambiar o gestionar el agente activo",
@@ -6461,7 +6464,9 @@
       "desc_tangent": "Iniciar una conversación tangencial",
       "desc_todos": "Mostrar o gestionar la lista de tareas",
       "desc_tools": "Mostrar las herramientas disponibles",
-      "desc_usage": "Mostrar la información de facturación y de uso"
+      "desc_usage": "Mostrar la información de facturación y de uso",
+      "no_matching_commands_ctrl_enter_sends": "No hay comandos coincidentes: Ctrl+Enter envía el mensaje",
+      "no_matching_commands_enter_sends": "No hay comandos coincidentes: Enter envía el mensaje"
     },
     "slotTagPopover": {
       "assign_tags": "Asignar etiquetas",
@@ -7984,8 +7989,8 @@
         "show_nudge_instructions": "Mostrar las instrucciones del empujón"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Contraer mensaje fijado",
-        "expand_pinned_prompt": "Expandir mensaje fijado",
+        "collapse_pinned_prompt": "Contraer turno fijado",
+        "expand_pinned_prompt": "Expandir turno fijado",
         "jump_to_this_turn": "Ir a este turno"
       },
       "recoveryCard": {
@@ -9203,7 +9208,10 @@
         "nodes": "nodos,",
         "all_sources": "Todas las fuentes",
         "filter_by_source": "Filtrar por fuente",
-        "recenter": "Recentrar"
+        "recenter": "Recentrar",
+        "start_physics": "Física",
+        "pause_physics": "Pausar",
+        "graph_region_label": "Grafo de entidades de conocimiento"
       },
       "sourceGroup": {
         "items_added_directly": "Elementos añadidos directamente",
@@ -10515,6 +10523,17 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Divergente",
+        "checkout_diverged_from_upstream": "Este checkout ha divergido de su upstream ({{distance}}). Haz rebase o merge para actualizar; nada se aplica automáticamente, así que tus commits locales están a salvo.",
+        "commits_ahead_one": "{{count}} commit por delante",
+        "commits_ahead_many": "{{count}} commits por delante",
+        "commits_ahead_other": "{{count}} commits por delante",
+        "commits_behind_one": "{{count}} commit por detrás",
+        "commits_behind_many": "{{count}} commits por detrás",
+        "commits_behind_other": "{{count}} commits por detrás",
+        "updates_managed_by_policy": "Las actualizaciones de esta instalación las gestiona una política de actualización definida por el operador. Las nuevas versiones llegan por ese mecanismo.",
+        "updates_managed_externally": "Las actualizaciones de esta instalación las gestiona un gestor de paquetes externo. Usa ese gestor de paquetes para obtener nuevas versiones.",
+        "updates_managed_externally_by": "Las actualizaciones de esta instalación las gestiona {{managedBy}}. Úsalo para obtener nuevas versiones.",
         "a_new_version": "Una nueva versión",
         "a_newer_version_is_available": "Hay una versión más reciente disponible.",
         "apache_2_0": "Apache 2.0",

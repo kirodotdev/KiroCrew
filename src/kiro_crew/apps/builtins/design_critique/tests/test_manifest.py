@@ -36,9 +36,6 @@ APP_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[6]
 APP_JSON = APP_ROOT / "app.json"
 
-# Where the frontend serves /app-assets/** from.
-APP_ASSETS_DIR = REPO_ROOT / "website" / "public" / "app-assets" / "design-critique"
-
 APP_NAME = "design-critique"
 
 # The dashboard's BuiltinAppRoute resolves a SINGLE path param; its guard regex

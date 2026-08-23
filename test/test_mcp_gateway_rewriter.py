@@ -404,13 +404,14 @@ def test_spec_env_path_wins_over_augmented_host_path(
     tmp_path: Path, monkeypatch
 ) -> None:
     """The spec's declared env.PATH is the operator's explicit intent: the
-    search is composed by the canonical ``env.spec_env_path`` (spec entries
-    FIRST, augmented host PATH behind), so a well-known dir can never shadow a
-    same-named binary the spec deliberately points elsewhere.
+    search is composed by the canonical ``env.mcp_search_path`` (spec entries
+    FIRST, contributed MCP dirs then the augmented host PATH behind), so a
+    well-known dir can never shadow a same-named binary the spec deliberately
+    points elsewhere.
 
     ``shutil.which`` is faked (first matching dir in path order wins) so the
     ordering assertion is platform-independent; the search string itself
-    comes from the REAL ``spec_env_path``, spied to prove the resolver
+    comes from the REAL ``mcp_search_path``, spied to prove the resolver
     delegates to it rather than hand-rolling the composition."""
     import os as _os
 
@@ -428,14 +429,14 @@ def test_spec_env_path_wins_over_augmented_host_path(
         return None
 
     seen: list[str] = []
-    real = _rw.spec_env_path
+    real = _rw.mcp_search_path
 
     def _spy(env_path: str) -> str:
         seen.append(env_path)
         return real(env_path)
 
     monkeypatch.setattr(_rw.shutil, "which", _fake_which)
-    monkeypatch.setattr(_rw, "spec_env_path", _spy)
+    monkeypatch.setattr(_rw, "mcp_search_path", _spy)
     monkeypatch.setenv("PATH", str(host_dir))
 
     resolved = _rw._resolve_target_command(

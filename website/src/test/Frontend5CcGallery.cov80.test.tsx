@@ -36,8 +36,10 @@ vi.mock('../apps/crew-companion/dashboardTheme', () => ({
   extractStylesheetHrefs: () => [],
 }))
 
+// The entry imports the all-languages module, so that is the id to intercept —
+// mocking `../i18n` would miss it and leave the spy silent.
 const initI18n = vi.fn()
-vi.mock('../i18n', () => ({ initI18n: () => initI18n(), i18next: {} }))
+vi.mock('../i18n/all', () => ({ initI18n: () => initI18n(), i18next: {} }))
 
 // The panel owns the whole surface (including its own ✕ and Escape); stubbing it
 // keeps every assertion here about the entry's own bootstrap.

@@ -1274,6 +1274,108 @@ async def test_fetch_github_marks_failed_secondary_endpoints_partial(
 
 
 @pytest.mark.asyncio
+async def test_fetch_github_reads_rollup_outside_the_core_field_set(monkeypatch) -> None:
+    """The core `pr view` field set must not bundle `statusCheckRollup` (#5115).
+
+    `gh` resolves a `--json` field set atomically, so a bundled rollup made a
+    fine-grained token without Checks read access fail the WHOLE panel read.
+    """
+    commands: list[tuple[str, int | None]] = []
+
+    async def fake_run(*argv: str, **kwargs: int):
+        command = " ".join(argv)
+        commands.append((command, kwargs.get("max_output_bytes")))
+        if "statusCheckRollup" in command:
+            return {
+                "statusCheckRollup": [
+                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
+                ],
+                "headRefOid": "abc123",
+            }
+        if "pr view" in command:
+            return {"number": 12, "title": "Split", "state": "OPEN", "headRefOid": "abc123"}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    core_reads = [
+        command for command, _limit in commands if "pr view" in command and "title" in command
+    ]
+    assert core_reads
+    assert all("statusCheckRollup" not in command for command in core_reads)
+    rollup_reads = [
+        (command, limit) for command, limit in commands if "statusCheckRollup" in command
+    ]
+    assert len(rollup_reads) == 1
+    assert rollup_reads[0][0].endswith("statusCheckRollup,headRefOid")
+    assert rollup_reads[0][1] == source._CHECKS_OUTPUT_BYTES
+    assert data["checks"][0]["bucket"] == "passed"
+    assert "checks" not in data["partialSections"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_core_payload_survives_rollup_failure(monkeypatch) -> None:
+    """A Checks-blind token costs the checks SECTION, never the panel (#5115)."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            raise source.SourceProviderError("gh: Resource not accessible by integration")
+        if "pr view" in command:
+            return {
+                "number": 12,
+                "title": "Fine-grained token",
+                "state": "OPEN",
+                "headRefOid": "abc123",
+            }
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert data["title"] == "Fine-grained token"
+    assert data["state"] == "OPEN"
+    assert data["checks"] == []
+    # The degraded state is distinguishable IN THE PAYLOAD: an empty `checks`
+    # list plus the named partial section, never a silent "no checks".
+    assert "checks" in data["partialSections"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_github_discards_rollup_from_a_different_head(monkeypatch) -> None:
+    """A rollup read that straddled a push must not pin another commit's CI."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            return {
+                "statusCheckRollup": [
+                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
+                ],
+                "headRefOid": "pushed-after-core-read",
+            }
+        if "pr view" in command:
+            return {"number": 12, "state": "OPEN", "headRefOid": "abc123"}
+        return {} if "graphql" in command else []
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    data = await source._fetch_github(
+        source.parse_source_url("https://github.com/acme/repo/pull/12")
+    )
+
+    assert data["checks"] == []
+    assert "checks" in data["partialSections"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failed_endpoint", "expected_section"),
     [
@@ -1561,7 +1663,10 @@ async def test_github_check_status_carries_settled_merge_state(monkeypatch) -> N
     panel is open lands on a poll instead of waiting for a manual refresh."""
 
     async def fake_run(*argv: str, **_kwargs: int):
-        assert "mergeable,mergeStateStatus" in " ".join(argv)
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            return {"statusCheckRollup": [], "headRefOid": "abc123"}
+        assert "mergeable,mergeStateStatus" in command
         return {"state": "OPEN", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
 
     monkeypatch.setattr(source, "_run_json", fake_run)
@@ -1586,6 +1691,73 @@ async def test_github_check_status_omits_unsettled_merge_state(
     status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
 
     assert status == {"state": "open"}
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_keeps_authorized_fields_when_rollup_fails(
+    monkeypatch,
+) -> None:
+    """The chip renders state/merge under a Checks-blind token (#5115).
+
+    Bundling `statusCheckRollup` into the chip read made the WHOLE read fail
+    when the token lacked Checks access; the split keeps the fields the token
+    was authorized for and flags only the CI portion as unavailable.
+    """
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            raise source.SourceProviderError("gh: Resource not accessible by integration")
+        return {"state": "OPEN", "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY"}
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status is not None
+    assert status.pop(source._CHIP_CI_UNAVAILABLE, None) == "1"
+    assert status == {"state": "open", "mergeable": "conflicting", "mergeStateStatus": "dirty"}
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_marks_stale_rollup_unavailable(monkeypatch) -> None:
+    """A rollup read that straddled a push must not paint another head's CI."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            return {
+                "statusCheckRollup": [
+                    {"name": "test", "status": "COMPLETED", "conclusion": "SUCCESS"}
+                ],
+                "headRefOid": "pushed-after-core-read",
+            }
+        return {"state": "OPEN", "headRefOid": "abc123"}
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    status = await source._fetch_check_status("https://github.com/acme/repo/pull/12")
+
+    assert status is not None
+    assert status.pop(source._CHIP_CI_UNAVAILABLE, None) == "1"
+    assert status == {"state": "open"}
+
+
+@pytest.mark.asyncio
+async def test_github_check_status_still_fails_when_core_read_fails(monkeypatch) -> None:
+    """Only the rollup is degradable: a failed CORE read must keep raising, so
+    `_refresh_check_status` keeps its keep-previous-wholesale posture."""
+
+    async def fake_run(*argv: str, **_kwargs: int):
+        command = " ".join(argv)
+        if "statusCheckRollup" in command:
+            return {"statusCheckRollup": [], "headRefOid": "abc123"}
+        raise source.SourceProviderError("core read failed")
+
+    monkeypatch.setattr(source, "_run_json", fake_run)
+
+    with pytest.raises(source.SourceProviderError):
+        await source._fetch_check_status("https://github.com/acme/repo/pull/12")
 
 
 @pytest.mark.asyncio
@@ -2039,6 +2211,53 @@ async def test_chip_refresh_without_change_keeps_full_payload(monkeypatch) -> No
     assert url in source._CACHE
     source._CACHE.clear()
     source._check_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_chip_refresh_keeps_known_ci_when_rollup_alone_fails(monkeypatch) -> None:
+    """Mirror of the full-payload keep-known rule for a partial `checks`: a
+    degraded rollup must not erase a glyph the chip cache already knows, and
+    the internal marker must never reach the cache."""
+    url = "https://github.com/acme/repo/pull/12"
+    source._check_cache.clear()
+    source._check_inflight.clear()
+    source._check_cache[url] = (source.time.monotonic(), {"ci": "passed", "state": "open"})
+    monkeypatch.setattr(
+        source,
+        "_fetch_check_status",
+        AsyncMock(return_value={"state": "open", source._CHIP_CI_UNAVAILABLE: "1"}),
+    )
+
+    try:
+        await source._refresh_check_status(url)
+
+        assert source._check_cache[url][1] == {"ci": "passed", "state": "open"}
+    finally:
+        source._check_cache.clear()
+
+
+@pytest.mark.asyncio
+async def test_chip_refresh_lets_a_clean_empty_rollup_clear_a_stale_ci(monkeypatch) -> None:
+    """A rollup that SUCCEEDS with zero checks carries no marker: the CI glyph
+    was legitimately withdrawn (no checks configured), so it must clear."""
+    url = "https://github.com/acme/repo/pull/12"
+    source._CACHE.clear()
+    source._check_cache.clear()
+    source._check_inflight.clear()
+    source._check_cache[url] = (source.time.monotonic(), {"ci": "passed", "state": "open"})
+    monkeypatch.setattr(
+        source,
+        "_fetch_check_status",
+        AsyncMock(return_value={"state": "open"}),
+    )
+
+    try:
+        await source._refresh_check_status(url)
+
+        assert source._check_cache[url][1] == {"state": "open"}
+    finally:
+        source._CACHE.clear()
+        source._check_cache.clear()
 
 
 @pytest.mark.asyncio
@@ -2665,7 +2884,7 @@ async def test_fetch_github_checks_uses_one_call_without_rewriting_cache(monkeyp
         "view",
         url,
         "--json",
-        "statusCheckRollup",
+        "statusCheckRollup,headRefOid",
         max_output_bytes=source._CHECKS_OUTPUT_BYTES,
     )
     assert checks[0]["bucket"] == "pending"

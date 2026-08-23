@@ -7,8 +7,9 @@ redaction and the tool-approval decision -- so every channel inherits them
 once.
 
 This module stays dependency-neutral: it imports only the ``acp.types``
-event constants (a stdlib-only leaf) and the ``security`` redactors (also a
-leaf). It does NOT import ``kiro_crew.slack`` or ``kiro_crew.dashboard``.
+event constants (a stdlib-only leaf), the ``security`` redactors (also a
+leaf), and the ``session_directive`` codec (a third stdlib-only leaf). It
+does NOT import ``kiro_crew.slack`` or ``kiro_crew.dashboard``.
 
 This driver is the channel-neutral core shared by every transport;
 Slack-specific rendering lives in the Slack ``Renderer``
@@ -17,17 +18,21 @@ Slack-specific rendering lives in the Slack ``Renderer``
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Awaitable, Callable
 
+from kiro_crew import session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_STEER_CONSUMED,
+    EVENT_SUBAGENT_ACTIVITY,
     EVENT_TEXT_CHUNK,
     EVENT_THINKING_CHUNK,
     EVENT_TOOL_CALL,
+    EVENT_TOOL_RESULT,
 )
 from kiro_crew.messaging.renderer import (
     COMPACTION,
@@ -42,6 +47,8 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+
+logger = logging.getLogger(__name__)
 
 # Approval modes (mirrors slack/handler APPROVAL_* + the dashboard ladder).
 APPROVAL_AUTO = "auto"
@@ -59,6 +66,13 @@ ApprovalDecider = Callable[[Any], Awaitable[bool]]
 #: (keeping the driver channel-neutral) to preserve hook-driven auto-approval
 #: such as ``auto_approve_subagent_spawn`` for the ``spawn_run`` tool.
 AutoApprovePredicate = Callable[[str], bool]
+
+#: A session-directive consumer: ``(kind, args) -> awaitable``. The driver
+#: invokes it when a genuine directive-tool result (see ``session_directive``)
+#: carries a decoded marker; the caller injects a consumer bound to ITS OWN
+#: session key (keeping the driver channel-neutral), typically
+#: ``messaging.dispatch.build_directive_consumer``.
+DirectiveConsumer = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 # kiro-cli embeds this protocol frame in ordinary agent_message_chunk text when
 # it folds a mid-turn steer. It is transport metadata, not assistant speech.
@@ -273,6 +287,15 @@ class TurnDriver:
         permission request in this turn is auto-approved immediately (no
         buttons, no wait). Injected by the caller to honor per-session Trust /
         global YOLO without the driver depending on any channel module.
+    directive_consumer:
+        Optional async callback ``(kind, args) -> None``. When set, the driver
+        decodes session-directive markers from genuine directive-tool results
+        (``EVENT_TOOL_RESULT``) and invokes the callback with the validated
+        payload, so a stateless session-bound tool (``monitor_start`` /
+        ``autonudge_stop`` / ...) takes effect on standalone channel
+        transports. Injected by the caller with its own session key bound, so
+        the driver stays channel-neutral. When omitted, directive markers are
+        ignored exactly as before.
     """
 
     def __init__(
@@ -285,6 +308,7 @@ class TurnDriver:
         auto_approve_tool: AutoApprovePredicate | None = None,
         auto_approve_session: Callable[[], bool] | None = None,
         tool_gate: Callable[[Any], str] | None = None,
+        directive_consumer: DirectiveConsumer | None = None,
     ) -> None:
         self.provider = provider
         self.renderer = renderer
@@ -300,6 +324,10 @@ class TurnDriver:
         # handle_message enforces via hooks.on_tool_call. Runs BEFORE the
         # auto/trust/YOLO ladder so a DENY can never be overridden.
         self.tool_gate = tool_gate
+        # Session-directive consumer (see the class docstring). Applied on
+        # EVENT_TOOL_RESULT for a tool call whose trusted ``_meta.kiro``
+        # identity was recorded at EVENT_TOOL_CALL — the forgery gate.
+        self.directive_consumer = directive_consumer
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
@@ -313,6 +341,19 @@ class TurnDriver:
         stream_redactor = StreamRedactor(_redact)
         pending_steer_events = 0
         unmatched_marker_events = 0
+        # tool_call_id -> canonical directive-tool name, recorded at
+        # EVENT_TOOL_CALL from the trusted ``_meta.kiro`` identity and consumed
+        # at the matching EVENT_TOOL_RESULT. Only populated when a directive
+        # consumer is injected, so a consumer-less turn does no extra work.
+        pending_directives: dict[str, str] = {}
+        # tool_call_ids owned by a NATIVE (in-session) sub-agent, announced via
+        # EVENT_SUBAGENT_ACTIVITY before the child's flat tool_call/tool_result
+        # frames arrive on this same stream. A native child's directive call
+        # carries a genuine core-MCP identity but has no independently bindable
+        # session, so it must be REFUSED rather than applied to the parent —
+        # sub-agent isolation, mirroring the dashboard consumer's
+        # ``_native_tc_card`` refusal.
+        native_tool_call_ids: set[str] = set()
 
         async def emit_text(text: str) -> None:
             nonlocal accumulated
@@ -383,6 +424,47 @@ class TurnDriver:
                         tool_purpose=_redact(getattr(event, "tool_purpose", "")),
                     )
                 )
+                # Forgery gate: record the directive-tool name ONLY from the
+                # trusted ``_meta.kiro`` identity and ONLY for a genuine call
+                # served by Kiro Crew's OWN core MCP server — never the
+                # LLM-authored title, and never another (possibly third-party)
+                # MCP server that merely exposes a tool named e.g.
+                # "monitor_start". A shell tool has no mcp_server_name and a
+                # canonical tool_name like "execute_bash", so it can never
+                # register here. (Mirrors the dashboard consumer in
+                # chat_runner.)
+                if (
+                    self.directive_consumer is not None
+                    and event.tool_call_id
+                    and getattr(event, "mcp_server_name", "")
+                    == session_directive.CORE_MCP_SERVER
+                ):
+                    canonical = session_directive.match_tool(
+                        getattr(event, "tool_name", "") or ""
+                    )
+                    if canonical:
+                        pending_directives[event.tool_call_id] = canonical
+            elif kind == EVENT_SUBAGENT_ACTIVITY:
+                # Native sub-agent lifecycle marker. Its only role in this
+                # driver is the isolation gate above: remember which
+                # tool_call_ids belong to a child session so their directives
+                # are refused. Tracked regardless of the consumer being set at
+                # THIS point in the stream, because the set is only read when a
+                # consumer exists and the bookkeeping is O(1) per event.
+                if event.tool_call_id and getattr(event, "sub_session_id", ""):
+                    native_tool_call_ids.add(event.tool_call_id)
+            elif kind == EVENT_TOOL_RESULT:
+                # Session directive: a stateless session-bound tool returns a
+                # marker instead of resolving its own session identity; the
+                # caller-injected consumer applies it against the caller's own
+                # session. Gated on the identity recorded above — a forged
+                # marker under any other tool resolves no entry and is
+                # ignored. Without a consumer this event stays inert,
+                # preserving the pre-consumer behavior exactly.
+                if self.directive_consumer is not None:
+                    await self._consume_directive(
+                        event, pending_directives, native_tool_call_ids
+                    )
             elif kind == EVENT_PERMISSION_REQUEST:
                 # PreToolUse security gate — sensitive-path keystone +
                 # governance ceiling + deny-list. Runs FIRST, before the
@@ -485,6 +567,85 @@ class TurnDriver:
                     OutputEvent(kind=DONE, stop_reason=event.stop_reason)
                 )
         return accumulated
+
+    async def _consume_directive(
+        self, event: Any, pending: dict[str, str], native_tool_call_ids: set[str]
+    ) -> None:
+        """Decode one directive-tool result and apply it via the consumer.
+
+        SINGLE-CONSUME: one tool call can surface more than one result frame
+        (a mid-stream content frame and the final ``status=completed``
+        rawOutput frame), so the mapping is popped BEFORE the consumer runs —
+        a second frame must never re-apply the effect (two armed loops, a
+        repeated mutation). A mid-stream frame with no decodable marker leaves
+        the mapping in place for the final frame. Mirrors the dashboard
+        consumer in ``chat_runner``.
+        """
+        consumer = self.directive_consumer
+        tool = pending.get(event.tool_call_id or "", "")
+        if consumer is None or not tool:
+            return
+        if event.tool_call_id in native_tool_call_ids:
+            # Sub-agent ISOLATION: a native child's tool calls surface as flat
+            # events on the parent stream with a genuine core-MCP identity, but
+            # the child has no independently bindable session — applying its
+            # directive here would let a sub-agent arm/mutate its PARENT. Pop
+            # (terminal for this call) and audit the refusal so the denial is
+            # never a silent drop, mirroring the dashboard consumer.
+            pending.pop(event.tool_call_id, None)
+            sel().log_api_access(
+                caller="turn_driver",
+                operation="session_directive",
+                outcome="denied",
+                source="messaging",
+                resources=(
+                    f"tool={tool} tool_call_id={event.tool_call_id} "
+                    "reason=native_subagent_isolation"
+                ),
+            )
+            logger.info(
+                "session-directive %r from a native sub-agent refused "
+                "(tool_call_id=%s): no session of its own to act on",
+                tool,
+                event.tool_call_id,
+            )
+            return
+        output = event.tool_output or ""
+        args = session_directive.decode(output, tool)
+        if args is None:
+            if getattr(event, "tool_final", False):
+                if session_directive.is_refusal(output):
+                    # encode() refused to emit a marker (payload over the
+                    # delivery limit): nothing was applied and the result text
+                    # already told the model so. Terminal for this call.
+                    pending.pop(event.tool_call_id, None)
+                    logger.info(
+                        "session-directive REFUSED for %r (tool_call_id=%s): "
+                        "payload over the %d-char delivery limit; nothing applied",
+                        tool,
+                        event.tool_call_id,
+                        session_directive.MAX_DIRECTIVE_CHARS,
+                    )
+                else:
+                    # Authenticated directive tool, final frame, no marker:
+                    # the effect is being dropped outright. Never let that be
+                    # silent — this exact silence can hide a marker-escaping
+                    # transport regression.
+                    logger.warning(
+                        "session-directive decode FAILED for %r (tool_call_id=%s, "
+                        "out_len=%d) — effect dropped",
+                        tool,
+                        event.tool_call_id,
+                        len(output),
+                    )
+            return
+        pending.pop(event.tool_call_id, None)
+        try:
+            await consumer(tool, args)
+        except Exception:
+            # The consumer is injected code applying a side effect; a failure
+            # there must never abort the rest of the turn's stream.
+            logger.warning("session-directive consumer failed for %r", tool, exc_info=True)
 
     async def _approve(self, event: Any) -> bool:
         """Apply the approval ladder to a permission-request event."""

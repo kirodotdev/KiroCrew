@@ -381,6 +381,44 @@ def err(msg):
     sys.stderr.write(msg + "\n")
 
 
+# statusCheckRollup needs Checks read access, which a fine-grained PAT
+# structurally cannot grant, and gh resolves every field of one --json request
+# atomically -- so bundling the rollup with the core fields makes the WHOLE
+# read fail for those tokens. The rollup is therefore fetched in its own call
+# (fetch_check_rollup) and degrades softly: the caller keeps the core metadata
+# and reports CI as unknown instead of aborting. The second read re-fetches
+# headRefOid and is discarded on a mismatch with the core read's head, so a
+# push landing between the two reads can never pair one head's metadata with
+# another head's checks. Byte-identical copy in pr_findings.py (parity-pinned
+# by test_prepare_pr_findings.py; the scripts are standalone-copyable, so
+# neither imports the other).
+ROLLUP_UNAVAILABLE_NOTICE = (
+    "CI check status UNAVAILABLE - the statusCheckRollup fetch failed (a token "
+    "without Checks read access, e.g. any fine-grained PAT, cannot fetch it); "
+    "treat CI as UNKNOWN, not as 'no checks yet'"
+)
+ROLLUP_HEAD_MOVED_NOTICE = (
+    "CI check status DISCARDED - the PR head changed between the core read and "
+    "the rollup read (concurrent push); treat CI as UNKNOWN and re-run for a "
+    "consistent snapshot"
+)
+
+
+def fetch_check_rollup(pr, expected_head):
+    """Return (rollup entries, notice); the notice is non-empty when degraded."""
+    rc, out, _ = run(["gh", "pr", "view", pr, "--json", "headRefOid,statusCheckRollup"])
+    if rc == 0 and out.strip():
+        try:
+            d = json.loads(out)
+        except ValueError:
+            d = None
+        if isinstance(d, dict):
+            if expected_head and (d.get("headRefOid") or "").strip() != expected_head:
+                return [], ROLLUP_HEAD_MOVED_NOTICE
+            return d.get("statusCheckRollup") or [], ""
+    return [], ROLLUP_UNAVAILABLE_NOTICE
+
+
 def classify_check(entry):
     """Return 'pass' | 'running' | 'fail' for one statusCheckRollup entry.
 
@@ -736,6 +774,7 @@ def decide(
     readiness_context,
     marker_eval=None,
     head_run="skip",
+    rollup_notice="",
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
 
@@ -764,6 +803,12 @@ def decide(
        defect. Both fail closed on "could not read". Advisory FINDING counts
        never gate -- whether a non-blocking finding should hold the loop open
        is a judgment call the exit code deliberately does not make.
+       ``rollup_notice`` -- the non-empty NOTICE string when the rollup read
+       degraded (fetch failure, or a concurrent push between the two reads) --
+       never changes the exit code either, only which reason an empty rollup
+       earns: a degraded read names its environment cause, so the reason (and
+       ``progress_key.status``, which carries it) distinguishes an environment
+       gap from a genuinely check-less PR.
     """
     if state != "OPEN":
         return 20, "STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?")
@@ -795,7 +840,28 @@ def decide(
     elif readiness_kind is None and n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
     if n_checks == 0:
-        reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
+        # An empty rollup has two very different causes, and the reason chosen
+        # here travels in ``progress_key.status``, which a polling loop
+        # compares byte-for-byte across runs. A degraded rollup read (the
+        # NOTICE the caller printed) is an environment gap -- token scope, an
+        # API error, a concurrent push -- while an empty rollup from a healthy
+        # read means the host truly reports no checks for this head. One
+        # shared reason would make those indistinguishable, so a loop would
+        # re-poll a token problem forever instead of escalating it.
+        if rollup_notice == ROLLUP_HEAD_MOVED_NOTICE:
+            reasons.append(
+                "CI status unreadable - the PR head moved between reads "
+                "(concurrent push) - transient environment, re-run for a "
+                "consistent snapshot (fail-closed)"
+            )
+        elif rollup_notice:
+            reasons.append(
+                "CI status unreadable - the rollup fetch failed (a token "
+                "without Checks read access, a 403, or a rate limit) - "
+                "environment gap, not a code defect (fail-closed)"
+            )
+        else:
+            reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
     if marker_eval is not None:
         if not marker_eval.get("ok"):
             reasons.append("reviewer comments could not be read (fail-closed)")
@@ -861,7 +927,7 @@ def main(argv):
 
     fields = (
         "number,title,state,isDraft,mergeable,mergeStateStatus,"
-        "reviewDecision,url,headRefName,headRefOid,statusCheckRollup,"
+        "reviewDecision,url,headRefName,headRefOid,"
         "body,closingIssuesReferences"
     )
     rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
@@ -875,7 +941,9 @@ def main(argv):
     mergeable = (d.get("mergeable") or "").upper()
     merge_state = (d.get("mergeStateStatus") or "").upper()
     decision = (d.get("reviewDecision") or "NONE").upper()
-    rollup = collapse_superseded(d.get("statusCheckRollup") or [])
+    head_sha = (d.get("headRefOid") or "").strip()
+    rollup_entries, rollup_notice = fetch_check_rollup(pr, head_sha)
+    rollup = collapse_superseded(rollup_entries)
 
     print("=" * 54)
     print("PR #{}  [{}{}]".format(d.get("number"), state, " draft" if draft else ""))
@@ -889,6 +957,8 @@ def main(argv):
     )
 
     print("-- CI checks " + "-" * 40)
+    if rollup_notice:
+        print("  NOTICE: " + rollup_notice)
     n_running = n_fail = 0
     failing_checks = []
     readiness_kind = None
@@ -935,7 +1005,6 @@ def main(argv):
     # Reviewer-side conditions (issue #2550): the stamp and the comment body
     # are the signal -- never the review workflow's run conclusion, which is
     # unreliable in both directions on this repo.
-    head_sha = (d.get("headRefOid") or "").strip()
     repo = detect_repo(d.get("url") or "")
     marker_authors = resolve_marker_authors(argv, os.environ)
     marker_bindings = resolve_marker_bindings(argv, os.environ)
@@ -1006,6 +1075,7 @@ def main(argv):
         readiness_context=readiness_context,
         marker_eval=marker_eval,
         head_run=head_run,
+        rollup_notice=rollup_notice,
     )
     print(status)
     if "--json" in argv[1:]:

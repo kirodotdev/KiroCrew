@@ -27,7 +27,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // Initialise i18next exactly as main.tsx does. Importing the module only DEFINES
 // initI18n — without calling it, every label in the frame is blank, which
 // silently produces screenshots that misrepresent the real UI.
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 // Without the app's own stylesheet every Tailwind class in the row is inert:
 // the frame renders unstyled, the icon tile loses its size constraint and fills
 // the shot, and the theme tokens never paint. A screenshot in that state

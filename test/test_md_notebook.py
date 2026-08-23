@@ -27,8 +27,10 @@ import pytest
 import yarl
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from windows_sim import replace_sharing_violation
 
 from conftest import requires_symlinks
+from kiro_crew import atomic_write as atomic_write_mod
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.md_notebook import git_ops
 
@@ -1125,6 +1127,27 @@ async def test_concurrent_clones_do_not_lose_a_vault(fixtures) -> None:
         assert r1[0] == 200 and r2[0] == 200, (r1, r2)
         _, listing = await client.get("/api/vaults")
         assert len(listing["vaults"]) == 2, listing
+
+
+def test_vault_registry_commit_retries_windows_sharing_violation(
+    fixtures, monkeypatch
+) -> None:
+    """A transient Windows handle on vaults.json must not lose a clone.
+
+    Clone/attach mutations are serialized, but Windows Search or an AV scanner
+    can still hold the registry open when the atomic rename lands. The shared
+    retry helper absorbs that bounded sharing-violation window.
+    """
+    server_mod, _remote, _seed = fixtures
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+    monkeypatch.setattr(atomic_write_mod, "_REPLACE_BACKOFF_SECONDS", 0)
+    vaults = [{"id": "v1", "localPath": "vault-one"}]
+
+    with replace_sharing_violation(match="vaults.json", times=1) as state:
+        server_mod._write_vaults_sync(vaults)
+
+    assert json.loads(server_mod._vaults_json().read_text(encoding="utf-8")) == vaults
+    assert state["n"] == 2, "the transient rename must be retried exactly once"
 
 
 # ---------------------------------------------------------------------------

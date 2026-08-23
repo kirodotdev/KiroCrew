@@ -868,6 +868,26 @@ _MAX_SLOT_MESSAGES = 10000  # Keep all messages — virtual scrolling handles pe
 #: ``chat_persistence._TRANSIENT_ROLES`` minus the rows that ARE broadcast).
 #: They get no ``meta.mid`` — see ``_ChatSlot.append``.
 _WIRE_ONLY_ROLES = frozenset({"chunk", "done", "streaming"})
+
+
+def row_mid(row: Any) -> str | None:
+    """The delivery identity stamped on an appended window row, or ``None``.
+
+    The ONE extraction of ``meta.mid`` shared by every dual-writer that reads
+    the id off a ``_ChatSlot.append`` return to stamp its durable transcript
+    copy. Mirrors the read side (``_append_unflushed_tail`` matches only a
+    non-empty ``str``): any other shape reads as "no identity" here rather than
+    being persisted as an id the reader is structurally unable to match.
+    Tolerates a non-dict *row* so a caller handed a test double degrades to
+    ``None`` (an id-less durable copy) instead of raising.
+    """
+    if not isinstance(row, dict):
+        return None
+    meta = row.get("meta")
+    mid = meta.get("mid") if isinstance(meta, dict) else None
+    return mid if isinstance(mid, str) and mid else None
+
+
 #: Roles whose LIVE append starts the slot's next turn, and so consumes the answer
 #: channel an unanswered stateless question card was waiting on. Mirrors the
 #: frontend's ``QUESTION_RETIRING_ROLES``: the two must agree, or a session reports
@@ -1371,10 +1391,10 @@ class SlotOrigin:
     regardless of their ``_app`` owner).
     """
 
-    USER = "user"       # initiated from the dashboard UI (no app token)
-    APP = "app"         # initiated by an app SDK call (carries owner _app)
-    CRON = "cron"       # initiated by a cron job
-    SYSTEM = "system"   # gateway-internal (startup, migration, etc.)
+    USER = "user"  # initiated from the dashboard UI (no app token)
+    APP = "app"  # initiated by an app SDK call (carries owner _app)
+    CRON = "cron"  # initiated by a cron job
+    SYSTEM = "system"  # gateway-internal (startup, migration, etc.)
 
 
 def request_slot_origin(app: str) -> str:
@@ -2161,7 +2181,7 @@ class _ChatSlot:
         broadcast: bool = True,
         broadcast_user: bool = False,
         meta: dict | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         # A LIVE turn-consuming row retires every unanswered STATELESS question:
         # the card's own submit path sends one, and anything else that starts the
         # slot's next turn consumes the answer channel the card was waiting on.
@@ -2309,6 +2329,13 @@ class _ChatSlot:
                 )
             # The frozen prefix grew → its cached bytes are stale.
             self._frozen_prefix_cache = None
+        # Hand back the row as appended (id included): a dual-writer that also
+        # persists this message through ``ConversationLog.append`` needs the
+        # ``meta.mid`` minted above so BOTH copies carry the same identity —
+        # re-minting at the durable copy would give the reconciliation walk two
+        # ids for one logical message. Read the id off the return with
+        # :func:`row_mid`, never an inline ``meta`` poke.
+        return msg
 
     def push_wire_frame(self, cls: str, content: str) -> None:
         """Queue an ephemeral wire-only frame for live SSE readers.
@@ -2322,9 +2349,7 @@ class _ChatSlot:
         The queue/ordering contract lives here so callers never hand-roll a
         raw ``_pending`` append at a distance.
         """
-        self._pending.append(
-            {"role": cls, "content": content, "cls": cls, "ts": ""}
-        )
+        self._pending.append({"role": cls, "content": content, "cls": cls, "ts": ""})
         self.event.set()
 
     def drain(self) -> list[dict[str, str]]:
@@ -2494,7 +2519,9 @@ class _ChatSlot:
         if len(keep_ctx) != len(self._pending_context):
             dropped += len(self._pending_context) - len(keep_ctx)
             self._pending_context[:] = keep_ctx
-        keep_msgs = [m for m in self.messages if not _note_authorized_elsewhere(m.get("meta"), live)]
+        keep_msgs = [
+            m for m in self.messages if not _note_authorized_elsewhere(m.get("meta"), live)
+        ]
         if len(keep_msgs) != len(self.messages):
             dropped += len(self.messages) - len(keep_msgs)
             self.messages[:] = keep_msgs
@@ -3357,7 +3384,9 @@ class DashboardState:
         # Cloud provisioning launch jobs (lazy-init in handlers_cloud).
         self.cloud_launch_store: Any = None  # LaunchJobStore
         self.cloud_launch_cancels: Any = None  # dict[str, threading.Event]
-        self.cloud_launch_engine: Any = None  # test-injected LaunchEngine (None -> RealLaunchEngine)
+        self.cloud_launch_engine: Any = (
+            None  # test-injected LaunchEngine (None -> RealLaunchEngine)
+        )
         self.cloud_launch_sync: bool = False  # tests set True to run launches inline
         self.cloud_launch_reaped: bool = False  # orphan reap is once per process
         self.cloud_launch_lock: Any = None  # asyncio.Lock serializing launch creation
@@ -3915,6 +3944,9 @@ class DashboardState:
         update_check_status: str = "unchecked",
         update_command: str = "",
         update_channel: str = "",
+        update_managed_by: str = "",
+        update_commits_ahead: int = 0,
+        update_commits_behind: int = 0,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -3956,6 +3988,19 @@ class DashboardState:
             # between switching channels and the new lane's build landing, so the
             # switcher must key on this one or it would snap back on every poll.
             "update_channel": update_channel,
+            # Who manages updates on this host: "" (self-managed), or the
+            # mechanism that owns them (e.g. "command" for a policy-pinned
+            # provider). The panel keys its update copy on this — a
+            # command-managed host must not render self-managed installer
+            # instructions its policy exists to bypass.
+            "update_managed_by": update_managed_by,
+            # Commit distance from a git checkout's upstream, both directions.
+            # DIVERGED (both > 0) reports ``update_available: False`` exactly
+            # like a current checkout — the destructive apply paths must never
+            # be offered local commits — so without the counts the badge cannot
+            # tell the two apart. 0/0 on non-git layouts and before any check.
+            "update_commits_ahead": update_commits_ahead,
+            "update_commits_behind": update_commits_behind,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
@@ -3976,9 +4021,7 @@ class DashboardState:
             # Require BOTH a wired client and the real connect outcome the
             # gateway records after _connect_slack. This is the same field
             # /api/slack/config already reports to the settings badge.
-            "slack_connected": (
-                self.slack_client is not None and self.slack_socket_connected
-            ),
+            "slack_connected": (self.slack_client is not None and self.slack_socket_connected),
             # Governance enforcement health: "active" (enforcing),
             # "disabled" (permissive default / not restricting), "degraded" (a
             # fail-closed trip, integrity mismatch, or unverified policy this
@@ -6371,8 +6414,7 @@ class DashboardState:
             # connect it. Guaranteed here rather than left to hold incidentally
             # across the branches above.
             if not any(
-                row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin"
-                for row in links
+                row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin" for row in links
             ):
                 append_link(ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts), "out")
             return links, True, visible_slack_channel, slack_ts or ""
@@ -6850,9 +6892,7 @@ class DashboardState:
         if exc is not None:
             logger.debug("WS send failed (client likely disconnected): %s", exc)
 
-    def _ws_client_allowed(
-        self, ws: web.WebSocketResponse, msg_type: str, data: object
-    ) -> bool:
+    def _ws_client_allowed(self, ws: web.WebSocketResponse, msg_type: str, data: object) -> bool:
         """Return True if *ws* should receive an event with *msg_type* / *data*.
 
         Deny-by-default (CWE-269): every non-dashboard-user connection is gated
@@ -6988,9 +7028,7 @@ class DashboardState:
                 data[key], ws_app, allowed, self, msg_type=msg_type
             )
         except Exception:
-            self._log.warning(
-                "subagent batch filter failed; dropping items", exc_info=True
-            )
+            self._log.warning("subagent batch filter failed; dropping items", exc_info=True)
             items = []
         return json.dumps({"type": msg_type, "data": {key: items}})
 

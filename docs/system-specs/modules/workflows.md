@@ -445,9 +445,15 @@ Unknown keywords are ignored, so a richer schema still validates on the parts th
 understands. `bool` is explicitly **not** an `integer` or `number`.
 
 `parse_json(text)` is tolerant of the two shapes a model actually returns: a
-fenced ` ```json ` block, and JSON wrapped in prose (it falls back to the
-outermost `{...}` / `[...]` span, trying whichever delimiter appears first so a
-prose-wrapped array yields the array, not an inner object). It never `eval`s.
+fenced ` ```json ` block, and JSON wrapped in prose. Prose recovery delegates to
+the shared `llm_helpers._extract_json_of_type` scanner (stdlib `raw_decode` over
+successive `{` / `[` offsets), so a stray brace or bracket in the prose no longer
+corrupts recovery, and a prose-wrapped array still yields the outer array, not an
+inner object. `coerce_and_validate` derives a prefer predicate from the schema's
+container `type`, so an object schema selects the object even when stray prose
+parses as an array first (and vice versa); two *different* candidates of the
+preferred shape refuse the guess and count as a parse failure, feeding the retry
+loop. It never `eval`s.
 
 `run_with_schema(produce, prompt, schema, retries=DEFAULT_SCHEMA_RETRIES)` drives
 the loop: the prompt is augmented with the serialized schema and a JSON-only

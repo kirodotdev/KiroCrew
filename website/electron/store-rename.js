@@ -86,6 +86,12 @@ function sleepSync(ms) {
 // lets the behavioural settings (runLocalGateway, sshTimeoutMs) come along. Dropping
 // those would mean a user who runs as a pure client gets an unwanted local gateway on
 // the first launch after the rename.
+//
+// Values equal to their defaults are carried too, deliberately. The destination never
+// exists when the seed runs, so seeding a default-equal value is indistinguishable
+// from electron-store writing that default itself — filtering them out could only be
+// done against a hand-copied defaults table, whose silent divergence from main.js
+// would misclassify a real legacy choice as "default, drop it".
 const MIGRATED_KEYS = [
   // Behavioural: an orphaned value silently changes which release channel the user
   // follows, or starts a gateway they run as a pure client to avoid.
@@ -107,31 +113,6 @@ const MIGRATED_KEYS = [
   "linuxFrameless",
 ];
 
-// Defaults main.js constructs the store with, for the keys above. A legacy value equal
-// to its own default carries no intent, so seeding it would only re-state the default
-// and make an empty migration look like a real one.
-const KEY_DEFAULTS = {
-  updateChannel: "",
-  remoteHost: "",
-  kirocrewBinPath: "~/.local/bin/kirocrew",
-  runLocalGateway: true,
-  remoteHosts: {},
-  sshTimeoutMs: 20000,
-  windowState: null,
-  themeAccent: "",
-  globalHotkey: null,
-  linuxFrameless: null,
-};
-
-function isDefault(key, value) {
-  const fallback = KEY_DEFAULTS[key];
-  // Objects (remoteHosts, windowState) need a structural comparison.
-  if (typeof fallback === "object" && fallback !== null) {
-    try { return JSON.stringify(value) === JSON.stringify(fallback); } catch { return false; }
-  }
-  return value === fallback;
-}
-
 /**
  * electron-store's config.json inside the PRE-RENAME userData directory, derived from
  * the live one.
@@ -144,9 +125,10 @@ function isDefault(key, value) {
  * SIBLING of the current one, whatever Electron chose.
  *
  * @param {string} userDataPath app.getPath("userData")
- * @returns {string} path to the legacy config.json, or "" if it cannot be derived
+ * @param {string} [storeFileName] electron-store file inside the userData directory
+ * @returns {string} path to the legacy store file, or "" if it cannot be derived
  */
-function legacyStoreFile(userDataPath) {
+function legacyStoreFile(userDataPath, storeFileName = STORE_FILE_NAME) {
   if (typeof userDataPath !== "string" || !userDataPath) return "";
   // Pick the parser from the path's own SHAPE rather than process.platform, so all
   // three layouts stay testable on one machine and a win32 path is never parsed with
@@ -155,7 +137,7 @@ function legacyStoreFile(userDataPath) {
   const normalized = userDataPath.replace(/[\\/]+$/, "");
   const parent = impl.dirname(normalized);
   if (!parent || parent === normalized) return "";
-  return impl.join(parent, LEGACY_STORE_NAME, STORE_FILE_NAME);
+  return impl.join(parent, LEGACY_STORE_NAME, storeFileName);
 }
 
 /**
@@ -172,6 +154,14 @@ function legacyStoreFile(userDataPath) {
  *
  * @param {string} userDataPath app.getPath("userData")
  * @param {object} [opts]
+ * @param {string} [opts.storeFileName] which electron-store file to seed; defaults to
+ *   the shell's main config.json. Other stores in the same userData directory (e.g.
+ *   Mochi's mochi-machine.json) are orphaned by the same rename and reuse this
+ *   mechanism with their own file name and key allowlist.
+ * @param {string[]} [opts.keys] allowlist of top-level keys to carry from the legacy
+ *   file; defaults to the main store's MIGRATED_KEYS. Must match the RAW file shape:
+ *   electron-store resolves dotted keys via dot-notation, so a namespaced store's
+ *   user data lives under its top-level namespace segment, not the dotted spelling.
  * @param {() => object|null} [opts.readLegacy] injected for tests
  * @param {(file:string, data:string) => void} [opts.writeFile] injected for tests
  * @param {(msg:string) => void} [opts.log]
@@ -179,8 +169,15 @@ function legacyStoreFile(userDataPath) {
  *   synchronous wait between failed legacy-read attempts
  * @returns {boolean} whether a file was written
  */
-function seedRenamedStore(userDataPath, { readLegacy = null, writeFile = null, log = null, sleep = sleepSync } = {}) {
-  const target = path.join(userDataPath || "", STORE_FILE_NAME);
+function seedRenamedStore(userDataPath, {
+  storeFileName = STORE_FILE_NAME,
+  keys = MIGRATED_KEYS,
+  readLegacy = null,
+  writeFile = null,
+  log = null,
+  sleep = sleepSync,
+} = {}) {
+  const target = path.join(userDataPath || "", storeFileName);
   // This invocation's temp sibling, named outside the try so the failure path can
   // remove exactly the file this call created and nothing else.
   let tmp = "";
@@ -190,7 +187,7 @@ function seedRenamedStore(userDataPath, { readLegacy = null, writeFile = null, l
     if (fs.existsSync(target)) return false;
 
     const read = readLegacy || (() => {
-      const file = legacyStoreFile(userDataPath);
+      const file = legacyStoreFile(userDataPath, storeFileName);
       if (!file) return null;
       return JSON.parse(fs.readFileSync(file, "utf8"));
     });
@@ -229,19 +226,21 @@ function seedRenamedStore(userDataPath, { readLegacy = null, writeFile = null, l
     if (!legacy || typeof legacy !== "object") return false;
 
     const seed = {};
-    for (const key of MIGRATED_KEYS) {
+    for (const key of keys) {
       // Key ABSENCE, not emptiness, means "the legacy store has nothing to say". An
       // explicit "" is a real choice — main.js documents globalHotkey null as
       // "platform default" and "" as "disabled" — so treating empty as absent would
-      // silently re-enable a hotkey the user turned off.
+      // silently re-enable a hotkey the user turned off. Default-equal values are
+      // carried for the same reason absence is respected: the destination does not
+      // exist, so re-stating a default is a no-op, and filtering would require a
+      // second defaults table that could drift from the store's real one.
       if (!Object.prototype.hasOwnProperty.call(legacy, key)) continue;
       const value = legacy[key];
       if (value === undefined) continue;
-      if (isDefault(key, value)) continue;
       seed[key] = value;
     }
-    const keys = Object.keys(seed);
-    if (!keys.length) return false;
+    const seededKeys = Object.keys(seed);
+    if (!seededKeys.length) return false;
 
     // ATOMIC: write a temp sibling, then rename. config.json is what electron-store
     // parses on the next launch, so a torn write is worse than no migration at all —
@@ -264,7 +263,7 @@ function seedRenamedStore(userDataPath, { readLegacy = null, writeFile = null, l
     });
     write(tmpName, `${JSON.stringify(seed, null, "\t")}\n`);
     fs.renameSync(tmpName, target);
-    if (log) log(`carried ${keys.length} setting(s) from the pre-rename store: ${keys.join(", ")}`);
+    if (log) log(`carried ${seededKeys.length} setting(s) from the pre-rename store: ${seededKeys.join(", ")}`);
     return true;
   } catch (err) {
     // Remove ONLY this invocation's temp sibling — never `target`. The destination

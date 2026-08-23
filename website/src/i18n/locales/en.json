@@ -5319,8 +5319,8 @@
         "loop": "Loop"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Collapse pinned prompt",
-        "expand_pinned_prompt": "Expand pinned prompt",
+        "collapse_pinned_prompt": "Collapse pinned turn",
+        "expand_pinned_prompt": "Expand pinned turn",
         "jump_to_this_turn": "Jump to this turn"
       },
       "recoveryCard": {
@@ -5950,7 +5950,10 @@
         "nodes": "nodes,",
         "all_sources": "All sources",
         "filter_by_source": "Filter by source",
-        "recenter": "Recenter"
+        "recenter": "Recenter",
+        "start_physics": "Physics",
+        "pause_physics": "Pause",
+        "graph_region_label": "Knowledge entity graph"
       },
       "sourceGroup": {
         "next": "Next →",

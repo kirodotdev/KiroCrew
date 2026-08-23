@@ -2065,6 +2065,36 @@ def pid_liveness(pid: int) -> str:
     return PID_ALIVE if pid_exists(pid) else PID_DEAD
 
 
+def pgroup_exists(pgid: int) -> bool:
+    """Return True iff any member of process GROUP ``pgid`` is alive (best-effort).
+
+    The tree-faithful liveness probe for a child spawned with
+    ``start_new_session=True``: the launcher's pid doubles as the group id and
+    ordinary descendants keep it after the launcher exits, so the group
+    outlives the launcher exactly as long as any member does. A descendant
+    that ``setsid()``s out of the group evades this probe precisely as it
+    evades ``kill_process_tree`` -- callers that must catch those use the
+    escaped-children reapers, not this.
+
+    POSIX: ``os.killpg(pgid, 0)`` -- conservative on EPERM (unsignalable
+    reads as alive). Windows: process groups in this sense do not exist and
+    ``kill_process_tree`` already walks the whole child tree via
+    ``taskkill /T``, so the group id (== the launcher pid) is probed as a
+    plain pid via :func:`pid_exists`.
+    """
+    if not IS_POSIX:
+        return pid_exists(pgid)
+    if pgid <= 0:
+        return False
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but we can't signal it
+    return True
+
+
 def pid_exists(pid: int) -> bool:
     """Return True iff ``pid`` currently exists (best-effort).
 

@@ -20,7 +20,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 import ExecutionsView from '../src/components/ExecutionsView'
 import JobLogsView from '../src/components/JobLogsView'
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)

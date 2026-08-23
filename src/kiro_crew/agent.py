@@ -58,14 +58,16 @@ from kiro_crew.config.paths import (
     _in_linked_git_worktree,
     _under_system_tmp,
     _valid_override_home,
+    ambient_agents_dir,
     isolated_agents_dir,
     kiro_agents_dir,
 )
 from kiro_crew.env import (
+    MCP_PATH_HINT,
     dedup_path,
     describe_search_path,
     emit_env,
-    spec_env_path,
+    mcp_search_path,
     spec_path_key,
 )
 from kiro_crew.mcp_cleanup import purge_deleted_proxy_from_config
@@ -2840,8 +2842,12 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     * A globally exported ``KIRO_HOME`` moves the shared directory, so comparing
       against a hard-coded default reads "not the shared one" and waves the write
       straight through. The comparison is therefore against what the AMBIENT
-      environment resolves right now (``kiro_agents_dir()``), which is by
+      environment resolves right now (``ambient_agents_dir()``), which is by
       definition the directory every instance under this environment shares.
+      Deliberately the override-BLIND resolver, not ``kiro_agents_dir()``: the
+      latter follows ``config.paths._agents_dir_override``, so a redirect would
+      move both sides of this comparison together, read as "target is the shared
+      one", and refuse the write from any ephemeral checkout.
 
     A target is exempt only when it is **provably private**: either a caller
     redirected the write somewhere the ambient environment would never produce (a
@@ -2858,7 +2864,7 @@ def _decline_shared_agent_home(*, audit: bool = True) -> Path | None:
     (``KIROCREW_HOME=$HOME`` is enough).
     """
     target = kiro_agents_dir_path().resolve()
-    if target != kiro_agents_dir().resolve():
+    if target != ambient_agents_dir().resolve():
         # A caller pointed the write somewhere of its own choosing; nothing is
         # shared with the ambient install, so there is nothing to protect.
         return None
@@ -3418,12 +3424,16 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         executable — shutil.which can fail inside user-namespace sandboxes
         even when the file is fine.
 
-        Searches the server's own env.PATH first, then the same augmented
-        PATH the MCP probe uses — both via :func:`spec_env_path`, which is
-        also the value emitted into the spec, so resolution, the probe and the
-        launched child all agree. A divergence would let a server probe healthy
+        Searches the server's own env.PATH first, then the contributed MCP
+        directories, then the same augmented PATH the MCP probe uses — all via
+        :func:`mcp_search_path`, so resolution, the probe and the rewriter all
+        agree. A divergence would let a server probe healthy
         on the dashboard while being silently dropped from the generated agent
-        config ("command not found: kirocrew"). augmented_path
+        config ("command not found: kirocrew"). The value EMITTED into the spec
+        is :func:`spec_env_path` instead, which omits the contributed
+        directories: an emitted PATH is persisted and read back as an authored
+        entry, so a contributed directory written there could never be removed
+        again. augmented_path
         covers ~/.aim/mcp-servers and ~/.toolbox/bin and appends the running
         interpreter's console-scripts dir
         (venv ``Scripts\\`` on Windows, ``bin/`` on POSIX) as a last-resort
@@ -3439,10 +3449,10 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         _env = env or {}
         _key = spec_path_key(_env)
         _declared = _env.get(_key, "") if _key else ""
-        _search = spec_env_path(_declared if isinstance(_declared, str) else "")
+        _search = mcp_search_path(_declared if isinstance(_declared, str) else "")
         # The search path is returned, not recomputed by the caller: a candidate
         # that declares its own ``env.PATH`` is searched against a DIFFERENT path
-        # than one that does not, so a caller reporting ``spec_env_path("")``
+        # than one that does not, so a caller reporting ``mcp_search_path("")``
         # would name directories that were never searched.
         return shutil.which(cmd, path=_search), _search
 
@@ -3596,10 +3606,11 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             # directories that were never consulted. The candidate list stays at
             # DEBUG: that is about which spec won, not about why none resolved.
             logger.warning(
-                "Dropping MCP server %r: command not found: %s — %s",
+                "Dropping MCP server %r: command not found: %s — %s; %s",
                 name,
                 spec.get("command", ""),
                 describe_search_path(dedup_path(os.pathsep.join(searched))),
+                MCP_PATH_HINT,
             )
             logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers

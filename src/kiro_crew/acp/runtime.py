@@ -27,7 +27,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
-from kiro_crew import platform_compat
+from kiro_crew import agent_scratch, platform_compat
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -74,6 +74,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_INTERNAL_SANDBOX,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_CLIENT_CAPABILITIES,
     KAS_AUTH_CALLBACK_ERROR_CODE,
     KAS_CLIENT_CAPABILITIES,
@@ -787,6 +788,18 @@ class AcpRuntime:
         return self._acp_backend
 
     @property
+    def uses_kiro_identity_store(self) -> bool:
+        """True when this runtime's process signs in from kiro-cli's own store.
+
+        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        H5/H14). ``AcpRuntime`` is not an ``LLMProvider``, but the identity-change
+        sweep reaches shared runtimes as well as session providers, so it
+        declares the same capability under the same name -- letting that sweep
+        ask both families one question instead of probing private attributes.
+        """
+        return self._acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
+
+    @property
     def supports_image_prompt(self) -> bool:
         """True when the agent advertised ``promptCapabilities.image``.
 
@@ -857,6 +870,24 @@ class AcpRuntime:
         drop that session's in-flight prompt/response.
         """
         return bool(self._session_queues)
+
+    def has_active_or_initializing_sessions(self) -> bool:
+        """True if any session is registered OR still being created.
+
+        ``has_active_sessions`` sees only REGISTERED queues, and
+        ``create_session`` registers outside the runtime lock -- so a co-tenant
+        whose ``session/new`` is in flight is momentarily invisible to it. Callers
+        that recycle a stale runtime tolerate that window deliberately (their
+        ``create_session`` raises ``AcpRuntimeDead`` and a respawn loop backstops
+        it, costing one extra respawn).
+
+        A caller with NO such backstop must not: killing the runtime under an
+        initializing task session surfaces as ``AcpRuntimeDead`` on work the user
+        never connected to whatever prompted the kill. Those callers ask this
+        instead, which also counts ``_session_inits_in_flight``.
+        """
+
+        return bool(self._session_queues) or self._session_inits_in_flight > 0
 
     # ── Lifecycle ──
 
@@ -1032,6 +1063,24 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Per-process scratch containment (#5063): the agent's temp AND its
+        # prompt-guided work products land in an owned directory instead of
+        # the shared system temp dir. Allocated off-loop (mkdir + config read)
+        # through the sandbox guard like the env resolution above, and
+        # fail-open -- scratch is hygiene, not a spawn prerequisite. The
+        # owner pid is recorded after spawn; reclamation is liveness-keyed
+        # (agent_scratch.sweep_dead_scratch), never age-keyed.
+        self._scratch_dir = None
+        try:
+            self._scratch_dir = await self._to_thread_guarding_sandbox(
+                agent_scratch.allocate_scratch, "runtime"
+            )
+            env.update(agent_scratch.scratch_env(self._scratch_dir))
+        except OSError:
+            logger.warning(
+                "agent-scratch: could not allocate; spawning with inherited temp",
+                exc_info=True,
+            )
         # Memory-aware cap for pytest-xdist's ``-n auto`` (subagent spawn path —
         # mirrors acp/client.py): xdist sizes auto to the CPU count, ignoring
         # memory; PYTEST_XDIST_AUTO_NUM_WORKERS bounds ONLY auto resolution.
@@ -1081,6 +1130,14 @@ class AcpRuntime:
         self._start_time = _get_start_time(self._pid)
         self._spawn_monotonic = time.monotonic()
         self._last_activity = time.monotonic()
+        if self._scratch_dir is not None:
+            # Liveness anchor for the scratch sweeps: a dir whose recorded
+            # owner is dead is reclaimable. Off-loop (file write), fail-open
+            # (an unowned dir falls under the grace-window rule instead).
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+            )
         logger.info(
             "AcpRuntime spawned backend=%s agent=%s (PID %d)",
             self._acp_backend,
@@ -1156,6 +1213,8 @@ class AcpRuntime:
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
             try:
+                # This death IS abnormal (failed spawn/handshake): kill()'s
+                # expected=False default keeps its log at WARNING.
                 await self.kill()
             except Exception:
                 logger.debug(
@@ -1168,13 +1227,23 @@ class AcpRuntime:
     _KILL_TERM_TIMEOUT = 5.0
     _KILL_REAP_TIMEOUT = 2.0
 
-    async def kill(self) -> None:
-        """Kill the subprocess and clean up all state."""
+    async def kill(self, *, expected: bool = False) -> None:
+        """Kill the subprocess and clean up all state.
+
+        ``expected`` changes log severity only: a deliberate teardown of a
+        healthy runtime (pool TTL recycle, session shutdown, logout) passes
+        ``expected=True`` to log the death at INFO. The default is False —
+        matching ``_mark_dead`` — so every cleanup kill on a failure path
+        (``initialize()``'s failed-spawn cleanup, a failed session setup) and
+        any future call site stays a WARNING without having to opt in.
+        ``_mark_dead`` additionally refuses to downgrade when the process
+        already exited on its own, so a reap-after-death can never log INFO.
+        """
         # Fail pending futures + poison session queues FIRST. _mark_dead sets
         # self._dead internally; doing it up front (before teardown) ensures any
         # waiters learn the runtime died. Calling it after setting _dead=True
         # would hit its early-return guard and skip all cleanup.
-        self._mark_dead("killed")
+        self._mark_dead("killed", expected=expected)
 
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
@@ -2024,11 +2093,27 @@ class AcpRuntime:
         """
         return any(_NOT_LOGGED_IN_RE.search(line) for line in self._stderr_lines)
 
-    def _mark_dead(self, reason: str) -> None:
-        """Mark runtime dead, fail all pending requests, poison all session queues."""
+    def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
+        """Mark runtime dead, fail all pending requests, poison all session queues.
+
+        ``expected`` selects only the log severity: a deliberate teardown (a
+        warm-pool TTL recycle, a session shutdown) logs at INFO, while every
+        genuine death path (process exit, reader crash, broken pipe, ...) keeps
+        today's WARNING. The default is False so any death path added later is
+        a WARNING without having to opt in. Everything else — the ``_dead``
+        early return, PID unshielding, failing pending futures, poisoning
+        session queues — is identical on both paths.
+        """
         if self._dead:
             return
         self._dead = True
+        # A process that already exited on its own is a genuine death being
+        # reaped, not a teardown this caller initiated — refuse the downgrade
+        # regardless of call site. This closes the race where a replacement
+        # path observes is_alive() == False (returncode set by the child
+        # watcher) and kill()s before the reader loop has marked the death.
+        if expected and self._process is not None and self._process.returncode is not None:
+            expected = False
         # Release the sweep-protection shield on ANY death path (EOF, rc!=0,
         # stdout overrun, reader crash, broken pipe) — not just kill(). Otherwise
         # the dead PID lingers in _PROTECTED_PIDS forever and, after PID reuse,
@@ -2044,7 +2129,8 @@ class AcpRuntime:
         # operators can tell an OOM/crash from a clean exit without DEBUG logs.
         rc = self._process.returncode if self._process else None
         tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
-        logger.warning(
+        log = logger.info if expected else logger.warning
+        log(
             "AcpRuntime dead (PID %s): %s [returncode=%s] stderr_tail: %s",
             self._pid,
             reason,

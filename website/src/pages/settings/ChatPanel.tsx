@@ -30,8 +30,8 @@ const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '0']
 function restoreLabels(): string[] {
   return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
 }
-const COMPACT_OPTIONS = ['20', '40', '60', '80', '90']
-const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '80%', '90% (default)']
+const COMPACT_OPTIONS = ['20', '40', '60', '70', '80', '90']
+const COMPACT_LABELS = ['20% (aggressive)', '40%', '60%', '70% (default)', '80%', '90%']
 
 // About You — slugs shared with onboarding step 2 and context.py's prompt maps.
 const ROLE_OPTIONS = ['', ...ROLE_SLUGS]
@@ -581,7 +581,7 @@ export function ChatPanel() {
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
             description={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
-            value={String(mcCfg?.session?.autocompact_pct ?? 90)}
+            value={String(mcCfg?.session?.autocompact_pct ?? 70)}
             options={COMPACT_OPTIONS}
             optionLabels={COMPACT_LABELS}
             onChange={v =>

@@ -873,6 +873,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
+        # Gate-side log hygiene: the session-directive consumer redacts the
+        # applier's confirmation string (which interpolates LLM-derived text —
+        # a stop reason, a rejected path, exception args) before writing it to
+        # the gateway log. The channel surface never renders tool results, so
+        # this line is an operational record, not an output boundary bound for
+        # a human; the applier itself SEL-audits every outcome.
+        "messaging/dispatch.py",
         "autonudge_authz.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle

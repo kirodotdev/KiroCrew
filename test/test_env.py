@@ -17,6 +17,7 @@ from kiro_crew.env import (
     augmented_path,
     ensure_node,
     node_all_bin_dirs,
+    register_mcp_path_dirs,
     resolve_krb5_ccname,
 )
 
@@ -173,6 +174,266 @@ class TestAugmentedPath:
             env_mod._node_all_bin_dirs.cache_clear()
         for d in dirs:
             assert os.path.isabs(d), f"relative PATH entry leaked: {d!r}"
+
+
+class TestExtraMcpPathDirs:
+    """The MCP binary search path must be extensible (issue #5083).
+
+    A launcher installed into a directory ``_EXTRA_PATH_DIRS`` does not guess
+    resolves nowhere on a systemd gateway's PATH, so the server never starts and
+    the session merely comes up short of tools. Both seams -- the
+    ``mcp.extra_path_dirs`` setting and :func:`register_mcp_path_dirs` -- are
+    merged in ``mcp_search_path``, the path the MCP probe, the agent-config
+    resolver and gatewayd's rewriter all RESOLVE against, so one contributed
+    directory reaches all three. It is deliberately NOT ``spec_env_path``, whose
+    result is persisted -- see ``TestContributedDirsAreNeverPersisted``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clean_registry(self, monkeypatch):
+        # Module-global snapshots + warn-once memo: isolate all three so ordering
+        # between tests cannot leak a directory or swallow an expected warning.
+        monkeypatch.setattr(env_mod, "_registered_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_warned_bad_bin_dirs", set())
+        yield
+
+    @staticmethod
+    def _set_configured(monkeypatch, value):
+        """Publish *value* as the config's ``mcp.extra_path_dirs``.
+
+        Goes through the real publish entry point rather than assigning the
+        global, so a rename or a change of stored shape breaks these tests
+        instead of silently passing against a stale field.
+        """
+        env_mod.publish_config_path_dirs(value)
+
+    @staticmethod
+    def _mcp_dirs(declared: str = "") -> list[str]:
+        """The search path an MCP server's command is resolved against."""
+        return env_mod.mcp_search_path(declared).split(os.pathsep)
+
+    def test_configured_dir_outranks_builtin_guesses(self, monkeypatch) -> None:
+        """An explicitly named directory must win over a built-in guess.
+
+        Ordering is the whole point: when the same command name exists in both,
+        the directory the operator named is the one they meant.
+        """
+        self._set_configured(monkeypatch, ["/opt/pixi/bin"])
+        dirs = self._mcp_dirs()
+        local_idx = next(i for i, d in enumerate(dirs) if ".local/bin" in d)
+        assert dirs.index("/opt/pixi/bin") < local_idx
+
+    def test_spec_declared_path_still_outranks_a_configured_dir(self, monkeypatch) -> None:
+        """An operator pin on the spec must not be displaceable by this setting."""
+        self._set_configured(monkeypatch, ["/opt/pixi/bin"])
+        dirs = self._mcp_dirs("/opt/pinned/bin")
+        assert dirs.index("/opt/pinned/bin") < dirs.index("/opt/pixi/bin")
+
+    def test_configured_dir_expands_tilde(self, monkeypatch, tmp_path) -> None:
+        """``~/x/bin`` is what a human writes in a config file."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: p.replace("~", str(tmp_path), 1))
+        self._set_configured(monkeypatch, ["~/pixi/bin"])
+        dirs = self._mcp_dirs()
+        assert str(tmp_path / "pixi" / "bin") in dirs
+        assert "~/pixi/bin" not in dirs
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "relative/bin",  # re-resolved against the CHILD's cwd
+            f"/opt/a{os.pathsep}/opt/b",  # smuggles two entries into one
+            "/opt/\0bin",  # cannot survive exec
+            "",
+            42,  # hand-edited config / a caller passing junk
+            None,
+        ],
+    )
+    def test_bad_entry_is_dropped_not_fatal(self, monkeypatch, bad, caplog) -> None:
+        """One bad entry must cost only itself -- never the whole list.
+
+        Failing the list would take out every other directory the operator
+        declared; failing the call would take out every MCP probe and rewrite.
+        """
+        self._set_configured(monkeypatch, [bad, "/opt/good/bin"])
+        with caplog.at_level("WARNING"):
+            dirs = self._mcp_dirs()
+        assert "/opt/good/bin" in dirs
+        assert all(os.path.isabs(d) and os.pathsep not in d for d in dirs)
+        assert any("mcp.extra_path_dirs" in r.message for r in caplog.records)
+
+    def test_rejected_entry_is_warned_once(self, monkeypatch, caplog) -> None:
+        """This runs once per candidate per rebuild; warning every time is spam."""
+        self._set_configured(monkeypatch, ["relative/bin"])
+        with caplog.at_level("WARNING"):
+            self._mcp_dirs()
+            self._mcp_dirs()
+        warnings = [r for r in caplog.records if "mcp.extra_path_dirs" in r.message]
+        assert len(warnings) == 1
+
+    def test_non_list_setting_is_ignored(self, monkeypatch) -> None:
+        self._set_configured(monkeypatch, "/opt/pixi/bin")  # a bare string, not a list
+        dirs = self._mcp_dirs()
+        assert "/opt/pixi/bin" not in dirs
+        assert any(".local/bin" in d for d in dirs)  # the rest still built
+
+    def test_reads_no_config(self, monkeypatch) -> None:
+        """The whole reason the value is pushed: this composition is reached from
+        the event loop by every MCP probe (probe_server), so it must not
+        stat/read/validate config.json."""
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        def _boom(cls):
+            raise AssertionError("the search path must not load the config")
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_boom))
+        self._set_configured(monkeypatch, ["/opt/pixi/bin"])
+        assert "/opt/pixi/bin" in self._mcp_dirs()
+
+    def test_publish_clears_a_removed_setting(self, monkeypatch) -> None:
+        """Every load republishes, so deleting the setting must take effect too --
+        not leave the last value pinned for the process lifetime."""
+        self._set_configured(monkeypatch, ["/opt/pixi/bin"])
+        assert "/opt/pixi/bin" in self._mcp_dirs()
+        self._set_configured(monkeypatch, [])
+        assert "/opt/pixi/bin" not in self._mcp_dirs()
+
+    def test_register_contributes_and_is_idempotent(self) -> None:
+        """A packaged build's installer hook may run more than once."""
+        assert register_mcp_path_dirs("/opt/dist/bin") == ("/opt/dist/bin",)
+        register_mcp_path_dirs("/opt/dist/bin")
+        assert self._mcp_dirs().count("/opt/dist/bin") == 1
+
+    def test_register_returns_only_accepted_entries(self) -> None:
+        """The caller needs to see that a value was rejected."""
+        assert register_mcp_path_dirs("relative/bin", "/opt/dist/bin") == ("/opt/dist/bin",)
+        assert "relative/bin" not in self._mcp_dirs()
+
+    def test_config_outranks_registered(self, monkeypatch) -> None:
+        """An operator's own host setting beats a distribution default."""
+        self._set_configured(monkeypatch, ["/opt/operator/bin"])
+        register_mcp_path_dirs("/opt/dist/bin")
+        dirs = self._mcp_dirs()
+        assert dirs.index("/opt/operator/bin") < dirs.index("/opt/dist/bin")
+
+    def test_registration_order_is_precedence_order(self) -> None:
+        register_mcp_path_dirs("/opt/first/bin")
+        register_mcp_path_dirs("/opt/second/bin")
+        dirs = self._mcp_dirs()
+        assert dirs.index("/opt/first/bin") < dirs.index("/opt/second/bin")
+
+    def test_contributed_duplicate_of_builtin_appears_once(self, monkeypatch, tmp_path) -> None:
+        """Contributing a directory the built-in list already covers must not
+        lengthen every child's PATH with a second copy of it."""
+        monkeypatch.setattr(os.path, "expanduser", lambda p: str(tmp_path) if p == "~" else p)
+        local_bin = str(tmp_path / ".local" / "bin")
+        self._set_configured(monkeypatch, [local_bin])
+        env_mod._node_all_bin_dirs.cache_clear()
+        try:
+            dirs = self._mcp_dirs()
+        finally:
+            env_mod._node_all_bin_dirs.cache_clear()
+        assert dirs.count(local_bin) == 1
+        assert dirs.index(local_bin) == 0
+
+    def test_default_config_changes_nothing(self, monkeypatch) -> None:
+        """With the setting untouched the emitted PATH is byte-identical to before,
+        so the seam cannot perturb an install that never uses it."""
+        self._set_configured(monkeypatch, [])
+        assert env_mod.mcp_search_path("/opt/pinned/bin") == env_mod.spec_env_path(
+            "/opt/pinned/bin"
+        )
+
+
+class TestContributedDirsAreNeverPersisted:
+    """A contributed directory must never be written into a consumed config file.
+
+    ``emit_env`` writes ``spec_env_path``'s result into the agent config, the
+    kiro-global ``mcp.json`` and the Claude Code sidecar, and those files are read
+    back as a spec's AUTHORED ``env.PATH`` on the next rebuild -- which is why
+    ``spec_env_path`` documents being idempotent under re-expansion. A contributed
+    directory rendered there would become indistinguishable from an authored
+    entry, so clearing ``mcp.extra_path_dirs`` could never remove it again.
+    Resolution is recomputed every time and stored nowhere, which is why the
+    contribution lives only on ``mcp_search_path``.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _contributed(self, monkeypatch):
+        monkeypatch.setattr(env_mod, "_registered_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_warned_bad_bin_dirs", set())
+        env_mod.publish_config_path_dirs(["/opt/contributed/bin"])
+        register_mcp_path_dirs("/opt/contributed-registered/bin")
+        yield
+
+    def test_spec_env_path_excludes_contributed_dirs(self) -> None:
+        entries = env_mod.spec_env_path("/opt/pinned/bin").split(os.pathsep)
+        assert "/opt/contributed/bin" not in entries
+        assert "/opt/contributed-registered/bin" not in entries
+
+    def test_emit_env_excludes_contributed_dirs(self) -> None:
+        """The persisted surface. ``emit_env`` is the single writer for every
+        consumed config file, so excluding it here covers all of them."""
+        emitted = env_mod.emit_env({"PATH": "/opt/pinned/bin"})["PATH"]
+        assert "/opt/contributed/bin" not in emitted.split(os.pathsep)
+        assert "/opt/contributed-registered/bin" not in emitted.split(os.pathsep)
+
+    def test_a_removed_setting_stops_being_searched(self) -> None:
+        """The consequence the exclusion buys: clearing the setting takes effect
+        even for a spec whose PATH was rendered while it was set."""
+        rendered = env_mod.emit_env({"PATH": "/opt/pinned/bin"})["PATH"]
+        env_mod.publish_config_path_dirs([])
+        monkeyed = env_mod.mcp_search_path(rendered).split(os.pathsep)
+        assert "/opt/contributed/bin" not in monkeyed
+
+    def test_contributed_dir_still_reaches_the_mcp_search_path(self) -> None:
+        """The negative assertions above must not pass by the feature being broken."""
+        entries = env_mod.mcp_search_path("").split(os.pathsep)
+        assert "/opt/contributed/bin" in entries
+        assert "/opt/contributed-registered/bin" in entries
+
+
+class TestContributedDirsNeverReachTheTrustedRuntime:
+    """A contributed MCP directory must not be able to shadow the agent runtime.
+
+    ``kiro_cli.known_kiro_cli_dirs`` appends ``augmented_path`` when looking for
+    ``kiro-cli`` itself, and ``resolve_kiro_cli`` takes the FIRST executable
+    candidate. On an install whose CLI is reachable only that way -- a toolbox
+    install, found via ``~/.toolbox/bin`` -- a contributed directory ranked ahead
+    of it would let a forged ``kiro-cli`` win. Where ``agent.sandbox="off"``
+    delegates confinement to the CLI's own sandbox, that forged binary IS the
+    sandbox, so this is a credential-exposure path and not merely a wrong
+    binary. The contribution therefore lives on the MCP-only composition; these
+    tests are the ratchet on that boundary.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _contributed(self, monkeypatch):
+        monkeypatch.setattr(env_mod, "_registered_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_config_path_dirs", ())
+        monkeypatch.setattr(env_mod, "_warned_bad_bin_dirs", set())
+        env_mod.publish_config_path_dirs(["/opt/attacker/bin"])
+        register_mcp_path_dirs("/opt/attacker-registered/bin")
+        yield
+
+    def test_augmented_path_excludes_contributed_dirs(self) -> None:
+        dirs = augmented_path("/usr/bin").split(os.pathsep)
+        assert "/opt/attacker/bin" not in dirs
+        assert "/opt/attacker-registered/bin" not in dirs
+
+    def test_kiro_cli_search_dirs_exclude_contributed_dirs(self, tmp_path) -> None:
+        from kiro_crew.kiro_cli import known_kiro_cli_dirs
+
+        dirs = known_kiro_cli_dirs("linux", tmp_path, {"PATH": "/usr/bin"})
+        assert "/opt/attacker/bin" not in dirs
+        assert "/opt/attacker-registered/bin" not in dirs
+
+    def test_contributed_dir_still_reaches_the_mcp_search_path(self) -> None:
+        """The negative tests above must not pass by the feature being broken."""
+        dirs = env_mod.mcp_search_path("").split(os.pathsep)
+        assert "/opt/attacker/bin" in dirs
+        assert "/opt/attacker-registered/bin" in dirs
 
 
 class TestNodeAllBinDirs:

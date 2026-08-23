@@ -196,9 +196,9 @@ class TestChannelEndpoint:
                 await slow
 
             assert reads, "the discard path must still resolve the current channel"
-            assert loop_thread not in reads, (
-                f"the channel read ran on the event loop thread: {reads}"
-            )
+            assert (
+                loop_thread not in reads
+            ), f"the channel read ran on the event loop thread: {reads}"
 
         asyncio.run(_scenario())
 
@@ -344,9 +344,7 @@ class TestChannelEndpoint:
         assert resp.status == 400
         assert not (_isolated_channel_home / "channel").exists()
 
-    def test_a_check_superseded_by_a_switch_cannot_write_its_verdict(
-        self, _isolated_channel_home
-    ):
+    def test_a_check_superseded_by_a_switch_cannot_write_its_verdict(self, _isolated_channel_home):
         """An in-flight check against the OLD feed must not land after the switch.
 
         The in-flight guard cannot cancel a running check, so a check that started
@@ -417,6 +415,29 @@ class TestChannelEndpoint:
         with patch.object(updates, "detect_install_layout", return_value=layout):
             resp = asyncio.run(updates.api_update_channel(_request({"channel": "insider"})))
         assert resp.status == 409
+        assert not (_isolated_channel_home / "channel").exists()
+
+    def test_refuses_a_command_managed_install(self, _isolated_channel_home):
+        """A policy-pinned provider never reads the channel file — refuse, don't lie.
+
+        The layout probe is booby-trapped: the refusal must fire BEFORE the git
+        shell-out, because a command-managed host owes the caller the same
+        answer regardless of what the install tree happens to look like.
+        """
+        from kiro_crew.platform.update_provider import CommandProvider
+
+        provider = CommandProvider(check_command="check-cmd")
+        with (
+            patch.object(updates, "resolve_provider", return_value=provider),
+            patch.object(
+                updates,
+                "detect_install_layout",
+                side_effect=AssertionError("layout probe must not run"),
+            ),
+        ):
+            resp = asyncio.run(updates.api_update_channel(_request({"channel": "insider"})))
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "channel_not_applicable_command_managed"
         assert not (_isolated_channel_home / "channel").exists()
 
     def test_reports_a_write_failure_instead_of_claiming_success(self, _isolated_channel_home):

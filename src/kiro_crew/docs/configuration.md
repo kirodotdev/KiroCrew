@@ -125,7 +125,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
   },
   "session": {
     "timeout_secs": 3600,
-    "autocompact_pct": 90.0,
+    "autocompact_pct": 70.0,
     "pool_size": 0,
     "pool_agent": "",
     "pool_ttl_secs": 1800
@@ -204,7 +204,7 @@ Set via `kirocrew config set agent.acp_backend kas`.
 | Key | Description | Default |
 |-----|-------------|---------|
 | `session.timeout_secs` | Idle session timeout in seconds (0 disables the idle sweep) | `3600` (60 min) |
-| `session.autocompact_pct` | Context usage percentage at which auto-compaction triggers (5-90) | `90.0` |
+| `session.autocompact_pct` | Context usage percentage at which auto-compaction triggers (5-90). Lower compacts sooner and keeps per-turn cost down; higher retains more conversation before rewriting it. Applies to new installs: an existing `config.json` keeps its stored value | `70.0` |
 | `session.pool_size` | Number of pre-spawned kiro-cli processes kept ready for instant session start. 0 disables | `0` |
 | `session.pool_agent` | Agent for warm-pool processes. Empty uses `agent.default_agent` | `""` |
 | `session.pool_ttl_secs` | Max age in seconds for pooled processes, discarded at claim time. 0 disables | `1800` |

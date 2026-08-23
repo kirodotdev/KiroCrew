@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
+from kiro_crew.messaging.dispatch import build_directive_consumer
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
@@ -128,11 +129,18 @@ async def handle_message_transport(
     show_thinking: bool = True,
     consolidator: HistoryConsolidator | None = None,
     user_display_name: str | None = None,
+    gateway: Any | None = None,
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
 
     This replaces handle_message when the feature flag is on. It uses
     TurnDriver + SlackRenderer instead of the inline stream loop.
+
+    ``gateway`` is the orchestrator that owns this dispatch (when the caller
+    has one): its ``dashboard_state`` attribute supplies the live gateway
+    state to the session-directive consumer, so a monitor directive on a
+    dashboard-owned thread can resolve the slot instead of failing closed on
+    the sessions-backed stand-in.
     """
     Stats().inc_message_received()
     _t0 = time.monotonic()
@@ -564,6 +572,15 @@ async def handle_message_transport(
             # PreToolUse deny/auto gate (runs before the ladder in TurnDriver;
             # a DENY is un-overridable by auto/trust/YOLO).
             tool_gate=_tool_gate,
+            # Session-directive consumer: monitor_start / autonudge_stop / ...
+            # return a marker the driver decodes; apply it against THIS turn's
+            # session key. ``gateway`` (when the caller passed one) carries the
+            # live ``dashboard_state``; without it the consumer falls back to
+            # its sessions-backed authorizer stand-in (dashboard-only
+            # directives stay refused either way).
+            directive_consumer=build_directive_consumer(
+                session_key=session_key, sessions=sessions, dispatcher=gateway
+            ),
         )
         # The thread's owner as of the moment the turn starts producing output.
         # A dashboard link landing during the run moves the conversation to a

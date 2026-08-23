@@ -366,7 +366,10 @@ class _BatchRuntimeHolder:
 
     async def _kill(self, rt: "AcpRuntime") -> None:
         try:
-            await rt.kill()
+            # Deliberate pool teardown (batch drain / force_shutdown). The
+            # reap-a-dead-one caller is covered too: _mark_dead refuses the
+            # INFO downgrade when the process already exited on its own.
+            await rt.kill(expected=True)
         except Exception:
             logger.debug("code-review-sage runtime kill error", exc_info=True)
 

@@ -23,6 +23,7 @@ import os
 import re
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping, Optional
 
 from kiro_crew import platform_compat
@@ -42,6 +43,12 @@ from kiro_crew.mcp_gateway.apps import (
     extract_ui_resource_uri,
     strip_model_hidden_tools,
     write_spool,
+)
+from kiro_crew.mcp_gateway.backend_tmp import (
+    allocate_backend_tmp,
+    record_owner,
+    sweep_backend_tmp,
+    tmp_env,
 )
 from kiro_crew.mcp_gateway.image_budget import (
     line_may_carry_image_block,
@@ -2183,6 +2190,11 @@ class Backend:
             await self._cancel_background_tasks()
             if self._dead_reason is None:
                 self._dead_reason = f"shutdown rc={self.process.returncode}"
+        # Deliberately NO temp sweep here: the launcher's exit is not proof
+        # its process TREE is gone (a wrapper launcher exits while its server
+        # child lives on and keeps using the dir). The single deletion
+        # authority is backend_tmp.sweep_all_backend_tmp, which requires the
+        # recorded owner to be dead AND the directory to be idle.
 
 
 # --- Spawn / handshake ------------------------------------------------------
@@ -2194,8 +2206,15 @@ async def spawn_backend(
     args: list[str],
     env: Mapping[str, str],
     work_dir: str,
+    declared_temp_keys: tuple[str, ...] = (),
 ) -> Backend:
     """Spawn a real MCP subprocess and wrap it in a :class:`Backend`.
+
+    ``declared_temp_keys`` are the temp-key names (``TMPDIR``/``TMP``/``TEMP``,
+    any casing) the operator's agent spec DECLARES for this server -- the
+    caller knows the declared-env set and this function does not (``env``
+    also carries the daemon's ambient values, which must not suppress
+    containment; see the containment block below).
 
     ``env`` is passed verbatim — callers MUST NOT rely on parent process
     env inheritance. The rewriter layer computes the effective env for
@@ -2235,17 +2254,72 @@ async def spawn_backend(
     # identity (unlike a per-session value, which would be a correctness bug).
     spawn_env = dict(env)
     spawn_env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
-    process = await asyncio.create_subprocess_exec(
-        command,
-        *args,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=work_dir,
-        env=spawn_env,
-        start_new_session=True,
-        limit=READ_BUFFER_LIMIT_BYTES,
-    )
+    # Per-process temp containment (#5064). Safe re: the pooled-backend
+    # PoolKey invariant for the same reason as the marker above -- the value
+    # is derived from the key's own digest plus a token generated AFTER
+    # pool-identity resolution and is never folded into the hash, so it can
+    # neither split nor collapse pool identity. Allocated off-loop (mkdir is
+    # filesystem work), and fail-open: containment is hygiene, not a spawn
+    # prerequisite -- a host where the dir cannot be created still gets a
+    # working backend with today's inherited-temp behavior.
+    #
+    # An OPERATOR-DECLARED temp wins: a spec that sets any of TMPDIR/TMP/TEMP
+    # deliberately points a heavy server at chosen storage (e.g. a capacity
+    # volume), and overriding it would trade litter for ENOSPC. No allocation
+    # happens at all in that case -- no empty dir, nothing to sweep.
+    #
+    # Declaration is signalled by the CALLER (``declared_temp_keys``), not
+    # read off ``spawn_env``: the resolver folds the daemon's own inherited
+    # environment into ``env``, and macOS always exports TMPDIR (Windows
+    # always exports TMP/TEMP), so an env-membership test would read the
+    # ambient value as a declaration and silently disable containment on
+    # those platforms. Ambient keys are OVERRIDDEN by the managed triple on
+    # success, left untouched on allocation failure (the documented fail-open
+    # "inherited temp" fallback), and PRUNED down to the declared set when
+    # the operator declared a temp (see the else branch).
+    backend_tmp: Optional[Path] = None
+    _declared_upper = {key.upper() for key in declared_temp_keys}
+    if not _declared_upper:
+        try:
+            backend_tmp = await asyncio.to_thread(
+                allocate_backend_tmp, pool_key.stable_hash()
+            )
+            spawn_env.update(tmp_env(backend_tmp))
+        except OSError:
+            logger.warning(
+                "backend-tmp: could not allocate a contained temp dir; spawning "
+                "with inherited temp",
+                exc_info=True,
+            )
+    else:
+        # Yielding is not enough on its own: the daemon's AMBIENT temp keys
+        # are still in ``spawn_env``, and ``tempfile`` consults TMPDIR before
+        # TMP -- a spec declaring only ``TMP`` on macOS would silently write
+        # through the inherited ambient TMPDIR. Strip the canonical keys the
+        # operator did NOT declare so the declared one actually governs.
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            if key not in _declared_upper:
+                spawn_env.pop(key, None)
+    try:
+        process = await asyncio.create_subprocess_exec(
+            command,
+            *args,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=work_dir,
+            env=spawn_env,
+            start_new_session=True,
+            limit=READ_BUFFER_LIMIT_BYTES,
+        )
+    except BaseException:
+        # The spawn itself failed: reclaim the just-allocated dir here and
+        # now. Unowned directories are deliberately never deleted by the
+        # sweeps (an owner record can fail on a live backend), so this is
+        # the ONLY reclamation point for a dir whose process never existed.
+        if backend_tmp is not None:
+            await asyncio.to_thread(sweep_backend_tmp, backend_tmp)
+        raise
     if process.stdin is None or process.stdout is None:
         # asyncio.create_subprocess_exec populates these whenever PIPE was
         # requested; the guard exists for type checkers. Kill the child on
@@ -2277,6 +2351,12 @@ async def spawn_backend(
     )
     backend._last_ping_response_mono = now  # cold-start: not insta-stale
     backend._stderr_task = stderr_task
+    if backend_tmp is not None:
+        # Liveness anchor for the daemon-boot sweep: a SIGKILL'd daemon can
+        # leave this backend running (start_new_session), and the next boot
+        # must not delete temp storage under a survivor. Off-loop, fail-open
+        # (an unowned dir falls under the sweep's grace-window rule instead).
+        await asyncio.to_thread(record_owner, backend_tmp, process.pid)
     return backend
 
 

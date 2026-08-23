@@ -541,6 +541,49 @@ def default(provider: str) -> str:
     return _DEFAULTS.get(provider, _FALLBACK_CANONICAL)
 
 
+def acp_id_correction(candidate: str) -> str | None:
+    """The real kiro-cli id for a value the registry knows by a WRONG spelling.
+
+    Returns ``None`` when *candidate* is already a valid kiro-cli id, is empty
+    or ``auto``, or is unrecognized entirely (an unregistered-but-real id — a
+    regional profile or a future model — must not be second-guessed).
+
+    This exists because the spellings of one model are not interchangeable on
+    the wire, and a spec pinning the wrong one is read by kiro-cli when the child
+    starts: the process dies seconds later with no turn taken.
+    :func:`to_acp_id` deliberately does not fold aliases (that would silently
+    downgrade a Haiku-pinned agent to Sonnet), so the wrong spelling reaches the
+    child unchanged. The information needed to name the right one is already in
+    the registry.
+
+    Resolution deliberately spans EVERY provider index, not just ``acp``.
+    :func:`_build_indices` puts each entry's aliases into every provider's index
+    but each provider's own id only into its own, so an ``acp``-only lookup
+    catches the prefix-stripped alias (``claude-opus-4-8``) while missing the
+    registered id it was stripped from
+    (``global.anthropic.claude-opus-4-8``) — the same mistake in the form
+    someone copying from Bedrock is likelier to make. So the rule is one rule:
+    any spelling the registry recognizes for a model, that is not what kiro-cli
+    serves, resolves to what kiro-cli serves.
+
+    ``acp`` is consulted first so a value that provider already knows keeps its
+    own reading; the rest are visited in sorted order, so the answer never
+    depends on registry insertion order.
+    """
+    if not candidate or candidate == "auto":
+        return None
+    if candidate in set(available_models("acp")):
+        return None
+    for provider in ["acp", *sorted(p for p in _CANONICAL_INDEX if p != "acp")]:
+        canonical = _resolve_canonical(candidate, provider)
+        if canonical is None:
+            continue
+        corrected = (_REGISTRY.get(canonical) or {}).get("providers", {}).get("acp", "")
+        if corrected:
+            return corrected
+    return None
+
+
 def is_canonical_key(name: str) -> bool:
     """True if ``name`` is a top-level canonical registry key (e.g. ``fable-5-1m``).
 

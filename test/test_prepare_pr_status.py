@@ -1166,3 +1166,145 @@ def test_stampless_advisory_lane_comment_does_not_block_discovery_mode() -> None
     assert module.main(["pr_status.py", "42"]) == 0
     # Pinned: UX is explicitly required -> its stampless state blocks.
     assert module.main(["pr_status.py", "42", "--reviewers", "GPT,UX"]) == 20
+
+
+def test_checks_blind_token_degrades_softly_instead_of_aborting(capsys) -> None:
+    """A token that cannot read Checks (any fine-grained PAT) fails EVERY gh
+    request naming statusCheckRollup -- gh resolves a --json field set
+    atomically. The core read must survive by not naming the field; the
+    rollup-only read fails and degrades: the script completes with a visible
+    notice and fails closed, never aborting with 'could not read PR'. Both
+    failure shapes are exercised: a non-zero exit and unparseable stdout.
+    """
+    raw = json.loads(_pr_payload([]))
+    del raw["statusCheckRollup"]  # a Checks-blind token never returns the field
+    payload = json.dumps(raw)
+
+    failure_shapes = (
+        (1, "", "Resource not accessible by personal access token"),
+        (0, "not json", ""),
+    )
+    for rollup_response in failure_shapes:
+        module = _load_script()
+
+        def fake_run(
+            args: list[str], _rollup: tuple[int, str, str] = rollup_response
+        ) -> tuple[int, str, str]:
+            if args[:3] == ["gh", "auth", "status"]:
+                return 0, "", ""
+            if args[:3] == ["gh", "pr", "view"]:
+                fields = args[args.index("--json") + 1] if "--json" in args else ""
+                if "statusCheckRollup" in fields:
+                    return _rollup
+                return 0, payload, ""
+            if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
+                return 0, "[]", ""
+            raise AssertionError("unexpected command: {}".format(args))
+
+        module.run = fake_run
+        module.unresolved_thread_count = lambda _number: 0
+
+        code = module.main(["pr_status.py", "42"])
+        captured = capsys.readouterr()
+
+        # Fail-closed, not a false CLEAN: unknown CI reads as BLOCKED.
+        assert code == 20
+        # The core read survived: the report still carries the PR metadata.
+        assert "PR #42" in captured.out
+        assert "NOTICE: " + module.ROLLUP_UNAVAILABLE_NOTICE in captured.out
+        assert "could not read PR" not in captured.err
+        # The verdict names the environment cause; the genuine no-checks
+        # reason is reserved for a healthy read that returned zero checks.
+        assert "CI status unreadable - the rollup fetch failed" in captured.out
+        assert "no CI checks reported" not in captured.out
+
+
+def test_head_moved_between_reads_discards_the_rollup_not_reports_clean(capsys) -> None:
+    """The core read and the rollup read are two gh calls, so a push can land
+    between them. A rollup snapshotted from the NEW head must never be paired
+    with the OLD head's metadata: even when that rollup would read fully green,
+    the result is a discard notice and a fail-closed exit, never CLEAN."""
+    module = _load_script()
+    old_head = "a" * 40
+    new_head = "b" * 40
+    core = json.loads(_pr_payload([]))
+    del core["statusCheckRollup"]
+    core["headRefOid"] = old_head
+    green_rollup = json.dumps(
+        {
+            "headRefOid": new_head,
+            "statusCheckRollup": [{"context": "PR Readiness", "state": "SUCCESS"}],
+        }
+    )
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            fields = args[args.index("--json") + 1] if "--json" in args else ""
+            if "statusCheckRollup" in fields:
+                return 0, green_rollup, ""
+            return 0, json.dumps(core), ""
+        if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
+            return 0, "[]", ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    module.unresolved_thread_count = lambda _number: 0
+
+    code = module.main(["pr_status.py", "42"])
+    captured = capsys.readouterr()
+
+    assert code == 20
+    assert "NOTICE: " + module.ROLLUP_HEAD_MOVED_NOTICE in captured.out
+    # The green rollup from the wrong head must not leak into the report.
+    assert "aggregate readiness: not published" in captured.out
+    # The verdict names the discard, not a genuine absence of checks.
+    assert "CI status unreadable - the PR head moved between reads" in captured.out
+    assert "no CI checks reported" not in captured.out
+
+
+def test_degraded_rollup_reason_is_distinct_from_a_genuine_no_checks_pr(capsys) -> None:
+    """An environment gap (a Checks-blind token, a 403, a rate limit) and a
+    genuine no-checks-yet PR both leave the rollup empty, but they demand
+    opposite responses: fix the environment vs wait for or configure CI. The
+    fail-closed reason travels in ``progress_key.status``, which a polling
+    loop compares byte-for-byte -- a shared reason string would make the loop
+    re-poll a token problem until its stall detector fired instead of
+    escalating it. The exit code stays 20 for both: only the reason differs.
+    """
+    # Degraded: the core read survives, the rollup-only read fails.
+    core = json.loads(_pr_payload([]))
+    del core["statusCheckRollup"]
+    core_payload = json.dumps(core)
+
+    module = _load_script()
+
+    def fake_run(args: list[str]) -> tuple[int, str, str]:
+        if args[:3] == ["gh", "auth", "status"]:
+            return 0, "", ""
+        if args[:3] == ["gh", "pr", "view"]:
+            fields = args[args.index("--json") + 1] if "--json" in args else ""
+            if "statusCheckRollup" in fields:
+                return 1, "", "Resource not accessible by personal access token"
+            return 0, core_payload, ""
+        if args[:2] == ["gh", "api"] and "/issues/" in args[2] and "/comments" in args[2]:
+            return 0, "[]", ""
+        raise AssertionError("unexpected command: {}".format(args))
+
+    module.run = fake_run
+    module.unresolved_thread_count = lambda _number: 0
+    assert module.main(["pr_status.py", "42", "--json"]) == 20
+    degraded_status = _last_line_json(capsys)["progress_key"]["status"]
+
+    # Genuine: the rollup read succeeds and truly contains zero checks.
+    module = _load_script()
+    _install_fake_gh(module, _pr_payload([]))
+    assert module.main(["pr_status.py", "42", "--json"]) == 20
+    genuine_status = _last_line_json(capsys)["progress_key"]["status"]
+
+    assert "CI status unreadable" in degraded_status
+    assert "no CI checks reported" not in degraded_status
+    assert "no CI checks reported" in genuine_status
+    assert "CI status unreadable" not in genuine_status
+    assert degraded_status != genuine_status

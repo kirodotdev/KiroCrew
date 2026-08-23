@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
     ACP_BACKENDS_KNOWN,
     ACP_BACKENDS_SESSION_SHARING,
     EVENT_COMPACTION_STATUS,
@@ -487,6 +488,18 @@ class AcpProvider(LLMProvider):
         until someone adds it deliberately.
         """
         return self._client.backend in ACP_BACKENDS_SESSION_SHARING
+
+    @property
+    def uses_kiro_identity_store(self) -> bool:
+        """True when this provider's child signs in from kiro-cli's own store.
+
+        Membership in ``ACP_BACKENDS_KIRO_IDENTITY_STORE`` (harness-parity
+        H5/H14). Declaring it here is what lets the session layer ask the
+        question through the ABC instead of probing private attributes, so an
+        adapted provider is classified by its own declaration rather than by
+        whichever internal shape it happens to expose.
+        """
+        return self._client.backend in ACP_BACKENDS_KIRO_IDENTITY_STORE
 
     async def _start_kiro_runtime(self) -> None:
         """Spawn an AcpRuntime + session; time the kiro cold-start split.

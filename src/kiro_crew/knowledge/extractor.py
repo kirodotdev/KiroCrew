@@ -1,13 +1,25 @@
 """Entity extraction using the LLM pool."""
 from __future__ import annotations
 
-import json
-import re
 import uuid
 from typing import TYPE_CHECKING
 
+from kiro_crew.llm_helpers import _extract_json_of_type
+
 if TYPE_CHECKING:
     from kiro_crew.knowledge.llm_pool import LLMPool
+
+_PAYLOAD_KEYS = frozenset({"title", "entities", "relations", "category", "summary"})
+
+
+def _extraction_shaped(value: object) -> bool:
+    """Prefer predicate: a dict carrying at least one extraction payload field.
+
+    Disambiguates the payload from stray braced JSON in the surrounding prose
+    or in the untrusted chunk itself — those parse as dicts but never carry
+    the fields ``_validate`` consumes."""
+    return isinstance(value, dict) and not _PAYLOAD_KEYS.isdisjoint(value)
+
 
 EXTRACTION_PROMPT = """Extract structured information from this text chunk.
 
@@ -87,26 +99,20 @@ class EntityExtractor:
             return [_empty_result() for _ in chunks]
 
     def _parse_response(self, response: str) -> dict:
-        for text in (response, self._extract_code_block(response)):
-            if text:
-                try:
-                    data = json.loads(text)
-                    return self._validate(data)
-                except (json.JSONDecodeError, ValueError):
-                    pass
-        m = re.search(r'\{[\s\S]*\}', response)
-        if m:
-            try:
-                data = json.loads(m.group())
-                return self._validate(data)
-            except (json.JSONDecodeError, ValueError):
-                pass
-        return _empty_result()
+        """Pull the extraction payload dict out of an LLM reply.
 
-    @staticmethod
-    def _extract_code_block(response: str) -> str | None:
-        m = re.search(r'```(?:json)?\s*\n?([\s\S]*?)```', response)
-        return m.group(1).strip() if m else None
+        Delegates to the shared ``llm_helpers._extract_json_of_type`` scanner
+        (a bare JSON reply, a fenced block, and JSON wrapped in prose are all
+        the same to it), so a stray brace in surrounding prose no longer
+        corrupts the span the way the old greedy first-``{``-to-last-``}``
+        regex did. Returns the empty result on any parse failure, on a
+        non-dict reply, or when two DIFFERENT payload-shaped dicts make the
+        choice ambiguous (the shared contract refuses to guess).
+        """
+        data = _extract_json_of_type(response, dict, prefer=_extraction_shaped)
+        if isinstance(data, dict):
+            return self._validate(data)
+        return _empty_result()
 
     @staticmethod
     def _validate(data: dict) -> dict:

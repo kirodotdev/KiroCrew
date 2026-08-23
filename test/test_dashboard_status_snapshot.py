@@ -158,6 +158,9 @@ class TestAllStatusSnapshotCallersPassTheUpdateFields:
             "update_check_status",
             "update_command",
             "update_channel",
+            "update_managed_by",
+            "update_commits_ahead",
+            "update_commits_behind",
         }
 
     def test_the_shared_reader_never_flattens_a_missing_verdict(self) -> None:

@@ -182,52 +182,15 @@ class HeadingAwareChunker:
                 sections.insert(0, (None, 1, preamble))
 
         # Merge small sections, split oversized ones
-        results = []
+        results: list[dict] = []
         idx = 0
         current_title: str | None = None
         current_body = ""
         current_start = 1
 
-        for title, line_start, body in sections:
-            if not current_body:
-                current_title = title
-                current_body = body
-                current_start = line_start
-            elif _word_count(current_body + body) <= self.target_size:
-                current_body += "\n" + body
-                if current_title is None and title is not None:
-                    current_title = title
-            else:
-                # Flush current
-                if _word_count(current_body) > self.target_size:
-                    offset = 0
-                    for sub in self._recursive_split(current_body, _SEPARATORS):
-                        sub_line_start = current_start + offset
-                        results.append({
-                            "content": sub,
-                            "section_title": current_title,
-                            "chunk_index": idx,
-                            "line_start": sub_line_start,
-                            "line_end": sub_line_start + sub.count("\n"),
-                        })
-                        offset += sub.count("\n") + 1
-                        idx += 1
-                else:
-                    stripped = current_body.strip()
-                    results.append({
-                        "content": stripped,
-                        "section_title": current_title,
-                        "chunk_index": idx,
-                        "line_start": current_start,
-                        "line_end": current_start + stripped.count("\n"),
-                    })
-                    idx += 1
-                current_title = title
-                current_body = body
-                current_start = line_start
-
-        # Flush last
-        if current_body.strip():
+        def _flush() -> None:
+            """Emit the accumulated section, sub-splitting it if oversized."""
+            nonlocal idx
             if _word_count(current_body) > self.target_size:
                 offset = 0
                 for sub in self._recursive_split(current_body, _SEPARATORS):
@@ -250,6 +213,25 @@ class HeadingAwareChunker:
                     "line_start": current_start,
                     "line_end": current_start + stripped.count("\n"),
                 })
+                idx += 1
+
+        for title, line_start, body in sections:
+            if not current_body:
+                current_title = title
+                current_body = body
+                current_start = line_start
+            elif _word_count(current_body + body) <= self.target_size:
+                current_body += "\n" + body
+                if current_title is None and title is not None:
+                    current_title = title
+            else:
+                _flush()
+                current_title = title
+                current_body = body
+                current_start = line_start
+
+        if current_body.strip():
+            _flush()
 
         return results[:MAX_CHUNKS_PER_FILE]
 

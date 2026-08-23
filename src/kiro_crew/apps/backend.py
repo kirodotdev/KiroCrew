@@ -754,6 +754,35 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
         # without this forward the documented override silently never reaches
         # the backend and the fleet renders empty. A path, not a secret.
         _platform_extra["KIROCREW_DEVFLEET_REPO"] = os.environ["KIROCREW_DEVFLEET_REPO"]
+    if os.environ.get("KIROCREW_PROFILE"):
+        # Forward the edition-profile override to the backend subprocess.
+        # minimal_env() strips it otherwise, so a gateway launched with an
+        # explicit KIROCREW_PROFILE (e.g. =standalone to override an installed
+        # companion) would have the child re-resolve the profile from on-disk
+        # markers and diverge from the parent. Since the backend now boots the
+        # platform context at startup (fail-closed), that divergence would make
+        # the subprocess refuse to start rather than fail lazily. Forwarding it
+        # keeps the child on the SAME profile the gateway resolved. A profile
+        # name, not a secret.
+        _platform_extra["KIROCREW_PROFILE"] = os.environ["KIROCREW_PROFILE"]
+    for _policy_env in ("KIROCREW_SECURITY_POLICY", "KIROCREW_ADMISSION_POLICY"):
+        # Forward the governance trust-root path overrides alongside the profile.
+        # These are the fleet operator's highest-priority policy sources
+        # (governance.load_security_policy / admission), and minimal_env() strips
+        # them. Now that the backend boots the platform context itself, dropping
+        # them would make the child resolve its ceiling from the on-disk /
+        # packaged default instead of the administrator-pinned policy — a looser
+        # ceiling for governed app commands.
+        #
+        # Absolutize against THIS process's cwd before forwarding: the loaders
+        # read the value as a bare Path() with no resolve()/expanduser(), and the
+        # backend subprocess runs with a different cwd (the package root, set
+        # below), so forwarding a RELATIVE override verbatim would make the child
+        # look in the wrong directory and fail closed. Resolving here binds the
+        # child to the exact file the gateway resolved. A path, not a secret.
+        _policy_val = os.environ.get(_policy_env)
+        if _policy_val:
+            _platform_extra[_policy_env] = os.path.abspath(os.path.expanduser(_policy_val))
     for _k, _v in os.environ.items():
         # Operator-declared trusted-binary overrides (unit-file owned):
         # backends resolve credential-bearing tools through these instead of

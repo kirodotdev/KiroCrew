@@ -713,7 +713,7 @@ if (shadowed.length > 0) {
   console.error(
     `\n${shadowed.length} key(s) exist in BOTH en.json and en.manual.json:\n`
     + `${shadowed.slice(0, 20).map((k) => `  ${k}`).join('\n')}\n\n`
-    + '`src/i18n/index.ts` deep-merges with the manual catalog winning, so the generated value is\n'
+    + '`src/i18n/enCatalog.ts` deep-merges with the manual catalog winning, so the generated value is\n'
     + 'dead while the codemod keeps regenerating it — the two drift apart with nothing to say so.\n'
     + 'Keep the key in exactly one file: en.manual.json if it has no source literal to extract,\n'
     + 'otherwise let the codemod own it and delete the manual copy.',

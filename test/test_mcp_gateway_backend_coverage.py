@@ -2057,3 +2057,195 @@ class TestCallMetrics:
         await _settle(backend)
         assert backend._metric_tasks == set()
         assert json.loads(path.read_text(encoding="utf-8").strip())["method"] == "ping"
+
+
+class TestBackendTmpContainment:
+    """Issue #5064: spawn injects a contained temp dir; shutdown reclaims it."""
+
+    @pytest.mark.asyncio
+    async def test_spawn_contains_temp_under_managed_root(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        from pathlib import Path
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        await spawn_backend(
+            _pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir"
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        root = home / "run" / "mcp-tmp"
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            assert Path(env[key]).parent == root, key
+        assert env["TMPDIR"] == env["TMP"] == env["TEMP"]
+        contained = Path(env["TMPDIR"])
+        assert contained.is_dir()
+        # Liveness anchor for the sweep: allocation + spawn leave an owner
+        # record on disk -- the sweep's ONLY state (no in-memory field).
+        assert (contained / bt.OWNER_FILENAME).is_file()
+
+    @pytest.mark.asyncio
+    async def test_operator_declared_temp_wins(self, fake_spawn, monkeypatch, tmp_path) -> None:
+        # A spec that sets TMPDIR deliberately points a heavy server at
+        # chosen storage; containment must not trade litter for ENOSPC.
+        # Declaration is the CALLER's signal (declared_temp_keys), carried
+        # from the gatewayd closure that knows the declared-env set.
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        await spawn_backend(
+            _pool_key(),
+            "/usr/bin/example-mcp",
+            [],
+            {"TMPDIR": "/mnt/bigdisk/tmp"},
+            "/nonexistent-work-dir",
+            declared_temp_keys=("TMPDIR",),
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        assert env["TMPDIR"] == "/mnt/bigdisk/tmp"
+        assert not (home / "run" / "mcp-tmp").exists() or not any(
+            (home / "run" / "mcp-tmp").iterdir()
+        )
+
+    @pytest.mark.asyncio
+    async def test_partial_declaration_strips_competing_ambient_keys(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        # A spec declaring only TMP must actually govern the child: tempfile
+        # consults TMPDIR before TMP, so leaving the daemon's ambient TMPDIR
+        # in place would silently defeat the declaration (macOS always
+        # exports one). Yield = declared keys kept, undeclared canonical
+        # keys pruned.
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        await spawn_backend(
+            _pool_key(),
+            "/usr/bin/example-mcp",
+            [],
+            {"TMPDIR": "/var/folders/xy/ambient", "TMP": "/mnt/bigdisk/tmp"},
+            "/nonexistent-work-dir",
+            declared_temp_keys=("TMP",),
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        assert "TMPDIR" not in env
+        assert env["TMP"] == "/mnt/bigdisk/tmp"
+        assert not (home / "run" / "mcp-tmp").exists() or not any(
+            (home / "run" / "mcp-tmp").iterdir()
+        )
+
+    @pytest.mark.asyncio
+    async def test_ambient_temp_does_not_suppress_containment(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        # Regression: the resolver folds the daemon's own inherited environ
+        # into the spawn env, and macOS always exports TMPDIR (Windows: TMP /
+        # TEMP). An env-membership gate read that ambient value as an operator
+        # declaration and disabled containment on those platforms entirely.
+        # Ambient keys must be OVERRIDDEN by the managed triple.
+        from pathlib import Path
+
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        await spawn_backend(
+            _pool_key(),
+            "/usr/bin/example-mcp",
+            [],
+            {"TMPDIR": "/var/folders/xy/ambient", "TMP": r"C:\Users\x\tmp"},
+            "/nonexistent-work-dir",
+            declared_temp_keys=(),
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        root = home / "run" / "mcp-tmp"
+        for key in ("TMPDIR", "TMP", "TEMP"):
+            assert Path(env[key]).parent == root, key
+        assert Path(env["TMPDIR"]).is_dir()
+
+    @pytest.mark.asyncio
+    async def test_spawn_survives_allocation_failure(self, fake_spawn, monkeypatch) -> None:
+        # Fail-open: containment is hygiene, not a spawn prerequisite. The
+        # allocate step raises when the dir or its owner record cannot be
+        # written (ENOSPC / inode exhaustion) -- the spawn proceeds with
+        # inherited temp and nothing is left on disk to reclaim.
+        from kiro_crew.mcp_gateway import backend as backend_mod
+
+        def _boom(_digest: str):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(backend_mod, "allocate_backend_tmp", _boom)
+
+        await spawn_backend(
+            _pool_key(), "/usr/bin/example-mcp", [], {"PATH": "/usr/bin"}, "/nonexistent-work-dir"
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        assert "TMPDIR" not in env
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_reclaims_the_fresh_dir(self, monkeypatch, tmp_path) -> None:
+        # Unowned-by-a-live-process dirs are never deleted by the sweeps, so
+        # the spawn-failure path is the ONLY reclamation point for a dir
+        # whose process never existed.
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        async def _boom(*_args, **_kwargs):
+            raise OSError("exec failed")
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", _boom)
+
+        with pytest.raises(OSError):
+            await spawn_backend(
+                _pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir"
+            )
+
+        root = home / "run" / "mcp-tmp"
+        assert not root.exists() or list(root.iterdir()) == []
+
+    @pytest.mark.asyncio
+    async def test_shutdown_leaves_the_dir_for_the_sweep(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        # Deliberately NO deletion on shutdown: the launcher's exit is not
+        # proof its process TREE is gone (a wrapper exits while its server
+        # child lives on). The sweep's dual condition (owner dead AND idle)
+        # is the single deletion authority.
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+
+        from pathlib import Path
+
+        backend = await spawn_backend(
+            _pool_key(), "/usr/bin/example-mcp", [], {}, "/nonexistent-work-dir"
+        )
+        tmp_dir = Path(fake_spawn["kwargs"]["env"]["TMPDIR"])
+        assert tmp_dir.is_dir()
+
+        fake_spawn["process"].returncode = 0
+        await backend.shutdown()
+
+        assert tmp_dir.is_dir(), "shutdown must not delete; the sweep owns deletion"

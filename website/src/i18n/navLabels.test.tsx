@@ -15,7 +15,8 @@
 
 import { describe, it, expect, afterEach } from 'vitest'
 
-import { i18next } from './index'
+// `./all` for the non-English catalogs: `./index` registers English only.
+import { i18next } from './all'
 import { SUPPORTED_CODES } from './languages'
 import { surfaceLabel } from '../surfaces/registry'
 import '../surfaces/builtins'

@@ -181,6 +181,17 @@ ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 # yet is excluded from sharing until keep-aware teardown lands).
 ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
+# Backends whose sign-in lives in kiro-cli's OWN identity store, so an external
+# ``kiro-cli logout`` (or a switch to another account) invalidates a process that
+# is already running. Membership is what authorizes retiring a live session's
+# child when that store starts naming a different account: a harness
+# authenticated some other way must not be recycled on a store it never reads.
+# KAS is deliberately NOT a member — it is a separate Node entry point
+# (``build_kas_argv``), and nothing here establishes that it authenticates from
+# kiro-cli's store; it opts in when someone demonstrates that it does. Positive
+# membership rather than "not claude" (harness-parity H5).
+ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO})
+
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

@@ -1135,9 +1135,10 @@ jobs:
 
       - name: Type check
         working-directory: website
-        # `tsc -b`, NOT `npm run typecheck`: the root tsconfig has `files: []`
-        # + project references, so `tsc --noEmit` (what `typecheck` runs) checks
-        # ZERO files and always passes. `tsc -b` actually type-checks the project.
+        # Spelled out rather than `npm run typecheck` so this gate cannot be
+        # changed from package.json. Build mode is required either way: the root
+        # tsconfig is `files: []` + project references, and references are followed
+        # only by `-b`, so a plain `tsc --noEmit` there compiles an empty program.
         run: npx tsc -b
 
       - name: Lint

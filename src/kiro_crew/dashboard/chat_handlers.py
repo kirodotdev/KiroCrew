@@ -204,11 +204,33 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     if requested_memory_mode not in ("persistent", "incognito", "temporary"):
         requested_memory_mode = None
 
+    # Honor mode from the body when auto-creating a slot, mirroring memory_mode
+    # above: an app whose worker slot lives only in gateway memory (e.g. Design
+    # Critique) repeats mode on send(), so a slot recreated here after a
+    # gateway restart keeps its non-"" surface and stays out of the chat
+    # sidebar's surface allowlist. Only creation-allowlisted values pass;
+    # anything else is dropped so get_or_create_slot uses its default. Unlike
+    # memory_mode there is no mismatch error: get_or_create_slot ignores mode
+    # for an already-existing slot.
+    requested_mode = body.get("mode")
+    if not isinstance(requested_mode, str) or requested_mode not in _CREATABLE_MODES:
+        requested_mode = ""
+    if requested_mode == "crew" and slot_name:
+        # Same boundary as api_chat_slot_create: a caller-supplied name whose
+        # normalized key cannot host a crew store must not become a crew slot
+        # (its first crew message would 500). Dropped rather than refused —
+        # auto-create is a convenience path, not the crew entry point.
+        from kiro_crew.crew_chat import is_crew_capable_slot_key
+
+        if not is_crew_capable_slot_key(_normalize_slot_key(slot_name)):
+            requested_mode = ""
+
     try:
         slot = state.get_or_create_slot(
             slot_name,
             app=request.get("app", ""),
             origin=request_slot_origin(request.get("app", "")),
+            mode=requested_mode,
             memory_mode=requested_memory_mode,
         )
     except ValueError as exc:
@@ -1263,9 +1285,12 @@ def _append_unflushed_tail(
     capturing inside this thread, which is weaker — see that helper.
 
     Prefer message identity. A save copies each window row's ``meta.mid`` to disk,
-    so a window row whose id appears in the disk read is persisted. Rows written by
-    any other writer carry no id — ``ConversationLog.append`` persists no ``meta``
-    — so they cannot be mistaken for a flushed window row.
+    so a window row whose id appears in the disk read is persisted. A durable
+    injector passes the window row's own id to ``ConversationLog.append``, which
+    persists it in the same ``meta.mid`` shape — that copy carrying the id is the
+    point: it IS the window row's flushed form and must match. A writer that passes
+    no id persists no ``meta``, so its rows cannot be mistaken for a flushed window
+    row.
 
     A disk read holding no ids at all needs a different boundary: a session
     persisted before ids existed, or rows a durable injector appended without
@@ -1310,10 +1335,11 @@ def _append_unflushed_tail(
     The fallback below already starts its disk cursor at the same offset.
 
     Id matching is selected only when EVERY row in that region carries a valid id, not
-    merely when some row does. A durable injection is written by two writers — the
-    window copy through ``slot.append``, where an id is minted, and the durable copy
-    through ``append_if_absent``, which persists no ``meta`` at all — so the region can
-    legitimately hold a MIX. Choosing id matching on the strength of one id-carrying
+    merely when some row does. The dual-write injectors stamp both copies with one id
+    (``slot.append`` mints it for the window copy and ``append_if_absent`` persists it
+    on the durable copy), but the region can still legitimately hold a MIX: transcripts
+    written before ids existed, and callers that pass no id. Choosing id matching on the
+    strength of one id-carrying
     row then applies it to a row that structurally cannot match, which reads as
     un-flushed and appends the injection a second time. A mixed region belongs on the
     ordered path, which compares the fields both writers do record.
@@ -1762,6 +1788,17 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
     return web.Response(text=body, content_type="application/json")
 
 
+# Modes a slot may be CREATED with. A deliberate superset of the mode-SWITCH
+# allowlist (chat_folders._VALID_MODES) and the fork override allowlist
+# (chat_fork): "design-critique" is an app-worker mode assigned at birth by the
+# Design Critique app's openSlot() — the custom mode keeps its throwaway dc-*
+# slots off the chat sidebar, which renders only "", "orchestrator" and "crew"
+# (ChatPage.tsx filteredSlots). Switching an existing session INTO an app-worker
+# mode, or forking one with it as an override, is not a real flow, so those two
+# allowlists deliberately stay narrower — do not "sync" them to this one.
+_CREATABLE_MODES = ("", "orchestrator", "crew", "design-critique")
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -1830,7 +1867,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             if memory_mode not in ("persistent", "incognito", "temporary"):
                 return web.json_response({"error": "invalid memory_mode"}, status=400)
             _mode = body.get("mode", "")
-            if _mode not in ("", "orchestrator", "crew"):
+            if _mode not in _CREATABLE_MODES:
                 return web.json_response(
                     {"error": "invalid mode", "code": "invalid_mode"}, status=400
                 )
@@ -3612,7 +3649,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
 
 
-def _model_rejected_reason(model_name: str) -> str | None:
+def _model_rejected_reason(model_name: str, provider: str | None = None) -> str | None:
     """Reason to reject ``model_name`` for the active provider, or None to allow.
 
     The dashboard model dropdown falls back to canonical registry keys (e.g.
@@ -3624,13 +3661,20 @@ def _model_rejected_reason(model_name: str) -> str | None:
     call, or the openai-compat path can never persist a canonical key. ``auto``
     and ``""`` (provider default) always pass; for the ``claude_code`` provider
     canonical keys ARE the wire format, so they pass there too.
+
+    *provider* lets a caller that has already loaded the config supply it, so
+    this adds no read of its own: ``KiroCrewConfig.load()`` deep-copies the
+    validated dict even on a cache hit, and on a miss it reads and validates
+    files — work that must not land on the event loop under a held lock. Omit it
+    and the provider is resolved here, preserving the original behaviour.
     """
     if not model_name or model_name == "auto":
         return None
-    try:
-        provider = KiroCrewConfig.load().agent.provider
-    except Exception:  # pragma: no cover - config load is resilient
-        provider = ""
+    if provider is None:
+        try:
+            provider = KiroCrewConfig.load().agent.provider
+        except Exception:  # pragma: no cover - config load is resilient
+            provider = ""
     if provider == "claude_code":
         return None
     if model_registry.is_canonical_key(model_name):

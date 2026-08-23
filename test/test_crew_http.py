@@ -175,6 +175,37 @@ class TestCrewHttpFlow:
             assert r2.status in (200, 201)
 
     @pytest.mark.asyncio
+    async def test_create_endpoint_accepts_design_critique_mode(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        """Regression for #5099: the Design Critique app opens throwaway worker
+        slots with mode="design-critique" (kept out of the chat sidebar by the
+        frontend's surface filter). The create allowlist never included the
+        mode, so every open of the app failed with 400 code=invalid_mode."""
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_create
+
+        state = _crew_state(tmp_path)
+        app = _make_app(state)
+        app.router.add_post("/api/chat/slots", api_chat_slot_create)
+        async with TestClient(TestServer(app)) as client:
+            r = await client.post(
+                "/api/chat/slots",
+                json={
+                    "name": "dc-1755892086",
+                    "mode": "design-critique",
+                    "memory_mode": "temporary",
+                },
+            )
+            assert r.status in (200, 201)
+            data = await r.json()
+            assert data.get("mode") == "design-critique"
+            # The forward-compat surface alias mirrors the mode — this is the
+            # field the sidebar filter reads, so it must not be "".
+            assert data.get("surface") == "design-critique"
+            # An unknown mode still returns the machine-readable rejection.
+            bad = await client.post("/api/chat/slots", json={"mode": "bogus-mode"})
+            assert bad.status == 400
+            assert (await bad.json()).get("code") == "invalid_mode"
+
+    @pytest.mark.asyncio
     async def test_crew_ingest_refusal_is_not_a_200(self, tmp_path) -> None:  # type: ignore[no-untyped-def]
         """`ingest` declines an app-owned session. Reporting 200 anyway told the
         caller its message was accepted for work that will never run — and an API

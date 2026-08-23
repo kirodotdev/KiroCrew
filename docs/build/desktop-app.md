@@ -735,6 +735,44 @@ carries **no** network rules, so the sandbox does not block sockets — but whet
 TCC's responsible-process attribution still lands on the app bundle across that
 `exec` has to be confirmed on a real macOS 15 host rather than reasoned about.
 
+## Externally-managed installs (repackagers)
+
+A distro or enterprise packager that redistributes the desktop app through its
+own package manager owns the install's update lifecycle: the package manager
+replaces the whole install, so the built-in auto-updater would fight it (each
+overwriting the other's bytes) and its feed check would compare against
+releases the packager never ships.
+
+Such a packager opts out by dropping an `EXTERNALLY-MANAGED` marker file
+(named after the PEP 668 precedent) into the packaged resources directory —
+the same outside-asar surface that carries `package-type` and `backend-dist`
+(`Contents/Resources/` on macOS, `resources/` on Linux and Windows). Its
+presence alone disables the updater: the feed is never contacted, and
+Settings → About hides the release-channel switcher (the lanes it offers are
+ones the packager never reads). The body is optional JSON metadata for the
+About panel:
+
+```json
+{
+  "managedBy": "your package manager's name",
+  "updateCommand": "the command users run to update"
+}
+```
+
+`managedBy` names the owning system in the "updates are managed by …"
+message; `updateCommand` renders as a copyable command. An empty or
+unparsable body still counts as managed — an operator who dropped the file
+gets the safe behavior even when the metadata is wrong. For local testing,
+the `KIROCREW_EXTERNALLY_MANAGED` env var points at a marker file (any other
+non-empty value marks the install managed with no metadata).
+
+The gateway has the matching seam for its own surfaces: an operator's
+`security_policy.json` `updates` block (`check_command` / `apply_command`)
+routes the dashboard's update check, badge, and Update button through the
+declared commands, and the gateway then reports no release channel at all.
+The `check_command` runs on every check — the 12-hourly background poll AND
+the manual Check button — so it must be side-effect-free and idempotent.
+
 ## Remote tunnel mode
 
 The desktop app can also connect to a gateway running on a **remote** host (e.g.

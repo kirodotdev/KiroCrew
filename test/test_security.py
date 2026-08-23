@@ -3490,7 +3490,25 @@ class TestHomeDirTargetsCache:
         )
 
     def test_second_call_does_not_rebuild(self, monkeypatch, tmp_path) -> None:
-        """Within the TTL the expensive builder runs once, not per call."""
+        """Within the TTL the expensive builder runs once, not per call.
+
+        The cache compares ``time.monotonic()`` against a stored deadline
+        (``_home_dir_targets`` reads the clock exactly once per call), so the
+        clock is FROZEN here rather than raced: with a constant monotonic
+        source, "every call is inside the TTL" is a fact of the test instead
+        of a bet that the loop outruns ``_HOME_TARGETS_TTL_SECS`` (0.1s) on
+        the slowest runner in the matrix. That removes the only
+        platform-dependent input — before this, the assertion held only while
+        50 iterations plus one ~1.4ms rebuild finished inside 100ms, which the
+        Windows shards do not guarantee.
+
+        The second half advances the fake clock past the TTL and requires a
+        rebuild. That direction pins the TTL behavior itself AND proves the
+        freeze took effect: were the patch silently a no-op, the +0.11s jump
+        would not have happened in real time and the rebuild would not occur,
+        failing the final assertion instead of degrading back into a timing
+        race.
+        """
         from kiro_crew import security
 
         monkeypatch.setenv("HOME", str(tmp_path))
@@ -3503,9 +3521,16 @@ class TestHomeDirTargetsCache:
             return real(home_dirs, roots)
 
         monkeypatch.setattr(security, "_home_dir_targets_uncached", counting)
+        clock = {"now": 1000.0}
+        monkeypatch.setattr(security.time, "monotonic", lambda: clock["now"])
         for _ in range(50):
             security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
         assert len(calls) == 1
+
+        # Guard: advancing the frozen clock past the TTL MUST rebuild.
+        clock["now"] += security._HOME_TARGETS_TTL_SECS + 0.01
+        security._home_dir_targets(security._SENSITIVE_HOME_DIRS)
+        assert len(calls) == 2
 
     def test_kirocrew_home_change_is_not_deferred_by_ttl(self, monkeypatch, tmp_path) -> None:
         """A changed KIROCREW_HOME must re-key immediately, not after the TTL.

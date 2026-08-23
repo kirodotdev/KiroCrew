@@ -25,7 +25,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import cli_help, platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 from kiro_crew.gateway_lock import LOCK_FILENAME
@@ -342,7 +342,7 @@ def register_perf_parser(sub: argparse._SubParsersAction) -> None:
     exists, and "profile" is overloaded three ways in this codebase (governance
     profiles, AWS profiles, deploy profiles).
     """
-    perf_parser = sub.add_parser("perf", help="Debug-only performance sampling (off by default)")
+    perf_parser = cli_help.add_command(sub, "perf")
     perf_sub = perf_parser.add_subparsers(dest="perf_action")
     sample = perf_sub.add_parser(
         "sample",

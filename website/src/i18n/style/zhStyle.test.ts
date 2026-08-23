@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from '../index'
+import { CATALOGS as RUNTIME_CATALOGS } from '../catalogs'
 
 const CJK = /[\u4e00-\u9fff]/
 

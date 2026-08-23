@@ -1386,6 +1386,100 @@ class TestFontRoles:
         assert len(_theme_asset_descriptor(d, manifest, 1)["fonts"]) == 6
 
 
+class TestFontRoleRejectedAtInstall:
+    """A `fonts` entry whose `role` is neither "sans" nor "mono" is REFUSED at
+    install (`installing=True`) instead of silently coercing to "sans".
+    "monospace" (the CSS keyword) is the likeliest typo for exactly the role
+    most likely to be mistyped, and `_theme_asset_descriptor`'s lenient
+    coercion (covered by `TestFontRoles` above, which must keep passing
+    unchanged) made the failure silent: the mono face renders as Sans while
+    Mono keeps the built-in JetBrains Mono (#2750). Unlike that read path,
+    `_validate_theme_dir` reads `theme.json` from disk, so these build a real
+    on-disk pack rather than passing an in-memory manifest."""
+
+    def _pack_with_font_role(self, tmp_path: Path, role: object) -> Path:
+        d = tmp_path / "role-pack"
+        d.mkdir(parents=True, exist_ok=True)
+        _write(
+            d / "theme.json",
+            {
+                "slug": "role-pack",
+                "name": "Role Pack",
+                "emoji": "🎨",
+                "level": 1,
+                "formatVersion": 1,
+                "fonts": [{"family": "Manrope", "file": "sans.ttf", "role": role}],
+            },
+        )
+        _write(d / "variables.json", _VALID_VARS)
+        (d / "styles" / "fonts").mkdir(parents=True, exist_ok=True)
+        (d / "styles" / "fonts" / "sans.ttf").write_bytes(_TTF)
+        return d
+
+    def test_unknown_role_rejected_at_install(self, tmp_path: Path) -> None:
+        d = self._pack_with_font_role(tmp_path, "monospace")
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None
+        assert "Manrope" in err
+        assert "monospace" in err
+        assert "'sans' and 'mono'" in err
+
+    def test_unknown_role_tolerated_on_re_read(self, tmp_path: Path) -> None:
+        # The theme-detail route re-runs this validator for every installed
+        # pack on read (installing=False, the default). A pack that predates
+        # this rule -- or installed before a narrower rule existed -- must
+        # keep loading there rather than 500ing and dropping out of the theme
+        # map, mirroring the font-pin rule's own install-only enforcement.
+        d = self._pack_with_font_role(tmp_path, "monospace")
+        summary, err = _validate_theme_dir(d)
+        assert err is None, err
+        assert summary is not None
+
+    @pytest.mark.parametrize("role", ["sans", "mono"])
+    def test_valid_roles_accepted_at_install(self, tmp_path: Path, role: str) -> None:
+        d = self._pack_with_font_role(tmp_path, role)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+
+    def test_absent_role_still_accepted_at_install(self, tmp_path: Path) -> None:
+        # Absent is the deliberate default case (coerces to sans on read) --
+        # not what this rule targets.
+        d = tmp_path / "no-role-pack"
+        d.mkdir()
+        _write(
+            d / "theme.json",
+            {
+                "slug": "no-role-pack",
+                "name": "No Role",
+                "emoji": "🎨",
+                "level": 1,
+                "formatVersion": 1,
+                "fonts": [{"family": "Manrope", "file": "sans.ttf"}],
+            },
+        )
+        _write(d / "variables.json", _VALID_VARS)
+        (d / "styles" / "fonts").mkdir(parents=True)
+        (d / "styles" / "fonts" / "sans.ttf").write_bytes(_TTF)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert err is None, err
+
+    @pytest.mark.parametrize("bad_role", [[], {}, 7, True, ["sans"], None])
+    def test_non_string_role_rejected_at_install_without_crashing(
+        self, tmp_path: Path, bad_role: object
+    ) -> None:
+        # `role` is untrusted manifest JSON. Membership-testing an unhashable
+        # value (a list, a dict) against the frozenset raises TypeError if the
+        # isinstance guard is dropped -- this must return a clean error
+        # instead of crashing the install handler. An explicit JSON `null`
+        # (None) is a PRESENT non-string value: it is rejected like any other
+        # bad role, distinct from the absent-role default case above.
+        d = self._pack_with_font_role(tmp_path, bad_role)
+        summary, err = _validate_theme_dir(d, installing=True)
+        assert summary is None
+        assert err is not None
+
+
 class TestOverridesFontPin:
     """overrides.css must not pin the UI font: a pin lands below where the Font
     Family preference is applied, so Mono/System would stop working with nothing

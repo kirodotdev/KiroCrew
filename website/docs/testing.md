@@ -22,11 +22,8 @@ npm run test:playwright:headless
 npx tsc -b                # the real type check
 ```
 
-Two traps worth knowing before you trust a green run:
+One trap worth knowing before you trust a green run:
 
-- **`npm run typecheck` checks ZERO files.** It runs `tsc --noEmit`, and the root
-  `tsconfig.json` sets `"files": []` with project references, so nothing is checked
-  and it always passes. Use `npx tsc -b`, which is what `npm run build` and CI run.
 - **`npm test` is wider than it looks.** It runs the Electron suite as well as the
   website suite, and the `pretest` hook runs a jscpd duplication check first, so
   `npm test` can fail on copy-paste before a single test executes.
@@ -57,6 +54,65 @@ a component under test talks to a realistic API without a gateway running.
 When a test fails with an unhandled request, the fix is almost always a missing
 handler rather than a change to the component: add the endpoint to the mock server.
 
+## What a `setupFiles` entry costs
+
+`isolate: true` clears each worker's module registry between files, so vitest
+re-fetches `integration/setup.ts` and its whole module graph **once per test
+FILE** — ~1,400 of them. The total can exceed the cost of running the tests.
+Reaching all 14 locale catalogs from it cost more in setup than the whole suite
+spent running tests; owning them elsewhere is where the numbers below come from.
+
+Measured back to back on one host at `maxWorkers: 3`, same `node_modules`, both
+runs green:
+
+| | all 14 in the setup graph | English only |
+|---|---|---|
+| wall | 1166.5s | **822.2s** (1.42x, -29.5%) |
+| setup | 1363.5s | **371.6s** (3.67x less) |
+| tests | 873.5s | 817.8s |
+| setup as a share of the tests phase | 1.56x | 0.45x |
+
+Quote the ratio rather than the wall clock: the absolute number moves with
+`maxWorkers` and host load, and an earlier pair on a quieter host read 17m06s ->
+11m30s for the same change.
+
+**The cost is the per-module round trip, not the bytes.** Parsing all 14 catalogs
+measures 32 ms and compiling them 1.5 ms, against ~690 ms per file of measured
+saving — what is expensive is 14 vite-node module fetches crossing the fork IPC
+channel, repeated per file. So the lever is always *fewer modules in the graph*;
+making the same modules cheaper to parse buys nothing, which is why Vite's
+`json.stringify` (on by default above 10 KB) does not help. Count modules, not
+kilobytes, when you judge a setup import.
+
+The test path is also heavier than the production bundle: `en-XA.json` is 1.33 MiB
+and DEV-only, and `import.meta.env.DEV` is true under vitest, so it loads here and
+is dropped from a release build.
+
+That is why `src/i18n/index.ts` imports **English only** (726,947 bytes, 5.9% of the
+12,242,932 authored bytes), `src/i18n/catalogs.ts` owns every catalog import, and
+`src/i18n/all.ts` is the entry that registers them. Three rules hold that split in
+place:
+
+- **No non-English catalog import in `src/i18n/index.ts`** — that is the module
+  `integration/setup.ts` and ~600 components import.
+- **No all-catalogs import in `integration/setup.ts`**: neither `src/i18n/all` nor
+  `src/i18n/catalogs`, and not transitively through a helper it pulls in.
+- **A page entry point imports `initI18n` from `src/i18n/all`**, never from
+  `src/i18n/index`. Both export the same signature so `tsc` accepts either, but
+  through the English-only module the dashboard renders English to a user who
+  picked Japanese: i18next falls back, nothing throws, no key renders raw.
+
+`src/test/i18nAllLanguagesEntry.test.ts` gates all three by scanning the static
+import graph, because none of them changes a test result on its own.
+
+A test that needs a language other than English imports `src/i18n/all`; a test that
+audits the whole catalog set imports `CATALOGS` from `src/i18n/catalogs`. Either way
+a single file pays the load. None of this defers a load — `t()` is synchronous on
+every path — it only settles which module owns the import.
+
+Weigh anything else you put in the setup graph the same way: multiply it by the
+file count first.
+
 ## Playwright: how it actually runs
 
 The config is `playwright.config.ts`, and several of its choices surprise people:
@@ -85,9 +141,12 @@ match when you are debugging a CI-only failure: see
 - **jscpd** duplication check: copy-pasted code fails the build.
 - Coverage is emitted as cobertura XML from `test:website`.
 - `npx tsc -b` and eslint run as their own blocking steps.
-- Coverage runs use at most two fork workers with a 3072 MB old-space ceiling
-  per worker. The cap leaves room for the Vitest coordinator, coverage maps,
-  happy-dom state, and the operating system on a standard hosted runner.
+- Coverage runs cap fork workers (`maxWorkers` in `vite.config.ts`) with a
+  3072 MB old-space ceiling per worker. The cap leaves room for the Vitest
+  coordinator, coverage maps, happy-dom state, and the operating system on a
+  standard hosted runner; without it one fork per core exceeds host RAM and the
+  kernel OOM-kills a worker, which surfaces as "Worker exited unexpectedly"
+  even though every test passed.
 
 Backend-side test determinism and suite-speed rules (they apply to the same CI run)
 are in

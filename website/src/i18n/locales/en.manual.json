@@ -1343,6 +1343,7 @@
       "stop_the_current_response_to_switch_agents": "Stop the current response to switch agents",
       "stop_the_current_response_to_switch_model": "Stop the current response to switch model",
       "stop_the_current_response_to_switch_project": "Stop the current response to switch project",
+      "switch_not_confirmed": "Switch not confirmed yet — it will apply if the connection recovers.",
       "that_approval_expired_the_turn_it_belonged_to_is": "This approval request expired because the associated turn is no longer awaiting approval.",
       "that_request_already_timed_out_and_was_denied": "That {{source}} request already timed out and was denied — the job is no longer waiting. Check the approvals feed for the record.",
       "transcribing": "Transcribing…",
@@ -2023,6 +2024,10 @@
       "open": "Open {{path}}",
       "root": "(root)"
     },
+    "skillPickerMenu": {
+      "no_matching_skills_ctrl_enter_sends": "No matching skills — Ctrl+Enter sends the message",
+      "no_matching_skills_enter_sends": "No matching skills — Enter sends the message"
+    },
     "snipOverlay": {
       "could_not_capture_the_selected_region_please_try": "Could not capture the selected region. Please try again."
     },
@@ -2243,7 +2248,9 @@
       "desc_tangent": "Start a tangent conversation",
       "desc_todos": "Show or manage the task list",
       "desc_tools": "Show available tools",
-      "desc_usage": "Show billing and usage information"
+      "desc_usage": "Show billing and usage information",
+      "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
+      "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },
     "privacyChapter": {
       "continue": "Continue",
@@ -3930,6 +3937,15 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Diverged",
+        "checkout_diverged_from_upstream": "This checkout has diverged from its upstream ({{distance}}). Rebase or merge to update — nothing is applied automatically, so your local commits are safe.",
+        "commits_ahead_one": "{{count}} commit ahead",
+        "commits_ahead_other": "{{count}} commits ahead",
+        "commits_behind_one": "{{count}} commit behind",
+        "commits_behind_other": "{{count}} commits behind",
+        "updates_managed_by_policy": "Updates for this install are managed by an operator-defined update policy. New versions arrive through the mechanism it defines.",
+        "updates_managed_externally": "Updates for this install are managed by an external package manager. Use that package manager to get new versions.",
+        "updates_managed_externally_by": "Updates for this install are managed by {{managedBy}}. Use it to get new versions.",
         "automatic_updates_unavailable_dev_build": "Automatic updates are unavailable in this build (development build).",
         "automatic_updates_unavailable_channel": "Automatic updates are unavailable because this release channel has no builds for your platform yet. Switch channels above to receive updates.",
         "automatic_updates_unavailable_platform": "Automatic updates are unavailable in this build on this platform.",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import subprocess
 
 from kiro_crew.dashboard.handlers import updates
@@ -83,6 +84,120 @@ class TestUpdateCheckGitGuard:
         resp = asyncio.run(updates.api_update_apply(_Req()))
         assert resp.status == 409
         assert b"redeploy" in resp.body
+
+    def test_apply_refuses_a_diverged_checkout_before_pulling(self, monkeypatch, tmp_path):
+        # The render-site guards only cover clients that ran a fresh check; a
+        # stale client still POSTs here, and the bare ``git pull`` would answer
+        # a diverged checkout with an unrequested merge. The endpoint owns the
+        # destructive action, so IT enforces the precondition: 409 with the
+        # counts, and git pull must never start.
+        _init_repo(tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr("kiro_crew.platform.update_provider.apply_policy_update", _no_provider)
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda url: None)
+
+        calls: list[tuple[str, ...]] = []
+        # git status --porcelain (clean), pre-guard git fetch, then rev-list.
+        outputs = [(0, b""), (0, b""), (0, b"3\t219\n")]
+
+        class _Proc:
+            def __init__(self, rc: int, out: bytes) -> None:
+                self.returncode = rc
+                self._out = out
+
+            async def communicate(self):
+                return (self._out, b"")
+
+        async def _fake_exec(*args, **kwargs):
+            calls.append(tuple(str(a) for a in args))
+            rc, out = outputs.pop(0) if outputs else (0, b"")
+            return _Proc(rc, out)
+
+        monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _fake_exec)
+
+        class _State:
+            def push_refresh(self, kind: str) -> None:
+                pass
+
+        class _Req:
+            app = {"state": _State()}
+
+        resp = asyncio.run(updates.api_update_apply(_Req()))
+        assert resp.status == 409
+        body = json.loads(resp.body)
+        assert body["code"] == "checkout_diverged"
+        assert body["commits_ahead"] == 3
+        assert body["commits_behind"] == 219
+        assert not any("pull" in c for c in calls)
+        # The guard counted against refs it refreshed itself: stale
+        # remote-tracking refs from an old fetch can report behind=0 for a
+        # checkout whose remote has since moved.
+        assert any("fetch" in c for c in calls)
+
+    def test_apply_fails_closed_when_the_preguard_fetch_fails(self, monkeypatch, tmp_path):
+        # An unanswerable safety question is not an answer of safe: if the
+        # remote cannot be reached, the distance below would be computed from
+        # stale refs, so the endpoint refuses instead of pulling blind.
+        _init_repo(tmp_path)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
+
+        async def _no_provider():
+            return None
+
+        monkeypatch.setattr("kiro_crew.platform.update_provider.apply_policy_update", _no_provider)
+        monkeypatch.setattr(updates, "update_blocked_reason", lambda url: None)
+
+        calls: list[tuple[str, ...]] = []
+        outputs = [(0, b""), (1, b"")]  # clean tree, then the fetch FAILS
+
+        class _Proc:
+            def __init__(self, rc: int, out: bytes) -> None:
+                self.returncode = rc
+                self._out = out
+
+            async def communicate(self):
+                return (self._out, b"")
+
+        async def _fake_exec(*args, **kwargs):
+            calls.append(tuple(str(a) for a in args))
+            rc, out = outputs.pop(0) if outputs else (0, b"")
+            return _Proc(rc, out)
+
+        monkeypatch.setattr(updates.asyncio, "create_subprocess_exec", _fake_exec)
+
+        class _State:
+            def push_refresh(self, kind: str) -> None:
+                pass
+
+        class _Req:
+            app = {"state": _State()}
+
+        resp = asyncio.run(updates.api_update_apply(_Req()))
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "git_fetch_failed"
+        assert not any("pull" in c for c in calls)
+
+    def test_the_apply_pull_is_fast_forward_only(self):
+        # The precondition and the pull are not one atomic operation: a remote
+        # that moves in between must fail the pull, never mint an unrequested
+        # merge commit into the user's branch. Pinned at the source so the
+        # flag cannot be dropped in a refactor without a test going red.
+        import inspect
+
+        src = inspect.getsource(updates.api_update_apply)
+        assert '"--ff-only"' in src
 
     def test_proceeds_when_dot_git_is_file(self, monkeypatch, tmp_path):
         # Linked git worktrees and submodules have .git as a *file* pointing at

@@ -63,8 +63,11 @@ a level-0 pack shipping a font is refused.
   are rejected at install and dropped at runtime (CSS-escape evasions included).
   A `font-family` on ONE allowlisted surface (e.g. `.topbar`) is fine.
 - Ship the font's license file in the pack source (OFL/Apache/MIT).
-- KNOWN TRAP: a wrong role *string* (e.g. `"monospace"`) silently coerces to
-  `sans` — the mono face lands on the Sans option.
+- Only `"sans"` and `"mono"` are valid; a wrong role *string* (e.g. the CSS
+  keyword `"monospace"`) is **rejected at install** with an error naming the
+  font and the bad value. An already-installed pack whose role predates this
+  check keeps loading — the coercion-to-`sans` behavior only remains on that
+  read path, never on a fresh install.
 
 ## variables.json — the palette
 

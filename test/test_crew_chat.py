@@ -741,6 +741,23 @@ class TestAnswerMarking:
         assert ("crew-reply" in cls) is expect_marker
         assert cls.startswith("msg msg-a")
 
+    def test_the_durable_copy_carries_the_window_rows_id(self) -> None:
+        # `_post` appends the window copy — where ``meta.mid`` is minted — and
+        # then persists a durable transcript copy; both must carry ONE id or a
+        # bounded slot-detail read cannot reconcile them as the same message.
+        orch = _orch()
+        slot = _slot()
+        slot.append.return_value = {
+            "role": "assistant",
+            "content": "an answer",
+            "meta": {"mid": "m-feedfacefeedface"},
+        }
+        with patch.object(crew_mod, "append_if_absent_off_loop") as durable:
+            assert orch._post(slot, "an answer", kind="crew_result") is True
+        assert durable.call_args.kwargs["mid"] == "m-feedfacefeedface", (
+            "the durable copy did not carry the window row's id"
+        )
+
 
 class TestUnsettledEntriesAreNotStranded:
     """A decision pass can return valid JSON that settles nothing."""
@@ -2987,3 +3004,74 @@ class TestUnknownCrewNameStaysFailClosed:
         with cfg_patch, bind_patch:
             resolved = await orch._dispatch_agent(_slot(agent="default"))
         assert resolved == "kirocrew"
+
+
+class TestDecisionJsonExtraction:
+    """The decision reply is parsed by the shared scanner, not a greedy regex."""
+
+    @pytest.mark.asyncio
+    async def test_stray_brace_in_prose_still_routes(self) -> None:
+        # The old greedy first-'{'-to-last-'}' regex spanned from the
+        # {placeholder} aside to the trailing "{}" echo, so a valid decision
+        # payload wrapped in prose never parsed and every entry was deferred.
+        orch = _orch()
+        slot = _slot()
+        st = orch._store("s1")
+        e = st.add_msg("do the thing")
+        reply = (
+            'Routing per the {msg_id, topic_id} schema: '
+            '{"actions": [{"do": "meta", "msg_id": "%s"}]} -- use {} if unsure.'
+            % e["msg_id"]
+        )
+
+        async def _reply(*a, **kw):
+            return reply
+
+        with patch.object(crew_mod, "run_bg_oneliner", side_effect=_reply), \
+                patch.object(orch, "_apply", new=AsyncMock()) as apply:
+            await orch._decide_once(slot)
+        apply.assert_awaited_once()
+        assert apply.await_args.args[2] == {"do": "meta", "msg_id": e["msg_id"]}
+
+    @pytest.mark.asyncio
+    async def test_two_different_payloads_defer_not_guess(self) -> None:
+        # Two DIFFERENT actions-shaped dicts (e.g. a worked example echoed
+        # before the real payload) are ambiguous: the shared contract refuses
+        # to guess, so the pass takes the retry-then-defer path instead of
+        # executing whichever dict a scanner happened to land on.
+        orch = _orch()
+        slot = _slot()
+        st = orch._store("s1")
+        st.add_msg("do the thing")
+
+        async def _reply(*a, **kw):
+            return ('{"actions": [{"do": "meta", "msg_id": "a"}]} or '
+                    '{"actions": [{"do": "meta", "msg_id": "b"}]}')
+
+        with patch.object(crew_mod, "run_bg_oneliner", side_effect=_reply) as llm, \
+                patch.object(orch, "_apply", new=AsyncMock()) as apply:
+            await orch._decide_once(slot)
+        apply.assert_not_awaited()
+        assert llm.call_count == 2  # retried once, then deferred
+
+    @pytest.mark.asyncio
+    async def test_braceless_reply_takes_the_retry_path(self, caplog) -> None:  # type: ignore[no-untyped-def]
+        # The prompt demands a JSON-only reply, so a reply with no JSON object
+        # at all is a model failure: it gets the same retry-then-defer
+        # treatment as garbage braces (the old code silently treated it as
+        # "no actions" and never logged).
+        orch = _orch()
+        slot = _slot()
+        st = orch._store("s1")
+        st.add_msg("do the thing")
+
+        async def _reply(*a, **kw):
+            return "I cannot decide right now."
+
+        with caplog.at_level(logging.WARNING):
+            with patch.object(crew_mod, "run_bg_oneliner", side_effect=_reply) as llm, \
+                    patch.object(orch, "_apply", new=AsyncMock()) as apply:
+                await orch._decide_once(slot)
+        apply.assert_not_awaited()
+        assert llm.call_count == 2
+        assert "unparseable decision" in caplog.text

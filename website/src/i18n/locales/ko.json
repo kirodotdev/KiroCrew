@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "프로젝트를 전환하려면 현재 응답을 중지하세요",
       "stopping": "중지 중…",
       "stopping_2": "중지 중",
+      "switch_not_confirmed": "전환이 아직 확인되지 않았습니다. 연결이 복구되면 적용됩니다.",
       "taking_longer_than_expected": "예상보다 오래 걸리고 있습니다",
       "that_approval_expired_the_turn_it_belonged_to_is": "연결된 턴이 더 이상 승인을 기다리지 않아 이 승인 요청이 만료되었습니다.",
       "that_request_already_timed_out_and_was_denied": "해당 {{source}} 요청은 이미 시간이 초과되어 거부되었습니다 — 작업은 더 이상 대기하지 않습니다. 기록은 승인 피드에서 확인하세요.",
@@ -6254,7 +6255,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "스킬을 불러오는 중…",
-      "no_matching_skills": "일치하는 스킬 없음"
+      "no_matching_skills": "일치하는 스킬 없음",
+      "no_matching_skills_ctrl_enter_sends": "일치하는 스킬 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_matching_skills_enter_sends": "일치하는 스킬 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },
     "slashCommandMenu": {
       "desc_agent": "활성 에이전트를 전환하거나 관리합니다",
@@ -6283,7 +6286,9 @@
       "desc_tangent": "곁가지 대화를 시작합니다",
       "desc_todos": "작업 목록을 표시하거나 관리합니다",
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
-      "desc_usage": "청구 및 사용량 정보를 표시합니다"
+      "desc_usage": "청구 및 사용량 정보를 표시합니다",
+      "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
+      "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },
     "slotTagPopover": {
       "assign_tags": "태그 지정",
@@ -7780,8 +7785,8 @@
         "show_nudge_instructions": "넛지 지시 표시"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "고정한 프롬프트 접기",
-        "expand_pinned_prompt": "고정한 프롬프트 펼치기",
+        "collapse_pinned_prompt": "고정한 턴 접기",
+        "expand_pinned_prompt": "고정한 턴 펼치기",
         "jump_to_this_turn": "이 턴으로 이동"
       },
       "recoveryCard": {
@@ -8981,7 +8986,10 @@
         "nodes": "노드,",
         "all_sources": "모든 소스",
         "filter_by_source": "소스별 필터",
-        "recenter": "다시 가운데로"
+        "recenter": "다시 가운데로",
+        "start_physics": "물리 시뮬레이션",
+        "pause_physics": "일시정지",
+        "graph_region_label": "지식 엔티티 그래프"
       },
       "sourceGroup": {
         "items_added_directly": "직접 추가한 항목",
@@ -10266,6 +10274,13 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "분기됨",
+        "checkout_diverged_from_upstream": "이 체크아웃은 업스트림에서 분기되었습니다({{distance}}). rebase 또는 merge로 업데이트하세요 — 아무것도 자동으로 적용되지 않으므로 로컬 커밋은 안전합니다.",
+        "commits_ahead_other": "{{count}}개 커밋 앞섬",
+        "commits_behind_other": "{{count}}개 커밋 뒤처짐",
+        "updates_managed_by_policy": "이 설치의 업데이트는 운영자가 정의한 업데이트 정책으로 관리됩니다. 새 버전은 해당 메커니즘을 통해 제공됩니다.",
+        "updates_managed_externally": "이 설치의 업데이트는 외부 패키지 관리자가 관리합니다. 새 버전은 해당 패키지 관리자로 받으세요.",
+        "updates_managed_externally_by": "이 설치의 업데이트는 {{managedBy}}이(가) 관리합니다. 새 버전은 그것으로 받으세요.",
         "a_new_version": "새 버전",
         "a_newer_version_is_available": "새 버전을 사용할 수 있습니다.",
         "apache_2_0": "Apache 2.0",

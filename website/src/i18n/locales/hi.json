@@ -4838,6 +4838,7 @@
       "stop_the_current_response_to_switch_project": "प्रोजेक्ट बदलने के लिए मौजूदा जवाब रोकें",
       "stopping": "रोका जा रहा है…",
       "stopping_2": "रोका जा रहा है",
+      "switch_not_confirmed": "स्विच की अभी पुष्टि नहीं हुई है — कनेक्शन बहाल होने पर यह लागू हो जाएगा।",
       "taking_longer_than_expected": "अपेक्षा से अधिक समय ले रहा है",
       "that_approval_expired_the_turn_it_belonged_to_is": "यह मंज़ूरी अनुरोध समाप्त हो गया क्योंकि संबद्ध टर्न अब मंज़ूरी की प्रतीक्षा में नहीं है।",
       "that_request_already_timed_out_and_was_denied": "वह {{source}} अनुरोध पहले ही टाइम आउट होकर अस्वीकार हो गया — जॉब अब प्रतीक्षा नहीं कर रही। रिकॉर्ड के लिए मंज़ूरी फ़ीड देखो।",
@@ -6343,7 +6344,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "स्किल लोड हो रही हैं…",
-      "no_matching_skills": "कोई मेल खाती स्किल नहीं"
+      "no_matching_skills": "कोई मेल खाती स्किल नहीं",
+      "no_matching_skills_ctrl_enter_sends": "कोई मेल खाती स्किल नहीं — Ctrl+Enter संदेश भेज देगा",
+      "no_matching_skills_enter_sends": "कोई मेल खाती स्किल नहीं — Enter संदेश भेज देगा"
     },
     "slashCommandMenu": {
       "desc_agent": "सक्रिय एजेंट बदलें या प्रबंधित करें",
@@ -6372,7 +6375,9 @@
       "desc_tangent": "टैंजेंट बातचीत शुरू करें",
       "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
       "desc_tools": "उपलब्ध टूल दिखाएँ",
-      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ"
+      "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ",
+      "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
+      "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
     },
     "slotTagPopover": {
       "assign_tags": "टैग असाइन करें",
@@ -7882,8 +7887,8 @@
         "show_nudge_instructions": "नज निर्देश दिखाएँ"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "पिन किया गया संदेश संक्षिप्त करें",
-        "expand_pinned_prompt": "पिन किया गया संदेश विस्तृत करें",
+        "collapse_pinned_prompt": "पिन किया गया टर्न संक्षिप्त करें",
+        "expand_pinned_prompt": "पिन किया गया टर्न विस्तृत करें",
         "jump_to_this_turn": "इस टर्न पर जाएँ"
       },
       "recoveryCard": {
@@ -9092,7 +9097,10 @@
         "nodes": "नोड,",
         "all_sources": "सभी स्रोत",
         "filter_by_source": "स्रोत द्वारा फ़िल्टर करें",
-        "recenter": "फिर केंद्र में लाएं"
+        "recenter": "फिर केंद्र में लाएं",
+        "start_physics": "फ़िज़िक्स",
+        "pause_physics": "रोकें",
+        "graph_region_label": "नॉलेज एंटिटी ग्राफ़"
       },
       "sourceGroup": {
         "items_added_directly": "सीधे जोड़े गए आइटम",
@@ -10391,6 +10399,15 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "अलग हो गया",
+        "checkout_diverged_from_upstream": "यह चेकआउट अपने अपस्ट्रीम से अलग हो गया है ({{distance}})। अपडेट करने के लिए rebase या merge करो — कुछ भी अपने आप लागू नहीं होता, इसलिए तुम्हारे लोकल कमिट सुरक्षित हैं।",
+        "commits_ahead_one": "{{count}} कमिट आगे",
+        "commits_ahead_other": "{{count}} कमिट आगे",
+        "commits_behind_one": "{{count}} कमिट पीछे",
+        "commits_behind_other": "{{count}} कमिट पीछे",
+        "updates_managed_by_policy": "इस इंस्टॉल के अपडेट ऑपरेटर द्वारा परिभाषित अपडेट नीति से प्रबंधित होते हैं। नए संस्करण उसी तंत्र से आते हैं।",
+        "updates_managed_externally": "इस इंस्टॉल के अपडेट एक बाहरी पैकेज मैनेजर द्वारा प्रबंधित किए जाते हैं। नए संस्करण उसी पैकेज मैनेजर से प्राप्त करें।",
+        "updates_managed_externally_by": "इस इंस्टॉल के अपडेट {{managedBy}} द्वारा प्रबंधित किए जाते हैं। नए संस्करण उसी से प्राप्त करें।",
         "a_new_version": "एक नया संस्करण",
         "a_newer_version_is_available": "एक नया संस्करण उपलब्ध है।",
         "apache_2_0": "Apache 2.0",

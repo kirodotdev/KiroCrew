@@ -54,9 +54,11 @@ from aiohttp import web
 from kiro_crew import dep_sync, frontend, hooks, platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service
 from kiro_crew.apps.proxy_auth import raw_request_target
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.instances import run_marker
+from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
     create_subprocess_limited,
@@ -5914,7 +5916,21 @@ def create_app() -> web.Application:
 
 
 def main() -> int:
-    """Entry point when run as a module by the app backend system."""
+    """Entry point when run as a module by the app backend system.
+
+    Install the platform context FIRST. This runs as its own subprocess
+    (``python -m ...`` spawned by the app backend launcher), so unlike an
+    in-gateway import it inherits no installed context. Without this, the first
+    code path that reads the context -- e.g. the sandbox floor resolved while
+    wrapping this app's own ``git worktree`` scan -- calls ``current_context()``
+    cold. On a non-standalone edition that raises ``PlatformCompositionError``
+    ("no installed context but profile resolved to ..."), whose message then
+    surfaces verbatim in the UI as an opaque sandbox error. ``boot_platform`` is
+    idempotent and, like the CLI entry point, fails CLOSED: a non-standalone
+    profile that cannot compose its companion aborts here rather than serving a
+    backend with no security overlay or credential redaction.
+    """
+    boot_platform(KiroCrewConfig.load())
     app = create_app()
     logger.info("Dev Fleet backend starting on 127.0.0.1:%d", PORT)
     web.run_app(app, host="127.0.0.1", port=PORT, print=None)

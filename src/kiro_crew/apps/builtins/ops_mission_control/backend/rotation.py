@@ -88,10 +88,6 @@ DEFAULT_APP_MODE = MODE_OBSERVE
 #: budget on the other blocking path in this gate.
 _ASYNC_SHIFT_TIMEOUT_SECS = 10.0
 
-#: Config key holding the user's autonomy rules.
-_RULES_KEY = "autonomy_rules"
-_APP_MODE_KEY = "mode"
-
 #: Heartbeat-pacing keys, duplicated from ``dispatch`` because importing them would close
 #: an import cycle (``dispatch`` imports this module). They are asserted equal to
 #: ``dispatch``'s own constants by ``test_store_and_gate.py``, so the duplication cannot

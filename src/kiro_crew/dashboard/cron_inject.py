@@ -9,7 +9,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.state import DashboardState, SlotOrigin
+from kiro_crew.dashboard.state import DashboardState, SlotOrigin, row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -114,7 +114,12 @@ def inject_cron_result_to_dashboard(
         safe_result, _ = redact_credentials(safe_result)
         context = f"# Cron Job Result: {safe_name}\n\n{safe_result}"
         if not any(msg.get("content") == context for msg in slot.messages):
-            slot.append("assistant", context, "msg msg-a")
+            # The durable copy below must carry the SAME ``meta.mid`` the window
+            # copy is minted (read off the append's return via ``row_mid``): an
+            # id-less durable row cannot be matched by the bounded read's
+            # identity walk, which then treats the window copy as still owed and
+            # re-appends the injection.
+            window_mid = row_mid(slot.append("assistant", context, "msg msg-a"))
             # Persist the result to the canonical ConversationLog under the
             # linked session key so a dashboard follow-up turn has it as
             # context. The cron execution path (gateway stream_and_collect)
@@ -145,6 +150,7 @@ def inject_cron_result_to_dashboard(
                     "assistant",
                     context,
                     agent=job.agent_id or None,
+                    mid=window_mid,
                 )
     if context_reading:
         # Same frame shape as chat_runner._context_usage_payload. `reset` when
@@ -162,7 +168,16 @@ def inject_cron_result_to_dashboard(
 
 
 def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None:
-    """Load last 50 messages from pre-loaded history into a new slot."""
+    """Load last 50 messages from pre-loaded history into a new slot.
+
+    Each row's ``meta`` rides along so a persisted ``meta.mid`` survives the
+    round trip (``_ChatSlot.append`` preserves a supplied id and mints one only
+    when absent). Dropping it would hand every hydrated row a FRESH id while
+    the disk keeps the old ones: with the durable injection copies now
+    id-carrying, the on-disk window region reads all-id, the slot-detail
+    reconciliation selects the identity walk, no window id matches, and the
+    whole hydrated history is served twice until the next flush rewrites it.
+    """
     for msg in messages[-50:]:
         role = msg.get("role", "assistant")
         content = msg.get("content", "")
@@ -172,4 +187,10 @@ def hydrate_slot_from_history(slot: Any, messages: list[dict[str, Any]]) -> None
         content, _ = redact_credentials(content)
         if any(m.get("content") == content for m in slot.messages):
             continue
-        slot.append(role, content, f"msg msg-{'a' if role == 'assistant' else 'u'}", broadcast=False)
+        slot.append(
+            role,
+            content,
+            f"msg msg-{'a' if role == 'assistant' else 'u'}",
+            broadcast=False,
+            meta=(msg["meta"] if isinstance(msg.get("meta"), dict) else None),
+        )

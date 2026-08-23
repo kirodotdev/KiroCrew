@@ -5,6 +5,7 @@ import { api } from '../api/client'
 import { i18nT } from '../i18n/t'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import { menuGeometry, bottomUpOrder } from '../lib/pickerMenu'
+import type { SendMode } from '../pages/chat/ChatSettings'
 
 interface SlashCommand {
   name: string
@@ -112,14 +113,20 @@ interface Props {
   onSelect: (command: string) => void
   onClose: () => void
   open?: boolean
+  /**
+   * The composer's effective send binding (see ChatInput's SendMode). Only
+   * read by the settled-empty copy: in 'ctrl-enter' mode a released bare
+   * Enter is a newline, so the announcement must name Ctrl+Enter instead.
+   */
+  sendOnEnter?: SendMode
 }
 
 const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 
-export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true }: Props) {
-  const { data: apiCommands = FALLBACK_COMMANDS } = useQuery<SlashCommand[]>({
+export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, open = true, sendOnEnter = 'enter' }: Props) {
+  const { data: apiCommands = FALLBACK_COMMANDS, isFetching } = useQuery<SlashCommand[]>({
     queryKey: ['slash-commands'],
     queryFn: () => api.slashCommands(),
     enabled: typeof api.slashCommands === 'function',
@@ -144,6 +151,26 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     if (c) onSelect(c.name + ' ')
   }, [onSelect])
 
+  // Filter computed synchronously (not inside the ordering effect) so the
+  // keyboard-release gate below reads the SAME render's match set — a gate
+  // derived from the `displayed` state would lag one effect flush behind and
+  // could release Enter while matches exist.
+  const filtered = useMemo(
+    () => (visible ? commands.filter(c => c.name.slice(1).startsWith(filter)) : []),
+    [visible, filter, commands]
+  )
+
+  // Zero matches while `visible` is still true: the nav hook's document
+  // listener stays attached, and an invisible surface must not swallow Enter
+  // on unmatched slash input like "/xyz" (the #5029 trap, deferred to the
+  // sibling pickers by #5041). Releasing (rather than auto-closing on empty)
+  // keeps the composer's input-derived reopen path working when the user
+  // backspaces to a matching prefix. `!isFetching` guards the one in-flight
+  // window: a server-only command typed before the remote list replaces the
+  // synchronous fallback is transiently a zero-match, and releasing there
+  // would send the half-typed command as a chat message.
+  const releaseKeysWhenEmpty = !isFetching && filtered.length === 0
+
   // Uses the SAME nav hook as the $skill / @file pickers, which gives the slash
   // menu arrow-scroll and consistent Enter/Tab/Escape.
   const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
@@ -151,20 +178,20 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     count: displayed.length,
     onChoose: choose,
     onClose,
+    releaseKeysWhenEmpty,
   })
 
   // Order + initial selection: bottom-up when the menu opens above the input
-  // (shared helper — identical to the other pickers). Filter is computed INSIDE
-  // the effect and keyed on primitives (visible/filter/commands) so unrelated
-  // re-renders (e.g. arrow-key selection changes) don't reset the selection.
+  // (shared helper — identical to the other pickers). Keyed on the memoized
+  // `filtered` so unrelated re-renders (e.g. arrow-key selection changes)
+  // don't reset the selection.
   useEffect(() => {
     if (!visible) { setDisplayed([]); resultsRef.current = []; return }
-    const f = commands.filter(c => c.name.slice(1).startsWith(filter))
-    const above = anchorRef.current ? menuGeometry(anchorRef.current, f.length, 40).above : false
-    const { ordered, initialIndex } = bottomUpOrder(f, above)
+    const above = anchorRef.current ? menuGeometry(anchorRef.current, filtered.length, 40).above : false
+    const { ordered, initialIndex } = bottomUpOrder(filtered, above)
     setDisplayed(ordered); resultsRef.current = ordered
     setSelected(initialIndex)
-  }, [visible, filter, commands, anchorRef, setSelected])
+  }, [visible, filtered, anchorRef, setSelected])
 
   // Scroll the selected row into view once it renders (open + filter change),
   // matching the $skill / @file pickers.
@@ -173,9 +200,12 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
     itemRefs.current[selectedRef.current]?.scrollIntoView({ block: 'nearest' })
   }, [displayed, visible, itemRefs, selectedRef])
 
-  if (!visible || displayed.length === 0 || !anchorRef.current) return null
+  if (!visible || !anchorRef.current) return null
+  // Unsettled zero-match (remote list still in flight): keep rendering
+  // nothing — the release gate is off and the row set is not yet decided.
+  if (displayed.length === 0 && !releaseKeysWhenEmpty) return null
 
-  const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, displayed.length, 40)
+  const { top, left, width, maxHeight } = menuGeometry(anchorRef.current, Math.max(displayed.length, 1), 40)
 
   return createPortal(
     <div
@@ -183,7 +213,14 @@ export default function SlashCommandMenu({ input, anchorRef, onSelect, onClose, 
       role="listbox"
       style={{ top, left, width: Math.min(width, 380), maxHeight }}
     >
-      {displayed.map((cmd, i) => (
+      {displayed.length === 0
+        // Settled zero-match: Enter's meaning flips (pick → send), and the
+        // menu vanishing on its own would leave that flip invisible — announce
+        // it at the point of action, mirroring the $skill picker's empty state.
+        // Named per the composer's send binding ('ctrl-enter' → bare Enter is
+        // a newline); role="status" so screen-reader users hear the flip too.
+        ? <div role="status" className="px-3 py-3 text-[12px] text-muted">{i18nT(sendOnEnter === 'ctrl-enter' ? 'components.slashCommandMenu.no_matching_commands_ctrl_enter_sends' : 'components.slashCommandMenu.no_matching_commands_enter_sends')}</div>
+        : displayed.map((cmd, i) => (
         <button
           role="option"
           aria-selected={i === selected}

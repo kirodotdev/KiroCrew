@@ -42,7 +42,7 @@ from slack_sdk.socket_mode.websockets import SocketModeClient as WSSocketModeCli
 
 import kiro_crew
 import kiro_crew.crash_guard as crash_guard
-from kiro_crew import beacon, dep_sync, platform_compat, shutdown_event
+from kiro_crew import agent_scratch, beacon, dep_sync, platform_compat, shutdown_event
 from kiro_crew.acp.client import AcpError, AcpProcessDied
 from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.autonudge import (
@@ -9274,6 +9274,8 @@ _SLICE_LIMITS_TASK: "asyncio.Task[None] | None" = None
 # Strong ref to the fire-and-forget agents-dir janitor sweep launched at boot
 # (the loop holds tasks weakly, so without this it could be GC'd mid-flight).
 _AGENTS_JANITOR_TASK: "asyncio.Task[None] | None" = None
+#: Strong ref for the liveness-keyed agent-scratch sweep loop (#5063).
+_AGENT_SCRATCH_SWEEP_TASK: "asyncio.Task[None] | None" = None
 
 
 async def run_gateway(
@@ -9360,6 +9362,37 @@ async def run_gateway(
 
         _AGENTS_JANITOR_TASK = asyncio.create_task(
             _run_agents_janitor(), name="agents-dir-janitor"
+        )
+
+    # ── Agent scratch sweep (fire-and-forget, boot + hourly) ──
+    # Reclaim per-process agent scratch dirs whose owner process is dead
+    # (see kiro_crew.agent_scratch). Liveness-keyed, never age-keyed, so a
+    # long-lived session's in-flight work is never deleted under it -- and
+    # because agent processes can OUTLIVE a gateway restart, the sweep checks
+    # each recorded owner pid instead of clearing wholesale at boot. Hourly
+    # repeats catch processes that die while the gateway stays up (no
+    # per-teardown hook: the positive liveness signal covers every death
+    # path by construction). Same containment posture as the janitor above:
+    # offloaded, fail-open, skipped in test_mode.
+    global _AGENT_SCRATCH_SWEEP_TASK
+    if not test_mode:
+
+        async def _run_agent_scratch_sweep() -> None:
+            while True:
+                # Sleep FIRST: gateway boot must not pick up file-count-scaled
+                # maintenance (no-new-work-on-gateway-boot-path); the first
+                # sweep runs an hour in, and nothing here is boot-urgent --
+                # scratch reclamation has no correctness deadline.
+                await asyncio.sleep(3600)
+                try:
+                    await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
+                except Exception:
+                    logging.getLogger(__name__).debug(
+                        "agent-scratch sweep failed", exc_info=True
+                    )
+
+        _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
+            _run_agent_scratch_sweep(), name="agent-scratch-sweep"
         )
 
     # ── Anonymous usage beacon (at most one HTTP GET per day) ──

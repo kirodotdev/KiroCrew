@@ -17,8 +17,10 @@ import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 // i18n must initialize before the first render — a component rendering ahead of
-// init would emit its bare translation key instead of text.
-import { initI18n } from './i18n'
+// init would emit its bare translation key instead of text. The `/all` entry is
+// what registers every language; plain `./i18n` is English-only, so importing it
+// here would render English for every user whatever language they picked.
+import { initI18n } from './i18n/all'
 import { LanguageProvider } from './i18n/LanguageProvider'
 import App from './App'
 import { queryClient } from './api/queryClient'

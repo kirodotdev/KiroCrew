@@ -193,6 +193,68 @@ class TestDoctor:
             # Must NOT raise SystemExit(1): the two STT gaps are notes on Windows.
             _doctor()
 
+    @pytest.mark.parametrize(
+        "is_windows, expected_mark",
+        [(False, "❌"), (True, "⚠️ ")],
+        ids=["posix-fatal", "windows-note"],
+    )
+    def test_doctor_stt_marker_arms_match_platform(
+        self, tmp_path, capsys, monkeypatch, is_windows, expected_mark
+    ):
+        """The whisper/ffmpeg severity marker is derived once (stt_mark) from
+        stt_fatal: a hard-issue mark on POSIX, a note mark on Windows. Pins
+        both arms byte-for-byte — including the note mark's trailing pad
+        space, which keeps the report columns aligned — AND that the twin
+        report lines can never disagree, so a one-arm edit to either site
+        fails here (issue #5096)."""
+        import kiro_crew.cli_doctor as _doc
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        agent_file = tmp_path / "kirocrew.json"
+        _healthy_agent_file(agent_file)
+        mock_run = MagicMock(returncode=0, stdout="kiro-cli 1.0.0", stderr="")
+        monkeypatch.setattr(_doc.platform_compat, "IS_WINDOWS", is_windows)
+
+        # STT enabled with whisper provider, neither binary present — the
+        # autouse fixture pins STT OFF, so re-enable here.
+        def _cfg_with_stt() -> KiroCrewConfig:
+            cfg = KiroCrewConfig()
+            cfg.stt.enabled = True
+            cfg.stt.provider = "whisper"
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: _cfg_with_stt()))
+        monkeypatch.setattr(_doc, "_find_whisper", lambda path=None: None)
+        monkeypatch.setattr(_doc, "ensure_ffmpeg_in_path", lambda: None)
+
+        def _which(binary, **_kw):
+            # Everything resolves EXCEPT the two STT binaries.
+            if binary in ("whisper", "ffmpeg"):
+                return None
+            return f"/usr/local/bin/{binary}"
+
+        with (
+            patch("kiro_crew.cli_doctor.shutil.which", side_effect=_which),
+            patch("kiro_crew.cli_doctor.KIRO_AGENTS_DIR", tmp_path),
+            patch("kiro_crew.cli_doctor.subprocess.run", return_value=mock_run),
+            patch("urllib.request.urlopen", side_effect=urllib.error.URLError("no gateway")),
+            patch("kiro_crew.cli_doctor.is_local_only", return_value=True),
+            patch("kiro_crew.cli_doctor.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cli_doctor.probe_server", side_effect=_noop_probe_server),
+        ):
+            # On POSIX the two gaps are hard issues and doctor exits 1; on
+            # Windows they are notes. Exit semantics are pinned elsewhere —
+            # here only the printed markers matter.
+            try:
+                _doctor()
+            except SystemExit:
+                pass
+        out = capsys.readouterr().out
+        # Exact literals from the production f-strings: any drift in glyph,
+        # variation selector, or the note arm's padding space fails here.
+        assert f"  whisper:     {expected_mark} not found" in out
+        assert f"  ffmpeg:      {expected_mark} not found" in out
+
     def test_doctor_reports_platform_boot_error_without_crashing(self, tmp_path, capsys):
         """A PlatformCompositionError from boot must be REPORTED by the doctor,
         not crash it — the doctor is the tool that diagnoses a broken setup, so

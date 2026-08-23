@@ -198,7 +198,7 @@ class TestValidateRoleModel:
         monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
-            lambda m: "display-only key" if m == "fable-5-1m" else None,
+            lambda m, provider=None: "display-only key" if m == "fable-5-1m" else None,
         )
         assert core._validate_role_model("fable-5-1m", self._req()) == "display-only key"
 
@@ -206,7 +206,8 @@ class TestValidateRoleModel:
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._model_rejected_reason", lambda m: None
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda m, provider=None: None,
         )
         monkeypatch.setattr(core, "_active_advertised_ids", lambda req: None)
         # No advertised set -> don't accuse on no evidence.
@@ -216,7 +217,8 @@ class TestValidateRoleModel:
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._model_rejected_reason", lambda m: None
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda m, provider=None: None,
         )
         monkeypatch.setattr(
             core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"]
@@ -228,7 +230,8 @@ class TestValidateRoleModel:
         from kiro_crew.dashboard.handlers import core
 
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._model_rejected_reason", lambda m: None
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda m, provider=None: None,
         )
         monkeypatch.setattr(
             core, "_active_advertised_ids", lambda req: ["sonnet-4.6-1m"]

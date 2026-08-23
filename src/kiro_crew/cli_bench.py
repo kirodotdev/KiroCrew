@@ -19,6 +19,8 @@ import argparse
 import json
 from pathlib import Path
 
+from kiro_crew import cli_help
+
 DEFAULT_OUT_DIR = "bench_results"
 
 
@@ -58,9 +60,9 @@ def _positive_int(raw: str) -> int:
 
 def register_bench_parser(sub: argparse._SubParsersAction) -> None:
     """Wire ``kirocrew bench`` into the top-level parser."""
-    parser = sub.add_parser(
+    parser = cli_help.add_command(
+        sub,
         "bench",
-        help="Run external memory benchmarks (LongMemEval, LoCoMo)",
         description=(
             "Measures the Kiro Crew memory layer against published benchmarks. The "
             "retrieval ruler is deterministic, so a delta between two commits is "

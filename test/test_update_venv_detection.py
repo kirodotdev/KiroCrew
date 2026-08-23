@@ -332,7 +332,12 @@ class TestApiUpdateApplyVenvDispatch:
         # Stub git pull so it succeeds.
         async def fake_exec(*args, **kwargs):
             proc = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"", b""))
+            # The apply guard fails CLOSED on an unparseable rev-list count, so
+            # the universal success stub must answer that one call with a real
+            # fast-forwardable distance for the dispatch under test to be
+            # reachable at all.
+            out = b"0\t1\n" if "rev-list" in args else b""
+            proc.communicate = AsyncMock(return_value=(out, b""))
             proc.returncode = 0
             return proc
 
@@ -384,7 +389,12 @@ class TestApiUpdateApplyVenvDispatch:
 
         async def fake_exec(*args, **kwargs):
             proc = MagicMock()
-            proc.communicate = AsyncMock(return_value=(b"", b""))
+            # The apply guard fails CLOSED on an unparseable rev-list count, so
+            # the universal success stub must answer that one call with a real
+            # fast-forwardable distance for the dispatch under test to be
+            # reachable at all.
+            out = b"0\t1\n" if "rev-list" in args else b""
+            proc.communicate = AsyncMock(return_value=(out, b""))
             proc.returncode = 0
             return proc
 

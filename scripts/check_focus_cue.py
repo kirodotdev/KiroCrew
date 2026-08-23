@@ -9,14 +9,11 @@ practice is an element opting out of the outline — ``outline-none``,
 that happens: the element still works, and a pointer user never sees the
 difference.
 
-One thing to be honest about: that global rule is **commented out** in
-``index.css`` as this gate lands (behind a ``TESTING: disabled to check scroll
-bug`` note), and restoring it is a separate change. Until it is back, "inherit the
-global outline" is not yet a working remedy, and this gate's value is narrower than
-its end state: it stops NEW suppressors from reaching the trunk while the tree-wide
-backlog — which that one disabled line created — is cleared separately. That is
-what a diff-scoped gate is for, so the sequencing costs nothing; it just should not
-be mistaken for delivering the cue.
+Whether "inherit the global outline" is a working remedy depends on that rule
+being live, so ``global_ring_is_live()`` reads it out of the stylesheet rather than
+assuming it. If the rule is ever disabled, removing a suppressor would turn this
+gate green while a keyboard user still saw nothing — a gate certifying a fix that
+does not render — so the remedy list drops that option and says so.
 
 ## Why diff-scoped and not whole-tree
 
@@ -38,6 +35,14 @@ non-failing report, so the backlog stays visible without being a build break.
 * An element that supplies its own cue — any ``focus-visible:``/``focus:``
   utility that paints (ring, border, background, shadow, text), or the repo's
   ``focus-ring`` class.
+* An element whose cue is carried by an **ancestor** through ``focus-within:`` —
+  the search-pill idiom, where a wrapper gets ``focus-within:border-accent`` and
+  the input inside suppresses its own outline so the two indicators do not stack.
+  The wrapper's utility must pass ``is_cue`` (a suppressor like
+  ``focus-within:ring-0``, or a non-visual one like ``focus-within:w-auto``, does
+  not exempt) and its ``className`` must be a **static string literal**: a cue
+  inside a ternary or template literal is present on only some branches, and
+  taking it as proof would silence the branches that have none.
 * An element whose cue is carried by a **descendant** through Tailwind's
   ``group`` mechanism: the element itself has the ``group`` marker class and a
   child has ``group-focus-visible:ring-2`` or similar. Such an element suppresses
@@ -168,6 +173,27 @@ DESCENDANT_CUE = re.compile(r"\bgroup-(?:focus-visible|focus):([a-z0-9-]+)")
 # a blocking gate a missed violation is cheaper than a wrongly failed build.
 DESCENDANT_CUE_WINDOW = 60
 
+# The mirror image, and the more common one in this tree: the cue sits on the
+# WRAPPER via `focus-within:`, and the control inside legitimately suppresses its
+# own outline so the two indicators do not stack. A bordered search pill --
+# `border border-border focus-within:border-accent` on the div, `outline-none` on
+# the input -- is the dominant search-field idiom here, and reading only the
+# input's own className scores it as an uncued suppressor.
+#
+# That is the same FALSE POSITIVE class as the group mechanism above, and it does
+# the same damage: the remedy this gate prints tells the author to add a ring on
+# top of the wrapper's existing border change, painting two focus indicators on
+# one control -- which is exactly what the sibling check shipped and reverted.
+ANCESTOR_CUE = re.compile(r"\bfocus-within:([a-z0-9-]+(?:\[[^\]]*\])?)")
+# Four lines, deliberately tight. A wrapper's cue is on the line immediately
+# above its child, or within a short attribute list; every one of the wrapper-cued
+# elements in this tree sits at distance 1-4. A wider window starts exempting
+# elements whose nearest `focus-within:` belongs to a DIFFERENT wrapper -- at 20
+# it silences the composer textarea in `components/ChatInput.tsx`, whose
+# `focus-within:border-accent/50` lives only in the final else-branch of a
+# ternary, so three persistent modes really do render with no regional cue.
+ANCESTOR_CUE_WINDOW = 4
+
 
 @dataclass
 class Violation:
@@ -277,6 +303,62 @@ def descendant_supplies_cue(src: str, value: str, tag_end: int) -> bool:
     )
 
 
+def still_open_at(src: str, opened_at: int, pos: int) -> bool:
+    """Whether the element whose opening tag ends at ``opened_at`` encloses ``pos``.
+
+    Proximity alone is not enclosure: a CLOSED sibling wrapper sitting a line or
+    two above would otherwise lend its cue to an element it does not contain, and
+    the gate would accept a keyboard control with no visible cue -- a false
+    NEGATIVE, which is the one direction an exemption must never introduce.
+
+    Depth is counted by tag, not parsed: over the few lines this is asked about,
+    every `<tag` opens, `/>` and `</tag>` close, and reaching depth 0 means the
+    candidate wrapper ended before ``pos``. Fragments and expression braces do not
+    carry focus utilities, so they cannot change the answer.
+    """
+    depth = 1
+    for m in re.finditer(r"</\s*[A-Za-z][\w.-]*\s*>|/>|<\s*[A-Za-z][\w.-]*",
+                         src[opened_at:pos]):
+        depth += -1 if m.group().startswith(("</", "/>")) else 1
+        if depth <= 0:
+            return False
+    return True
+
+
+def ancestor_supplies_cue(src: str, tag_at: int) -> bool:
+    """Whether an ENCLOSING element carries the cue via `focus-within:`.
+
+    Two conditions, and dropping either one turns this exemption into a false
+    negative:
+
+    * The wrapper must actually still be open at the element -- see
+      ``still_open_at``. A nearby closed sibling is not an ancestor.
+    * The wrapper's `className` must be a STATIC STRING LITERAL. A cue inside a
+      template literal or ternary is present on only some branches, and taking it
+      as proof would silence the branches that have none:
+      `components/SearchBar.tsx` carries `focus-within:border-accent` one line
+      above its input, but only in the undocked branch -- docked renders no border
+      and no cue at all.
+    """
+    lines = src[:tag_at].split("\n")
+    window_at = len("\n".join(lines[:-(ANCESTOR_CUE_WINDOW + 1)])) if (
+        len(lines) > ANCESTOR_CUE_WINDOW + 1) else 0
+    for m in re.finditer(r'\bclassName\s*=\s*"([^"]*)"', src[window_at:tag_at]):
+        if not any(is_cue(util) for util in ANCESTOR_CUE.findall(m.group(1))):
+            continue
+        at = window_at + m.end()
+        close = src.find(">", at)
+        if close == -1:
+            continue
+        # A self-closed wrapper (`<div ... />`) encloses nothing, so its cue can
+        # never reach the element below it.
+        if src[close - 1] == "/":
+            continue
+        if still_open_at(src, close + 1, tag_at):
+            return True
+    return False
+
+
 def scan_source(path: str, raw: str) -> list[tuple[Violation, set[int]]]:
     """Violations in ``raw``, each with the line span the element occupies."""
     src = blank_comments(raw)
@@ -305,6 +387,8 @@ def scan_source(path: str, raw: str) -> list[tuple[Violation, set[int]]]:
         if not reachable:
             continue
         if descendant_supplies_cue(src, value, tag_at + len(tag_text)):
+            continue
+        if ancestor_supplies_cue(src, tag_at):
             continue
         first = raw[:tag_at].count("\n") + 1
         last = raw[:span[1]].count("\n") + 1
@@ -400,12 +484,11 @@ def global_ring_is_live() -> bool:
     """Whether index.css currently declares an ACTIVE global :focus-visible outline.
 
     The gate's most natural remedy — "drop the suppressor and inherit the global
-    outline" — only works if that rule is actually live. At the time this gate was
-    written it was commented out (`/* TESTING: disabled to check scroll bug */`),
-    so an author who followed that advice would turn the gate green while the
-    keyboard user still saw nothing: the gate would certify a fix that does not
-    render. The remedy list is therefore generated from the stylesheet's real
-    state rather than assumed, and self-corrects the moment the rule is restored.
+    outline" — only works if that rule is live. An author who follows it while the
+    rule is disabled turns this gate green while the keyboard user still sees
+    nothing, so the gate would certify a fix that does not render. The remedy list
+    is therefore generated from the stylesheet's real state rather than assumed,
+    which also means it needs no edit when the rule is toggled either way.
     """
     raw = read_text(os.path.join(SCAN_ROOT, "index.css"))
     if raw is None:
@@ -598,6 +681,57 @@ PROBES: list[tuple[str, str, bool]] = [
      '<div role="slider" tabIndex={0} className="group outline-none">\n'
      '  <div className="group-focus-visible:cursor-pointer" />\n'
      '</div>', True),
+
+    # The wrapper (`focus-within:`) mechanism. The search-pill idiom: the cue is
+    # on the parent and the child suppresses its own outline so the two do not
+    # stack, which is correct and must not be reported.
+    ("a wrapper focus-within cue exempts the input inside it",
+     '<div className="border border-border focus-within:border-accent">\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', False),
+    ("a focus-within SUPPRESSOR is not a cue",
+     '<div className="border focus-within:ring-0">\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    ("focus-within:border-transparent is not a cue",
+     '<div className="border focus-within:border-transparent">\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    ("a non-visual focus-within utility is not a cue",
+     '<div className="flex focus-within:w-auto">\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    ("a wrapper cue beyond the window does not reach the input",
+     '<div className="border focus-within:border-accent">\n'
+     '  <span />\n  <span />\n  <span />\n  <span />\n  <span />\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    # Both conditional shapes: a cue on only some branches proves nothing about
+    # the branches that lack it, so it must not exempt.
+    ("a wrapper cue inside a template literal does not exempt",
+     '<div className={`border ${docked ? "" : "focus-within:border-accent"}`}>\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    ("a wrapper cue inside a ternary does not exempt",
+     "<div className={docked ? 'flex w-full' : 'border focus-within:border-accent'}>\n"
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>', True),
+    # Proximity is not enclosure. A CLOSED sibling must not lend its cue, or the
+    # exemption becomes a false NEGATIVE -- the one direction it must never take.
+    ("a closed sibling wrapper does not exempt the element after it",
+     '<div className="border focus-within:border-accent">\n'
+     '  <input className="bg-transparent outline-none" />\n'
+     '</div>\n'
+     '<input className="bg-transparent outline-none" />', True),
+    ("a self-closed sibling wrapper does not exempt the element after it",
+     '<div className="border focus-within:border-accent" />\n'
+     '<input className="bg-transparent outline-none" />', True),
+    ("a cue two levels up still exempts",
+     '<div className="border focus-within:border-accent">\n'
+     '  <span className="flex">\n'
+     '    <input className="bg-transparent outline-none" />\n'
+     '  </span>\n'
+     '</div>', False),
 ]
 
 

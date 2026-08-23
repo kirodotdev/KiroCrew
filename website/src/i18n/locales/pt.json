@@ -4911,6 +4911,7 @@
       "stop_the_current_response_to_switch_project": "Pare a resposta atual para trocar de projeto",
       "stopping": "Parando…",
       "stopping_2": "Parando",
+      "switch_not_confirmed": "Troca ainda não confirmada — será aplicada se a conexão for restaurada.",
       "taking_longer_than_expected": "demorando mais que o esperado",
       "that_approval_expired_the_turn_it_belonged_to_is": "Esta solicitação de aprovação expirou porque o turno associado não está mais aguardando aprovação.",
       "that_request_already_timed_out_and_was_denied": "Essa solicitação de {{source}} já expirou e foi negada — o job não está mais aguardando. Consulte o feed de aprovações para ver o registro.",
@@ -6432,7 +6433,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Carregando habilidades…",
-      "no_matching_skills": "Nenhuma habilidade correspondente"
+      "no_matching_skills": "Nenhuma habilidade correspondente",
+      "no_matching_skills_ctrl_enter_sends": "Nenhuma habilidade correspondente — Ctrl+Enter envia a mensagem",
+      "no_matching_skills_enter_sends": "Nenhuma habilidade correspondente — Enter envia a mensagem"
     },
     "slashCommandMenu": {
       "desc_agent": "Alternar ou gerenciar o agente ativo",
@@ -6461,7 +6464,9 @@
       "desc_tangent": "Iniciar uma conversa tangente",
       "desc_todos": "Mostrar ou gerenciar a lista de tarefas",
       "desc_tools": "Mostrar as ferramentas disponíveis",
-      "desc_usage": "Mostrar informações de cobrança e uso"
+      "desc_usage": "Mostrar informações de cobrança e uso",
+      "no_matching_commands_ctrl_enter_sends": "Nenhum comando correspondente — Ctrl+Enter envia a mensagem",
+      "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem"
     },
     "slotTagPopover": {
       "assign_tags": "Atribuir etiquetas",
@@ -7984,8 +7989,8 @@
         "show_nudge_instructions": "Mostrar instruções do nudge"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Recolher mensagem fixada",
-        "expand_pinned_prompt": "Expandir mensagem fixada",
+        "collapse_pinned_prompt": "Recolher turno fixado",
+        "expand_pinned_prompt": "Expandir turno fixado",
         "jump_to_this_turn": "Ir para este turno"
       },
       "recoveryCard": {
@@ -9203,7 +9208,10 @@
         "nodes": "nós,",
         "all_sources": "Todas as fontes",
         "filter_by_source": "Filtrar por fonte",
-        "recenter": "Recentralizar"
+        "recenter": "Recentralizar",
+        "start_physics": "Física",
+        "pause_physics": "Pausar",
+        "graph_region_label": "Grafo de entidades de conhecimento"
       },
       "sourceGroup": {
         "items_added_directly": "Itens adicionados diretamente",
@@ -10514,6 +10522,17 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Divergente",
+        "checkout_diverged_from_upstream": "Este checkout divergiu do seu upstream ({{distance}}). Faça rebase ou merge para atualizar — nada é aplicado automaticamente, então seus commits locais estão seguros.",
+        "commits_ahead_one": "{{count}} commit à frente",
+        "commits_ahead_many": "{{count}} commits à frente",
+        "commits_ahead_other": "{{count}} commits à frente",
+        "commits_behind_one": "{{count}} commit atrás",
+        "commits_behind_many": "{{count}} commits atrás",
+        "commits_behind_other": "{{count}} commits atrás",
+        "updates_managed_by_policy": "As atualizações desta instalação são gerenciadas por uma política de atualização definida pelo operador. Novas versões chegam por esse mecanismo.",
+        "updates_managed_externally": "As atualizações desta instalação são gerenciadas por um gerenciador de pacotes externo. Use esse gerenciador de pacotes para obter novas versões.",
+        "updates_managed_externally_by": "As atualizações desta instalação são gerenciadas por {{managedBy}}. Use-o para obter novas versões.",
         "a_new_version": "Uma nova versão",
         "a_newer_version_is_available": "Uma versão mais recente está disponível.",
         "apache_2_0": "Apache 2.0",

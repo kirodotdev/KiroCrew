@@ -55,6 +55,28 @@ def _decode_text_bytes(raw: bytes) -> str:
     return text.replace('\r\n', '\n').replace('\r', '\n')
 
 
+def _read_error(exc: Exception) -> tuple[str, dict]:
+    """The reader result for a file that could not be read.
+
+    ``format: 'error'`` is the sentinel ``IngestionPipeline.ingest_file`` tests:
+    it raises rather than indexing, so the file is recorded as failed against its
+    source and the surrounding scan continues. The returned text is diagnostic and
+    never becomes an item.
+    """
+    return f'Error reading file: {exc}', {'format': 'error', 'error': str(exc)}
+
+
+def _missing_dep(fmt: str, package: str) -> tuple[str, dict]:
+    """The reader result when an optional extraction dependency is absent.
+
+    Carries the same ``format: 'error'`` sentinel as :func:`_read_error`. ``.pptx``
+    has no declared dependency, so this is the normal path for that format rather
+    than an anomaly.
+    """
+    message = f'{fmt} support requires {package}: pip install {package}'
+    return message, {'format': 'error', 'error': f'{fmt} support requires {package}'}
+
+
 class FileReader:
     # Binary formats need optional runtime deps: .pdf -> pdfplumber and .docx ->
     # python-docx (both declared in setup.cfg). .pptx -> python-pptx is NOT declared,
@@ -88,10 +110,9 @@ class FileReader:
         method_name = self._DISPATCH.get(ext)
         if method_name:
             text, meta = getattr(self, method_name)(path)
-            base_meta.update(meta)
         else:
             text, meta = self._read_text(path, ext.lstrip('.'))
-            base_meta.update(meta)
+        base_meta.update(meta)
         base_meta['line_count'] = text.count('\n') + 1 if text else 0
         return text, base_meta
 
@@ -104,23 +125,21 @@ class FileReader:
                 raw = f.read()
             return _decode_text_bytes(raw), {'format': fmt}
         except Exception as e:
-            return f'Error reading file: {e}', {'format': 'error', 'error': str(e)}
+            return _read_error(e)
 
     def _read_pdf(self, path: str) -> tuple[str, dict]:
         if pdfplumber is None:
-            return ('PDF support requires pdfplumber: pip install pdfplumber',
-                    {'format': 'error', 'error': 'PDF support requires pdfplumber'})
+            return _missing_dep('PDF', 'pdfplumber')
         try:
             with pdfplumber.open(path) as pdf:
                 pages = [p.extract_text() or '' for p in pdf.pages]
                 return '\n'.join(pages), {'format': 'pdf', 'page_count': len(pages)}
         except Exception as e:
-            return f'Error reading file: {e}', {'format': 'error', 'error': str(e)}
+            return _read_error(e)
 
     def _read_pptx(self, path: str) -> tuple[str, dict]:
         if Presentation is None:
-            return ('PPTX support requires python-pptx: pip install python-pptx',
-                    {'format': 'error', 'error': 'PPTX support requires python-pptx'})
+            return _missing_dep('PPTX', 'python-pptx')
         try:
             prs = Presentation(path)
             parts = []
@@ -143,12 +162,11 @@ class FileReader:
                 parts.append(section)
             return '\n\n'.join(parts), {'format': 'pptx', 'slide_count': len(prs.slides)}
         except Exception as e:
-            return f'Error reading file: {e}', {'format': 'error', 'error': str(e)}
+            return _read_error(e)
 
     def _read_docx(self, path: str) -> tuple[str, dict]:
         if Document is None:
-            return ('DOCX support requires python-docx: pip install python-docx',
-                    {'format': 'error', 'error': 'DOCX support requires python-docx'})
+            return _missing_dep('DOCX', 'python-docx')
         try:
             doc = Document(path)
             lines = []
@@ -165,7 +183,7 @@ class FileReader:
                     lines.append(text)
             return '\n'.join(lines), {'format': 'docx', 'content_type': 'markdown', 'paragraph_count': len(doc.paragraphs)}
         except Exception as e:
-            return f'Error reading file: {e}', {'format': 'error', 'error': str(e)}
+            return _read_error(e)
 
     def _read_html(self, path: str) -> tuple[str, dict]:
         try:
@@ -174,7 +192,7 @@ class FileReader:
             with open(path, 'rb') as f:
                 html = _decode_text_bytes(f.read())
         except Exception as e:
-            return f'Error reading file: {e}', {'format': 'error', 'error': str(e)}
+            return _read_error(e)
         if _html2text_mod is not None:
             h = _html2text_mod.HTML2Text()
             h.ignore_links = False

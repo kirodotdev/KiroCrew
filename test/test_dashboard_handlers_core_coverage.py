@@ -1201,19 +1201,21 @@ class TestAdvertisedModelGuards:
     def test_provider_rejection_is_surfaced(self, monkeypatch) -> None:
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
-            lambda _v: "display-only key",
+            lambda _v, provider=None: "display-only key",
         )
         assert core_mod._validate_role_model("fable-5-1m", _req()) == "display-only key"
 
     def test_unknown_entitlement_does_not_accuse(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._model_rejected_reason", lambda _v: None
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda _v, provider=None: None,
         )
         assert core_mod._validate_role_model("some-model", _req(app={})) is None
 
     def test_unentitled_model_lists_usable_alternatives(self, monkeypatch) -> None:
         monkeypatch.setattr(
-            "kiro_crew.dashboard.chat_handlers._model_rejected_reason", lambda _v: None
+            "kiro_crew.dashboard.chat_handlers._model_rejected_reason",
+            lambda _v, provider=None: None,
         )
         state = SimpleNamespace(
             sessions=SimpleNamespace(

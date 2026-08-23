@@ -608,3 +608,26 @@ start and `kill()`ed when the batch drains, with each per-PR session
 `destroy()`ed on completion for context isolation. Because the runtime layer has
 no `audit_source`, the pool re-emits the equivalent per-tool SEL audit itself
 (see the `audit_source` note above). See `providers.md` and `subagent.md`.
+
+**Death-log severity is a contract: expected teardowns are INFO, genuine deaths
+are WARNING.** `_mark_dead(reason, *, expected=False)` logs the single
+`AcpRuntime dead (PID …) [returncode=…] stderr_tail: …` line at INFO when the
+death is a deliberate teardown and at WARNING otherwise; the flag changes
+severity only — futures still fail with `AcpRuntimeDead`, queues are still
+poisoned. `kill(*, expected=False)` plumbs it through, and both defaults are
+fail-safe (WARNING), so a cleanup kill on a failure path — `initialize()`'s
+failed-spawn cleanup, `AcpProvider`'s failed-session-setup kill — and any
+future call site warns without opting in; only the deliberate teardowns of a
+healthy runtime (session shutdown via `AcpSessionProvider`, `_bg`/subagent
+runtime recycling and shutdown, `ReviewPool` batch drain) pass
+`expected=True`. `_mark_dead` refuses the downgrade when the process already
+exited on its own (`returncode` set), so a replacement path reaping a death
+the reader loop has not yet marked keeps the WARNING whenever the exit has
+already been observed — best-effort: an exit the child watcher has not yet
+recorded can still take the INFO path in that narrow window. The warm-pool
+health sweep and the claim path (`_drain_and_claim`) follow the same rule: a
+TTL recycle of a healthy provider logs at INFO, while a provider found dead —
+in a TTL branch or a dead-provider branch — stays WARNING. Note the default
+`agent.log_level` is WARNING, so expected teardowns are absent from
+`gateway.log` unless the operator raises verbosity; that silence is the point
+of the split (issue #4052).

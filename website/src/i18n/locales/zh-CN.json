@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "停止当前回复以切换项目",
       "stopping": "正在停止…",
       "stopping_2": "正在停止",
+      "switch_not_confirmed": "切换尚未确认——连接恢复后将自动生效。",
       "taking_longer_than_expected": "耗时超出预期",
       "that_approval_expired_the_turn_it_belonged_to_is": "关联轮次不再等待批准，因此此批准请求已过期。",
       "that_request_already_timed_out_and_was_denied": "此 {{source}} 请求已超时，系统已拒绝 — 任务不再等待。在审批动态中查看记录。",
@@ -6254,7 +6255,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "正在加载技能…",
-      "no_matching_skills": "无匹配的技能"
+      "no_matching_skills": "无匹配的技能",
+      "no_matching_skills_ctrl_enter_sends": "无匹配的技能 —— 按 Ctrl+Enter 直接发送消息",
+      "no_matching_skills_enter_sends": "无匹配的技能 —— 按 Enter 直接发送消息"
     },
     "slashCommandMenu": {
       "desc_agent": "切换或管理当前代理",
@@ -6283,7 +6286,9 @@
       "desc_tangent": "开始一段支线对话",
       "desc_todos": "显示或管理任务清单",
       "desc_tools": "显示可用工具",
-      "desc_usage": "显示计费和用量信息"
+      "desc_usage": "显示计费和用量信息",
+      "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
+      "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息"
     },
     "slotTagPopover": {
       "assign_tags": "分配标签",
@@ -7780,8 +7785,8 @@
         "show_nudge_instructions": "显示推动指令"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "收起置顶提示",
-        "expand_pinned_prompt": "展开置顶提示",
+        "collapse_pinned_prompt": "收起置顶轮次",
+        "expand_pinned_prompt": "展开置顶轮次",
         "jump_to_this_turn": "跳转到此轮次"
       },
       "recoveryCard": {
@@ -8981,7 +8986,10 @@
         "nodes": "个节点，",
         "all_sources": "所有来源",
         "filter_by_source": "按来源筛选",
-        "recenter": "重新居中"
+        "recenter": "重新居中",
+        "start_physics": "物理模拟",
+        "pause_physics": "暂停",
+        "graph_region_label": "知识实体图谱"
       },
       "sourceGroup": {
         "items_added_directly": "直接添加的条目",
@@ -10266,6 +10274,13 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "已分叉",
+        "checkout_diverged_from_upstream": "此检出已与上游分叉（{{distance}}）。请用 rebase 或 merge 更新——不会自动应用任何更改，你的本地提交是安全的。",
+        "commits_ahead_other": "领先 {{count}} 个提交",
+        "commits_behind_other": "落后 {{count}} 个提交",
+        "updates_managed_by_policy": "此安装的更新由管理员定义的更新策略管理。新版本将通过该机制到达。",
+        "updates_managed_externally": "此安装的更新由外部包管理器管理。请使用该包管理器获取新版本。",
+        "updates_managed_externally_by": "此安装的更新由 {{managedBy}} 管理。请使用它获取新版本。",
         "a_new_version": "新版本",
         "a_newer_version_is_available": "有新版本可用。",
         "apache_2_0": "Apache 2.0",

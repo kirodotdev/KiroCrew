@@ -43,7 +43,9 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.proxy_auth import verify_proxy_request
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.hooks import safe_read_file_bytes
+from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import cgroup_scope_argv, run_limited, wrap_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -1185,6 +1187,13 @@ class FileExplorerHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    # Install the platform context before serving. This backend is spawned as
+    # its own subprocess by the app backend launcher, so it inherits no context;
+    # its git-command sandbox wrapping reads the governed sandbox floor, which
+    # resolves the context cold and raises PlatformCompositionError on a
+    # non-standalone edition. Idempotent and fail-closed, mirroring the CLI and
+    # gateway entry points (and Dev Fleet's backend).
+    boot_platform(KiroCrewConfig.load())
     server = ThreadingHTTPServer(("127.0.0.1", PORT), FileExplorerHandler)
     logger.info(
         "listening on http://127.0.0.1:%d  rg=%s  allowed=%s",

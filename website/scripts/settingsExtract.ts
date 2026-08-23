@@ -30,7 +30,7 @@ import type { SettingEntry, SettingPrimitiveType } from '../src/components/comma
 
 export type { SettingEntry, SettingPrimitiveType }
 
-/** English catalogs, in load order (manual wins) — mirrors `src/i18n/index.ts`. */
+/** English catalogs, in load order (manual wins) — mirrors `src/i18n/enCatalog.ts`. */
 const EN_CATALOG_PATHS = [
   path.resolve(__dirname, '../src/i18n/locales/en.json'),
   path.resolve(__dirname, '../src/i18n/locales/en.manual.json'),

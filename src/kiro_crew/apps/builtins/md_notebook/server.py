@@ -39,7 +39,7 @@ from kiro_crew import hooks, platform_compat, security
 from kiro_crew.apps.builtins.md_notebook import git_ops
 from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
-from kiro_crew.atomic_write import atomic_write
+from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
@@ -316,7 +316,7 @@ def _write_vaults_sync(vaults: list[dict[str, Any]]) -> None:
     tmp = target.with_name(f"vaults.json.{uuid.uuid4().hex}.tmp")
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(vaults, fh, indent=2)
-    os.replace(tmp, target)
+    replace_with_retry(tmp, target)
 
 
 def _read_pat_sync() -> Optional[str]:

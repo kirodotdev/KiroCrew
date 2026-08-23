@@ -16,7 +16,8 @@ import React from 'react'
 
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
 import { api } from '../api/client'
-import { i18next } from '../i18n/index'
+// `/all` for the Chinese catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })

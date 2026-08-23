@@ -2955,8 +2955,13 @@ class TestAutocompactPctLoadClamp:
         assert cfg.session.autocompact_pct == 75.5
 
     def test_default_when_omitted(self) -> None:
+        """An omitted key takes the module default, not a clamp bound. Asserted
+        against the constant rather than a literal so the two cannot drift: a
+        ``load()`` fallback restated as its own literal still fails here."""
+        from kiro_crew.config.loader import DEFAULT_AUTOCOMPACT_PCT
+
         cfg = _load_from_dict({})
-        assert cfg.session.autocompact_pct == 90.0
+        assert cfg.session.autocompact_pct == DEFAULT_AUTOCOMPACT_PCT
 
     def test_load_range_and_dashboard_validator_share_one_constant(self) -> None:
         """Drift guard: the dashboard write-gate bounds for

@@ -49,6 +49,7 @@ def _fake_config():
     """A stand-in KiroCrewConfig recording whether save() was reached."""
     saved: list[bool] = []
     return SimpleNamespace(
+        agent=SimpleNamespace(provider="acp"),
         agents={},
         default_agent="kirocrew",
         save=lambda: saved.append(True),

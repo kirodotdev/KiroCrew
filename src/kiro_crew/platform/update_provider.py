@@ -334,6 +334,25 @@ class CommandProvider:
             return overrides[field]
         return getattr(self, field, "")
 
+    def can_apply(self) -> bool:
+        """True when an ``apply_command`` is configured AND can run here.
+
+        The dashboard's check path uses this to decide whether to offer an
+        Update button at all: a provider configured with only a
+        ``check_command`` can report availability but cannot act, and a button
+        that can only fail would contradict the honesty contract the check
+        cache carries. The runnability half matters on Windows, where
+        :func:`_shell_exec_args` refuses every command — a configured
+        ``apply_command`` there must not render a button whose only possible
+        outcome is ``policy_update_failed``.
+
+        NOTE: True means the PROVIDER can apply. It does NOT imply a git
+        checkout — callers that git-reset must gate on
+        :func:`resolve_provider` first, as both existing callers do.
+        """
+        cmd = self._resolve_command("apply_command")
+        return bool(cmd) and _shell_exec_args(cmd) is not None
+
     async def check(self) -> UpdateCheckResult:
         """Run check_command. Exit 0 + non-empty stdout version = available."""
         cmd = self._resolve_command("check_command")
@@ -363,9 +382,7 @@ class CommandProvider:
                 # agent-writable checkout. Operator commands name absolute paths.
                 cwd="/",
             )
-            stdout, _stderr = await _read_bounded_output(
-                proc, timeout=60, want_stdout=True
-            )
+            stdout, _stderr = await _read_bounded_output(proc, timeout=60, want_stdout=True)
         except asyncio.CancelledError:
             if proc is not None:
                 await _kill_and_reap(proc)
@@ -429,9 +446,7 @@ class CommandProvider:
                 # agent-writable checkout. Operator commands name absolute paths.
                 cwd="/",
             )
-            _stdout, stderr = await _read_bounded_output(
-                proc, timeout=600, want_stdout=False
-            )
+            _stdout, stderr = await _read_bounded_output(proc, timeout=600, want_stdout=False)
         except asyncio.CancelledError:
             if proc is not None:
                 await _kill_and_reap(proc)

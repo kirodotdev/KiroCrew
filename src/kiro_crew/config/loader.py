@@ -163,6 +163,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "computer_use",
         "instances",
         "mcp_gateway",
+        "mcp",
         "taskrunner",
         "orchestrator",
         "watchdog",
@@ -228,6 +229,20 @@ _warned_env_keys: set[str] = set()
 
 DEFAULT_MODEL = "auto"
 DEFAULT_SESSION_TIMEOUT = 3600  # 60 min
+# Auto-compaction threshold, as a percentage of the context window. Named
+# because two code paths need it — the dataclass field default (used only when
+# there is no config file) and the dict-load fallback in ``load()`` (used when
+# a config file omits the key). Restating the number in both is how
+# ``pool_size`` came to have a field default of 0 and a load fallback of 2.
+DEFAULT_AUTOCOMPACT_PCT = 70.0
+# Margin BELOW the configured compaction threshold at which the "context is
+# getting large" warning fires. A margin rather than an absolute percentage
+# because both consumers test compaction FIRST in an if/elif chain
+# (``session.check_context_usage`` and the ``cli_chat`` REPL loop), so an
+# absolute warn level at or above the configured threshold makes the warning arm
+# unreachable and the early signal disappears for whoever did not change the
+# default. Kept here rather than in either consumer so the two cannot drift.
+CONTEXT_WARN_MARGIN_PCT = 20.0
 DEFAULT_MAX_PARALLEL_STEPS = (
     0  # 0 = auto: derive from agent.subagent_auto_max via compute_max_subagents
 )
@@ -1816,7 +1831,7 @@ class SessionConfig:
         ),
     )
     autocompact_pct: float = field(
-        default=90.0,
+        default=DEFAULT_AUTOCOMPACT_PCT,
         metadata=_meta(
             "Auto-Compact Threshold",
             "Context usage percentage at which auto-compaction triggers (5-90).",
@@ -4630,6 +4645,34 @@ FORWARD_DECLARED_ENV_DEFAULT = bool(
 
 
 @dataclass
+class McpConfig:
+    """MCP server settings that apply whether or not the broker is enabled.
+
+    Distinct from :class:`McpGatewayConfig`, which configures the sharing broker
+    itself: these settings govern how MCP servers are FOUND and launched, so
+    they matter equally with the broker off.
+    """
+
+    extra_path_dirs: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Extra MCP Binary Directories",
+            "Additional directories to search for MCP server binaries, ahead of "
+            "the built-in locations. Add one when a package manager installs its "
+            "MCP launchers somewhere Kiro Crew does not know about: a server "
+            "declared by bare name that resolves nowhere never starts, and the "
+            "session just comes up short of tools. Each entry must be a single "
+            "absolute directory (``~`` is expanded); anything else is ignored "
+            "with a warning. These directories are prepended to the search path "
+            "used by the MCP probe, the agent-config command resolver, and the "
+            "broker's rewriter alike, so a binary found here is found "
+            "everywhere. They do NOT join the search for the agent runtime "
+            "itself, which must not be shadowable by a configured directory.",
+        ),
+    )
+
+
+@dataclass
 class InstancesConfig:
     """Multi-instance management (the *Instances* feature).
 
@@ -5895,6 +5938,13 @@ class KiroCrewConfig:
         default_factory=McpGatewayConfig,
         metadata=_meta("MCP Gateway", "Sidecar MCP broker that shares backends across sessions."),
     )
+    mcp: McpConfig = field(
+        default_factory=McpConfig,
+        metadata=_meta(
+            "MCP",
+            "How MCP servers are found and launched — applies with the broker off too.",
+        ),
+    )
     instances: InstancesConfig = field(
         default_factory=InstancesConfig,
         metadata=_meta(
@@ -6071,6 +6121,33 @@ class KiroCrewConfig:
         The overlay is applied at load time but NOT persisted back by
         ``save()`` — only the base config is written to ``config.json``.
         """
+        cfg = cls._load_resolved()
+        # Push the MCP search-path setting to its consumer. It is PUSHED rather
+        # than read there because kiro_crew.env.mcp_search_path is reached from
+        # the event loop by every MCP probe and by the agent-config resolver, so
+        # a config read on that side would stat/read/validate config.json on the
+        # loop. Done here rather than inside _load_resolved so EVERY return path
+        # publishes -- including the defaults path taken when neither config file
+        # could be read, which must CLEAR a previously published snapshot rather
+        # than leave a deleted directory resolving commands. Lazy import: env
+        # must stay off this module's import graph.
+        try:
+            from kiro_crew.env import publish_config_path_dirs
+
+            publish_config_path_dirs(cfg.mcp.extra_path_dirs)
+        except Exception as e:  # pragma: no cover - defensive
+            # A publish failure must never make the config unloadable; the
+            # search path simply keeps its previous (or empty) contribution.
+            logger.warning("Publishing mcp.extra_path_dirs failed: %s", e)
+        return cfg
+
+    @classmethod
+    def _load_resolved(cls) -> KiroCrewConfig:
+        """Resolve the config from disk (or defaults). See :meth:`load`.
+
+        Split out so :meth:`load` owns the post-resolution publication on every
+        return path; this method may return from more than one place.
+        """
         path = config_path()
 
         # Hot-path cache: reuse the validated, merged dict when neither config
@@ -6220,6 +6297,9 @@ class KiroCrewConfig:
         mcp_gateway_data = data.get("mcp_gateway", {})
         if not isinstance(mcp_gateway_data, dict):
             mcp_gateway_data = {}
+        mcp_data = data.get("mcp", {})
+        if not isinstance(mcp_data, dict):
+            mcp_data = {}
         heartbeat_data = data.get("heartbeat", {})
         if not isinstance(heartbeat_data, dict):
             heartbeat_data = {}
@@ -6447,8 +6527,8 @@ class KiroCrewConfig:
                     session_data.get("empty_response_auto_continue", True)
                 ),
                 autocompact_pct=_safe_float(
-                    session_data.get("autocompact_pct", 90.0),
-                    90.0,
+                    session_data.get("autocompact_pct", DEFAULT_AUTOCOMPACT_PCT),
+                    DEFAULT_AUTOCOMPACT_PCT,
                     lo=AUTOCOMPACT_PCT_MIN,
                     hi=AUTOCOMPACT_PCT_MAX,
                 ),
@@ -7024,6 +7104,18 @@ class KiroCrewConfig:
                     ),
                 ),
             ),
+            mcp=McpConfig(
+                # Kept as authored strings — validation (absolute-only, ``~``
+                # expansion, dedup) belongs to the consumer,
+                # kiro_crew.env.augmented_path, so the ONE gate the built-in
+                # directories already pass applies to these too instead of a
+                # second rule drifting here. Non-strings ARE dropped now: the
+                # field is typed list[str] and to_dict() round-trips it verbatim
+                # into the saved config.
+                extra_path_dirs=[
+                    d for d in _safe_list(mcp_data.get("extra_path_dirs", [])) if isinstance(d, str)
+                ],
+            ),
             instances=InstancesConfig(
                 enabled=bool(instances_data.get("enabled", False)),
                 warm_set_cap=_safe_int(
@@ -7183,6 +7275,7 @@ class KiroCrewConfig:
             "computer_use": asdict(self.computer_use),
             "instances": asdict(self.instances),
             "mcp_gateway": asdict(self.mcp_gateway),
+            "mcp": asdict(self.mcp),
             "taskrunner": asdict(self.taskrunner),
             "orchestrator": asdict(self.orchestrator),
             "watchdog": asdict(self.watchdog),

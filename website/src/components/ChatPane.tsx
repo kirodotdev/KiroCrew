@@ -24,7 +24,8 @@ import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
 import { confirmedDelivered } from '../utils/sendDelivery'
-import { triggerRefresh } from '../store/dashboardSlice'
+import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
+import { performSlotSwitch } from '../lib/slotSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
@@ -215,7 +216,24 @@ export default function ChatPane({
     api.chatSlotAgent(slotKey, name)
       .catch((e) => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e))))
   }, [dispatch, slotKey])
-  const switchModel = useCallback((name: string) => { api.chatSlotModel(slotKey, name).catch((e) => console.error('[ChatPane] switchModel failed', e)) }, [slotKey])
+  const switchModel = useCallback(async (name: string) => {
+    try {
+      // performSlotSwitch owns the whole protocol: serialized dispatch,
+      // latest-request-wins adjudication, hung-request timeout, and exactly
+      // one store write on the authoritative value (#4523) — the pane must
+      // not depend on the coalesced slots rebroadcast to see its own pick.
+      await performSlotSwitch('model', slotKey, name,
+        async () => {
+          const r = await api.chatSlotModel(slotKey, name)
+          return r?.model ?? name
+        },
+        (value) => dispatch(updateSlot({ key: slotKey, model: value })))
+    } catch (e) {
+      // Same failure surface as switchAgent above: the shared notice toast.
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+      console.error('[ChatPane] switchModel failed', e)
+    }
+  }, [dispatch, slotKey])
 
   // Roving-focus keyboard nav for the pickers (mirrors ChatPage / StyledSelect):
   // ArrowUp/Down across options, Enter/Space select, Escape/Tab close + return

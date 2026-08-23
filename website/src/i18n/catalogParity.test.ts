@@ -8,15 +8,16 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from './index'
+import { CATALOGS as RUNTIME_CATALOGS } from './catalogs'
 import { SUPPORTED_LANGUAGES, DEFAULT_LANGUAGE, isSupportedLanguage } from './languages'
 import pluralKeys from './pluralKeys.json'
 
 /**
  * Catalogs exactly as the runtime composes them — including English's
- * generated + manual merge. Reading `CATALOGS` from `./index` rather than
- * re-importing the JSON means this suite can never disagree with what actually
- * ships, and adding a language needs no edit here.
+ * generated + manual merge. Reading `CATALOGS` from `./catalogs`, the module that
+ * owns every catalog import, rather than re-importing the JSON means this suite
+ * can never disagree with what actually ships, and adding a language needs no
+ * edit here.
  */
 const CATALOGS: Record<string, unknown> = Object.fromEntries(
   Object.entries(RUNTIME_CATALOGS).map(([code, bundle]) => [
@@ -132,7 +133,7 @@ describe('language registry', () => {
     expect(
       authored.length,
       'Adding a catalog puts its full weight in every user\'s first load. Land the '
-      + 'lazy-loading seam in i18n/index.ts instead, or re-measure and say why here.',
+      + 'lazy-loading seam in i18n/catalogs.ts instead, or re-measure and say why here.',
     ).toBeLessThanOrEqual(12)
   })
 })

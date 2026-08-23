@@ -4735,7 +4735,7 @@
       "describe_what_you_want_the_agent_to_accomplish": "Beschreiben Sie, was der Agent erreichen soll…",
       "give_the_agent_a_goal_and_it_will_keep_working_t": "Lege ein Ziel für den Agenten fest. {{productName}} sendet dem Agenten im unten angegebenen Intervall einen Anstoß mit diesem Ziel, bis das Ziel erreicht oder das Zykluslimit erreicht ist.",
       "goal_active_cycle": "Ziel aktiv (Zyklus {{cycle}})",
-      "goal_interrupted_cycle": "Zielschleife bereit (Zyklus {{cycle}}) – letzter Durchlauf wurde unterbrochen; Chat fortsetzen oder auf den nächsten Zyklus warten",
+      "goal_interrupted_cycle": "Zielschleife bereit (Zyklus {{cycle}}) – letzter Zug wurde unterbrochen; Chat fortsetzen oder auf den nächsten Zyklus warten",
       "goal_description": "Zielbeschreibung",
       "seconds_between_nudges": "Sekunden zwischen Anstößen",
       "last_fire": "Letzte Auslösung:",
@@ -4775,7 +4775,7 @@
       "command": "Befehl",
       "context_usage": "Kontextnutzung",
       "context_window": "Kontextfenster",
-      "continue_interrupted_turn": "Unterbrochenen Durchlauf fortsetzen",
+      "continue_interrupted_turn": "Unterbrochenen Zug fortsetzen",
       "continue_thread": "Den Agenten fortsetzen lassen",
       "could_not_submit_that_decision_see_the_console_f": "Entscheidung konnte nicht übermittelt werden — Details in der Konsole.",
       "detached_head_at": "Detached HEAD bei {{branch}}",
@@ -4838,6 +4838,7 @@
       "stop_the_current_response_to_switch_project": "Aktuelle Antwort stoppen, um das Projekt zu wechseln",
       "stopping": "Wird gestoppt…",
       "stopping_2": "Wird gestoppt",
+      "switch_not_confirmed": "Wechsel noch nicht bestätigt – er wird übernommen, sobald die Verbindung wiederhergestellt ist.",
       "taking_longer_than_expected": "dauert länger als erwartet",
       "that_approval_expired_the_turn_it_belonged_to_is": "Diese Genehmigungsanfrage ist abgelaufen, weil der zugehörige Zug nicht mehr auf Genehmigung wartet.",
       "that_request_already_timed_out_and_was_denied": "Diese Anfrage von {{source}} ist bereits abgelaufen und wurde abgelehnt — der Job wartet nicht mehr. Den Eintrag findest du im Genehmigungs-Feed.",
@@ -4845,7 +4846,7 @@
       "transcribing": "Wird transkribiert…",
       "transcribing_please_wait": "Wird transkribiert, bitte warten…",
       "trust_reads": "Lesevorgängen vertrauen",
-      "turn_interrupted_press_continue": "Letzter Durchlauf wurde unterbrochen – Fortsetzen drücken oder einfach tippen",
+      "turn_interrupted_press_continue": "Letzter Zug wurde unterbrochen – Fortsetzen drücken oder einfach tippen",
       "upload_file": "Datei hochladen",
       "use_a_skill": "Einen Skill verwenden",
       "used": "Verbraucht",
@@ -6343,7 +6344,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Skills werden geladen…",
-      "no_matching_skills": "Keine passenden Skills"
+      "no_matching_skills": "Keine passenden Skills",
+      "no_matching_skills_ctrl_enter_sends": "Keine passenden Skills — Ctrl+Enter sendet die Nachricht",
+      "no_matching_skills_enter_sends": "Keine passenden Skills — Enter sendet die Nachricht"
     },
     "slashCommandMenu": {
       "desc_agent": "Aktiven Agenten wechseln oder verwalten",
@@ -6372,7 +6375,9 @@
       "desc_tangent": "Eine Nebenunterhaltung starten",
       "desc_todos": "Aufgabenliste anzeigen oder verwalten",
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
-      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen"
+      "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen",
+      "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
+      "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht"
     },
     "slotTagPopover": {
       "assign_tags": "Tags zuweisen",
@@ -7882,8 +7887,8 @@
         "show_nudge_instructions": "Anstoß-Anweisungen anzeigen"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Angeheftete Nachricht einklappen",
-        "expand_pinned_prompt": "Angeheftete Nachricht ausklappen",
+        "collapse_pinned_prompt": "Angehefteten Zug einklappen",
+        "expand_pinned_prompt": "Angehefteten Zug ausklappen",
         "jump_to_this_turn": "Zu diesem Zug springen"
       },
       "recoveryCard": {
@@ -7903,7 +7908,7 @@
         "no_response_returned": "Keine Antwort",
         "nudge_cap_reached": "Nudge-Limit erreicht",
         "recovered_continuing": "Fortsetzung automatisch gesendet",
-        "resuming_the_interrupted_turn": "unterbrochener Durchlauf wird fortgesetzt",
+        "resuming_the_interrupted_turn": "unterbrochener Zug wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie hat den Aufruf blockiert · Fortsetzung automatisch gesendet",
         "session_busy_continuing": "Sitzung beschäftigt · Fortsetzung automatisch gesendet",
         "subagents_finished": "Subagenten abgeschlossen",
@@ -8353,7 +8358,7 @@
       "folders": "Ordner",
       "goal_loop_cycle": "Zielschleife · Zyklus {{count}} von {{total}}",
       "goal_loop_cycle_no_cap": "Zielschleife · Zyklus {{count}} (unbegrenzt)",
-      "goal_loop_interrupted_title": "Zielschleife bereit – letzter Durchlauf wurde unterbrochen; Chat fortsetzen oder auf den nächsten Zyklus warten",
+      "goal_loop_interrupted_title": "Zielschleife bereit – letzter Zug wurde unterbrochen; Chat fortsetzen oder auf den nächsten Zyklus warten",
       "hidden": "verborgen",
       "hidden_because_parent_hidden": "{{name}} ist ausgeblendet, weil ein übergeordneter Ordner ausgeblendet ist",
       "hidden_folder": "ausgeblendeter Ordner",
@@ -9092,7 +9097,10 @@
         "nodes": "Knoten,",
         "all_sources": "Alle Quellen",
         "filter_by_source": "Nach Quelle filtern",
-        "recenter": "Neu zentrieren"
+        "recenter": "Neu zentrieren",
+        "start_physics": "Physik",
+        "pause_physics": "Pause",
+        "graph_region_label": "Wissens-Entitätsgraph"
       },
       "sourceGroup": {
         "items_added_directly": "Direkt hinzugefügte Elemente",
@@ -10390,6 +10398,15 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Abgewichen",
+        "checkout_diverged_from_upstream": "Dieser Checkout ist vom Upstream abgewichen ({{distance}}). Zum Aktualisieren Rebase oder Merge ausführen — nichts wird automatisch angewendet, die lokalen Commits bleiben also erhalten.",
+        "commits_ahead_one": "{{count}} Commit voraus",
+        "commits_ahead_other": "{{count}} Commits voraus",
+        "commits_behind_one": "{{count}} Commit zurück",
+        "commits_behind_other": "{{count}} Commits zurück",
+        "updates_managed_by_policy": "Updates für diese Installation werden über eine vom Betreiber definierte Update-Richtlinie verwaltet. Neue Versionen kommen über diesen Mechanismus an.",
+        "updates_managed_externally": "Updates für diese Installation werden von einem externen Paketmanager verwaltet. Beziehen Sie neue Versionen über diesen Paketmanager.",
+        "updates_managed_externally_by": "Updates für diese Installation werden von {{managedBy}} verwaltet. Beziehen Sie neue Versionen darüber.",
         "a_new_version": "Eine neue Version",
         "a_newer_version_is_available": "Eine neuere Version ist verfügbar.",
         "apache_2_0": "Apache 2.0",
@@ -12026,7 +12043,7 @@
       "timed_out_blurb": "Der Lauf überschritt sein Zeitlimit und wurde abgebrochen. Teilergebnisse werden nicht zugestellt.",
       "token": "Token",
       "tokens_and_run_history_are_kept_you_can_switch_i": "Tokens und Ausführungsverlauf bleiben erhalten — du kannst es jederzeit wieder einschalten.",
-      "tool_the_agent_reads_it_before_the_inbound_messa": "— der Agent liest den Kontext\n          vor der eingehenden Nachricht, damit der Durchlauf mit der Absicht der vorherigen\n          Sitzung fortgesetzt wird.",
+      "tool_the_agent_reads_it_before_the_inbound_messa": "— der Agent liest den Kontext\n          vor der eingehenden Nachricht, damit der Zug mit der Absicht der vorherigen\n          Sitzung fortgesetzt wird.",
       "turn_off": "Ausschalten",
       "turn_on": "Einschalten",
       "unauthorized": "401 nicht autorisiert",

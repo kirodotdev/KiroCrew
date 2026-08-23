@@ -2649,6 +2649,17 @@ _AUDIT_ONLY_READ_IDS: dict[str, str] = {
     # no value is returned. The audit is owed regardless, because the file holds
     # live credential material whatever this reader touches.
     "kiro_cli.idc_identity_probe": ".local/share/kiro-cli/data.sqlite3",
+    # Same store, read by ``kiro_crew.kiro_prerequisite.identity_fingerprint`` to
+    # answer one question on the turn path: does the account signed in NOW differ
+    # from the one the running kiro-cli children loaded? Only stable account
+    # claims participate (start_url, region, oauth_flow, scopes, client_id) plus
+    # the non-secret ``auth.*`` / ``api.codewhisperer.*`` marker rows; the values
+    # are hashed and only a digest leaves the function. The rotating and secret
+    # fields (access_token, refresh_token, expires_at, client_secret) are excluded
+    # by an ALLOWLIST, so a field added to the blob later cannot join by default.
+    # Audited on the observation a caller acts on rather than per poll -- the
+    # reader holds a short cache -- for the same reason as the mint entry below.
+    "kiro_prerequisite.identity_fingerprint": ".local/share/kiro-cli/data.sqlite3",
     # Class 2. kiro-cli's MCP OAuth artifact cache under ``~/.aws/sso/cache``.
     # ``kiro_crew.connections.mint.grant_present`` STATS the paired
     # ``<sha256(mcp_url)>.token.json`` / ``.registration.json`` artifacts to learn

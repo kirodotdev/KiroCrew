@@ -51,11 +51,6 @@ logger = logging.getLogger(__name__)
 #: Every reader now takes it from this single definition.
 QUEUE_FILE = "mochi-queue.json"
 
-# ── Task type constants (mirror shared/queueTypes.ts) ──────────────────────
-
-DETERMINISTIC_TYPES = ("move", "notify", "mood")
-AGENT_TYPES = ("freestyle",)
-
 # Default TTL for done-task cleanup: 2 hours.
 DEFAULT_TTL_MS = 2 * 60 * 60 * 1000
 

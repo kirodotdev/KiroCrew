@@ -4765,6 +4765,7 @@
       "stop_the_current_response_to_switch_project": "現在の応答を停止してプロジェクトを切り替え",
       "stopping": "停止中…",
       "stopping_2": "停止中",
+      "switch_not_confirmed": "切り替えはまだ確認されていません。接続が回復すると適用されます。",
       "taking_longer_than_expected": "予想より時間がかかっています",
       "that_approval_expired_the_turn_it_belonged_to_is": "関連付けられたターンが承認待ちではなくなったため、この承認リクエストは期限切れになりました。",
       "that_request_already_timed_out_and_was_denied": "その {{source}} リクエストはすでにタイムアウトし、拒否されました — ジョブはもう待機していません。記録は承認フィードで確認できます。",
@@ -6254,7 +6255,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "スキルを読み込み中…",
-      "no_matching_skills": "一致するスキルがありません"
+      "no_matching_skills": "一致するスキルがありません",
+      "no_matching_skills_ctrl_enter_sends": "一致するスキルがありません — Ctrl+Enter でメッセージを送信します",
+      "no_matching_skills_enter_sends": "一致するスキルがありません — Enter でメッセージを送信します"
     },
     "slashCommandMenu": {
       "desc_agent": "アクティブなエージェントを切り替えるか管理する",
@@ -6283,7 +6286,9 @@
       "desc_tangent": "接線会話を開始する",
       "desc_todos": "タスクリストを表示または管理する",
       "desc_tools": "利用可能なツールを表示する",
-      "desc_usage": "課金と使用情報を表示する"
+      "desc_usage": "課金と使用情報を表示する",
+      "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
+      "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します"
     },
     "slotTagPopover": {
       "assign_tags": "タグを割り当てる",
@@ -7780,8 +7785,8 @@
         "show_nudge_instructions": "ナッジの指示を表示"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "固定したプロンプトを折りたたむ",
-        "expand_pinned_prompt": "固定したプロンプトを展開",
+        "collapse_pinned_prompt": "固定したターンを折りたたむ",
+        "expand_pinned_prompt": "固定したターンを展開",
         "jump_to_this_turn": "このターンへ移動"
       },
       "recoveryCard": {
@@ -8981,7 +8986,10 @@
         "nodes": "ノード、",
         "all_sources": "すべてのソース",
         "filter_by_source": "ソースでフィルター",
-        "recenter": "中央に戻す"
+        "recenter": "中央に戻す",
+        "start_physics": "物理演算",
+        "pause_physics": "一時停止",
+        "graph_region_label": "ナレッジエンティティグラフ"
       },
       "sourceGroup": {
         "items_added_directly": "直接追加されたアイテム",
@@ -10266,6 +10274,13 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "分岐あり",
+        "checkout_diverged_from_upstream": "このチェックアウトはアップストリームから分岐しています（{{distance}}）。rebase または merge で更新してください — 何も自動では適用されないため、ローカルコミットは安全です。",
+        "commits_ahead_other": "{{count}} コミット先行",
+        "commits_behind_other": "{{count}} コミット遅れ",
+        "updates_managed_by_policy": "このインストールの更新は、運用者が定義した更新ポリシーで管理されています。新しいバージョンはその仕組みで届きます。",
+        "updates_managed_externally": "このインストールの更新は外部のパッケージマネージャーが管理しています。新しいバージョンはそのパッケージマネージャーで取得してください。",
+        "updates_managed_externally_by": "このインストールの更新は {{managedBy}} が管理しています。新しいバージョンはそれで取得してください。",
         "a_new_version": "新しいバージョン",
         "a_newer_version_is_available": "新しいバージョンが利用可能です。",
         "apache_2_0": "Apache 2.0",

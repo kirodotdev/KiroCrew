@@ -4984,6 +4984,7 @@
       "stop_the_current_response_to_switch_project": "Останови текущий ответ, чтобы сменить проект",
       "stopping": "Остановка…",
       "stopping_2": "Остановка",
+      "switch_not_confirmed": "Переключение ещё не подтверждено — оно применится, когда соединение восстановится.",
       "taking_longer_than_expected": "выполняется дольше, чем ожидалось",
       "that_approval_expired_the_turn_it_belonged_to_is": "Срок действия этого запроса на одобрение истёк, потому что связанный с ним ход больше не ожидает одобрения.",
       "that_request_already_timed_out_and_was_denied": "Запрос {{source}} уже истёк по таймауту и был отклонён — задание больше не ждёт. Запись смотри в ленте подтверждений.",
@@ -6521,7 +6522,9 @@
     },
     "skillPickerMenu": {
       "loading_skills": "Загрузка навыков…",
-      "no_matching_skills": "Нет подходящих навыков"
+      "no_matching_skills": "Нет подходящих навыков",
+      "no_matching_skills_ctrl_enter_sends": "Нет подходящих навыков — Ctrl+Enter отправит сообщение",
+      "no_matching_skills_enter_sends": "Нет подходящих навыков — Enter отправит сообщение"
     },
     "slashCommandMenu": {
       "desc_agent": "Переключить активного агента или управлять им",
@@ -6550,7 +6553,9 @@
       "desc_tangent": "Начать ответвление переписки",
       "desc_todos": "Показать список задач или управлять им",
       "desc_tools": "Показать доступные инструменты",
-      "desc_usage": "Показать сведения о биллинге и расходе"
+      "desc_usage": "Показать сведения о биллинге и расходе",
+      "no_matching_commands_ctrl_enter_sends": "Нет подходящих команд — Ctrl+Enter отправит сообщение",
+      "no_matching_commands_enter_sends": "Нет подходящих команд — Enter отправит сообщение"
     },
     "slotTagPopover": {
       "assign_tags": "Назначить теги",
@@ -8086,8 +8091,8 @@
         "show_nudge_instructions": "Показать инструкции подталкивания"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Свернуть закреплённое сообщение",
-        "expand_pinned_prompt": "Развернуть закреплённое сообщение",
+        "collapse_pinned_prompt": "Свернуть закреплённый ход",
+        "expand_pinned_prompt": "Развернуть закреплённый ход",
         "jump_to_this_turn": "Перейти к этому ходу"
       },
       "recoveryCard": {
@@ -9314,7 +9319,10 @@
         "nodes": "узлов,",
         "all_sources": "Все источники",
         "filter_by_source": "Фильтр по источнику",
-        "recenter": "Центрировать"
+        "recenter": "Центрировать",
+        "start_physics": "Физика",
+        "pause_physics": "Пауза",
+        "graph_region_label": "Граф сущностей знаний"
       },
       "sourceGroup": {
         "items_added_directly": "Добавлено напрямую",
@@ -10639,6 +10647,19 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Расхождение",
+        "checkout_diverged_from_upstream": "Эта рабочая копия разошлась с upstream ({{distance}}). Выполните rebase или merge, чтобы обновиться — ничего не применяется автоматически, поэтому ваши локальные коммиты в безопасности.",
+        "commits_ahead_one": "{{count}} коммит впереди",
+        "commits_ahead_few": "{{count}} коммита впереди",
+        "commits_ahead_many": "{{count}} коммитов впереди",
+        "commits_ahead_other": "{{count}} коммита впереди",
+        "commits_behind_one": "{{count}} коммит позади",
+        "commits_behind_few": "{{count}} коммита позади",
+        "commits_behind_many": "{{count}} коммитов позади",
+        "commits_behind_other": "{{count}} коммита позади",
+        "updates_managed_by_policy": "Обновлениями этой установки управляет политика обновлений, заданная оператором. Новые версии приходят через этот механизм.",
+        "updates_managed_externally": "Обновлениями этой установки управляет внешний менеджер пакетов. Получайте новые версии через этот менеджер пакетов.",
+        "updates_managed_externally_by": "Обновлениями этой установки управляет {{managedBy}}. Получайте новые версии через него.",
         "a_new_version": "Новая версия",
         "a_newer_version_is_available": "Доступна новая версия.",
         "apache_2_0": "Apache 2.0",

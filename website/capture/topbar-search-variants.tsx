@@ -33,7 +33,7 @@ import { useEffect, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { Home, Search, Bell, Lightbulb, Bug, Layers, Coins, AudioWaveform, ChevronDown, Menu } from 'lucide-react'
 
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import '../src/index.css'
 
 const params = new URLSearchParams(location.search)
