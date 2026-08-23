@@ -98,6 +98,15 @@ _update_info: dict[str, object] = {
     #: it only did so at a release. Requiring both keeps that path firing no more
     #: often than it did while the verdict was version-only.
     "version_newer": False,
+    #: Commit distance from the tracked upstream, BOTH directions. A DIVERGED
+    #: checkout (ahead and behind at once) reports ``update_available: False``
+    #: exactly like a current one — offering it an update would feed the
+    #: destructive ``git reset --hard`` apply path commits to discard — so
+    #: without the counts the two states are indistinguishable on the wire and
+    #: the panel can only say "up to date" to a user who actually needs to
+    #: rebase or merge. 0/0 everywhere except a successful git-checkout check.
+    "commits_ahead": 0,
+    "commits_behind": 0,
     "error_code": None,
     "unavailable_reason": None,
     "remediation": None,
@@ -202,6 +211,8 @@ def status_update_fields() -> dict[str, object]:
     "never checked reads as current" bug at the last step.
     """
     available = _update_info.get("update_available")
+    ahead = _update_info.get("commits_ahead")
+    behind = _update_info.get("commits_behind")
     return {
         "update_available": available if isinstance(available, bool) else None,
         "update_can_apply": bool(_update_info.get("can_apply")),
@@ -212,6 +223,13 @@ def status_update_fields() -> dict[str, object]:
         # command-managed host must not render the self-managed installer
         # instructions its policy exists to bypass.
         "update_managed_by": str(_update_info.get("managed_by") or ""),
+        # Commit distance for a git checkout, both directions, so the About
+        # panel's badge can tell DIVERGED (ahead and behind at once — reported
+        # as ``update_available: False`` because the apply path must never be
+        # offered local commits) from genuinely current without waiting for a
+        # manual check. 0/0 everywhere except a successful git-checkout check.
+        "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
+        "update_commits_behind": behind if isinstance(behind, int) else 0,
     }
 
 
@@ -378,6 +396,8 @@ def _set_update_info(**fields: object) -> None:
             "check_status": CHECK_UNCHECKED,
             "update_available": None,
             "version_newer": False,
+            "commits_ahead": 0,
+            "commits_behind": 0,
             "error_code": None,
             "unavailable_reason": None,
             "remediation": None,
@@ -771,6 +791,11 @@ async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
         changes=changes,
         latest_version=remote_version,
         version_newer=bool(version_newer),
+        # The raw distance travels with the verdict so a consumer can tell the
+        # diverged ``available: False`` from the current one and render "rebase
+        # or merge" instead of "up to date".
+        commits_ahead=ahead,
+        commits_behind=behind,
         check_status=CHECK_SUCCEEDED,
     )
 
@@ -1272,12 +1297,106 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # Diverged precondition, enforced at the layer that owns the destructive
+    # action. The dashboard's own render-site guards can only cover the clients
+    # that ran a fresh check; a stale client (an Update button armed before the
+    # checkout gained local commits, a cached-changelog modal whose pre-apply
+    # check never re-ran) still POSTs here. Fetch FIRST, fail closed: the
+    # counts below read the remote-tracking refs, and refs from an old fetch
+    # can report behind=0 for a checkout whose remote has since moved — which
+    # would wave through the very state this guard exists to refuse.
+    fetch = await asyncio.create_subprocess_exec(
+        "git",
+        "fetch",
+        "--quiet",
+        cwd=proj,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        await asyncio.wait_for(fetch.communicate(), timeout=30)
+    except asyncio.TimeoutError:
+        try:
+            fetch.kill()
+        except ProcessLookupError:
+            pass
+        await fetch.communicate()
+        return web.json_response(
+            {
+                "error": "Timed out refreshing the remote before updating",
+                "code": "git_fetch_failed",
+            },
+            status=500,
+        )
+    if fetch.returncode != 0:
+        logger.warning("Update refused: pre-apply git fetch failed (rc=%s)", fetch.returncode)
+        return web.json_response(
+            {
+                "error": "Could not reach the remote to verify the update",
+                "code": "git_fetch_failed",
+            },
+            status=409,
+        )
+    count = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-list",
+        "--count",
+        "--left-right",
+        "HEAD...@{u}",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        count_out, _ = await asyncio.wait_for(count.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            count.kill()
+        except ProcessLookupError:
+            pass
+        await count.communicate()
+        return web.json_response(
+            {"error": "Timed out checking upstream distance", "code": "git_read_failed"},
+            status=500,
+        )
+    try:
+        ahead_text, behind_text = count_out.decode(errors="replace").split()
+        ahead, behind = int(ahead_text), int(behind_text)
+    except ValueError:
+        logger.warning("Update refused: could not count commits against upstream in %s", proj)
+        return web.json_response(
+            {
+                "error": "Could not compare against upstream — check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
+    if ahead > 0 and behind > 0:
+        logger.warning(
+            "Update refused: checkout diverged from upstream (%d ahead, %d behind)", ahead, behind
+        )
+        return web.json_response(
+            {
+                "error": "Checkout has diverged from its upstream — rebase or merge in a terminal",
+                "code": "checkout_diverged",
+                "commits_ahead": ahead,
+                "commits_behind": behind,
+            },
+            status=409,
+        )
+
     async def _apply() -> None:
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
+            # --ff-only makes the non-fast-forward classes unreachable at the
+            # action primitive itself, not just at the precondition above: a
+            # remote that moves in the window between the guard's fetch and
+            # this pull fails the pull instead of minting an unrequested merge
+            # commit into the user's branch.
             pull = await asyncio.create_subprocess_exec(
                 "git",
                 "pull",
+                "--ff-only",
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

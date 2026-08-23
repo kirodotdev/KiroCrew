@@ -642,7 +642,12 @@ class TestApplyRefusals:
         monkeypatch.setenv("KIROCREW_PROJECT_DIR", _git_proj(monkeypatch, tmp_path))
         monkeypatch.setattr(updates, "resolve_remote_url", lambda _p: "")
         monkeypatch.setattr(updates, "update_blocked_reason", lambda _u: "")
-        _sequence_procs(monkeypatch, [_FakeProc(out=b"")] + procs)
+        # Clean tree, then the diverged guard's own fetch and a fast-forwardable
+        # rev-list count, so the request reaches the worker whose procs follow.
+        _sequence_procs(
+            monkeypatch,
+            [_FakeProc(out=b""), _FakeProc(out=b""), _FakeProc(out=b"0\t1\n")] + procs,
+        )
 
         req = _request({})
         state = req.app["state"]
@@ -685,8 +690,14 @@ class TestApplyRefusals:
 
         async def _exec(*args: str, **_kwargs: object):
             calls["n"] += 1
-            if calls["n"] == 1:
+            if calls["n"] == 1:  # git status --porcelain: clean
                 return _FakeProc(out=b"")
+            if calls["n"] == 2:  # the diverged guard's own fetch
+                return _FakeProc(out=b"")
+            if calls["n"] == 3:  # the guard's rev-list: fast-forwardable
+                return _FakeProc(out=b"0\t1\n")
+            # The WORKER's first spawn (git pull) crashes: the point under test
+            # is that an exception inside the worker reaches the UI.
             raise RuntimeError("fork failed")
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", _exec)

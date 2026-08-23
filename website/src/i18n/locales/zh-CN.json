@@ -10273,6 +10273,10 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "已分叉",
+        "checkout_diverged_from_upstream": "此检出已与上游分叉（{{distance}}）。请用 rebase 或 merge 更新——不会自动应用任何更改，你的本地提交是安全的。",
+        "commits_ahead_other": "领先 {{count}} 个提交",
+        "commits_behind_other": "落后 {{count}} 个提交",
         "updates_managed_by_policy": "此安装的更新由管理员定义的更新策略管理。新版本将通过该机制到达。",
         "updates_managed_externally": "此安装的更新由外部包管理器管理。请使用该包管理器获取新版本。",
         "updates_managed_externally_by": "此安装的更新由 {{managedBy}} 管理。请使用它获取新版本。",

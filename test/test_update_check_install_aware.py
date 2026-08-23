@@ -545,6 +545,36 @@ class TestGitCheckoutStillWorks:
         assert info["check_status"] == "succeeded"
         assert info["error_code"] is None
 
+    def test_a_diverged_checkout_reports_its_commit_distance(self, _git_install, monkeypatch):
+        """Diverged is its own wire state, not a quieter "up to date".
+
+        ``update_available: False`` alone is what BOTH a current checkout and a
+        diverged one report, so the counts are the only signal the panel has to
+        say "rebase or merge" instead of "you're on the latest version". The
+        availability assertion rides along on purpose: populating the counts
+        must not loosen the no-auto-apply property the diverged case exists to
+        protect.
+        """
+        self._git_script(
+            monkeypatch,
+            [
+                (0, b""),  # git fetch
+                (0, b"cccc\n"),  # rev-parse HEAD
+                (0, b"bbbb\n"),  # rev-parse @{u}
+                (0, b"3\t219\n"),  # rev-list: 3 ahead, 219 behind — DIVERGED
+                (0, b'__version__ = "0.3.0"\n'),  # git show
+            ],
+        )
+        monkeypatch.setattr(updates, "_local_version", "0.3.0")
+        asyncio.run(updates._do_update_check())
+
+        info = updates.get_update_info()
+        assert info["commits_ahead"] == 3
+        assert info["commits_behind"] == 219
+        assert info["update_available"] is False
+        assert info["check_status"] == "succeeded"
+        assert info["error_code"] is None
+
     def test_a_checkout_only_ahead_is_up_to_date(self, _git_install, monkeypatch):
         """Unpushed local commits are not an update to offer.
 

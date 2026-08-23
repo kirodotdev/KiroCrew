@@ -10398,6 +10398,12 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "আলাদা হয়ে গেছে",
+        "checkout_diverged_from_upstream": "এই চেকআউটটি তার আপস্ট্রিম থেকে আলাদা হয়ে গেছে ({{distance}})। আপডেট করতে rebase বা merge করুন — কিছুই স্বয়ংক্রিয়ভাবে প্রয়োগ হয় না, তাই আপনার লোকাল কমিটগুলি নিরাপদ।",
+        "commits_ahead_one": "{{count}}টি কমিট এগিয়ে",
+        "commits_ahead_other": "{{count}}টি কমিট এগিয়ে",
+        "commits_behind_one": "{{count}}টি কমিট পিছিয়ে",
+        "commits_behind_other": "{{count}}টি কমিট পিছিয়ে",
         "updates_managed_by_policy": "এই ইনস্টলের আপডেট অপারেটর-নির্ধারিত আপডেট নীতি দ্বারা পরিচালিত হয়। নতুন সংস্করণ সেই ব্যবস্থার মাধ্যমে আসে।",
         "updates_managed_externally": "এই ইনস্টলের আপডেট একটি বাহ্যিক প্যাকেজ ম্যানেজার পরিচালনা করে। নতুন সংস্করণ সেই প্যাকেজ ম্যানেজার দিয়ে নিন।",
         "updates_managed_externally_by": "এই ইনস্টলের আপডেট {{managedBy}} পরিচালনা করে। নতুন সংস্করণ সেটি দিয়ে নিন।",

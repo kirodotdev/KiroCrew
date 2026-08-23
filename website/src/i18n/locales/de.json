@@ -10397,6 +10397,12 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Abgewichen",
+        "checkout_diverged_from_upstream": "Dieser Checkout ist vom Upstream abgewichen ({{distance}}). Zum Aktualisieren Rebase oder Merge ausführen — nichts wird automatisch angewendet, die lokalen Commits bleiben also erhalten.",
+        "commits_ahead_one": "{{count}} Commit voraus",
+        "commits_ahead_other": "{{count}} Commits voraus",
+        "commits_behind_one": "{{count}} Commit zurück",
+        "commits_behind_other": "{{count}} Commits zurück",
         "updates_managed_by_policy": "Updates für diese Installation werden über eine vom Betreiber definierte Update-Richtlinie verwaltet. Neue Versionen kommen über diesen Mechanismus an.",
         "updates_managed_externally": "Updates für diese Installation werden von einem externen Paketmanager verwaltet. Beziehen Sie neue Versionen über diesen Paketmanager.",
         "updates_managed_externally_by": "Updates für diese Installation werden von {{managedBy}} verwaltet. Beziehen Sie neue Versionen darüber.",

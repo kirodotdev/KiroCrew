@@ -10646,6 +10646,16 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Расхождение",
+        "checkout_diverged_from_upstream": "Эта рабочая копия разошлась с upstream ({{distance}}). Выполните rebase или merge, чтобы обновиться — ничего не применяется автоматически, поэтому ваши локальные коммиты в безопасности.",
+        "commits_ahead_one": "{{count}} коммит впереди",
+        "commits_ahead_few": "{{count}} коммита впереди",
+        "commits_ahead_many": "{{count}} коммитов впереди",
+        "commits_ahead_other": "{{count}} коммита впереди",
+        "commits_behind_one": "{{count}} коммит позади",
+        "commits_behind_few": "{{count}} коммита позади",
+        "commits_behind_many": "{{count}} коммитов позади",
+        "commits_behind_other": "{{count}} коммита позади",
         "updates_managed_by_policy": "Обновлениями этой установки управляет политика обновлений, заданная оператором. Новые версии приходят через этот механизм.",
         "updates_managed_externally": "Обновлениями этой установки управляет внешний менеджер пакетов. Получайте новые версии через этот менеджер пакетов.",
         "updates_managed_externally_by": "Обновлениями этой установки управляет {{managedBy}}. Получайте новые версии через него.",

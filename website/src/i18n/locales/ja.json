@@ -10273,6 +10273,10 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "分岐あり",
+        "checkout_diverged_from_upstream": "このチェックアウトはアップストリームから分岐しています（{{distance}}）。rebase または merge で更新してください — 何も自動では適用されないため、ローカルコミットは安全です。",
+        "commits_ahead_other": "{{count}} コミット先行",
+        "commits_behind_other": "{{count}} コミット遅れ",
         "updates_managed_by_policy": "このインストールの更新は、運用者が定義した更新ポリシーで管理されています。新しいバージョンはその仕組みで届きます。",
         "updates_managed_externally": "このインストールの更新は外部のパッケージマネージャーが管理しています。新しいバージョンはそのパッケージマネージャーで取得してください。",
         "updates_managed_externally_by": "このインストールの更新は {{managedBy}} が管理しています。新しいバージョンはそれで取得してください。",

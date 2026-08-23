@@ -15,6 +15,7 @@ import type {
   SessionStorageCleanup,
   SessionStorageReport,
   SessionTrashResult,
+  UpdateCheckResult,
   WorkflowRunSummary,
 } from '../types'
 import { refreshOnce, __resetRefreshOnceForTests } from './refreshOnce'
@@ -2401,7 +2402,7 @@ export const api = {
     URL.revokeObjectURL(url)
   },
   // Update
-  checkUpdate: () => fetch('/api/update/check').then(j),
+  checkUpdate: () => fetch('/api/update/check').then(j) as Promise<UpdateCheckResult>,
   changelog: () => fetch('/api/changelog').then(j),
   releases: () => fetch('/api/releases').then(j),
   applyUpdate: () => post('/api/update').then(j),

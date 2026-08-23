@@ -10398,6 +10398,12 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "अलग हो गया",
+        "checkout_diverged_from_upstream": "यह चेकआउट अपने अपस्ट्रीम से अलग हो गया है ({{distance}})। अपडेट करने के लिए rebase या merge करो — कुछ भी अपने आप लागू नहीं होता, इसलिए तुम्हारे लोकल कमिट सुरक्षित हैं।",
+        "commits_ahead_one": "{{count}} कमिट आगे",
+        "commits_ahead_other": "{{count}} कमिट आगे",
+        "commits_behind_one": "{{count}} कमिट पीछे",
+        "commits_behind_other": "{{count}} कमिट पीछे",
         "updates_managed_by_policy": "इस इंस्टॉल के अपडेट ऑपरेटर द्वारा परिभाषित अपडेट नीति से प्रबंधित होते हैं। नए संस्करण उसी तंत्र से आते हैं।",
         "updates_managed_externally": "इस इंस्टॉल के अपडेट एक बाहरी पैकेज मैनेजर द्वारा प्रबंधित किए जाते हैं। नए संस्करण उसी पैकेज मैनेजर से प्राप्त करें।",
         "updates_managed_externally_by": "इस इंस्टॉल के अपडेट {{managedBy}} द्वारा प्रबंधित किए जाते हैं। नए संस्करण उसी से प्राप्त करें।",

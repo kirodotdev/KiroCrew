@@ -3936,6 +3936,12 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Diverged",
+        "checkout_diverged_from_upstream": "This checkout has diverged from its upstream ({{distance}}). Rebase or merge to update — nothing is applied automatically, so your local commits are safe.",
+        "commits_ahead_one": "{{count}} commit ahead",
+        "commits_ahead_other": "{{count}} commits ahead",
+        "commits_behind_one": "{{count}} commit behind",
+        "commits_behind_other": "{{count}} commits behind",
         "updates_managed_by_policy": "Updates for this install are managed by an operator-defined update policy. New versions arrive through the mechanism it defines.",
         "updates_managed_externally": "Updates for this install are managed by an external package manager. Use that package manager to get new versions.",
         "updates_managed_externally_by": "Updates for this install are managed by {{managedBy}}. Use it to get new versions.",

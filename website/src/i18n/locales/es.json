@@ -10522,6 +10522,14 @@
     },
     "settings": {
       "aboutPanel": {
+        "diverged": "Divergente",
+        "checkout_diverged_from_upstream": "Este checkout ha divergido de su upstream ({{distance}}). Haz rebase o merge para actualizar; nada se aplica automáticamente, así que tus commits locales están a salvo.",
+        "commits_ahead_one": "{{count}} commit por delante",
+        "commits_ahead_many": "{{count}} commits por delante",
+        "commits_ahead_other": "{{count}} commits por delante",
+        "commits_behind_one": "{{count}} commit por detrás",
+        "commits_behind_many": "{{count}} commits por detrás",
+        "commits_behind_other": "{{count}} commits por detrás",
         "updates_managed_by_policy": "Las actualizaciones de esta instalación las gestiona una política de actualización definida por el operador. Las nuevas versiones llegan por ese mecanismo.",
         "updates_managed_externally": "Las actualizaciones de esta instalación las gestiona un gestor de paquetes externo. Usa ese gestor de paquetes para obtener nuevas versiones.",
         "updates_managed_externally_by": "Las actualizaciones de esta instalación las gestiona {{managedBy}}. Úsalo para obtener nuevas versiones.",

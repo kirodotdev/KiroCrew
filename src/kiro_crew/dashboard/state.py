@@ -3918,6 +3918,8 @@ class DashboardState:
         update_command: str = "",
         update_channel: str = "",
         update_managed_by: str = "",
+        update_commits_ahead: int = 0,
+        update_commits_behind: int = 0,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -3965,6 +3967,13 @@ class DashboardState:
             # command-managed host must not render self-managed installer
             # instructions its policy exists to bypass.
             "update_managed_by": update_managed_by,
+            # Commit distance from a git checkout's upstream, both directions.
+            # DIVERGED (both > 0) reports ``update_available: False`` exactly
+            # like a current checkout — the destructive apply paths must never
+            # be offered local commits — so without the counts the badge cannot
+            # tell the two apart. 0/0 on non-git layouts and before any check.
+            "update_commits_ahead": update_commits_ahead,
+            "update_commits_behind": update_commits_behind,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,
