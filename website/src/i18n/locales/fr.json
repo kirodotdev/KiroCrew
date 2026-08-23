@@ -7988,8 +7988,8 @@
         "show_nudge_instructions": "Afficher les instructions de relance"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Réduire le message épinglé",
-        "expand_pinned_prompt": "Développer le message épinglé",
+        "collapse_pinned_prompt": "Réduire le tour épinglé",
+        "expand_pinned_prompt": "Développer le tour épinglé",
         "jump_to_this_turn": "Aller à ce tour"
       },
       "recoveryCard": {

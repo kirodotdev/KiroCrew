@@ -7886,8 +7886,8 @@
         "show_nudge_instructions": "नज निर्देश दिखाएँ"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "पिन किया गया संदेश संक्षिप्त करें",
-        "expand_pinned_prompt": "पिन किया गया संदेश विस्तृत करें",
+        "collapse_pinned_prompt": "पिन किया गया टर्न संक्षिप्त करें",
+        "expand_pinned_prompt": "पिन किया गया टर्न विस्तृत करें",
         "jump_to_this_turn": "इस टर्न पर जाएँ"
       },
       "recoveryCard": {

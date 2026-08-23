@@ -7886,8 +7886,8 @@
         "show_nudge_instructions": "নাজের নির্দেশ দেখাও"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "পিন করা মেসেজ সংকুচিত করুন",
-        "expand_pinned_prompt": "পিন করা মেসেজ প্রসারিত করুন",
+        "collapse_pinned_prompt": "পিন করা টার্ন সংকুচিত করুন",
+        "expand_pinned_prompt": "পিন করা টার্ন প্রসারিত করুন",
         "jump_to_this_turn": "এই টার্নে যান"
       },
       "recoveryCard": {

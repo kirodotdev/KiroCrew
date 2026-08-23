@@ -7784,8 +7784,8 @@
         "show_nudge_instructions": "넛지 지시 표시"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "고정한 프롬프트 접기",
-        "expand_pinned_prompt": "고정한 프롬프트 펼치기",
+        "collapse_pinned_prompt": "고정한 턴 접기",
+        "expand_pinned_prompt": "고정한 턴 펼치기",
         "jump_to_this_turn": "이 턴으로 이동"
       },
       "recoveryCard": {

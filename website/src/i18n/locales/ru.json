@@ -8090,8 +8090,8 @@
         "show_nudge_instructions": "Показать инструкции подталкивания"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Свернуть закреплённое сообщение",
-        "expand_pinned_prompt": "Развернуть закреплённое сообщение",
+        "collapse_pinned_prompt": "Свернуть закреплённый ход",
+        "expand_pinned_prompt": "Развернуть закреплённый ход",
         "jump_to_this_turn": "Перейти к этому ходу"
       },
       "recoveryCard": {

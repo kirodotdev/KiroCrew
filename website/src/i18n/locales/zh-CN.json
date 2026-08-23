@@ -7784,8 +7784,8 @@
         "show_nudge_instructions": "显示推动指令"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "收起置顶提示",
-        "expand_pinned_prompt": "展开置顶提示",
+        "collapse_pinned_prompt": "收起置顶轮次",
+        "expand_pinned_prompt": "展开置顶轮次",
         "jump_to_this_turn": "跳转到此轮次"
       },
       "recoveryCard": {

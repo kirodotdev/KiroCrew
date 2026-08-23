@@ -7988,8 +7988,8 @@
         "show_nudge_instructions": "Mostrar las instrucciones del empujón"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Contraer mensaje fijado",
-        "expand_pinned_prompt": "Expandir mensaje fijado",
+        "collapse_pinned_prompt": "Contraer turno fijado",
+        "expand_pinned_prompt": "Expandir turno fijado",
         "jump_to_this_turn": "Ir a este turno"
       },
       "recoveryCard": {

@@ -7784,8 +7784,8 @@
         "show_nudge_instructions": "ナッジの指示を表示"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "固定したプロンプトを折りたたむ",
-        "expand_pinned_prompt": "固定したプロンプトを展開",
+        "collapse_pinned_prompt": "固定したターンを折りたたむ",
+        "expand_pinned_prompt": "固定したターンを展開",
         "jump_to_this_turn": "このターンへ移動"
       },
       "recoveryCard": {

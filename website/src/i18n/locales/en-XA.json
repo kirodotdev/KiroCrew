@@ -7754,8 +7754,8 @@
         "show_nudge_instructions": "[Şĥøẁ ñùðğè ìñşţŕùçţìøñş ················]"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "[Çøĺĺàþşè þìññèð þŕøɱþţ ···············]",
-        "expand_pinned_prompt": "[Èẋþàñð þìññèð þŕøɱþţ ··················]",
+        "collapse_pinned_prompt": "[Çøĺĺàþşè þìññèð ţùŕñ ··················]",
+        "expand_pinned_prompt": "[Èẋþàñð þìññèð ţùŕñ ················]",
         "jump_to_this_turn": "[Ĵùɱþ ţø ţĥìş ţùŕñ ···············]"
       },
       "recoveryCard": {

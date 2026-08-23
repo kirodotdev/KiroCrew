@@ -7988,8 +7988,8 @@
         "show_nudge_instructions": "Mostrar instruções do nudge"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Recolher mensagem fixada",
-        "expand_pinned_prompt": "Expandir mensagem fixada",
+        "collapse_pinned_prompt": "Recolher turno fixado",
+        "expand_pinned_prompt": "Expandir turno fixado",
         "jump_to_this_turn": "Ir para este turno"
       },
       "recoveryCard": {

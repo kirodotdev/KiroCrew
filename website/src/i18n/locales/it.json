@@ -7988,8 +7988,8 @@
         "show_nudge_instructions": "Mostra le istruzioni del sollecito"
       },
       "pinnedPrompt": {
-        "collapse_pinned_prompt": "Comprimi messaggio fissato",
-        "expand_pinned_prompt": "Espandi messaggio fissato",
+        "collapse_pinned_prompt": "Comprimi turno fissato",
+        "expand_pinned_prompt": "Espandi turno fissato",
         "jump_to_this_turn": "Vai a questo turno"
       },
       "recoveryCard": {
