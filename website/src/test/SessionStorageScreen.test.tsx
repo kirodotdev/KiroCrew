@@ -463,4 +463,136 @@ describe('SessionStorageScreen (inventory)', () => {
     expect(held!.title).toMatch(/storage cleanup is unavailable/i)
   })
 
+  /* ─────────────────── Pagination ─────────────────── */
+
+  /**
+   * Builds `count` conversation rows, biggest first, so the default sort puts
+   * `FG 001` at the top and `FG <count>` at the bottom. That makes "which page am
+   * I on" assertable by title alone.
+   */
+  function manyForeground(count: number): SessionInventoryList {
+    const rows = Array.from({ length: count }, (_, i) => ({
+      uid: `dashboard_chat-${i}`,
+      title: `FG ${String(i + 1).padStart(3, '0')}`,
+      origin: `dashboard · chat-${i}`,
+      bytes: (count - i) * 1_000_000,
+      mtime: 1752000000 - i,
+      active: false,
+      live: false,
+      background: false,
+    }))
+    return baseInventory({
+      sessions: rows,
+      total_sessions: count,
+      background: { sessions: 0, bytes: 0, listed: 0 },
+    })
+  }
+
+  /**
+   * The reported symptom: with a full inventory on one page the Trash section —
+   * the only place a staged delete is undone or confirmed — sat below every row in
+   * the store, so the screen's own controls were unreachable.
+   */
+  it('shows one page of rows, not the whole inventory', async () => {
+    inventory = manyForeground(45)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+
+    expect(screen.getByText('FG 020')).toBeTruthy()
+    expect(screen.queryByText('FG 021')).toBeNull()
+    expect(screen.getByText('Page 1 of 3')).toBeTruthy()
+    expect(screen.getByText('Showing 1–20 of 45')).toBeTruthy()
+  })
+
+  it('moves to the next page and back', async () => {
+    inventory = manyForeground(45)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByText('FG 021')).toBeTruthy()
+    expect(screen.queryByText('FG 001')).toBeNull()
+    expect(screen.getByText('Page 2 of 3')).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Previous' }))
+    expect(screen.getByText('FG 001')).toBeTruthy()
+    expect(screen.getByText('Page 1 of 3')).toBeTruthy()
+  })
+
+  it('stops at the last page, which may be short', async () => {
+    inventory = manyForeground(45)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByText('Showing 41–45 of 45')).toBeTruthy()
+    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  /**
+   * Page 3 of a one-page result is an empty screen, which is what a kept cursor
+   * produces the moment a search narrows the list.
+   */
+  it('returns to the first page when the search changes', async () => {
+    inventory = manyForeground(45)
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('FG 001')).toBeTruthy())
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByText('Page 2 of 3')).toBeTruthy()
+
+    fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'FG' } })
+    await waitFor(() => expect(screen.getByText('Page 1 of 3')).toBeTruthy())
+    expect(screen.getByText('FG 001')).toBeTruthy()
+    expect(screen.queryByText('FG 021')).toBeNull()
+  })
+
+  it('offers no pager when the whole list fits on one page', async () => {
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull()
+    expect(screen.queryByText(/^Page /)).toBeNull()
+  })
+
+  /**
+   * A filtered-to-nothing list used to render as a blank gap, which reads as a
+   * screen that failed to load rather than a query with no hits.
+   */
+  it('says a search matched nothing instead of showing a blank gap', async () => {
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText('Refactor the ACP adapter')).toBeTruthy())
+
+    fireEvent.change(screen.getByPlaceholderText('Search sessions'), { target: { value: 'zzzz' } })
+    await waitFor(() => expect(screen.getByText('No conversations match that search.')).toBeTruthy())
+    expect(screen.queryByText('Refactor the ACP adapter')).toBeNull()
+  })
+
+  /** The replay-only group is capped at 200 rows server-side, so it pages too. */
+  it('pages the background group as well', async () => {
+    const bg = Array.from({ length: 30 }, (_, i) => ({
+      uid: `subagent_${i}`,
+      title: '',
+      origin: `subagent · ${String(i + 1).padStart(3, '0')}`,
+      bytes: (30 - i) * 1_000,
+      mtime: 1752000000,
+      active: false,
+      live: false,
+      background: true,
+    }))
+    inventory = baseInventory({
+      sessions: bg,
+      total_sessions: 30,
+      background: { sessions: 30, bytes: 465_000, listed: 30 },
+    })
+    renderWithProviders(<SessionStorageScreen onBack={() => {}} />)
+    await waitFor(() => expect(screen.getByText(/Background agents/)).toBeTruthy())
+    await userEvent.click(screen.getByText(/Background agents/))
+
+    expect(screen.getByText('subagent · 020')).toBeTruthy()
+    expect(screen.queryByText('subagent · 021')).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Next' }))
+    expect(screen.getByText('subagent · 021')).toBeTruthy()
+  })
+
 })
