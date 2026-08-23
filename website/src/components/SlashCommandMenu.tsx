@@ -63,6 +63,7 @@ const COMMAND_DESC_KEY: Record<string, string> = {
   '/model': 'components.slashCommandMenu.desc_model',
   '/onboarding': 'components.slashCommandMenu.desc_onboarding',
   '/paste': 'components.slashCommandMenu.desc_paste',
+  '/plain': 'components.slashCommandMenu.desc_plain',
   '/prompts': 'components.slashCommandMenu.desc_prompts',
   '/q': 'components.slashCommandMenu.desc_quit',
   '/quit': 'components.slashCommandMenu.desc_quit',
@@ -121,7 +122,22 @@ interface Props {
   sendOnEnter?: SendMode
 }
 
-const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding'] as const
+/**
+ * Commands the backend's GET /api/slash-commands does not report, merged in so
+ * the menu still offers them. Two different kinds live here, and the difference
+ * matters when adding a row:
+ *
+ * - CLIENT-INTERCEPTED (`/kb`, `/onboarding`): the composer recognises the text
+ *   and acts on it locally; the message is never sent. Those also need a branch
+ *   in `interceptSlashCommand`.
+ * - QUICK PROMPT (`/plain`): a backend MACRO. The message IS sent, unchanged, and
+ *   `ContextBuilder.build_message` swaps the token for the instruction it stands
+ *   for (`src/kiro_crew/quick_prompts.py`). It must therefore stay OUT of
+ *   `interceptSlashCommand` — intercepting it would stop it ever reaching the
+ *   expansion — and out of the kiro-cli passthrough set, which would forward it
+ *   to a harness that has no such command.
+ */
+const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding', '/plain'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 

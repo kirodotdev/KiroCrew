@@ -93,6 +93,11 @@ def attributable_user_chars(original_len: int, *, prompt_expanded: bool) -> int:
 
     * ``@prompt`` REPLACES the message with SOP/prompt content — injected
       instruction, not user typing — so none of it is the user's (return 0).
+    * A ``/plain``-style QUICK PROMPT is the same class of replacement: the token
+      the user typed is gone from the turn and what remains is generated
+      instruction, so none of it is theirs either. ``build_message`` reports an
+      empty user span for that turn, and the caller passes ``prompt_expanded``
+      for it, so this fallback agrees with the authoritative span.
     * ``$skill`` APPENDS skill bodies after the original text, so the original
       typed length still marks the user's span; the appended ``[Skill: ]``
       blocks classify by their own markers in :func:`split_blocks`.

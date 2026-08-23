@@ -11,7 +11,8 @@ import SlashCommandMenu from '../components/SlashCommandMenu'
 
 // Commands distinct from the component's FALLBACK set, so findByText waits for
 // the resolved query (not the transient FALLBACK render) before we navigate.
-// Include /kb so FRONTEND_COMMANDS adds nothing extra → list is exactly these.
+// Include /kb so the only extra FRONTEND_COMMANDS row is /plain — a quick prompt
+// the backend never reports, asserted below.
 const CMDS = [
   { name: '/aa', description: 'Alpha command' },
   { name: '/bb', description: 'Beta command' },
@@ -47,8 +48,16 @@ describe('SlashCommandMenu (shared-hook migration)', () => {
     expect(screen.getByText('/cc')).toBeInTheDocument()
   })
 
-  it('renders each command description from the API', async () => {
+  // /plain is a quick prompt: a backend MACRO, so GET /api/slash-commands never
+  // reports it. It reaches the menu only through FRONTEND_COMMANDS, which is the
+  // one thing that makes it discoverable at all.
+  it('offers /plain even though the API does not report it', async () => {
     render(<Harness input="/" />)
+    expect(await screen.findByText('/aa')).toBeInTheDocument()
+    expect(screen.getByText('/plain')).toBeInTheDocument()
+  })
+
+  it('renders each command description from the API', async () => {    render(<Harness input="/" />)
     // Wait for the resolved query, then assert the description column renders.
     expect(await screen.findByText('Alpha command')).toBeInTheDocument()
     expect(screen.getByText('Beta command')).toBeInTheDocument()

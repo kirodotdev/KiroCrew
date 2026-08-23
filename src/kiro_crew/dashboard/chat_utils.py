@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMEvent
     from kiro_crew.slack.outbound import PostedOptions
 
+from kiro_crew.context_blocks import attributable_user_chars
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
     CONN_RECOVERY_PREFIX,
@@ -39,6 +40,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import transcript_sort_key
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     oauth_url_contains_credential,
     redact_credentials,
@@ -273,6 +275,54 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/usage": "Show billing and usage information",
     "/workflows": "List and manage dynamic workflow runs",
 }
+
+
+def user_text_span(
+    offset: int,
+    typed_len: int,
+    *,
+    quick_prompt: bool,
+    prompt_expanded: bool,
+) -> tuple[int, int]:
+    """WHERE the user's typed text sits in the message handed to ``build_message``.
+
+    Deliberately NOT the same question as how much of the turn is ATTRIBUTABLE to
+    the user, which is :func:`attributable_user_chars`. Conflating the two is a live
+    trap: a quick-prompt turn credits the user zero characters, so deriving the
+    span from the attributable count hands ``build_message`` an EMPTY slice — and
+    since that slice is what the quick-prompt matcher reads, the token silently
+    stops expanding altogether.
+
+    So a quick prompt reports its REAL typed span (the matcher has to see the
+    token; ``build_message`` zeroes the attribution itself once it has expanded),
+    while an ``@prompt`` turn — already replaced before this point, so its typed
+    text is gone from the message — reports the empty span the attribution rule
+    asks for.
+    """
+    length = (
+        typed_len
+        if quick_prompt
+        else attributable_user_chars(typed_len, prompt_expanded=prompt_expanded)
+    )
+    return offset, offset + length
+
+
+def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
+    """Whether *first_word* should be forwarded to the harness as a command.
+
+    Two rules, and the second exists because of a trap. A member of
+    :data:`_SLASH_COMMANDS` is a command on every provider. Under ``claude_code``
+    the harness owns its own command set, so ANY leading slash is forwarded —
+    except a quick-prompt token, which is not a command at all but a macro
+    :meth:`ContextBuilder.build_message` expands into an instruction. Forwarding one
+    would hand the harness a command it has no definition for, and the token would
+    silently do nothing on that provider while working everywhere else.
+    """
+    if first_word in _SLASH_COMMANDS:
+        return True
+    if not (cc_provider and first_word.startswith("/")):
+        return False
+    return first_word.lower() not in QUICK_PROMPTS
 
 
 def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEvent") -> str:

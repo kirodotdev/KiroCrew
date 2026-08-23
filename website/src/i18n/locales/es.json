@@ -6477,6 +6477,7 @@
       "desc_model": "Mostrar o cambiar el modelo actual",
       "desc_onboarding": "Repetir la importación inicial y el recorrido de bienvenida",
       "desc_paste": "Pegar una imagen del portapapeles",
+      "desc_plain": "Cómo va todo, o indica un tema",
       "desc_prompts": "Listar o invocar los prompts guardados y los procedimientos operativos del agente",
       "desc_quit": "Cerrar la sesión de chat",
       "desc_reply": "Responder al último mensaje del asistente",

@@ -2269,6 +2269,7 @@
       "desc_model": "Show or switch the current model",
       "desc_onboarding": "Replay setup import and the welcome tour",
       "desc_paste": "Paste an image from the clipboard",
+      "desc_plain": "Where things stand - or add a topic",
       "desc_prompts": "List or invoke saved prompts & agent SOPs",
       "desc_quit": "Quit the chat session",
       "desc_reply": "Reply to the last assistant message",

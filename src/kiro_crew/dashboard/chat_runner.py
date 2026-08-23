@@ -75,7 +75,6 @@ from kiro_crew.dashboard.chat_title import (
 from kiro_crew.dashboard.chat_utils import (
     _BLOCKED_SLASH_COMMANDS,
     _MAX_TOOL_PURPOSE,
-    _SLASH_COMMANDS,
     ResetCause,
     _append_compaction_notice,
     _apply_incognito_prefix,
@@ -95,11 +94,13 @@ from kiro_crew.dashboard.chat_utils import (
     build_recovery_requeue,
     effective_session_key,
     expire_slack_options,
+    is_harness_slash_command,
     is_system_injection_item,
     mirror_is_paused,
     remember_slack_options,
     slack_mirror_is_paused,
     slot_history_key,
+    user_text_span,
 )
 from kiro_crew.dashboard.handlers import (
     MAX_PROMPT_BYTES,
@@ -201,6 +202,7 @@ from kiro_crew.providers.base import (
     EVENT_TOOL_RESULT,
     LLMEvent,
 )
+from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
     StreamRedactor,
@@ -4781,7 +4783,10 @@ async def _run_chat(
     # ── Slash commands: detect early, before session acquisition ──
     first_word = message.split()[0] if message.strip() else ""
     _is_cc_provider = KiroCrewConfig.load().agent.provider == "claude_code"
-    is_slash = (first_word.startswith("/") and _is_cc_provider) or first_word in _SLASH_COMMANDS
+    # Named rather than inlined so the quick-prompt exception is one testable rule
+    # instead of a condition only reachable by driving this whole function: a macro
+    # must NOT be forwarded to the harness as a command.
+    is_slash = is_harness_slash_command(first_word, cc_provider=_is_cc_provider)
 
     # Block dangerous/local-only commands before acquiring a session
     if first_word in _BLOCKED_SLASH_COMMANDS:
@@ -5259,7 +5264,15 @@ async def _run_chat(
         # neutralization, the multibyte fold, a rewriting hook) are NOT applied
         # here — build_message maps these bounds to their final position itself.
         user_typed_len = len(message)
-        prompt_expanded = False
+        # A quick prompt is a REPLACING expansion, the same class as @prompt: the
+        # instruction the model receives is injected content, not the user's typing,
+        # so none of it is attributable to them. This flag drives the FALLBACK
+        # attribution path (used when the authoritative span cannot be re-derived
+        # after post-assembly prefixes). It must NOT also shorten the span handed to
+        # build_message -- that span is how the matcher FINDS the token, and zeroing
+        # it stops the expansion entirely. `user_text_span` keeps the two apart.
+        _is_quick_prompt = first_word.lower() in QUICK_PROMPTS
+        prompt_expanded = _is_quick_prompt
         if message.startswith("@") and not is_slash and _prompt_depth < 1:
             original = message
             message, _status = _expand_prompt_mention(message, state, slot)
@@ -5542,10 +5555,11 @@ async def _run_chat(
                 exclude_last_n=1,
                 folder_path=folder_path,
                 model_window=model_window,
-                user_text_range=(
+                user_text_range=user_text_span(
                     _user_prepend_offset,
-                    _user_prepend_offset
-                    + attributable_user_chars(user_typed_len, prompt_expanded=prompt_expanded),
+                    user_typed_len,
+                    quick_prompt=_is_quick_prompt,
+                    prompt_expanded=prompt_expanded,
                 ),
                 user_span_out=_user_span,
                 needs_reinjection=_needs_reinjection,

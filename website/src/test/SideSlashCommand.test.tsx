@@ -51,6 +51,19 @@ describe('/side slash command interception', () => {
     expect(mockSideOpen).not.toHaveBeenCalled()
   })
 
+  // A quick prompt (/plain) is a BACKEND macro: build_message swaps the token for
+  // the instruction it stands for. Intercepting it here would stop the message
+  // ever being sent, so the feature would silently do nothing. Pinned because the
+  // command appears in the same menu as /side and looks interceptable.
+  it('does not intercept "/plain" — it must reach the backend expansion', async () => {
+    for (const text of ['/plain', '/plain why is CI red']) {
+      const result = await interceptSlashCommand(text, SLOT, store.dispatch)
+      expect(result).toEqual({ intercepted: false })
+    }
+    expect(mockSideOpen).not.toHaveBeenCalled()
+    expect(mockSideTurn).not.toHaveBeenCalled()
+  })
+
   it('starts the import gate before replaying onboarding', async () => {
     const listener = vi.fn()
     window.addEventListener('mc-start-import', listener)

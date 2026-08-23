@@ -32,6 +32,7 @@ from kiro_crew.hooks import (
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.metrics.provider import get_recorder
+from kiro_crew.quick_prompts import expand_quick_prompt
 from kiro_crew.security import (
     audit_injection_dropped,
     contains_injection,
@@ -2966,6 +2967,39 @@ class ContextBuilder:
         # forge a second boundary after the request header above. This covers the
         # HOOK_MODIFY path too — a transform hook may re-emit untrusted input.
         turn_text = hook_result.text if hook_result.action == HOOK_MODIFY else text
+        # Quick prompts (``/plain``) are macros, not commands: the token the user
+        # opened with is replaced by the instruction it stands for. It happens
+        # HERE, in the one function every inbound surface funnels through, so a
+        # single registry row works from the dashboard composer, Telegram, Slack,
+        # Discord, a subagent and a cron turn — rather than once per dispatcher.
+        # After the hook layer, so a transform hook still sees what the user
+        # actually typed, and a hook that rewrites a turn INTO a quick prompt is
+        # honoured too. Before marker neutralization, so the spliced instruction
+        # is scrubbed on the same terms as any other turn text.
+        #
+        # The token has to be matched against the USER'S OWN SLICE, not the whole
+        # turn. A dashboard turn can arrive with an envelope PREFIXED to it — a
+        # drained memory block, a compaction notice — which is exactly what
+        # ``user_text_range`` describes. Anchoring on the whole turn would miss a
+        # prefixed ``/plain`` and silently send the literal token to the model, so
+        # the match runs on ``text[start:end]`` and the expansion is spliced back
+        # into that slice's place. Where no range is given (channels, cron, a
+        # subagent) the whole turn IS the user's text, and a rewriting hook's
+        # output is likewise the turn in full.
+        _quick_prompt: str | None = None
+        _quick_at = 0
+        if hook_result.action == HOOK_MODIFY or user_text_range is None:
+            _quick_prompt = expand_quick_prompt(turn_text)
+            if _quick_prompt is not None:
+                turn_text = _quick_prompt
+        else:
+            _q0, _q1 = user_text_range
+            _q0 = max(0, min(_q0, len(turn_text)))
+            _q1 = max(_q0, min(_q1, len(turn_text)))
+            _quick_prompt = expand_quick_prompt(turn_text[_q0:_q1])
+            if _quick_prompt is not None:
+                turn_text = turn_text[:_q0] + _quick_prompt + turn_text[_q1:]
+                _quick_at = _q0
         _marker_spans = _structural_marker_spans(turn_text)
         _turn_neutralized = _apply_marker_spans(turn_text, _marker_spans)
         # Where the user's own text lands is resolved HERE rather than
@@ -2975,10 +3009,22 @@ class ContextBuilder:
         # text), and the final _MULTIBYTE_TABLE fold. A caller measuring the
         # pre-transform message cannot know the post-transform offsets.
         if user_text_range is not None:
-            if hook_result.action == HOOK_MODIFY:
-                # A transform hook replaced the whole turn, so the caller's
-                # bounds describe text that no longer exists. The hook's output
-                # IS the user's turn now, so attribute all of it.
+            if _quick_prompt is not None:
+                # A quick prompt REPLACED the user's slice with injected
+                # instruction text. None of it is their typing — they typed a
+                # token that no longer exists in the turn — so their span is
+                # EMPTY, anchored where that slice began. This is the rule
+                # attributable_user_chars() already states for the sibling
+                # @prompt replacement (credit 0). Claiming the whole replacement,
+                # as a rewriting hook legitimately does, would report generated
+                # instructions as the user's own words and underreport Crew-added
+                # context in the per-turn breakdown.
+                _u0, _u1 = _quick_at, _quick_at
+            elif hook_result.action == HOOK_MODIFY:
+                # A transform hook replaced the whole turn, so the caller's bounds
+                # describe text that no longer exists. The hook's output IS the
+                # user's turn now, so attribute all of it rather than clamping
+                # stale offsets into the middle of it.
                 _u0, _u1 = 0, len(turn_text)
             else:
                 _u0, _u1 = user_text_range

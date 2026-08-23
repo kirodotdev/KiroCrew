@@ -6477,6 +6477,7 @@
       "desc_model": "Mostrar ou trocar o modelo atual",
       "desc_onboarding": "Repetir a importação da configuração e o tour de boas-vindas",
       "desc_paste": "Colar uma imagem da área de transferência",
+      "desc_plain": "Como as coisas estão, ou informe um tema",
       "desc_prompts": "Listar ou invocar prompts salvos e SOPs de agentes",
       "desc_quit": "Encerrar a sessão de conversa",
       "desc_reply": "Responder à última mensagem do assistente",

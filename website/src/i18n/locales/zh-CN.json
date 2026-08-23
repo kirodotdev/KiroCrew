@@ -6297,6 +6297,7 @@
       "desc_model": "显示或切换当前模型",
       "desc_onboarding": "重放设置导入和欢迎引导",
       "desc_paste": "从剪贴板粘贴图片",
+      "desc_plain": "现在是什么情况，或指定一个话题",
       "desc_prompts": "列出或调用已保存的提示词与代理 SOP",
       "desc_quit": "结束聊天会话",
       "desc_reply": "回复最后一条助手消息",
