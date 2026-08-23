@@ -77,6 +77,10 @@ from kiro_crew.config.paths import (  # noqa: F401, kiro_agents_dir
     kiro_agents_dir,
 )
 
+# Superseded-default reporting (#5244). Leaf module: stdlib only, so importing it
+# here creates no cycle.
+from kiro_crew.config.superseded_defaults import drift_summary, superseded_default_drift
+
 # Schema validation + the validated-data cache live in ``config.validation``.
 # Re-exported here for backward compatibility — callers and tests still
 # reference these as ``kiro_crew.config.loader.X`` (e.g. the cache tests patch
@@ -970,6 +974,36 @@ def update_config_locked(
             return result
     finally:
         os.close(fd)
+
+
+# Keys already warned about in this process. The gateway loads config repeatedly
+# and a superseded default is per-install information, not per-load, so it is
+# said once; ``doctor`` is the surface that renders it again on demand.
+_REPORTED_SUPERSEDED_KEYS: set[str] = set()
+
+
+def _report_superseded_defaults(base_data: dict) -> None:
+    """Warn once per key when a stored base value still holds a superseded default.
+
+    *base_data* is the ``config.json`` document as read, BEFORE the
+    ``config.local.json`` overlay is merged over it. Reporting on the base is the
+    point: the overlay is a separate user-owned file whose value is the operator's
+    live choice, so it neither proves nor disproves what the base has materialized.
+
+    Reads only. This deliberately does NOT correct the value -- for a key that also
+    has a documented escape hatch, a stored old default and a deliberate opt-out
+    are the same bytes on disk, so a rewrite cannot correct one without overriding
+    the other. Telling the operator is the part that can be done without guessing.
+
+    Warned at most once per key per process. The gateway loads config repeatedly,
+    and a line the operator has already read is noise that trains them to ignore
+    the next one; the durable, re-readable rendering lives in ``doctor``.
+    """
+    for entry in superseded_default_drift(base_data):
+        if entry.dotted_key in _REPORTED_SUPERSEDED_KEYS:
+            continue
+        _REPORTED_SUPERSEDED_KEYS.add(entry.dotted_key)
+        logger.warning("Superseded default in stored config: %s", drift_summary(entry))
 
 
 def stamp_config_meta(data: dict) -> dict:
@@ -6177,6 +6211,16 @@ class KiroCrewConfig:
                         logger.warning("Config is not a JSON object, using defaults")
                 except (json.JSONDecodeError, OSError) as e:
                     logger.warning("Failed to load config from %s: %s", path, e)
+
+            # Report -- never correct -- a stored BASE value that still holds a
+            # superseded default (issue #5244), before the overlay merge below:
+            # the overlay is the operator's live choice and says nothing about
+            # what the base materialized. Read-only by design; a key with a
+            # documented escape hatch cannot be corrected automatically, because
+            # a stale default and a deliberate opt-out are the same bytes.
+            # Skipped when no base file loaded -- nothing is stored to report on.
+            if loaded_base:
+                _report_superseded_defaults(data)
 
             # Deep-merge config.local.json overlay (user-owned, never touched by setup)
             local_data: dict = {}

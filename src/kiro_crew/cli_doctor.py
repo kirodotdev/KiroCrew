@@ -44,6 +44,7 @@ from kiro_crew.config.paths import (
     kiro_agents_dir,
     project_agents_dir,
 )
+from kiro_crew.config.superseded_defaults import render_doctor_section
 from kiro_crew.constants import MIN_NODE_MAJOR
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
@@ -2022,6 +2023,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # agent.model, and the whole point here is that the global is not
     # necessarily what a new session gets.
     _doctor_effective_model(cfg, proj, issues)
+
+    # ── Stored defaults a release has since changed (#5244) ──
+    render_doctor_section(issues)
 
     # ── Data Home (+ leftover legacy home) ──
     _doctor_data_home()

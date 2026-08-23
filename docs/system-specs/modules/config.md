@@ -194,6 +194,40 @@ The parent directory is created on first call if it doesn't exist.
 
 The CLI (`cli.py:main()`) auto-detects and sets the env var at startup.
 
+## Superseded Defaults (reported, never rewritten)
+
+`config.json` is a full materialization of the schema -- every field is written to
+disk, including fields the operator never set -- and each field is resolved as
+`data.get(key, DEFAULT)`. A stored value therefore always beats the dataclass
+default, so **changing a shipped default reaches only installs created after the
+change**; a pre-existing install keeps whatever value was materialized last.
+
+`config/superseded_defaults.py` holds an append-only registry
+(`SUPERSEDED_DEFAULTS`) of default changes existing installs should be told about,
+each entry naming the dotted key, the old default, the new default, and the
+release that changed it. `superseded_default_drift(base_data)` returns the entries
+whose stored value equals the old default, comparing type as well as value so a
+stored `0` is not read as `False`.
+
+Two surfaces render it, and neither writes:
+
+- The load path warns once per key per process, evaluated on the **stored base
+  document before the `config.local.json` merge** -- an overlay value is the
+  operator's live choice and says nothing about what the base materialized, so a
+  base drift is still reported when an overlay masks it, and an overlay-only value
+  is not reported at all.
+- `kirocrew doctor` prints a `Stored Defaults` section reading `config.json`
+  directly. Drift is informational and does NOT become an issue; an unreadable or
+  malformed config does.
+
+**Why nothing is corrected automatically.** At least one registered key also has a
+documented escape hatch (`mcp_gateway.forward_declared_env`, whose stored `false`
+is pinned as honoured by `test_a_real_false_still_turns_it_off`). On disk that
+escape hatch and a stale materialized default are the same bytes, so a rewrite
+cannot correct one without overriding the other. Telling them apart needs per-key
+provenance -- a record of which keys the operator actually set -- which this layer
+does not have.
+
 ## Config Overlay (config.local.json)
 
 User overrides can be placed in `~/.kiro/crew/config.local.json`. This file is
