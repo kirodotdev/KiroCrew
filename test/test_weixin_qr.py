@@ -42,6 +42,53 @@ def test_atomic_write_secret_leaves_no_temp_file_behind(tmp_path):
     assert [p.name for p in tmp_path.iterdir()] == [".env"]
 
 
+def test_atomic_write_secret_locks_down_before_any_content_byte(tmp_path, monkeypatch):
+    """The ordering IS the security property: POSIX mode bits protect nothing
+    against NTFS ACLs, so a lockdown applied to the final path after the write
+    leaves the credential readable under the directory-inherited DACL for the
+    whole write. The shared helper restricts the empty temp file first; assert
+    the sequence through the same os.write seam the helper's own ordering test
+    uses."""
+    from kiro_crew import platform_compat
+
+    events = []
+    real_restrict = platform_compat.restrict_to_owner
+    real_os_write = os.write
+
+    def _spy(path):
+        events.append("restrict")
+        return real_restrict(path)
+
+    def _tracking_write(fd, data):
+        events.append("write")
+        return real_os_write(fd, data)
+
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _spy)
+    monkeypatch.setattr(os, "write", _tracking_write)
+
+    target = tmp_path / ".env"
+    qr._atomic_write(target, "WEIXIN=abc\n", secret=True)
+
+    assert events == ["restrict", "write"], events
+    assert target.read_text() == "WEIXIN=abc\n"
+
+
+def test_atomic_write_secret_survives_a_lockdown_refusal(tmp_path, monkeypatch):
+    """A host where the owner lockdown fails (e.g. SID resolution refused) must
+    warn and keep the credential save, not abort a sign-in that already
+    succeeded: the writer's contract is enforce-and-warn."""
+    from kiro_crew import platform_compat
+
+    def _boom(path):
+        raise OSError("icacls failed")
+
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _boom)
+    target = tmp_path / ".env"
+    qr._atomic_write(target, "WEIXIN=abc\n", secret=True)  # must not raise
+    assert target.read_text() == "WEIXIN=abc\n"
+    assert [p.name for p in tmp_path.iterdir()] == [".env"]  # no temp residue
+
+
 def test_env_value_round_trips_and_delete_preserves_other_keys(tmp_path, monkeypatch):
     ep = tmp_path / ".env"
     ep.write_text("OTHER=keepme\nWEIXIN_TOKEN=old\n", encoding="utf-8")

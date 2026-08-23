@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.command_bus import (
     DEFAULT_COMMAND_TIMEOUT_MS,
     DEFAULT_DRAIN_WAIT_MS,
@@ -2396,15 +2397,18 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
 def _write_env_updates(updates: dict[str, str | None]) -> None:
     """Update select keys in config_dir/.env, preserving comments and order.
 
-    A value of ``None`` deletes the key; new keys are appended. The write is
-    atomic (0600 temp file in the same dir, then rename) so a crash can never
-    truncate .env and lose other credentials, and there is no world-readable
-    window between create and chmod.
+    A value of ``None`` deletes the key; new keys are appended. The write goes
+    through :func:`kiro_crew.atomic_write.atomic_write` with
+    ``restrict_to_owner=True``, which locks the unique temp file down to its
+    owner BEFORE any content byte is written: POSIX mode bits protect nothing
+    on Windows (``fchmod_safe`` is a documented no-op there), so a lockdown
+    applied after the write would leave the tokens readable under the
+    directory-inherited DACL for the whole write — and indefinitely if the
+    lockdown fails. ``restrict_on_error="warn"`` keeps this writer's contract:
+    a host where the lockdown cannot be applied must not abort a token save
+    that already succeeded.
     """
-    import tempfile  # noqa: F811
-
     from kiro_crew.config.loader import env_path  # noqa: F811
-    from kiro_crew.platform_compat import fchmod_safe, restrict_to_owner
 
     ep = env_path()
     lines = ep.read_text(encoding="utf-8").splitlines() if ep.exists() else []
@@ -2425,30 +2429,8 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     for k, new_val in updates.items():
         if k not in seen and new_val:
             out.append(f"{k}={new_val}")
-    ep.parent.mkdir(parents=True, exist_ok=True)
     content = "\n".join(out) + ("\n" if out else "")
-    # mkstemp creates the file with mode 0600 and O_EXCL; rename is atomic on
-    # the same filesystem. fchmod is belt-and-suspenders in case of odd umask.
-    fd, tmp_name = tempfile.mkstemp(dir=str(ep.parent), prefix=".env.", suffix=".tmp")
-    try:
-        # Portable perms: os.fchmod is POSIX-only (absent on Windows, where a
-        # raw call would raise AttributeError and 500 every token save).
-        # fchmod_safe applies 0600 on POSIX and no-ops on Windows;
-        # restrict_to_owner then locks the completed file down on both.
-        fchmod_safe(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_name, ep)
-        try:
-            restrict_to_owner(ep)
-        except OSError:
-            logger.warning("could not restrict .env permissions", exc_info=True)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write(ep, content, restrict_to_owner=True, restrict_on_error="warn")
 
 
 async def api_slack_manifest(request: web.Request) -> web.Response:
@@ -2694,7 +2676,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        _write_env_updates(env_updates)
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
         # Keep the live process environment in sync with the new .env state.
         # load_credentials() lets os.environ win over .env, so without this a
         # replaced/cleared token would keep being reported as installed by GET
@@ -3016,7 +3000,9 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        _write_env_updates(env_updates)
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
         # Keep the live process environment in sync with the new .env state
         # (load_credentials() lets os.environ win over .env — see the Slack
         # save handler for the full rationale).
@@ -3857,7 +3843,9 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
                     relabel="session_folder" in changes,
                 )
         if env_updates:
-            _write_env_updates(env_updates)
+            # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+            # which must not block the event loop.
+            await asyncio.to_thread(_write_env_updates, env_updates)
             # Keep the live process environment in sync (see the Slack save path).
             for key, new_val in env_updates.items():
                 if new_val is None:
