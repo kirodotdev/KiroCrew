@@ -136,6 +136,44 @@ function scanShadowedBindings(lines: string[]): number[] {
   return hits
 }
 
+/**
+ * A `compositionstart` subscription is the seed of a composition LATCH, and a
+ * latch hand-rolled beside a native handler is the second spelling this
+ * ratchet exists to prevent: its author re-derives the flag-and-timer
+ * semantics (the post-`compositionend` window, the stale-timer clear, the
+ * stranded-latch recovery) and reliably gets one of them wrong. So each
+ * subscription must feed the shared latch — `useImeGuard` for synthetic
+ * handlers, its `createImeLatch` factory for native ones (document-capture
+ * keydown listeners never see a synthetic event, so `claimEnter` is
+ * structurally unavailable to them; `useListKeyboardNav` is the reference
+ * consumer). The exemption is judged in a bounded window around EACH
+ * subscription, on comment-stripped lines: a whole-file test would let one
+ * sanctioned latch (or a mere comment mention) exempt every other
+ * subscription in the file. The window accepts either the shared-guard call
+ * itself or a handler delegating into a latch's own `onCompositionStart()`
+ * (both in-tree consumers wire it through a one-line arrow). A
+ * `compositionend`-only grace window (TerminalCompletion's xterm handler
+ * tracks a timestamp, not a latch) does not subscribe to `compositionstart`
+ * and stays out of scope — a structural distinction, not a pardoned file.
+ */
+const COMPOSITION_SUBSCRIBE = /addEventListener\(\s*['"]compositionstart['"]/
+const SHARED_LATCH = /\b(?:useImeGuard|createImeLatch)\(|\.onCompositionStart\(\)/
+const LATCH_WINDOW = 12
+
+function scanUnlatchedCompositionSubscribers(lines: string[]): number[] {
+  const code = lines.map(l => {
+    const t = l.trim()
+    return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') ? '' : l
+  })
+  const hits: number[] = []
+  code.forEach((line, i) => {
+    if (!COMPOSITION_SUBSCRIBE.test(line)) return
+    const windowLines = code.slice(Math.max(0, i - LATCH_WINDOW), i + LATCH_WINDOW + 1)
+    if (!windowLines.some(l => SHARED_LATCH.test(l))) hits.push(i + 1)
+  })
+  return hits
+}
+
 describe('IME Enter claim ratchet', () => {
   it('routes every Enter-submit branch through the guard', () => {
     const offenders: string[] = []
@@ -211,6 +249,26 @@ describe('IME Enter claim ratchet', () => {
     expect(offenders).toEqual([])
   })
 
+  it('never hand-rolls a composition latch beside a native handler', () => {
+    // A `compositionstart` subscription outside the guard module must feed the
+    // shared latch (`useImeGuard` / `createImeLatch`), never a private flag —
+    // the native-event twin of the one-line rule above. `useListKeyboardNav`
+    // shipped exactly the gap this pins: a document-capture Enter dispatch
+    // with no composition reference at all, which on WebKit activated the
+    // highlighted picker row with the keydown that committed an IME candidate.
+    const offenders: string[] = []
+    for (const rel of sourceFiles()) {
+      if (rel === 'hooks/useImeGuard.ts') continue
+      const lines = readFileSync(join(SRC, rel), 'utf8').split('\n')
+      for (const n of scanUnlatchedCompositionSubscribers(lines)) {
+        offenders.push(`${rel}:${n}`)
+      }
+    }
+    // An entry here tracks composition with its own state. Consume
+    // `createImeLatch()` (native handlers) or `useImeGuard()` (synthetic).
+    expect(offenders).toEqual([])
+  })
+
   it('keeps every React handler off the raw composition flag', () => {
     // The Enter check above only sees the two on one line. `SearchableSelect` guarded
     // Enter with a bare `e.nativeEvent.isComposing` early-return one line ABOVE the
@@ -244,7 +302,11 @@ describe('IME Enter claim ratchet', () => {
     // the only place that can make that unreachable, so it must not hand out a
     // recovery-less binding for a caller to pick by mistake.
     const hook = readFileSync(join(SRC, 'hooks/useImeGuard.ts'), 'utf8')
-    const returned = /return \{([^}]*)\}/.exec(hook)?.[1] ?? ''
+    // Anchor on the hook itself: the file also exports the `createImeLatch`
+    // factory (the tracked latch shared with native-event consumers), whose
+    // own `return {` would otherwise be the first match.
+    const hookBody = hook.slice(hook.indexOf('export function useImeGuard'))
+    const returned = /return \{([^}]*)\}/.exec(hookBody)?.[1] ?? ''
     expect(returned).toContain('bindComposition')
     expect(returned.split(',').map(s => s.trim())).not.toContain('composition')
     // Every binding the hook returns carries onBlur.
@@ -346,5 +408,32 @@ describe('ratchet rule fixtures', () => {
           e.currentTarget.blur()
         }
       }}`))).toHaveLength(1)
+  })
+
+  it('flags a compositionstart subscription that feeds a private flag, not the shared latch', () => {
+    const handRolled = jsx(`
+      let composing = false
+      document.addEventListener('compositionstart', () => { composing = true }, true)
+      document.addEventListener('compositionend', () => { composing = false }, true)`)
+    expect(scanUnlatchedCompositionSubscribers(handRolled)).toHaveLength(1)
+    // The sanctioned shapes: the same subscription feeding the shared latch,
+    // via the factory call or a handler delegating into it.
+    expect(scanUnlatchedCompositionSubscribers(jsx(`
+      const latch = createImeLatch()
+      document.addEventListener('compositionstart', () => latch.onCompositionStart(), true)`))).toHaveLength(0)
+    expect(scanUnlatchedCompositionSubscribers(jsx(`
+      const onStart = () => imeRef.current.onCompositionStart()
+      el.addEventListener('compositionstart', onStart)`))).toHaveLength(0)
+    // A compositionend-only grace window (TerminalCompletion's xterm handler)
+    // is a timestamp, not a latch, and stays out of scope.
+    expect(scanUnlatchedCompositionSubscribers(jsx(`
+      ta.addEventListener('compositionend', done)`))).toHaveLength(0)
+    // The exemption is per subscription and ignores comments: a hand-rolled
+    // flag is still flagged when the sanctioned latch is merely mentioned in
+    // a nearby comment, or lives elsewhere in the same file beyond the window.
+    expect(scanUnlatchedCompositionSubscribers(jsx(`
+      // the shared guard is createImeLatch(), which this deliberately skips
+      let composing = false
+      document.addEventListener('compositionstart', () => { composing = true }, true)`))).toHaveLength(1)
   })
 })

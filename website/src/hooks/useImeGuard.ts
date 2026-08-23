@@ -1,27 +1,96 @@
 import { useRef, useEffect, type KeyboardEvent, type FocusEvent } from 'react'
 
 /**
+ * How long after `compositionend` an Enter keydown still belongs to the IME.
+ * On WebKit the keydown that commits a candidate arrives AFTER
+ * `compositionend` with `isComposing` already false, so the native flags alone
+ * cannot identify it — the tracked latch below outlives them by this window.
+ */
+const POST_COMPOSITION_MS = 50
+
+export interface ImeLatch {
+  onCompositionStart: () => void
+  onCompositionEnd: () => void
+  /** True while a composition is live or inside the post-composition window. */
+  isLatched: () => boolean
+  /** Clear the latch and any pending timer (stale-latch recovery). */
+  reset: () => void
+  /**
+   * Native-event twin of `useImeGuard().claimEnter`: take ownership of a key
+   * the caller has decided is a choose/submit key, and report whether to act.
+   * `true` = act on it (the caller consumes it as part of acting). `false` =
+   * the IME owns this keypress; the claim has already consumed it — always
+   * `stopPropagation()` (so it cannot fall through to the host composer), and
+   * `preventDefault()` only when both native signals are clear (the
+   * post-composition latch window, where the browser would otherwise act).
+   * A mid-composition key keeps its default action: the browser is consuming
+   * it for the candidate commit or candidate navigation itself, and
+   * cancelling that would eat the user's composition. Owning both halves in
+   * one place is the point — a call site re-spelling the split is the drift
+   * the `ImeEnterClaimRatchet` exists to prevent.
+   */
+  claimKey: (e: globalThis.KeyboardEvent) => boolean
+}
+
+/**
+ * The tracked half of the IME guard, framework-free so both event worlds share
+ * ONE latch spelling: `useImeGuard` layers it under React synthetic events, and
+ * native-event listeners (document-level keydown handlers, which never see a
+ * synthetic event and therefore cannot call `claimEnter`) consume it directly —
+ * `useListKeyboardNav` is the reference consumer. A private flag-and-timer copy
+ * in a native handler is exactly the drift the `ImeEnterClaimRatchet` pins.
+ *
+ * `latched` stays true from `compositionstart` until POST_COMPOSITION_MS after
+ * `compositionend`. The timer handle is cleared on every new
+ * `compositionstart`, so a stale timer cannot flip the latch back to false
+ * while a follow-up (back-to-back) composition is mid-flight.
+ */
+export function createImeLatch(): ImeLatch {
+  let latched = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const isLatched = () => latched
+  return {
+    onCompositionStart() {
+      clearTimeout(timer)
+      latched = true
+    },
+    onCompositionEnd() {
+      latched = true
+      timer = setTimeout(() => { latched = false }, POST_COMPOSITION_MS)
+    },
+    isLatched,
+    reset() {
+      clearTimeout(timer)
+      latched = false
+    },
+    claimKey(e: globalThis.KeyboardEvent) {
+      const composing = latched || e.isComposing || e.keyCode === 229
+      if (!composing) return true
+      if (!e.isComposing && e.keyCode !== 229) e.preventDefault()
+      e.stopPropagation()
+      return false
+    },
+  }
+}
+
+/**
  * Guard against IME composition Enter falsely triggering submit handlers.
  *
  * IME (Chinese/Japanese/Korean) sends a final Enter to commit the composition.
  * React's synthetic `isComposing` is sometimes false on that final Enter, so
  * this hook layers multiple guards:
  *
- *   1. `composingRef`              - true from compositionStart until 50ms
- *                                    after compositionEnd (timer-based)
+ *   1. the tracked latch (`createImeLatch`) - true from compositionStart until
+ *                                    50ms after compositionEnd (timer-based)
  *   2. `e.nativeEvent.isComposing` - native browser flag
  *   3. `e.keyCode === 229`         - "IME processing" keyCode some browsers
  *                                    emit while composition is in flight even
  *                                    after isComposing flips to false
  *
- * The 50ms guard is tracked via `setTimeout` whose handle is cleared on every
- * new `compositionStart` - prevents a stale timer from flipping composingRef
- * back to false while a follow-up (back-to-back) composition is mid-flight.
- *
  * **Sharing a single hook instance across multiple inputs:** If the hosting
  * component unmounts an input mid-composition (e.g. Escape cancels a rename
  * and removes the input from the tree), `compositionEnd` will never fire and
- * `composingRef` would stay true forever, blocking Enter on every input that
+ * the latch would stay set forever, blocking Enter on every input that
  * shares this hook. Recovery therefore ships WITH the tracking: the only
  * composition binding this hook exposes carries the blur reset, so a surface
  * cannot opt out of it by omission. That matters more now than it used to,
@@ -37,7 +106,7 @@ import { useRef, useEffect, type KeyboardEvent, type FocusEvent } from 'react'
  * remember that. It suppresses the default only where the browser would
  * otherwise act — both native signals clear — and leaves a keypress the IME is
  * itself consuming alone. The window this matters in is not hypothetical: the
- * `composingRef` timer above outlives the native signals by 50ms, and a fast
+ * latch timer above outlives the native signals by 50ms, and a fast
  * typist's send lands inside it.
  *
  * Usage (simple Enter/Escape inputs):
@@ -54,28 +123,20 @@ import { useRef, useEffect, type KeyboardEvent, type FocusEvent } from 'react'
  *   />
  */
 export function useImeGuard() {
-  const composingRef = useRef(false)
-  const timerRef = useRef<ReturnType<typeof setTimeout>>()
+  const latchRef = useRef<ImeLatch>()
+  if (!latchRef.current) latchRef.current = createImeLatch()
+  const latch = latchRef.current
 
   // Clear any pending post-composition timer when the host component unmounts.
-  // Prevents stale timer callbacks from writing to the ref after teardown.
-  useEffect(() => () => { clearTimeout(timerRef.current) }, [])
+  // Prevents stale timer callbacks from writing to the latch after teardown.
+  useEffect(() => () => { latch.reset() }, [latch])
 
-  const reset = () => {
-    clearTimeout(timerRef.current)
-    composingRef.current = false
-  }
+  const reset = () => latch.reset()
 
-  const onCompositionStart = () => {
-    clearTimeout(timerRef.current)
-    composingRef.current = true
-  }
-  const onCompositionEnd = () => {
-    composingRef.current = true
-    timerRef.current = setTimeout(() => { composingRef.current = false }, 50)
-  }
+  const onCompositionStart = () => latch.onCompositionStart()
+  const onCompositionEnd = () => latch.onCompositionEnd()
   const isComposing = (e: KeyboardEvent) =>
-    composingRef.current || e.nativeEvent.isComposing || e.keyCode === 229
+    latch.isLatched() || e.nativeEvent.isComposing || e.keyCode === 229
 
   /**
    * Take ownership of an Enter the caller has already decided is a submit key,
@@ -107,7 +168,7 @@ export function useImeGuard() {
    *
    * The blur reset is not optional and not the caller's to remember. A composition
    * abandoned WITHOUT a `compositionend` — focus moves away mid-composition, the
-   * element unmounts, an OS-level IME cancel — leaves `composingRef` latched, and a
+   * element unmounts, an OS-level IME cancel — leaves the latch set, and a
    * latched guard declines every later Enter for the element's lifetime. Since
    * `claimEnter` also consumes those keypresses, a latched guard is SILENT: the
    * surface simply stops sending. So the recovery ships with the tracking, and a
