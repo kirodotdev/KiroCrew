@@ -7404,9 +7404,19 @@ class KiroCrewConfig:
         creds: dict[str, str] = {}
         ep = env_path()
         if ep.exists():
-            # Enforce restrictive permissions on credential file
+            # Enforce restrictive permissions on the credential file. POSIX
+            # only: on Windows mode bits are meaningless (a chmod there
+            # toggles the read-only attribute and succeeds without narrowing
+            # who can read), and the real owner-only lockdown —
+            # ``platform_compat.restrict_to_owner`` — spawns ``icacls``, a
+            # blocking subprocess this reader must never run: it is called
+            # from async request handlers on the gateway's event loop (the
+            # same constraint ``write_config_atomically`` documents). Windows
+            # enforcement therefore lives where the file is WRITTEN — the
+            # setup wizard and the dashboard credential writers all apply
+            # ``restrict_to_owner`` off the loop at write time.
             try:
-                if ep.stat().st_mode & 0o077:
+                if platform_compat.IS_POSIX and ep.stat().st_mode & 0o077:
                     ep.chmod(0o600)
             except OSError:
                 logger.warning("Cannot enforce permissions on %s", ep)

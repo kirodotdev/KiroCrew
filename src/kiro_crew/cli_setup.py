@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
 from kiro_crew.conductor_skill import generate_conductor_skill
 from kiro_crew.config import KiroCrewConfig
@@ -498,8 +499,22 @@ def _setup_slack_tokens() -> None:
 
     cred_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{k}={v}" for k, v in existing.items()]
-    cred_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    cred_path.chmod(0o600)
+    # atomic_write with restrict_to_owner, not write_text + chmod(0o600): a
+    # bare chmod is a silent no-op for Windows ACLs, and applying any lockdown
+    # only AFTER the tokens are on disk leaves them readable through the
+    # directory's inherited DACL in the failure window. The helper locks its
+    # unique temp file down before any content reaches it and renames only on
+    # success, so the tokens never exist under a wider mode and a failure
+    # leaves the previous .env untouched. restrict_on_error="warn" matches the
+    # .env doctrine (enforce the lockdown, log a warning if it fails) and the
+    # dashboard credential writers: an ACL-refusing host still completes the
+    # wizard instead of aborting after the user typed their tokens.
+    atomic_write(
+        cred_path,
+        "\n".join(lines) + "\n",
+        restrict_to_owner=True,
+        restrict_on_error="warn",
+    )
     print(f"  ✅ Credentials saved to {cred_path}\n")
 
 

@@ -769,9 +769,25 @@ def _stt_prereq_commands(provider: str = "whisper") -> list[str]:
             # happens in-process, so a system python or ``--user`` install is
             # not importable here.
             if os.name == "nt":
-                # POSIX quoting is wrong for Windows shells; ``&`` is
-                # PowerShell's call operator for a quoted executable path.
-                cmds.append(f'& "{sys.executable}" -m pip install "kirocrew[voice]"')
+                # The user's shell is unknowable here (they may paste this into
+                # PowerShell OR cmd), so the form must be SILENT-CORRUPTION-FREE
+                # in both, and PowerShell is the harder shell: a double-quoted
+                # string still expands ``$name`` and honours backtick escapes,
+                # and so does a bare unquoted token — both are legal path
+                # characters, so either form silently rewrites an interpreter
+                # under e.g. ``C:\tools\$python\...`` into a path that does not
+                # exist. Single quotes are PowerShell's LITERAL form (no
+                # expansion, no escapes, spaces included), with ``&`` invoking
+                # the quoted path, so the interpreter reaches pip byte-for-byte
+                # — including the all-users ``C:\Program Files\...`` layout an
+                # unquoted form cannot express. cmd performs no ``$`` or
+                # backtick processing at all and rejects the leading ``&``
+                # loudly ("... was unexpected"), so a cmd user gets a clear
+                # error to re-quote for, never a corrupted install. A literal
+                # single quote in the path is escaped by doubling, PowerShell's
+                # own rule.
+                exe = sys.executable.replace("'", "''")
+                cmds.append(f"& '{exe}' -m pip install kirocrew[voice]")
             else:
                 cmds.append(f"{shlex.quote(sys.executable)} -m pip install 'kirocrew[voice]'")
         # The non-streaming path remuxes the browser's .webm through ffmpeg, and

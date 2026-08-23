@@ -26,6 +26,7 @@ import aiohttp
 import yarl
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
@@ -94,7 +95,13 @@ from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    KiroCrewConfig,
+    config_dir,
+    config_path,
+    update_config_locked,
+)
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
@@ -156,26 +163,45 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
 
 
 def _sync_builtin_config(name: str, *, enabled: bool) -> None:
-    """Update config.json for a builtin app so gateway reads the right state on restart."""
+    """Update config.json for a builtin app so gateway reads the right state on restart.
+
+    Blocking: performs a file-locked read-modify-write of config.json and, on
+    Windows, spawns ``icacls`` (``restrict_to_owner``). Callers on the event
+    loop must offload this through ``asyncio.to_thread``.
+    """
     cfg_key, _ = _BUILTIN_SERVICE_APPS.get(name, (None, None))
     if cfg_key is None:
         return
-    path = config_path()
+
+    def _mutate(data: dict) -> dict:
+        data.setdefault(cfg_key, {})["enabled"] = enabled
+        return data
+
+    # update_config_locked, the required path for new config.json mutations:
+    # the whole read-modify-write runs under an advisory sidecar file lock, so
+    # this write is serialized against every other converted writer and other
+    # processes — not merely against itself, which is all an in-module lock
+    # could offer. The write itself is mode-preserving (an operator's
+    # tightened 0600 survives) and symlink-safe. A corrupt config fails
+    # closed; it is re-raised as OSError because that is the failure type the
+    # call sites catch and surface as a warning.
     try:
-        data = json.loads(path.read_text()) if path.exists() else {}
-    except (json.JSONDecodeError, OSError) as exc:
+        update_config_locked(config_path(), mutate=_mutate)
+    except ConfigReadError as exc:
         raise OSError(f"Could not read config.json: {exc}") from exc
-    section = data.setdefault(cfg_key, {})
-    section["enabled"] = enabled
-    tmp = path.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.chmod(0o600)
-        tmp.replace(path)  # replace, not rename: Windows rename refuses to overwrite
-    except OSError:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        raise
+    if not platform_compat.IS_POSIX:  # pragma: no cover — exercised on Windows CI
+        # POSIX mode bits are meaningless on Windows, so the preserved mode
+        # protects nothing there, and the shared helpers deliberately apply
+        # no DACL themselves because they are also called from loop-reachable
+        # paths (restrict_to_owner spawns icacls, a blocking subprocess).
+        # This caller runs off-loop (to_thread), so it applies the owner
+        # lockdown here: config.json can hold inline credentials. Warn rather
+        # than raise — the settings write itself succeeded, and the callers
+        # must still notify the service of the new enabled state.
+        try:
+            platform_compat.restrict_to_owner(config_path())
+        except OSError:
+            logger.warning("could not restrict config.json permissions", exc_info=True)
     logger.info("Synced config.json %s.enabled = %s", cfg_key, enabled)
 
 
@@ -1319,7 +1345,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=True)
+                # to_thread: the sync helper does file I/O and, on Windows,
+                # spawns icacls — neither may run on the event loop.
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 resp.setdefault("warnings", []).append(
@@ -1405,7 +1433,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=False)
+                # to_thread: the sync helper does file I/O and, on Windows,
+                # spawns icacls — neither may run on the event loop.
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=False)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 warnings.append(_redact_warning(f"config sync failed: {exc}"))

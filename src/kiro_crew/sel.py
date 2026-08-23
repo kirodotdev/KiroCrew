@@ -563,7 +563,13 @@ class SecurityEventLog:
             # can see that it has moved on.
             written = os.fstat(f.fileno())
         # Ensure permissions are correct even if file pre-existed with
-        # wrong mode (e.g. created by an older version).
+        # wrong mode (e.g. created by an older version). POSIX repair only,
+        # deliberately NOT ``platform_compat.restrict_to_owner``: that helper
+        # spawns ``icacls`` on Windows (a blocking subprocess), and this
+        # append path can run inline on a caller's thread that may be the
+        # asyncio event loop — the ``critical=True`` audit-or-deny write, and
+        # the fallback taken when the writer thread cannot start (see
+        # ``_may_rotate``) — where a blocking call freezes every gateway task.
         try:
             os.chmod(self._path, 0o600)
         except OSError:

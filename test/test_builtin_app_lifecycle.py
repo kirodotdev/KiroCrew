@@ -8,7 +8,11 @@ on any specific bundled service (the former ``secretary`` builtin was removed).
 """
 from __future__ import annotations
 
+import inspect
 import json
+import os
+import re
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -90,6 +94,96 @@ class TestSyncBuiltinConfig:
                 _sync_builtin_config(_TEST_BUILTIN, enabled=False)
         # File should be untouched — not overwritten with empty dict
         assert cfg.read_text(encoding="utf-8") == "{corrupt json!!!"
+
+    def test_write_routes_through_update_config_locked(self, tmp_path, register_test_builtin):
+        """config.json can hold inline credentials and an operator may have
+        tightened its mode — the write must go through update_config_locked,
+        the required path for new config.json mutations: the whole
+        read-modify-write is serialized under an advisory sidecar file lock
+        (the call sites offload to worker threads, and the per-app lifecycle
+        lock does not serialize two DIFFERENT apps), the mode is carried over
+        rather than widened to a new-inode default, and a corrupt config
+        fails closed."""
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": False}}))
+        cfg.chmod(0o640)
+        calls: list[Path] = []
+        real = routes.update_config_locked
+
+        def _spy(path=None, **kw):
+            calls.append(path)
+            return real(path, **kw)
+
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
+            with patch("kiro_crew.config.loader.config_path", return_value=cfg):
+                with patch("kiro_crew.apps.routes.update_config_locked", side_effect=_spy):
+                    _sync_builtin_config(_TEST_BUILTIN, enabled=True)
+        assert len(calls) == 1
+        assert json.loads(cfg.read_text(encoding="utf-8"))[_TEST_CFG_KEY]["enabled"] is True
+        assert not list(tmp_path.glob("*.tmp"))  # unique temp, cleaned up
+        if os.name == "posix":
+            # The property the helper exists for: the operator's mode survives.
+            assert cfg.stat().st_mode & 0o777 == 0o640
+
+    def test_windows_applies_the_owner_lockdown_off_loop_and_warns_on_refusal(
+        self, tmp_path, register_test_builtin
+    ):
+        """POSIX mode bits protect nothing on Windows, and the shared helper
+        deliberately applies no DACL (it is also called from loop-reachable
+        paths). This caller runs off-loop, so it applies restrict_to_owner
+        itself — and a refusal must warn, not fail a settings write that
+        already succeeded. Only routes' own platform_compat binding is
+        stubbed: flipping the real module's IS_POSIX would send the write
+        path's file lock down the msvcrt branch on POSIX hosts."""
+        from types import SimpleNamespace
+
+        cfg = tmp_path / "config.json"
+        seen: list[object] = []
+        win_ok = SimpleNamespace(IS_POSIX=False, restrict_to_owner=seen.append)
+
+        def _boom(_path):
+            raise OSError("icacls failed")
+
+        win_refuse = SimpleNamespace(IS_POSIX=False, restrict_to_owner=_boom)
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
+            with patch.object(routes, "platform_compat", win_ok):
+                _sync_builtin_config(_TEST_BUILTIN, enabled=True)
+            assert seen == [cfg]
+            with patch.object(routes, "platform_compat", win_refuse):
+                _sync_builtin_config(_TEST_BUILTIN, enabled=False)  # must not raise
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        assert data[_TEST_CFG_KEY]["enabled"] is False
+
+    def test_failed_write_propagates_to_the_callers_warning_path(
+        self, tmp_path, register_test_builtin
+    ):
+        """A write failure is fail-loud: it must propagate (the callers catch
+        OSError and surface a warning) and leave the previous config
+        byte-identical."""
+        cfg = tmp_path / "config.json"
+        cfg.write_text(json.dumps({_TEST_CFG_KEY: {"enabled": False}}))
+        before = cfg.read_text(encoding="utf-8")
+        with patch("kiro_crew.apps.routes.config_path", return_value=cfg):
+            with patch(
+                "kiro_crew.apps.routes.update_config_locked",
+                side_effect=OSError("disk full"),
+            ):
+                with pytest.raises(OSError):
+                    _sync_builtin_config(_TEST_BUILTIN, enabled=True)
+        assert cfg.read_text(encoding="utf-8") == before
+
+    def test_async_call_sites_offload_off_the_event_loop(self):
+        """The helper does file I/O and, on Windows, spawns icacls via
+        restrict_to_owner — its async callers must route it through
+        asyncio.to_thread (no-blocking-call-on-event-loop). Any bare
+        direct call (statement, assignment, or nested argument) is a
+        violation; the to_thread form never matches because there the name is
+        followed by a comma, not a call paren."""
+        src = inspect.getsource(routes)
+        assert not re.findall(
+            r"(?<!def )_sync_builtin_config\(", src
+        ), "found a bare on-loop _sync_builtin_config call"
+        assert src.count("asyncio.to_thread(_sync_builtin_config, name") == 2
 
 
 # ── _notify_builtin_service ──

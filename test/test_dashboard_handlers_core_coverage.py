@@ -309,15 +309,42 @@ class TestSttPrereqCommands:
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(core_mod.sys.executable) in cmds[0]
 
-    def test_transcribe_prereq_windows_uses_call_operator(self, monkeypatch) -> None:
-        """POSIX single-quoting breaks on Windows shells; the PowerShell form
-        must be emitted there instead."""
+    def test_transcribe_prereq_windows_is_powershell_literal_quoted(self, monkeypatch) -> None:
+        """The user's shell is unknowable on Windows (the command may be pasted
+        into PowerShell OR cmd), so the emitted form must be free of SILENT
+        corruption in both. PowerShell is the harder shell: a double-quoted
+        string AND a bare unquoted token both expand ``$names`` and honour
+        backtick escapes — legal path characters — silently rewriting the
+        interpreter path. Single quotes are PowerShell's literal form (spaces
+        included, so the all-users ``C:\\Program Files`` layout works), and cmd
+        rejects the leading ``&`` loudly rather than corrupting anything."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
         monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
         monkeypatch.setattr(core_mod.os, "name", "nt")
+        monkeypatch.setattr(
+            core_mod.sys, "executable", "C:\\Program Files\\Python312\\python.exe"
+        )
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == [f'& "{core_mod.sys.executable}" -m pip install "kirocrew[voice]"']
+        assert cmds == [
+            "& 'C:\\Program Files\\Python312\\python.exe' -m pip install kirocrew[voice]"
+        ]
+        # Named properties the exact match locks in:
+        assert '"' not in cmds[0]  # PS double quotes still expand $ and backtick
+        assert "`" not in cmds[0]  # never emit a PS escape character
+
+    def test_transcribe_prereq_windows_metachar_paths_survive_literally(self, monkeypatch) -> None:
+        """``$`` and a literal single quote are legal Windows path characters.
+        Inside PowerShell single quotes ``$python`` is NOT expanded, and a
+        quote in the path is escaped by doubling — PowerShell's own rule — so
+        the interpreter reaches pip byte-for-byte."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
+        monkeypatch.setattr(core_mod.os, "name", "nt")
+        monkeypatch.setattr(core_mod.sys, "executable", "C:\\tools\\$python\\o'brien.exe")
+        cmds = core_mod._stt_prereq_commands("transcribe")
+        assert cmds == ["& 'C:\\tools\\$python\\o''brien.exe' -m pip install kirocrew[voice]"]
 
     def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
         """When no install channel can make the extra importable (bundled

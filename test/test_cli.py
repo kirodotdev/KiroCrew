@@ -3917,6 +3917,63 @@ class TestConfigDirOverride:
         content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "xapp-test" in content
 
+    def test_setup_slack_tokens_locks_env_to_owner(self, tmp_path, monkeypatch):
+        """The credential write must route through atomic_write's owner
+        lockdown: a bare chmod(0o600) is a silent no-op for Windows ACLs, and
+        any lockdown applied only AFTER the tokens are on disk leaves them
+        readable through the directory's inherited DACL in the failure window.
+        The lockdown therefore lands on the temp file, before any token byte
+        reaches it."""
+        import os as os_mod
+
+        import kiro_crew.cli_setup as cs
+        from kiro_crew import platform_compat as pc
+
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr("kiro_crew.cli_setup.env_path", lambda: env_file)
+        inputs = iter(["y", "xapp-test", "xoxb-test", "U12345"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        seen: list[tuple[Path, bool]] = []
+        real = pc.restrict_to_owner
+
+        def _spy(path):
+            # Record what the lockdown saw: the path, and whether the tokens
+            # were already readable there at that moment.
+            p = Path(path)
+            seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
+            return real(path)
+
+        monkeypatch.setattr(pc, "restrict_to_owner", _spy)
+        cs._setup_slack_tokens()
+        # Locked exactly once, on a file in the credential dir, while it was
+        # still empty of tokens.
+        assert seen == [(tmp_path, False)]
+        assert "xoxb-test" in env_file.read_text(encoding="utf-8")
+        assert not list(tmp_path.glob("*.tmp"))  # no temp residue
+        if os_mod.name == "posix":
+            assert env_file.stat().st_mode & 0o777 == 0o600
+
+    def test_setup_slack_tokens_survives_a_lockdown_refusal(self, tmp_path, monkeypatch):
+        """A host where the owner lockdown fails (e.g. SID resolution refused)
+        must not abort the wizard with a traceback after the user already
+        typed their tokens: the .env doctrine is enforce-and-warn, matching
+        the dashboard credential writers."""
+        import kiro_crew.cli_setup as cs
+        from kiro_crew import platform_compat as pc
+
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr("kiro_crew.cli_setup.env_path", lambda: env_file)
+        inputs = iter(["y", "xapp-test", "xoxb-test", "U12345"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        monkeypatch.setattr(
+            pc, "restrict_to_owner", MagicMock(side_effect=OSError("icacls failed"))
+        )
+
+        cs._setup_slack_tokens()  # must not raise
+        assert "xoxb-test" in env_file.read_text(encoding="utf-8")
+        assert not list(tmp_path.glob("*.tmp"))  # failure leaves no temp residue
+
 
 class TestSetupChannelGating:
     """`kirocrew setup` runs the Slack steps only with --slack.
