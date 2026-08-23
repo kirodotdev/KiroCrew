@@ -240,7 +240,13 @@ send time.
   JSON appearing bumps the dir mtime) AND a TTL (`_AGENT_MODEL_CACHE_TTL`, for
   in-place edits that leave the dir mtime unchanged). Without invalidation an
   early `"auto"` miss (agent JSON not yet present) would be pinned forever, so a
-  later create/edit of the agent config would never be observed.
+  later create/edit of the agent config would never be observed. The scan reads
+  each spec through `agent_discovery._read_agent_spec`, the hardened reader that
+  module documents as the one reader for both agent scopes: `~/.kiro/agents` is
+  user-writable and shared with kiro-cli, so the read is size-capped and refuses
+  a link resolving onto a sensitive target rather than resolving a model out of
+  whatever the link names. A refused spec is skipped like a malformed one, so
+  the resolution falls through to `"auto"` exactly as an absent spec does.
 - **Idle cleanup**: expires sessions after `session.timeout_secs` (default
   60min). Never expires `BACKGROUND_KEY`. Dashboard per-tab sessions
   (`dashboard:{slot_key}`) idle-expire like any other session.

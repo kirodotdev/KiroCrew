@@ -106,7 +106,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import selectable_backends
 from kiro_crew.agent import kiro_agents_dir_path
-from kiro_crew.agent_discovery import spec_model
+from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CONTEXT_WARN_MARGIN_PCT,
@@ -2723,12 +2723,14 @@ class SessionManager:
 
         model = "auto"
         try:
-            import json as _json
-
             for af in kiro_agents_dir_path().glob("*.json"):
-                try:
-                    ad = _json.loads(af.read_text(encoding="utf-8"))
-                except (ValueError, OSError):
+                # The hardened, size-capped reader, same as every other spec
+                # read: the agents directory is user-writable and shared with
+                # other tools, and this result is cached and served to
+                # ``/api/sessions/context``. It also supplies the malformed- and
+                # non-object-JSON skip this loop needs.
+                ad = _read_agent_spec(af)
+                if ad is None:
                     continue
                 if ad.get("name") == agent or af.stem == agent:
                     # Coerced, not raw: this method is annotated ``-> str`` and

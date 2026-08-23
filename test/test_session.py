@@ -2464,6 +2464,67 @@ class TestContextInfo:
         assert result == "auto"
         assert isinstance(result, str)
 
+    def test_resolve_agent_model_refuses_an_oversized_spec(self, tmp_path, monkeypatch):
+        """The scan reads through the hardened, size-capped reader.
+
+        ``~/.kiro/agents`` is user-writable and shared with kiro-cli, so an
+        oversized "agent config" there must be refused rather than slurped into
+        memory — and this resolution is CACHED and served to
+        ``/api/sessions/context``, so it is not a rare corner.
+
+        Exercised with a LOWERED cap rather than a real 50 MB fixture; the
+        property is that the cap is consulted, not its value. Paired with the
+        A-side below so the refusal cannot pass by breaking every read.
+        """
+        import json
+
+        from kiro_crew import hooks
+
+        if hasattr(SessionManager, "_agent_model_cache"):
+            SessionManager._agent_model_cache.clear()
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 256)
+        (tmp_path / "big.json").write_text(
+            json.dumps({"name": "big", "model": "pinned-by-oversized", "pad": "x" * 1024})
+        )
+
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
+            assert SessionManager._resolve_agent_model("big") == "auto"
+
+    def test_resolve_agent_model_still_reads_a_spec_under_the_same_cap(self, tmp_path, monkeypatch):
+        """A-side of the cap test above: a normal spec still resolves."""
+        import json
+
+        from kiro_crew import hooks
+
+        if hasattr(SessionManager, "_agent_model_cache"):
+            SessionManager._agent_model_cache.clear()
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 256)
+        (tmp_path / "small.json").write_text(
+            json.dumps({"name": "small", "model": "pinned-by-small"})
+        )
+
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path):
+            assert SessionManager._resolve_agent_model("small") == "pinned-by-small"
+
+    def test_resolve_agent_model_refuses_a_link_to_a_sensitive_target(self, tmp_path, monkeypatch):
+        """A spec that is a symlink resolving onto a sensitive target is refused,
+        so the model is not resolved out of whatever the link names."""
+        import json
+
+        from kiro_crew import agent_discovery
+
+        if hasattr(SessionManager, "_agent_model_cache"):
+            SessionManager._agent_model_cache.clear()
+        target = tmp_path / "protected.json"
+        target.write_text(json.dumps({"model": "leaked-value"}))
+        agents = tmp_path / "agents"
+        agents.mkdir()
+        (agents / "linked.json").symlink_to(target)
+        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda p: str(target) in str(p))
+
+        with patch("kiro_crew.agent.KIRO_AGENTS_DIR", agents):
+            assert SessionManager._resolve_agent_model("linked") == "auto"
+
 
 class TestWarmPoolInternals:
     """Tests for _fill_warm_pool, _claim_from_pool, _drain_and_claim."""
