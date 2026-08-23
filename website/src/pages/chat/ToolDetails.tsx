@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Zap, Wrench } from 'lucide-react'
 import { ToolInputText } from '../../components/ToolInputText'
+import { ROW_RAIL_CLASS } from './rowPill'
 import { PierreCode } from '../../pierre'
 import SegmentedControl from '../../components/SegmentedControl'
 
@@ -112,7 +113,7 @@ export function ToolDetails({ purpose, pillLabel, toolName, input, output, auto,
   const reallyEmpty = (empty && !showToolName) || (!showPurpose && !showToolName && !hasInput && !hasOutput && !auto && !pending && ts === 0)
 
   return (
-    <div className={`${flush ? '' : 'ml-3'} mt-1 mb-2 border-l-2 pl-3 flex flex-col gap-2`} style={{ borderLeftColor: barColor }}>
+    <div className={`${flush ? '' : 'ml-3'} ${ROW_RAIL_CLASS} flex flex-col gap-2`} style={{ borderLeftColor: barColor }}>
       {(auto || pending || ts > 0 || showToolName || showPurpose || hasInput || hasOutput) && (
         <div className="flex items-center gap-2 flex-wrap">
           {/* Capped and clipped: `toolName` is kiro-cli's display TITLE, and for a
