@@ -2,7 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { hideToTray, DEFAULT_LEAVE_TIMEOUT_MS } = require("../hide-to-tray");
+const { hideToTray, cancelPendingTrayHide, DEFAULT_LEAVE_TIMEOUT_MS } = require("../hide-to-tray");
 
 // Fake BrowserWindow/BaseWindow recording the calls hideToTray makes. Only the
 // members the helper touches are implemented. `once` captures listeners so a
@@ -235,6 +235,90 @@ describe("hideToTray", () => {
   });
 });
 
+// A show request (Dock activate, tray "Show", the summon hotkey) landing while
+// the hide is deferred to the fullscreen exit must win over the pending hide.
+// Without a cancel, the show either gets skipped (the window is still visible,
+// so `isVisible()` guards it away) or is silently undone moments later when
+// `leave-full-screen` (or the backstop) fires — the user asks for the window
+// back and watches it vanish.
+describe("cancelPendingTrayHide", () => {
+  it("disarms a deferred hide so the fullscreen exit no longer hides", () => {
+    const timers = makeTimers();
+    const win = makeWin({ fullScreen: true });
+    hideToTray(win, mac(timers));
+
+    assert.equal(cancelPendingTrayHide(win), true, "a pending hide must report disarmed");
+    assert.equal(timers.scheduled[0].cleared, true, "the backstop must be cleared");
+    assert.equal(win.listeners.size, 0, "the leave-full-screen listener must be removed");
+
+    // The transition still completes (the exit itself is not reversed) and the
+    // backstop may already be in flight — neither may hide now.
+    timers.fire();
+    assert.deepEqual(win.calls, [["setFullScreen", false]], "no hide after cancel");
+  });
+
+  it("returns false when nothing is pending", () => {
+    assert.equal(cancelPendingTrayHide(makeWin()), false);
+    assert.equal(cancelPendingTrayHide(null), false);
+    assert.equal(cancelPendingTrayHide(undefined), false);
+  });
+
+  // An immediate (non-deferred) hide leaves nothing to cancel: the window is
+  // already hidden, and the later show() re-shows it normally.
+  it("has nothing to cancel after a non-fullscreen hide", () => {
+    const win = makeWin({ fullScreen: false });
+    hideToTray(win, mac());
+    assert.equal(cancelPendingTrayHide(win), false);
+  });
+
+  // Exactly-once settlement is shared with the hide paths: once the event or
+  // the backstop has hidden the window, there is no pending hide left, and a
+  // late cancel must not report having disarmed anything.
+  it("is a no-op after the deferred hide already landed", () => {
+    const timers = makeTimers();
+    const win = makeWin({ fullScreen: true });
+    hideToTray(win, mac(timers));
+    win.emitLeaveFullScreen();
+    assert.deepEqual(win.calls, [["setFullScreen", false], ["hide"]]);
+    assert.equal(cancelPendingTrayHide(win), false);
+  });
+
+  it("is idempotent — a second cancel reports nothing pending", () => {
+    const timers = makeTimers();
+    const win = makeWin({ fullScreen: true });
+    hideToTray(win, mac(timers));
+    assert.equal(cancelPendingTrayHide(win), true);
+    assert.equal(cancelPendingTrayHide(win), false);
+  });
+
+  // The user closes again after summoning the window back: the next close must
+  // defer-and-hide exactly as the first one did, unaffected by the cancel.
+  it("does not break a subsequent hideToTray on the same window", () => {
+    const timers = makeTimers();
+    const win = makeWin({ fullScreen: true });
+    hideToTray(win, mac(timers));
+    cancelPendingTrayHide(win);
+
+    hideToTray(win, mac(timers));
+    assert.deepEqual(win.calls, [["setFullScreen", false], ["setFullScreen", false]]);
+    win.emitLeaveFullScreen();
+    assert.deepEqual(win.calls, [
+      ["setFullScreen", false],
+      ["setFullScreen", false],
+      ["hide"],
+    ]);
+  });
+
+  // The setFullScreen-throw path settles synchronously inside hideToTray, so it
+  // must not leave a cancellable entry behind.
+  it("has nothing to cancel when the exit could not be started", () => {
+    const timers = makeTimers();
+    const win = makeWin({ fullScreen: true, throwOnSetFullScreen: true });
+    hideToTray(win, mac(timers));
+    assert.equal(cancelPendingTrayHide(win), false);
+  });
+});
+
 // The helper above is only a fix if main.js actually routes the tray close
 // through it. A correct helper with the old `mainWindow.hide()` still at the
 // call site passes every test above while the bug is fully intact, so pin the
@@ -261,5 +345,52 @@ describe("main.js tray-close wiring", () => {
       /mainWindow\.hide\(\)/,
       "a direct hide() orphans the macOS fullscreen Space — go through hideToTray",
     );
+  });
+
+  // A correct cancel helper with the show paths still calling a bare show()
+  // passes every unit test above while the bug is fully intact: an activate or
+  // tray gesture during the deferred hide would still lose to it. Pin each
+  // user-initiated show path to the cancel.
+  it("cancels the pending hide before the activate show", () => {
+    const branch = MAIN_JS.match(/app\.on\("activate", \(\) => \{([\s\S]*?)\}\);/);
+    assert.ok(branch, "could not locate the activate handler");
+    const body = branch[1];
+    assert.match(body, /cancelPendingTrayHide\(mainWindow\)/);
+    assert.ok(
+      body.indexOf("cancelPendingTrayHide") < body.indexOf(".show()"),
+      "the cancel must run before the show",
+    );
+  });
+
+  it("routes both tray show gestures through the cancelling helper", () => {
+    // The menu item and the icon click are the same user intent; both must
+    // disarm the pending hide, so both go through the one helper that does.
+    const helper = MAIN_JS.match(/const showFromTray = \(\) => \{([\s\S]*?)\};/);
+    assert.ok(helper, "could not locate showFromTray");
+    assert.match(helper[1], /cancelPendingTrayHide\(mainWindow\)/);
+    assert.match(MAIN_JS, /\{ label: `Show \$\{app\.name\}`, click: showFromTray \}/);
+    assert.match(MAIN_JS, /tray\.on\("click", showFromTray\)/);
+  });
+
+  // The remaining user-intent shows of a possibly-deferred window: relaunching
+  // the app (second-instance), the tray "New Connection Window…" item, opening
+  // settings, and clicking the update notification. Each must disarm before it
+  // shows, or the window it surfaces vanishes when the deferral settles.
+  it("cancels the pending hide on every other user-intent show path", () => {
+    const sites = [
+      ["second-instance", /app\.on\("second-instance", \(\) => \{([\s\S]*?)\}\);/],
+      ["openNewConnectionWindow", /async function openNewConnectionWindow\(\) \{([\s\S]*?)const css/],
+      ["openSettingsPage", /const openSettingsPage = \(tab\) => \{([\s\S]*?)\};/],
+      ["update-notification click", /n\.on\("click", \(\) => \{([\s\S]*?)\}\);/],
+    ];
+    for (const [name, re] of sites) {
+      const m = MAIN_JS.match(re);
+      assert.ok(m, `could not locate the ${name} show path`);
+      assert.match(m[1], /cancelPendingTrayHide\(/, `${name} must disarm the pending hide`);
+      assert.ok(
+        m[1].indexOf("cancelPendingTrayHide") < m[1].indexOf(".show()"),
+        `${name}: the cancel must run before the show`,
+      );
+    }
   });
 });
