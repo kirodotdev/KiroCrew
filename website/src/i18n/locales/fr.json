@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "Mesure un dépôt GitHub avant de le modifier. Conçoit une métrique de performance calibrée (la règle), prouve que la métrique est fiable face à un gain connu, puis exécute des cycles conserver-ou-annuler : chaque correctif candidat est écrit dans un worktree isolé, filtré par une liste d’autorisation d’édition et les tests du dépôt, et conservé uniquement si le gain mesuré dépasse la bande de bruit. Les survivants sont proposés en pull requests GitHub à l’état de brouillon, que vous relisez et publiez vous-même.",
+        "description": "Mesure un dépôt GitHub ou GitLab avant de le modifier. Conçoit une métrique de performance calibrée (la règle), prouve que la métrique est fiable face à un gain connu, puis exécute des cycles conserver-ou-annuler : chaque correctif candidat est écrit dans un worktree isolé, filtré par une liste d’autorisation d’édition et les tests du dépôt, et conservé uniquement si le gain mesuré dépasse la bande de bruit. Les survivants sont proposés en pull requests GitHub ou en merge requests GitLab à l’état de brouillon, que vous relisez et publiez vous-même.",
         "display_name": "Auto-Improvement",
         "highlight_1": "Prouve d’abord sa propre métrique — une exécution refuse de démarrer sur une règle peu fiable",
         "highlight_2": "Chaque candidat est mesuré en A/B, ou RED/GREEN pour les corrections de bugs, jamais un simple « ça a l’air bon »",
         "highlight_3": "Ne conserve un changement que si le gain dépasse la bande de bruit mesurée",
-        "highlight_4": "Rédige des pull requests GitHub — en brouillon uniquement, jamais publiées ni fusionnées pour vous",
+        "highlight_4": "Rédige des pull requests GitHub et des merge requests GitLab — en brouillon uniquement, jamais publiées ni fusionnées pour vous",
         "highlight_5": "Travaille sur un clone sans droit de push, afin que rien ne quitte le bac à sable sans relecture",
-        "highlight_6": "Une session de discussion reprenable par pull request, par constat et par exécution",
+        "highlight_6": "Une session de discussion reprenable par pull request ou merge request, par constat et par exécution",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo ou https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

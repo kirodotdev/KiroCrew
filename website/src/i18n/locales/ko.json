@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "GitHub 저장소를 변경하기 전에 먼저 측정합니다. 보정된 성능 지표(잣대)를 설계하고, 이미 알려진 개선으로 그 지표가 믿을 만한지 증명한 뒤, 유지 또는 되돌리기 개선 주기를 실행합니다. 모든 후보 수정은 격리된 worktree에서 작성되고, 편집 허용 목록과 저장소 자체 테스트로 검사되며, 측정된 개선이 잡음 구간을 넘어설 때만 유지됩니다. 살아남은 변경은 직접 리뷰하고 공개하는 GitHub 풀 리퀘스트 초안이 됩니다.",
+        "description": "GitHub 또는 GitLab 저장소를 변경하기 전에 먼저 측정합니다. 보정된 성능 지표(잣대)를 설계하고, 이미 알려진 개선으로 그 지표가 믿을 만한지 증명한 뒤, 유지 또는 되돌리기 개선 주기를 실행합니다. 모든 후보 수정은 격리된 worktree에서 작성되고, 편집 허용 목록과 저장소 자체 테스트로 검사되며, 측정된 개선이 잡음 구간을 넘어설 때만 유지됩니다. 살아남은 변경은 직접 리뷰하고 공개하는 GitHub 풀 리퀘스트 또는 GitLab 머지 리퀘스트 초안이 됩니다.",
         "display_name": "Auto-Improvement",
         "highlight_1": "지표부터 증명합니다 — 잣대를 믿을 수 없으면 실행을 시작하지 않습니다",
         "highlight_2": "모든 후보를 A/B로, 버그 수정은 RED/GREEN으로 측정합니다. ‘괜찮아 보인다’로 판단하지 않습니다",
         "highlight_3": "개선이 측정된 잡음 구간을 넘어설 때만 변경을 유지합니다",
-        "highlight_4": "GitHub 풀 리퀘스트를 초안으로 작성합니다 — 초안만 만들며, 대신 공개하거나 병합하지 않습니다",
+        "highlight_4": "GitHub 풀 리퀘스트나 GitLab 머지 리퀘스트를 초안으로 작성합니다 — 초안만 만들며, 대신 공개하거나 병합하지 않습니다",
         "highlight_5": "푸시가 비활성화된 클론에서 동작하므로 리뷰 없이 샌드박스를 벗어나는 것은 없습니다",
-        "highlight_6": "풀 리퀘스트·발견 항목·실행마다 이어서 쓸 수 있는 채팅 세션 하나",
+        "highlight_6": "풀 리퀘스트나 머지 리퀘스트·발견 항목·실행마다 이어서 쓸 수 있는 채팅 세션 하나",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo 또는 https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

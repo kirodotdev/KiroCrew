@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "Mide un repositorio de GitHub antes de cambiarlo. Diseña una métrica de rendimiento calibrada (la regla), demuestra que la métrica es fiable frente a una mejora conocida y luego ejecuta ciclos de conservar o revertir: cada corrección candidata se escribe en un worktree aislado, se filtra con una lista de permitidos de edición y las pruebas del propio repositorio, y solo se conserva cuando la mejora medida supera la banda de ruido. Las supervivientes se redactan como pull requests de GitHub en borrador que tú revisas y publicas.",
+        "description": "Mide un repositorio de GitHub o GitLab antes de cambiarlo. Diseña una métrica de rendimiento calibrada (la regla), demuestra que la métrica es fiable frente a una mejora conocida y luego ejecuta ciclos de conservar o revertir: cada corrección candidata se escribe en un worktree aislado, se filtra con una lista de permitidos de edición y las pruebas del propio repositorio, y solo se conserva cuando la mejora medida supera la banda de ruido. Las supervivientes se redactan como pull requests de GitHub o merge requests de GitLab en borrador que tú revisas y publicas.",
         "display_name": "Auto-Improvement",
         "highlight_1": "Primero demuestra su propia métrica: una ejecución se niega a empezar con una regla poco fiable",
         "highlight_2": "Cada candidato se mide en A/B, o RED/GREEN para correcciones de errores, nunca solo “parece correcto”",
         "highlight_3": "Conserva un cambio solo cuando la mejora supera la banda de ruido medida",
-        "highlight_4": "Redacta pull requests de GitHub: solo borradores, nunca publicados ni fusionados por ti",
+        "highlight_4": "Redacta pull requests de GitHub y merge requests de GitLab: solo borradores, nunca publicados ni fusionados por ti",
         "highlight_5": "Funciona sobre un clon sin permiso de push, así nada sale del entorno aislado sin revisión",
-        "highlight_6": "Una sesión de chat reanudable por cada pull request, hallazgo y ejecución",
+        "highlight_6": "Una sesión de chat reanudable por cada pull request o merge request, hallazgo y ejecución",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo o https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

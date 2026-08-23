@@ -133,25 +133,43 @@ class TestProgressSeries:
 
 
 class TestDeps:
-    def test_reports_git_and_gh_as_required(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_reports_git_and_the_targets_forge_cli_as_required(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         out = deps.check_deps()
         required = {d["id"] for d in out["deps"] if d["required"]}
         assert required == {"git", "gh"}
         assert out["ok"] is True and out["blocking"] == []
+
+    def test_a_gitlab_target_swaps_the_required_cli(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
+        monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITLAB)
+        out = deps.check_deps()
+        required = {d["id"] for d in out["deps"] if d["required"]}
+        assert required == {"git", "glab"}
 
     def test_unauthenticated_gh_blocks(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Presence on PATH is not enough: an unauthenticated gh fails only when a
         PR is drafted, which is the worst moment to discover it."""
         monkeypatch.setattr(deps, "_which", lambda b: f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (False, "not logged in"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "authenticated"))
+        monkeypatch.setattr(deps, "_configured_provider", lambda: deps.PROVIDER_GITHUB)
         out = deps.check_deps()
         assert out["ok"] is False and "gh" in out["blocking"]
 
     def test_missing_ruff_is_optional(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(deps, "_which", lambda b: "" if b == "ruff" else f"/usr/bin/{b}")
         monkeypatch.setattr(deps, "_gh_authenticated", lambda: (True, "ok"))
+        monkeypatch.setattr(deps, "_glab_authenticated", lambda: (True, "ok"))
         out = deps.check_deps()
         assert out["ok"] is True
         assert [d for d in out["deps"] if d["id"] == "ruff"][0]["ok"] is False

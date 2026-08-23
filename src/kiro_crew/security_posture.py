@@ -353,10 +353,11 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Auto-Improvement PR prose",
-        "apps/builtins/auto_improvement/profiles/github_repo/pr_recipe.py",
-        "The pull-request TITLE and BODY are agent-authored prose published by `gh pr "
-        "create`, and a PR description cannot be un-published. Redacted in place because "
-        "prose survives rewriting; the DIFF beside it is instead detected-and-refused by "
+        "apps/builtins/auto_improvement/profiles/pr_recipe_base.py",
+        "The pull/merge-request TITLE and BODY are agent-authored prose published by "
+        "`gh pr create` or `glab mr create`, and a published description cannot be "
+        "un-published. Redacted in place because prose survives rewriting; the DIFF "
+        "beside it is instead detected-and-refused by "
         "`spine/push_policy.py:scan_content_for_secrets`, since rewriting a patch would "
         "corrupt the fix the gate proved.",
     ),

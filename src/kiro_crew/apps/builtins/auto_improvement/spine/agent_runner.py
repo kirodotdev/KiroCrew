@@ -252,6 +252,28 @@ _FORBIDDEN_SUBCOMMANDS: dict[str, tuple[tuple[str, ...], ...]] = {
         ("secret",),
         ("workflow", "run"),
     ),
+    # The GitLab CLI, mirroring the `gh` entry verb-for-verb: same watcher, same
+    # attacker-writable inputs (MR descriptions, review notes), same operator identity
+    # behind the token. `mr update` covers `--ready` — GitLab's publish verb — and every
+    # other MR mutation (there is no separate `mr edit`); `mr note` is `pr comment`;
+    # `mr approve` is `pr review --approve`; `variable` is `secret`; `ci run` is
+    # `workflow run`. The app's own draft MR comes from
+    # `profiles/gitlab_repo/mr_recipe.py`, which builds its argv directly and never
+    # passes through this denylist, so nothing legitimate is lost.
+    "glab": (
+        ("mr", "merge"),
+        ("mr", "update"),
+        ("mr", "close"),
+        ("mr", "note"),
+        ("mr", "approve"),
+        ("mr", "create"),
+        ("issue",),
+        ("release",),
+        ("auth",),
+        ("api",),  # can PATCH/POST anything the token reaches
+        ("variable",),
+        ("ci", "run"),
+    ),
     "git": (
         ("push",),
         ("remote", "set-url"),

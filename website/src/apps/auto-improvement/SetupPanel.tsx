@@ -4,9 +4,9 @@
 // to say WHICH repository the loop should work on. The flow is deliberately
 // three explicit steps rather than one opaque field, because each step has a
 // real failure mode worth surfacing on its own:
-//   1. paste a GitHub URL -> the backend validates + clones it PUSH-DISABLED
-//      (POST /setup-clone). A bad URL or a clone that cannot be made push-safe
-//      fails HERE, before anything else is configured.
+//   1. paste a GitHub or GitLab URL -> the backend validates + clones it
+//      PUSH-DISABLED (POST /setup-clone). A bad URL or a clone that cannot be
+//      made push-safe fails HERE, before anything else is configured.
 //   2. pick a base branch -> the picker only offers branches that actually
 //      exist in the clone (GET /branches), so a run can never target a typo.
 //   3. start the run -> POST /run; live status polls GET /run.
@@ -191,7 +191,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
           <Input
             value={url}
             onChange={(e) => setUrl(e.target.value)}
-            placeholder={i18nT('apps.autoImprovement.setupPanel.https_github_com_owner_repo')}
+            placeholder={i18nT('apps.autoImprovement.setupPanel.repo_url_placeholder')}
             className="flex-1"
             aria-label={i18nT('autoImprovement.repoLabel')}
             onKeyDown={(e) => {

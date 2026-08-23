@@ -1,7 +1,7 @@
 # Auto-Improvement — user manual
 
-An opt-in built-in app that finds and fixes real defects in a GitHub repository, then
-opens them as **draft pull requests** for you to review.
+An opt-in built-in app that finds and fixes real defects in a GitHub or GitLab
+repository, then opens them as **draft pull or merge requests** for you to review.
 
 Its central idea: **measure before you change, and never let the agent grade its own
 work.** The agent proposes; deterministic Python decides. That is why a run can honestly
@@ -13,11 +13,13 @@ report "I found nothing" — and why a fix that reaches you has already been pro
 
 You need:
 
-* **`git`** and an authenticated **`gh`** (`gh auth status`). An unauthenticated `gh`
-  only fails at the moment a PR is drafted, which is the worst time to discover it — so
-  the app checks up front and refuses to start.
-* **A GitHub repository with a Python test suite.** The suite is the app's measuring
-  instrument, so this is a hard requirement, not a nicety.
+* **`git`**, plus the CLI for your repository's host: an authenticated **`gh`**
+  (`gh auth login`) for GitHub, or an authenticated **`glab`** (`glab auth login`) for
+  GitLab. An unauthenticated CLI only fails at the moment a PR or MR is drafted, which is
+  the worst time to discover it — so the app checks the one your repository needs up
+  front and refuses to start.
+* **A GitHub or GitLab repository with a Python test suite.** The suite is the app's
+  measuring instrument, so this is a hard requirement, not a nicety.
 * **`ruff`** (optional). Improves defect discovery; the app degrades cleanly without it.
 
 The app is **disabled by default** (`defaultEnabled: false`). Enable it from the Apps
@@ -39,7 +41,9 @@ The gate runs your suite several times per candidate (build → lint → collect
 
 ## 2. Connect a repository
 
-1. Paste an `https://github.com/<owner>/<repo>` URL and click **Connect**.
+1. Paste an `https://github.com/<owner>/<repo>` or `https://gitlab.com/<group>/<project>`
+   URL and click **Connect**. A self-hosted GitLab URL works once its host is listed in
+   the `dashboard.gitlab_hosts` allowlist.
 2. Pick a **base branch**.
 
 The app clones into its own scratch directory and immediately **disables push** on that
@@ -48,11 +52,13 @@ run and refuses to start if the check does not hold.
 
 Two refusals you may hit, both deliberate:
 
-* **"Only github.com URLs are supported"** — the host list is an allowlist, not a
-  denylist.
+* **An unsupported-host refusal** — the host list is an allowlist, not a denylist.
+  `github.com` and `gitlab.com` are built in; a self-hosted GitLab instance counts only
+  once its host is added to the `dashboard.gitlab_hosts` config.
 * **"Existing clone … has origin X, which does not match Y — refusing to reuse it"** —
-  usually because `gh` switched between HTTPS and SSH. Delete or move the old scratch
-  clone and reconnect. The app will not silently reuse a clone it cannot vouch for.
+  usually because `gh` or `glab` switched between HTTPS and SSH. Delete or move the old
+  scratch clone and reconnect. The app will not silently reuse a clone it cannot vouch
+  for.
 
 Changing repositories clears `branch` and `scopeDiffBase`, because a branch belongs to the
 repository it came from.
@@ -96,7 +102,7 @@ Click **Run**. Each cycle:
    must **fail on your unmodified code (twice, to catch flakes)**, **pass with the fix**,
    and **leave the rest of the suite green**.
 4. **Keep** — only a real transition is accepted.
-5. **Draft a PR** (or commit — §6).
+5. **Draft a PR or MR** (or commit — §6).
 
 A run ends on any of: the cycle cap, the time budget, the cost ceiling, **quiescence**
 (3 consecutive cycles with no keep — "this region is mined out"), or **Stop**. Stop lands
@@ -127,7 +133,7 @@ Click any finding to expand its evidence:
 | `discarded_noise` | A perf change that did not beat the noise band. | sticky |
 | `duplicate` | Same fingerprint already resolved; not re-filed. | — |
 | `error` | A harness failure, not a verdict on the code. | after 24 h |
-| `filed` | A draft PR exists. **Review it.** | — |
+| `filed` | A draft PR or MR exists. **Review it.** | — |
 | `committed` | Pushed to your branch (autocommit mode). Click **View commit**. | — |
 
 Findings are keyed by a **content fingerprint** and scoped per repository *and* branch, so
@@ -137,11 +143,12 @@ switching either gives you a separate set, and the same defect is never filed tw
 
 ---
 
-## 6. Draft PRs vs autocommit
+## 6. Draft PRs/MRs vs autocommit
 
-**Draft PR (default).** A verified fix is pushed to a generated
-`auto-improvement/<kind>-<fingerprint>` branch and opened as a **draft**. The app never
-marks a PR ready, never merges, and never enables auto-merge — those stay yours.
+**Draft PR / MR (default).** A verified fix is pushed to a generated
+`auto-improvement/<kind>-<fingerprint>` branch and opened as a **draft** — a GitHub draft
+PR or a GitLab draft MR. The app never marks it ready, never merges, and never enables
+auto-merge or merge-when-pipeline-succeeds — those stay yours.
 
 **Autocommit** (`directCommit`). A verified fix is committed straight to your base branch.
 Use it on a feature branch you own. Guards that still apply:
@@ -183,6 +190,11 @@ through Connect. Rejected keys are echoed back rather than silently dropped.
 **"the clone's push is not disabled — re-run repository setup."** The safety invariant
 failed. Reconnect the repository.
 
+**The run refuses to start with an authentication error.** The up-front CLI check failed
+for the host your repository lives on. GitHub repositories need an authenticated `gh`
+(`gh auth login`); GitLab repositories need an authenticated `glab` (`glab auth login`,
+or `glab auth login --hostname <host>` for a self-hosted instance).
+
 **Every candidate fails `failed_gate: test_invalid`.** Its reproducing test would not
 collect. Most often the test depends on something only the *fix* introduces (a new import,
 for example), so on your unmodified code it errors instead of failing cleanly — which
@@ -199,9 +211,9 @@ attempt them. Raise `maxHours`; `maxCycles` is already generous.
 deduplicates by fingerprint, so a subtree it has already worked gets quieter over time.
 Point `editAllowlist` somewhere new.
 
-**A PR's CI goes red after the run finished.** The app periodically re-drives filed PRs
-whose checks fail, bounded by a concurrency cap. Over-cap findings are deferred, never
-dropped.
+**A PR's or MR's CI goes red after the run finished.** The app periodically re-drives
+filed PRs and MRs whose checks fail, bounded by a concurrency cap. Over-cap findings are
+deferred, never dropped.
 
 ---
 
@@ -210,12 +222,13 @@ dropped.
 Stated plainly, because these are guarantees:
 
 * Never pushes to a protected branch.
-* Never merges, marks a PR ready (unless you enable `autoPublish`), or enables auto-merge.
+* Never merges, marks a PR or MR ready (unless you enable `autoPublish`), or enables
+  auto-merge or merge-when-pipeline-succeeds.
 * Never edits your tests to make a metric look better — the tests are the measuring
   instrument, and a candidate that deletes tests is rejected by name.
 * Never reports an estimate as a measurement.
 * Never keeps a fix on the agent's word. Every accepted change passed a deterministic
-  gate, and a perf win is independently reproduced before a PR is drafted.
+  gate, and a perf win is independently reproduced before a PR or MR is drafted.
 
 ---
 

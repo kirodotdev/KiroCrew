@@ -145,18 +145,18 @@
         "staygreen": "STAYGREEN"
       },
       "manifest": {
-        "description": "先度量 GitHub 仓库，再改动它。先设计一个经过校准的性能指标，也就是标尺；再用一个已知改进来证明该指标可信。随后运行“保留或回滚”改进循环：每个候选修复都写在独立 worktree 中，要通过可编辑文件白名单以及仓库自身测试，只有当实测收益超过噪声带时才会保留。留下来的结果会拟为 GitHub 草稿拉取请求，由你自己审阅并发布。",
+        "description": "先度量 GitHub 或 GitLab 仓库，再改动它。先设计一个经过校准的性能指标，也就是标尺；再用一个已知改进来证明该指标可信。随后运行“保留或回滚”改进循环：每个候选修复都写在独立 worktree 中，要通过可编辑文件白名单以及仓库自身测试，只有当实测收益超过噪声带时才会保留。留下来的结果会拟为 GitHub 草稿拉取请求或 GitLab 草稿合并请求，由你自己审阅并发布。",
         "display_name": "Auto-Improvement",
         "highlight_1": "先证明自己的指标——标尺不可信时，运行会拒绝开始",
         "highlight_2": "每个候选都做 A/B 度量，缺陷修复则用 RED/GREEN，而不是只凭“看起来对”",
         "highlight_3": "只有当收益超过实测噪声带时才保留改动",
-        "highlight_4": "拟写 GitHub 拉取请求——仅为草稿，绝不代你发布或合并",
+        "highlight_4": "拟写 GitHub 拉取请求或 GitLab 合并请求——仅为草稿，绝不代你发布或合并",
         "highlight_5": "在禁止 push 的克隆上运行，任何东西都不会未经审阅离开沙箱",
-        "highlight_6": "每个拉取请求、每项发现、每次运行各有一个可续接的聊天会话",
+        "highlight_6": "每个拉取请求或合并请求、每项发现、每次运行各有一个可续接的聊天会话",
         "page_label": "Auto-Improve"
       },
       "setupPanel": {
-        "https_github_com_owner_repo": "https://github.com/owner/repo"
+        "repo_url_placeholder": "https://github.com/owner/repo 或 https://gitlab.com/group/project"
       }
     },
     "autoResearch": {

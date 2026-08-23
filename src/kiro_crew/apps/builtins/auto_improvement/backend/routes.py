@@ -27,7 +27,7 @@ from aiohttp import web
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.security import redact
 
-from ..profiles.github_repo.pr_recipe import GitHubPRRecipe
+from ..profiles import _provider_of, build_pr_recipe
 from ..spine.push_policy import normalize_branch
 from . import (
     clone_setup,
@@ -362,6 +362,11 @@ async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
         # this setup path.
         current["origin_url"] = str(result.get("origin_url") or "")
         current["target_display"] = result["display"]
+        # Which review provider the target lives on. Prefer what clone_setup derived
+        # (the CloneSpec ``provider`` field, once it lands); fall back to inferring
+        # from the just-validated setup URL. Like ``clone``/``target_url`` this moves
+        # only through the setup path, never through ``PUT /config``.
+        current["provider"] = str(result.get("provider") or "") or _provider_of(url)
         if retargeted:
             # A branch belongs to the repo it came from. Carrying it across a retarget
             # leaves config naming a branch that does not exist in the NEW clone — the
@@ -841,8 +846,10 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
                 ),
             }
 
-        recipe = GitHubPRRecipe(
-            user=str(config.get("githubUser") or ""),
+        # Provider-selected: a GitLab target drafts an MR via `glab`, a GitHub one a
+        # PR via `gh`. The factory owns which user config key each recipe reads.
+        recipe = build_pr_recipe(
+            config,
             clone_path=Path(clone),
             pr_queue_dir=queue,
             base_ref=str(config.get("branch") or "origin/main"),
