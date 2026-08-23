@@ -115,6 +115,21 @@ WINDOWS_PROGRAM_ROOT_VARS = ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"
 # its own caller-specific override (KIROCREW_ISSUE_RADAR_GH / KIROCREW_SAGE_GH).
 GH_BIN_ENV = "KIROCREW_GH_BIN"
 
+# Parent-prevalidated gh channel for sandboxed children. A Linux script-cron
+# sandbox maps only the gateway's own uid into its user namespace, so every
+# root-owned path component (`/`, `/usr`, `/home`) stats as the overflow uid
+# 65534 and the ownership walk in validate_provider_executable refuses ANY gh
+# on the host -- the uid signal is destroyed, not merely inconvenient. The
+# gateway therefore runs the FULL validation outside the sandbox (real uids)
+# and hands the child `<resolved path>|<st_dev>:<st_ino>`; the child re-checks
+# everything the namespace leaves intact (regular file, executable, not
+# world-writable, outside the agent-writable tree) plus the device:inode
+# identity pin, which closes the swap-between-validate-and-exec window the
+# skipped ownership walk would otherwise reopen. Private (underscore) because
+# only the script-cron spawn path may set it; a set-but-malformed value fails
+# loudly like the operator overrides above.
+GH_PREVALIDATED_ENV = "_KIROCREW_GH_PREVALIDATED"
+
 # gh's own auth + network/TLS vars, forwarded (when present) on top of the
 # platform's minimal safe-key base; everything else in the parent env is
 # dropped. This is the canonical union for every gh spawn path — each key is
@@ -469,12 +484,73 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
 # Resolution results keyed by (override env NAME, its value, the generic
 # KIROCREW_GH_BIN value) so a changed override never serves a stale binary
 # while repeat calls skip the stat-heavy validation walk.
-_RESOLVE_CACHE: dict[tuple[str, str | None, str | None], str] = {}
+_RESOLVE_CACHE: dict[tuple[str, str | None, str | None, str | None], str] = {}
 
 
 def reset_cache() -> None:
     """Forget every cached gh resolution (test hook and operator-facing reset)."""
     _RESOLVE_CACHE.clear()
+
+
+def _consume_prevalidated(value: str) -> str:
+    """Validate a parent-prevalidated gh handoff inside a sandboxed child.
+
+    ``value`` is ``<resolved path>|<st_dev>:<st_ino>`` written by
+    :func:`prevalidated_gh_env` in the gateway, where the full ownership walk
+    already ran with real uids. Inside the child's user namespace that walk is
+    unavailable (root maps to the overflow uid), so this re-checks every
+    property the namespace leaves intact and pins the file's identity to the
+    device:inode the parent validated -- a binary swapped in after the parent's
+    check has a different inode and is refused. Any failure raises loudly:
+    a set-but-wrong handoff is a defect to surface, never to silently skip.
+    """
+    try:
+        path_part, _, identity = value.rpartition("|")
+        dev_s, _, ino_s = identity.partition(":")
+        expected = (int(dev_s), int(ino_s))
+    except ValueError as exc:
+        raise SetupError(f"{GH_PREVALIDATED_ENV} is malformed: {value!r}") from exc
+    if not path_part:
+        raise SetupError(f"{GH_PREVALIDATED_ENV} is malformed: {value!r}")
+    resolved = Path(path_part)
+    try:
+        st = resolved.stat()
+    except OSError as exc:
+        raise SetupError(f"{GH_PREVALIDATED_ENV} target is not accessible: {exc}") from exc
+    if (st.st_dev, st.st_ino) != expected:
+        raise SetupError(
+            f"{GH_PREVALIDATED_ENV} identity mismatch: the binary at {path_part} "
+            "is not the file the gateway validated"
+        )
+    if not stat.S_ISREG(st.st_mode):
+        raise SetupError(f"{GH_PREVALIDATED_ENV} target is not a regular file")
+    if st.st_mode & stat.S_IWOTH:
+        raise SetupError(f"{GH_PREVALIDATED_ENV} target is world-writable")
+    if not os.access(resolved, os.X_OK):
+        raise SetupError(f"{GH_PREVALIDATED_ENV} target is not executable")
+    for root in agent_writable_roots():
+        if resolved == root or root in resolved.parents:
+            raise SetupError(
+                f"{GH_PREVALIDATED_ENV} target is inside the agent-writable tree {root}"
+            )
+    return str(resolved)
+
+
+def prevalidated_gh_env() -> dict[str, str]:
+    """Env entry handing a fully-validated gh to a sandboxed child, or ``{}``.
+
+    Gateway-side producer for :data:`GH_PREVALIDATED_ENV`: runs the normal
+    :func:`resolve_gh` (full ownership walk, real uids) and pins the result's
+    device:inode. A host without a usable gh returns ``{}`` -- the child's own
+    resolution then fails with the ordinary setup message, so scripts that
+    never call gh are unaffected.
+    """
+    try:
+        resolved = resolve_gh()
+        st = os.stat(resolved)
+    except (SetupError, OSError):
+        return {}
+    return {GH_PREVALIDATED_ENV: f"{resolved}|{st.st_dev}:{st.st_ino}"}
 
 
 def resolve_gh(*, override_env: str = "", cache: bool = True) -> str:
@@ -492,9 +568,21 @@ def resolve_gh(*, override_env: str = "", cache: bool = True) -> str:
         override_env,
         os.environ.get(override_env) if override_env else None,
         os.environ.get(GH_BIN_ENV),
+        os.environ.get(GH_PREVALIDATED_ENV),
     )
     if cache and key in _RESOLVE_CACHE:
         return _RESOLVE_CACHE[key]
+
+    # Parent-prevalidated handoff (sandboxed children) wins first: inside the
+    # child's user namespace the ownership walk below cannot succeed for ANY
+    # binary under a root-owned hierarchy, so the gateway validated outside
+    # and pinned the identity -- see GH_PREVALIDATED_ENV.
+    prevalidated = os.environ.get(GH_PREVALIDATED_ENV)
+    if prevalidated is not None:
+        resolved = _consume_prevalidated(prevalidated)
+        if cache:
+            _RESOLVE_CACHE[key] = resolved
+        return resolved
 
     override_names = ([override_env] if override_env else []) + [GH_BIN_ENV]
     for name in override_names:

@@ -38,6 +38,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_dir, read_local_secret
 from kiro_crew.config.paths import kiro_agents_dir
+from kiro_crew.github_runner import prevalidated_gh_env
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.port_resolution import resolve_serving_port
 from kiro_crew.sandbox import (
@@ -684,6 +685,12 @@ def run_script_sandboxed(
         # The child must dial the gateway the credential above was minted for:
         # same dial_port, resolved once above, not a second resolution here.
         clean_env["_KIROCREW_DIAL_PORT"] = str(dial_port)
+        # Pre-resolve gh OUTSIDE the sandbox and pin its identity for the
+        # child: the sandbox's single-uid user namespace maps every root-owned
+        # path component to the overflow uid, so the child's own ownership
+        # walk refuses ANY gh on the host. Empty when the host has no usable
+        # gh -- scripts that never call gh are unaffected either way.
+        clean_env.update(prevalidated_gh_env())
 
         sandboxed_argv = cgroup_scope_argv(sandboxed_argv)  # cgroup DoS ceiling
         proc = popen_limited(

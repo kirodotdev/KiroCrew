@@ -181,16 +181,81 @@ not write it off as flakiness.
 ## Decision table
 
 - User is waiting and total time < 30 min → `wait` + poll, no loop.
-- "Babysit / monitor / keep checking" in THIS conversation → `monitor_start`.
+- "Babysit / monitor / keep checking" in THIS conversation, in a phase where
+  you ACT most cycles (fixing findings, pushing revisions) → `monitor_start`.
+- **Pure-watch phase of a PR babysit** — waiting on CI or reviewers, nothing
+  to do until a signal → arm the **`pr_watch` script cron** (below). Zero
+  tokens per quiet cycle; it wakes THIS session with one agent turn only when
+  something unexpected happens.
 - Reacting to review feedback or CI on a PR → `monitor_start` or in-turn
-  `wait`+poll. **Never `cron_add`, never HEARTBEAT.md** (see below).
+  `wait`+poll for the active-fix phase. **Never an agent (LLM) cron, never
+  HEARTBEAT.md** (see below). The `pr_watch` script cron is fine: it is the
+  detector, not the reactor — the woken agent turn does the reacting with
+  this session's own trust.
 - Work belongs in a fresh isolated session each cycle, and needs no tools that
   require approval → `cron_add`.
 - Cleaning up after a merge you have already verified → `cron_add`, as a
   `script` cron at roughly a 5-minute interval.
 - External system will call back → `register_hook`.
 
-### Never use cron or heartbeat to react to reviewer feedback
+### Watch mode — zero-token PR polling with `pr_watch.py`
+
+A babysit spends most of its life waiting: CI runs for ten minutes, reviewers
+take longer, and every `monitor_start` cycle that discovers "nothing changed"
+still pays a full agent turn on the session's whole context. Watch mode moves
+the *detection* to a script cron and keeps the *judgment* in this session:
+
+```
+script cron (zero tokens, every ~5 min)
+  ├─ nothing changed / checks still running     → silent, no delivery
+  ├─ merged / closed                            → final message, cron removes itself
+  └─ unexpected state                           → ONE agent turn in THIS session
+       (CONFLICTING · new failing check not in known_reds · all green)
+```
+
+Arm it **from the session that owns the babysit** — the cron captures that
+session as its wake target; armed anywhere else, the wake lands in the wrong
+chat. Cron scripts must live under `~/.kiro/crew/crons/`, so copy the synced
+skill asset there first (re-copy on every arm — it keeps the copy current
+with skill updates):
+
+```
+cp ~/.kiro/crew/skills/kirocrew-dev/babysit/scripts/pr_watch.py \
+   ~/.kiro/crew/crons/pr_watch.py
+
+cron_add(
+  name="pr-watch #1234",
+  script="~/.kiro/crew/crons/pr_watch.py:watch",
+  every=300,
+  timeout=120,
+  message='{"repo": "owner/name", "pr": 1234,
+            "known_reds": ["Frontend Tests (4)"],
+            "note": "worktree ~/oss/wt-foo, branch fix/foo"}'
+)
+```
+
+- `known_reds` — check names that are red on the BASE branch (inherited
+  breakage). The watch never wakes for them and treats "everything else
+  green" as review-ready. Populate it from what you verified against main's
+  own CI, and update the cron message if main's condition changes.
+- `note` — one line of context echoed into the wake brief. Put the worktree
+  and branch here so the woken turn starts oriented; if this session keeps a
+  work ledger, the brief also tells the woken turn to read it.
+- Wakes are deduplicated **per head SHA**: one wake per conflict, per new red
+  check name, per all-green. A force-push resets the memory, so the next
+  anomaly on the new head wakes again. Quiet ticks deliver nothing at all.
+- The watch reads only PR state and the check rollup. It does NOT read
+  reviewer comment bodies — verdict text, marker freshness, and rebuttals are
+  the woken agent's job, exactly as in a manual cycle.
+- Merged or closed → the cron delivers a final message and removes itself.
+  If you finish the babysit early, remove it yourself (`cron_remove`).
+- Typical composition: drive the active-fix phase with `monitor_start`; when
+  the PR goes quiet (checks running, awaiting review), stop the loop
+  (`autonudge_stop`) and arm the watch. When a wake arrives, act on it; if
+  heavy fixing resumes, re-arm `monitor_start` and remove the watch until
+  things go quiet again.
+
+### Never use an agent cron or heartbeat to react to reviewer feedback
 
 Both are structurally incapable of it, and both fail in ways that look like
 success:
