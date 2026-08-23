@@ -12,21 +12,22 @@ orphaned kiro-cli session file is deleted so it does not pollute
 Contract:
 - ``POST /api/chat/slots/{slot}/rewind``
 - Body: ``{at_message_index: int, content: str}`` (or ``{ts, content}``)
-- Truncates ``slot.messages[:at_message_index]``, kills + removes the
-  current ACP session for the slot, deletes the orphaned kiro-cli session
-  file (best-effort), persists the truncated history, and re-runs from
-  the edited prompt against a fresh ACP session.
+- Prepares and persists the truncated history before replacing the live slot,
+  discards the current ACP conversation, deletes the orphaned kiro-cli session
+  file (best-effort), and re-runs from the edited prompt against a fresh ACP
+  session.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import logging
 
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
-from kiro_crew.dashboard.chat_runner import _run_chat
+from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
@@ -78,7 +79,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     request_app = request.get("app", "")
     if not slot:
-        return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     # App ownership check — mirror fork's contract so apps can't rewind
     # slots they don't own.
@@ -94,7 +95,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             )
             # 404 (not 403): indistinguishable from a missing slot —
             # anti-enumeration (CWE-204); true reason logged via SEL above.
-            return web.json_response({"error": "not found"}, status=404)
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
 
     try:
         body = await request.json()
@@ -197,6 +198,30 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # Capture orphan info before any mutation, so we can clean up the
         # kiro-cli session file even if the swap path errors out partway.
         session_key = effective_session_key(slot)
+
+        # An app may rewind only the slot's OWN dashboard session. An
+        # app-owned slot can carry a channel link (``linked_session_key``),
+        # and ``session_key`` then addresses a foreign channel conversation
+        # -- rewinding through it would clear the native identity of a
+        # session the app does not own. Same 404-not-403 shape as the
+        # ownership check above (anti-enumeration); SEL records the truth.
+        if request_app and getattr(slot, "linked_session_key", ""):
+            sel().log_api_access(
+                caller=request_app,
+                operation="chat.slot_rewind",
+                outcome="denied",
+                source="app_isolation",
+                resources=f"slot={name}",
+                error="app cannot rewind a channel-linked slot",
+            )
+            return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+
+        # The transcript this rewind was authorized against. A concurrent
+        # rebinding (a cron injection re-linking the slot) moves the slot to
+        # another transcript while the boundaries below are pending; the
+        # commit re-checks this key so the edit can never land on state it
+        # never read.
+        expected_history_key = slot_history_key(slot)
         orphan_kiro_session_id = ""
         if state.sessions is not None:
             try:
@@ -204,68 +229,75 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
             except Exception:
                 logger.debug("rewind: failed to read session_map", exc_info=True)
 
-        # Truncate slot messages to the snapshot — everything from the
-        # edited message onward is discarded (intentional, by design).
-        del slot.messages[index:]
-        slot.invalidate_source_links()
-        slot._dirty = True
-        slot._resumed_count = 0
-        # Window was truncated → next save MUST be the archive-safe rewrite path.
-        # If the inline save below fails, the flag keeps the flush loop on the
-        # rewrite path so the dropped tail is still archived.
-        slot._pending_rewrite = True
+        # Prepare the prospective state on a copy. The dirty-slot flush can run
+        # while either durable boundary below is pending, so exposing a truncated
+        # live window here could make a rejected edit permanent.
+        prospective_slot = copy.copy(slot)
+        prospective_slot.messages = list(slot.messages[:index])
+        prospective_slot._queue = []
+        prospective_slot._pending = list(slot._pending)
+        prospective_slot._question_pending = dict(slot._question_pending)
+        prospective_slot._on_question_retired = None
+        prospective_slot.event = asyncio.Event()
+        if prospective_slot._pending:
+            prospective_slot.event.set()
+        prospective_slot._dirty = True
+        prospective_slot._resumed_count = 0
+        prospective_slot._pending_rewrite = True
 
-        # Swap the ACP session: kill current process AND delete the
-        # session_map entry so the next get_or_create cold-starts a fresh
-        # kiro-cli session. ``remove`` (vs ``reset``) is the right call —
-        # we want a clean slate, not a session/load resume.
-        if state.sessions is not None:
-            try:
-                await state.sessions.remove(session_key)
-            except Exception:
-                logger.warning(
-                    "rewind: failed to remove ACP session for %s",
-                    session_key,
-                    exc_info=True,
-                )
+        # The backing queue belongs to the discarded suffix too. Entries that
+        # arrive AFTER this snapshot (a send diverted to the queue by the
+        # reservation below) are not part of it and must survive the commit.
+        discarded_queue = list(slot._queue)
+        discarded_queue_ids = {item["id"] for item in discarded_queue}
 
-        # Best-effort cleanup of the orphaned kiro-cli session JSONL so it
-        # does not show up in ``kiro-cli chat -l`` or the resume picker.
-        if orphan_kiro_session_id:
-            await _delete_orphan_kiro_session(orphan_kiro_session_id)
-
-        # Append the edited prompt to slot history so the truncated +
-        # edited state is what gets persisted and what the freshly-spawned
-        # ACP session sees on its first prompt.
+        # Build the user row through the slot's normal append path without
+        # publishing it to the live slot before persistence succeeds.
         redacted_content, _ = redact_exfiltration_urls(content)
         redacted_content, _ = redact_credentials(redacted_content)
-        slot.append("user", redacted_content, "msg msg-u")
+        prospective_slot.append("user", redacted_content, "msg msg-u")
+        msgs_snapshot = list(prospective_slot.messages)
+        retired_question_ids = [
+            question_id
+            for question_id in slot._question_pending
+            if question_id not in prospective_slot._question_pending
+        ]
 
-        try:
-            msgs_snapshot = list(slot.messages)
-            await asyncio.to_thread(_save_slot_to_history, state, slot, msgs_snapshot)
-        except Exception:
-            logger.warning("rewind: failed to persist truncated history", exc_info=True)
+        # Reserve the slot BEFORE the awaits below. ``slot.running`` derives
+        # from ``slot.task``, and the send path is not serialized on
+        # ``slot._lock``: without a live task, a send arriving while either
+        # durable boundary is pending observes an idle slot, appends its row
+        # to ``slot.messages`` and dispatches a competing turn -- which the
+        # commit below would then erase. Publishing the dispatch task here
+        # (no await between the idle check above and this assignment) makes
+        # such a send take the queue path instead; the entry is not in
+        # ``discarded_queue``, so the commit preserves it and the replacement
+        # turn's own teardown drain delivers it. On abort the task starts the
+        # next queued turn itself, so a diverted send is never stranded.
+        dispatch_ready = asyncio.Event()
+        dispatch_commit = False
 
-        sel().log_api_access(
-            caller=request_app or "dashboard",
-            operation="chat.rewind",
-            outcome="allowed",
-            source="dashboard",
-            resources=(
-                f"slot={slot.key},at_index={index},"
-                f"orphan_kiro_session={orphan_kiro_session_id or 'none'}"
-            ),
-        )
+        async def _rewind_dispatch() -> None:
+            await dispatch_ready.wait()
+            if dispatch_commit:
+                await _run_chat(
+                    state,
+                    slot,
+                    redacted_content,
+                    _directive_user_origin=not bool(request_app),
+                )
+                return
+            # Rewind rejected. A send diverted to the queue by this
+            # reservation has no drain trigger of its own (no turn ran), so
+            # hand it to the canonical successor dispatch, which re-validates
+            # holds before starting anything. Entries that were already
+            # queued before the rewind keep waiting for their own trigger.
+            if any(entry["id"] not in discarded_queue_ids for entry in slot._queue):
+                if await _start_next_queued_turn(state, slot):
+                    return
+            state.push_slots_update()
 
-        task = asyncio.create_task(
-            _run_chat(
-                state,
-                slot,
-                redacted_content,
-                _directive_user_origin=not bool(request_app),
-            )
-        )
+        task = asyncio.create_task(_rewind_dispatch())
         slot.task = task
         state._background_tasks.add(task)
         task.add_done_callback(state._background_tasks.discard)
@@ -275,6 +307,236 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                 logger.error("rewind _run_chat failed for %s", slot.key, exc_info=t.exception())
 
         task.add_done_callback(_on_done)
+
+        # Durably clear the native resume sid before committing the edited
+        # history. A failure leaves the original branch intact and dispatches
+        # no replacement turn.
+        try:
+            if state.sessions is not None:
+                try:
+                    # ``skip_if_busy``: an inbound channel turn (a Slack reply
+                    # on the linked session) holds the session semaphore while
+                    # ``slot.running`` reads False, so the idle check above
+                    # cannot see it -- an unconditional discard would tear
+                    # down its provider mid-reply. The refusal is atomic with
+                    # the busy probe inside the lifecycle service.
+                    discarded = await state.sessions.discard_conversation(
+                        session_key, skip_if_busy=True
+                    )
+                except Exception:
+                    logger.warning(
+                        "rewind: failed to discard ACP conversation for %s",
+                        session_key,
+                        exc_info=True,
+                    )
+                    state.push_slots_update()
+                    return web.json_response(
+                        {
+                            "error": "could not prepare edited conversation; retry the edit",
+                            "code": "rewind_prepare_failed",
+                        },
+                        status=503,
+                    )
+                if not discarded:
+                    state.push_slots_update()
+                    return web.json_response(
+                        {
+                            "error": "the session is busy with another reply; retry the edit",
+                            "code": "rewind_session_busy",
+                        },
+                        status=409,
+                    )
+                try:
+                    # The sid clear lands in the session map's debounced
+                    # writer; a gateway exit before that write would reload
+                    # the old sid on restart and resurrect the discarded
+                    # conversation. Force the durability point HERE,
+                    # endpoint-side, so the shared discard keeps its existing
+                    # semantics for its other callers (chat_runner, channel
+                    # handlers), which tolerate the debounce.
+                    await state.sessions.aflush()
+                except Exception:
+                    logger.warning(
+                        "rewind: failed to flush the cleared resume sid for %s",
+                        session_key,
+                        exc_info=True,
+                    )
+                    state.push_slots_update()
+                    return web.json_response(
+                        {
+                            "error": "could not prepare edited conversation; retry the edit",
+                            "code": "rewind_prepare_failed",
+                        },
+                        status=503,
+                    )
+
+            def _commit_live_state() -> None:
+                """Adopt the prepared state on the live slot (synchronous).
+
+                Shared by the normal success path and the cancellation path
+                below: once the destructive rewrite has landed on disk, this
+                is the only thing that keeps live state matching it. No await
+                inside, so it is atomic on the event loop.
+                """
+                slot.messages = prospective_slot.messages
+                # Remove only the entries captured in the pre-await snapshot:
+                # an entry queued while the boundaries were pending belongs to
+                # the NEW timeline and must survive for the teardown drain.
+                slot._queue[:] = [
+                    entry for entry in slot._queue if entry["id"] not in discarded_queue_ids
+                ]
+                slot._pending = prospective_slot._pending
+                slot._question_pending = prospective_slot._question_pending
+                slot.invalidate_source_links()
+                slot._dirty = True
+                slot._resumed_count = 0
+                # Deliberately NOT copied from ``prospective_slot``: the
+                # persistence witnesses (``_pending_rewrite``, ``_disk_*``,
+                # ``_frozen_prefix_cache``). The save above ran on the LIVE
+                # slot and stamped them with the post-rewrite truth
+                # (``_pending_rewrite`` cleared, disk window/meta/mtime cache
+                # matching the truncated file); the prospective copies are the
+                # PRE-save values. Restoring those would re-arm
+                # ``_pending_rewrite`` -- making the next flush repeat the
+                # destructive rewrite and discard any cross-process append
+                # (workflow/cron) that landed in between -- and would move the
+                # monotone ``_disk_tail_ts`` floor backwards.
+                if slot._pending:
+                    slot.event.set()
+                else:
+                    slot.event.clear()
+                if retired_question_ids and callable(slot._on_question_retired):
+                    try:
+                        slot._on_question_retired(slot.key, retired_question_ids)  # type: ignore[operator]
+                    except Exception:
+                        logger.debug(
+                            "rewind: question-retirement announcement failed for slot %s",
+                            slot.key,
+                            exc_info=True,
+                        )
+                # Other open clients render queue cards from WebSocket events
+                # rather than this slot's optimistic edit.
+                for item in discarded_queue:
+                    state.broadcast_ws("queue_cancel", {"slot": slot.key, "queue_id": item["id"]})
+                sel().log_api_access(
+                    caller=request_app or "dashboard",
+                    operation="chat.rewind",
+                    outcome="allowed",
+                    source="dashboard",
+                    resources=(
+                        f"slot={slot.key},at_index={index},"
+                        f"orphan_kiro_session={orphan_kiro_session_id or 'none'}"
+                    ),
+                )
+
+            # The worker thread cannot be interrupted: once the rewrite starts
+            # it WILL finish, whether or not this handler is still alive. A
+            # client disconnect cancels the handler task, and a bare await
+            # here would then abandon a completed destructive rewrite --
+            # persisted history rewound, live state stale, edited prompt never
+            # dispatched. Shield the save; on cancellation, wait for the
+            # worker's real outcome and complete the matching commit (and let
+            # the reserved dispatch task run the edited prompt) before
+            # propagating the cancellation.
+            save_task = asyncio.ensure_future(
+                asyncio.to_thread(
+                    _save_slot_to_history,
+                    state,
+                    slot,
+                    msgs_snapshot,
+                    expected_history_key=expected_history_key,
+                )
+            )
+            try:
+                saved = await asyncio.shield(save_task)
+            except asyncio.CancelledError:
+                landed = False
+                try:
+                    landed = bool(await save_task)
+                except Exception:
+                    landed = False
+                if landed and slot_history_key(slot) == expected_history_key:
+                    _commit_live_state()
+                    dispatch_commit = True
+                    logger.info(
+                        "rewind: request cancelled after the rewrite landed for %s; "
+                        "committed live state and dispatching the edited prompt",
+                        slot.key,
+                    )
+                raise
+            except Exception:
+                logger.warning("rewind: failed to persist truncated history", exc_info=True)
+                state.push_slots_update()
+                return web.json_response(
+                    {
+                        "error": "could not save edited conversation; retry the edit",
+                        "code": "rewind_save_failed",
+                    },
+                    status=503,
+                )
+            if not saved:
+                # The save's own guards refused the write (the session was
+                # permanently deleted, or the slot was rebound to another
+                # transcript, while the write awaited its lock). Nothing was
+                # persisted, so reporting success here would dispatch a turn
+                # from state that exists only in memory.
+                logger.warning(
+                    "rewind: history save refused for %s (concurrent delete or rebind)",
+                    slot.key,
+                )
+                state.push_slots_update()
+                return web.json_response(
+                    {
+                        "error": "could not save edited conversation; retry the edit",
+                        "code": "rewind_save_failed",
+                    },
+                    status=503,
+                )
+
+            # Both irreversible boundaries succeeded. Before adopting the
+            # prepared state, confirm the slot still routes to the transcript
+            # this rewind was authorized against: a concurrent rebinding (a
+            # cron injection re-linking the slot mid-persistence) hydrates the
+            # slot with ANOTHER conversation's state, and a late commit here
+            # would silently replace it. The prospective copy froze the old
+            # routing, so the save-side ``expected_history_key`` guard cannot
+            # see the live slot move -- this loop-side check is the one that
+            # can. No await between this check and the mutations below.
+            if slot_history_key(slot) != expected_history_key:
+                logger.warning(
+                    "rewind: slot %s was rebound to another transcript during "
+                    "persistence; refusing the commit",
+                    slot.key,
+                )
+                state.push_slots_update()
+                return web.json_response(
+                    {
+                        "error": "the conversation changed while saving; retry the edit",
+                        "code": "rewind_slot_rebound",
+                    },
+                    status=503,
+                )
+
+            # The prepared state is now the live slot state. Keep the queue
+            # cancellation and source-link invalidation with this commit
+            # rather than leaking them during either await above.
+            _commit_live_state()
+            # BEFORE the await below: a cancellation landing during the
+            # best-effort cleanup would otherwise abort the reserved dispatch
+            # after the commit already happened, stranding a persisted edited
+            # prompt that never runs.
+            dispatch_commit = True
+
+            # Best-effort cleanup of the orphaned kiro-cli session JSONL so it
+            # does not show up in ``kiro-cli chat -l`` or the resume picker.
+            # After the commit (and skipped on the cancellation path): purely
+            # cosmetic, kiro-cli's own GC reclaims the file eventually.
+            if orphan_kiro_session_id:
+                await _delete_orphan_kiro_session(orphan_kiro_session_id)
+        finally:
+            # Wake the reserved dispatch task on every exit: it runs the
+            # replacement turn on commit and the queue handoff on abort.
+            dispatch_ready.set()
 
     state.push_slots_update()
     return web.json_response({"ok": True, "at_message_index": index + disk_older})

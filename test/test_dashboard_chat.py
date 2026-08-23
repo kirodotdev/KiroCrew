@@ -7967,7 +7967,7 @@ class TestRuntimeWiring:
         build_message_calls: list[dict] = []
 
         def mock_build_message(self_ctx, text, is_new, session_key=None, **kwargs):
-            build_message_calls.append({"text": text, "kwargs": kwargs})
+            build_message_calls.append({"text": text, "session_key": session_key, "kwargs": kwargs})
             return text, MagicMock(action=None, text="")
 
         # Mock config loading
@@ -8005,14 +8005,34 @@ class TestRuntimeWiring:
 
         state = _make_state(tmp_path, context_builder=ctx_builder)
 
-        # Create a slot with an agent
+        # Create a slot with retained history, then verify a cold start replays it.
         slot = state.get_or_create_slot("mem-test", agent="oncall")
+        conversation_log = ConversationLog(base_dir=tmp_path / "sessions")
+        conversation_log.init()
+        await asyncio.to_thread(
+            conversation_log.append, "dashboard:mem-test", "user", "frozen retained question"
+        )
+        await asyncio.to_thread(
+            conversation_log.append,
+            "dashboard:mem-test",
+            "assistant",
+            "frozen retained answer",
+        )
+        await asyncio.to_thread(
+            conversation_log.append, "dashboard:mem-test", "user", "test message"
+        )
+        ctx_builder.conversation_log = conversation_log
+        state.conversation_log = conversation_log
+        slot.append("user", "retained question", "msg msg-u")
+        slot.append("assistant", "retained answer", "msg msg-a")
+        slot.append("user", "test message", "msg msg-u")
 
         # Mock session manager to return a mock client
         mock_client = MagicMock()
         mock_client.stream = MagicMock(return_value=AsyncIterator([]))
         state.sessions.get_or_create = AsyncMock(return_value=(mock_client, True, False))
         state.sessions.get_pid = MagicMock(return_value=None)
+        state.sessions.consume_replay_suppression = MagicMock(return_value=False)
 
         # Import and run _run_chat
         from kiro_crew.dashboard.chat import _run_chat
@@ -8022,6 +8042,10 @@ class TestRuntimeWiring:
         # Verify build_message was called with memory_store
         assert len(build_message_calls) == 1
         assert build_message_calls[0]["kwargs"].get("memory_store") == "oncall-mem"
+        assert build_message_calls[0]["session_key"] == "dashboard:mem-test"
+        replay = build_message_calls[0]["kwargs"].get("compressed_history")
+        assert "frozen retained question" in replay
+        assert "frozen retained answer" in replay
 
     @pytest.mark.asyncio
     async def test_run_chat_forwards_and_clears_the_reinjection_flag(self, tmp_path, monkeypatch):

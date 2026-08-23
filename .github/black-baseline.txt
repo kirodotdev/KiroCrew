@@ -600,7 +600,6 @@ test/test_dashboard.py
 test/test_dashboard_approval.py
 test/test_dashboard_approval_window.py
 test/test_dashboard_branding.py
-test/test_dashboard_chat_rewind.py
 test/test_dashboard_config_gitlab_hosts.py
 test/test_dashboard_cron_approval.py
 test/test_dashboard_cron_batch_delete_handler.py

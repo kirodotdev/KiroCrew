@@ -378,6 +378,24 @@ re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
 
+### Edit rewind context boundary
+
+Dashboard Edit + Send replaces the ACP session and rebuilds context from the
+retained canonical history. The discarded suffix is excluded from session
+replay, stop recovery, and persisted-history context; stable memory, rules,
+skills, and project context remain available.
+
+The native conversation is discarded before the retained history rewrite, and
+the cleared resume pointer is flushed durably before the rewrite is committed,
+so a gateway restart cannot resurrect the discarded native session. If the
+rewrite fails -- or the slot was concurrently rebound to another transcript
+while it was in flight -- Edit + Send returns a 503 and restores the dashboard
+slot, but it cannot restore the discarded native session; a later turn
+cold-starts from the original persisted history instead of resuming it.
+App-authenticated requests may rewind only a slot's own dashboard session:
+a channel-linked slot is refused, because its effective session is a
+conversation the app does not own.
+
 ### Eager Respawn
 
 After a hard kill, `_eager_respawn(key)` calls `get_or_create(key)` in a background task so the next user message finds a warm session. On failure, logs at debug and does nothing — the next message triggers `get_or_create` again via the normal path.
