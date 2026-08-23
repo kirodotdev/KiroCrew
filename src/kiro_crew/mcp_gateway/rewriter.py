@@ -1485,15 +1485,26 @@ def rewrite_agents(
         _collect_target_env(new_spec.get("mcpServers", {}), target_env)
         target = overlay_dir / path.name
         try:
-            # Atomic + 0600: temp-file + os.replace (via atomic_write) so a
-            # live session reading this overlay through the bind-mount never
+            # Atomic + owner-only: temp-file + os.replace (via atomic_write) so
+            # a live session reading this overlay through the bind-mount never
             # sees a truncated spec (which would make the agent's MCP servers
             # vanish mid-run), and the passed-through non-poolable / HTTP-SSE
             # env blocks (tokens / API keys) are never world-readable. Matches
             # the env sidecar and settings overlay.
-            atomic_write(target, json.dumps(new_spec, indent=2) + "\n", mode=0o600)
-            if not platform_compat.IS_POSIX:
-                platform_compat.restrict_to_owner(target)
+            #
+            # `restrict_to_owner=True` locks the TEMP file down before any
+            # content reaches it, which is what makes "never world-readable"
+            # true on Windows too. Applying the DACL after the rename left the
+            # tokens published under the directory's inherited ACL for the
+            # length of that call; on POSIX the mode landed on the temp already,
+            # so only Windows carried the window. A lockdown failure now raises
+            # before publication and is handled by the same `except OSError`
+            # below, so the overlay is skipped rather than published unprotected.
+            atomic_write(
+                target,
+                json.dumps(new_spec, indent=2) + "\n",
+                restrict_to_owner=True,
+            )
         except OSError as exc:
             logger.warning("failed to write overlay %s: %s", target, exc)
             overlay_write_failed = True
@@ -1557,19 +1568,16 @@ def rewrite_agents(
                 # Malformed source (mcpServers not a dict): normalize rather
                 # than propagate the broken shape into a freshly-written overlay.
                 new_settings["mcpServers"] = {}
-            # Atomic + 0600: temp-file + os.replace (via atomic_write) so a
-            # live session reading this overlay through the bind-mount never
-            # sees a truncated mcp.json (which would make its MCP servers
-            # vanish mid-run), and the passed-through non-poolable / HTTP-SSE
-            # env blocks (tokens / API keys) are never world-readable. Matches
-            # the env sidecar and per-agent overlay.
+            # Atomic + owner-only, same contract as the per-agent overlay
+            # above: the temp file is locked down before any content reaches it,
+            # so the passed-through env blocks (tokens / API keys) are never
+            # world-readable on any platform, and a lockdown failure raises
+            # before publication instead of leaving an unprotected mcp.json.
             atomic_write(
                 settings_overlay_path,
                 json.dumps(new_settings, indent=2) + "\n",
-                mode=0o600,
+                restrict_to_owner=True,
             )
-            if not platform_compat.IS_POSIX:
-                platform_compat.restrict_to_owner(settings_overlay_path)
             logger.info(
                 "mcp-gateway rewriter: global mcp.json overlay written, "
                 "%d poolable server(s) relocated to per-agent overlays (overlay=%s)",

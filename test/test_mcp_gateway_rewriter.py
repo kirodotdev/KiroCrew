@@ -613,12 +613,16 @@ def test_rewriter_calls_restrict_to_owner_on_windows(
     # because the non-POSIX guard in the write path fires.
     env_sidecars = [p for p in restricted_paths if "stubs" in str(p.parent)]
     assert env_sidecars, f"env sidecar file not restricted: {restricted_paths}"
-    # The overlay agent spec lives in overlay/ directory
-    overlay_specs = [
-        p for p in restricted_paths
-        if p.suffix == ".json" and p.parent.name == "overlay"
-    ]
-    assert overlay_specs, f"overlay spec file not restricted: {restricted_paths}"
+    # The overlay agent spec lives in the overlay/ directory. Its lockdown is
+    # applied by atomic_write to the TEMP file, before the rename, so what is
+    # asserted is that a file in overlay/ was restricted and that the published
+    # .json never was -- a DACL landing on the published path would mean the
+    # spec, which carries passed-through env blocks, existed unprotected first.
+    overlay_locked = [p for p in restricted_paths if p.parent.name == "overlay"]
+    assert overlay_locked, f"overlay spec file not restricted: {restricted_paths}"
+    assert not [p for p in overlay_locked if p.suffix == ".json"], (
+        f"the overlay spec was restricted after publication: {overlay_locked}"
+    )
 
 
 def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:

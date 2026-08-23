@@ -22,9 +22,9 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.service.live_target import (
     _FILENAME,
-    _MODE,
     EXEC_MARKER,
     InvalidTarget,
     maybe_reexec,
@@ -290,23 +290,38 @@ class TestWriteTarget:
             # Windows has no POSIX bits: write_target applies an owner-only DACL
             # through restrict_to_owner, which the next test pins directly.
             pytest.skip("POSIX permission bits are not meaningful here")
-        assert pointer_path().stat().st_mode & 0o777 == _MODE
+        # 0o600 is what restrict_to_owner implies on POSIX; asserted as the
+        # literal now that the module no longer carries a mode constant.
+        assert pointer_path().stat().st_mode & 0o777 == 0o600
 
     def test_applies_owner_only_lockdown(self, tmp_path, monkeypatch):
-        """restrict_to_owner is called on the written pointer.
+        """The owner-only lockdown runs, and runs BEFORE the pointer is published.
 
         This is the only owner-only mechanism on Windows, where atomic_write's
         mode argument is a no-op, so it must be asserted independently of the
-        POSIX bit check above.
+        POSIX bit check above. It is applied to the temp file inside
+        atomic_write, so what is pinned here is that it ran against a file in
+        the pointer's own directory while the pointer itself did not yet exist —
+        a lockdown landing after publication would leave the pointer, which is a
+        code-execution input read at every startup, briefly unprotected.
         """
         seen: list = []
-        monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner",
-            lambda path: seen.append(Path(path)),
-        )
+        published_at_call: list = []
+        real = platform_compat.restrict_to_owner
+
+        def _record(path):
+            seen.append(Path(path))
+            published_at_call.append(pointer_path().exists())
+            return real(path)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _record)
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
-        assert seen == [pointer_path()]
+        assert seen, "no owner-only lockdown was applied to the pointer"
+        assert all(p.parent == pointer_path().parent for p in seen), seen
+        assert not any(published_at_call), (
+            "the lockdown ran after the pointer was already published"
+        )
 
     def test_round_trips_through_read_target(self, tmp_path):
         checkout = _make_valid_checkout(tmp_path)
@@ -368,19 +383,27 @@ class TestSnapshotRestore:
         """
         hardened: list = []
         monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
         assert restore('{"checkout": "/old/path"}\n') is True
 
-        assert hardened == [path], "restore must harden the file it wrote"
+        # The lockdown lands on atomic_write's temp file, in the pointer's own
+        # directory, BEFORE the rename -- so the restored pointer is never
+        # briefly present under an inherited ACL. Asserting it never runs on
+        # the final path is what pins that ordering.
+        assert hardened, "restore must harden the file it wrote"
+        assert all(Path(h).parent == path.parent for h in hardened), hardened
+        assert path not in [Path(h) for h in hardened], (
+            "the DACL was applied to the published pointer instead of before it"
+        )
 
     def test_restore_none_does_not_harden_a_deleted_pointer(self, tmp_path, monkeypatch):
         """Deleting leaves no file, so there is nothing to apply a DACL to."""
         hardened: list = []
         monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("anything")
@@ -395,7 +418,7 @@ class TestSnapshotRestore:
         def boom(_path):
             raise OSError(5, "icacls failed")
 
-        monkeypatch.setattr("kiro_crew.service.live_target.platform_compat.restrict_to_owner", boom)
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", boom)
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
