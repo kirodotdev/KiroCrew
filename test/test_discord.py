@@ -2207,8 +2207,11 @@ class TestDispatcher:
         assert "Kiro Crew — Discord" not in "\n".join(text for text, _ in cli.sent)
 
     @pytest.mark.asyncio
-    async def test_attachment_rejection_is_not_silent(self) -> None:
+    async def test_opaque_attachment_download_is_not_silent(self) -> None:
         d, cli, _ = _dispatcher({"u1"})
+        url = "https://cdn.discordapp.com/a.bin"
+        payload = b"complete opaque bytes"
+        cli.attachment_bodies[url] = payload
         await d.handle_message(
             InboundMessage(
                 channel_type="discord",
@@ -2219,16 +2222,20 @@ class TestDispatcher:
                     {
                         "filename": "archive.bin",
                         "content_type": "application/octet-stream",
-                        "size": 10,
-                        "url": "https://cdn.discordapp.com/a.bin",
+                        "size": len(payload),
+                        "url": url,
                     }
                 ],
             )
         )
         await asyncio.sleep(0)
 
-        assert "unsupported type" in d.ctx_builder.messages[-1]
-        assert cli.attachment_downloads == []
+        prompt = d.ctx_builder.messages[-1]
+        paths = [line for line in prompt.splitlines() if line.endswith(".bin")]
+        assert "[Attached file: archive.bin]" in prompt
+        assert cli.attachment_downloads == [url]
+        assert len(paths) == 1
+        assert not os.path.exists(paths[0])
 
     @pytest.mark.asyncio
     async def test_busy_attachment_waits_for_queued_turn_before_cleanup(self) -> None:

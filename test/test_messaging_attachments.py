@@ -213,23 +213,124 @@ class TestIngestAttachments:
         )
         assert "truncated" in result.text_blocks[0]
 
-    async def test_video_is_rejected_with_a_reason(self):
-        """Out of scope is not the same as silently dropped."""
+    @pytest.mark.parametrize(
+        "name,mimetype,suffix,payload",
+        [
+            ("clip.mp4", "video/mp4", "mp4", b"\x00\x00\x00\x18ftypmp42video"),
+            ("archive.zip", "application/zip", "zip", b"PK\x03\x04archive"),
+            ("x.bin", "application/octet-stream", "bin", bytes(range(32))),
+        ],
+    )
+    async def test_opaque_file_is_preserved_byte_for_byte(
+        self, name, mimetype, suffix, payload
+    ):
         result = await ingest_attachments(
-            [Attachment(name="clip.mp4", mimetype="video/mp4", size=99, url="u")],
-            download=_writer(b"\x00"),
+            [Attachment(name=name, mimetype=mimetype, size=len(payload), url="u", suffix_hint=suffix)],
+            download=_writer(payload),
             source="test",
         )
-        assert result.image_paths == [] and result.text_blocks == []
-        assert any("video is not supported" in r for r in result.rejections)
+        assert len(result.file_paths) == 1
+        with open(result.file_paths[0], "rb") as fh:
+            assert fh.read() == payload
+        assert result.rejections == []
+        assert f"[Attached file: {name}]" in result.text_blocks[0]
+        assert f"Type: {mimetype}" in result.text_blocks[0]
+        assert f"Size: {len(payload)} bytes" in result.text_blocks[0]
+        cleanup(result.temp_paths)
 
-    async def test_unsupported_type_is_rejected_with_a_reason(self):
+    async def test_opaque_size_enforced_on_downloaded_bytes(self):
         result = await ingest_attachments(
-            [Attachment(name="x.bin", mimetype="application/octet-stream", size=9, url="u")],
-            download=_writer(b"\x00"),
+            [Attachment(name="x.bin", mimetype="application/octet-stream", size=0, url="u")],
+            download=_writer(b"x" * 65),
+            source="test",
+            limits=IngestLimits(max_opaque_bytes=64),
+        )
+        assert result.file_paths == []
+        assert any("too large" in r for r in result.rejections)
+
+    @pytest.mark.parametrize("suffix", ["png", "PNG", "jpg", "jpeg", "gif", "webp", "bmp"])
+    async def test_opaque_file_never_keeps_an_inlineable_image_suffix(self, suffix):
+        """The ACP encoder types a path by suffix alone, with no content check.
+
+        A sender picks name and mimetype independently, so an opaque file named
+        ``photo.png`` would otherwise reach the image sink without passing
+        ``sniff_image_mime`` -- carrying a mimeType derived from that name.
+        """
+        payload = b"not an image at all"
+        result = await ingest_attachments(
+            [
+                Attachment(
+                    name=f"photo.{suffix}",
+                    mimetype="application/octet-stream",
+                    size=len(payload),
+                    url="u",
+                    suffix_hint=suffix,
+                )
+            ],
+            download=_writer(payload),
             source="test",
         )
-        assert any("unsupported type" in r for r in result.rejections)
+        assert len(result.file_paths) == 1
+        path = result.file_paths[0]
+        # Hard-coded expectation on purpose: asserting against
+        # ``_INLINEABLE_IMAGE_SUFFIXES`` would pass vacuously if that set were
+        # ever emptied, which is the exact regression this guards.
+        assert path.endswith(".bin"), path
+        with open(path, "rb") as fh:
+            assert fh.read() == payload
+        cleanup(result.temp_paths)
+
+    async def test_opaque_file_is_dropped_when_the_suffix_cannot_be_neutralized(
+        self, monkeypatch
+    ):
+        """Fail closed: a rename that did not happen must not emit the path.
+
+        Returning the original ``.png`` path here would hand the ACP image sink
+        exactly the file the neutralizing rename exists to keep away from it.
+        """
+        created: list[str] = []
+        import tempfile as _tempfile
+
+        real_mkstemp = _tempfile.mkstemp
+
+        def _tracking_mkstemp(*a, **kw):
+            fd, path = real_mkstemp(*a, **kw)
+            created.append(path)
+            return fd, path
+
+        def _refuse_replace(*a, **kw):
+            raise OSError("cross-device link")
+
+        class _NoReplaceOS:
+            """Only this module's ``os.replace`` fails.
+
+            Patching the global ``os.replace`` would also break SEL's atomic
+            audit write, so the test would fail for the wrong reason.
+            """
+
+            def __getattr__(self, name):
+                return _refuse_replace if name == "replace" else getattr(os, name)
+
+        monkeypatch.setattr(_tempfile, "mkstemp", _tracking_mkstemp)
+        monkeypatch.setattr(attachments, "os", _NoReplaceOS())
+
+        result = await ingest_attachments(
+            [
+                Attachment(
+                    name="photo.png",
+                    mimetype="application/octet-stream",
+                    size=12,
+                    url="u",
+                    suffix_hint="png",
+                )
+            ],
+            download=_writer(b"not an image"),
+            source="test",
+        )
+        assert result.file_paths == []
+        assert result.text_blocks == []
+        assert any("could not be stored safely" in r for r in result.rejections)
+        assert [p for p in created if os.path.exists(p)] == []
 
     async def test_missing_url_is_reported(self):
         result = await ingest_attachments(
@@ -305,17 +406,24 @@ class TestIngestAttachments:
         assert len(result.rejections) == 1
         cleanup(result.temp_paths)
 
-    async def test_temp_paths_covers_images_and_audio(self):
+    async def test_temp_paths_covers_images_audio_and_opaque_files(self):
         result = await ingest_attachments(
             [
                 Attachment(name="a.png", mimetype="image/png", size=40, url="u", suffix_hint="png"),
                 Attachment(name="v.webm", mimetype="audio/webm", size=10, url="u"),
+                Attachment(
+                    name="archive.bin",
+                    mimetype="application/octet-stream",
+                    size=40,
+                    url="u",
+                    suffix_hint="bin",
+                ),
             ],
             download=_writer(_PNG),
             source="test",
             handle_audio=True,
         )
-        assert len(result.temp_paths) == 2
+        assert len(result.temp_paths) == 3
         cleanup(result.temp_paths)
         assert [p for p in result.temp_paths if os.path.exists(p)] == []
 
@@ -341,14 +449,16 @@ class TestChannelDeclaredAudio:
         assert result.audio_paths == []  # handle_audio=False -> silently skipped
         assert result.text_blocks == []
 
-    async def test_same_type_is_still_video_without_the_override(self):
-        """The override is opt-in: a real video upload is still rejected."""
+    async def test_same_type_is_opaque_without_the_override(self):
+        """The override is opt-in: without it, the complete video is preserved."""
         result = await ingest_attachments(
             [Attachment(name="clip.webm", mimetype="video/webm", size=10, url="u")],
             download=_writer(b"\x00" * 10),
             source="test",
         )
-        assert any("video is not supported" in r for r in result.rejections)
+        assert len(result.file_paths) == 1
+        assert result.rejections == []
+        cleanup(result.temp_paths)
 
     async def test_declared_audio_can_be_returned_for_transcription(self):
         result = await ingest_attachments(
@@ -361,17 +471,29 @@ class TestChannelDeclaredAudio:
         assert len(result.audio_paths) == 1
         cleanup(result.temp_paths)
 
-    async def test_other_video_types_are_unaffected_by_the_override(self):
+    async def test_other_video_types_remain_opaque_with_the_override(self):
         result = await ingest_attachments(
             [Attachment(name="clip.mp4", mimetype="video/mp4", size=10, url="u")],
             download=_writer(b"\x00" * 10),
             source="test",
             audio_mimetypes=("audio/", "video/webm"),
         )
-        assert any("video is not supported" in r for r in result.rejections)
+        assert len(result.file_paths) == 1
+        assert result.rejections == []
+        cleanup(result.temp_paths)
 
 
 class TestClassifyOverride:
+    def test_inlineable_suffixes_match_the_acp_encoder(self):
+        """Drift guard: the encoder's table is the source of truth.
+
+        Imported here, not in ``messaging/attachments.py``, so the production
+        dependency surface stays stdlib + the shared helpers.
+        """
+        from kiro_crew.acp.prompt_blocks import IMAGE_MEDIA_TYPES
+
+        assert attachments._INLINEABLE_IMAGE_SUFFIXES == frozenset(IMAGE_MEDIA_TYPES)
+
     def test_override_wins_over_the_video_prefix(self):
         assert classify("video/webm", audio_mimetypes=("video/webm",)) == AUDIO
 
@@ -511,10 +633,23 @@ class TestBlockingWorkLeavesTheEventLoop:
 class TestAppendAttachmentContext:
     """append_attachment_context is channel-neutral and lives in messaging/."""
 
+    def test_existing_positional_fields_remain_compatible(self):
+        result = IngestResult(["/tmp/a.png"], ["/tmp/a.ogg"], ["text"], ["rejected"])
+        assert result.image_paths == ["/tmp/a.png"]
+        assert result.audio_paths == ["/tmp/a.ogg"]
+        assert result.text_blocks == ["text"]
+        assert result.rejections == ["rejected"]
+        assert result.file_paths == []
+
     def test_image_paths_appended(self):
         result = IngestResult(image_paths=["/tmp/a.png", "/tmp/b.jpg"])
         out = append_attachment_context("hello", result)
         assert out == "hello\n/tmp/a.png\n/tmp/b.jpg"
+
+    def test_file_paths_appended(self):
+        result = IngestResult(file_paths=["/tmp/archive.zip", "/tmp/clip.mp4"])
+        out = append_attachment_context("hello", result)
+        assert out == "hello\n/tmp/archive.zip\n/tmp/clip.mp4"
 
     def test_text_blocks_appended(self):
         result = IngestResult(text_blocks=["[File: x.txt]\ncontent"])

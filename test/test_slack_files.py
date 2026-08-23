@@ -9,6 +9,7 @@ import pytest
 
 from kiro_crew.slack.files import (
     _MAX_IMAGE_BYTES,
+    _MAX_OPAQUE_BYTES,
     _MAX_TEXT_BYTES,
     _MAX_TEXT_INJECT,
     _safe_suffix,
@@ -153,22 +154,43 @@ class TestProcessSlackFiles:
         assert "truncated" in text_blocks[0]
 
     @pytest.mark.asyncio
-    async def test_unsupported_type_metadata_only(self):
-        orch = _make_orch()
+    async def test_zip_downloaded_byte_for_byte(self):
+        payload = b"PK\x03\x04complete archive bytes"
+        orch = _make_orch(payload)
         files = [
             {
                 "mimetype": "application/zip",
                 "url_private_download": "https://files.slack.com/archive.zip",
                 "filetype": "zip",
                 "name": "archive.zip",
-                "size": 5000,
+                "size": len(payload),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
-        assert image_paths == []
-        assert len(text_blocks) == 1
-        assert "unsupported type" in text_blocks[0]
-        assert "archive.zip" in text_blocks[0]
+        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        assert len(attachment_paths) == 1
+        assert attachment_paths[0].endswith(".zip")
+        with open(attachment_paths[0], "rb") as fh:
+            assert fh.read() == payload
+        assert "[Attached file: archive.zip]" in text_blocks[0]
+        assert "Type: application/zip" in text_blocks[0]
+        orch.slack.download_file.assert_awaited_once()
+        os.unlink(attachment_paths[0])
+
+    @pytest.mark.asyncio
+    async def test_opaque_file_too_large_skipped_before_download(self):
+        orch = _make_orch()
+        files = [
+            {
+                "mimetype": "application/octet-stream",
+                "url_private_download": "https://files.slack.com/huge.bin",
+                "filetype": "bin",
+                "name": "huge.bin",
+                "size": _MAX_OPAQUE_BYTES + 1,
+            }
+        ]
+        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        assert attachment_paths == []
+        assert any("too large" in block for block in text_blocks)
         orch.slack.download_file.assert_not_called()
 
     @pytest.mark.asyncio
@@ -388,23 +410,26 @@ class TestProcessSlackFiles:
         assert "REDACTED" in text_blocks[0]
 
     @pytest.mark.asyncio
-    async def test_image_svg_treated_as_unsupported(self):
-        """SVG is not in the ACP-compatible image set."""
-        orch = _make_orch()
+    async def test_image_svg_preserved_as_opaque_file(self):
+        """SVG is not inlineable, but its complete bytes remain tool-accessible."""
+        payload = b'<svg xmlns="http://www.w3.org/2000/svg"><text>safe</text></svg>'
+        orch = _make_orch(payload)
         files = [
             {
                 "mimetype": "image/svg+xml",
                 "url_private_download": "https://files.slack.com/i.svg",
                 "filetype": "svg",
                 "name": "icon.svg",
-                "size": 500,
+                "size": len(payload),
             }
         ]
-        image_paths, text_blocks = await process_slack_files(orch, files)
-        assert image_paths == []
-        assert len(text_blocks) == 1
-        assert "unsupported type" in text_blocks[0]
-        orch.slack.download_file.assert_not_called()
+        attachment_paths, text_blocks = await process_slack_files(orch, files)
+        assert len(attachment_paths) == 1
+        with open(attachment_paths[0], "rb") as fh:
+            assert fh.read() == payload
+        assert "[Attached file: icon.svg]" in text_blocks[0]
+        orch.slack.download_file.assert_awaited_once()
+        os.unlink(attachment_paths[0])
 
     @pytest.mark.asyncio
     async def test_docx_file_parsed(self):
