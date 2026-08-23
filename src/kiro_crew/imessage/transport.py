@@ -14,8 +14,12 @@ on the other end is a phone number rather than a workspace member:
 * **Handle allowlist, deny-by-default.** An empty allowlist authorizes nobody.
   There is no org boundary to fall back on -- anyone who knows the user's
   number can send to it.
-* **Own messages are ignored.** The watch is an all-chat stream and sees the
-  agent's own replies; without this the channel answers itself in a loop.
+* **Own messages are ignored**, on two signals rather than one. The watch is an
+  all-chat stream and sees the agent's own replies; without this the channel
+  answers itself in a loop. The bridge's ``is_from_me`` covers the rows it has
+  already attributed to us, and the client's ledger of what it sent covers the
+  self-chat case, where the allow-listed handle is the identity the agent sends
+  as and that flag is not dependable on its own (issue #5246).
 * **DM only, fail closed.** A reply in a group chat would deliver tool output
   to members who are not on the allowlist, the same reasoning that already
   makes Telegram and Webex direct-only.
@@ -192,6 +196,24 @@ class IMessageTransport(MessagingTransport):
             thread_id=None,
         )
         if not self.authorize(msg):
+            return
+        # LAST gate, and its position is load-bearing in both directions.
+        #
+        # After `is_from_me`, because a copy the bridge already attributes to us
+        # must not consume the ledger record that the UNattributed echo needs --
+        # consuming it there would restore the loop while looking fixed.
+        #
+        # After the group and allow-list gates, because this one has a side
+        # effect: it consumes the record. A row that is going to be dropped
+        # anyway -- a group message, an unlisted sender -- must not be able to
+        # spend the record on its way out, or the real echo that follows finds
+        # nothing and is answered.
+        #
+        # `is_from_me` alone cannot carry this: in a self-chat the allow-listed
+        # sender IS the identity the agent replies as, and the bridge writes that
+        # flag asynchronously (its 500ms watch debounce exists so a correction
+        # can land first). See `is_own_echo`.
+        if self._client.is_own_echo(inbound):
             return
         if self._dispatch is not None:
             await self._dispatch(inbound)

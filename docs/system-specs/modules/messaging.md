@@ -854,13 +854,43 @@ while over-declaring risks a send the platform silently refuses.
 authorizes nobody, which is the correct posture for a channel with no org
 boundary in front of it. Handles are normalized before comparison (email folds
 to lowercase, phone loses formatting) so `+61 400 000 000` and `+61400000000`
-are one handle. Own messages (`is_from_me`) are dropped without an audit event
-— the all-chat watch sees the agent's own replies, and auditing them would log
-one entry per outbound message. **Group chats fail closed** with a
+are one handle. **Group chats fail closed** with a
 `denied_group_chat` audit: a reply there would deliver tool output to members who
 are not on the allowlist, the same reasoning that makes Telegram and Webex
 direct-only. Unauthorized inbound is dropped with no reply, so an unknown sender
 learns nothing about what they reached.
+
+**Own-message suppression is TWO signals, and the gate order is load-bearing.**
+Neither part is a defensive extra: a self-chat loop that answered its own replies
+without bound shipped once (issue #5246), and each rule below is what closes it.
+
+1. `is_from_me` drops the rows the bridge already attributes to the agent, without
+   an audit event — the all-chat watch sees its own replies, and auditing them
+   would log one entry per outbound message.
+2. That flag is not sufficient on its own. In a **self-chat** the allow-listed
+   handle IS the identity the agent sends as, and the bridge writes the
+   attribution asynchronously (`watch.subscribe` defaults to a 500ms debounce
+   expressly so an `is_from_me` correction can land), so an echo can arrive
+   looking exactly like user input. The client therefore keeps a short-lived
+   **ledger of what it sent** — one record per sent message, holding both the
+   body it went out with and the guid the bridge reported, consumed whole on a
+   match — and the transport consults it as the LAST gate before dispatch.
+
+The ordering constraints are the part a refactor must preserve:
+
+* The ledger check runs **after** the `is_from_me` drop, so a copy the platform
+  already attributes to the agent cannot consume the record that the
+  *unattributed* echo needs.
+* It runs **after** the group and allowlist gates, because consuming is a side
+  effect: a row that will be dropped anyway must not spend the record on its way
+  out.
+* A record's TTL starts when the send **resolves**, not when it is issued, and an
+  unresolved record is never pruned or evicted — the echo of a slow send arrives
+  before its result does.
+
+Reordering any of those reintroduces the loop. The accepted cost is a bounded
+one: an allow-listed sender who repeats the agent's exact text within the TTL has
+that message suppressed once, in any chat rather than only a self-chat.
 
 **Rendering.** Only the final answer is delivered; reasoning and tool activity
 stay in the gateway. There is no placeholder message, because there is no edit

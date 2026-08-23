@@ -44,6 +44,12 @@ class FakeClient:
         self.started = False
         self.closed = False
         self.sent: list[tuple[str, str]] = []
+        #: Bodies this fake claims to have sent, consumed on match — the same
+        #: consume-once contract the real ledger has. The real one is tested
+        #: against the real client in test_imessage_client.py; here it is a seam
+        #: so these tests can assert the transport CONSULTS it, and when.
+        self.own_echo_texts: list[str] = []
+        self.echo_checks: list[IMessageInbound] = []
 
     async def start(self) -> None:
         self.started = True
@@ -54,6 +60,13 @@ class FakeClient:
     async def send(self, to: str, text: str) -> str:
         self.sent.append((to, text))
         return "GUID-OUT"
+
+    def is_own_echo(self, inbound: IMessageInbound) -> bool:
+        self.echo_checks.append(inbound)
+        if inbound.text in self.own_echo_texts:
+            self.own_echo_texts.remove(inbound.text)
+            return True
+        return False
 
 
 def _transport(*allowed: str) -> tuple[IMessageTransport, FakeClient, list[IMessageInbound]]:
@@ -206,6 +219,74 @@ class TestReceive:
         recorded.text = ""
         await transport.receive(recorded)
         assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_an_own_echo_is_dropped_even_when_the_platform_calls_it_inbound(
+        self,
+    ) -> None:
+        # The self-chat loop of issue #5246: the agent's own reply arrives with
+        # is_from_me FALSE, from a handle that is on the allowlist because it is
+        # the user's own. Nothing about the row says "this is ours" -- only the
+        # client's record of having sent it does.
+        transport, client, dispatched = _transport(OWNER)
+        recorded = _recorded("watch_message_direct")
+        recorded.is_from_me = False
+        client.own_echo_texts.append(recorded.text)
+        with patch("kiro_crew.imessage.transport.sel") as mock_sel:
+            await transport.receive(recorded)
+        assert dispatched == []
+        # Own traffic, not a denial: auditing it would write one entry per
+        # outbound message, exactly as for the is_from_me case above.
+        mock_sel().log_api_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_attributed_copy_does_not_consume_the_echo_record(self) -> None:
+        # Ordering guard. If the is_from_me copy were checked against the ledger
+        # it would consume the entry, and the UNattributed echo that follows
+        # would then be dispatched -- restoring the loop while looking fixed.
+        transport, client, dispatched = _transport(OWNER)
+        attributed = _recorded("watch_message_direct")
+        attributed.is_from_me = True
+        client.own_echo_texts.append(attributed.text)
+        await transport.receive(attributed)
+        assert client.echo_checks == []
+
+        echo = _recorded("watch_message_direct")
+        echo.is_from_me = False
+        await transport.receive(echo)
+        assert dispatched == []
+
+    @pytest.mark.asyncio
+    async def test_a_group_row_cannot_spend_the_record_the_real_echo_needs(self) -> None:
+        # The echo check consumes, so it has to run AFTER the gates that drop a
+        # row anyway. A group message carrying the same words would otherwise
+        # spend the record on its way out, and the DM echo that follows would
+        # find nothing and be answered -- the loop, reopened by a side effect.
+        transport, client, dispatched = _transport(OWNER)
+        group = _recorded("watch_message_group")
+        client.own_echo_texts.append(group.text)
+        with patch("kiro_crew.imessage.transport.sel"):
+            await transport.receive(group)
+        assert client.echo_checks == []
+        assert client.own_echo_texts == [group.text], "the group row spent the record"
+
+    @pytest.mark.asyncio
+    async def test_an_unlisted_sender_cannot_spend_the_record_either(self) -> None:
+        transport, client, _dispatched = _transport("+15559876543")
+        recorded = _recorded("watch_message_direct")
+        client.own_echo_texts.append(recorded.text)
+        with patch("kiro_crew.imessage.transport.sel"):
+            await transport.receive(recorded)
+        assert client.echo_checks == []
+        assert client.own_echo_texts == [recorded.text]
+
+    @pytest.mark.asyncio
+    async def test_a_message_that_is_not_an_echo_still_reaches_the_agent(self) -> None:
+        # The guard must not swallow ordinary traffic from the same handle.
+        transport, client, dispatched = _transport(OWNER)
+        client.own_echo_texts.append("something else entirely")
+        await transport.receive(_recorded("watch_message_direct"))
+        assert len(dispatched) == 1
 
     @pytest.mark.asyncio
     async def test_an_unauthorized_sender_gets_no_reply_at_all(self) -> None:
