@@ -1235,6 +1235,33 @@ class TestTheStoredPushDestinationIsValidated:
     destination rather than trusting persisted input. Raised by the GPT review of this branch.
     """
 
+    @pytest.fixture(autouse=True)
+    def _public_dns(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Resolve every hostname to a fixed public address.
+
+        ``resolve_origin_url``'s identity-pinning step re-runs ``validate_target_url``,
+        whose ``_host_is_blocked`` SSRF check does a LIVE ``socket.getaddrinfo`` resolve
+        and fails CLOSED on any resolver error. On a transient runner DNS hiccup
+        ``github.com`` read as blocked and a legitimate remote resolved to ``""``,
+        flaking the legitimate-remote cases in CI (#5229); the foreign-remote cases
+        short-circuit on the allowlist before DNS and cannot flake, but the pin covers
+        the whole class so no case here ever reaches a resolver. These tests are about
+        URL/identity validation, not address screening — the address decision has its
+        own tests below — so resolution is stubbed, same shape as the ``public_dns``
+        fixture in ``test/test_meetings_providers.py``. The patch swaps the shared
+        ``socket`` module's ``getaddrinfo`` for the whole process while a test runs
+        (``clone_setup.socket`` IS that module; monkeypatch restores it at teardown);
+        these tests do no other network I/O, so do not copy this fixture into ones
+        that do. The fail-closed production behaviour is deliberately untouched: it is
+        correct for a real DNS failure; the defect was a unit test exercising the real
+        resolver.
+        """
+        monkeypatch.setattr(
+            clone_setup.socket,
+            "getaddrinfo",
+            lambda *_a, **_kw: [(2, 1, 6, "", ("93.184.216.34", 443))],
+        )
+
     @pytest.mark.parametrize(
         "url",
         [
@@ -1280,6 +1307,60 @@ class TestTheStoredPushDestinationIsValidated:
         if clone_setup._remote_slug(url):
             cfg["target_url"] = "https://github.com/owner/repo"
         assert clone_setup.resolve_origin_url(cfg) == url
+
+
+class TestTheAddressDecisionItself:
+    """The SSRF screen the class above stubs out gets its own direct coverage.
+
+    ``TestTheStoredPushDestinationIsValidated`` pins ``getaddrinfo`` so it no longer
+    exercises ``_host_is_blocked`` incidentally (#5229) — which was the helper's ONLY
+    coverage in the repo. Losing the pinned-away coverage without an equivalent is how
+    a later edit to the screen (say, dropping the ``is_private`` predicate, or turning
+    the fail-closed ``except`` into fail-open) would land silently. Same split as the
+    ``public_dns`` precedent in ``test/test_meetings_providers.py``: the scheme tests
+    stub resolution, and the address decision is tested on its own.
+    """
+
+    def _pin(self, monkeypatch: pytest.MonkeyPatch, result) -> None:
+        if isinstance(result, Exception):
+
+            def _resolve(*_a, **_kw):
+                raise result
+
+        else:
+
+            def _resolve(*_a, **_kw):
+                return [(2, 1, 6, "", (result, 443))]
+
+        monkeypatch.setattr(clone_setup.socket, "getaddrinfo", _resolve)
+
+    def test_a_public_address_is_allowed(self, monkeypatch) -> None:
+        self._pin(monkeypatch, "93.184.216.34")
+        assert clone_setup._host_is_blocked("github.com") is False
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "127.0.0.1",  # loopback
+            "10.0.0.7",  # private
+            "169.254.169.254",  # link-local (the cloud metadata range)
+            "0.0.0.0",  # unspecified
+        ],
+    )
+    def test_an_internal_address_is_blocked(self, monkeypatch, address) -> None:
+        """An allowlisted NAME pointed at an internal ADDRESS is the rebinding case."""
+        self._pin(monkeypatch, address)
+        assert clone_setup._host_is_blocked("github.com") is True
+
+    def test_a_resolver_error_fails_closed(self, monkeypatch) -> None:
+        """The contract the fixture above leans on: a DNS error means BLOCKED.
+
+        This is exactly the behaviour that made #5229 a test-hermeticity defect and
+        not a production one — pin it so the fail-closed ``except`` cannot quietly
+        become fail-open.
+        """
+        self._pin(monkeypatch, OSError("resolver down"))
+        assert clone_setup._host_is_blocked("github.com") is True
 
 
 class TestApprovalIsOneShotNotPersistent:
