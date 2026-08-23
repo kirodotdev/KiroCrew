@@ -1144,12 +1144,14 @@ jobs:
       - name: Lint
         working-directory: website
         # Blocking: fails on any eslint error and on any NEW warning above the
-        # current baseline. Ratchet --max-warnings down toward 0 as the ~1116
+        # current baseline. Ratchet --max-warnings down toward 0 as the
         # pre-existing warnings (no-explicit-any, jsx-a11y, no-console) are burned
-        # down; do not raise it. (Baseline bumped 1066 -> 1116 by the final
-        # Brazil->GitHub sync, which imported upstream warnings that never faced
-        # this gate; burn-down resumes from 1116.)
-        run: npx eslint src/ --max-warnings 1116
+        # down; do not raise it.
+        #
+        # The ceiling must EQUAL the measured count, not sit above it: slack is
+        # silent admission, and a warning that lands inside it never surfaces
+        # again. Re-measure with `cd website && npx eslint src/` when burning down.
+        run: npx eslint src/ --max-warnings 680
 
       - name: Copy/paste detection
         working-directory: website
@@ -1215,7 +1217,7 @@ jobs:
         #
         # `check-i18n-strings.mjs` drives a SECOND eslint invocation with its own config.
         # `no-literal-string` at `mode: 'all'` reports thousands of findings, and folding
-        # those into the 1116 budget above would make an i18n regression indistinguishable
+        # those into the budget above would make an i18n regression indistinguishable
         # from a new `no-explicit-any`.
         run: |
           # `actions/checkout` fetches depth 1, so the base branch is not present and
