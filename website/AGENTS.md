@@ -29,12 +29,8 @@ React 18, Redux Toolkit, React Query (`@tanstack/react-query`), React Router v7,
 Framer Motion, Tailwind CSS 3, Lucide React, DOMPurify, highlight.js, Monaco,
 TypeScript, Vite 5. Prefer the library already here over a new dependency.
 
-## Build and test: two gotchas that produce a silent false green
+## Build and test: a gotcha that produces a silent false green
 
-- **`npm run typecheck` checks ZERO files.** It runs `tsc --noEmit`, and the root
-  `tsconfig.json` has `"files": []` with project references, so nothing is
-  type-checked and it always passes. Use **`npx tsc -b`** (what `npm run build` and
-  CI run) whenever you mean to type-check.
 - **The `localStorage` test polyfill must stay on `Storage.prototype`.** Assigning
   it elsewhere makes the mock silently miss.
 

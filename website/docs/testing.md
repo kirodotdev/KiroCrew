@@ -22,11 +22,8 @@ npm run test:playwright:headless
 npx tsc -b                # the real type check
 ```
 
-Two traps worth knowing before you trust a green run:
+One trap worth knowing before you trust a green run:
 
-- **`npm run typecheck` checks ZERO files.** It runs `tsc --noEmit`, and the root
-  `tsconfig.json` sets `"files": []` with project references, so nothing is checked
-  and it always passes. Use `npx tsc -b`, which is what `npm run build` and CI run.
 - **`npm test` is wider than it looks.** It runs the Electron suite as well as the
   website suite, and the `pretest` hook runs a jscpd duplication check first, so
   `npm test` can fail on copy-paste before a single test executes.

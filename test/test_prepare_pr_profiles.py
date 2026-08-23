@@ -320,19 +320,51 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
 
 
 def test_floor_typechecks_the_way_ci_does():
-    """`npm run typecheck` is a no-op gate; the floor must use `tsc -b`.
+    """The floor spells out `tsc -b` rather than going through an npm script.
 
-    ci.yml documents this: the root tsconfig is `files: []` plus project
-    references, so `tsc --noEmit` -- what the `typecheck` script runs -- checks
-    ZERO files and always passes. A floor carrying the convenient script would
-    look enforced and catch nothing, which is worse than having no gate.
+    Build mode is what makes the check real: the root tsconfig is `files: []`
+    plus project references, and references are followed only by `-b`, so any
+    single-project invocation there compiles an EMPTY program and passes
+    unconditionally. Naming the command directly means the floor cannot be
+    changed out from under itself by an edit to `package.json` -- the same reason
+    ci.yml's Type check step spells it out too.
     """
     gates = "\n".join(
         json.loads((PROFILES_DIR / "kirocrew.json").read_text(encoding="utf-8"))["gates"]
     )
     assert "tsc -b" in gates, "the gate floor no longer type-checks with `tsc -b`"
     assert "run typecheck" not in gates, (
-        "the floor uses the `typecheck` npm script, which checks zero files"
+        "the floor reaches type-checking through an npm script, so a package.json "
+        "edit can silently change what this gate runs"
+    )
+
+
+def test_typecheck_script_actually_type_checks():
+    """`npm run typecheck` must run in BUILD mode, or it checks nothing at all.
+
+    `website/tsconfig.json` is a solution-style config -- `{"files": [], "references":
+    [...]}`. TypeScript follows `references` only in build mode, so `tsc --noEmit`
+    there compiles an empty program: measured 0 files listed, exit 0 with a genuine
+    type error present in `src/App.tsx`. `npm run check` chains this script, so the
+    one command that looks like a pre-push gate would pass over the whole tree.
+
+    Nothing else pins the spelling, so without this a revert to `tsc --noEmit`
+    restores a gate that is enforced in appearance only.
+    """
+    scripts = json.loads(
+        (REPO_ROOT / "website" / "package.json").read_text(encoding="utf-8")
+    )["scripts"]
+    typecheck = scripts["typecheck"]
+
+    assert "tsc -b" in typecheck, (
+        f"website `typecheck` script is {typecheck!r}; it must use build mode "
+        "(`tsc -b`) because the root tsconfig has `files: []` and a "
+        "non-build invocation there type-checks zero files"
+    )
+    assert "--noEmit" not in typecheck, (
+        f"website `typecheck` script is {typecheck!r}; `--noEmit` selects "
+        "single-project mode, which compiles an empty program against the "
+        "solution-style root tsconfig"
     )
 
 

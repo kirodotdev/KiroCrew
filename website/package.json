@@ -24,7 +24,7 @@
     "test:playwright": "playwright test --headed --workers=1",
     "test:playwright:headless": "playwright test",
     "lint": "eslint src --ext .ts,.tsx",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc -b",
     "check": "npm run typecheck && npm run lint && npm run test",
     "jscpd": "jscpd .",
     "gen:settings": "node scripts/gen-settings-registry.mjs",

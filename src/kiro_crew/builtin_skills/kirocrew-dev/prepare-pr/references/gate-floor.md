@@ -90,11 +90,13 @@ Both obvious alternatives fail one of the three constraints:
 
 ## Prefer the workflow's command over the package's convenience script
 
-They are not always the same check. `npm run typecheck` runs `tsc --noEmit`, and
-the root tsconfig is `files: []` plus project references, so it checks **zero
-files and always passes**. CI type-checks with `tsc -b` for exactly that reason. A
-floor built from `package.json` script names would carry a gate that is enforced
-in appearance only — strictly worse than a missing gate, because nobody goes
+They are not always the same check, and the difference is usually invisible from
+the script name. The `Bundle Size Gate` is the live example: `npm run build`
+deliberately writes no `dist/bundle-report.json`, so CI runs
+`vite build --mode analyze` FIRST and only then `scripts/check-bundle-size.mjs`.
+Reproduce the gate with `npm run build` alone and the checker exits 2 on a missing
+report — a floor entry built from the convenience script would be enforced in
+appearance only, which is strictly worse than a missing gate because nobody goes
 looking for it.
 
 ## Working directory is part of the command
@@ -129,10 +131,11 @@ PR. A check written as a bare binary (`cfn-lint`, `mypy`, `flake8`) is invisible
 a `scripts/`-and-`npm run` scan, so the parity test also enumerates the **tool
 names** `ci.yml` invokes and makes each one either a gate or a named exemption.
 
-Strip comment-only lines before any such scan. `ci.yml` explains in prose why the
-Type check step uses `tsc -b` and *not* `npm run typecheck`, so a naive grep for
-`npm run <script>` "finds" a script CI deliberately avoids — the same trap as
-reading a ratchet number out of a comment.
+Strip comment-only lines before any such scan. `ci.yml` names commands in prose as
+well as running them — the Type check step's comment explains why it spells out
+`npx tsc -b` instead of going through a script — so a naive grep for
+`npm run <script>` "finds" scripts no step invokes, the same trap as reading a
+ratchet number out of a comment.
 
 ## Checks with no local entry point
 

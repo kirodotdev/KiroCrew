@@ -33,8 +33,9 @@ npm run lint         # eslint
 npm run test         # website vitest suite + the Electron suite (a jscpd pretest runs first)
 ```
 
-**`npm run typecheck` checks zero files** (it is `tsc --noEmit`, and the root
-`tsconfig.json` has `"files": []`), so use `npx tsc -b` when you mean to type-check.
+`npm run typecheck` runs `tsc -b`, the same build-mode check as `npm run build` and
+CI. Build mode is what follows the root `tsconfig.json`'s project references; a plain
+`tsc --noEmit` there compiles an empty program and passes unconditionally.
 Test layers, when to use which, and how Playwright really runs:
 [docs/testing.md](docs/testing.md).
 
