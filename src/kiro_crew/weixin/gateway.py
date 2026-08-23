@@ -41,11 +41,14 @@ async def maybe_start_weixin(orch: "GatewayOrchestrator") -> "WeixinClient | Non
     """Start the Weixin channel if enabled + credentialed; else no-op."""
     if not getattr(orch, "_weixin_enabled", False):
         return None
+    # NOTE: ``_weixin_enabled`` already folds in token+account_id (see
+    # GatewayOrchestrator), so both are guaranteed non-empty past the guard.
+    # The old factory-level "enabled but not credentialed" INFO log here was
+    # unreachable for the same reason (removed in #5412; the reachable
+    # equivalent for WeCom lives in ``_start_channel_transports``, and
+    # generalizing it to all channels is #5418).
     token = getattr(orch, "_weixin_token", "")
     account_id = getattr(orch, "_weixin_account_id", "")
-    if not token or not account_id:
-        logger.info("weixin: enabled but not credentialed (no token/account_id) — skipping. Connect via Settings QR.")
-        return None
 
     try:
         assert orch.sessions is not None and orch.ctx_builder is not None

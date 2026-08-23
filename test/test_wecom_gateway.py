@@ -13,13 +13,19 @@ returns a client.
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
-from kiro_crew.wecom.gateway import _allowed_userids, _resolve_approval_mode, maybe_start_wecom
+from kiro_crew.wecom.gateway import (
+    _allowed_userids,
+    _resolve_approval_mode,
+    maybe_start_wecom,
+    warn_if_wecom_uncredentialed,
+)
 
 
 class FakeState:
@@ -213,3 +219,69 @@ class TestStartup:
         assert client._on_message == transport.receive
         assert transport.dispatcher is not None
         assert transport.dispatcher.client is client
+
+
+class TestSkipReasonWarning:
+    """An enabled-but-uncredentialed channel must say so at the DEFAULT level.
+
+    ``_wecom_enabled`` collapses "disabled" and "enabled but missing
+    credentials" into one boolean, and the channel registry's enabled-only gate
+    skips ``maybe_start_wecom`` entirely for both states -- so the skip reason
+    is logged by :func:`warn_if_wecom_uncredentialed` at flag-computation time
+    (the production wiring is pinned in ``test_slack_gateway.py``). These pin
+    the helper's contract: exactly one WARNING (visible at the default log
+    level) naming exactly the missing credential name(s), values never logged,
+    and complete silence when the channel is disabled or fully credentialed.
+    """
+
+    def test_enabled_without_credentials_warns_once_naming_both(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
+            warn_if_wecom_uncredentialed(True, "", "")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "WECOM_BOT_ID" in msg
+        assert "WECOM_SECRET" in msg
+
+    def test_a_missing_secret_is_named_alone_and_the_present_value_never_leaks(
+        self, caplog
+    ) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
+            warn_if_wecom_uncredentialed(True, "bot-1", "")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "WECOM_SECRET" in msg
+        assert "WECOM_BOT_ID" not in msg
+        # Credential VALUES must never be logged, only the variable names.
+        assert "bot-1" not in msg
+
+    def test_a_missing_bot_id_is_named_alone(self, caplog) -> None:
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
+            warn_if_wecom_uncredentialed(True, "", "sec-1")
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        msg = warnings[0].getMessage()
+        assert "WECOM_BOT_ID" in msg
+        assert "WECOM_SECRET" not in msg
+        assert "sec-1" not in msg
+
+    def test_a_disabled_channel_logs_nothing_at_all(self, caplog) -> None:
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wecom.gateway"):
+            warn_if_wecom_uncredentialed(False, "", "")
+        assert [r for r in caplog.records if r.name == "kiro_crew.wecom.gateway"] == []
+
+    def test_a_fully_credentialed_channel_logs_nothing(self, caplog) -> None:
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wecom.gateway"):
+            warn_if_wecom_uncredentialed(True, "bot-1", "sec-1")
+        assert [r for r in caplog.records if r.name == "kiro_crew.wecom.gateway"] == []
+
+    @pytest.mark.asyncio
+    async def test_the_factory_itself_stays_silent_for_an_uncredentialed_state(
+        self, caplog
+    ) -> None:
+        # The registry never calls the factory when _wecom_enabled is False, so
+        # the factory must not duplicate the warning (one WARNING per boot).
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wecom.gateway"):
+            assert await maybe_start_wecom(_orch(enabled=False)) is None
+        assert [r for r in caplog.records if r.name == "kiro_crew.wecom.gateway"] == []

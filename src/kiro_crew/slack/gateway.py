@@ -255,6 +255,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.wecom.gateway import warn_if_wecom_uncredentialed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -9499,6 +9500,14 @@ class GatewayOrchestrator:
         enabled = {
             d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False)) for d in boot
         }
+        # The enabled-only gate below never calls a factory whose flag is
+        # False — for a disabled and an enabled-but-uncredentialed channel
+        # alike — so a factory-level skip-reason log can never be reached.
+        # Say WHY WeCom is being skipped here, at the decision point (issue
+        # #304). Runs after KIROCREW_READY, outside the boot-path window.
+        warn_if_wecom_uncredentialed(
+            self._cfg.wecom.enabled, self._wecom_bot_id, self._wecom_secret
+        )
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
             maintenance_executor(),
