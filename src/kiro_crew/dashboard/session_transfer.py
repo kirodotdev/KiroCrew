@@ -70,7 +70,6 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -417,29 +416,37 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
             # concurrent writers cannot collide on a deterministic ``.tmp`` name
             # (an ENOENT race the previous hand-rolled write here was exposed to),
             # and it retries the Windows rename window.
-            atomic_write(path, text, mode=0o600)
+            #
+            # ``restrict_to_owner=True`` applies the owner-only lockdown to the
+            # temp file BEFORE any content reaches it — POSIX mode bits are
+            # meaningless against NTFS ACLs, and the previous post-rename
+            # ``restrict_to_owner`` call left Layer B readable under the
+            # inherited DACL for the whole write window (issue #5285). It
+            # implies 0o600 on POSIX, and the default
+            # ``restrict_on_error="raise"`` keeps this site FAIL CLOSED.
             try:
-                # POSIX mode bits are meaningless against NTFS ACLs, so on Windows
-                # this call is the ONLY thing making the file owner-only -- the
-                # ``mode=0o600`` above is a no-op there. It raises for documented,
-                # reachable reasons (it refuses to apply a half-configured DACL
-                # when the invoking user's SID will not resolve).
-                restrict_to_owner(path)
+                atomic_write(path, text, restrict_to_owner=True)
             except OSError:
                 # FAIL CLOSED. This is the model's whole context window; leaving it
                 # readable by other local accounts on a shared machine is worse
                 # than not resuming, and this feature already has an honest
                 # fallback for exactly that -- returning ``None`` imports the
                 # session transcript-only. Both files go, not just this one: the
-                # pair is useless alone and the ``.json`` carries context too.
+                # pair is useless alone and the ``.json`` carries context too
+                # (a lockdown failure on the SECOND file leaves the first,
+                # already-published one behind otherwise).
                 #
                 # This overrides the warn-and-continue precedent in
                 # ``handlers/weixin_qr.py``. That path has no fallback -- refusing
                 # breaks the feature outright -- whereas refusing here costs only
                 # resume fidelity, so the same trade resolves the other way.
+                #
+                # The outer ``except Exception`` below performs the same
+                # cleanup as a backstop for non-OSError failures; keep the two
+                # paths in sync.
                 logger.warning(
-                    "session_transfer: could not restrict Layer B permissions on %s; "
-                    "discarding it and importing transcript-only",
+                    "session_transfer: could not write owner-only Layer B file %s; "
+                    "discarding the pair and importing transcript-only",
                     path.name,
                     exc_info=True,
                 )

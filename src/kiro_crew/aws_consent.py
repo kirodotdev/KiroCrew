@@ -83,10 +83,6 @@ SERVICE_LABELS: dict[str, str] = {
     SERVICE_TRANSCRIBE: "Amazon Transcribe",
 }
 
-#: Owner-only, matching the other keystone leaves. The value is not a
-#: credential, but it IS an authorization whose integrity matters.
-_CONSENT_FILE_MODE = 0o600
-
 #: Lock filename beside the consent file -- NOT the file itself, because
 #: ``atomic_write`` renames a new inode over it and a lock on the old inode
 #: protects nothing. Same placement and reasoning as
@@ -206,8 +202,15 @@ def _preserve_if_unreadable() -> None:
     stamp = time.strftime("%Y%m%dT%H%M%S", time.gmtime())
     sidecar = path.with_name(f"{path.name}.corrupt-{stamp}")
     try:
-        atomic_write(sidecar, raw, mode=_CONSENT_FILE_MODE)
-        platform_compat.restrict_to_owner(sidecar)
+        # restrict_to_owner=True locks the temp file down BEFORE the preserved
+        # contents reach it (the previous post-rename lockdown left them readable
+        # under the inherited DACL on Windows for the write window, issue #5285)
+        # and implies the owner-only POSIX mode. The default
+        # restrict_on_error="raise" surfaces a lockdown failure into this
+        # except, where the whole preservation attempt is already warn-only —
+        # and because the failure now happens before the rename, a sidecar that
+        # could not be protected never exists at the final path at all.
+        atomic_write(sidecar, raw, restrict_to_owner=True)
         logger.warning(
             "AWS consent store was unreadable; preserved the previous contents at %s "
             "before recording a new confirmation",
@@ -249,19 +252,24 @@ class _ConsentLock:
 
 def _write_all(data: dict[str, Any]) -> None:
     path = aws_consent_path()
-    atomic_write(path, json.dumps(data, indent=2, sort_keys=True), mode=_CONSENT_FILE_MODE)
-    # Fail-loud lockdown, same as the sibling keystone stores: ``atomic_write``'s
-    # mode covers POSIX and this applies the owner-only DACL on Windows. A
-    # lockdown failure must not leave an authorization record world-writable,
-    # so unlink and re-raise rather than continue.
-    try:
-        platform_compat.restrict_to_owner(path)
-    except OSError:
-        try:
-            path.unlink()
-        except OSError:
-            logger.exception("failed to remove AWS consent file after lockdown failure")
-        raise
+    # Fail-loud lockdown BEFORE any content lands, same as the sibling keystone
+    # stores: ``restrict_to_owner=True`` applies the owner-only DACL to the temp
+    # file before the payload reaches it (the previous post-rename lockdown left
+    # the authorization record readable under the inherited DACL on Windows for
+    # the write window, issue #5285) and implies the owner-only POSIX mode. The
+    # default ``restrict_on_error="raise"`` refuses to write a record it cannot
+    # protect.
+    #
+    # No cleanup on failure any more. Every failure inside ``atomic_write`` —
+    # lockdown, payload write (ENOSPC), rename — happens BEFORE the final path
+    # is touched: the helper removes its temp file and re-raises, so an
+    # unprotectable record never exists at ``path`` at all. The unlink the old
+    # code ran existed to remove a NEW store already PUBLISHED at a wide DACL
+    # when its post-write lockdown failed; that state is unreachable now, and
+    # keeping the unlink would instead delete the previous, healthy,
+    # already-locked-down store on any transient failure (both pre-push
+    # reviews flagged exactly that data loss).
+    atomic_write(path, json.dumps(data, indent=2, sort_keys=True), restrict_to_owner=True)
 
 
 def read_grant(service: str) -> Grant | None:

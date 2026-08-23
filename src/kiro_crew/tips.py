@@ -24,7 +24,6 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
-from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 from kiro_crew.tips_text import truncate_summary
@@ -356,17 +355,20 @@ def _save_state(st: TipsState) -> None:
         + "\n",
         # Owner-only: generated tips embed memory-derived content (preferences,
         # projects, recent activity) — must not be world-readable on shared
-        # machines. mode also corrects permissions of pre-existing 0644 files
-        # on the next write (atomic replace).
-        mode=0o600,
+        # machines. restrict_to_owner locks the temp file down BEFORE any content
+        # reaches it (a post-rename lockdown left the payload readable under the
+        # inherited DACL on Windows for the write window, issue #5285), implies
+        # 0o600 on POSIX — which also corrects permissions of pre-existing 0644
+        # files on the next write (atomic replace) — and applies the owner-only
+        # DACL on Windows, where mode bits are a no-op. Warn-and-continue: a
+        # lockdown failure must not break tips persistence, but it must be
+        # visible. The linked-parent refusal restrict_to_owner also implies is
+        # NOT covered by restrict_on_error — it raises unconditionally, which is
+        # correct for a secret-adjacent writer (#4381) and unreachable here in
+        # practice: the parent is config_dir(), a trust anchor.
+        restrict_to_owner=True,
+        restrict_on_error="warn",
     )
-    # mode= only sets POSIX bits; on Windows an owner-only DACL is needed too.
-    # Warn-and-continue: a lockdown failure must not break tips persistence,
-    # but it must be visible.
-    try:
-        restrict_to_owner(path)
-    except OSError:
-        logger.warning("Could not restrict tips_state.json to owner", exc_info=True)
 
 
 # ── Cache ──
