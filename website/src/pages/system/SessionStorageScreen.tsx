@@ -8,9 +8,9 @@
  * that is an implementation detail and the report carries no per-store
  * breakdown, so this screen cannot accidentally surface it.
  */
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronLeft, ChevronRight, Info, Search } from 'lucide-react'
+import { ChevronDown, ChevronLeft, ChevronRight, Info, Loader2, Search } from 'lucide-react'
 import { api } from '../../api/client'
 import Clickable from '../../components/Clickable'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -23,6 +23,7 @@ import type {
   SessionInventoryList,
   SessionStorageBatch,
   SessionStorageCleanup,
+  SessionStorageEmptyJob,
   SessionTrashRefusal,
 } from '../../types'
 
@@ -79,7 +80,48 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
     queryKey: ['session-inventory'],
     queryFn: api.sessionInventory,
     refetchOnWindowFocus: false,
+    // The shared client sets staleTime: Infinity — freshness there comes from
+    // WebSocket invalidation, and nothing pushes an event for a delete that
+    // finished while this screen was unmounted. Without this, leaving the page
+    // during an empty and coming back re-rendered the CACHED pre-delete list: the
+    // batch still listed, the totals unchanged. staleTime 0 alone is enough (a stale
+    // query refetches when it mounts); `refetchOnMount: 'always'` on top of it was
+    // two spellings of one rule. The one scan on mount is the price of never showing
+    // a store that is already gone — a WebSocket event on storage mutations would let
+    // this go back to being cache-backed, and is the better long-term shape.
+    staleTime: 0,
   })
+
+  /**
+   * The running or last-finished empty.
+   *
+   * Polled rather than awaited on the mutation, because the delete outlives the
+   * request that starts it and outlives this component: a job started here and
+   * still running when the user comes back is picked up by this same query, which
+   * is what makes "you can leave the page" true on screen and not just in the
+   * gateway. The endpoint reads counters and touches no store, so a 1s poll costs
+   * nothing — but it only polls while something is running.
+   */
+  const { data: emptyState } = useQuery<{ job: SessionStorageEmptyJob | null }>({
+    queryKey: ['session-empty-job'],
+    queryFn: api.sessionStorageEmptyStatus,
+    // staleTime 0 alone, same as the inventory query above: a stale query already
+    // refetches when it mounts, so pairing it with `refetchOnMount: 'always'` is two
+    // spellings of one rule.
+    staleTime: 0,
+    refetchInterval: q => {
+      const job = q.state.data?.job
+      if (!job) return false
+      // Slowly, not never, once it settles. The server retires a finished job on
+      // its own clock; a client that stopped at `running: false` would never see
+      // that happen, so the outcome line would sit on an open tab indefinitely -
+      // the same "presented as current long after the fact" this screen is fixing,
+      // moved from the gateway into one session.
+      return job.running ? 1_000 : 30_000
+    },
+  })
+  const emptyJob = emptyState?.job ?? null
+  const emptyRunning = emptyJob !== null && emptyJob.running
 
   const invalidate = useCallback(() => {
     void qc.invalidateQueries({ queryKey: ['session-inventory'] })
@@ -100,12 +142,42 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
     onSuccess: invalidate,
   })
 
+  /**
+   * Starts an empty. It does NOT wait for the files to go.
+   *
+   * The response only says the work was accepted, so there is nothing to
+   * invalidate here yet — the inventory is still true until the delete lands. What
+   * this does is disarm the confirm and kick the job poll, which then owns
+   * reporting the run and refreshing the list when it finishes.
+   *
+   * On SETTLED, not on success: a second tab that clicks while one empty is running
+   * gets a 409, which react-query treats as an error - so a success-only hook left
+   * that tab with no poll and no progress, which is the exact "nothing is happening"
+   * this screen exists to remove. The 409 means a job EXISTS, so it is precisely the
+   * case that must go and read it.
+   */
   const emptyMut = useMutation({
     mutationFn: (batchId: string) => api.sessionStorageEmpty([batchId]),
-    onSuccess: () => { setArming(null); invalidate() },
+    onSettled: () => {
+      setArming(null)
+      void qc.invalidateQueries({ queryKey: ['session-empty-job'] })
+    },
   })
 
-  const busy = trashMut.isPending || restoreMut.isPending || emptyMut.isPending
+  // A finished job means the store on disk no longer matches the listing in hand,
+  // so the scan is re-run exactly once per job rather than on a timer. Keyed on the
+  // job id as well as the flag: two empties in a row must each trigger their own
+  // refresh, and a remount that finds an already-finished job must not re-fire for
+  // one it has already accounted for.
+  const settledJob = useRef<string>('')
+  useEffect(() => {
+    if (!emptyJob || emptyJob.running) return
+    if (settledJob.current === emptyJob.job_id) return
+    settledJob.current = emptyJob.job_id
+    invalidate()
+  }, [emptyJob, invalidate])
+
+  const busy = trashMut.isPending || restoreMut.isPending || emptyMut.isPending || emptyRunning
   const blocked = (data?.reclaim_blocked_reason ?? '') !== ''
 
   // Split sessions: foreground vs background
@@ -280,6 +352,22 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
             <div className="flex items-start gap-2 text-[11.5px] text-warn">
               <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
               <span>{data.reclaim_blocked_reason}</span>
+            </div>
+          )}
+
+          {/* Why the controls above and below are dead, said WHERE they are. The run
+              takes minutes on a large store and the "Emptying Trash" progress line
+              lives down in the Trash section, past a long list - so a user arriving
+              mid-run to trash a session met greyed buttons with the explanation
+              offscreen. Same defect as the one this PR fixes, one level up: the screen
+              knew something the user could not see. */}
+          {emptyRunning && (
+            <div
+              role="status"
+              className="flex items-center gap-2 text-xs text-muted bg-bg-elevated border border-border rounded-md px-2.5 py-1.5"
+            >
+              <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+              <span>{i18nT('pages.sessionStorage.busy_emptying')}</span>
             </div>
           )}
 
@@ -459,6 +547,8 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
           <TrashSection
             trash={data.trash}
             busy={busy}
+            job={emptyJob}
+            startFailed={emptyMut.isError && emptyJob === null}
             trashOpen={trashOpen}
             onToggleTrash={() => setTrashOpen(!trashOpen)}
             arming={arming}
@@ -792,11 +882,13 @@ function Fact({ label, value }: { label: string; value: string }) {
 /* ─────────────────── Trash Section ─────────────────── */
 
 function TrashSection({
-  trash, busy, trashOpen, onToggleTrash,
+  trash, busy, job, startFailed, trashOpen, onToggleTrash,
   arming, onArm, onRestore, onConfirmEmpty,
 }: {
   trash: SessionInventoryList['trash']
   busy: boolean
+  job: SessionStorageEmptyJob | null
+  startFailed: boolean
   trashOpen: boolean
   onToggleTrash: () => void
   arming: string | null
@@ -825,10 +917,34 @@ function TrashSection({
             })}
           </span>
         )}
-        {batches.length === 0 && (
+        {batches.length === 0 && !job?.running && (
           <span className="text-[12px] text-muted">{i18nT('pages.sessionStorage.trash_empty')}</span>
         )}
       </Clickable>
+
+      {/* The delete's own status. Outside the collapsed body on purpose: a run
+          that takes minutes must stay visible whether or not the section that
+          started it is open, and it is the only thing on screen that says the
+          work did not die with the click. */}
+      {job !== null && <EmptyProgress job={job} />}
+
+      {/* A request that never became a job. `onSettled` disarms the confirm on any
+          outcome - which is what lets a 409 tab pick up the running job - so a POST
+          that failed cleared the button and left nothing behind: the click read as
+          accepted while nothing ran. That is this screen's own reported symptom in a
+          corner, so it gets a line of its own.
+
+          Gated on the ABSENCE of a job, not on the mutation's error state: react-query
+          keeps `isError` set until the next mutate, so after a 409 (a second tab) the
+          poll picks up the real job and, the moment it settled, this line appeared
+          above "Freed 18GB" - the screen telling the user the delete both never ran
+          and freed 18GB, on the one surface whose whole job is answering whether the
+          irreversible thing happened. When a job exists, the job is the answer. */}
+      {startFailed && (
+        <p className="px-1.5 py-2 text-[12px] text-danger" role="status">
+          {i18nT('pages.sessionStorage.empty_not_started')}
+        </p>
+      )}
 
       {trashOpen && batches.length > 0 && (
         <div className="pl-4">
@@ -850,6 +966,136 @@ function TrashSection({
       )}
     </div>
   )
+}
+
+/**
+ * What the empty is doing, while it does it.
+ *
+ * The reported symptom this answers: the three buttons greyed out and nothing
+ * else changed, so the only way to learn whether a delete of tens of thousands of
+ * sessions had worked was to come back later and see whether the batch was gone.
+ *
+ * Progress is measured in BYTES against the staged total, not in sessions: the
+ * delete walks files, and a session is more than one file, so a session-shaped
+ * count would either be a guess or lag the work it claims to describe. The
+ * "keeps running" line is load-bearing, not reassurance — the job lives in the
+ * gateway, so leaving really is safe, and a user who does not know that waits.
+ */
+function EmptyProgress({ job }: { job: SessionStorageEmptyJob }) {
+  if (job.running) {
+    // Only when the staged total is known: a batch whose manifest reported no
+    // bytes would otherwise render a bar permanently at 0% next to a number that
+    // is climbing, which reads as stuck.
+    const pct = job.total_bytes > 0
+      ? Math.min(100, (job.freed_bytes / job.total_bytes) * 100)
+      : null
+    return (
+      <div className="px-1.5 py-2">
+        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+          {/* The live region is the STATE, not the counter. The figure below changes
+              on every poll, so announcing it makes a screen reader speak roughly
+              once a second for a job that runs for minutes; `aria-live="off"`
+              leaves it readable without being read out. */}
+          <span className="text-[12.5px] text-text-strong" role="status">
+            {i18nT('pages.sessionStorage.emptying')}
+          </span>
+          <span
+            className="text-[12px] text-muted font-mono tabular-nums"
+            aria-live="off"
+          >
+            {job.total_bytes > 0
+              ? i18nT('pages.sessionStorage.emptying_progress', {
+                freed: fmtBytes(job.freed_bytes),
+                total: fmtBytes(job.total_bytes),
+              })
+              : fmtBytes(job.freed_bytes)}
+          </span>
+          <span className="text-[11.5px] text-muted">
+            {i18nT('pages.sessionStorage.emptying_leave_ok')}
+          </span>
+        </div>
+        {pct !== null && (
+          <div className="h-[3px] bg-border mt-1.5 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-accent rounded-full transition-[width] duration-500"
+              style={{ width: `${Math.max(1, pct)}%` }}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
+  if (job.error !== '') {
+    return (
+      <div className="px-1.5 py-2" role="status">
+        <p className="text-[12px] text-danger">
+          {i18nT('pages.sessionStorage.empty_failed', { freed: fmtBytes(job.freed_bytes) })}
+        </p>
+        {/* A next step, translated, BEFORE the raw text. The delete stopped partway
+            through something irreversible, and the gateway's sentence is English in
+            all 12 locales - so in 11 of them the only explanation of a half-finished
+            destructive operation was untranslated technical text. This line says what
+            to do in the reader's language; the raw sentence stays as the detail. */}
+        <p className="text-[11px] text-muted mt-0.5">
+          {i18nT('pages.sessionStorage.empty_failed_next_step')}
+        </p>
+        {/* The gateway's own sentence, on its own line and in a monospace face so it
+            reads as the technical detail it is. Deliberately not a clause inside the
+            translated line above: it describes an error nobody enumerated, so it
+            cannot be a code like the skips are, and splicing English into a localized
+            sentence would be the mixed-language result those codes exist to avoid.
+            The line above is a whole sentence on its own - a key ending in a
+            connector leaves half a sentence outside it, which a translator cannot
+            reorder. */}
+        <p className="text-[11px] text-muted font-mono mt-0.5">{job.error}</p>
+      </div>
+    )
+  }
+  // A kept batch is NOT a success: the user asked for it to be destroyed and it is
+  // still in the list above. Rendering "Freed 0 B." here — which is what an
+  // outcome read only from `error` produced — is a success-shaped line
+  // contradicting the row it sits under, with the reason only in the gateway log.
+  if (job.skipped.length > 0) {
+    // Deduplicated: two batches kept for the same reason is the same sentence
+    // twice. The count is deliberately not shown - it would need a plural form in
+    // every locale to say something the reasons already say.
+    const reasons = [...new Set(job.skipped)]
+    return (
+      <p className="px-1.5 py-2 text-[12px] text-warn" role="status">
+        {i18nT('pages.sessionStorage.empty_kept', { freed: fmtBytes(job.freed_bytes) })}
+        {' '}
+        {reasons.map(skipReason).join(' ')}
+        {/* Gated on the reason it actually describes. Only the unlisted-file case has
+            a file to name, so appending it to every code promised a log line that
+            says nothing for the others. */}
+        {reasons.includes('unlisted_files') && (
+          <> {i18nT('pages.sessionStorage.kept_next_step')}</>
+        )}
+      </p>
+    )
+  }
+  return (
+    <p className="px-1.5 py-2 text-[12px] text-muted" role="status">
+      {i18nT('pages.sessionStorage.emptied', { size: fmtBytes(job.freed_bytes) })}
+    </p>
+  )
+}
+
+/**
+ * Why a batch was kept, in the user's language.
+ *
+ * The gateway sends a code rather than prose precisely so this can be translated:
+ * interpolating the backend's own sentence would put untranslated internal
+ * vocabulary ("staged file is absent from its manifest") in front of a reader.
+ */
+function skipReason(code: string): string {
+  switch (code) {
+    case 'unlisted_files': return i18nT('pages.sessionStorage.kept_unlisted_files')
+    case 'unreadable_batch': return i18nT('pages.sessionStorage.kept_unreadable')
+    case 'outside_trash_root': return i18nT('pages.sessionStorage.kept_outside_root')
+    case 'incomplete': return i18nT('pages.sessionStorage.kept_incomplete')
+    default: return i18nT('pages.sessionStorage.kept_unknown')
+  }
 }
 
 function TrashBatchRow({

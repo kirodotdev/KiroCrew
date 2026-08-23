@@ -8,9 +8,12 @@ and the payload never splits a session's size across the two stores it occupies.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import threading
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -356,8 +359,73 @@ class TestRestore:
 
 
 class TestEmpty:
+    @pytest.fixture(autouse=True)
+    def _no_job_leaks(self, request: pytest.FixtureRequest) -> Iterator[None]:
+        """The job slot is a module global, so a test must not inherit one.
+
+        Without this a finished job from an earlier test makes the next one's POST
+        look like a second empty, or its status read report a run it never started.
+
+        Teardown WAITS for a still-running job rather than cancelling it. Cancelling
+        the asyncio task only abandons the `to_thread` wrapper - the worker thread
+        keeps running `empty_trash` and keeps deleting files, straight through
+        `tmp_path` teardown, so a failed assertion turned into a real delete racing the
+        fixture that was removing the same tree. Waiting is bounded and, on timeout,
+        fails loudly with the test's name instead of leaving a thread mutating storage.
+        """
+        handler._empty_job = None
+        yield
+        job = handler._empty_job
+        if job is not None and job.task is not None and not job.task.done():
+            loop = asyncio.get_event_loop()
+            try:
+                loop.run_until_complete(asyncio.wait_for(job.task, timeout=30))
+            except asyncio.TimeoutError:  # pragma: no cover - a wedged test, not a path
+                pytest.fail(
+                    f"{request.node.name} left an empty job running for 30s; it holds a "
+                    "worker thread that is still deleting files"
+                )
+        handler._empty_job = None
+
     @pytest.mark.asyncio
-    async def test_frees_space_and_audits_the_bytes(self, stores: tuple[Path, Path]) -> None:
+    async def test_a_job_left_running_is_awaited_by_teardown_not_abandoned(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Covers the guard itself: this test deliberately does NOT await its job.
+
+        Cancelling the task would abandon a worker thread that is still deleting files,
+        into `tmp_path` teardown. So the fixture waits, and this is the test that makes
+        it wait - without it the wait path never runs and could rot.
+        """
+        done = threading.Event()
+
+        def slow_empty(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            time.sleep(0.2)
+            done.set()
+            return 0
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", return_value=([], 0)),
+            patch.object(handler, "empty_trash", slow_empty),
+        ):
+            resp = await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+
+        assert resp.status == 202
+        job = handler._empty_job
+        assert job is not None and job.task is not None and not job.task.done()
+        # Deliberately returning with the job in flight. If teardown cancelled instead
+        # of waiting, `done` would still be unset when the next test starts and the
+        # thread would outlive this one.
+        assert not done.is_set()
+
+    @pytest.mark.asyncio
+    async def test_accepts_the_work_then_frees_the_space_and_audits_it(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """202 says "accepted", not "done" — the bytes land when the job finishes."""
         _, kiro_home = stores
         size = _retired(kiro_home, "aaaa1111")
         sel = _sel_stub()
@@ -369,10 +437,479 @@ class TestEmpty:
             resp = await handler.api_session_storage_empty(
                 _request("POST", "/api/system/session-storage/empty", {"all": True})
             )
+            accepted = json.loads(resp.body)
 
-        assert json.loads(resp.body)["freed_bytes"] >= size
+            assert resp.status == 202
+            assert accepted["running"] is True
+            # The denominator comes from the staged manifest, so the screen can draw
+            # progress from the first frame instead of after the first callback.
+            assert accepted["total_bytes"] >= size
+
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+            status = json.loads(
+                (
+                    await handler.api_session_storage_empty_status(
+                        _request("GET", "/api/system/session-storage/empty", None)
+                    )
+                ).body
+            )
+
+        assert status["job"]["running"] is False
+        assert status["job"]["error"] == ""
+        assert status["job"]["freed_bytes"] >= size
+        assert status["job"]["job_id"] == accepted["job_id"]
+        assert session_storage_module.list_trash() == []
         resources = [c.kwargs["resources"] for c in sel.log_api_access.call_args_list]
         assert any(r.startswith("freed:") for r in resources)
+
+    @pytest.mark.asyncio
+    async def test_no_job_reads_as_no_job(self, stores: tuple[Path, Path]) -> None:
+        resp = await handler.api_session_storage_empty_status(
+            _request("GET", "/api/system/session-storage/empty", None)
+        )
+        assert json.loads(resp.body) == {"job": None}
+
+    @pytest.mark.asyncio
+    async def test_progress_is_visible_while_the_delete_is_still_running(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The point of the whole change: a partial figure, before it is finished.
+
+        The delete is held open on an event so the status read happens mid-run,
+        which is the only moment the old blocking endpoint could say nothing at all.
+        """
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        release = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _slow_empty(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            if on_progress is not None:
+                on_progress(512)
+            asyncio.run_coroutine_threadsafe(_wait(), loop).result()
+            return 1024
+
+        async def _wait() -> None:
+            await release.wait()
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            await handler.api_session_storage_cleanup(
+                _request("POST", "/api/system/session-storage/cleanup", {"older_than_days": 30})
+            )
+            with patch.object(handler, "empty_trash", _slow_empty):
+                await handler.api_session_storage_empty(
+                    _request("POST", "/api/system/session-storage/empty", {"all": True})
+                )
+                job = handler._empty_job
+                assert job is not None and job.task is not None
+                # try/finally, not a trailing release: the worker is parked in
+                # `.result()` on a thread, and an assertion failing before the set
+                # would leave that thread blocked forever. Cancelling the asyncio task
+                # (which the fixture does) does not reach it, so pytest could not shut
+                # its executor down and a failed test became a hung run.
+                try:
+                    # Let the worker thread report once.
+                    for _ in range(200):
+                        if job.freed_bytes:
+                            break
+                        await asyncio.sleep(0.01)
+
+                    mid = json.loads(
+                        (
+                            await handler.api_session_storage_empty_status(
+                                _request("GET", "/api/system/session-storage/empty", None)
+                            )
+                        ).body
+                    )
+                    assert mid["job"]["running"] is True
+                    assert mid["job"]["freed_bytes"] == 512
+
+                    # A second empty is refused while this one holds the slot, and the
+                    # refusal carries the running job so a second tab shows progress
+                    # rather than an error it cannot act on.
+                    busy = await handler.api_session_storage_empty(
+                        _request("POST", "/api/system/session-storage/empty", {"all": True})
+                    )
+                    assert busy.status == 409
+                    assert json.loads(busy.body)["code"] == "empty_in_progress"
+                    assert json.loads(busy.body)["job"]["job_id"] == mid["job"]["job_id"]
+                finally:
+                    release.set()
+                    await job.task
+
+        assert job.done is True
+        assert job.freed_bytes == 1024
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_lands_on_the_job_not_on_a_lost_request(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The request is already answered, so a refusal has to be readable later."""
+
+        def _refuse(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            raise session_storage_module.SessionStorageError("the trash root moved")
+
+        sel = _sel_stub()
+        with (
+            patch.object(handler, "_sel", return_value=sel),
+            patch.object(handler, "staged_targets", return_value=([], 0)),
+            patch.object(handler, "empty_trash", _refuse),
+        ):
+            await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+        assert job.done is True
+        assert "trash root moved" in job.error
+        outcomes = [c.kwargs["outcome"] for c in sel.log_api_access.call_args_list]
+        assert "refused" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_an_unexpected_error_finishes_the_job_instead_of_hanging_it(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A job left flagged running is a screen polling a delete that stopped."""
+
+        def _boom(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            raise RuntimeError("disk went away")
+
+        sel = _sel_stub()
+        with (
+            patch.object(handler, "_sel", return_value=sel),
+            patch.object(handler, "staged_targets", return_value=([], 0)),
+            patch.object(handler, "empty_trash", _boom),
+        ):
+            await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+        assert job.done is True
+        assert job.error != ""
+        # The client is told something stopped, never the exception text.
+        assert "disk went away" not in job.error
+        outcomes = [c.kwargs["outcome"] for c in sel.log_api_access.call_args_list]
+        assert "error" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_a_kept_batch_is_reported_as_a_refusal_not_a_success(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A batch held back is not "0 bytes freed, success".
+
+        `_empty_trash_locked` keeps a batch holding files no manifest lists, because
+        those are the only copy -- and nothing raises. Read only from the exception,
+        the job settled clean and the screen said "Freed 0 B." above a batch that was
+        still there, with the reason in a log the user cannot read.
+        """
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        sel = _sel_stub()
+
+        with patch.object(handler, "_sel", return_value=sel):
+            await handler.api_session_storage_cleanup(
+                _request("POST", "/api/system/session-storage/cleanup", {"older_than_days": 30})
+            )
+            batch = session_storage_module.list_trash()[0]
+            staged = session_storage_module.trash_root() / batch.batch_id / "cli"
+            staged.mkdir(parents=True, exist_ok=True)
+            (staged / "cccc3333.jsonl").write_bytes(b"ONLY COPY")
+
+            await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+            status = json.loads(
+                (
+                    await handler.api_session_storage_empty_status(
+                        _request("GET", "/api/system/session-storage/empty", None)
+                    )
+                ).body
+            )
+
+        assert status["job"]["skipped"] == [session_storage_module.SKIP_UNLISTED_FILES]
+        assert status["job"]["error"] == ""
+        assert len(session_storage_module.list_trash()) == 1, "the batch was kept"
+        outcomes = [c.kwargs["outcome"] for c in sel.log_api_access.call_args_list]
+        assert "refused" in outcomes
+
+    @pytest.mark.asyncio
+    async def test_a_stale_finished_job_stops_being_reported(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """An outcome must not sit on the screen as current for days.
+
+        The slot holds the last job for the life of the process, so without a cutoff
+        "Freed 18GB." rendered above the Trash on every visit until a restart.
+        """
+        handler._empty_job = handler._EmptyJob(
+            job_id="empty-old",
+            total_bytes=10,
+            freed_bytes=10,
+            done=True,
+            finished_at=time.time() - handler._JOB_TTL_SECONDS - 60,
+        )
+
+        resp = await handler.api_session_storage_empty_status(
+            _request("GET", "/api/system/session-storage/empty", None)
+        )
+        assert json.loads(resp.body) == {"job": None}
+
+        # A job that finished just now is still the answer.
+        handler._empty_job.finished_at = time.time()
+        resp = await handler.api_session_storage_empty_status(
+            _request("GET", "/api/system/session-storage/empty", None)
+        )
+        assert json.loads(resp.body)["job"]["job_id"] == "empty-old"
+
+    @pytest.mark.asyncio
+    async def test_two_simultaneous_posts_produce_one_job(self, stores: tuple[Path, Path]) -> None:
+        """The slot is claimed in the same synchronous step as the check.
+
+        Reading the staged totals first put a suspension point between the guard and
+        the claim: both requests passed, both got a 202, and the second overwrote the
+        first -- so the status endpoint reported a job that (serialized behind the
+        mutation lock) found the trash already gone and said "freed 0", while the
+        delete the user was waiting on had no record at all.
+        """
+
+        def _slow_totals(batch_ids):  # type: ignore[no-untyped-def]
+            time.sleep(0.05)
+            return [], 0
+
+        release = asyncio.Event()
+        loop = asyncio.get_running_loop()
+
+        def _held_empty(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            asyncio.run_coroutine_threadsafe(release.wait(), loop).result()
+            return 0
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", _slow_totals),
+            patch.object(handler, "empty_trash", _held_empty),
+        ):
+            first, second = await asyncio.gather(
+                handler.api_session_storage_empty(
+                    _request("POST", "/api/system/session-storage/empty", {"all": True})
+                ),
+                handler.api_session_storage_empty(
+                    _request("POST", "/api/system/session-storage/empty", {"all": True})
+                ),
+            )
+            job = handler._empty_job
+            # Released in `finally` for the same reason as the mid-run test: the worker
+            # parks in `.result()` on a thread that only this event frees, and an
+            # assertion failing first would hang the run rather than fail it.
+            try:
+                statuses = sorted([first.status, second.status])
+                assert job is not None and job.task is not None
+            finally:
+                release.set()
+                if job is not None and job.task is not None:
+                    await job.task
+
+        assert statuses == [202, 409]
+
+    @pytest.mark.asyncio
+    async def test_a_batch_id_that_is_not_a_batch_is_refused_not_dropped(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Naming a bad id must refuse, not report success for a delete that never ran.
+
+        Resolving the target set by FILTERING the staged list took over from
+        `_batch_dir`, which every other caller resolves ids through: an id that is not
+        a batch - a typo, or one already emptied - was silently dropped, the worker got
+        an empty list, and the user was told the delete succeeded.
+        """
+        seen: list[object] = []
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "empty_trash", lambda ids, *a, **k: seen.append(ids) or 0),
+        ):
+            resp = await handler.api_session_storage_empty(
+                _request(
+                    "POST",
+                    "/api/system/session-storage/empty",
+                    {"batch_ids": ["../../sessions"]},
+                )
+            )
+
+        assert resp.status == 400
+        assert json.loads(resp.body)["code"] == "empty_refused"
+        assert seen == [], "nothing was dispatched"
+        # The slot is not left holding a job for a request that never ran.
+        assert handler._empty_job is None
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_trash_fails_an_empty_all_closed_and_says_so(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """ "Everything staged" that cannot be resolved must delete NOTHING.
+
+        Two properties pull against each other here and both come from real findings:
+        a failure must not wedge the slot forever, and it must not hand the worker
+        "all" to re-enumerate later, which would destroy batches staged after the
+        click. So the job settles with a reason instead of running, and the slot is
+        free for a retry.
+        """
+
+        def _explode(batch_ids):  # type: ignore[no-untyped-def]
+            raise ValueError("a staged manifest is malformed")
+
+        deleted: list[object] = []
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", _explode),
+            patch.object(handler, "empty_trash", lambda ids, *a, **k: deleted.append(ids) or 0),
+        ):
+            resp = await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+
+        job = handler._empty_job
+        assert resp.status == 202
+        assert job is not None and job.done is True
+        assert job.task is None, "nothing was dispatched"
+        assert deleted == [], "no delete ran"
+        assert "could not be read" in json.loads(resp.body)["error"]
+
+        # And the slot is free again, rather than answering 409 forever.
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", return_value=([], 0)),
+            patch.object(handler, "empty_trash", lambda *a, **k: 0),
+        ):
+            again = await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+            second = handler._empty_job
+            assert second is not None and second.task is not None
+            await second.task
+        assert again.status == 202
+
+    @pytest.mark.asyncio
+    async def test_a_refusal_text_is_scrubbed_before_a_client_reads_it(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The one part of a job a browser renders goes through the same scrubbers.
+
+        A refusal quotes what caused it, which can be the caller's own argument or a
+        string the module was resolving, and this endpoint is pollable - so the text
+        gets the module's `_redact` and a length cap rather than being passed through.
+        Asserted with a credential shape the scrubber recognises (the AWS
+        documentation example key), because that is what "redacted" means here: a
+        pattern match, not a filter over every possible sentence.
+        """
+        leak = "refused near AKIAIOSFODNN7EXAMPLE " + ("y" * 900)
+
+        def _refuse(batch_ids, on_progress=None, on_skip=None):  # type: ignore[no-untyped-def]
+            raise session_storage_module.SessionStorageError(leak)
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", return_value=([], 0)),
+            patch.object(handler, "empty_trash", _refuse),
+        ):
+            await handler.api_session_storage_empty(
+                _request("POST", "/api/system/session-storage/empty", {"all": True})
+            )
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+            body = json.loads(
+                (
+                    await handler.api_session_storage_empty_status(
+                        _request("GET", "/api/system/session-storage/empty", None)
+                    )
+                ).body
+            )
+
+        reported = body["job"]["error"]
+        assert len(reported) <= handler._ERROR_TEXT_LIMIT
+        assert "AKIAIOSFODNN7EXAMPLE" not in reported
+        assert "refused" in reported
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_selection_still_runs_without_a_denominator(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A named selection needs no snapshot, so a failed read only costs the bar.
+
+        The widening hazard does not apply: the caller said which batches, and that
+        list is what the worker gets.
+        """
+
+        def _explode(batch_ids):  # type: ignore[no-untyped-def]
+            raise ValueError("a staged manifest is malformed")
+
+        seen: list[object] = []
+
+        with (
+            patch.object(handler, "_sel", return_value=_sel_stub()),
+            patch.object(handler, "staged_targets", _explode),
+            patch.object(handler, "empty_trash", lambda ids, *a, **k: seen.append(ids) or 0),
+        ):
+            resp = await handler.api_session_storage_empty(
+                _request(
+                    "POST",
+                    "/api/system/session-storage/empty",
+                    {"batch_ids": ["b-1", "b-2"]},
+                )
+            )
+            job = handler._empty_job
+            assert job is not None and job.task is not None
+            await job.task
+
+        assert resp.status == 202
+        assert json.loads(resp.body)["total_bytes"] == 0, "no denominator, but a job"
+        assert seen == [["b-1", "b-2"]]
+
+    @pytest.mark.asyncio
+    async def test_empty_all_hands_the_worker_the_batches_it_resolved(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A batch staged AFTER the click must survive an "empty everything".
+
+        `empty_trash(None)` enumerates in the worker, which now runs well after the
+        request and can queue behind another mutation - so a batch staged in between
+        was destroyed although the user never saw it, and a staged batch is the only
+        copy of those sessions.
+        """
+        _, kiro_home = stores
+        _retired(kiro_home, "aaaa1111")
+        seen: list[object] = []
+
+        with patch.object(handler, "_sel", return_value=_sel_stub()):
+            await handler.api_session_storage_cleanup(
+                _request("POST", "/api/system/session-storage/cleanup", {"older_than_days": 30})
+            )
+            staged = [b.batch_id for b in session_storage_module.list_trash()]
+            assert len(staged) == 1
+
+            with patch.object(handler, "empty_trash", lambda ids, *a, **k: seen.append(ids) or 0):
+                await handler.api_session_storage_empty(
+                    _request("POST", "/api/system/session-storage/empty", {"all": True})
+                )
+                job = handler._empty_job
+                assert job is not None and job.task is not None
+                await job.task
+
+        assert seen == [staged], "the worker gets ids, never None"
 
     @pytest.mark.asyncio
     async def test_an_empty_body_destroys_nothing(self, stores: tuple[Path, Path]) -> None:

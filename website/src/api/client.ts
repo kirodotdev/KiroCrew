@@ -13,6 +13,7 @@ import type {
   SessionInventoryList,
   SessionLaneKey,
   SessionStorageCleanup,
+  SessionStorageEmptyJob,
   SessionStorageReport,
   SessionTrashResult,
   UpdateCheckResult,
@@ -1701,8 +1702,12 @@ export const api = {
   sessionStorageRestore: (batchId: string, uids?: string[]) =>
     post('/api/system/session-storage/restore', uids ? { batch_id: batchId, uids } : { batch_id: batchId })
       .then(j) as Promise<{ restored: number }>,
+  /** Starts an empty and returns the job; the delete outlives this request. */
   sessionStorageEmpty: (batchIds: string[]) =>
-    post('/api/system/session-storage/empty', { batch_ids: batchIds }).then(j) as Promise<{ freed_bytes: number }>,
+    post('/api/system/session-storage/empty', { batch_ids: batchIds }).then(j) as Promise<SessionStorageEmptyJob>,
+  /** The running or last-finished empty. Cheap — no store is walked, so it polls. */
+  sessionStorageEmptyStatus: () =>
+    get('/api/system/session-storage/empty').then(j) as Promise<{ job: SessionStorageEmptyJob | null }>,
   /** Session inventory — the flat list contract (§1). */
   sessionInventory: () =>
     get('/api/system/session-storage/sessions').then(j) as Promise<SessionInventoryList>,

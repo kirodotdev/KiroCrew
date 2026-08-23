@@ -1198,9 +1198,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setattr(session_storage, "cotenant_sids", claimed_late)
 
         with pytest.raises(SessionStorageError, match="still in use"):
-            session_storage.move_to_trash(
-                ["adopted001"], reason="manual", index=_index(), now=_NOW
-            )
+            session_storage.move_to_trash(["adopted001"], reason="manual", index=_index(), now=_NOW)
         assert (kiro_home / "sessions" / "cli" / "adopted001.jsonl").is_file()
 
     def test_a_cotenant_map_that_becomes_unreadable_mid_move_refuses(
@@ -1219,9 +1217,7 @@ class TestSharedStoreRefusal:
         monkeypatch.setattr(session_storage, "cotenant_sids", unreadable_late)
 
         with pytest.raises(SessionStorageError, match="make reclaiming unsafe"):
-            session_storage.move_to_trash(
-                ["aaaa1111"], reason="manual", index=_index(), now=_NOW
-            )
+            session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
         assert (kiro_home / "sessions" / "cli" / "aaaa1111.jsonl").is_file()
 
     def test_a_symlinked_cotenant_map_is_refused_not_followed(
@@ -1318,14 +1314,10 @@ class TestSharedStoreRefusal:
         """
         _, kiro_home = stores
         _cli_half(kiro_home, "podsid01", log_bytes=64, age_days=40)
-        monkeypatch.setattr(
-            session_storage, "cotenant_sids", lambda: (frozenset({"podsid01"}), ())
-        )
+        monkeypatch.setattr(session_storage, "cotenant_sids", lambda: (frozenset({"podsid01"}), ()))
 
         with pytest.raises(SessionStorageError, match="still in use"):
-            session_storage.move_to_trash(
-                ["podsid01"], reason="manual", index=_index(), now=_NOW
-            )
+            session_storage.move_to_trash(["podsid01"], reason="manual", index=_index(), now=_NOW)
         assert (kiro_home / "sessions" / "cli" / "podsid01.jsonl").is_file()
 
     def test_no_pods_leaves_the_default_instance_able_to_reclaim(
@@ -1759,6 +1751,329 @@ class TestEmptyTrash:
         assert freed >= size
         assert session_storage.list_trash() == []
         assert not (session_storage.trash_root() / batch.batch_id).exists()
+
+    def test_reports_progress_that_ends_at_what_it_returns(self, stores: tuple[Path, Path]) -> None:
+        """Progress must be a running total of the WHOLE call, not per batch.
+
+        A screen draws a bar against one denominator, so a figure that restarts on
+        each batch would march to the end and then jump backwards. The last value
+        reported is also the returned total, which is what lets a client stop
+        polling on the callback rather than waiting for a separate confirmation.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=4096, age_days=40)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=2048, age_days=40)
+        first = session_storage.move_to_trash(
+            ["aaaa1111"], reason="a", index=_index(), now=_NOW - _DAY
+        )
+        second = session_storage.move_to_trash(["bbbb2222"], reason="b", index=_index(), now=_NOW)
+
+        seen: list[int] = []
+        freed = session_storage.empty_trash(
+            [first.batch_id, second.batch_id], on_progress=seen.append
+        )
+
+        assert seen, "a delete that frees bytes must report at least once"
+        assert seen == sorted(seen), "a running total cannot go down"
+        assert seen[-1] == freed
+        assert freed >= 4096 + 2048
+        assert session_storage.list_trash() == []
+
+    def test_a_refused_batch_reports_nothing_it_did_not_delete(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The refusal path must not report bytes: nothing was freed."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        (session_storage.trash_root() / batch.batch_id / "cli" / "cccc3333.jsonl").write_bytes(
+            b"ONLY COPY"
+        )
+
+        seen: list[int] = []
+        skips: list[str] = []
+        freed = session_storage.empty_trash(
+            [batch.batch_id], on_progress=seen.append, on_skip=skips.append
+        )
+
+        assert freed == 0
+        assert seen == []
+        # And it SAYS why. Reporting only "0 bytes freed" made a batch deliberately
+        # kept indistinguishable from an empty one, with the reason in a log the
+        # user cannot read.
+        assert skips == [session_storage.SKIP_UNLISTED_FILES]
+
+    def test_deletes_only_what_the_manifest_names(self, stores: tuple[Path, Path]) -> None:
+        """Files are named by the manifest, never discovered by walking the batch.
+
+        A walk has to decide per entry whether to descend, and on Windows a junction
+        is not a symlink -- os.path.islink reports False for one, so os.walk would
+        descend into it and unlink the files it points at, outside the trash. Naming
+        the files means traversal never happens. Asserted here with a symlinked
+        subdirectory, the portable stand-in for that shape.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=64, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        staged = session_storage.trash_root() / batch.batch_id
+
+        outside = kiro_home.parent / "precious"
+        outside.mkdir()
+        victim = outside / "keep.jsonl"
+        victim.write_bytes(b"NOT THE TRASH")
+        # A LINKED DIRECTORY inside the batch. Note it does not trip the
+        # unlisted-file guard: that guard walks for files, and a link to a
+        # directory is not one -- which is precisely why the delete must not be the
+        # thing that decides whether to descend.
+        (staged / "link").symlink_to(outside, target_is_directory=True)
+
+        freed = session_storage.empty_trash([batch.batch_id])
+
+        assert freed >= 64
+        assert not staged.exists(), "the batch itself is still removed"
+        assert victim.read_bytes() == b"NOT THE TRASH"
+        assert outside.is_dir()
+
+    @pytest.mark.parametrize(
+        "rel",
+        [
+            "/etc/victim",  # absolute
+            "//tmp/victim",  # POSIX root of TWO slashes, whose part is "//"
+            "///tmp/victim",
+            "../outside",
+            "cli/../../outside",
+            "..",
+            "",
+            ".",
+            "C:/windows/x",  # absolute in the other flavour
+            "C:\\windows\\x",
+            "..\\outside",  # a parent reference only Windows parsing sees
+            "\\\\server\\share\\x",
+        ],
+    )
+    def test_a_staged_name_that_is_not_a_plain_relative_path_is_refused(self, rel: str) -> None:
+        """One table, because each shape got in by a different spelling.
+
+        `//tmp/victim` is the one that shipped: its first component is `//`, so a
+        check against `/` missed it, and an absolute path handed to `os.open` ignores
+        `dir_fd` and leaves the batch entirely. The Windows spellings matter because
+        the coarse path joins these names with the local `Path`.
+        """
+        assert session_storage._plain_parts(rel) is None
+
+    @pytest.mark.parametrize("rel", ["cli/a.jsonl", "crew/archive/b.jsonl", "c.json"])
+    def test_a_plain_staged_name_is_accepted(self, rel: str) -> None:
+        assert session_storage._plain_parts(rel) is not None
+
+    def test_the_size_read_refuses_a_rel_that_escapes_the_batch(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The coarse path's measurement must not stat outside the batch either.
+
+        Where the platform cannot delete by descriptor the batch takes rmtree and the
+        bytes come from statting the manifest's names. That read went straight to the
+        filesystem, so a tampered entry made it measure - and report as freed - a file
+        the delete never touched.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        staged = session_storage.trash_root() / batch.batch_id
+        outside = kiro_home / "big.jsonl"
+        outside.write_bytes(b"z" * 100_000)
+
+        listed = session_storage._manifest_rels(staged)
+        honest = session_storage._listed_bytes(staged, listed)
+        tampered = session_storage._listed_bytes(staged, listed + ["../../big.jsonl"])
+
+        assert tampered == honest, "an escaping rel must contribute nothing"
+        assert honest >= 16
+
+    def test_a_stale_but_well_formed_id_is_refused(self, stores: tuple[Path, Path]) -> None:
+        """Naming a batch that is not staged is a refusal, not a zero-byte success.
+
+        `_batch_dir` does not require the directory to exist, so an id that was already
+        emptied passes it. Measured on the pre-snapshot path: that id reached the delete
+        and returned 0 bytes with only a log line, which is the silent outcome this PR
+        exists to remove - and filtering it out of the snapshot kept it silent.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        stale = "20260101T000000-deadbeef"
+
+        with pytest.raises(SessionStorageError, match="no longer staged"):
+            session_storage.staged_targets([stale])
+
+        # Naming a live batch alongside a stale one is refused too: the request is not
+        # partly honoured, because the caller cannot see which half ran.
+        with pytest.raises(SessionStorageError, match="no longer staged"):
+            session_storage.staged_targets([batch.batch_id, stale])
+
+        # And the live batch alone still resolves.
+        ids, total = session_storage.staged_targets([batch.batch_id])
+        assert ids == [batch.batch_id] and total > 0
+
+    def test_the_target_snapshot_is_serialized_against_staging(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A batch mid-staging must not be selectable, so it cannot grow before delete.
+
+        `list_trash` does not take the mutation lock, so an unlocked read can see a
+        batch whose directory and manifest header exist while its sessions are still
+        moving in. Selecting that id makes the delete wait for staging to finish and
+        then destroy the FINISHED batch - sessions the user never saw included.
+
+        Asserted on the mechanism rather than by racing staging, which on a quiet
+        machine would pass either way: while the snapshot is reading, a FRESH
+        descriptor on the same lock file must not be able to take it, which is exactly
+        what excludes a concurrent `move_to_trash`.
+        """
+        pytest.importorskip("fcntl")
+        import fcntl
+
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        session_storage.move_to_trash(["aaaa1111"], reason="manual", index=_index(), now=_NOW)
+
+        lock_path = session_storage.trash_root().parent / session_storage.MUTATION_LOCK_NAME
+        observed: list[str] = []
+        real_list = session_storage.list_trash
+
+        def probe_then_list():  # type: ignore[no-untyped-def]
+            fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(fd, fcntl.LOCK_UN)
+                observed.append("free")
+            except OSError:
+                observed.append("held")
+            finally:
+                os.close(fd)
+            return real_list()
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(session_storage, "list_trash", probe_then_list)
+        try:
+            ids, total = session_storage.staged_targets(None)
+        finally:
+            monkey.undo()
+
+        assert observed == ["held"], "the snapshot must resolve inside the mutation lock"
+        assert len(ids) == 1 and total > 0
+
+    def test_a_nul_in_a_manifest_name_cannot_abort_a_half_done_delete(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A NUL is the one bad name that raised ValueError, not OSError.
+
+        JSON can carry `\\u0000`, so a tampered or corrupted manifest can hold one, and
+        every `os` call then raises ValueError - which the delete's `except OSError` did
+        not catch. It escaped mid-loop, after earlier files were already unlinked, so an
+        irreversible operation stopped halfway. Two guards now: the validator refuses the
+        name, and the loop treats an unusable name as costing its own file only.
+        """
+        assert session_storage._plain_parts("a\x00b") is None
+        assert session_storage._plain_parts("ok/a\x00b") is None
+
+    def test_a_drive_relative_name_is_refused_even_though_it_is_not_absolute(
+        self,
+    ) -> None:
+        """`C:.ssh/id_rsa` has no root, so an absoluteness check alone lets it through.
+
+        Joining it onto the batch on Windows replaces the anchor - pathlib lets a
+        right-hand side carrying a drive take over - and resolves it against that
+        drive's working directory, so the size read would stat a file outside the batch
+        and report that it exists and how big it is.
+        """
+        for rel in ("C:.ssh/id_rsa", "c:y", "C:/x", "C:\\x"):
+            assert session_storage._plain_parts(rel) is None, rel
+        # Collateral, and deliberate: Windows parsing reads a POSIX name spelled `a:b`
+        # as a drive too. This store names its own files, so it never writes one, and
+        # being wrong costs a batch kept as incomplete rather than an escape.
+        assert session_storage._plain_parts("a:b/c") is None
+        # A colon elsewhere in the name is untouched.
+        assert session_storage._plain_parts("ab:c/d") == ("ab:c", "d")
+
+    def test_the_coarse_path_reports_only_bytes_that_went_away(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """Windows takes rmtree with `ignore_errors`, which can leave the batch standing.
+
+        The freed figure has to be measured after the attempt, not before it, or a
+        locked file is reported as space reclaimed while it is still on disk.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=4096, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+        staged = session_storage.trash_root() / batch.batch_id
+
+        skips: list[str] = []
+        with pytest.MonkeyPatch.context() as patched:
+            # Let rmtree fail the way a lock does: quietly.
+            patched.setattr(session_storage.shutil, "rmtree", lambda *a, **k: None)
+            freed = session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
+
+        assert staged.is_dir(), "the batch must still be there for this to mean anything"
+        assert freed == 0, "nothing went away, so nothing may be reported as freed"
+        assert skips == [session_storage.SKIP_INCOMPLETE]
+
+    def test_a_batch_that_survives_a_coarse_delete_reports_a_reason(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The coarse path re-checks the directory, because rmtree tells it nothing.
+
+        `rmtree(ignore_errors=True)` reports nothing, so a tree it could not remove left
+        the batch on the user's screen while the job said the delete had succeeded.
+        """
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=16, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"], reason="manual", index=_index(), now=_NOW
+        )
+
+        monkeypatch.setattr(session_storage.shutil, "rmtree", lambda *a, **k: None)
+        skips: list[str] = []
+        session_storage.empty_trash([batch.batch_id], on_skip=skips.append)
+
+        assert skips == [session_storage.SKIP_INCOMPLETE]
+        assert (session_storage.trash_root() / batch.batch_id).is_dir()
+
+    def test_a_manifest_rel_that_escapes_the_batch_is_refused(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """A tampered manifest cannot aim the delete out of its own batch."""
+        _, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _cli_half(kiro_home, "bbbb2222", log_bytes=8, age_days=40)
+        keep = session_storage.move_to_trash(
+            ["aaaa1111"], reason="a", index=_index(), now=_NOW - _DAY
+        )
+        drop = session_storage.move_to_trash(["bbbb2222"], reason="b", index=_index(), now=_NOW)
+
+        # Point one of drop's entries at a file inside the OTHER batch.
+        target = session_storage.trash_root() / keep.batch_id / "cli" / "aaaa1111.jsonl"
+        assert target.is_file()
+        manifest = session_storage.trash_root() / drop.batch_id / "manifest.jsonl"
+        lines = manifest.read_text(encoding="utf-8").splitlines()
+        entry = json.loads(lines[1])
+        entry["files"].append({"rel": f"../{keep.batch_id}/cli/aaaa1111.jsonl"})
+        lines[1] = json.dumps(entry)
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        session_storage.empty_trash([drop.batch_id])
+
+        assert target.is_file(), "a rel outside the batch must not be deleted"
 
     def test_targets_one_batch_and_leaves_the_others(self, stores: tuple[Path, Path]) -> None:
         _, kiro_home = stores

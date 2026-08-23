@@ -251,7 +251,6 @@ src/kiro_crew/dashboard/handlers/messaging.py
 src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/prompts.py
 src/kiro_crew/dashboard/handlers/security.py
-src/kiro_crew/dashboard/handlers/session_storage.py
 src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/skill_budget.py
 src/kiro_crew/dashboard/handlers/source_providers.py
@@ -1182,7 +1181,6 @@ test/test_session_rss.py
 test/test_session_sharing.py
 test/test_session_spend_identity.py
 test/test_session_start_timeout_diagnostics.py
-test/test_session_storage.py
 test/test_session_summary_api.py
 test/test_session_summary_extract.py
 test/test_session_summary_generate.py
