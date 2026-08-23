@@ -2,7 +2,7 @@
 
 ## Overview
 
-`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, and iMessage integrations; its conservative contract also leaves room for future channels such as WhatsApp. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
+`kiro_crew.messaging` is the channel-neutral transport abstraction used by the shipped Slack, Discord, Telegram, Webex, WeCom, Microsoft Teams, Weixin, iMessage, and WhatsApp integrations; its conservative contract also leaves room for a further channel. It avoids re-implementing streaming, tool approval, session identity, or rendering for each integration. It holds the channel-neutral core of the Slack turn loop (`slack/handler.py::handle_message`) so a new channel implements only two small interfaces (a `MessagingTransport` + a `Renderer`) and inherits everything else.
 
 **Dependency direction is one-way:** `slack` / `dashboard` → `messaging`, never the reverse. The `kiro_crew.messaging` package imports nothing from `kiro_crew.slack` or `kiro_crew.dashboard`; its only first-party dependencies are the shared lower-level helpers — `acp.types` event constants, the `security` redactors (`redact_credentials` / `redact_exfiltration_urls`), and `sel` for audit.
 
@@ -35,7 +35,10 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
 | `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement) |
+| `messaging/approval.py` | Tool approval by TYPED REPLY, for channels declaring `max_buttons=0`, the numbered-text fallback `transport.py` and `renderer.py` both promise. Owns `TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, the `session_key`+`request_id` registry, and `TextReplyApprovalDecider`. Deny on silence, deny when no prompt was delivered, and Trust recorded as the session's own approval policy rather than a second trust store |
+| `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Defaults False |
 | `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
+| `messaging/markup.py` | `strip_thinking_tags` / `flatten_pipe_tables` / `flatten_mermaid_body`: Markdown reductions for a surface that renders none of the source form (a `<thinking>` block, a pipe table needing a monospace grid, a `mermaid` fence needing an image). Emits Markdown, never a channel dialect, so each channel's own inline converter finishes the job. Stdlib-only leaf |
 | `messaging/split.py` | `split_markdown_safe` — the shared fence-safe markdown splitter (stdlib-only, pure). Prefix-stable so streaming callers can send sealed chunks and keep only the last as a live buffer. Also exports `iter_fence_spans`, the same fence machine viewed as character spans over a whole message |
 | `messaging/outbound_files.py` | `extract_local_refs` (+ `extract_local_refs_off_loop`) — pulls local markdown image references out of an outbound reply into `OutboundFile` payloads carrying the validated bytes, with `Rejection` reasons for everything refused. Also `iter_local_refs` / `hide_local_refs`, the text-only scan a streaming channel uses to keep the markup off live frames. Channel-neutral; the upload stays per-transport |
 | `messaging/raster.py` | `sniff_raster_mime` — what counts as a raster, decided by leading bytes. Dependency-free (no `kiro_crew` imports) so both the inbound sniff and the outbound extractor can share it |
@@ -81,8 +84,8 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 | `native_tables` | `False` | the target renders a GFM pipe table AS a table; checked before `native` may pass through |
 | `supports_session_resume` | `False` | ENFORCED — gates whether a dashboard connect marks the binding as an inbound resume target (`direction: both`). Only a transport whose inbound path resolves the mirror binding may declare it |
 | `max_message_chars` | `4096` | quantitative — Slack 3900, Telegram 4096, Discord 2000, Teams 16000, WhatsApp 4096. A CHARACTER count: a byte-capped platform must declare a value safe at its worst-case bytes-per-char (Webex and Teams are pinned in `test_capability_ledger.py`) |
-| `max_buttons` | `3` | TOTAL interactive choices per prompt (WhatsApp reply buttons = 3); enforced via `apply_options_cap` — overflow degrades to a numbered text list |
-| `supports_proactive_send` | `True` | send-policy (WhatsApp: `False` outside its 24h window) |
+| `max_buttons` | `3` | TOTAL interactive choices per prompt (the WhatsApp Business Cloud API's reply-button cap, which is where the default came from; the personal-account WhatsApp channel this repo ships declares 0); enforced via `apply_options_cap` -- overflow degrades to a numbered text list |
+| `supports_proactive_send` | `True` | send-policy (the WhatsApp Business Cloud API is `False` outside its 24h window; the personal-account channel here has no such window and declares `True`) |
 
 `to_dict()` serializes all fields. The integer *parameters* (not booleans) capture where channels differ quantitatively so the `Renderer` can chunk / degrade rather than assume a single shape.
 
@@ -147,6 +150,8 @@ is the point — a channel-local store would have had to reimplement every one o
 
 `decider: ApprovalDecider` (`Callable[[Any], Awaitable[bool]]`) supplies the interactive click; when omitted, interactive mode denies by default (so buttons are only rendered when a decider exists — otherwise the user would get dead controls). Every permission decision emits an `sel().log_api_access` event (`caller="turn_driver"`, `operation="tool_permission"`, `source="messaging"`, `outcome` one of `auto_approved` / `approved` / `denied`).
 
+**Deny-on-silence can be SPOKEN.** `open_approval(..., on_timeout=…)` takes an optional coroutine that `PendingApproval.wait` awaits when the window closes, before it returns `DENY`, so the channel can resolve the prompt still sitting on the user's screen: `approval.TIMEOUT_NOTICE` is the text. Without it the refusal is invisible: the turn moves on and a live-looking prompt remains, which a later `1` can no longer answer (it finds no open entry and gets `RECEIPT_EXPIRED`). It is a callback rather than a transport because this module never learns what a channel is, and only the renderer that posted the prompt knows which message to edit. It must not raise: the verdict is already `DENY`, and `_announce_timeout` logs and swallows anything but cancellation, because a notice that could not be posted must never become an approval. WhatsApp is the first channel wired onto it.
+
 ## Layer 2b — `Renderer` + `OutputEvent` (`renderer.py`)
 
 ### `OutputEvent`
@@ -160,7 +165,7 @@ Constructed with a `TransportCapabilities`. `dispatch(event)` routes each kind t
 - `on_turn_start()` — default no-op, called once before the stream begins.
 - `on_text_chunk(text)`, `on_thinking(text)` — abstract.
 - `on_tool_call(tool_call_id, title, tool_kind="", tool_purpose="")` — abstract; mirrors native uniform tool-call semantics (each call marks the previous task complete and starts a new in-progress task).
-- `on_prompt_choice(options, request_id)` — abstract; renders the interactive approval/choice prompt.
+- `on_prompt_choice(options, request_id, tool_title="", tool_purpose="")` — abstract; renders the interactive approval/choice prompt. The two tool fields ride the `PROMPT_CHOICE` event itself and are REDACTED like every other model-authored string. Both are defaulted, so an implementation that ignores them still satisfies the contract, but a renderer should PREFER them: the alternative is a name remembered from an earlier `TOOL_CALL`, which belongs to whichever call came last, so a permission request not immediately preceded by its own titled call names a different tool. Purpose is paired to title by `tool_call_id` rather than by recency, because the permission payload carries no purpose of its own and pairing by arrival order is what puts tool A's name beside tool B's purpose.
 - `on_compaction(context_usage_pct)`, `on_done(stop_reason="")` — abstract.
 - `on_steer_consumed(summary="")` — default no-op; Discord/Telegram seal the pre-steer segment and open the continuation with a native acknowledgement chip using the parsed summary, without receiving raw protocol text.
 
@@ -2407,3 +2412,428 @@ actual Messages.app and reply to real people.
   `imessage`, serialized under the repo-wide config lock. Every field except
   `session_folder` is boot-read, so `restart_required` is true on any other
   change.
+
+## WhatsApp channel
+
+A QR-linked **personal** account, paired as a linked device over the WhatsApp Web
+protocol (`neonize`, an optional extra installed with `kirocrew[whatsapp]`). There
+is no bot identity and no Business account, so the agent sends **as the
+operator**, which is what makes the two invariants below load-bearing rather
+than tidy.
+
+Because it is the personal Web protocol and not the Business Cloud API, figures
+quoted for the Cloud API do not transfer in either direction: there are no
+interactive reply buttons at all, and there is no 24-hour customer-service
+window.
+
+**Echo discipline** (`whatsapp/echo.py`). Every message the account sends comes
+back on the event stream with `from_me=True`, byte-identical in shape whether the
+operator typed it or this channel sent it. Content matching cannot separate them
+(the operator may quote the agent; a prefix marker leaks into the conversation),
+so the channel tracks the **message ID of every send** and drops an inbound
+`from_me` event whose ID it remembers. A `from_me` message it does NOT remember is
+the operator typing, which is the self-chat command surface. Reads are
+non-consuming because WhatsApp redelivers after a reconnect, and a one-shot pop
+would let the redelivery through as a phantom operator command.
+
+**The session store is on the sensitive keystone.** `<data home>/whatsapp/` holds
+whatsmeow's device keys, which are the entire credential: anything that reads them
+can act as the operator on WhatsApp with no second factor. It is a
+`_CREW_SECRET_LEAVES` entry, classified as the DIRECTORY so the SQLite WAL and SHM
+sidecars are covered too, and the path is pinned to the default: `whatsapp.db_path`
+is inert, because the protection is a path match and an operator-supplied location
+would carry the credential out from behind it.
+
+**Identity is folded at the edge** (`whatsapp/transport.py::_canonical_sender`).
+Multi-device addresses a sender either by their phone number or by a Linked
+Identity (`<id>@lid`), and the two user parts are UNRELATED strings. Operator
+config is written in phone numbers, so an `@lid` sender is resolved to its phone
+JID once per sender (`client.phone_for_lid`, cached) before anything compares it
+to the allowlist. Without that fold, `dm_policy="allowlist"` silently ignores a
+person the operator explicitly allowed: it fails closed, which is the safe
+direction, but presents as the channel being broken. An unresolvable alias keeps
+the `@lid` form and therefore stays denied.
+
+**Capabilities.** `streaming=True`, `edit=True`, `reactions=True`,
+`files_inbound=True`, `files_outbound=True`, `rich_blocks=False`,
+`threads=False`, `max_message_chars` reads `renderer.WHATSAPP_CHUNK_LIMIT`,
+`max_buttons=0`, `supports_proactive_send=True` (no 24-hour window, so reminders
+and cron results deliver at any time), `supports_session_resume=False` (inbound
+derives its key from the chat JID and never resolves a dashboard mirror binding,
+so a dashboard connect is outbound-only).
+
+`max_buttons=0` is a conservative CHOICE, recorded as unverified rather than as a
+platform ceiling. The pinned wheel ships a complete interactive-message builder
+(`neonize/ext/interactive_message/`, `send_interactive_message`) and a poll builder
+(`build_poll_vote_creation` / `decrypt_poll_vote`); what nothing in this repo could
+establish is whether a recipient's client RENDERS a native-flow message sent from a
+personal linked device rather than a Business account. Writing it down as
+impossible would close the door on every future picker on this channel.
+
+**A group member is admitted to the conversation, not to the machine.** Step 5 of
+the gauntlet authorizes the group SURFACE, so a configured group never reaches
+`authorize`, and membership alone would let any member trigger an authenticated
+whole-blob download into the gateway's heap at will: in `rules` mode an unaddressed
+message already answers `respond=True`, and the per-group cooldown does not bound
+the fetch because it only starts once a reply actually delivered, which a
+sentinel-silenced turn never does. `_may_fetch_media` therefore requires
+INDIVIDUAL admission for group media (the linked account, or a number the operator
+listed) and deliberately does not consult `dm_policy`, because `open` resolves to
+"anyone with a user id" and would hand the capability straight back. A refusal is
+spoken through the same note path an unsupported type uses, since silence reads as
+the agent ignoring a photo the sender believes it received.
+
+**Streaming is by edit, throttled.** The Web protocol exposes an edit where the
+Business Cloud API does not, so the renderer sends the first bubble once there is
+something worth reading and then edits it, opening a new one when the text
+outgrows a message or the 20-minute edit window closes. Two bounds exist for the
+operator's phone number rather than for looks: edits are coalesced to at most one
+per `_EDIT_INTERVAL_S`, single-flight, keeping only the newest pending text (each
+edit is a full end-to-end encrypted send to every device of every participant, and
+neonize's own example edits once per character); and past the window the server
+refuses, so the bubble seals instead of silently dropping progress. An unprompted
+group turn never streams, because it may still choose silence and a streamed
+prefix cannot be unsent.
+
+**Media.** Inbound images, stickers, voice notes, audio and documents go through
+`whatsapp/media.py` (which decides what arrived, from the protobuf alone) and
+`whatsapp/attachments.py` (which fetches the bytes into the shared ingest path).
+Presence is probed with `HasField`, never truthiness: a protobuf's singular
+submessage is never `None`, so reading an absent one returns a default instance
+and truthiness reports every field present. Content that cannot be ingested (a
+location, a poll, a contact card) produces a visible note rather than silence.
+Outbound, `whatsapp/files.py` runs the shared extractor at the seal and uploads
+each raster from BYTES, never by re-opening the path, because every security gate
+was applied to one inode. Its ceilings are this repo's policy, not sourced
+platform figures.
+
+**An inbound name is the sender's CLAIM, and the ingest layer reads it.** The
+shared layer picks a document parser and a transcription decoder from the
+filename's extension, so `whatsapp/attachments.py` appends a mimetype-derived
+suffix only when the name carries none. A document is the one kind that arrives
+with a filename at all, and a declared type is only a claim: a PDF sent as
+`application/octet-stream` derives `.bin`, and appending that turns `report.pdf`
+into `report.pdf.bin`, which matches no parser, so the file is refused before it
+is ever downloaded. The pinned `_SUFFIX_OVERRIDES` entries outrank the name as
+well, for the reason they exist: an `audio/ogg` attachment the sender named
+`note.oga` reaches the same suffix the transcription backend does not recognise.
+`MAX_MEDIA_BYTES` is enforced twice, against two different values, because
+neither alone is enough. The pinned binding returns the whole decrypted object in
+one value (it exposes no streaming and no size-limited download), so the ONLY
+bound that can act before the allocation is the sender's DECLARED `fileLength`,
+and the only bound that can be trusted is the length of what actually arrived.
+The pre-fetch check therefore refuses an oversized declaration, refuses one that
+would not fit in `host_available_mib()` with headroom (a 0 reading means "could
+not determine" and allows the fetch, never "no memory"), and refuses a media
+message that declares NO length at all: every media protobuf carries the field
+and `describe` reads it for every kind, so an absent one is not a legitimate
+shape, and it is precisely the input that makes the shared layer's
+`att.size and att.size > cap` pre-check skip itself. The post-fetch check is what
+keeps an UNDERSTATED object off the disk and out of the prompt. What remains, and
+is a binding limitation rather than a policy choice, is that an admitted sender
+who understates the length still causes one transient allocation bounded by
+WhatsApp's own server-side media cap. The write to the shared temp path is
+offloaded because `TMPDIR` is not guaranteed to be local disk.
+
+**Outbound media protobufs are assembled by the channel, not by neonize's `send_*`
+helpers.** `send_image_bytes`, `send_voice_bytes` and `send_document_bytes` each
+build their own `Message` and go out through one `send_message`, for the same
+reason `send_text` passes an explicit `Message(conversation=...)`:
+`build_image_message` and `build_document_message` run neonize's mention parser
+over the CAPTION and put the result in `contextInfo.mentionedJID`, so an
+`@<digits>` run in agent-authored alt text would be delivered as a real mention of
+that number and would notify its owner in a group. The captions carry an empty
+`ContextInfo` instead. The image build also decoded and rescaled the whole raster
+inline to make the inline preview; that decode runs through `asyncio.to_thread`,
+and the media type is declared per upload so neonize never probes the bytes with
+libmagic on the loop. `build_audio_message` is avoided for a different reason: it
+shells out to `ffprobe` for the duration, which would make an FFmpeg install a hard
+requirement for sending a voice note, so `AudioMessage.seconds` comes from the
+caller or from a stdlib WAV header read and degrades to an unlabelled duration. A
+voice note is `PTT=True`, which is what makes the recipient's client draw a player
+rather than a file attachment; the container is the caller's to choose, and
+WhatsApp's own voice notes are `audio/ogg; codecs=opus`, so a client may decline to
+play push-to-talk audio in another format. A document travels under the BASENAME of
+its path only, because WhatsApp shows the recipient whatever `fileName` carries.
+
+**Access control.** `dm_policy` is deny-by-default with four values: `self`
+(the default; only the linked account's own messages), `allowlist`, `open`, and
+`disabled`. An unrecognized value denies everyone. Groups are invisible
+unless configured per group, then gated by mode, mention and cooldown
+(`whatsapp/group_gate.py`).
+
+**A stale group entry is reported once, at the first connect.** Groups are opt-in
+and matched by exact JID, so an entry the account cannot resolve (a hand-typed
+JID, or a group the account has since left) is INVISIBLE rather than broken: the
+gate drops every message from a JID it does not hold, and silence is
+indistinguishable from nobody writing. On the first transition to `connected` the
+channel diffs the configured JIDs against `client.list_groups()` and logs ONE
+aggregated warning naming the unmatched ones. Three properties are load-bearing.
+It hangs off the CONNECTED state callback rather than off `connect()`, because
+`connect()` returns once the attempt is merely underway, so a diff taken there
+sees no joined groups and would name every configured group on every boot. It is
+scheduled as a task rather than awaited, so the round trip never lands inside the
+sequence that starts the remaining channels. And it compares exact strings, the
+same key `GroupGate` indexes its entries by, because a normalizing compare would
+call a case or `:device` typo fine and leave the group mute. An empty
+`list_groups()` answer produces no warning at all: that value means both "the
+account is in no groups" and "the `get_joined_groups` call failed", so it cannot
+tell a stale JID from a probe that never ran, and naming every configured group on
+a transient API failure is what teaches an operator to ignore the line.
+
+Proactive targets are gated by MEMBERSHIP, not just by shape.
+`resolve_configured_target` reads `_proactive_targets()`, the same linked-account
+plus DM-allowlist pair `configured_targets` lists from, so what the dashboard
+offers and what it accepts cannot drift. That resolver is the only allowlist check
+on the mirror-link path, which round-trips a chosen id back through it, and
+`dm_policy` never sees that path: accepting any well-formed `user:<number>` would
+let a proactive send open a conversation with an arbitrary phone number.
+
+**Acting as the agent is narrower than talking to it.** `is_operator` admits only
+the linked account,
+independent of `dm_policy`: `open` admits a stranger to CHAT and a configured
+group admits its members, but neither may authorize a command on the operator's
+machine. It reads the operator verdict `receive` already reached from the full
+multi-device picture rather than re-deriving it from the bare user part left on
+`InboundMessage`. With `max_buttons=0` the prompt is the numbered text form from
+`messaging/approval.py`, answered by typing `1`, `2` or `3`; silence denies. A
+reply is consumed only while a request is actually open for that session, so
+`no` is an ordinary message at every other moment, and only a reply that is
+ENTIRELY a verdict counts, so `no, use the other file` reaches the model.
+
+**A `from_me` message is not automatically a command.** It means the ACCOUNT sent
+it, which includes the operator texting an ordinary contact from their phone, so
+operator authority in a DIRECT chat requires the SELF-chat: that is the command
+surface. Answering an outgoing message to a contact would put the agent into the
+operator's private conversation and reply in that contact's chat. A configured
+group is exempt, because that is where the operator does address the agent, gated
+by mention or rules.
+
+**A non-operator never shares the operator's unified session.**
+`messaging.dm_scope="unified"` collapses every direct DM into one
+`unified:{agent}` bucket, which is right for the operator (their WhatsApp and
+dashboard conversations are the same conversation) and wrong for anyone else,
+because that bucket carries the operator's history: an admitted peer could ask
+what was discussed earlier and be told. A non-operator always gets a per-peer
+bucket whatever the global setting says.
+
+A non-operator's turn additionally carries `ChannelTurn.deny_all_tools`, because
+setting the approval mode is not enough: the PreToolUse hook can answer
+`auto_approve` and a session carrying Trust short-circuits, both ahead of the
+interactive ladder. They may talk to the agent; they cannot make it act. Steering
+is gated the same way, since it injects text into a turn already running, which
+under a unified DM scope is the operator's.
+
+**Private context is withheld per SESSION, not per sender.** `minimal_context` is
+`group or not is_operator`, and the `group` half is the one that is easy to get
+wrong: a group's session key IS the group, so one session serves every member.
+Keying the decision on who typed the current message leaks one turn later, because
+the operator addressing the agent in that group injects their memory, lessons and
+skills into the shared session and ACP replays native history, so a member's own
+minimal-context turn can still be answered out of it. A group turn is therefore
+minimal for EVERYONE, the operator included. The cost is deliberate: the self-chat
+and DMs are where context-rich work belongs, and anything the agent says in a group
+is visible to the group regardless.
+
+It also carries `ChannelTurn.minimal_context`, and that is a SEPARATE control
+rather than a duplicate of the two above. Both of those govern what the turn may
+DO; this one governs what the turn is TOLD. The context builder assembles memory,
+lessons, skills and history into the prompt before the model runs and before any
+tool is requested, so a peer admitted only to chat would otherwise be answered
+out of the operator's private material, with no tool call and no approval prompt
+anywhere on the path to notice.
+
+**The generation counter is seeded from disk** (`ConversationState(seed_fn=…)` →
+`link.seed_generation`), like every sibling channel's. It is in-memory, so an
+unseeded counter restarts at 0 after a gateway restart and the next `/new`
+advances 0 → 1 straight back onto the `:gen1` still persisted, resuming the
+conversation the operator explicitly discarded. The seed must address the same
+bucket `_session_key` builds, so the chat type is re-derived from the JID (a group
+keeps its full forum bucket whatever `dm_scope` says). It uses the OPERATOR's
+`dm_scope` because `seed_fn` receives a scope with no sender attached, and the two
+readings fail in opposite directions: reading the operator's bucket for a peer's
+scope over-seeds, which merely skips generations and still yields a fresh session,
+while reading a per-peer bucket for the operator under `dm_scope="unified"` reads
+a bucket their conversation does not live in, answers 0, and puts the
+resurrection straight back.
+
+The same predicate gates COMMANDS, which is not interchangeable with the group
+steer verdict: a DM carries no verdict, so the steer gate alone answers yes for
+any admitted sender, and with `messaging.dm_scope = "unified"` every direct DM
+shares one `unified:{agent}` bucket. Under `dm_policy` `allowlist` or `open` a
+peer's `/new` would therefore bump the generation on the conversation the
+operator is using.
+
+**A group cooldown follows delivery, not the renderer's own bookkeeping.** A
+muted conversation never runs this renderer: `drive_turn` substitutes
+`SilentRenderer` into its LOCAL name, so `on_done` is called on that object and
+the channel renderer's `suppressed` flag stays False. Recording the cooldown on
+`not suppressed` therefore consumed it for a reply nobody received, silencing the
+next unprompted turn that had something to say. The renderer sets `delivered`
+only after a send returns, which also covers a send that raised.
+
+**Phase reactions report the OUTCOME, and that is not the complement of
+`delivered`.** With `max_buttons=0` a reaction on the operator's own inbound
+message is the channel's only at-a-glance progress marker, so the dispatcher
+draws the hourglass before the turn and the tick or the warning sign after it.
+The success test is `delivered and not failed`, never `delivered` alone: a failed
+turn still SENDS something, the apology notice, so `delivered` is True there too
+and reading it by itself stamps a failure with the success tick. Only the renderer
+sees the stop reason, so it records `failed` in `on_done`; the dispatcher cannot
+re-derive it from what reached the chat. `_react` is the single chokepoint and
+carries both suppressions: an unprompted group turn (a reaction is still a visible
+mark in a conversation the agent was not addressed in) and a muted conversation
+(`SilentRenderer` means these flags describe nothing that was sent, and a mute the
+operator asked for must not answer back with a warning sign).
+
+**Rendering.** `to_whatsapp_text` converts Markdown into WhatsApp's dialect
+(`*bold*`, `_italic_`, `~strike~`, one code marker and no info strings) and
+`render_chunks` splits with the shared `split_markdown_safe`. Fence grammar comes
+from `messaging/split.py::iter_fence_lines` rather than a channel-local backtick
+counter, which got three things wrong that reached the user: a four-backtick
+block was not recognized as code so Markdown inside it was rewritten, a `~~~`
+fence was not recognized at all, and hard-splitting a long block left chunks
+carrying an odd number of delimiters, which WhatsApp renders as a monospace block
+that never closes. Every rewrite runs BEFORE splitting so the splitter measures
+what is delivered, which is what lets a step GROW the text: a flattened table row
+carries its column labels, a diagram gains a heading, and a redacted credential
+becomes a marker longer than the key. Splitting is awaited off the loop, as
+Discord does. The full order is
+`strip_ansi -> screen -> reduce -> convert -> screen -> split`.
+
+**The reductions live in `messaging/markup.py`, and they emit Markdown.** This is
+the most mobile surface in the product, so a construct that needs a monospace grid
+or an image is unreadable here rather than merely plain, and the dialect drops
+every info string. Three are reduced: a `<thinking>` block (no chat platform folds
+one away, so the model's scratchpad is otherwise part of the answer), a pipe table
+(flattened to one labelled bullet per row, the shape Slack adopted for mobile
+readability), and a `mermaid` fence (flattened to arrows under a `*Diagram*`
+heading, or kept as source under that same heading when the grammar is not one the
+reduction reads). Each emits Markdown rather than dialect, so `_convert_line`
+stays the single place that knows WhatsApp's spelling and the module stays usable
+by the sibling channels that have the same gap. Two rules keep the table reduction
+from losing an authored line, which the Slack copy it was modelled on does: a
+separator row is REQUIRED before a run of pipe lines counts as a table, and a
+table with no data rows is passed through verbatim. Tables are reduced per
+non-fenced RUN, so a code sample full of pipes is never rewritten, and the mermaid
+info string is read off the OPENER through the shared fence machine, so a mermaid
+fence nested in a wider block stays content.
+
+**The renderer is a registered `security_posture` redaction sink, and the screen
+that carries the guarantee runs LAST.** This is the only markup-CONSUMING channel
+whose own converter rewrites the delimiters: `TurnDriver` scans the provider stream
+as literal bytes, so `AKIA**I**OSFODNN7EXAMPLE` matches no credential pattern,
+`to_whatsapp_text` turns it into `AKIA*I*OSFODNN7EXAMPLE`, and the reader's client
+strips the markers and shows an intact key. `to_whatsapp_text` therefore screens
+through `display_safety.redact_for_display` AFTER every reduction, which is the
+only form whose safety does not depend on which reductions ran: each of them
+deletes a span, and deleting a span joins what sat on either side of it. A scan of
+`AKIA<thinking>x</thinking>IOSFODNN7EXAMPLE` sees nothing at all, which is why
+screening before the transform is the bypass rather than the fix. A second screen
+runs before the conversion; it is a belt, and it also carries the ANSI
+normalisation the conversion depends on, since every dialect rule is line-shaped
+and an escape in front of a `#` hides the heading from it. `display_safe_text` is
+the same screen without the conversion, for the sinks that do not pass through
+`render_chunks` at all: the whole-reply fallback, a file-rejection note, an image
+caption, and the approval prompt (whose tool title is model-authored and is
+interpolated verbatim by `build_approval_prompt`). A screen on the chunk path alone
+would leave all four as the bypass. The streaming and final paths are two more, and
+both reach `render_chunks` through `_rendered_chunks`, which is why one screen
+covers them.
+
+**Inline code is byte-exact through the conversion**
+(`renderer._sub_outside_code`). The dialect has no escape character, so a backtick
+span is the only way to show text WhatsApp must not reformat, and `__` inside
+`` `/tmp/__init__.py` `` is a filename rather than emphasis. The guard tests the
+DELIMITER positions rather than overlap, because emphasis legitimately spans a code
+span (` **a `b` c** `) and skipping the whole match there would leave visible `**`
+litter. `files.py::rejection_note` is built on this: the renderer's send path
+converts everything it puts on the wire (`transport.send_message` →
+`client.send_text` → `render_chunks`) and there is no unconverted send to reach
+for, so the note is written to survive that round trip byte-identically instead.
+
+**`_show` is the only thing that may advance `_sealed_count`.** Its contract is
+"this chunk is on screen, and only then does the count advance", and it exists
+because three call sites independently reached the same wrong conclusion: a closed
+edit window, a refused streaming edit, and a refused final edit each counted a
+chunk that never arrived, and once the count passes a chunk no later flush and no
+`on_done` pass looks at it again, so the middle of a reply disappears with nothing
+raised or logged. There is exactly one branchy fact, an edit can be refused, and
+a refusal closes the bubble, so it is answered once. A replacement bubble repeats
+whatever prefix the sealed one still shows, which is the right trade: a duplicated
+sentence is visible and recoverable, a silently missing one is neither. The tail is
+the one placement that does NOT advance the count, because the splitter can still
+revise it; `_seal_chunk` advances in a `finally`, so a send that raises is not
+retried on every later flush for the rest of the turn.
+
+**`_rendered_chunks` detaches the protocol suffix, and that is what keeps it
+MONOTONIC.** `_strip_options` only removes a COMPLETE trailer, so a still-arriving
+`[OPTIONS: yes | n` renders into the live bubble as litter, and the length goes
+with it: 4,089 visible characters plus that fragment is two chunks, while the
+completed ` [OPTIONS: yes | no]` strips back to one. A flush landing in that window
+leaves `_sealed_count` permanently above `len(chunks)`, so every later flush
+returns at `_render_live`'s guard and `on_done` computes an empty pending slice:
+the fragment stays on screen and the rest of the reply is dropped. Discord and
+Telegram detach the same suffix at the same point with `split_trailing_protocol_suffix`.
+
+**The composing indicator is dropped while an approval is pending.** `_hold_typing`
+refreshes every 8 seconds and is otherwise cancelled only by `on_done`/`close`,
+while the approval window is 300 seconds, so the operator would watch "typing" for
+five minutes while the agent is in fact waiting on THEM. `on_prompt_choice` stops
+the refresh once the prompt lands, and `_resume_typing` re-arms it lazily from
+`on_text_chunk` and `on_tool_call`, because nothing reports a decision back to a
+renderer: the driver dispatches `PROMPT_CHOICE` and only then awaits the decider,
+so the next output event is the first news the wait is over.
+
+**A timed-out approval is spoken, in place.** `on_prompt_choice` keeps the prompt's
+own message id and registers `approval.PendingApproval.on_timeout`; when the window
+closes the renderer edits that bubble to `approval.TIMEOUT_NOTICE`, falling back to
+a fresh message when the edit is refused or its own window has closed. Without it
+deny-on-silence is invisible: the tool is refused, the turn moves on, and a
+live-looking prompt sits in the chat that a later `1` can no longer answer (it
+finds no open entry and is reported as expired). The hook is a callback rather than
+a transport because `approval.py` never learns what a channel is, and the renderer
+that posted the prompt is the only thing that knows which bubble to edit; it is
+awaited from `wait()`, so it never raises, a notice that could not be posted must
+not become an approval.
+
+**Context accounting rides `ChannelTurn.notice`, which is the channel's ONLY
+reach into it.** `_maybe_notice` calls `sessions.check_context_usage`, and that
+is the sole caller of the session manager's compaction trigger, so a
+shared-pipeline channel that omits `notice=` has no compaction of any kind:
+neither the threshold nudge nor the backend autocompactor. Past
+`whatsapp.hard_threshold_pct` the context is compacted in place immediately
+(the backend threshold sits higher), and past `whatsapp.soft_threshold_pct` the
+operator is nudged once toward `/compact` or `/new`. The reading and the
+compaction are session hygiene and run for every turn, because an overflowed
+window costs the operator the conversation; only the TEXT is conditional, on the
+same two rules `_react` carries -- an unprompted group turn may still be choosing
+silence, and a muted conversation is one the operator switched off. The
+awaiting-compact flag records that the nudge WAS SENT, so it is set only when one
+goes out: setting it while suppressed would spend the single nudge a conversation
+gets on a message nobody read. `/compact` and a fresh generation both clear it.
+
+**`/compact` compacts, and its receipt describes what already happened.** It runs
+in place under atomic `try_acquire` (compacting while a turn is mutating the same
+session interleaves JSON-RPC on one provider and races the transcript), and a
+refused acquire is disambiguated with `has_session`: a turn holds the session
+(ask again) or there is no session (nothing to compact). Telling the operator the
+wrong one, or acknowledging with a promise to compact later, leaves them waiting
+for a compaction that never happens -- and on this channel there is no context
+indicator to check it against.
+
+**Commands** come from the table in `whatsapp/commands.py`, which is also what
+`/help` is derived from, so a command cannot ship undocumented: `/new`,
+`/compact`, `/help`, `/status`, `/stop`. Matching is whole-message and exact,
+which is load-bearing rather than fussy: `receive` drops a non-operator group
+message when `parse_command` is truthy, so a prefix match would start swallowing
+ordinary group messages that merely begin with a slash. The table decides
+operator-only per command, which is what lets `/help` stay answerable while
+everything that acts on the session does not.
+
+**Still not at parity with Slack**, listed rather than implied: rich blocks and
+modals (no such surface exists), threads (quoting is not a thread), an App Home
+equivalent, and inbound reaction events as a control channel. Read receipts are
+deliberately absent rather than pending: `client.mark_read` exists, but calling it
+writes to the operator's own account and overrides whatever read-receipt privacy
+setting their phone carries, so it is a product decision and not a parity gap.

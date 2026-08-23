@@ -855,9 +855,19 @@ class SlackRenderer(Renderer):
             self._stream_buffer = ""
 
     async def on_prompt_choice(
-        self, options: list[dict[str, Any]], request_id: str | int
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
     ) -> None:
-        title = options[0].get("label") or options[0].get("id", "tool") if options else "tool"
+        # The tool THIS request asks about. The options are the ANSWERS ("Allow",
+        # "Reject"), so falling back to the first one's label puts a verb where the
+        # card promises a tool name; it stays only as the last resort for a
+        # permission event that carried no title at all.
+        title = tool_title or (
+            (options[0].get("label") or options[0].get("id", "tool")) if options else "tool"
+        )
         # Namespace the approval buttons by this turn's session so a click can
         # only resolve THIS session's pending tool (kiro-cli rids restart at 1
         # per session — a bare id would collide across concurrent threads).

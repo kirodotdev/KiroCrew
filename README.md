@@ -179,8 +179,9 @@ without messaging credentials. Add a messaging channel —
 [Telegram](src/kiro_crew/docs/telegram-integration.md),
 [Teams](src/kiro_crew/docs/teams-integration.md),
 [Webex](src/kiro_crew/docs/webex-integration.md),
-[WeCom](src/kiro_crew/docs/wecom-integration.md), or
-[WeChat](src/kiro_crew/docs/weixin-integration.md) — when you want to continue
+[WeCom](src/kiro_crew/docs/wecom-integration.md),
+[WeChat](src/kiro_crew/docs/weixin-integration.md), or
+[WhatsApp](src/kiro_crew/docs/whatsapp-integration.md) — when you want to continue
 working with the same agent away from the dashboard. Apart from Teams (which
 needs a public HTTPS webhook — see its guide), these channels connect
 outbound, so you do not need to expose the dashboard port publicly.
@@ -615,7 +616,7 @@ performance metrics that never leave your machine. See
 | Install and packaging | [Install and build](docs/guides/install.md), [Windows](docs/guides/windows-install.md), [Docker](docs/guides/docker.md), [Desktop](docs/build/desktop-app.md), [Remote host](docs/guides/remote-and-mobile.md), [Release process](docs/build/release.md) |
 | Product capabilities | [Features](src/kiro_crew/docs/index.md), [Skills](skills/README.md), [All user docs](src/kiro_crew/docs/README.md) |
 | All documentation | [docs/](docs/README.md) for contributor and architecture docs |
-| Channels | [Slack](docs/guides/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md) |
+| Channels | [Slack](docs/guides/slack-setup.md), [Discord](src/kiro_crew/docs/discord-integration.md), [Telegram](src/kiro_crew/docs/telegram-integration.md), [Teams](src/kiro_crew/docs/teams-integration.md), [Webex](src/kiro_crew/docs/webex-integration.md), [WeCom](src/kiro_crew/docs/wecom-integration.md), [WeChat (Weixin)](src/kiro_crew/docs/weixin-integration.md), [WhatsApp](src/kiro_crew/docs/whatsapp-integration.md) |
 | Architecture | [System architecture](docs/architecture/overview.md), [Memory](docs/system-specs/modules/memory-skills-hooks.md), [MCP](docs/architecture/mcp.md), [App Kit](docs/app-kit/getting-started.md) |
 | Trust and dependencies | [Security](docs/architecture/security-deep-dive.md), [Security policy](SECURITY.md) |
 | Project work | [Contributing](CONTRIBUTING.md), [Tenets](TENETS.md), [Governance](GOVERNANCE.md), [Maintainers](MAINTAINERS.md), [AI assistant rules](AGENTS.md), [Changelog](CHANGELOG.md) |

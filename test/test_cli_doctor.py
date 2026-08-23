@@ -1558,3 +1558,185 @@ class TestEffectiveModelSection:
         # It degrades to the built-in agent and still produces the report.
         assert "effective:" in out
         assert "tracking:" in out
+
+
+class TestWhatsAppSection:
+    """`kirocrew doctor`'s WhatsApp Integration section.
+
+    WhatsApp is the only channel whose whole runtime hangs off an OPTIONAL wheel
+    plus a locally stored credential, and neither absence produces an error the
+    operator sees: a message simply never arrives. So the section has to answer
+    both, and it has to answer them WITHOUT loading the Go core: a preflight that
+    initializes the subsystem it is inspecting is both slow and a side effect.
+    """
+
+    def _cfg(self, *, enabled: bool = True, groups: list | None = None):
+        from kiro_crew.config import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.whatsapp.enabled = enabled
+        cfg.whatsapp.groups = groups if groups is not None else []
+        return cfg
+
+    @pytest.fixture()
+    def home(self, tmp_path: Path, monkeypatch) -> Path:
+        """Pin the data home the section reports on, so no real store is read."""
+        target = tmp_path / "home"
+        target.mkdir()
+        monkeypatch.setattr(cli_doctor, "data_home", lambda: target)
+        return target
+
+    @staticmethod
+    def _extra(monkeypatch, present: bool) -> None:
+        monkeypatch.setattr(
+            "kiro_crew.whatsapp.client.neonize_available", lambda: present
+        )
+
+    @staticmethod
+    def _pair(home: Path) -> Path:
+        from kiro_crew.whatsapp.client import default_db_path
+
+        store = default_db_path(home)
+        store.parent.mkdir(parents=True, exist_ok=True)
+        store.write_bytes(b"sqlite")
+        return store
+
+    def test_a_disabled_channel_names_the_two_ways_to_enable_it(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """The channel must be VISIBLE in the preflight even when off, because that
+        is the
+        surface an operator checks before wondering why nothing arrives."""
+        self._extra(monkeypatch, True)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(enabled=False), issues)
+
+        out = capsys.readouterr().out
+        assert "WhatsApp Integration" in out
+        assert "not enabled" in out
+        assert "setup --whatsapp" in out
+        assert issues == []
+
+    def test_a_missing_extra_on_an_enabled_channel_is_a_reported_issue(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """Config says the channel is on and the wheel it needs is absent: the
+        channel cannot start at all, and the fix is one offline pip install."""
+        self._extra(monkeypatch, False)
+        self._pair(home)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        out = capsys.readouterr().out
+        assert "kirocrew[whatsapp]" in out
+        assert "whatsapp extra missing" in issues
+
+    def test_an_installed_extra_and_a_paired_store_report_clean(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        self._extra(monkeypatch, True)
+        store = self._pair(home)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        out = capsys.readouterr().out
+        assert "extra:       ✅" in out
+        assert f"session:     ✅ paired session store at {store}" in out
+        assert issues == []
+
+    def test_an_unpaired_store_warns_but_never_fails_doctor(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """Load-bearing split. Pairing is a QR scan served BY the running gateway,
+        so a freshly enabled channel legitimately has no store yet. Counting that
+        as an issue would exit 1 and break the documented
+        `kirocrew doctor && kirocrew gateway` chain at the one moment the operator
+        has to start the gateway to make progress.
+        """
+        self._extra(monkeypatch, True)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        out = capsys.readouterr().out
+        assert "not paired yet" in out
+        assert "Settings → Channels" in out
+        assert issues == [], "an unpaired channel must not fail the preflight"
+
+    def test_the_reported_store_is_the_path_the_gateway_opens(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """Doctor and the channel must resolve ONE path, or the report describes a
+        store the gateway never touches."""
+        from kiro_crew.whatsapp.client import default_db_path
+
+        self._extra(monkeypatch, True)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        assert str(default_db_path(home)) in capsys.readouterr().out
+
+    def test_the_check_never_imports_neonize(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """The whole point of the ``find_spec`` probe: importing neonize loads a
+        ~19 MB ctypes CDLL plus protobuf descriptors, and a health check must not
+        pay that (or construct a client as a side effect of asking a question).
+        """
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _guard(name, *args, **kwargs):
+            if name.split(".")[0] == "neonize":
+                raise AssertionError(
+                    f"doctor imported {name!r}: the preflight must stay a find_spec check"
+                )
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _guard)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(), issues)
+
+        assert "WhatsApp Integration" in capsys.readouterr().out
+
+    def test_configured_groups_are_counted_and_junk_entries_are_not(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        """A hand-edited config reaches this section intact, so a non-dict or a
+        blank JID must neither be counted nor crash the one command a user runs
+        BECAUSE their config is broken."""
+        self._extra(monkeypatch, True)
+        issues: list[str] = []
+        groups = [{"jid": "123@g.us"}, {"jid": "  "}, "not-a-dict", {"jid": "456@g.us"}]
+
+        cli_doctor._doctor_whatsapp(self._cfg(groups=groups), issues)
+
+        assert "groups:      ✅ 2 configured" in capsys.readouterr().out
+
+    def test_no_configured_groups_says_group_messages_are_ignored(
+        self, home: Path, monkeypatch, capsys
+    ) -> None:
+        self._extra(monkeypatch, True)
+        issues: list[str] = []
+
+        cli_doctor._doctor_whatsapp(self._cfg(groups=[]), issues)
+
+        assert "none configured" in capsys.readouterr().out
+
+    def test_the_section_is_wired_into_the_doctor_run(self) -> None:
+        """Guards the call site itself. Every other test here drives the helper
+        directly, so a deleted call would leave them all green and the operator
+        with no WhatsApp line, the exact gap this section was added to close.
+        ``_doctor()`` spawns subprocesses, probes the network and calls
+        ``sys.exit``, so its source is read rather than run.
+        """
+        import inspect
+
+        source = inspect.getsource(cli_doctor._doctor)
+        assert "_doctor_whatsapp(cfg, issues)" in source

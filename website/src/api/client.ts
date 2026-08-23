@@ -582,6 +582,55 @@ export interface WeixinConfigSave {
   session_folder?: string
 }
 
+/** One opted-in WhatsApp group, as stored in config and edited in the panel. */
+export interface WhatsAppGroup {
+  /** The group JID (e.g. 1203...@g.us). */
+  jid: string
+  /** Human label shown in the editor (from get_joined_groups or typed in). */
+  name: string
+  /** How the agent participates: only when @-mentioned, when its rules say it
+   *  can help, or off (opted out while kept in the list). */
+  mode: 'mention' | 'rules' | 'off'
+  /** Free-text rules injected when mode='rules' — when the agent may speak. */
+  rules: string
+  /** Minimum seconds between agent replies in this group (anti-flood). */
+  cooldown_s: number
+}
+
+/** WhatsApp (personal account, QR-paired via neonize) config from
+ *  GET /api/whatsapp/config. There is no credential field: pairing is done by
+ *  QR scan and the session lives server-side in the neonize SQLite store, so
+ *  the client only ever sees connection status + policy. */
+export interface WhatsAppConfigData {
+  configured: boolean
+  connected: boolean
+  connect_error: string
+  read_only: boolean
+  enabled: boolean
+  /** Who may DM the agent: only the linked number (self), an allow-list, anyone
+   *  (open), or nobody (disabled). */
+  dm_policy: 'self' | 'allowlist' | 'open' | 'disabled'
+  /** Allowed WhatsApp numbers (digits only, no @-suffix) when dm_policy is
+   *  'allowlist'. Empty = deny all (fail closed). */
+  allowed_wa_ids: string[]
+  groups: WhatsAppGroup[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+  /** Pairing/connection lifecycle: unpaired → pairing → connected, or a terminal
+   *  logged_out / banned / error. Drives the status badge. */
+  state: 'unpaired' | 'pairing' | 'connected' | 'logged_out' | 'banned' | 'error'
+}
+
+/** Writable WhatsApp config fields sent to PUT /api/whatsapp/config. */
+export interface WhatsAppConfigSave {
+  enabled: boolean
+  dm_policy: 'self' | 'allowlist' | 'open' | 'disabled'
+  allowed_wa_ids: string[]
+  groups: WhatsAppGroup[]
+  /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
+  session_folder?: string
+}
+
 /** A built-in denied-command rule as returned by GET /api/security/denied-commands. */
 export interface DeniedCommandRule {
   id: string
@@ -2938,6 +2987,25 @@ export const api = {
   saveWeixinConfig: (body: Partial<WeixinConfigSave>) => put('/api/weixin/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
   weixinQrStart: () => post('/api/channels/weixin/qr/start', {}).then(j) as Promise<{ session_id: string; qrcode_img_content: string; error?: string }>,
   weixinQrStatus: (sessionId: string) => get(`/api/channels/weixin/qr/status?session_id=${encodeURIComponent(sessionId)}`).then(j) as Promise<{ status: string; connected?: boolean; account_id?: string; error?: string }>,
+
+  // WhatsApp (personal account, QR-paired via neonize) — QR pairing flow. The
+  // session lives server-side in the neonize SQLite store; the client only ever
+  // sees connection status + policy, never a credential.
+  getWhatsAppConfig: () => get('/api/whatsapp/config').then(j) as Promise<WhatsAppConfigData>,
+  saveWhatsAppConfig: (body: Partial<WhatsAppConfigSave>) => put('/api/whatsapp/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean }>,
+  // `state` is the live client's pairing state, and it is the only authority on
+  // whether a rotating code exists: the endpoint REPORTS pairing rather than
+  // starting it (pairing begins inside the channel's own connect()), so a caller
+  // that ignores this field renders a wait for a code that will never arrive.
+  whatsAppQrStart: () => post('/api/channels/whatsapp/qr/start', {}).then(j) as Promise<{ ok: boolean; state?: string; error?: string }>,
+  whatsAppQrStatus: () => get('/api/channels/whatsapp/qr/status').then(j) as Promise<{ state: string; qr_data_url: string | null; detail: string }>,
+  // Two distinguishable successes: a bare `ok` means the device is unlinked and
+  // the local session is gone, while `code: 'session_file_kept'` means the device
+  // IS unlinked but the store holding its keys survived. A refused logout is an
+  // ApiError(502) carrying `code: 'logout_failed'`, the device is still linked
+  // there, and the session is kept deliberately so a retry is possible.
+  whatsAppUnlink: () => post('/api/channels/whatsapp/unlink', {}).then(j) as Promise<{ ok: boolean; warning?: string; code?: string }>,
+  getWhatsAppGroups: () => get('/api/whatsapp/groups').then(j) as Promise<{ groups: { jid: string; name: string }[] }>,
 
   // Auto-research
   researchValidate: (body: object) => post("/api/apps/auto-research/validate", body).then(j),

@@ -370,3 +370,233 @@ def test_omitting_auto_approve_session_keeps_the_deny_default(monkeypatch) -> No
     )
 
     assert box[0].get("auto_approve_session") is None
+
+
+class _RecordingCtxBuilder:
+    """Captures the kwargs the pipeline hands ``build_message``.
+
+    The signature is spelled out rather than swallowed into ``**kw`` for
+    ``minimal_context``, so a pipeline that stops forwarding it fails here
+    instead of quietly falling back to the builder's own default.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def build_message(self, text, is_new, session_key, *, minimal_context=False, **kw):
+        self.calls.append({"minimal_context": minimal_context, **kw})
+        return text, None
+
+
+def _turn_minimal(renderer: Any, *, minimal_context: bool) -> ChannelTurn:
+    return ChannelTurn(
+        channel_type="weixin",
+        session_key="weixin:agentA:direct:userA",
+        conversation_id="weixin:userA",
+        agent="agentA",
+        user_text="hi",
+        renderer=renderer,
+        approval_mode="auto",
+        minimal_context=minimal_context,
+    )
+
+
+def test_minimal_context_reaches_build_message(monkeypatch) -> None:
+    """A non-operator's turn must be assembled WITHOUT the operator's context.
+
+    The exposure is in the PROMPT: memory, lessons, skills and prior history are
+    injected before any tool runs, so denying the sender's tools does not stop the
+    operator's private notes from being quoted back to an admitted peer. The
+    pipeline is the only place that calls ``build_message``, so a flag it drops is
+    a flag no channel can set.
+    """
+    _patch_pipeline(monkeypatch)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn_minimal(_Renderer(), minimal_context=True),
+            sessions=_Sessions(),
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls, "build_message was never called"
+    assert ctx.calls[0]["minimal_context"] is True, (
+        "the pipeline dropped minimal_context, so the peer's turn was built with "
+        "the operator's memory, lessons, skills and history"
+    )
+
+
+def test_the_default_turn_still_gets_full_context(monkeypatch) -> None:
+    """The non-vacuity half: the default must stay byte-identical for adopters.
+
+    Without this, hardcoding ``minimal_context=True`` in the pipeline would pass
+    the test above while stripping every existing channel's context.
+    """
+    _patch_pipeline(monkeypatch)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn(_Renderer()),  # constructed without naming the field at all
+            sessions=_Sessions(),
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls[0]["minimal_context"] is False
+
+
+class _GovernanceStub:
+    """Records what the shared gate asked governance, and answers a fixed verdict."""
+
+    def __init__(self, permitted: bool) -> None:
+        self.permitted = permitted
+        self.asked: list[str] = []
+
+    async def __call__(self, channel_type: str) -> bool:
+        self.asked.append(channel_type)
+        return self.permitted
+
+
+def _gate(monkeypatch, *, permitted: bool) -> _GovernanceStub:
+    stub = _GovernanceStub(permitted)
+    monkeypatch.setattr(D, "channel_inbound_permitted", stub)
+    return stub
+
+
+class TestPureCancelPredicate:
+    """PURE is what makes the governance exemption safe to grant."""
+
+    def test_every_channel_spelling_is_recognised(self) -> None:
+        # 停止 is WeCom's, and it is the one that was missing: the ASCII spellings
+        # are not reachable for a user whose whole surface is Chinese.
+        for text in ("/stop", "/cancel", "!stop", "!cancel", "停止"):
+            assert D.is_pure_cancel(text), text
+            assert D.is_pure_cancel(f"  {text.upper()}  "), text
+
+    def test_an_attachment_makes_it_impure(self) -> None:
+        """The channel fetches media AFTER authorizing, so this is the leak edge."""
+        assert D.is_pure_cancel("/stop", has_attachments=True) is False
+
+    def test_anything_beyond_the_word_is_an_ordinary_message(self) -> None:
+        for text in (
+            "/stop please",
+            "please /stop",
+            "/stopwatch",
+            "/restart",
+            "!restart",
+            "stop",
+            "",
+        ):
+            assert D.is_pure_cancel(text) is False, text
+
+    def test_the_shared_set_covers_the_channel_command_tables(self) -> None:
+        """Drift tripwire: a channel alias the shared gate does not know is a hole.
+
+        DISCOVERED rather than listed. The first version of this test imported
+        Discord's and Telegram's tables by name, which made it blind in exactly
+        the way the mirror it guards is blind: WeCom, Teams and WhatsApp each
+        declare their own stop spellings, and WeCom's ``停止`` reached its
+        ``/help`` card while the shared exemption did not know the word. A test
+        that hand-lists the channels is the same mirror one level up, so this
+        walks the packages instead and a new channel is covered by existing.
+
+        The three shapes below are the ones in the tree. An unrecognised shape
+        FAILS rather than being skipped: a channel whose table this cannot read
+        is a channel whose drift it cannot see, and silence there is the whole
+        defect being re-created.
+        """
+        import importlib
+        import pkgutil
+
+        import kiro_crew
+
+        found: dict[str, set[str]] = {}
+        unreadable: list[str] = []
+        for mod in pkgutil.iter_modules(kiro_crew.__path__):
+            # `messaging` is the shared layer that OWNS the union rather than a
+            # channel that contributes to it, so it is not a mirror of anything.
+            if not mod.ispkg or mod.name == "messaging":
+                continue
+            try:
+                commands = importlib.import_module(f"kiro_crew.{mod.name}.commands")
+            except ModuleNotFoundError:
+                continue
+            aliases: set[str] = set()
+            # Shape 1: a private frozenset (discord, telegram, wecom).
+            stop_set = getattr(commands, "_STOP_ALIASES", None)
+            if stop_set is not None:
+                aliases |= set(stop_set)
+            # Shape 2: ``(canonical, aliases, description)`` rows (teams).
+            for row in getattr(commands, "COMMAND_SPEC", ()) or ():
+                if len(row) == 3 and row[0] == "stop" and isinstance(row[1], tuple):
+                    aliases |= set(row[1])
+            # Shape 3: dataclass rows carrying ``.name`` / ``.aliases`` (whatsapp).
+            for row in getattr(commands, "COMMANDS", ()) or ():
+                if getattr(row, "name", "") == "stop":
+                    aliases |= set(getattr(row, "aliases", ()))
+            if aliases:
+                found[mod.name] = aliases
+                continue
+            # No stop spellings read. That is legitimate for a channel with no
+            # cancel command at all, but suspicious if the module mentions one.
+            source = getattr(commands, "__doc__", "") or ""
+            if "/stop" in source or "/cancel" in source:
+                unreadable.append(mod.name)
+
+        assert not unreadable, (
+            "channel command tables this tripwire could not parse, so their drift "
+            f"is invisible to it: {unreadable}"
+        )
+        # The channels known to ship a cancel today. A channel dropping out of
+        # this set means the discovery above silently stopped seeing it.
+        assert {"discord", "telegram", "wecom", "teams", "whatsapp"} <= set(found), found
+
+        union = set().union(*found.values())
+        missing = union - D._CANCEL_ALIASES
+        assert not missing, f"cancel spellings the shared exemption would gate: {missing}"
+        # And the reverse: a spelling in the shared set that no channel accepts is
+        # a governance exemption granted to a word nothing can act on.
+        assert not D._CANCEL_ALIASES - union, D._CANCEL_ALIASES - union
+
+
+class TestCancellationSurvivesAGovernanceDeny:
+    """A denied channel must still be able to halt the session it started.
+
+    ``max_buttons=0`` channels have no Reject button to press, so the typed cancel
+    is the only cancel affordance there is: gating it strands a runaway turn with
+    no way to stop it, which is the opposite of what a deny is for.
+    """
+
+    def test_a_pure_cancel_is_permitted_on_a_denied_channel(self, monkeypatch) -> None:
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="/stop")) is True
+
+    def test_an_ordinary_message_is_still_dropped(self, monkeypatch) -> None:
+        """Non-vacuity: the deny must still deny everything that is not a cancel."""
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="summarise my inbox")) is False
+
+    def test_a_restart_is_not_a_cancellation(self, monkeypatch) -> None:
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="/restart")) is False
+
+    def test_an_attachment_bearing_cancel_is_gated(self, monkeypatch) -> None:
+        """Otherwise the denied channel still pays for the download."""
+        _gate(monkeypatch, permitted=False)
+        assert (
+            asyncio.run(D.inbound_permitted("whatsapp", text="/stop", has_attachments=True))
+            is False
+        )
+
+    def test_the_argument_less_call_stays_strict(self, monkeypatch) -> None:
+        """``drive_turn``'s backstop names no text, so nothing is exempt there."""
+        _gate(monkeypatch, permitted=False)
+        assert asyncio.run(D.inbound_permitted("whatsapp")) is False
+
+    def test_a_permitted_channel_still_short_circuits(self, monkeypatch) -> None:
+        stub = _gate(monkeypatch, permitted=True)
+        assert asyncio.run(D.inbound_permitted("whatsapp", text="anything")) is True
+        assert stub.asked == ["whatsapp"], "governance must be consulted first, once"

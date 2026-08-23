@@ -68,9 +68,22 @@ from dataclasses import dataclass
 __all__ = [
     "split_markdown_safe",
     "iter_fence_spans",
+    "iter_fence_lines",
     "open_fence_at_end",
     "truncate_utf8",
+    "FENCE_OUTSIDE",
+    "FENCE_OPEN",
+    "FENCE_BODY",
+    "FENCE_CLOSE",
 ]
+
+#: Per-line fence roles yielded by :func:`iter_fence_lines`. Named rather than
+#: booleans because a caller distinguishes four cases, not two: outside a fence,
+#: the opener, content, and the closer.
+FENCE_OUTSIDE = "outside"
+FENCE_OPEN = "open"
+FENCE_BODY = "body"
+FENCE_CLOSE = "close"
 
 
 def truncate_utf8(text: str, max_bytes: int) -> str:
@@ -392,6 +405,44 @@ def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
         fence = after
     if fence is not None:
         yield open_at, len(text)
+
+
+def iter_fence_lines(text: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(line, role)`` for every logical line of *text*.
+
+    ``line`` is the line without its terminator (``\\n``, and a ``\\r`` before
+    it). ``role`` is one of :data:`FENCE_OUTSIDE`, :data:`FENCE_OPEN`,
+    :data:`FENCE_BODY`, :data:`FENCE_CLOSE`.
+
+    This is the per-LINE view of the machine :func:`iter_fence_spans` views as
+    character spans, and it exists for the one thing spans cannot answer: which
+    lines are the delimiters. A channel whose own markup has a single code
+    marker and no info string (WhatsApp: always ```````, never
+    `````python``) has to REWRITE the delimiter lines while
+    leaving the content between them byte-exact, and telling those apart from a
+    span plus offsets is ambiguous for a fence left open -- its last line is
+    content, but it sits where a closer would. Deriving it from a second fence
+    regex is what this module exists to prevent.
+
+    A fence left open yields no :data:`FENCE_CLOSE`, which is how a caller
+    detects it: the block is unterminated and the caller owns what to append.
+    """
+    fence: _Fence | None = None
+    for line, _full, _terminated in _lines(text):
+        body = line[:-1] if line.endswith("\n") else line
+        if body.endswith("\r"):
+            body = body[:-1]
+        before = fence
+        fence = _advance(fence, line)
+        if before is None and fence is not None:
+            role = FENCE_OPEN
+        elif before is not None and fence is None:
+            role = FENCE_CLOSE
+        elif fence is not None:
+            role = FENCE_BODY
+        else:
+            role = FENCE_OUTSIDE
+        yield body, role
 
 
 def _safe_cut(fence: _Fence | None, frag: str, room: int) -> int:

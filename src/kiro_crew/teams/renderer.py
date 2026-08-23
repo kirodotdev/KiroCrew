@@ -308,7 +308,13 @@ class TeamsRenderer(Renderer):
         self._last_progress = now
         await self._write_progress(f"🔧 {self._tool_title}…")
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         """Post the Approve / Trust session / Deny card for one tool request.
 
         The nonce is armed on the decider BEFORE the card is posted: a click can
@@ -328,7 +334,12 @@ class TeamsRenderer(Renderer):
             if isinstance(option, dict):
                 title = title or str(option.get("title") or option.get("name") or "")
                 purpose = purpose or str(option.get("purpose") or option.get("description") or "")
-        title = title or self._tool_title or "this tool"
+        # The request's OWN title outranks both: `_tool_title` is the last
+        # tool_call seen and is never cleared, so it names the PREVIOUS tool for
+        # any permission that arrives without one of its own. The options list is
+        # kept as the next fallback since it can carry a per-option label.
+        title = tool_title or title or self._tool_title or "this tool"
+        purpose = purpose or tool_purpose
         # A tool title and purpose are LLM-authored and land in a card TextBlock
         # that Teams markdown-renders, so they go through the same display-form
         # scan as the answer and the progress bubble. The driver's byte-level pass

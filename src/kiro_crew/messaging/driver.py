@@ -282,6 +282,12 @@ class TurnDriver:
         (no buttons, no decider wait), mirroring native ``handle_message``'s
         ``auto_approve_subagent_spawn`` hook for ``spawn_run``. Injected by the
         caller so the driver stays channel-neutral.
+    deny_all_tools:
+        Reject EVERY permission request, before any auto-approve path. For a turn
+        driven by a sender the channel does not trust as its operator: the
+        approval ladder alone cannot express this, because the PreToolUse hook's
+        ``auto_approve`` verdict and the Trust/YOLO predicates both approve ahead
+        of it. Defaults False, so every existing caller is unchanged.
     auto_approve_session:
         Optional zero-arg predicate ``() -> bool``. When it returns True, every
         permission request in this turn is auto-approved immediately (no
@@ -307,6 +313,7 @@ class TurnDriver:
         decider: ApprovalDecider | None = None,
         auto_approve_tool: AutoApprovePredicate | None = None,
         auto_approve_session: Callable[[], bool] | None = None,
+        deny_all_tools: bool = False,
         tool_gate: Callable[[Any], str] | None = None,
         directive_consumer: DirectiveConsumer | None = None,
     ) -> None:
@@ -316,6 +323,7 @@ class TurnDriver:
         self.decider = decider
         self.auto_approve_tool = auto_approve_tool
         self.auto_approve_session = auto_approve_session
+        self.deny_all_tools = deny_all_tools
         # PreToolUse security gate: given a permission-request event, returns
         # "deny" (hard-block, un-overridable), "auto_approve" (hook approves,
         # e.g. reads), or "" (passthrough to the approval ladder). Injected by
@@ -354,6 +362,13 @@ class TurnDriver:
         # sub-agent isolation, mirroring the dashboard consumer's
         # ``_native_tc_card`` refusal.
         native_tool_call_ids: set[str] = set()
+        # Purpose text from each tool_call, keyed by its tool_call_id, so a
+        # permission request can be paired with the purpose of the tool IT asks
+        # about. The permission payload carries the title but no purpose, and the
+        # two events are not necessarily adjacent, so a renderer remembering "the
+        # last purpose" can pair one tool's name with another's purpose. Turn-local
+        # and bounded by the turn's tool-call count.
+        tool_purposes: dict[str, str] = {}
 
         async def emit_text(text: str) -> None:
             nonlocal accumulated
@@ -399,9 +414,7 @@ class TurnDriver:
                 if filtered:
                     await dispatch_frames(steering_filter.feed(filtered))
             elif kind == EVENT_THINKING_CHUNK:
-                await self.renderer.dispatch(
-                    OutputEvent(kind=THINKING, text=_redact(event.text))
-                )
+                await self.renderer.dispatch(OutputEvent(kind=THINKING, text=_redact(event.text)))
             elif kind == EVENT_STEER_CONSUMED:
                 # kiro-cli emits both a typed lifecycle event and an inline
                 # marker, in either order. Pair them so renderers receive one
@@ -415,13 +428,16 @@ class TurnDriver:
                 # Native handle_message treats every EVENT_TOOL_CALL uniformly
                 # (complete previous task + start new), regardless of tool_final;
                 # emit a single tool_call event so the renderer matches it.
+                _purpose = _redact(getattr(event, "tool_purpose", ""))
+                if event.tool_call_id and _purpose:
+                    tool_purposes[str(event.tool_call_id)] = _purpose
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
                         tool_call_id=event.tool_call_id,
                         title=_redact(event.title),
                         tool_kind=getattr(event, "tool_kind", ""),
-                        tool_purpose=_redact(getattr(event, "tool_purpose", "")),
+                        tool_purpose=_purpose,
                     )
                 )
                 # Forgery gate: record the directive-tool name ONLY from the
@@ -457,10 +473,29 @@ class TurnDriver:
                 # ignored. Without a consumer this event stays inert,
                 # preserving the pre-consumer behavior exactly.
                 if self.directive_consumer is not None:
-                    await self._consume_directive(
-                        event, pending_directives, native_tool_call_ids
-                    )
+                    await self._consume_directive(event, pending_directives, native_tool_call_ids)
             elif kind == EVENT_PERMISSION_REQUEST:
+                # Untrusted sender: no tool runs, full stop. This precedes even
+                # the PreToolUse gate's auto_approve branch and the
+                # trust/YOLO predicates, all of which approve and `continue`, so
+                # setting the approval mode to `interactive` without a decider is
+                # NOT sufficient on its own: the hook layer can still say
+                # auto_approve, and a session carrying Trust still short-circuits.
+                # A channel that admits senders other than its operator needs one
+                # switch that means "deny every tool", and this is it.
+                if self.deny_all_tools:
+                    await self.provider.reject_tool(event.request_id)
+                    sel().log_api_access(
+                        caller="turn_driver",
+                        operation="tool_permission",
+                        outcome="denied",
+                        source="messaging",
+                        resources=(
+                            f"request_id={event.request_id} "
+                            f"mode={self.approval_mode} reason=untrusted_sender"
+                        ),
+                    )
+                    continue
                 # PreToolUse security gate — sensitive-path keystone +
                 # governance ceiling + deny-list. Runs FIRST, before the
                 # auto/trust/YOLO ladder, so a hard DENY can never be
@@ -523,6 +558,13 @@ class TurnDriver:
                 # await the click. Without one, _approve() denies by default,
                 # so posting buttons would leave the user with dead controls.
                 if self.approval_mode == APPROVAL_INTERACTIVE and self.decider is not None:
+                    # The prompt names the tool from the PERMISSION event's own
+                    # title, and its purpose from the tool_call that shares the
+                    # id. A renderer that instead remembers the last titled
+                    # tool_call names the PREVIOUS tool whenever a permission is
+                    # not immediately preceded by its own, informed consent on a
+                    # security prompt, so the correct name travels WITH the ask.
+                    _tool_call_id = str(getattr(event, "tool_call_id", "") or "")
                     await self.renderer.dispatch(
                         OutputEvent(
                             kind=PROMPT_CHOICE,
@@ -531,6 +573,8 @@ class TurnDriver:
                                 for o in (event.options or [])
                             ],
                             request_id=event.request_id,
+                            title=_redact(getattr(event, "title", "") or ""),
+                            tool_purpose=tool_purposes.get(_tool_call_id, ""),
                         )
                     )
                 approved = await self._approve(event)
@@ -558,9 +602,7 @@ class TurnDriver:
                 for _ in range(pending_steer_events):
                     await self.renderer.dispatch(OutputEvent(kind=STEER_CONSUMED))
                 pending_steer_events = 0
-                await self.renderer.dispatch(
-                    OutputEvent(kind=DONE, stop_reason=event.stop_reason)
-                )
+                await self.renderer.dispatch(OutputEvent(kind=DONE, stop_reason=event.stop_reason))
         return accumulated
 
     async def _consume_directive(

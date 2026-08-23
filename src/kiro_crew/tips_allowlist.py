@@ -48,5 +48,6 @@ TIP_DOC_ALLOWLIST: frozenset[str] = frozenset(
         "webex-integration.md",
         "wecom-integration.md",
         "weixin-integration.md",
+        "whatsapp-integration.md",
     }
 )

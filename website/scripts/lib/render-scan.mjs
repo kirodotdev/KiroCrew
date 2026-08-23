@@ -123,7 +123,11 @@ export const ALWAYS_LATIN = [
   'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
   'KiroCrew',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
-  'TypeScript', 'YAML', 'iMessage', 'npm',
+  'Telegram', 'TypeScript', 'Webex', 'WhatsApp', 'YAML', 'iMessage', 'npm',
+  // `WeCom` and `WeChat` are deliberately ABSENT despite rendering from the same
+  // `CHANNELS[].name` field: zh-CN localizes them (企业微信, 微信), so they are not
+  // Latin in every language and their leak on `settings-channels` is a real defect
+  // rather than an exemption to grant.
   // language endonyms from SUPPORTED_LANGUAGES
   'English', 'Espanol', 'Español', 'Francais', 'Français', 'Portugues', 'Português',
   'Deutsch', 'Italiano', 'Pseudolocale',

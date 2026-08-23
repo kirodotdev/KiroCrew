@@ -36,6 +36,7 @@ import threading
 import time
 from contextlib import ExitStack, asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1354,3 +1355,60 @@ class TestDeliverChannelReply:
                 "discord:kirocrew:direct:U9", "hi", resolved_link=(link, False)
             )
         assert delivered is False
+
+    # A sub-agent result whose code block spans the channel's message cap: the
+    # shape of a diff or log dump, and the one a fixed-width slice mangles. The
+    # lines inside carry prose markup a dialect converter WOULD rewrite if the
+    # part they land in has lost the fence opener.
+    _FENCED = (
+        "Here is the diff:\n\n"
+        "```diff\n"
+        "**never bold** inside a code block\n"
+        "# never a heading inside a code block\n"
+        "- never a bullet inside a code block\n"
+        "```\n"
+    )
+
+    @pytest.mark.asyncio
+    async def test_a_long_fenced_result_keeps_every_code_line_inside_its_fence(self):
+        """The pre-split IS final: each part arrives already under the cap.
+
+        So the channel's own fence-safe splitter is a no-op on it, and a blind
+        fixed-width cut through the block leaves part two with no opener: every
+        line in it then takes the prose branch of the dialect converter and the
+        markup INSIDE the code is rewritten.
+        """
+        from kiro_crew.messaging.split import FENCE_OUTSIDE, iter_fence_lines
+
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        link = gw.ChannelLink("discord", channel_id="C77")
+        transport = SimpleNamespace(
+            capabilities=SimpleNamespace(max_message_chars=90),
+            send_message=AsyncMock(return_value="mid"),
+        )
+        resolved = SimpleNamespace(channel_id="C77", thread_id=None)
+        with patch.object(
+            gw, "_resolve_channel_target", MagicMock(return_value=(resolved, transport))
+        ):
+            delivered = await orch._deliver_channel_reply(
+                "discord:kirocrew:direct:U9", self._FENCED, resolved_link=(link, False)
+            )
+
+        assert delivered is True
+        parts = [c.args[1] for c in transport.send_message.await_args_list]
+        assert len(parts) > 1, "precondition: the result must actually have been split"
+        markers = [
+            "**never bold** inside a code block",
+            "# never a heading inside a code block",
+            "- never a bullet inside a code block",
+        ]
+        for part in parts:
+            prose = [ln for ln, role in iter_fence_lines(part) if role == FENCE_OUTSIDE]
+            for marker in markers:
+                assert marker not in prose, (
+                    f"a code line landed outside its fence:\n{part}"
+                )
+        joined = "\n".join(parts)
+        for marker in markers:
+            assert marker in joined, "content must survive the split"

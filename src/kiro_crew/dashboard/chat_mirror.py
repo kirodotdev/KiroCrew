@@ -41,7 +41,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     is_channel_session_key,
 )
-from kiro_crew.messaging.renderer import chunk_text
+from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.sel import sel
@@ -353,13 +353,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     def _units_for(row: dict) -> list[str]:
         # redact_via_context is the canonical egress shim (a loaded companion's
         # extra credential regexes apply, not just the OSS baseline) and it never
-        # truncates. chunk_text at the transport's own limit matches how a normal
+        # truncates. Splitting at the transport's own limit matches how a normal
         # mirrored turn is delivered in _deliver_cross_surface_reply, so a long
         # message arrives in full instead of being cut at 2,000 chars. No Slack
         # mrkdwn conversion here: this path targets Telegram/Discord/Teams.
         speaker = "You" if row.get("role") == "user" else "Kiro Crew"
         text = redact_via_context(backfill_content(row))
-        return chunk_text(f"{speaker}: {text}", max_chars)
+        return split_markdown_safe(f"{speaker}: {text}", max_chars)
 
     # Bound the INLINE delivery. Unlike the Slack drain this cannot be
     # backgrounded -- the per-unit governance re-check below has to be able to

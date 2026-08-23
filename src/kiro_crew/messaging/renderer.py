@@ -52,9 +52,13 @@ class OutputEvent:
     kind: str
     text: str = ""  # text_chunk / thinking
     tool_call_id: str = ""  # tool_call
-    title: str = ""  # tool_call (tool name / "Running: X")
+    # ``title``/``tool_purpose`` describe a tool on BOTH kinds that carry one:
+    # tool_call announces it, prompt_choice asks permission for it. Carrying them
+    # on the prompt is what lets a renderer name the tool the request is actually
+    # about instead of the last one it happened to see.
+    title: str = ""  # tool_call / prompt_choice (tool name / "Running: X")
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
-    tool_purpose: str = ""  # tool_call (human-readable purpose -> task title)
+    tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     options: list[dict[str, Any]] = field(default_factory=list)  # prompt_choice
     request_id: str | int = ""  # prompt_choice correlation
     context_usage_pct: float = 0.0  # compaction
@@ -354,8 +358,26 @@ class Renderer(ABC):
         """
 
     @abstractmethod
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
-        """Render an interactive approval/choice prompt (first-class)."""
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
+        """Render an interactive approval/choice prompt (first-class).
+
+        ``tool_title`` is the tool THIS request asks about, taken from the
+        permission event itself, and ``tool_purpose`` is the purpose the matching
+        ``tool_call`` declared. Name the tool from these, not from a remembered
+        earlier ``on_tool_call``: a permission is not always immediately preceded
+        by its own titled tool call, so a remembered name is the PREVIOUS tool's,
+        and the operator would be consenting to something other than what they
+        read. Both are defaulted, so a renderer that has no name to show stays
+        valid; a renderer that keeps its own fallback should prefer these when
+        they are non-empty and must not pair a supplied title with a remembered
+        purpose from a different tool.
+        """
 
     @abstractmethod
     async def on_compaction(self, context_usage_pct: float) -> None:
@@ -385,7 +407,9 @@ class Renderer(ABC):
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )
         elif event.kind == PROMPT_CHOICE:
-            await self.on_prompt_choice(event.options, event.request_id)
+            await self.on_prompt_choice(
+                event.options, event.request_id, event.title, event.tool_purpose
+            )
         elif event.kind == COMPACTION:
             await self.on_compaction(event.context_usage_pct)
         elif event.kind == DONE:
@@ -454,7 +478,13 @@ class SilentRenderer(Renderer):
     ) -> None:
         return None
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         return None
 
     async def on_compaction(self, context_usage_pct: float) -> None:

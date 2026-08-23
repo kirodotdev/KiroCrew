@@ -1142,7 +1142,13 @@ class TelegramRenderer(Renderer):
         self._tool = self._last_tool
         await self._stream_live(force=True)
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         # Approve/Deny as a SEPARATE message so ongoing streaming edits to the
         # answer bubble don't clobber the buttons.
         #
@@ -1166,7 +1172,11 @@ class TelegramRenderer(Renderer):
         # The tool title is LLM-authored and lands in a markdown-rendered body, so
         # it goes through the same display-form scan as the answer -- off-loop,
         # because the scan is a full credential/exfil pass.
-        tool = await asyncio.to_thread(_display_safe, self._last_tool or "this tool")
+        # The request's OWN title first: `_last_tool` is the last tool_call seen
+        # and is never cleared, so it names the previous tool for any permission
+        # that arrives without one of its own. Either source is LLM-authored, so
+        # the display-form scan above applies to both.
+        tool = await asyncio.to_thread(_display_safe, tool_title or self._last_tool or "this tool")
         await self._client.send_message(
             self._chat_id,
             f"🔐 Approve `{tool}`?",

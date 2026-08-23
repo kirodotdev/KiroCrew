@@ -1103,7 +1103,13 @@ class DiscordRenderer(Renderer):
         self._set_phase(phase_for_tool_title(self._last_tool, tool_kind))
         await self._stream_live(force=True)
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         # Approve/Deny as a SEPARATE message so ongoing streaming edits to the
         # answer bubble don't clobber the buttons. custom_id carries a
         # per-prompt nonce (a:<request_id>:<nonce>:<1|0>, well under Discord's
@@ -1137,7 +1143,13 @@ class DiscordRenderer(Renderer):
         # markdown, so it goes through the same display-form scan as streamed text.
         # The driver's byte-level pass sees `AKIA**…**` as broken while the rendered
         # prompt shows it whole -- the reason _redact_transformed exists.
-        tool = await asyncio.to_thread(_redact_transformed, self._last_tool or "this tool")
+        # The request's OWN title first: `_last_tool` is the last tool_call seen
+        # and is never cleared, so it names the previous tool for any permission
+        # that arrives without one of its own. Either source is LLM-authored, so
+        # the display-form scan above applies to both.
+        tool = await asyncio.to_thread(
+            _redact_transformed, tool_title or self._last_tool or "this tool"
+        )
         # A turn parked on a human is not a stalled turn: hold the watchdog until
         # the next real activity (``_note_progress``) resumes it, so waiting for
         # an approval never earns the "gone quiet" mark.

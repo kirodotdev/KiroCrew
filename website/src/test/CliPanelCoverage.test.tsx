@@ -10,7 +10,7 @@
  * toolbar (clamping, copy, send-to-chat redaction handoff), the module-level
  * theme/font observers, and the teardown + delete-session exports.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor, cleanup } from '@testing-library/react'
 import { renderWithProviders, renderHookWithProviders } from './helpers'
 import { i18nT } from '../i18n/t'
@@ -108,6 +108,66 @@ import CliPanel, {
   useDeleteTerminalSession,
 } from '../components/CliPanel'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+
+/* ── MutationObserver delivery pin ─────────────────────────────────────────
+ * CliPanel's theme observer is MODULE-level: the first mount in this file
+ * installs it and every later repaint assertion depends on it still delivering
+ * records. happy-dom keeps each observer's record-delivery closure in a
+ * `WeakRef` whose only referent is that WeakRef, so a garbage collection drops
+ * the closure and the observer goes permanently silent for the rest of the
+ * window's life: no error, no record, the terminal just keeps the palette it
+ * booted with. Measured: `deref()` answers a function before a `global.gc()`
+ * and `undefined` after it, and forcing one collection makes both <head>
+ * repaint tests below read the unchanged baseline cursor instead of the probe's
+ * colour. A full-shard run collects often enough to land inside that window
+ * mid-file, which reads as a flaky assertion rather than as an environment
+ * guarantee the file never established.
+ *
+ * Pin the closure at registration, so delivery depends on the observer being
+ * connected rather than on when the collector last ran. A `WeakRef` is allowed
+ * to never clear, real browsers hold their observers strongly, and nothing
+ * about the production contract moves.
+ *
+ * Deliberately FILE-LOCAL rather than in `integration/setup.ts`. Promoting it
+ * there covers every `findBy*` in the suite, which is tempting because the same
+ * collection can degrade those to their polling fallback, but patching
+ * `observe` for all ~369 files of a shard produced a run whose every test
+ * PASSED and which still failed on a wall of unhandled `ECONNREFUSED`
+ * rejections from windows that should already have been torn down. The blast
+ * radius is not worth the reach: this file is the one with a module-level
+ * observer spanning the whole file, so this is where the guarantee is needed. */
+const MUTATION_LISTENERS_SYMBOL = 'mutationListeners'
+/** Strong referents for the delivery closures; cleared with the patch. */
+const pinnedDelivery: unknown[] = []
+const nativeObserve = MutationObserver.prototype.observe
+
+type WeakListener = { callback?: { deref: () => unknown } }
+
+function pinDeliveryClosures(target: Node): void {
+  const slot = Object.getOwnPropertySymbols(target).find(
+    s => s.description === MUTATION_LISTENERS_SYMBOL,
+  )
+  // Loud on purpose: a happy-dom bump that renames the slot must fail here
+  // rather than silently restore a load-dependent flake.
+  if (!slot) throw new Error(`happy-dom node exposes no ${MUTATION_LISTENERS_SYMBOL} slot`)
+  const listeners = (target as unknown as Record<symbol, WeakListener[] | undefined>)[slot]
+  for (const listener of listeners ?? []) {
+    const deliver = listener.callback?.deref()
+    if (deliver) pinnedDelivery.push(deliver)
+  }
+}
+
+beforeAll(() => {
+  MutationObserver.prototype.observe = function (target: Node, options?: MutationObserverInit) {
+    nativeObserve.call(this, target, options)
+    pinDeliveryClosures(target)
+  }
+})
+
+afterAll(() => {
+  MutationObserver.prototype.observe = nativeObserve
+  pinnedDelivery.length = 0
+})
 
 /* ── harness ──────────────────────────────────────────────────────────────── */
 

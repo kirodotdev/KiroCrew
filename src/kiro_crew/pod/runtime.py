@@ -980,6 +980,11 @@ SEED_DISABLED_SECTIONS: tuple[str, ...] = (
     "teams",
     "weixin",
     "imessage",
+    # WhatsApp is the sharpest case on this list: its transport is the operator's
+    # OWN account, paired as a linked device, so a seeded pod booting it live would
+    # send from the operator's real number using a credential that is not an env
+    # var this env can scrub (the session store lives under the data home).
+    "whatsapp",
 )
 
 

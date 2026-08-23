@@ -1112,6 +1112,15 @@ Examples:
         ),
     )
     setup_parser.add_argument(
+        "--whatsapp",
+        action="store_true",
+        help=(
+            "Also run the guided WhatsApp setup: report the optional 'whatsapp' "
+            "extra and the pairing state, then enable the channel; ignored with "
+            "--agent-only"
+        ),
+    )
+    setup_parser.add_argument(
         "--electron-only",
         action="store_true",
         help="Only install the Kiro Crew desktop app (macOS), skip other setup",
@@ -2337,6 +2346,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             electron_only=getattr(args, "electron_only", False),
             clean=getattr(args, "clean", False),
             slack=getattr(args, "slack", False),
+            whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
         _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))

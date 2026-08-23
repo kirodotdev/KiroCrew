@@ -4350,6 +4350,187 @@
       "defaultValue": ""
     },
     {
+      "path": "whatsapp",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "WhatsApp",
+      "help": "WhatsApp (QR-linked personal account) integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "dm_policy": "self",
+        "allowed_wa_ids": [],
+        "groups": [],
+        "db_path": "",
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95,
+        "session_folder": ""
+      }
+    },
+    {
+      "path": "whatsapp.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Enabled",
+      "help": "Enable the WhatsApp channel (QR-linked personal account over the WhatsApp Web protocol). Pair a device from Settings > Channels; needs the 'whatsapp' dependency extra installed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "whatsapp.dm_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "DM Policy",
+      "help": "Who may command the agent in direct chats: 'self' (only the linked account itself — your own messages, the default), 'allowlist' (yourself plus allowed_wa_ids), 'open' (any sender), or 'disabled'. Unknown values deny everyone (fail closed).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "self"
+    },
+    {
+      "path": "whatsapp.allowed_wa_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Allowed WhatsApp IDs",
+      "help": "Phone numbers (digits only, country code, no '+') additionally permitted to DM the agent when dm_policy='allowlist'. Empty adds nobody beyond the linked account.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "whatsapp.allowed_wa_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "whatsapp.groups",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Group Rules",
+      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120)}. Groups not listed are ignored entirely.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "whatsapp.groups.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "whatsapp.db_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Session DB Path",
+      "help": "Read-only. The pairing session database always lives at <data home>/whatsapp/session.db, because that path is what the sensitive-path protection matches: it holds the linked-device keys, and moving it elsewhere would take the credential out from behind the one control that stops an agent reading it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "whatsapp.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt the user to /compact or /new when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "whatsapp.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
+      "path": "whatsapp.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "discord",
       "kind": "core",
       "type": "object",

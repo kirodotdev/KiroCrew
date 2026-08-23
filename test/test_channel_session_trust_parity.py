@@ -75,9 +75,17 @@ class _Renderer(Renderer):
     ) -> None:
         return None
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: Any) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: Any,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         # Recorded because a widget offered on a decider-less channel is a dead
-        # control: the ladder denies whatever the user presses.
+        # control: the ladder denies whatever the user presses. The two tool
+        # fields ride the PROMPT_CHOICE event so a renderer can name the tool the
+        # request actually asks about; this fake ignores them but must accept them.
         self.prompts.append(request_id)
 
     async def on_compaction(self, context_usage_pct: float) -> None:
@@ -226,7 +234,13 @@ class _Ctx:
         agent: str,
         resumed: bool,
         runtime_source: str,
+        **kw: Any,
     ) -> tuple[str, None]:
+        # `**kw` so a new field on the shared seam (minimal_context, and whatever
+        # follows it) does not break this fake. The pipeline forwards every
+        # ChannelTurn field unconditionally, which is what makes "absent" and
+        # "False" distinguishable there; spelling each one here would make this
+        # file fail again on the next addition.
         return (text, None)
 
 

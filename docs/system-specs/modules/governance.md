@@ -892,7 +892,34 @@ ALLOWED turn in the channel could otherwise pull it into agent context), the
 `handle_message` keeps its own gate as defense-in-depth for its OTHER entry points
 (interaction re-dispatch, synthetic sends). **`!stop` (cancellation) is the sole
 exemption** — a denied channel must still be able to halt a runaway session it
-previously started; `!restart` is NOT cancellation and stays gated. The OPTIONS
+previously started; `!restart` is NOT cancellation and stays gated.
+
+The exemption is **channel-neutral**, not Slack-only. `messaging/dispatch.py`'s
+`inbound_permitted(channel_type, *, text, has_attachments)` carries it for every
+channel on the shared pipeline, via `is_pure_cancel()`. Two properties make it
+safe to state that broadly. The match is whole-message, so `/stop the presses`
+is an ordinary sentence rather than a cancel, and an ATTACHMENT-bearing message
+is never exempt: a channel that fetches media after authorization would
+otherwise let a denied channel trigger a download by attaching a file to the one
+word that skips the gate. Both arguments default to the gated behaviour, so a
+caller that does not pass them is unchanged. This matters most where the channel
+has no widgets: with `max_buttons=0` a typed `/stop` is the only cancel
+affordance the operator has.
+
+`_CANCEL_ALIASES` is the recognised set, and it is a MIRROR of the per-channel
+command tables (`/stop`, `/cancel`, Discord's `!` bang forms, WeCom's `停止`),
+which is the one thing about this exemption that has actually gone wrong: WeCom
+shipped `停止` in its own table and on its `/help` card while the shared set knew
+only the ASCII spellings, leaving a denied WeCom conversation with no reachable
+off-switch in the language that channel exists for. Deriving the union in
+`messaging/` would invert the dependency — the shared layer importing all nine
+channel packages — so the tripwire is a test
+(`test_messaging_dispatch.py::test_the_shared_set_covers_the_channel_command_tables`)
+which DISCOVERS the channel tables by walking the packages, checks both
+directions (an alias no channel accepts is an exemption granted to a dead word),
+and fails on a table shape it cannot parse rather than skipping it. An earlier
+version named Discord and Telegram by hand and was blind to the three channels
+that diverged, which is the same mirror one level up. The OPTIONS
 Send / legacy-choice buttons are gated at dispatch BEFORE they edit/post the
 selection to the channel (their re-dispatched turn is gated too, but the message
 edit precedes it); the spent-marker `_done_` no-op posts nothing and stays exempt.

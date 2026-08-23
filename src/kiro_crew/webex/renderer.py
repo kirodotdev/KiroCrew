@@ -140,7 +140,13 @@ class WebexRenderer(Renderer):
             # budget so we never race the final-answer edit against the cap.
             self._edits_used = _TOOL_EDIT_BUDGET
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         # The driver only dispatches prompt_choice for INTERACTIVE + a
         # decider, and Webex runs decider-less (deny-by-default), so this is
         # never reached -- kept as a safe no-op per the Renderer contract.

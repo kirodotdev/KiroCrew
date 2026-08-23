@@ -357,6 +357,47 @@ class TestSlackRendererMapping:
         assert f"{TOOL_APPROVE_ACTION_PREFIX}rq1" in all_ids
         assert provider.approved == ["rq1"]
 
+    def test_the_approval_card_names_the_tool_not_the_answer(self):
+        """The card promises a tool name, so an option LABEL must not fill it in.
+
+        The options are the ANSWERS ("Allow", "Reject"), so reading the first one
+        put a verb where the operator reads a tool name, and the tool the request
+        is about never appeared on the card at all.
+        """
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider([
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                title="execute_bash",
+                options=[{"id": "allow", "label": "Allow"}],
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        driver = TurnDriver(
+            provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider
+        )
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            decider.resolve("rq1", True)
+            await task
+
+        asyncio.run(scenario())
+        sections = [
+            b["text"]["text"]
+            for m, kw in rec.calls if m == "post_blocks"
+            for b in kw["blocks"] if b.get("type") == "section"
+        ]
+        assert any("execute_bash" in t for t in sections), sections
+        assert not any("*Allow*" in t for t in sections), sections
+
     def test_prompt_choice_suppressed_without_decider(self):
         # Deny-by-default (no decider): no dead approve/deny buttons are posted.
         rec = _RecSlack()

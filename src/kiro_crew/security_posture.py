@@ -715,6 +715,39 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "credential the original had broken up.",
     ),
     (
+        "Typed-reply approval prompt",
+        "messaging/approval.py",
+        "The numbered tool-approval prompt for a channel with no interactive "
+        "widget (max_buttons=0). Both fields it interpolates are AGENT-AUTHORED: "
+        "the model chooses the tool name and writes the purpose, so either can "
+        "carry a credential or an exfiltration URL, and the prompt puts them "
+        "straight into a chat message. The screen runs in build_approval_prompt "
+        "rather than at each channel's sink because that is why the helper is "
+        "shared: a channel adopting the ladder inherits the guarantee instead of "
+        "re-deriving it, and a caller that forgets it leaks on a security prompt. "
+        "A channel that screens again at its own sink is merely redundant.",
+    ),
+    (
+        "WhatsApp render pipeline",
+        "whatsapp/renderer.py",
+        "The WhatsApp RENDERING boundary. This is the only markup-CONSUMING "
+        "channel whose own converter rewrites the delimiters: `to_whatsapp_text` "
+        "turns `AKIA**I**OSFODNN7EXAMPLE` into `AKIA*I*OSFODNN7EXAMPLE`, which "
+        "matches no credential pattern as written while the reader's client "
+        "strips the markers and shows an intact key. It strips ANSI and then runs "
+        "redact_for_display (messaging/display_safety.py) over the "
+        "redact_exfiltration_urls + redact_credentials pair, and the pass that "
+        "carries the guarantee is the one AFTER the conversion: the module also "
+        "reduces `<thinking>` blocks, pipe tables and mermaid fences, each of "
+        "which deletes a span and so joins whatever sat on either side of it, "
+        "which a scan of the authored form cannot see. A second pass runs before "
+        "the conversion as a belt. `render_chunks` runs the whole pipeline before "
+        "the splitter, so a credential cannot be cut into an unmatchable prefix. "
+        "`display_safe_text` is the same screen without the conversion, for the "
+        "already-dialect sinks (a file-rejection note, an image caption, the "
+        "approval prompt) that `whatsapp/turn_renderer.py` puts on the wire.",
+    ),
+    (
         "Slack render pipeline",
         "slack/format.py",
         "The Slack RENDERING boundary: text that is converted to mrkdwn goes "
@@ -1478,6 +1511,7 @@ _AUDIT_SURFACE_DETAIL: dict[str, str] = {
     "telegram": "Telegram messages, approvals, and owner-authorization decisions",
     "wecom": "WeCom messages, approvals, and owner-authorization decisions",
     "weixin": "Weixin messages, approvals, and owner-authorization decisions",
+    "whatsapp": "WhatsApp messages, approvals, and owner-authorization decisions",
     "webex": "Webex messages, approvals, and owner-authorization decisions",
     "teams": "Microsoft Teams messages, approvals, and owner-authorization decisions",
     "imessage": "iMessage messages, approvals, and owner-authorization decisions",

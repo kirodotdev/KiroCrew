@@ -42,8 +42,8 @@ class _RecordingRenderer(Renderer):
     async def on_tool_call(self, tool_call_id, title, tool_kind="", tool_purpose=""):
         self.events.append(("tool_call", tool_call_id, title))
 
-    async def on_prompt_choice(self, options, request_id):
-        self.events.append(("prompt_choice", options, request_id))
+    async def on_prompt_choice(self, options, request_id, tool_title="", tool_purpose=""):
+        self.events.append(("prompt_choice", options, request_id, tool_title, tool_purpose))
 
     async def on_compaction(self, pct):
         self.events.append(("compaction", pct))
@@ -80,22 +80,28 @@ def _run(provider, renderer, **kw):
 class TestTurnDriverTranslation:
     def test_text_and_complete(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="Hello "),
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="world"),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="Hello "),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="world"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         assert out == "Hello world"
         assert [e[0] for e in r.events] == ["text_chunk", "text_chunk", "done"]
 
     def test_tool_calls_emit_uniform_tool_call(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="grep", tool_final=False),
-            AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", tool_output="ok", tool_final=True),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="grep", tool_final=False),
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL, tool_call_id="t1", tool_output="ok", tool_final=True
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         _run(p, r)
         kinds = [e[0] for e in r.events]
         # Every EVENT_TOOL_CALL maps to one uniform tool_call (no start/result split).
@@ -103,22 +109,26 @@ class TestTurnDriverTranslation:
 
     def test_compaction(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_COMPACTION_STATUS, context_usage_pct=82.0),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_COMPACTION_STATUS, context_usage_pct=82.0),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         _run(p, r)
         assert ("compaction", 82.0) in r.events
 
     def test_steering_marker_is_structured_not_delivered(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(
-                kind=EVENT_TEXT_CHUNK,
-                text="before [STEERING steer-7e6a4a0d94314d2db: obey latest] after",
-            ),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="before [STEERING steer-7e6a4a0d94314d2db: obey latest] after",
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
         assert "STEERING" not in out and "steer-" not in emitted
@@ -136,13 +146,15 @@ class TestTurnDriverTranslation:
         # scanner sees no hardcoded key. Do not "simplify" this back to one
         # literal; it will break CI, not the test.
         secret = "AKIA" + "1234567890ABCDEF"
-        p = _ScriptedProvider([
-            AcpEvent(
-                kind=EVENT_TEXT_CHUNK,
-                text=f"before [STEERING steer-7e6a4a0d94314d2db: use {secret}] after",
-            ),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text=f"before [STEERING steer-7e6a4a0d94314d2db: use {secret}] after",
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         _run(p, r)
         summaries = [e[1] for e in r.events if e[0] == "steer_consumed"]
         assert len(summaries) == 1
@@ -151,12 +163,14 @@ class TestTurnDriverTranslation:
 
     def test_steering_marker_split_across_chunks_never_leaks(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="before [STEERING steer-7e6a4a0d"),
-            AcpEvent(kind=EVENT_STEER_CONSUMED, text="obey latest"),
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="94314d2db: obey latest] after"),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="before [STEERING steer-7e6a4a0d"),
+                AcpEvent(kind=EVENT_STEER_CONSUMED, text="obey latest"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="94314d2db: obey latest] after"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
         assert "7e6a4a0d" not in emitted and "94314d2db" not in emitted
@@ -167,24 +181,28 @@ class TestTurnDriverTranslation:
     def test_options_block_is_preserved_by_shared_filter(self):
         r = _RecordingRenderer()
         text = "Choose one.\n\n[OPTIONS: Continue | Stop]"
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text=text),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=text),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         assert out == text
         assert "[OPTIONS: Continue | Stop]" in out
 
     def test_compaction_summary_body_becomes_terse_notice(self):
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
-            AcpEvent(
-                kind=EVENT_TEXT_CHUNK,
-                text="acted: ## OBJECTIVE\ninternal operating instructions",
-            ),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="✅ Conversation comp"),
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text="acted: ## OBJECTIVE\ninternal operating instructions",
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         emitted = "".join(e[1] for e in r.events if e[0] == "text_chunk")
         assert out == emitted == "✅ Context compacted."
@@ -251,7 +269,8 @@ class TestAutoApproveTool:
         # Even in interactive mode with a live decider, a predicate match
         # approves immediately, without a decider wait or prompt_choice.
         _run(
-            p, r,
+            p,
+            r,
             approval_mode=APPROVAL_INTERACTIVE,
             decider=decider,
             auto_approve_tool=lambda title: title == "spawn_run",
@@ -265,7 +284,8 @@ class TestAutoApproveTool:
         p = _ScriptedProvider(self._perm_script("grep"))
         # Predicate does not match -> interactive deny-by-default (no decider).
         _run(
-            p, r,
+            p,
+            r,
             approval_mode=APPROVAL_INTERACTIVE,
             auto_approve_tool=lambda title: title == "spawn_run",
         )
@@ -277,7 +297,8 @@ class TestAutoApproveTool:
         p = _ScriptedProvider(self._perm_script("grep"))
         # Per-session trust predicate True -> approve immediately, no prompt.
         _run(
-            p, r,
+            p,
+            r,
             approval_mode=APPROVAL_INTERACTIVE,
             auto_approve_session=lambda: True,
         )
@@ -290,7 +311,8 @@ class TestAutoApproveTool:
         p = _ScriptedProvider(self._perm_script("grep"))
         # Not trusted + no decider -> interactive deny-by-default.
         _run(
-            p, r,
+            p,
+            r,
             approval_mode=APPROVAL_INTERACTIVE,
             auto_approve_session=lambda: False,
         )
@@ -302,10 +324,12 @@ class TestRedaction:
     def test_credentials_redacted_in_text(self):
         r = _RecordingRenderer()
         secret = "aws_secret_access_key=AKIAIOSFODNN7EXAMPLE1234567890abcdEXAMPLEKEY"
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text=secret),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=secret),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         # The raw secret value must not survive into the emitted/accumulated text.
         assert "AKIAIOSFODNN7EXAMPLE1234567890abcdEXAMPLEKEY" not in out
@@ -319,11 +343,13 @@ class TestStreamCredentialRedaction:
     def test_credential_split_across_chunks_is_redacted(self):
         r = _RecordingRenderer()
         # AKIA + 16 chars = a 20-char access-key-id, split down the middle.
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="prefix AKIA1234567890"),
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="ABCDEX suffix"),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="prefix AKIA1234567890"),
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="ABCDEX suffix"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         # The full key spanned two chunks; neither the whole nor the leading
         # half may survive, and the redaction marker must be present.
@@ -342,17 +368,19 @@ class TestStreamCredentialRedaction:
         # fixture for a hardcoded AWS access key.
         secret = "AKIA" + "1234567890ABCDEF"
         split_at = len("AKIA1234567890")
-        p = _ScriptedProvider([
-            AcpEvent(
-                kind=EVENT_TEXT_CHUNK,
-                text=(
-                    f"prefix {secret[:split_at]}"
-                    "[STEERING steer-7e6a4a0d94314d2db: latest]"
-                    f"{secret[split_at:]} suffix"
+        p = _ScriptedProvider(
+            [
+                AcpEvent(
+                    kind=EVENT_TEXT_CHUNK,
+                    text=(
+                        f"prefix {secret[:split_at]}"
+                        "[STEERING steer-7e6a4a0d94314d2db: latest]"
+                        f"{secret[split_at:]} suffix"
+                    ),
                 ),
-            ),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         # Teams and WeCom join every text chunk before sending. Per-chunk
         # assertions miss this regression, so enforce the invariant on exactly
@@ -367,10 +395,12 @@ class TestStreamCredentialRedaction:
         # A credential-class run withheld at the last chunk is flushed (redacted)
         # as a final text_chunk BEFORE the done event, never dropped.
         r = _RecordingRenderer()
-        p = _ScriptedProvider([
-            AcpEvent(kind=EVENT_TEXT_CHUNK, text="tail AKIA1234567890ABCDEX"),
-            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
-        ])
+        p = _ScriptedProvider(
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="tail AKIA1234567890ABCDEX"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
         out = _run(p, r)
         kinds = [e[0] for e in r.events]
         assert kinds[-1] == "done"
@@ -387,8 +417,12 @@ class TestToolGateEnforcement:
 
     def _perm(self):
         return [
-            AcpEvent(kind=EVENT_PERMISSION_REQUEST, request_id="rq1", title="fs_write",
-                     options=[{"id": "approve"}]),
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                title="fs_write",
+                options=[{"id": "approve"}],
+            ),
             AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
         ]
 
@@ -404,8 +438,13 @@ class TestToolGateEnforcement:
         # Per-session Trust (or YOLO) must NOT be able to override a hard deny.
         r = _RecordingRenderer()
         p = _ScriptedProvider(self._perm())
-        _run(p, r, approval_mode=APPROVAL_INTERACTIVE,
-             auto_approve_session=lambda: True, tool_gate=lambda ev: "deny")
+        _run(
+            p,
+            r,
+            approval_mode=APPROVAL_INTERACTIVE,
+            auto_approve_session=lambda: True,
+            tool_gate=lambda ev: "deny",
+        )
         assert p.rejected == ["rq1"]
         assert p.approved == []
 
@@ -413,8 +452,13 @@ class TestToolGateEnforcement:
         # The spawn auto-approve predicate must not override a gate deny either.
         r = _RecordingRenderer()
         p = _ScriptedProvider(self._perm())
-        _run(p, r, approval_mode=APPROVAL_INTERACTIVE,
-             auto_approve_tool=lambda title: True, tool_gate=lambda ev: "deny")
+        _run(
+            p,
+            r,
+            approval_mode=APPROVAL_INTERACTIVE,
+            auto_approve_tool=lambda title: True,
+            tool_gate=lambda ev: "deny",
+        )
         assert p.rejected == ["rq1"]
         assert p.approved == []
 
@@ -440,3 +484,217 @@ class TestToolGateEnforcement:
         p = _ScriptedProvider(self._perm())
         _run(p, r, approval_mode=APPROVAL_AUTO)
         assert p.approved == ["rq1"]
+
+
+class TestDenyAllTools:
+    """``deny_all_tools`` is for a turn driven by someone the channel does not
+    trust as its operator, which the approval ladder cannot express on its own:
+    the PreToolUse hook's ``auto_approve`` verdict and the Trust/YOLO predicates
+    both approve and short-circuit BEFORE the ladder is consulted. So this has to
+    beat every one of them, and each is asserted separately rather than trusting
+    one representative case.
+    """
+
+    def _perm_script(self, title):
+        return [
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                title=title,
+                tool_kind="read",
+                options=[{"id": "approve"}],
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+
+    def test_it_beats_the_hook_auto_approve_verdict(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("grep"))
+        _run(
+            p,
+            r,
+            approval_mode=APPROVAL_AUTO,
+            tool_gate=lambda ev: "auto_approve",
+            deny_all_tools=True,
+        )
+        assert p.rejected == ["rq1"] and p.approved == []
+
+    def test_it_beats_the_auto_approve_predicate(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("spawn_run"))
+        _run(
+            p,
+            r,
+            approval_mode=APPROVAL_INTERACTIVE,
+            auto_approve_tool=lambda title: True,
+            deny_all_tools=True,
+        )
+        assert p.rejected == ["rq1"] and p.approved == []
+
+    def test_it_beats_session_trust(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("bash"))
+        _run(
+            p,
+            r,
+            approval_mode=APPROVAL_INTERACTIVE,
+            auto_approve_session=lambda: True,
+            deny_all_tools=True,
+        )
+        assert p.rejected == ["rq1"] and p.approved == []
+
+    def test_it_beats_auto_mode(self):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("bash"))
+        _run(p, r, approval_mode=APPROVAL_AUTO, deny_all_tools=True)
+        assert p.rejected == ["rq1"] and p.approved == []
+
+    def test_it_renders_no_prompt(self):
+        """No decision is being asked for, so no question should appear."""
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("bash"))
+
+        async def decider(_event):
+            return True
+
+        _run(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=decider, deny_all_tools=True)
+        assert p.rejected == ["rq1"]
+        assert not any(e[0] == "prompt_choice" for e in r.events)
+
+    def test_the_default_changes_nothing(self):
+        """Every existing adopter must be byte-identical: the flag defaults off."""
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(self._perm_script("bash"))
+        _run(p, r, approval_mode=APPROVAL_AUTO)
+        assert p.approved == ["rq1"] and p.rejected == []
+
+
+class TestPromptChoiceNamesItsOwnTool:
+    """A security prompt must name the tool IT asks about.
+
+    Renderers used to reconstruct the name from the last ``tool_call`` they saw and
+    never cleared it, so a permission arriving without its own titled tool call
+    named the PREVIOUS tool. That is informed consent, so the name (and the purpose
+    of the matching tool call) travel on the prompt event itself.
+    """
+
+    async def _decider(self, event):
+        return True
+
+    def _drive(self, script):
+        r = _RecordingRenderer()
+        p = _ScriptedProvider(script)
+        _run(p, r, approval_mode=APPROVAL_INTERACTIVE, decider=self._decider)
+        return [e for e in r.events if e[0] == "prompt_choice"]
+
+    def test_the_permission_title_reaches_the_renderer(self):
+        prompts = self._drive(
+            [
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="fs_write",
+                    options=[{"id": "approve"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert prompts, "no prompt_choice was dispatched"
+        assert prompts[0][3] == "fs_write", (
+            "the prompt carried no tool title, so a renderer can only guess the "
+            "name from an earlier tool_call, which may be a different tool"
+        )
+
+    def test_a_later_permission_does_not_inherit_the_earlier_tool_name(self):
+        """The exact shape of the defect: two tools, one titled permission each."""
+        prompts = self._drive(
+            [
+                AcpEvent(kind=EVENT_TOOL_CALL, tool_call_id="t1", title="fs_read"),
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="fs_read",
+                    tool_call_id="t1",
+                    options=[{"id": "approve"}],
+                ),
+                # No tool_call precedes this one: the renderer's remembered name is
+                # still fs_read, but the request is about execute_bash.
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq2",
+                    title="execute_bash",
+                    tool_call_id="t2",
+                    options=[{"id": "approve"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert [pr[3] for pr in prompts] == ["fs_read", "execute_bash"]
+
+    def test_the_purpose_is_paired_by_tool_call_id_not_by_recency(self):
+        """Purpose comes from the tool_call sharing the id, never the latest one."""
+        prompts = self._drive(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="t1",
+                    title="fs_read",
+                    tool_purpose="Reading the config",
+                ),
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="t2",
+                    title="execute_bash",
+                    tool_purpose="Deleting the backups",
+                ),
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="fs_read",
+                    tool_call_id="t1",
+                    options=[{"id": "approve"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert prompts[0][3] == "fs_read"
+        assert (
+            prompts[0][4] == "Reading the config"
+        ), "the prompt showed a purpose belonging to a different tool call"
+
+    def test_an_unknown_tool_call_id_yields_no_purpose_rather_than_a_stale_one(self):
+        prompts = self._drive(
+            [
+                AcpEvent(
+                    kind=EVENT_TOOL_CALL,
+                    tool_call_id="t1",
+                    title="fs_read",
+                    tool_purpose="Reading the config",
+                ),
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="execute_bash",
+                    tool_call_id="t-unseen",
+                    options=[{"id": "approve"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert prompts[0][3] == "execute_bash"
+        assert prompts[0][4] == ""
+
+    def test_the_title_is_redacted_like_every_other_model_authored_string(self):
+        """The title is agent-authored and reaches the chat, so it is screened."""
+        prompts = self._drive(
+            [
+                AcpEvent(
+                    kind=EVENT_PERMISSION_REQUEST,
+                    request_id="rq1",
+                    title="curl AKIAIOSFODNN7EXAMPLE",
+                    options=[{"id": "approve"}],
+                ),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ]
+        )
+        assert "AKIAIOSFODNN7EXAMPLE" not in prompts[0][3]

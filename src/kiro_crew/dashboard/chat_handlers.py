@@ -445,7 +445,8 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # queue entry is durable: a visible message with no queue entry (process
         # exit during a cold-store build) is a request that can never resume.
         _refusal = await _crew.ingest(
-            slot, message,
+            slot,
+            message,
             user_meta=_redact_meta(user_meta) if user_meta else None,
         )
         if _refusal:
@@ -454,8 +455,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # never run — the transcript note it posts is not visible to an API
             # caller, so the refusal has to reach the status line too.
             return web.json_response(
-                {"error": "crew mode is not available for this session",
-                 "code": _refusal},
+                {"error": "crew mode is not available for this session", "code": _refusal},
                 status=409,
             )
         return web.json_response({"ok": True, "slot": slot.key, "crew": True})
@@ -1039,9 +1039,7 @@ def _generate_state(cfg: KiroCrewConfig, slot: Any) -> str:
     if is_incognito_transcript(getattr(slot, "memory_mode", "")):
         return "unavailable"
     turns = count_user_turns_in_records(getattr(slot, "messages", []) or [])
-    if turns < cfg.session_summary.min_user_turns and not getattr(
-        slot, "_disk_older_count", 0
-    ):
+    if turns < cfg.session_summary.min_user_turns and not getattr(slot, "_disk_older_count", 0):
         return "too_few_turns"
     return "ready"
 
@@ -1623,7 +1621,11 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     if current_mem and disk_msgs:
                         # Spot-check last memory row against its expected disk position.
                         last_mem = current_mem[-1]
-                        disk_at = disk_msgs[len(current_mem) - 1] if len(current_mem) <= len(disk_msgs) else None
+                        disk_at = (
+                            disk_msgs[len(current_mem) - 1]
+                            if len(current_mem) <= len(disk_msgs)
+                            else None
+                        )
                         if disk_at and (
                             last_mem.get("ts", "") != disk_at.get("ts", "")
                             or last_mem.get("role") != disk_at.get("role")
@@ -1634,12 +1636,10 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
                     else:
                         # Disk has rows the window does not — reconcile by appending
                         # the missing tail to the slot and returning the union.
-                        fresh = disk_msgs[len(current_mem):]
+                        fresh = disk_msgs[len(current_mem) :]
                         for msg in fresh:
                             role = msg.get("role", "assistant")
-                            cls = msg.get("cls") or (
-                                "msg msg-u" if role == "user" else "msg msg-a"
-                            )
+                            cls = msg.get("cls") or ("msg msg-u" if role == "user" else "msg msg-a")
                             content = msg.get("content", "")
                             if role != "user":
                                 content, _ = redact_exfiltration_urls(content)
@@ -1688,9 +1688,7 @@ async def api_chat_slot_detail(request: web.Request) -> web.Response:
         history_key = slot_history_key(slot)
         try:
             all_msgs = (
-                await asyncio.to_thread(
-                    state.conversation_log.read_messages_chained, history_key
-                )
+                await asyncio.to_thread(state.conversation_log.read_messages_chained, history_key)
                 if state.conversation_log
                 else []
             )
@@ -1889,8 +1887,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 and not is_crew_capable_slot_key(_normalize_slot_key(str(name)))
             ):
                 return web.json_response(
-                    {"error": "this session name cannot run crew mode",
-                     "code": "crew_unsupported_slot"},
+                    {
+                        "error": "this session name cannot run crew mode",
+                        "code": "crew_unsupported_slot",
+                    },
                     status=400,
                 )
             slot = state.get_or_create_slot(
@@ -3284,9 +3284,7 @@ async def api_chat_slot_delete(request: web.Request) -> web.Response:
             # The app could not record the dismissal. Refuse the close rather
             # than leave a worker running behind a tab the user believes is gone.
             await _restore_slot_nudge_loop(retired_loop)
-            logger.error(
-                "Slot-close hook for app %r failed on %r, close aborted", slot._app, name
-            )
+            logger.error("Slot-close hook for app %r failed on %r, close aborted", slot._app, name)
             _sync_dashboard_slots(state)
             state.push_slots_update()
             return web.json_response(
@@ -3689,9 +3687,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             # store value, corrupting the cycle base and the displayed state
             # for a switch that actually happened.
             teardown_incomplete = True
-            logger.exception(
-                "Slot %s agent switch: old session teardown incomplete", name
-            )
+            logger.exception("Slot %s agent switch: old session teardown incomplete", name)
 
         # Persist the new agent so the session resumes under the correct
         # agent after a gateway restart. INSIDE the lock: two racing switches
@@ -4116,9 +4112,7 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
                 # slot now and pushed to the live session next turn.
                 slot.reasoning_effort = effort
                 state.push_slots_update()
-                return web.json_response(
-                    {"ok": True, "reasoning_effort": effort, "deferred": True}
-                )
+                return web.json_response({"ok": True, "reasoning_effort": effort, "deferred": True})
             # change_effort handles both backends and persists the per-model
             # override + overlay. "" clears the override → fall back to model
             # default (kiro: /effort with model default; claude: leave as-is).
@@ -4199,9 +4193,7 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
-        return web.json_response(
-            {"error": "not found", "code": "slot_not_found"}, status=404
-        )
+        return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     # The session the reload will tear down. ``effective_session_key``, never
     # ``_history_key_for``: a channel- or cron-born slot runs its turns under
     # its linked key, and the dashboard-prefixed spelling names a session that
@@ -4239,9 +4231,7 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
             # the silent failure this endpoint exists to prevent. Retry once;
             # a second decline means another turn is genuinely racing, which
             # is the turn-in-flight case.
-            reloaded = await _reset_slot_session(
-                state, slot, session_key, skip_if_busy=True
-            )
+            reloaded = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
             if not reloaded:
                 return web.json_response(
                     {"error": "a turn is in flight", "code": "turn_in_flight"},
@@ -4255,7 +4245,9 @@ async def api_chat_slot_reload(request: web.Request) -> web.Response:
     # clients dedupe on -- so an explicit broadcast here would deliver the
     # notice twice.
     slot.append(
-        "assistant", _SESSION_RELOAD_NOTICE, "msg msg-a",
+        "assistant",
+        _SESSION_RELOAD_NOTICE,
+        "msg msg-a",
         meta={"kind": SESSION_RELOAD_KIND},
     )
     # Respawn + session/load now rather than on the next message, so the fresh
@@ -4407,9 +4399,7 @@ def _deny_cross_app_slot_access(
         return None  # Dashboard user -- no restriction
     if slot._app and request_app == slot._app:
         return None  # App owns this slot
-    reason = (
-        "app does not own this slot" if slot._app else "app cannot access unscoped slots"
-    )
+    reason = "app does not own this slot" if slot._app else "app cannot access unscoped slots"
     try:
         sel().log_api_access(
             caller=request_app,
@@ -4610,9 +4600,7 @@ async def api_recent_projects(request: web.Request) -> web.Response:
     return web.json_response({"dirs": dirs})
 
 
-async def _reconcile_slot_window(
-    state: DashboardState, slot: "_ChatSlot"
-) -> None:
+async def _reconcile_slot_window(state: DashboardState, slot: "_ChatSlot") -> None:
     """Detect and reconcile stale in-memory window from disk.
 
     A live slot's window can fall behind disk when messages are written to the
@@ -4651,9 +4639,7 @@ async def _reconcile_slot_window(
             state.conversation_log.read_messages_chained, history_key
         )
     except Exception:
-        logger.warning(
-            "reconcile: read_messages_chained failed for %s", history_key, exc_info=True
-        )
+        logger.warning("reconcile: read_messages_chained failed for %s", history_key, exc_info=True)
         return
     disk_total = len(disk_msgs)
     if disk_total <= represented:
@@ -4679,9 +4665,8 @@ async def _reconcile_slot_window(
         last_mem = slot.messages[-1]
         expected_pos = disk_older + len(slot.messages) - 1
         disk_at = disk_msgs[expected_pos]
-        if (
-            last_mem.get("ts", "") != disk_at.get("ts", "")
-            or last_mem.get("role") != disk_at.get("role")
+        if last_mem.get("ts", "") != disk_at.get("ts", "") or last_mem.get("role") != disk_at.get(
+            "role"
         ):
             logger.info(
                 "reconcile: slot %s alignment mismatch at offset %d — skipping "
@@ -5281,12 +5266,12 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if slot_key and slot_key in state._slots:
             state._slots[slot_key]._trust = False
             state._slots[slot_key]._trust_reads = True
-            state.sessions.set_approval_policy(f"dashboard:{slot_key}", "")
+            state.sessions.set_approval_policy(effective_session_key(state._slots[slot_key]), "")
         else:
             for slot in state._slots.values():
                 slot._trust = False
                 slot._trust_reads = True
-                state.sessions.set_approval_policy(f"dashboard:{slot.key}", "")
+                state.sessions.set_approval_policy(effective_session_key(slot), "")
         try:
             sel().log_api_access(
                 caller="dashboard:mode",
@@ -5301,8 +5286,16 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if slot_key is not None:
             if slot_key not in state._slots:
                 return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
-            state._slots[slot_key]._trust = True
-            state.sessions.set_approval_policy(f"dashboard:{slot_key}", "auto")
+            # Every slot that SHARES the session, matching the revoke below. The
+            # policy is per session while the flag is per slot, so setting one of
+            # two sharing slots leaves them disagreeing about a session they both
+            # address, and the propagation pass would then be decided by slot
+            # iteration order rather than by what the operator asked for.
+            _granted_key = effective_session_key(state._slots[slot_key])
+            for _sharing in state._slots.values():
+                if effective_session_key(_sharing) == _granted_key:
+                    _sharing._trust = True
+            state.sessions.set_approval_policy(_granted_key, "auto")
             linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = True
@@ -5310,7 +5303,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         else:
             for slot in state._slots.values():
                 slot._trust = True
-                state.sessions.set_approval_policy(f"dashboard:{slot.key}", "auto")
+                state.sessions.set_approval_policy(effective_session_key(slot), "auto")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = True
@@ -5333,9 +5326,18 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         if slot_key is not None:
             if slot_key not in state._slots:
                 return web.json_response({"ok": False, "error": "unknown slot"}, status=400)
-            state._slots[slot_key]._trust = False
-            state._slots[slot_key]._trust_reads = False
-            state.sessions.set_approval_policy(f"dashboard:{slot_key}", "")
+            # Several slots can address ONE session (a rehydrated owner slot and
+            # the alias its turns run under both resolve to the same effective
+            # key), so revoking the selected slot alone leaves the others holding
+            # a stale `_trust`, and the propagation below then rewrites the shared
+            # session back to "auto" from it. The policy is per SESSION; the flag
+            # is per slot; so the revoke has to clear every slot that shares it.
+            _revoked_key = effective_session_key(state._slots[slot_key])
+            for _sharing in state._slots.values():
+                if effective_session_key(_sharing) == _revoked_key:
+                    _sharing._trust = False
+                    _sharing._trust_reads = False
+            state.sessions.set_approval_policy(_revoked_key, "")
             linked_ch = getattr(state._slots[slot_key], "_slack_channel", None)
             if mgr and linked_ch and linked_ch in mgr._channels:
                 mgr._channels[linked_ch].trusted = False
@@ -5344,7 +5346,7 @@ async def api_chat_mode(request: web.Request) -> web.Response:
             for slot in state._slots.values():
                 slot._trust = False
                 slot._trust_reads = False
-                state.sessions.set_approval_policy(f"dashboard:{slot.key}", "")
+                state.sessions.set_approval_policy(effective_session_key(slot), "")
             if mgr:
                 for ch in mgr._channels.values():
                     ch.trusted = False
@@ -5420,9 +5422,20 @@ async def api_chat_mode(request: web.Request) -> web.Response:
                             )
 
     # Propagate trust/yolo to session approval policies so subagents inherit.
+    #
+    # Keyed by ``effective_session_key`` — the SAME derivation every grant above
+    # and the approval-card grants in ``api_chat_slot_approve`` use — because a
+    # grant and its revoke must address one key. A channel-surfaced or cron-born
+    # slot runs its turns under ``linked_session_key``, which is what
+    # ``messaging.approval.TextApprovalDecider.trusted()`` reads, so keying by
+    # the slot name writes a session nobody consults and leaves the live one
+    # holding whatever it was last granted: an un-revokable auto-approve.
+    # Safe as a per-slot write ONLY because both branches above apply their change
+    # to every slot sharing a session, so two slots addressing one key always agree
+    # by the time this runs and iteration order cannot pick a winner.
     for slot in state._slots.values():
         policy = "auto" if slot._trust or safety_override().is_active() else ""
-        state.sessions.set_approval_policy(f"dashboard:{slot.key}", policy)
+        state.sessions.set_approval_policy(effective_session_key(slot), policy)
 
     state.push_slots_update()
     return web.json_response({"ok": True, "mode": mode})
@@ -5486,7 +5499,7 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
                 cand = s._approval_futures.get(request_id)
                 if not cand or cand.done():
                     continue
-                cand_session = s.linked_session_key or _history_key_for(s.key)
+                cand_session = effective_session_key(s)
                 if cand_session != want_session:
                     continue
                 owner, fut = s, cand
@@ -5498,14 +5511,15 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         else:
             fut = None
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
-    # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow slot
-    # runs under ``linked_session_key``, not ``dashboard:{key}``, so writing the
-    # raw slot key would leave the running session on its old policy and the trust
-    # decision would silently not take (mirrors the _run_chat session-key derivation).
+    # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
+    # channel-surfaced slot runs under ``linked_session_key``, not
+    # ``dashboard:{key}``, so writing the raw slot key would leave the running
+    # session on its old policy and the trust decision would silently not take.
+    # ``effective_session_key`` is the one derivation shared with ``api_chat_mode``'s
+    # grants AND revokes, so an off-switch always addresses the key a grant wrote.
     if action == "trust":
         owner._trust = True
-        owner_session = owner.linked_session_key or _history_key_for(owner.key)
-        state.sessions.set_approval_policy(owner_session, "auto")
+        state.sessions.set_approval_policy(effective_session_key(owner), "auto")
         action = "approved"
     # Trust-reads: auto-approve read-only bash commands for this slot
     # Defer setting _trust_reads until after the approval future is consumed
@@ -5547,9 +5561,9 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
             )
         for s in state._slots.values():
             # Same effective-session-key rule as the single-slot trust above: a
-            # linked cron/workflow slot runs under its linked_session_key.
-            s_session = s.linked_session_key or _history_key_for(s.key)
-            state.sessions.set_approval_policy(s_session, "auto")
+            # linked cron/workflow or channel-surfaced slot runs under its
+            # linked_session_key.
+            state.sessions.set_approval_policy(effective_session_key(s), "auto")
         action = "approved"
     resolved = action if action in ("approved", "approved_trust_reads") else "rejected"
     if not fut or fut.done():

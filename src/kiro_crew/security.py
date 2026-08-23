@@ -4866,6 +4866,17 @@ _CREW_SECRET_LEAVES: list[str] = [
     # outside a home-relative entry; the default path is what ships and what an
     # agent would find.
     "workspace/md-notebook/pat",
+    # The WhatsApp channel's linked-device session store (whatsmeow's sqlite
+    # keys). It IS the credential: anything that can read it can act as the
+    # operator on WhatsApp, read every chat and send as them, with no second
+    # factor and nothing on the phone to notice. Owner-only file modes do not
+    # isolate another process running as the same UID, and a prompt-injected
+    # agent's fs_read is exactly that process, so it belongs behind the shared
+    # floor like every other credential store. Classified as the whole DIRECTORY
+    # so the WAL and SHM sidecars, which hold the same key bytes, are covered
+    # too. The channel's own client opens it directly rather than through this
+    # gate, so pairing keeps working.
+    "whatsapp",
     # The Notes builtin's vault registry. It is not a secret, but it stores each
     # vault's on-disk ``localPath``, which auto-sync trusts and runs ``git
     # add``/``commit``/``push`` against. A prompt-injected agent that could

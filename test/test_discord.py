@@ -1907,6 +1907,33 @@ class TestRenderer:
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req9"), None)
 
     @pytest.mark.asyncio
+    async def test_prompt_names_the_tool_the_request_is_about(self) -> None:
+        """`_last_tool` is never cleared, so it names the PREVIOUS tool.
+
+        A permission that arrives without its own titled tool_call would otherwise
+        ask the operator to approve something other than what is about to run.
+        """
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_prompt_choice([], request_id="req1", tool_title="execute_bash")
+        text, _ = cli.sent[-1]
+        assert "execute_bash" in text
+        assert "fs_read" not in text
+        DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req1"), None)
+
+    @pytest.mark.asyncio
+    async def test_prompt_falls_back_to_the_last_tool_without_a_title(self) -> None:
+        """Non-vacuity: the fallback still runs when the event carried no name."""
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_prompt_choice([], request_id="req2")
+        text, _ = cli.sent[-1]
+        assert "fs_read" in text
+        DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req2"), None)
+
+    @pytest.mark.asyncio
     async def test_steer_marker_rotates_message_with_chip(self) -> None:
         r, cli = self._renderer()
         await r.on_turn_start()

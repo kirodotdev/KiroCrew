@@ -43,6 +43,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import (
     LEGACY_CONFIG_DIR_NAME,
     _valid_override_home,
+    data_home,
     kiro_agents_dir,
     project_agents_dir,
 )
@@ -1958,6 +1959,72 @@ def _doctor_discord(
     _discord_install_line(grants.application_id, dm_only=not needs_content)
 
 
+def _doctor_whatsapp(cfg: KiroCrewConfig, issues: list[str]) -> None:
+    """Report the WhatsApp channel's two invisible prerequisites.
+
+    WhatsApp is the only channel whose whole runtime hangs off an OPTIONAL wheel
+    plus a locally stored credential, so both halves can be absent on a machine
+    whose config says the channel is on. Neither absence produces an error the
+    operator sees: a message simply never arrives, which is exactly what a
+    preflight exists to answer.
+
+    Both probes are cheap and side-effect free by design. ``neonize_available()``
+    is a ``find_spec`` metadata lookup and the store check is one ``stat``; doctor
+    must never import neonize (a ~19 MB ``ctypes`` load plus protobuf descriptors)
+    or construct a client, because a health check that initializes the subsystem it
+    is checking is both slow and a side effect of asking a question.
+    """
+    # Function-local: this keeps the channel package out of the import graph of
+    # every `kirocrew` invocation, since cli.py imports this module at its own
+    # module scope for all subcommands.
+    from kiro_crew.whatsapp.client import (
+        MISSING_EXTRA_HINT,
+        default_db_path,
+        neonize_available,
+    )
+
+    print("\nWhatsApp Integration")
+    wa = cfg.whatsapp
+    if not wa.enabled:
+        print("  status:      ⏭  not enabled (optional)")
+        print("  setup:       run 'kirocrew setup --whatsapp', or enable it from")
+        print("               the dashboard (Settings → Channels → WhatsApp)")
+        return
+
+    if neonize_available():
+        print("  extra:       ✅ neonize importable")
+    else:
+        print("  extra:       ❌ not installed, so the enabled channel cannot start")
+        print(f"               Fix: {MISSING_EXTRA_HINT}")
+        issues.append("whatsapp extra missing")
+
+    # The SAME expression ``whatsapp/gateway.py`` builds the client from, so doctor
+    # can never report on a store the channel does not open. ``data_home()``
+    # rather than ``config_dir()``: this is a read, and it must not refresh the
+    # recovery breadcrumb as a side effect of reporting a path.
+    store = default_db_path(data_home())
+    if store.exists():
+        print(f"  session:     ✅ paired session store at {store}")
+    else:
+        # Deliberately NOT an issue. Pairing is a QR scan served BY the running
+        # gateway, so a freshly enabled channel legitimately has no store yet, and
+        # failing here would break the documented `kirocrew doctor && kirocrew
+        # gateway` chain at the one moment the operator must start the gateway to
+        # make progress.
+        print("  session:     ⚠️  not paired yet, so the channel starts unpaired")
+        print(f"               Expected store: {store}")
+        print("               Pair from the dashboard (Settings → Channels → WhatsApp)")
+
+    groups = [g for g in (wa.groups or []) if isinstance(g, dict) and str(g.get("jid", "")).strip()]
+    if groups:
+        # Membership is only knowable from a live connection, so the gateway checks
+        # it on connect and logs the unmatched JIDs; doctor reports the count.
+        print(f"  groups:      ✅ {len(groups)} configured")
+    else:
+        print("  groups:      ⏹ none configured (group messages are ignored)")
+    print(f"  dm policy:   {wa.dm_policy}")
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -2544,6 +2611,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Discord (optional) ──
     _doctor_discord(cfg, creds, _port, issues)
+
+    # ── WhatsApp (optional) ──
+    # Its own section rather than a line in the Slack one: WhatsApp's
+    # prerequisites are an optional wheel and a local credential store, neither of
+    # which any other channel has, and both of which fail silently.
+    _doctor_whatsapp(cfg, issues)
 
     # ── Loop-stall crash dumps ──
     print("\nLoop-stall Crash Dumps")

@@ -174,6 +174,49 @@ function scanUnlatchedCompositionSubscribers(lines: string[]): number[] {
   return hits
 }
 
+/**
+ * An `Enter → blur` commit that consults NO composition signal at all.
+ *
+ * Every rule above needs the site to have referenced a signal — they police a
+ * guard that is written WRONGLY. None of them can see a guard that is simply
+ * ABSENT, and the absent one is the shape that spreads by copy: the panel this
+ * rule was added for carried `if (e.key === 'Enter') e.currentTarget.blur()`
+ * twice, on a folder-name field and a group cooldown, both copied from a
+ * sibling channel panel BEFORE that sibling grew its guard. The whole tree was
+ * otherwise clean, so nothing failed and no reviewer of either file could have
+ * seen what the other one did.
+ *
+ * `blur()` on an Enter branch is the scoping signal, and it is a narrow one: in
+ * this tree that spelling exists only to commit a text field on Enter, which is
+ * exactly the action an IME's committing keydown must not trigger. The element
+ * is cleared when the guard appears anywhere in its span — the signal call
+ * itself, or a `bindEnter`/`bindComposition` spread that carries it — so a site
+ * using the sanctioned shape in any of its spellings passes.
+ */
+const ENTER_BLUR = /key === 'Enter'|key !== 'Enter'/
+const BLUR_COMMIT = /\.blur\(\)/
+const GUARD_PRESENT = /ime\.(?:isComposing|claimEnter)\(|\.\.\.\w+\.bind(?:Enter|Composition)\b/
+/** Lines of the handler/element around `i`, bounded by this tree's formatting. */
+const COMMIT_WINDOW = 10
+
+function scanUnguardedEnterBlurCommits(lines: string[]): number[] {
+  const code = lines.map(l => {
+    const t = l.trim()
+    return t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') ? '' : l
+  })
+  const hits: number[] = []
+  code.forEach((line, i) => {
+    if (!ENTER_BLUR.test(line)) return
+    const window = code.slice(i, i + COMMIT_WINDOW + 1)
+    // The commit has to be on this branch, not merely later in the file.
+    if (!window.some(l => BLUR_COMMIT.test(l))) return
+    // The guard may sit above (an early return) or on the element (a spread).
+    const span = code.slice(Math.max(0, i - COMMIT_WINDOW), i + COMMIT_WINDOW + 1)
+    if (!span.some(l => GUARD_PRESENT.test(l))) hits.push(i + 1)
+  })
+  return hits
+}
+
 describe('IME Enter claim ratchet', () => {
   it('routes every Enter-submit branch through the guard', () => {
     const offenders: string[] = []
@@ -219,6 +262,27 @@ describe('IME Enter claim ratchet', () => {
     }
     // An entry here declines an Enter on a textarea and lets the browser act
     // on it. Replace the decline with `if (!ime.claimEnter(e)) return`.
+    expect(offenders).toEqual([])
+  })
+
+  it('never commits an Enter to blur with no composition guard at all', () => {
+    // The rules above all require the site to have NAMED a composition signal,
+    // so each one polices a guard written wrongly and none can see one that is
+    // absent. `WhatsAppPanel` shipped the absent form twice, copied from
+    // `WeixinPanel` before that panel grew its own guard: a CJK operator
+    // pressing Enter to accept a candidate persisted the intermediate
+    // composition text as the folder name. A behavioural test per panel could
+    // not have caught it — the second copy was in a component nobody had
+    // written an IME test for.
+    const offenders: string[] = []
+    for (const rel of sourceFiles()) {
+      if (rel === 'hooks/useImeGuard.ts') continue
+      const lines = readFileSync(join(SRC, rel), 'utf8').split('\n')
+      for (const n of scanUnguardedEnterBlurCommits(lines)) offenders.push(`${rel}:${n}`)
+    }
+    // An entry here commits a text field on an Enter it never checked. Add the
+    // early return (`if (ime.isComposing(e)) return`) before the blur, and the
+    // `bindComposition` spread that tracks the latch it reads.
     expect(offenders).toEqual([])
   })
 
@@ -435,5 +499,50 @@ describe('ratchet rule fixtures', () => {
       // the shared guard is createImeLatch(), which this deliberately skips
       let composing = false
       document.addEventListener('compositionstart', () => { composing = true }, true)`))).toHaveLength(1)
+  })
+
+  it('flags an Enter-to-blur commit that names no composition signal', () => {
+    // The exact shape WhatsAppPanel shipped twice.
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      <input
+        onChange={setFolderName}
+        onBlur={commitFolderName}
+        onKeyDown={e => {
+          if (e.key === 'Enter') e.currentTarget.blur()
+        }}
+      />`))).toHaveLength(1)
+    // The sanctioned shape: the early return plus the tracking spread.
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      <input
+        onChange={setFolderName}
+        {...ime.bindComposition({ onBlur: commitFolderName })}
+        onKeyDown={e => {
+          if (e.key !== 'Enter') return
+          if (ime.isComposing(e)) return
+          e.currentTarget.blur()
+        }}
+      />`))).toHaveLength(0)
+    // `claimEnter` is the textarea remedy and clears the rule too.
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      onKeyDown={e => {
+        if (e.key !== 'Enter') return
+        if (!ime.claimEnter(e)) return
+        e.currentTarget.blur()
+      }}`))).toHaveLength(0)
+    // Scoped to a COMMIT: an Enter branch that does something other than blur a
+    // field is a different structure and out of scope, as is a blur that no
+    // Enter branch reaches.
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      onKeyDown={e => {
+        if (e.key === 'Enter') onSelect(row)
+      }}`))).toHaveLength(0)
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      const dismiss = () => inputRef.current?.blur()`))).toHaveLength(0)
+    // A guard mentioned only in a comment does not launder the site.
+    expect(scanUnguardedEnterBlurCommits(jsx(`
+      onKeyDown={e => {
+        // ime.isComposing is handled upstream, honestly
+        if (e.key === 'Enter') e.currentTarget.blur()
+      }}`))).toHaveLength(1)
   })
 })

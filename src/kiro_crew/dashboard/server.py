@@ -109,6 +109,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
+from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     PROBE_PATHS,
@@ -2776,6 +2777,7 @@ async def start_dashboard(
     setup_weixin_routes(app)
     setup_feedback_routes(app)
     setup_secrets_routes(app)
+    setup_whatsapp_routes(app)
 
     # Link previews (chat unfurl). Route is always registered; the handler gates
     # itself on cfg.dashboard.link_previews, so toggling the feature needs no
@@ -3364,9 +3366,18 @@ async def start_dashboard(
         state.broadcast_ws("yolo_expired", {"source": source})
         state.push_slots_update()
         if state.sessions is not None:
+            from kiro_crew.dashboard.chat_utils import effective_session_key
+
             for slot in state._slots.values():
                 if not slot._trust and not slot._trust_reads:
-                    state.sessions.set_approval_policy(f"dashboard:{slot.key}", "")
+                    # The SAME derivation the grant used. A channel-born slot's
+                    # turns run on the channel's own session key, which is what
+                    # `linked_session_key` holds, so clearing `dashboard:<slot>`
+                    # here cleared a key nothing on the channel path ever reads:
+                    # the TTL could not expire the grant it had handed out, which
+                    # is worse than a missing off-switch because the operator was
+                    # told it was time-bounded.
+                    state.sessions.set_approval_policy(effective_session_key(slot), "")
         # Slack cleanup — isolated so failures don't block dashboard operations
         try:
             from kiro_crew.slack.handler import (

@@ -27,6 +27,7 @@ from kiro_crew.cli_setup import (
     _find_electron_dir,
     _fix_shell_profiles,
     _setup_slash_command,
+    _setup_whatsapp,
 )
 
 _STALE = 'export PATH="$HOME/.kirocrew-app/bin:$PATH"\n'
@@ -223,3 +224,124 @@ class TestFindElectronDir:
 
         # It either resolves the real checkout or gives up — never the bogus root.
         assert found != (tmp_path / "does-not-exist" / "website" / "electron")
+
+
+class TestSetupWhatsApp:
+    """``_setup_whatsapp``: the guided WhatsApp opt-in (`kirocrew setup --whatsapp`).
+
+    WhatsApp has no token to collect: it pairs as a linked device on the operator's
+    own account, and pairing is a QR scan served by the RUNNING gateway. So the step
+    carries the three things an operator cannot discover elsewhere: the Terms of
+    Service / ban risk of automating a personal account, whether the optional wheel
+    is installed, and that ENABLING the channel is a config flag separate from
+    pairing it. It must also persist that flag without ever damaging a config it
+    could not parse.
+    """
+
+    @pytest.fixture()
+    def cfg_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        target = tmp_path / "config.json"
+        monkeypatch.setattr("kiro_crew.cli_setup.config_path", lambda: target)
+        monkeypatch.setattr("kiro_crew.config.paths.data_home", lambda: tmp_path / "home")
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: True)
+        return target
+
+    @staticmethod
+    def _answer(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+        monkeypatch.setattr("kiro_crew.cli_setup._input_or_skip", lambda prompt: value)
+
+    def test_yes_enables_the_channel_and_keeps_the_rest_of_the_config(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        cfg_file.write_text(
+            json.dumps({"timezone": "Europe/London", "whatsapp": {"dm_policy": "allowlist"}}),
+            encoding="utf-8",
+        )
+        self._answer(monkeypatch, "y")
+
+        _setup_whatsapp()
+
+        saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert saved["whatsapp"]["enabled"] is True
+        assert saved["whatsapp"]["dm_policy"] == "allowlist"
+        assert saved["timezone"] == "Europe/London"
+
+    def test_declining_writes_nothing(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        self._answer(monkeypatch, None)  # bare Enter, or a non-interactive EOF
+
+        _setup_whatsapp()
+
+        assert not cfg_file.exists(), "a declined opt-in must not create a config"
+        assert "Left disabled" in capsys.readouterr().out
+
+    def test_the_terms_of_service_risk_is_stated_before_the_prompt(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Enabling this channel automates the operator's PERSONAL account, which
+        can get the number banned. An opt-in that does not say so is not informed."""
+        self._answer(monkeypatch, "n")
+
+        _setup_whatsapp()
+
+        out = capsys.readouterr().out
+        assert "Terms of Service" in out
+        assert "banned" in out
+
+    def test_a_missing_extra_is_named_with_its_install_command(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: False)
+        self._answer(monkeypatch, "y")
+
+        _setup_whatsapp()
+
+        out = capsys.readouterr().out
+        assert "kirocrew[whatsapp]" in out
+        # Still enabled: the operator can install the extra afterwards, and doctor
+        # reports the gap until they do. Refusing here would strand them.
+        assert json.loads(cfg_file.read_text(encoding="utf-8"))["whatsapp"]["enabled"] is True
+
+    def test_an_unreadable_config_aborts_the_step_without_writing(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_file.write_text("{not json", encoding="utf-8")
+        self._answer(monkeypatch, "y")
+
+        _setup_whatsapp()
+
+        assert cfg_file.read_text(encoding="utf-8") == "{not json"
+        assert "Could not read" in capsys.readouterr().out
+
+    def test_a_non_object_whatsapp_section_is_left_alone(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        cfg_file.write_text(json.dumps({"whatsapp": "on"}), encoding="utf-8")
+        self._answer(monkeypatch, "y")
+
+        _setup_whatsapp()
+
+        assert json.loads(cfg_file.read_text(encoding="utf-8")) == {"whatsapp": "on"}
+        assert "not an object" in capsys.readouterr().out
+
+    def test_the_step_never_imports_neonize(
+        self, cfg_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The wizard reports on the credential's path, never through it: importing
+        neonize loads a ~19 MB ctypes CDLL, and setup runs on every install."""
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _guard(name, *args, **kwargs):
+            if name.split(".")[0] == "neonize":
+                raise AssertionError(f"setup imported {name!r}")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _guard)
+        self._answer(monkeypatch, "y")
+
+        _setup_whatsapp()
+
+        assert json.loads(cfg_file.read_text(encoding="utf-8"))["whatsapp"]["enabled"] is True

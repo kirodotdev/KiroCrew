@@ -152,6 +152,7 @@ _KNOWN_CONFIG_SECTIONS: frozenset = frozenset(
         "webex",
         "wecom",
         "weixin",
+        "whatsapp",
         "teams",
         "imessage",
         "dashboard",
@@ -5135,6 +5136,49 @@ def _coerce_opaque_str_ids(raw: object) -> list[str]:
     return out
 
 
+_WHATSAPP_GROUP_MODES = ("mention", "rules", "off")
+_WHATSAPP_GROUP_COOLDOWN_DEFAULT = 120
+
+
+def _coerce_whatsapp_groups(raw: object) -> list[dict]:
+    """Coerce the whatsapp ``groups`` config value to sanitized rule entries.
+
+    Each entry needs at least a non-empty ``jid``; everything else gets a safe
+    default. Unknown ``mode`` values fall back to ``mention`` (never to an
+    unprompted-speech mode), and cooldown is clamped to >= 0. Fails closed on
+    shape: a non-list yields ``[]``, malformed entries are dropped, duplicate
+    JIDs keep the first entry.
+    """
+    if not isinstance(raw, list):
+        return []
+    out: list[dict] = []
+    seen: set[str] = set()
+    for entry in raw:
+        if not isinstance(entry, dict):
+            continue
+        jid = str(entry.get("jid", "")).strip()
+        if not jid or jid in seen:
+            continue
+        seen.add(jid)
+        mode = str(entry.get("mode", "mention")).strip().lower()
+        if mode not in _WHATSAPP_GROUP_MODES:
+            mode = "mention"
+        try:
+            cooldown = int(entry.get("cooldown_s", _WHATSAPP_GROUP_COOLDOWN_DEFAULT))
+        except (TypeError, ValueError):
+            cooldown = _WHATSAPP_GROUP_COOLDOWN_DEFAULT
+        out.append(
+            {
+                "jid": jid,
+                "name": str(entry.get("name", "")).strip(),
+                "mode": mode,
+                "rules": str(entry.get("rules", "")).strip(),
+                "cooldown_s": max(0, cooldown),
+            }
+        )
+    return out
+
+
 def _coerce_str_ids(raw: object) -> list[str]:
     """Coerce a config value to a clean, deduped ``list[str]`` of digit IDs.
 
@@ -5565,6 +5609,116 @@ class WeixinConfig:
         # Shared normalization: clamp both thresholds and guarantee soft <= hard
         # so a misconfig can't make the soft nudge unreachable -- _maybe_notice
         # checks ``pct >= hard`` first. Mirrors WeComConfig.
+        self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
+            self.soft_threshold_pct, self.hard_threshold_pct
+        )
+
+
+@dataclass
+class WhatsAppConfig:
+    """WhatsApp channel via a QR-linked personal account (WhatsApp Web protocol).
+
+    Pairs as a linked device on the operator's own WhatsApp account — there is
+    no bot token. Pairing state lives in a local session database under the
+    data home (``whatsapp/session.db``), created by the Settings > Channels QR
+    flow. Requires the optional ``whatsapp`` dependency extra
+    (``pip install 'kirocrew[whatsapp]'``).
+
+    Uses the unofficial WhatsApp Web protocol; automation on a personal
+    account is against WhatsApp's Terms of Service and carries a small risk
+    of the linked number being banned. Keep volumes personal-scale.
+    """
+
+    enabled: bool = field(
+        default=False,
+        metadata=_meta(
+            "Enabled",
+            "Enable the WhatsApp channel (QR-linked personal account over the "
+            "WhatsApp Web protocol). Pair a device from Settings > Channels; "
+            "needs the 'whatsapp' dependency extra installed.",
+            tags=["whatsapp"],
+        ),
+    )
+    dm_policy: str = field(
+        default="self",
+        metadata=_meta(
+            "DM Policy",
+            "Who may command the agent in direct chats: 'self' (only the linked "
+            "account itself — your own messages, the default), 'allowlist' "
+            "(yourself plus allowed_wa_ids), 'open' (any sender), or 'disabled'. "
+            "Unknown values deny everyone (fail closed).",
+            tags=["whatsapp"],
+        ),
+    )
+    allowed_wa_ids: list[str] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Allowed WhatsApp IDs",
+            "Phone numbers (digits only, country code, no '+') additionally "
+            "permitted to DM the agent when dm_policy='allowlist'. Empty adds "
+            "nobody beyond the linked account.",
+            tags=["whatsapp"],
+        ),
+    )
+    groups: list[dict] = field(
+        default_factory=list,
+        metadata=_meta(
+            "Group Rules",
+            "Per-group participation rules. Each entry: {'jid': group JID "
+            "(…@g.us), 'name': display label, 'mode': 'mention' (reply only "
+            "when @-mentioned or quoted, the default) | 'rules' (also speak "
+            "unprompted when the entry's rules say the agent can genuinely "
+            "help) | 'off', 'rules': free-text guidance for when to speak, "
+            "'cooldown_s': minimum seconds between unprompted replies "
+            "(default 120)}. Groups not listed are ignored entirely.",
+            tags=["whatsapp"],
+        ),
+    )
+    db_path: str = field(
+        default="",
+        metadata=_meta(
+            "Session DB Path",
+            "Read-only. The pairing session database always lives at "
+            "<data home>/whatsapp/session.db, because that path is what the "
+            "sensitive-path protection matches: it holds the linked-device keys, "
+            "and moving it elsewhere would take the credential out from behind "
+            "the one control that stops an agent reading it.",
+            tags=["whatsapp"],
+        ),
+    )
+    soft_threshold_pct: int = field(
+        default=80,
+        metadata=_meta(
+            "Soft Context Threshold %",
+            "Prompt the user to /compact or /new when context passes this percentage.",
+            tags=["whatsapp"],
+        ),
+    )
+    hard_threshold_pct: int = field(
+        default=95,
+        metadata=_meta(
+            "Hard Context Threshold %",
+            "Force a compaction when context passes this percentage.",
+            tags=["whatsapp"],
+        ),
+    )
+    session_folder: str = field(
+        default="",
+        metadata=_meta(
+            "Session Folder",
+            "Optional sidebar folder for sessions that start on this channel. "
+            "Empty (the default) leaves them unfiled; any other value is the "
+            "folder name, created when these settings are saved and marked with "
+            "the channel's brand mark. A configured folder that no longer exists "
+            "leaves conversations unfiled until the next save recreates it.",
+            tags=["whatsapp"],
+        ),
+    )
+
+    def __post_init__(self) -> None:
+        # Shared normalization: clamp both thresholds and guarantee soft <= hard
+        # so a misconfig can't make the soft nudge unreachable -- _maybe_notice
+        # checks ``pct >= hard`` first. Mirrors WeixinConfig.
         self.soft_threshold_pct, self.hard_threshold_pct = _normalize_threshold_pair(
             self.soft_threshold_pct, self.hard_threshold_pct
         )
@@ -6040,6 +6194,14 @@ class KiroCrewConfig:
             "WeChat", "Weixin (iLink personal WeChat) integration settings.", tags=["weixin"]
         ),
     )
+    whatsapp: WhatsAppConfig = field(
+        default_factory=WhatsAppConfig,
+        metadata=_meta(
+            "WhatsApp",
+            "WhatsApp (QR-linked personal account) integration settings.",
+            tags=["whatsapp"],
+        ),
+    )
     discord: DiscordConfig = field(
         default_factory=DiscordConfig,
         metadata=_meta("Discord", "Discord bot integration settings.", tags=["discord"]),
@@ -6321,6 +6483,9 @@ class KiroCrewConfig:
         weixin_data = data.get("weixin", {})
         if not isinstance(weixin_data, dict):
             weixin_data = {}
+        whatsapp_data = data.get("whatsapp", {})
+        if not isinstance(whatsapp_data, dict):
+            whatsapp_data = {}
         discord_data = data.get("discord", {})
         if not isinstance(discord_data, dict):
             discord_data = {}
@@ -6774,6 +6939,16 @@ class KiroCrewConfig:
                 allowed_user_ids=_coerce_opaque_str_ids(weixin_data.get("allowed_user_ids")),
                 soft_threshold_pct=_threshold_pct(weixin_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(weixin_data.get("hard_threshold_pct"), 95),
+            ),
+            whatsapp=WhatsAppConfig(
+                session_folder=_coerce_session_folder(whatsapp_data.get("session_folder")),
+                enabled=bool(whatsapp_data.get("enabled", False)),
+                dm_policy=str(whatsapp_data.get("dm_policy", "self") or "self"),
+                allowed_wa_ids=_coerce_str_ids(whatsapp_data.get("allowed_wa_ids")),
+                groups=_coerce_whatsapp_groups(whatsapp_data.get("groups")),
+                db_path=str(whatsapp_data.get("db_path", "")),
+                soft_threshold_pct=_threshold_pct(whatsapp_data.get("soft_threshold_pct"), 80),
+                hard_threshold_pct=_threshold_pct(whatsapp_data.get("hard_threshold_pct"), 95),
             ),
             discord=DiscordConfig(
                 session_folder=_coerce_session_folder(discord_data.get("session_folder")),
@@ -7328,6 +7503,7 @@ class KiroCrewConfig:
             "webex": asdict(self.webex),
             "wecom": asdict(self.wecom),
             "weixin": asdict(self.weixin),
+            "whatsapp": asdict(self.whatsapp),
             "teams": asdict(self.teams),
             "imessage": asdict(self.imessage),
             "dashboard": asdict(self.dashboard),

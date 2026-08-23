@@ -4047,6 +4047,7 @@ class TestSetupChannelGating:
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
         monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(
             cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))
@@ -4087,6 +4088,51 @@ class TestSetupChannelGating:
         calls = self._run_setup(monkeypatch, tmp_path, agent_only=True)
         assert calls == []
         out = capsys.readouterr().out
+        assert "--slack is ignored" not in out
+
+    def test_default_setup_names_whatsapp_among_the_connectable_channels(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The fallback blurb is where an operator learns which channels exist.
+        Omitting WhatsApp made the only channel with an install prerequisite the
+        one channel the wizard never mentions."""
+        self._run_setup(monkeypatch, tmp_path)
+        out = capsys.readouterr().out
+        assert "WhatsApp" in out
+        assert "setup --whatsapp" in out
+
+    def test_whatsapp_flag_opts_into_the_whatsapp_step_only(self, tmp_path, monkeypatch):
+        """--whatsapp runs its own step and NOT the Slack ones (there is no token
+        to collect and no slash command on WhatsApp)."""
+        calls = self._run_setup(monkeypatch, tmp_path, whatsapp=True)
+        assert calls == ["whatsapp"]
+
+    def test_both_flags_run_both_guided_setups(self, tmp_path, monkeypatch):
+        calls = self._run_setup(monkeypatch, tmp_path, slack=True, whatsapp=True)
+        assert calls == ["slack_tokens", "slash_command", "whatsapp"]
+
+    def test_the_whatsapp_flag_reaches_setup_from_the_command_line(self):
+        """The wizard-level tests call ``_setup_impl`` directly, so the argparse
+        flag and its plumbing need their own guard: without them
+        ``kirocrew setup --whatsapp`` exits 2 instead of running anything."""
+        import sys
+
+        argv = ["kirocrew", "setup", "--whatsapp"]
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._setup") as mock_setup:
+            from kiro_crew.cli import main
+
+            main()
+            assert mock_setup.call_args.kwargs["whatsapp"] is True
+
+    def test_agent_only_with_whatsapp_warns_and_skips_the_step(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only --whatsapp: the step is skipped, and the notice names the
+        flag the caller actually passed rather than only --slack."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True, whatsapp=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--whatsapp is ignored with --agent-only" in out
         assert "--slack is ignored" not in out
 
 

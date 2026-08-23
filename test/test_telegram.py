@@ -1241,6 +1241,37 @@ class TestTransportReceive:
 
 
 class TestRenderer:
+    def test_the_approval_prompt_names_the_tool_the_request_is_about(self) -> None:
+        # `_last_tool` is the last tool_call the renderer saw and is never
+        # cleared, so a permission arriving without its own titled tool_call
+        # would ask the operator to approve the PREVIOUS tool.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_tool_call("t1", "fs_read")
+            await r.on_prompt_choice([], request_id="rq1", tool_title="execute_bash")
+
+        asyncio.run(_go())
+        prompt = cli.sent[-1][0]
+        assert "execute_bash" in prompt
+        assert "fs_read" not in prompt
+
+    def test_the_approval_prompt_falls_back_to_the_last_tool(self) -> None:
+        # Non-vacuity: without a title on the event the remembered name is still
+        # better than "this tool", so the fallback must survive.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_tool_call("t1", "fs_read")
+            await r.on_prompt_choice([], request_id="rq2")
+
+        asyncio.run(_go())
+        assert "fs_read" in cli.sent[-1][0]
+
     def test_a_streamed_table_reply_still_goes_out_as_a_rich_message(self) -> None:
         # THE regression this feature exists to prevent. A normal agent reply
         # streams, so _stream_live has already sent a plaintext bubble and set

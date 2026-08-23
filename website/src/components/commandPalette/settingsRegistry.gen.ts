@@ -151,6 +151,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.file-sessions-in-a-folder-wechat",
+    "label": "File sessions in a folder (WeChat)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "WeChat",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "weixin"
+    }
+  },
+  {
     "id": "channels.file-sessions-in-a-folder-wecom",
     "label": "File sessions in a folder (WeCom)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",

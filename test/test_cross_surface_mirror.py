@@ -348,3 +348,81 @@ class TestDeliverCrossSurfaceUserMessage:
             return_value=ChannelLink("telegram", channel_id="123")
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")  # must not raise
+
+
+# A reply whose code block spans the transport's message cap: the shape of a cron
+# log or diff dump, and the one a fixed-width slice mangles. Lines inside the
+# block carry prose markup a channel's dialect converter WOULD rewrite if the part
+# they land in has lost the opener.
+_FENCED_REPLY = (
+    "Here is the diff:\n\n"
+    "```diff\n"
+    "**never bold** inside a code block\n"
+    "# never a heading inside a code block\n"
+    "- never a bullet inside a code block\n"
+    "~~never struck~~ inside a code block\n"
+    "```\n"
+)
+_CODE_MARKERS = (
+    "**never bold** inside a code block",
+    "# never a heading inside a code block",
+    "- never a bullet inside a code block",
+    "~~never struck~~ inside a code block",
+)
+
+
+def _lines_the_channel_would_read_as_prose(part: str) -> list[str]:
+    """Lines of *part* that fall OUTSIDE a fence, as a dialect converter sees them."""
+    from kiro_crew.messaging.split import FENCE_OUTSIDE, iter_fence_lines
+
+    return [line for line, role in iter_fence_lines(part) if role == FENCE_OUTSIDE]
+
+
+class TestALongFencedReplyStaysCode:
+    """The mirror pre-splits, so the split it does IS the one the channel gets.
+
+    Each part arrives already under the cap, so a channel's own fence-safe
+    splitter is a no-op on it: whatever cut this leg makes is final. A fixed-width
+    slice through the block leaves part two with no opener, every line in it takes
+    the prose branch of the channel's dialect converter, and the markup INSIDE the
+    code gets rewritten.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_code_line_escapes_its_fence(self, tmp_path):
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        tp.capabilities.max_message_chars = 90
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123")
+        )
+
+        await _deliver_cross_surface_reply(state, "k", _FENCED_REPLY)
+
+        parts = [c.args[1] for c in tp.send_message.await_args_list]
+        assert len(parts) > 1, "precondition: the reply must actually have been split"
+        for part in parts:
+            prose = _lines_the_channel_would_read_as_prose(part)
+            for marker in _CODE_MARKERS:
+                assert marker not in prose, (
+                    f"a code line landed outside its fence in this part, so the "
+                    f"channel will rewrite the markup inside it:\n{part}"
+                )
+
+    @pytest.mark.asyncio
+    async def test_every_source_line_still_arrives(self, tmp_path):
+        """Fence scaffolding is added, never substituted for content."""
+        state = _make_state(tmp_path)
+        tp = _fake_transport("telegram")
+        tp.capabilities.max_message_chars = 90
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink("telegram", channel_id="123")
+        )
+
+        await _deliver_cross_surface_reply(state, "k", _FENCED_REPLY)
+
+        delivered = "\n".join(c.args[1] for c in tp.send_message.await_args_list)
+        for marker in _CODE_MARKERS:
+            assert marker in delivered

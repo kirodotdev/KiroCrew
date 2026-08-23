@@ -5055,7 +5055,7 @@ class TestMigrationBackupContainment:
 # only the soft nudge (their hard backstop is the backend autocompactor).
 # A future transport that forgets _threshold_pct / _normalize_threshold_pair
 # fails these tests rather than shipping an unclamped read.
-_THRESHOLD_PAIR_TRANSPORTS = ["weixin", "webex", "teams", "wecom"]
+_THRESHOLD_PAIR_TRANSPORTS = ["weixin", "webex", "teams", "wecom", "whatsapp", "imessage"]
 _THRESHOLD_SOFT_ONLY_TRANSPORTS = ["telegram", "discord"]
 
 
@@ -5134,6 +5134,8 @@ class TestTransportThresholdConsistency:
             "webex": loader_module.WebexConfig,
             "teams": loader_module.TeamsConfig,
             "wecom": loader_module.WeComConfig,
+            "whatsapp": loader_module.WhatsAppConfig,
+            "imessage": loader_module.IMessageConfig,
         }[transport]
         if transport in _THRESHOLD_PAIR_TRANSPORTS:
             obj = cls(soft_threshold_pct=150, hard_threshold_pct=-3)
@@ -5142,6 +5144,38 @@ class TestTransportThresholdConsistency:
         else:
             obj = cls(soft_threshold_pct=150)
             assert obj.soft_threshold_pct == 100
+
+    @pytest.mark.parametrize(
+        "transport", _THRESHOLD_PAIR_TRANSPORTS + _THRESHOLD_SOFT_ONLY_TRANSPORTS
+    )
+    def test_an_integral_float_is_honoured_on_a_shipped_install(
+        self, transport: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A threshold written as ``90.0`` is the value the operator chose.
+
+        Asserted with the schema layer OFF, because that is the shipped
+        configuration: ``jsonschema`` is a dev-only dependency, so on a user's
+        install ``validate_config_data`` returns early and its
+        ``_coerce_legacy_numeric_values`` pre-pass -- which is what turns an
+        integral float into an int -- never runs. The loader's own coercion is
+        then the only one there is, and the shared ``_threshold_pct`` accepts an
+        integral float where a hand-rolled ``int(str(raw))`` raises on ``"90.0"``
+        and silently substitutes the default. That channel would keep firing at
+        80 for someone who configured 90, with nothing logged.
+
+        Leaving jsonschema installed here (as CI does) makes this pass against a
+        hand-rolled clamp too, which is exactly the mistake that hides the bug.
+        """
+        import kiro_crew.config.validation as validation
+
+        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
+        payload: dict = {"soft_threshold_pct": 90.0}
+        if transport in _THRESHOLD_PAIR_TRANSPORTS:
+            payload["hard_threshold_pct"] = 99.0
+        section = self._section(_load_from_dict({transport: payload}), transport)
+        assert section.soft_threshold_pct == 90
+        if transport in _THRESHOLD_PAIR_TRANSPORTS:
+            assert section.hard_threshold_pct == 99
 
     def test_telegram_account_soft_threshold_clamped(self) -> None:
         # Deprecated/inert telegram.accounts entries still parse through the

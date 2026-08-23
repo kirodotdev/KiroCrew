@@ -47,6 +47,7 @@ organized for someone browsing the repository.
 | [webex-integration.md](webex-integration.md) | Webex setup and behavior. |
 | [wecom-integration.md](wecom-integration.md) | WeCom setup and behavior. |
 | [weixin-integration.md](weixin-integration.md) | Weixin setup, and the risks to read first. |
+| [whatsapp-integration.md](whatsapp-integration.md) | WhatsApp (QR-linked personal account) setup, and the risks to read first. |
 | [messaging-transport.md](messaging-transport.md) | The channel-neutral contracts every transport shares. |
 
 ## Platform
