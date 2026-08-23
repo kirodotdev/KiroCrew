@@ -4,7 +4,7 @@
 // macOS's sips is used only by designers; release and Windows builds consume
 // the committed PNG/BMP files and do not execute this script.
 
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,22 +36,6 @@ function renderBmp24(source, destination) {
   const intermediate = join(scratch, `${source.replaceAll(/[\\/]/g, "-")}.bmp`);
   render(source, "bmp", intermediate);
   bmp32To24(intermediate, destination);
-}
-
-function renderSvgTextBmp24(name, svg, destination) {
-  const source = join(scratch, `${name}.svg`);
-  const intermediate = join(scratch, `${name}.bmp`);
-  writeFileSync(source, svg);
-  run(
-    "/usr/bin/sips",
-    ["-s", "format", "bmp", source, "--out", intermediate],
-    `sips render for ${name}`
-  );
-  bmp32To24(intermediate, destination);
-}
-
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function renderSvgAtScale(source, scale, destination) {
@@ -124,65 +108,8 @@ try {
     "windows-installer-sidebar",
     "windows-installer-header",
     "windows-installer-full-light",
-    "windows-installer-full-dark",
   ]) {
     renderBmp24(`${name}.svg`, join(here, `${name}.bmp`));
-  }
-
-  // Render every animation state as one full-window bitmap. Win32 stretches
-  // sibling bitmaps independently, so even pixel-identical crops develop seams
-  // on a smaller work area. One surface keeps the opening-scene gradient,
-  // title, glass, and all eight characters in a single scaling operation.
-  const openingFrames = [
-    { scale: 0.001, dy: 0 },
-    { scale: 0.55, dy: 0 },
-    { scale: 1.14, dy: 0 },
-    { scale: 0.95, dy: 0 },
-    { scale: 1, dy: -4 },
-  ];
-  const openingGhosts = {
-    "top-left": { anchorX: 282, anchorY: 13, delay: 0 },
-    large: { anchorX: 896, anchorY: 17, delay: 1 },
-    left: { anchorX: 15, anchorY: 344, delay: 2 },
-    right: { anchorX: 1265, anchorY: 499, delay: 3 },
-    bottom: { anchorX: 384, anchorY: 851, delay: 4 },
-    small: { anchorX: 1088, anchorY: 163, delay: 5 },
-    "small-left": { anchorX: 166, anchorY: 636, delay: 6 },
-    "bottom-right": { anchorX: 845, anchorY: 671, delay: 7 },
-  };
-  const entranceTicks = [0, 3, 6, 8, 10];
-  for (const name of readdirSync(here)) {
-    if (/^windows-installer-progress-.*\.bmp$/.test(name)) rmSync(join(here, name));
-  }
-  for (const theme of ["light", "dark"]) {
-    const source = readFileSync(join(here, `windows-installer-full-${theme}.svg`), "utf8");
-    const renderScene = (index, resolveFrame) => {
-      let frame = source;
-      for (const [ghost, details] of Object.entries(openingGhosts)) {
-        const { anchorX, anchorY } = details;
-        const originalTransform = `translate(${anchorX} ${anchorY}) scale(1) translate(-${anchorX} -${anchorY})`;
-        const marker = new RegExp(
-          `(id="ghost-${escapeRegExp(ghost)}"[^>]*\\btransform=")${escapeRegExp(originalTransform)}(")`
-        );
-        if (!marker.test(frame)) {
-          throw new Error(`opening animation marker not found for ${theme}/${ghost}`);
-        }
-        const { scale, dy } = resolveFrame(details);
-        frame = frame.replace(
-          marker,
-          `$1translate(0 ${dy}) translate(${anchorX} ${anchorY}) scale(${scale.toFixed(4)}) translate(-${anchorX} -${anchorY})$2`
-        );
-      }
-      renderSvgTextBmp24(
-        `windows-installer-progress-${theme}-${index}`,
-        frame,
-        join(here, `windows-installer-progress-${theme}-${index}.bmp`)
-      );
-    };
-    entranceTicks.forEach((tick, index) => {
-      renderScene(index, ({ delay }) => openingFrames[Math.max(0, Math.min(4, tick - delay))]);
-    });
-    renderScene(5, () => ({ scale: 1, dy: 4 }));
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

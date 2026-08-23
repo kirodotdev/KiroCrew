@@ -85,7 +85,7 @@ jobs:
   build-windows-installer:
     name: Build Windows Installer (x64)
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -112,295 +112,25 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Capture live light and dark installer windows
+      - name: Install pinned video capture tool
+        shell: pwsh
+        run: choco install ffmpeg --version=9.0.1 --yes --no-progress
+
+      - name: Exercise native Windows 11 installer flow
         shell: pwsh
         working-directory: website/electron
         run: |
-          Add-Type -AssemblyName System.Drawing
-          Add-Type -AssemblyName UIAutomationClient
-          $referenceAssemblies = @(
-            [System.AppContext]::GetData('TRUSTED_PLATFORM_ASSEMBLIES') -split [IO.Path]::PathSeparator
-            [System.Drawing.Bitmap].Assembly.Location
-            [System.Drawing.Size].Assembly.Location
-          ) | Select-Object -Unique
-          Add-Type -ReferencedAssemblies $referenceAssemblies -TypeDefinition @'
-          using System;
-          using System.Drawing;
-          using System.Drawing.Imaging;
-          using System.IO;
-          using System.Runtime.InteropServices;
-          using System.Threading.Tasks;
-          public static class KiroInstallerCapture {
-            [StructLayout(LayoutKind.Sequential)]
-            public struct Rect { public int Left, Top, Right, Bottom; }
-            [DllImport("user32.dll")]
-            public static extern bool GetWindowRect(IntPtr handle, out Rect rect);
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern bool PostMessage(
-              IntPtr handle,
-              uint message,
-              IntPtr word,
-              IntPtr data
-            );
-            [DllImport("user32.dll")]
-            public static extern bool IsWindowVisible(IntPtr handle);
-            [DllImport("user32.dll")]
-            public static extern IntPtr GetDlgItem(IntPtr dialog, int identifier);
-            [DllImport("user32.dll", SetLastError = true)]
-            public static extern bool SystemParametersInfo(
-              uint action,
-              uint parameter,
-              ref int value,
-              uint update
-            );
-            [DllImport("kernel32.dll")]
-            public static extern void Sleep(uint milliseconds);
-            public static bool IsBrandedSurface(Bitmap bitmap) {
-              int purpleSamples = 0;
-              int[,] samples = {
-                { bitmap.Width / 2, bitmap.Height / 3 },
-                { bitmap.Width / 8, bitmap.Height / 2 },
-                { bitmap.Width * 7 / 8, bitmap.Height / 2 }
-              };
-              for (int sample = 0; sample < samples.GetLength(0); sample++) {
-                Color color = bitmap.GetPixel(samples[sample, 0], samples[sample, 1]);
-                if (color.B > color.R + 24 && color.R > color.G + 24) {
-                  purpleSamples++;
-                }
-              }
-              return purpleSamples >= 2;
-            }
-            public static Task CaptureProgressBurst(
-              IntPtr handle,
-              IntPtr progressReadyControl,
-              string directory
-            ) {
-              return Task.Run(() => {
-                bool progressReady = false;
-                for (int probe = 0; probe < 100; probe++) {
-                  if (IsWindowVisible(progressReadyControl)) {
-                    progressReady = true;
-                    break;
-                  }
-                  Sleep(80);
-                }
-                if (!progressReady) {
-                  throw new InvalidOperationException("Progress page never became ready for burst capture");
-                }
-                Bitmap readyFrame = null;
-                for (int probe = 0; probe < 150; probe++) {
-                  Rect rect;
-                  if (!GetWindowRect(handle, out rect)) {
-                    throw new InvalidOperationException("Could not read installer bounds during burst capture");
-                  }
-                  int width = rect.Right - rect.Left;
-                  int height = rect.Bottom - rect.Top;
-                  Bitmap bitmap = new Bitmap(width, height);
-                  using (Graphics graphics = Graphics.FromImage(bitmap)) {
-                    graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, bitmap.Size);
-                  }
-                  if (IsBrandedSurface(bitmap)) {
-                    readyFrame = bitmap;
-                    break;
-                  }
-                  bitmap.Dispose();
-                  Sleep(40);
-                }
-                if (readyFrame == null) {
-                  throw new InvalidOperationException("Kiro progress surface never became visible");
-                }
-                // Keep the entire burst in memory. Encoding a full-window PNG
-                // here can consume most of the 600 ms native entrance and make
-                // the evidence sampler observe only the settled frame.
-                Bitmap[] frames = new Bitmap[16];
-                frames[0] = readyFrame;
-                try {
-                  for (int frame = 1; frame < frames.Length; frame++) {
-                    Sleep(40);
-                    Rect rect;
-                    if (!GetWindowRect(handle, out rect)) {
-                      throw new InvalidOperationException("Could not read installer bounds during burst capture");
-                    }
-                    int width = rect.Right - rect.Left;
-                    int height = rect.Bottom - rect.Top;
-                    Bitmap bitmap = new Bitmap(width, height);
-                    using (Graphics graphics = Graphics.FromImage(bitmap)) {
-                      graphics.CopyFromScreen(rect.Left, rect.Top, 0, 0, bitmap.Size);
-                    }
-                    if (!IsBrandedSurface(bitmap)) {
-                      bitmap.Dispose();
-                      throw new InvalidOperationException(
-                        "A progress frame lost the branded whole-scene surface"
-                      );
-                    }
-                    frames[frame] = bitmap;
-                  }
-                  for (int frame = 0; frame < frames.Length; frame++) {
-                    string name = string.Format("progress-frame-{0:D3}.png", frame);
-                    frames[frame].Save(Path.Combine(directory, name), ImageFormat.Png);
-                  }
-                } finally {
-                  foreach (Bitmap frame in frames) {
-                    if (frame != null) frame.Dispose();
-                  }
-                }
-              });
-            }
-          }
-          '@
-          function Save-KiroInstallerWindow {
-            param([IntPtr]$Handle, [string]$Path)
-            $rect = New-Object KiroInstallerCapture+Rect
-            if (-not [KiroInstallerCapture]::GetWindowRect($Handle, [ref]$rect)) {
-              throw "Could not read installer bounds for $Path"
-            }
-            $width = $rect.Right - $rect.Left
-            $height = $rect.Bottom - $rect.Top
-            $bitmap = New-Object System.Drawing.Bitmap $width, $height
-            $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-            try {
-              $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
-              $bitmap.Save($Path)
-            } finally {
-              $graphics.Dispose()
-              $bitmap.Dispose()
-            }
-          }
-          $themeKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
-          New-Item -ItemType Directory -Force runtime-evidence | Out-Null
-          New-Item -Path $themeKey -Force | Out-Null
-          $animationsEnabled = 1
-          if (-not [KiroInstallerCapture]::SystemParametersInfo(
-            0x1043,
-            0,
-            [ref]$animationsEnabled,
-            0
-          )) {
-            throw 'Could not enable client-area animation for runtime verification'
-          }
-          $verifiedAnimationsEnabled = 0
-          if (-not [KiroInstallerCapture]::SystemParametersInfo(
-            0x1042,
-            0,
-            [ref]$verifiedAnimationsEnabled,
-            0
-          ) -or $verifiedAnimationsEnabled -eq 0) {
-            throw 'Client-area animation did not remain enabled for runtime verification'
-          }
-          $installer = Get-ChildItem dist -Filter '*Setup*.exe' | Select-Object -First 1
-          if (-not $installer) { throw 'Compiled installer not found' }
-          # A file can never own an extracted app directory. Exercise the real
-          # silent entry point so /D validation cannot regress behind UI-only
-          # checks or a source-pattern assertion.
-          $blockedDestination = Join-Path (Resolve-Path runtime-evidence).Path 'blocked-parent'
-          Set-Content -Path $blockedDestination -Value 'not a directory'
-          $blockedProcess = Start-Process -FilePath $installer.FullName -ArgumentList @(
-            '/S',
-            "/D=$blockedDestination"
-          ) -PassThru -Wait
-          if ($blockedProcess.ExitCode -ne 2) {
-            throw "Existing-file /D destination returned $($blockedProcess.ExitCode), expected 2"
-          }
-          foreach ($theme in @(@{ Name = 'light'; Value = 1 }, @{ Name = 'dark'; Value = 0 })) {
-            Set-ItemProperty -Path $themeKey -Name AppsUseLightTheme -Type DWord -Value $theme.Value
-            $process = Start-Process -FilePath $installer.FullName -PassThru
-            for ($attempt = 0; $attempt -lt 60; $attempt++) {
-              Start-Sleep -Milliseconds 250
-              $process.Refresh()
-              if ($process.MainWindowHandle -ne 0) { break }
-              if ($process.HasExited) { throw "Installer exited before showing the $($theme.Name) window" }
-            }
-            if ($process.MainWindowHandle -eq 0) { throw "$($theme.Name) installer window did not appear" }
-            Start-Sleep -Milliseconds 1200
-            Save-KiroInstallerWindow $process.MainWindowHandle "runtime-evidence/$($theme.Name)-options.png"
-            if ($theme.Name -eq 'dark') {
-              $root = [System.Windows.Automation.AutomationElement]::FromHandle($process.MainWindowHandle)
-              $buttonCondition = [System.Windows.Automation.PropertyCondition]::new(
-                [System.Windows.Automation.AutomationElement]::NameProperty,
-                'Install Kiro Crew'
-              )
-              $installButton = $root.FindFirst(
-                [System.Windows.Automation.TreeScope]::Descendants,
-                $buttonCondition
-              )
-              if (-not $installButton) { throw 'Could not find the live Install Kiro Crew button' }
-              $installHandle = [IntPtr]$installButton.Current.NativeWindowHandle
-              if ($installHandle -eq [IntPtr]::Zero) {
-                throw 'The live Install Kiro Crew button has no native window handle'
-              }
-              $progressReadyHandle = [KiroInstallerCapture]::GetDlgItem(
-                $process.MainWindowHandle,
-                2
-              )
-              if ($progressReadyHandle -eq [IntPtr]::Zero) {
-                throw 'The installer has no native progress-page readiness control'
-              }
-              $evidenceDirectory = (Resolve-Path runtime-evidence).Path
-              $progressCapture = [KiroInstallerCapture]::CaptureProgressBurst(
-                $process.MainWindowHandle,
-                $progressReadyHandle,
-                $evidenceDirectory
-              )
-              Start-Sleep -Milliseconds 100
-              if (-not [KiroInstallerCapture]::PostMessage(
-                $installHandle,
-                0x00F5,
-                [IntPtr]::Zero,
-                [IntPtr]::Zero
-              )) {
-                throw 'Could not activate the live Install Kiro Crew button'
-              }
-              $progressCapture.Wait()
-              $process.Refresh()
-              if ($process.HasExited) { throw 'Installer exited before the progress page was validated' }
-              $burstFrames = Get-ChildItem runtime-evidence -Filter 'progress-frame-*.png' |
-                Sort-Object Name
-              if ($burstFrames.Count -ne 16) { throw 'The progress-page burst capture is incomplete' }
-              Copy-Item -Path ($burstFrames[-1].FullName) -Destination 'runtime-evidence/dark-progress.png' -Force
-              $sceneChanged = $false
-              # Frame zero can straddle the page handoff. Compare only the
-              # following early native-progress frames across the artwork band;
-              # extraction is blocked behind the opening animation here.
-              for ($frame = 2; $frame -lt $burstFrames.Count -and -not $sceneChanged; $frame++) {
-                $firstFrame = [System.Drawing.Bitmap]::FromFile($burstFrames[$frame - 1].FullName)
-                $nextFrame = [System.Drawing.Bitmap]::FromFile($burstFrames[$frame].FullName)
-                try {
-                  $right = $firstFrame.Width
-                  $bottom = [Math]::Ceiling($firstFrame.Height * 0.6)
-                  for ($y = 0; $y -lt $bottom -and -not $sceneChanged; $y += 4) {
-                    for ($x = 0; $x -lt $right; $x += 4) {
-                      if ($firstFrame.GetPixel($x, $y).ToArgb() -ne $nextFrame.GetPixel($x, $y).ToArgb()) {
-                        $sceneChanged = $true
-                        break
-                      }
-                    }
-                  }
-                } finally {
-                  $firstFrame.Dispose()
-                  $nextFrame.Dispose()
-                }
-              }
-              if (-not $sceneChanged) { throw 'The native progress-page scene did not animate' }
-              if (-not [KiroInstallerCapture]::IsWindowVisible($progressReadyHandle)) {
-                throw 'The native progress-page Exit button disappeared before validation'
-              }
-            }
-            # Evidence capture must not depend on the localized modal NSIS
-            # confirmation shown by a mid-extraction Cancel. The visible Exit
-            # control was validated above; terminate this throwaway test run
-            # deterministically after all frames are safely encoded.
-            if (-not $process.HasExited) {
-              Stop-Process -Id $process.Id -Force
-              $process.WaitForExit()
-            }
-          }
+          & "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1"
 
-      - name: Upload live Windows installer screenshots
+      - name: Upload live Windows installer evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: windows-installer-runtime-evidence
-          path: website/electron/runtime-evidence/*.png
+          path: |
+            website/electron/runtime-evidence/*.png
+            website/electron/runtime-evidence/*.mp4
+            website/electron/runtime-evidence/*.txt
 
   # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS
   # builds -- it is comparatively cheap and catches cross-platform bundle
