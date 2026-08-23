@@ -17,7 +17,7 @@ import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
 import { updateAffordance } from './utils/updateAffordance'
 import { metricColor } from './utils/metricColor'
-import { fetchNotifications, ackNotification } from './store/notificationsSlice'
+import { fetchNotifications, ackNotification, armBootNotificationsFallback } from './store/notificationsSlice'
 import { useWebSocket } from './hooks/useWebSocket'
 import { useDashboardHealthProbe } from './hooks/useDashboardHealthProbe'
 import { useTheme } from './hooks/useTheme'
@@ -1930,9 +1930,16 @@ export default function App() {
         gcOrphanedStorage(liveIds)
       }
     })
-    dispatch(fetchNotifications())
+    // The boot notifications fetch is owned by the WebSocket first-connect
+    // handler (its snapshot is taken after socket registration, so nothing
+    // can fall between snapshot and push -- see notificationsSlice). This
+    // only arms the fallback for a socket that never connects.
+    // Return the thunk promise: a late first connect serializes its own fetch
+    // behind this one via markBootNotificationsFetched() (see notificationsSlice).
+    const disarmNotificationsFallback = armBootNotificationsFallback(() => dispatch(fetchNotifications()))
     // Fetch status immediately to sync YOLO state (WS status push is periodic)
     api.status().then(s => { dispatch(sseStatus(s)); recordSessionStart(s) }).catch(() => {})
+    return disarmNotificationsFallback
   }, [dispatch])
   const { subscribeLogs, subscribeSubagents, forceReconnect } = useWebSocket()
   useDashboardHealthProbe(forceReconnect)

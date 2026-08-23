@@ -584,8 +584,9 @@ describe('ChatPage welcome-state history suggestions', () => {
     })
     const { store } = renderChatPage([], { sessions: HISTORY })
     await waitFor(() => expect(inputProps).not.toBeNull())
-    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     await typeQuery('rate limiter')
+    // #765: history is seeded lazily by the typed query, not on mount.
+    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     const list = await screen.findByRole('listbox', { name: 'Previous chats' }, { timeout: 5_000 })
     const options = within(list).getAllByRole('option')
     expect(options).toHaveLength(1)
@@ -597,8 +598,9 @@ describe('ChatPage welcome-state history suggestions', () => {
   it('dismisses the suggestions on Escape', async () => {
     const { store } = renderChatPage([], { sessions: HISTORY })
     await waitFor(() => expect(inputProps).not.toBeNull())
-    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     await typeQuery('rate limiter')
+    // #765: history is seeded lazily by the typed query, not on mount.
+    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     expect(await screen.findByRole('listbox', { name: 'Previous chats' }, { timeout: 5_000 })).toBeInTheDocument()
     act(() => { fireEvent.keyDown(document, { key: 'Escape' }) })
     await waitFor(() => expect(screen.queryByRole('listbox', { name: 'Previous chats' })).toBeNull())
@@ -607,8 +609,11 @@ describe('ChatPage welcome-state history suggestions', () => {
   it('offers nothing when no past session matches', async () => {
     const { store } = renderChatPage([], { sessions: HISTORY })
     await waitFor(() => expect(inputProps).not.toBeNull())
-    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     await typeQuery('kubernetes migration')
+    // #765: history is seeded lazily by the typed query, not on mount — wait
+    // for the seed to land so the "no match" below is a real negative, not a
+    // not-yet-loaded false pass.
+    await waitFor(() => expect(store.getState().chat.history).toHaveLength(2))
     expect(screen.queryByRole('listbox', { name: 'Previous chats' })).toBeNull()
   })
 })
