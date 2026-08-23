@@ -8,9 +8,9 @@ import { ApiError } from '../api/client'
 import { i18nT } from '../i18n/t'
 export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, hasCommand = true, trustAllLabelKey, onApprove }: {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
-  /** False when the surface has no tool command behind the approval (the
-      channels surface titles the card with an agent role): forwarded to
-      TrustDropdown so command-scoped tiers are not offered there. */
+  /** False when the approval has no tool command behind it (for example, an
+      agent-role channel approval): forwarded to TrustDropdown so command-
+      scoped tiers are not offered for that card. */
   hasCommand?: boolean
   // Passed through to TrustDropdown: a surface whose `trust` decision grants
   // more than the session (e.g. channel-wide, persisted) labels the real grant.
@@ -74,8 +74,8 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
 
   const isShell = title.startsWith('Running: ')
   const normalized = title.replace(/^(Running: |Reading )/, '')
-  // Channel approvals pass ``hasCommand=false`` and grant only channel-wide
-  // trust.  Do not derive dead command/base authority from their display title.
+  // Approvals without a command (including agent-role channel approvals) pass
+  // `hasCommand=false`; do not derive dead command/base authority from a title.
   const baseCmd = hasCommand ? (normalized.split(/\s+/)[0] || normalized) : ''
   // The showButtons branch renders its own i18n "Running:" label, so a shell
   // title (which carries the "Running: " prefix) must be de-prefixed there to

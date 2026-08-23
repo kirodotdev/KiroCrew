@@ -132,9 +132,19 @@ function AgentBadge({ agent, index }: { agent: ChannelAgent; index: number }) {
   )
 }
 
+/** Tool title embedded in a channel approval message by the backend
+ * (`⚠️ Approval needed: **<name>**` + fenced input). Greedy up to the LAST
+ * `**` before the input fence so a command containing `**` stays whole.
+ * Empty when the message carries no name (legacy messages). The approval
+ * card's TrustDropdown derives its trust_command / trust_base patterns from
+ * this title, so it must be the tool's identity, never the agent role. */
+export function approvalToolTitle(content: string): string {
+  return /^⚠️ Approval needed: \*\*([\s\S]*)\*\*\n```/.exec(content)?.[1] || ''
+}
+
 function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
   msg: ChannelMessage; agents: ChannelAgent[]
-  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string) => Promise<unknown>
+  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string, pattern?: string) => Promise<unknown>
 }) {
   const isHuman = msg.fromId === 'human'
   const approvalMode = useAppSelector((s: RootState) => s.dashboard.approvalMode)
@@ -158,20 +168,21 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
           <span className="text-[13px] text-muted ml-auto">{time}</span>
         </div>
         <div className="text-sm text-text">{msg.msgType === 'approval' ? <span className="whitespace-pre-wrap">{msg.content}</span> : <MarkdownRenderer content={msg.content} />}</div>
-        {/* Approval card. hasCommand={false}: the channel approval message has
-            no STRUCTURED command field — the card is titled with the agent's
-            ROLE, and the fenced content is the tool input after credential
-            redaction and truncation (channel.py), which must never serve as an
-            exact-match trust pattern. The approve endpoint also accepts only
-            approved/rejected/trust, so command-scoped tiers stay off this
-            surface until the message schema actually carries a command.
-            trustAllLabelKey: the channel `trust` decision is channel-wide and
-            persisted to disk (it sets the channel's trusted flag and saves it),
-            so the trust-all option must say so — the default label reads as
-            session-scoped. */}
+        {/* Approval card. The title is the tool name the backend embedded in
+            the message — the TrustDropdown derives its trust_command /
+            trust_base patterns from it, so the agent ROLE (fromRole) is only
+            a fallback for legacy messages without a name. Per-command tiers
+            are shell-only on channels (the endpoint refuses them for
+            non-shell tools with pattern_underivable), so a non-shell card
+            offers just Approve / blanket Trust / Reject. */}
         {msg.msgType === 'approval' && onApprove && (
           <div className="mt-2">
-            <ApprovalCard title={msg.fromRole} hasCommand={false} toolInput={msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')} showButtons={approvalMode === 'normal'} trustAllLabelKey="components.trustDropdown.trust_all_tools_channel" onApprove={onApprove} />
+            {(() => {
+              const title = approvalToolTitle(msg.content)
+              const toolInput = msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')
+              const hasCommand = title.startsWith('Running: ') && !/\[REDACTED/.test(toolInput)
+              return <ApprovalCard title={title || msg.fromRole} hasCommand={hasCommand} toolInput={toolInput} showButtons={approvalMode === 'normal'} trustAllLabelKey="components.trustDropdown.trust_all_tools_channel" onApprove={onApprove} />
+            })()}
           </div>
         )}
         {/* Thread badge + reply */}
@@ -760,7 +771,7 @@ export default function ChannelPage() {
                 <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
                   onReply={() => openThread(msg.id)}
                   onOpenThread={() => openThread(msg.id)}
-                  onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action) : undefined} />
+                  onApprove={msg.msgType === 'approval' ? (action, pattern) => api.channelApproveAgent(channel.id, msg.fromId, action, pattern) : undefined} />
               ))}
               {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                 <div key={a.id + '-typing'} className="flex items-center gap-2 px-3 py-1.5 text-[13px] text-muted animate-pulse">
@@ -785,11 +796,11 @@ export default function ChannelPage() {
                 }>
                   <div className="flex flex-col gap-1 -mx-3 -mt-2">
                     {parent && <MessageBubble key={parent.id} msg={parent} agents={channel.agents}
-                      onApprove={parent.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, parent.fromId, action) : undefined} />}
+                      onApprove={parent.msgType === 'approval' ? (action, pattern) => api.channelApproveAgent(channel.id, parent.fromId, action, pattern) : undefined} />}
                     {replies.length > 0 && <div className="border-t border-border my-2" />}
                     {replies.map(msg => (
                       <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
-                        onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action) : undefined} />
+                        onApprove={msg.msgType === 'approval' ? (action, pattern) => api.channelApproveAgent(channel.id, msg.fromId, action, pattern) : undefined} />
                     ))}
                     {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                       <div key={a.id + '-typing-t'} className="flex items-center gap-2 px-2 py-1 text-[13px] text-muted animate-pulse">

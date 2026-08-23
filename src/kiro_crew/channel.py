@@ -15,14 +15,17 @@ import json
 import logging
 import os
 import re
+import shlex
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from kiro_crew import name_grant
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
+from kiro_crew.trust_patterns import extract_bash_command
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +80,94 @@ _BLOCKED_TOOL_RE = re.compile(
     + r")(?![\w.\-/])"
 )
 _MCP_SEPARATOR_RE = re.compile(r"_{2,}")
+
+
+def _shell_base_binary(cmd: str) -> str | None:
+    """The single binary a SIMPLE shell command invokes, else None.
+
+    Shell-aware (shlex) tokenization, fail-closed on everything that is not
+    one plain invocation: parse failures, empty commands, shell operators or
+    substitution anywhere (``|``, ``&``, ``;``, newline, backtick, ``$(``,
+    redirects), and env-assignment or quoted/space-bearing first tokens. A
+    base-command trust grant keyed on anything richer than one unambiguous
+    binary name has already been shown to widen scope (naive first-token
+    slicing turned ``"./my tool" --safe`` into a ``"./my`` prefix grant, and
+    env prefixes into match-anything grants), so anything ambiguous simply
+    has no base.
+    """
+    if not cmd or _CHANNEL_SHELL_OPERATOR_RE.search(cmd):
+        return None
+    try:
+        tokens = shlex.split(cmd)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    base = tokens[0]
+    # An env-assignment first token means the binary is the SECOND token —
+    # refuse rather than guess (the grant would silently cover any command
+    # run under that prefix).
+    if not base or "=" in base:
+        return None
+    # A base containing whitespace can only come from quoting; a quoted
+    # executable path is matched by the exact-command tier, not by base.
+    if any(c.isspace() for c in base):
+        return None
+    # POSITIVE shape check: the base must look like a plain binary name or
+    # path. Enumerating bad metacharacters one by one (``!``, ``(``, …) is a
+    # losing game — the shell always has one more; anything outside this
+    # conservative charset is refused instead.
+    if not _CHANNEL_BASE_BINARY_RE.fullmatch(base):
+        return None
+    # Shell reserved words pass the charset but are interpreted by the shell,
+    # not executed as a binary — ``time rm ...`` must not yield a ``time``
+    # grant that covers ``time <anything>``.
+    if base in _CHANNEL_SHELL_RESERVED_WORDS:
+        return None
+    return base
+
+
+# Anything that makes a command more than ONE plain invocation. Deliberately
+# broader than the enforcement splitter's operator set: over-matching here
+# fails toward "no per-command grant available", never toward a wider grant.
+# Parentheses and braces cover subshell / brace grouping — "(rm /tmp/a)" must
+# not yield "(rm" as a trusted binary.
+_CHANNEL_SHELL_OPERATOR_RE = re.compile(r"[|&;`\n\r<>(){}]|\$\(")
+
+# What a trusted base binary is ALLOWED to look like: alphanumerics plus the
+# few characters real binary names and paths use. Everything else — negation
+# ``!``, test ``[``, arithmetic ``((`` — simply has no derivable base.
+_CHANNEL_BASE_BINARY_RE = re.compile(r"[A-Za-z0-9._/+-]+")
+
+# Words the shell interprets instead of executing. A grant keyed on one would
+# cover whatever command the shell runs under it.
+_CHANNEL_SHELL_RESERVED_WORDS = frozenset(
+    "! case coproc do done elif else esac fi for function if in select "
+    "then time until while".split()
+)
+
+
+def _match_trusted_channel_command(cmd: str, agent: "ChannelAgent") -> str | None:
+    """Match a pending shell command against the agent's trust grants.
+
+    Two literal forms only, both case-sensitive (on POSIX ``./Deploy.sh`` and
+    ``./deploy.sh`` are different executables):
+
+    - exact: the whole command text equals a granted command, OR
+    - base: the command is a SIMPLE invocation (see ``_shell_base_binary``)
+      whose binary equals a granted base.
+
+    Compound commands never match a base grant and only match an exact grant
+    granted for that identical compound; there is no pattern language and no
+    per-segment matching, so a grant can never cover text the user did not
+    read. Returns an audit label or None.
+    """
+    if cmd in agent._trusted_commands:
+        return f"command:{cmd}"
+    base = _shell_base_binary(cmd)
+    if base is not None and base in agent._trusted_bases:
+        return f"base:{base}"
+    return None
 
 
 def _blocked_tool_named(rendered: str) -> bool:
@@ -145,6 +236,24 @@ class ChannelAgent:
     listen_mode: ListenMode = ListenMode.MENTION
     inbox: asyncio.Queue[ChannelMessage] = field(default_factory=asyncio.Queue)
     _approval_future: asyncio.Future | None = field(default=None, repr=False)
+    # Per-command trust grants (trust_command / trust_base tiers) — runtime
+    # only, like the chat slot's session-scoped grants: agents are relaunched
+    # with fresh sessions on gateway restart, so grants deliberately do not
+    # persist. Grants are OPAQUE LITERALS, never patterns: ``_trusted_commands``
+    # holds exact full command texts (matched by string equality) and
+    # ``_trusted_bases`` holds single binary names (matched by shlex-token
+    # equality). No pattern language exists here by design — every derived
+    # sub-pattern scheme reviewed on this surface (segment globs, base globs
+    # from naive tokenization) leaked scope the user never consented to.
+    _trusted_commands: set[str] = field(default_factory=set, repr=False)
+    _trusted_bases: set[str] = field(default_factory=set, repr=False)
+    # Canonical shell command of the approval currently awaiting a decision,
+    # extracted server-side from the provider event's ``tool_input`` when the
+    # provider classified the tool as shell ("" otherwise). The approve
+    # endpoint binds trust_command / trust_base grants to THIS value — display
+    # titles and request-body patterns are LLM-influenced and never scope a
+    # grant. Set while ``_approval_future`` is pending, cleared with it.
+    _pending_approval_command: str = field(default="", repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)
 
     def to_dict(self) -> dict[str, Any]:
@@ -766,6 +875,58 @@ async def _stream_task(
                     )
                     await client.approve_tool(event.request_id)
                     continue
+                # Per-command trust grants (trust_command / trust_base) — agent-
+                # scoped patterns granted via the approve endpoint. Security:
+                # grants are SHELL-ONLY and match against the ACTUAL command
+                # extracted from tool_input, never the LLM-authored display
+                # title; a tool the provider did not classify as shell is never
+                # matched even when its arguments carry a nested "command" key
+                # (e.g. cron_add), so a shell grant cannot leak onto MCP tools
+                # (deny-by-default). Mirrors the dashboard chat slot's
+                # trusted-pattern gate, hardened on the is_shell axis.
+                _is_shell = bool(getattr(event, "is_shell", False))
+                _cmd = (
+                    extract_bash_command(event.tool_input) if _is_shell and event.tool_input else ""
+                )
+                if (agent._trusted_commands or agent._trusted_bases) and _cmd:
+                    matched = _match_trusted_channel_command(_cmd, agent)
+                    if matched:
+                        # The grant names a PROGRAM; the shell resolves that
+                        # name again through a PATH that can lead with
+                        # agent-writable directories, and the file behind a
+                        # trusted `./deploy.sh` can have been replaced since
+                        # the human approved it. Same shared check as every
+                        # other name-based tier (hook auto-approve, chat
+                        # trusted patterns): a refusal does not reject — the
+                        # request falls through to the interactive card below,
+                        # where the human decides on this specific command.
+                        # Check the COMMAND THE GRANT MATCHED (_cmd, from
+                        # extract_bash_command) rather than re-deriving it
+                        # from the event: event.shell_command returns None
+                        # for raw non-JSON tool_input, and a None command
+                        # would make the check vouch for nothing while the
+                        # tier still auto-approves.
+                        _ng_refusal = await name_grant.refusal_for_command_off_loop(_cmd)
+                        if _ng_refusal is None:
+                            sel().log_tool_invocation(
+                                session_key=agent.session_key,
+                                agent=agent.agent_name,
+                                source="channel",
+                                tool_name=event.text or event.title or "",
+                                outcome="auto_approved_trusted_pattern",
+                                metadata={"pattern": matched},
+                            )
+                            await client.approve_tool(event.request_id)
+                            continue
+                        name_grant.log_decline(
+                            source="channel",
+                            session_key=agent.session_key,
+                            agent=agent.agent_name,
+                            event=event,
+                            refusal=_ng_refusal,
+                            tier="channel_trusted_pattern",
+                            sel_factory=sel,
+                        )
                 # Normal mode — interactive approval
                 # Redact over the FULL input, then bound: cutting first can
                 # split a credential at the boundary into fragments no
@@ -775,23 +936,72 @@ async def _stream_task(
                 sanitized_input = await asyncio.to_thread(
                     redact_and_truncate, event.tool_input, 500
                 )
-                sanitized_name, _ = redact_credentials(event.text or "")
+                # The card's tool name. For a shell tool prefer the CANONICAL
+                # command (from ``tool_input``) over the display title: kiro's
+                # ``title`` for shell calls can be a model-authored prose
+                # description, and the trust tiers derive their consent-proof
+                # pattern from this name — a prose name would make the tiers
+                # mismatch the real command and fail with
+                # ``approval_superseded``. Non-shell tools keep the provider
+                # name (``text`` then ``title`` — the same fallback the
+                # blocked-tool check above uses; ACP permission events
+                # populate only ``title``).
+                # Use the same redactors on the command BYTES that would become
+                # authority. ``tool_input_redacted`` is transport provenance:
+                # re-running the scanners cannot reveal bytes an ACP transport
+                # already removed. Either signal makes the command display-only.
+                _safe_cmd, _cmd_credential_redacted = redact_credentials(_cmd)
+                _safe_cmd, _cmd_url_redacted = redact_exfiltration_urls(_safe_cmd)
+                _command_grantable = bool(_cmd) and not (
+                    bool(getattr(event, "tool_input_redacted", False))
+                    or _cmd_credential_redacted
+                    or _cmd_url_redacted
+                    or _safe_cmd != _cmd
+                    or "[REDACTED" in _cmd
+                )
+                if _cmd:
+                    # ``Running:`` is the channel UI's explicit proof that
+                    # command-scoped tiers are available. Keep an ungrantable
+                    # redacted command visible, but do not give it that marker
+                    # or the card would offer decisions the server must refuse.
+                    _card_name = (
+                        f"Running: {_safe_cmd}"
+                        if _command_grantable
+                        else f"Shell command (allow once): {_safe_cmd}"
+                    )
+                else:
+                    _card_name = event.text or event.title or ""
+                sanitized_name, _ = redact_credentials(_card_name)
                 sanitized_name, _ = redact_exfiltration_urls(sanitized_name)
                 loop = asyncio.get_running_loop()
-                agent._approval_future = loop.create_future()
-                await channel.post(
-                    agent.id,
-                    f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```",
-                    from_role=agent.role,
-                    msg_type="approval",
-                    thread_id=thread_id,
-                )
+                # Bind-target for a per-command trust decision on THIS
+                # approval: the canonical shell command ("" for non-shell
+                # tools, which the tiers refuse — fail closed). A command the
+                # provider redacted is also refused: two commands differing
+                # only in their credentials redact to the SAME text, so a
+                # grant scoped to the redacted form would silently cover
+                # commands the user never consented to.
+                approval_future = loop.create_future()
+                agent._pending_approval_command = _cmd if _command_grantable else ""
+                agent._approval_future = approval_future
                 try:
-                    decision = await asyncio.wait_for(agent._approval_future, timeout=3600)
+                    # Posting and waiting are one ownership scope. If the post
+                    # itself fails, neither the Future nor its command authority
+                    # may leak onto the next approval handled by this agent.
+                    await channel.post(
+                        agent.id,
+                        f"⚠️ Approval needed: **{sanitized_name}**\n```\n{sanitized_input}\n```",
+                        from_role=agent.role,
+                        msg_type="approval",
+                        thread_id=thread_id,
+                    )
+                    decision = await asyncio.wait_for(approval_future, timeout=3600)
                 except asyncio.TimeoutError:
                     decision = "rejected"
                 finally:
-                    agent._approval_future = None
+                    if agent._approval_future is approval_future:
+                        agent._approval_future = None
+                        agent._pending_approval_command = ""
 
                 if decision not in ("approved", "rejected", "trust"):
                     decision = "rejected"
@@ -804,6 +1014,16 @@ async def _stream_task(
                     outcome=decision,
                 )
 
+                if decision in ("approved", "trust") and _is_shell and _cmd:
+                    # A human read this exact command and said yes: record the
+                    # identity of the file behind each program name (same
+                    # witness the chat slot pins), so a later per-command
+                    # grant is honoured only while the same file answers to
+                    # the name. Pin BEFORE releasing execution: approving
+                    # first would let a self-replacing script swap the file
+                    # and get the replacement pinned. Runs off-loop (stats +
+                    # digests files).
+                    await asyncio.to_thread(name_grant.pin_human_approval, _cmd)
                 if decision == "trust":
                     channel.trusted = True
                     await client.approve_tool(event.request_id)

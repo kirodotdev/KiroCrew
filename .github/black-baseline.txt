@@ -226,7 +226,6 @@ src/kiro_crew/dashboard/handlers/themes.py
 src/kiro_crew/dashboard/handlers/tunnel.py
 src/kiro_crew/dashboard/handlers/webapp_preview.py
 src/kiro_crew/dashboard/handlers/weixin_qr.py
-src/kiro_crew/dashboard/handlers_channel.py
 src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
