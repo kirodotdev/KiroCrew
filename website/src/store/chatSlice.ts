@@ -1092,8 +1092,10 @@ export const fetchHistory = createAsyncThunk(
   },
 )
 
-/** Rows to request per older-history page. */
-const OLDER_PAGE_LIMIT = 100
+/** Rows for the initial slot-open page and each older-history page. One size
+ *  for both keeps the scrollback walk uniform: the first page a slot opens
+ *  with is simply page one of the same pagination `loadOlderMessages` runs. */
+export const OLDER_PAGE_LIMIT = 100
 
 // Aborts the in-flight older-history fetch, or null when none is running.
 // Module-level because switchSlot must reach a fetch it did not start.
@@ -1258,8 +1260,11 @@ function retainServerTotal(state: ChatState, key: string, total: number | undefi
 }
 
 async function fetchSlotDetail(key: string, limit?: number) {
-  // A limit takes the handler's most-recent-N slice, all a background pane shows.
-  // Omit the arg when unbounded so existing callers keep their one-argument shape.
+  // A limit takes the handler's most-recent-N slice. `undefined` keeps the
+  // unbounded shape, which two callers still need: refreshSlot replaces the
+  // active transcript in place (a bound would shrink history the user already
+  // paged in), and a STREAMING warm/switch fetch (the server's limit slices raw
+  // chunk rows). Omit the arg when unbounded so those keep the one-argument shape.
   const d = await (limit === undefined ? api.chatSlotDetail(key) : api.chatSlotDetail(key, limit))
   type QueueItem = string | { content: string; id: string }
   return { key, nextBefore: d.next_before || 0, messages: filterMessages(d.messages || []), running: d.running || false, stopping: d.stopping || false, hasMore: d.has_more || false, total: d.total || 0, queue: ((d.queue || []) as QueueItem[]).map((q: QueueItem) => typeof q === 'string' ? { content: q, queueId: crypto.randomUUID(), ts: new Date().toISOString() } : { content: q.content, queueId: q.id, ts: new Date().toISOString() }), context: d.context_pct != null ? { pct: d.context_pct, used: d.context_used_tokens ?? undefined, window: d.context_window_tokens ?? undefined } : undefined }
@@ -1303,12 +1308,26 @@ function seedContextUsage(
 
 export const switchSlot = createAsyncThunk(
   'chat/switchSlot',
-  async (key: string, { dispatch }) => {
+  async (key: string, { dispatch, getState }) => {
     // Safe unconditionally: this fetch resets the pane's messages and cursor, so
     // any older page still in flight is superseded even when the key is unchanged.
     _abortLoadOlder?.()
     dispatch(markSlotRead(key))
-    return fetchSlotDetail(key)
+    // Bounded to the page size so opening a long session costs one page, not the
+    // whole chained transcript; `loadOlderMessages` walks back from the cursor
+    // this fetch returns. Unbounded while the slot is streaming, for the same
+    // reason warmSlotCache and ChatPane's hydrate are: the server's limit slices
+    // RAW rows, and a streaming response is many chunk rows that only collapse
+    // afterwards -- bounding it would keep just the tail.
+    // `slotRun` and not `selectSlotStreamState`: switchSlot.pending has already
+    // assigned `activeSlot = key` by the time this body runs, so that selector
+    // would always take its active-slot branch and report `slotState`, which
+    // still describes the OUTGOING slot. `slotRun` is keyed per slot, so it
+    // answers for the incoming one. Guarded because a partial preloaded state
+    // can omit `slotRun` entirely, and throwing here would skip the fetch.
+    const state = (getState() as { chat: ChatState }).chat
+    const streaming = (state.slotRun?.[key]?.state ?? 'idle') !== 'idle'
+    return fetchSlotDetail(key, streaming ? undefined : OLDER_PAGE_LIMIT)
   },
 )
 

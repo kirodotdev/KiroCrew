@@ -12,7 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { configureStore } from '@reduxjs/toolkit'
 
 import { api } from '../api/client'
-import chatReducer, { PANE_HYDRATE_LIMIT, appendSlotMessage, hydrateSlotMessages, refreshSlot, switchSlot, warmSlotCache } from '../store/chatSlice'
+import chatReducer, { OLDER_PAGE_LIMIT, PANE_HYDRATE_LIMIT, appendSlotMessage, hydrateSlotMessages, refreshSlot, switchSlot, warmSlotCache } from '../store/chatSlice'
 
 vi.mock('../api/client')
 
@@ -49,12 +49,13 @@ describe('warmSlotCache hydrate bound', () => {
     expect(api.chatSlotDetail).not.toHaveBeenCalled()
   })
 
-  // Control: the bound is for background panes only. The active slot renders the
-  // full transcript and pages through it, so bounding these would truncate it.
-  it('leaves the active-slot paths unbounded', async () => {
+  // Control: a refresh replaces the active transcript in place, so a bound
+  // would shrink history the user already paged in. switchSlot resets the
+  // pane's cursor, so IT pages: one bounded first page, older pages on demand.
+  it('leaves the in-place refresh unbounded while the slot open pages', async () => {
     const store = makeStore('active-slot')
     await store.dispatch(switchSlot('active-slot') as never)
-    expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot')
+    expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot', OLDER_PAGE_LIMIT)
     await store.dispatch(refreshSlot('active-slot') as never)
     expect(api.chatSlotDetail).toHaveBeenLastCalledWith('active-slot')
   })

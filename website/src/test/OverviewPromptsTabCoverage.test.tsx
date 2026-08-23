@@ -298,7 +298,7 @@ describe('PromptsTab slot picker', () => {
     const { store } = await openPicker([slot({ key: 'chat/7', title: 'Seven' })])
     fireEvent.click(screen.getByRole('button', { name: 'Seven' }))
     expect(store.getState().chat.pendingInput).toBe('@hello')
-    await waitFor(() => expect(mockApi.chatSlotDetail).toHaveBeenCalledWith('chat/7'))
+    await waitFor(() => expect(mockApi.chatSlotDetail).toHaveBeenCalledWith('chat/7', expect.any(Number)))
     expect(mockNavigate).toHaveBeenCalledWith('/chat?autoSend=1')
     expect(mockNavigate).not.toHaveBeenCalledWith('/chat?autoSend=1&newSession=1')
   })
