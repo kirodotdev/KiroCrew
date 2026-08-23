@@ -8,7 +8,6 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
 import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsSubtitle, settingsTabLabel } from '../../components/commandPalette/settingsTabLabel'
-import { i18nT } from '../../i18n/t'
 import CommandBarOverlay from './CommandBarOverlay'
 
 /**

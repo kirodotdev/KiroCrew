@@ -1694,6 +1694,7 @@ export default function App() {
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleReasoningEffort failed', e)
       }
     },
@@ -1717,6 +1718,7 @@ export default function App() {
           (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevReasoningEffort failed', e)
       }
     },
@@ -1766,6 +1768,7 @@ export default function App() {
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCycleModel failed', e)
       }
     },
@@ -1790,6 +1793,7 @@ export default function App() {
           (value) => store.dispatch(updateSlot({ key: activeSlot, model: value })))
       } catch (e) {
         store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        // eslint-disable-next-line no-console -- failure diagnostic; the notice above already told the user
         console.error('onCyclePrevModel failed', e)
       }
     },
