@@ -1697,6 +1697,11 @@ def _read_managed_tool_policy_sync(agent_path: Path) -> dict[str, Any] | None:
         config = json.loads(agent_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+    if not isinstance(config, dict):
+        # Valid JSON that is not an object (a list, a scalar, null) parses
+        # fine, but `.get` on it would raise. It is a malformed spec, so it
+        # takes the same disposition as the unparseable case above.
+        return None
     policy = config.get("managedToolPolicy", {})
     return policy if isinstance(policy, dict) else None
 

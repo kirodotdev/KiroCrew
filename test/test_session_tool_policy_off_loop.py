@@ -115,6 +115,29 @@ async def test_an_unparseable_agent_config_is_an_empty_policy(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("content", ["[1, 2, 3]", "42", "null", "true", '"a string"'])
+async def test_a_valid_json_non_object_agent_config_is_an_empty_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    """A spec that is valid JSON but not an object parses fine, so the
+    JSONDecodeError guard never fires — but ``.get`` on the parsed value would
+    raise AttributeError out of the handler. It is a malformed spec: answer the
+    same empty policy as the unparseable case, and do not log it as a success
+    (only a config that was read AND understood earns the SEL ``ok`` record).
+    """
+    (tmp_path / f"{AGENT}.json").write_text(content, encoding="utf-8")
+
+    sel = MagicMock()
+    monkeypatch.setattr(sessions_mod, "kiro_agents_dir", lambda: tmp_path)
+    monkeypatch.setattr(sessions_mod, "_sel", lambda: sel)
+    response = await sessions_mod.api_session_tool_policy(_request(_state()))
+
+    assert response.status == 200
+    assert _body(response) == {}
+    assert not sel.log_api_access.called, "a config that was never understood must not report ok"
+
+
+@pytest.mark.asyncio
 async def test_a_non_dict_policy_is_an_empty_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
