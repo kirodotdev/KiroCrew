@@ -1213,6 +1213,8 @@ class AcpRuntime:
             logger.info("AcpRuntime initialized (PID %d)", self._pid)
         except BaseException:
             try:
+                # This death IS abnormal (failed spawn/handshake): kill()'s
+                # expected=False default keeps its log at WARNING.
                 await self.kill()
             except Exception:
                 logger.debug(
@@ -1225,13 +1227,23 @@ class AcpRuntime:
     _KILL_TERM_TIMEOUT = 5.0
     _KILL_REAP_TIMEOUT = 2.0
 
-    async def kill(self) -> None:
-        """Kill the subprocess and clean up all state."""
+    async def kill(self, *, expected: bool = False) -> None:
+        """Kill the subprocess and clean up all state.
+
+        ``expected`` changes log severity only: a deliberate teardown of a
+        healthy runtime (pool TTL recycle, session shutdown, logout) passes
+        ``expected=True`` to log the death at INFO. The default is False —
+        matching ``_mark_dead`` — so every cleanup kill on a failure path
+        (``initialize()``'s failed-spawn cleanup, a failed session setup) and
+        any future call site stays a WARNING without having to opt in.
+        ``_mark_dead`` additionally refuses to downgrade when the process
+        already exited on its own, so a reap-after-death can never log INFO.
+        """
         # Fail pending futures + poison session queues FIRST. _mark_dead sets
         # self._dead internally; doing it up front (before teardown) ensures any
         # waiters learn the runtime died. Calling it after setting _dead=True
         # would hit its early-return guard and skip all cleanup.
-        self._mark_dead("killed")
+        self._mark_dead("killed", expected=expected)
 
         if self._reader_task and not self._reader_task.done():
             self._reader_task.cancel()
@@ -2081,11 +2093,27 @@ class AcpRuntime:
         """
         return any(_NOT_LOGGED_IN_RE.search(line) for line in self._stderr_lines)
 
-    def _mark_dead(self, reason: str) -> None:
-        """Mark runtime dead, fail all pending requests, poison all session queues."""
+    def _mark_dead(self, reason: str, *, expected: bool = False) -> None:
+        """Mark runtime dead, fail all pending requests, poison all session queues.
+
+        ``expected`` selects only the log severity: a deliberate teardown (a
+        warm-pool TTL recycle, a session shutdown) logs at INFO, while every
+        genuine death path (process exit, reader crash, broken pipe, ...) keeps
+        today's WARNING. The default is False so any death path added later is
+        a WARNING without having to opt in. Everything else — the ``_dead``
+        early return, PID unshielding, failing pending futures, poisoning
+        session queues — is identical on both paths.
+        """
         if self._dead:
             return
         self._dead = True
+        # A process that already exited on its own is a genuine death being
+        # reaped, not a teardown this caller initiated — refuse the downgrade
+        # regardless of call site. This closes the race where a replacement
+        # path observes is_alive() == False (returncode set by the child
+        # watcher) and kill()s before the reader loop has marked the death.
+        if expected and self._process is not None and self._process.returncode is not None:
+            expected = False
         # Release the sweep-protection shield on ANY death path (EOF, rc!=0,
         # stdout overrun, reader crash, broken pipe) — not just kill(). Otherwise
         # the dead PID lingers in _PROTECTED_PIDS forever and, after PID reuse,
@@ -2101,7 +2129,8 @@ class AcpRuntime:
         # operators can tell an OOM/crash from a clean exit without DEBUG logs.
         rc = self._process.returncode if self._process else None
         tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
-        logger.warning(
+        log = logger.info if expected else logger.warning
+        log(
             "AcpRuntime dead (PID %s): %s [returncode=%s] stderr_tail: %s",
             self._pid,
             reason,

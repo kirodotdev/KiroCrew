@@ -823,6 +823,122 @@ async def test_mark_dead_is_idempotent():
     assert q["sA"].empty()
 
 
+# ── Death-log severity: deliberate teardown vs genuine death (#4052) ──
+#
+# A warm-pool TTL recycle tears runtimes down via kill() on a schedule; logging
+# that at the same severity and shape as a crash made `kirocrew logs` misreport
+# routine recycling as process death. These tests pin the split: kill() → INFO,
+# every genuine death path → WARNING, and the state transitions identical.
+
+
+def _death_records(caplog):
+    """The 'AcpRuntime dead' records, selected by the raw log template so the
+    assertions can check levelname (severity) separately from message shape."""
+    return [r for r in caplog.records if str(r.msg).startswith("AcpRuntime dead")]
+
+
+def _neuter_kill_side_effects(monkeypatch, proc):
+    """Keep kill() away from the host: never signal the fake PID (4242 could be
+    a real process), never touch the PID-tracking files."""
+    import kiro_crew.acp.runtime as rt_mod
+
+    proc.wait = AsyncMock(return_value=0)
+    monkeypatch.setattr(rt_mod.platform_compat, "kill_process_tree", lambda *a, **k: None)
+    monkeypatch.setattr(rt_mod.platform_compat, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(rt_mod, "_untrack_pid", lambda p: None)
+    monkeypatch.setattr(rt_mod, "_untrack_session_pid", lambda p: None)
+
+
+@pytest.mark.asyncio
+async def test_deliberate_kill_logs_info_and_still_fails_pending_futures(caplog, monkeypatch):
+    """A deliberate kill(expected=True) of a LIVE runtime (pool recycle /
+    session shutdown) must log the death at INFO — no WARNING — while
+    everything non-log stays identical: pending futures still fail with
+    AcpRuntimeDead and session queues are poisoned."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    q = _register(rt, "sA")
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    rt._pending_requests[7] = fut
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=True)
+
+    records = _death_records(caplog)
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "killed" in records[0].getMessage()
+    # Severity-only change: waiters still learn the runtime died.
+    with pytest.raises(AcpRuntimeDead):
+        await asyncio.wait_for(fut, timeout=1.0)
+    assert await asyncio.wait_for(q["sA"].get(), timeout=1.0) is None
+
+
+@pytest.mark.asyncio
+async def test_kill_default_is_unexpected_and_warns(caplog, monkeypatch):
+    """A bare kill() keeps the WARNING: the default is fail-safe so every
+    cleanup kill on a failure path — initialize()'s failed-spawn cleanup, a
+    failed session setup — and any future call site stays a WARNING without
+    opting in."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill()
+
+    assert [r.levelname for r in _death_records(caplog)] == ["WARNING"]
+
+
+@pytest.mark.asyncio
+async def test_kill_refuses_info_downgrade_when_process_already_exited(caplog, monkeypatch):
+    """A replacement path can observe is_alive() == False (returncode set by
+    the child watcher) and kill() before the reader loop marks the death.
+    That is a genuine death being reaped, not a teardown this caller started:
+    expected=True must be refused and the WARNING kept."""
+    import logging
+
+    rt, _, proc = _make_runtime()
+    _neuter_kill_side_effects(monkeypatch, proc)
+    proc.returncode = 1  # process already exited on its own; _dead still False
+
+    with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+        await rt.kill(expected=True)
+
+    records = _death_records(caplog)
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "returncode=1" in records[0].getMessage()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_process_exit_still_warns_with_diagnostic_shape(caplog):
+    """A genuine death (process exited) keeps today's WARNING and its full
+    diagnostic shape — reason with rc, returncode=, stderr_tail: — unchanged."""
+    import logging
+
+    rt, reader, proc = _make_runtime()
+    proc.returncode = 1
+    fut: asyncio.Future = asyncio.get_event_loop().create_future()
+    rt._pending_requests[3] = fut
+    task = await _start_reader(rt)
+    try:
+        with caplog.at_level(logging.INFO, logger="kiro_crew.acp.runtime"):
+            reader.feed_eof()  # empty readline → process exited
+            with pytest.raises(AcpRuntimeDead):
+                await asyncio.wait_for(fut, timeout=1.0)
+    finally:
+        await _stop_reader(task)
+
+    records = _death_records(caplog)
+    assert [r.levelname for r in records] == ["WARNING"]
+    msg = records[0].getMessage()
+    assert "process exited (rc=1)" in msg
+    assert "returncode=1" in msg
+    assert "stderr_tail: <none>" in msg
+
+
 # ── Send paths ──
 
 

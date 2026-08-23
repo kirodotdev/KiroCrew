@@ -573,7 +573,7 @@ class _FakeRuntime:
     def has_active_or_initializing_sessions(self) -> bool:
         return self._active or self._initializing
 
-    async def kill(self) -> None:
+    async def kill(self, *, expected: bool = False) -> None:
         self.killed += 1
 
 

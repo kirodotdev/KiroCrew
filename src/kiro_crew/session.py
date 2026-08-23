@@ -1274,7 +1274,7 @@ class SessionManager:
                                 runtime.pid,
                                 reason,
                             )
-                            await runtime.kill()
+                            await runtime.kill(expected=True)  # deliberate staleness recycle
                             self._bg_runtime = None
                     elif runtime._stale_by_age():
                         # Stale but co-tenant sessions are active, so recycling
@@ -1432,7 +1432,7 @@ class SessionManager:
             runtime = self._subagent_runtimes.pop(parent_session_key, None)
         if runtime is not None:
             try:
-                await runtime.kill()
+                await runtime.kill(expected=True)  # deliberate teardown with parent
             except Exception:
                 logger.warning(
                     "Failed to kill subagent runtime for %s", parent_session_key, exc_info=True
@@ -1942,7 +1942,17 @@ class SessionManager:
             # Check TTL (0 = disabled)
             age = time.monotonic() - spawn_time
             if self._pool_ttl_secs and age > self._pool_ttl_secs:
-                logger.warning(
+                # Same severity rule as the health sweep: a TTL recycle of a
+                # healthy provider is routine (INFO); one that also died before
+                # aging out is a genuine anomaly and keeps WARNING.
+                try:
+                    ttl_alive = (
+                        hasattr(provider, "is_process_alive") and provider.is_process_alive()
+                    )
+                except Exception:
+                    ttl_alive = False
+                ttl_log = logger.info if ttl_alive else logger.warning
+                ttl_log(
                     "Warm pool: %.0fs old provider exceeds TTL %ds, discarding",
                     age,
                     self._pool_ttl_secs,
@@ -2081,7 +2091,19 @@ class SessionManager:
                 if isinstance(pid, int):
                     self._pool_sweep_pids.add(pid)
                 if self._pool_ttl_secs and age > self._pool_ttl_secs:
-                    logger.warning(
+                    # A scheduled TTL recycle of a HEALTHY provider is the pool
+                    # working as designed, not operator-actionable — INFO. A
+                    # provider that also died before aging out is a genuine
+                    # anomaly: keep the pre-existing WARNING for it (same
+                    # message, same discard path — severity only).
+                    try:
+                        ttl_alive = (
+                            hasattr(provider, "is_process_alive") and provider.is_process_alive()
+                        )
+                    except Exception:
+                        ttl_alive = False
+                    ttl_log = logger.info if ttl_alive else logger.warning
+                    ttl_log(
                         "Pool health: %.0fs old provider (pid=%s) exceeds TTL %ds, discarding",
                         age,
                         pid,
@@ -4053,7 +4075,7 @@ class SessionManager:
             if runtime.has_active_or_initializing_sessions():
                 return False
             try:
-                await runtime.kill()
+                await runtime.kill(expected=True)  # deliberate logout teardown
             except Exception:
                 logger.warning(
                     "Failed to retire the background runtime after an identity change",
@@ -4299,7 +4321,7 @@ class SessionManager:
         # next-startup orphan reaper.
         if self._bg_runtime is not None:
             try:
-                await self._bg_runtime.kill()
+                await self._bg_runtime.kill(expected=True)  # graceful shutdown
             except Exception:
                 logger.debug("close_all: _bg_runtime kill failed", exc_info=True)
             self._bg_runtime = None
