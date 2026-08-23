@@ -200,6 +200,9 @@ def _get_vector_store(state: DashboardState):
     if mem.vector_store:
         return mem.vector_store
     # Fallback: create standalone
+    # COUPLING: ``_get_vector_store_async``'s fast-path predicate mirrors the
+    # resolution above. A new ``init()``-bearing branch added here must be
+    # reflected there, or async handlers may run it on the event loop again.
     if not hasattr(state, "_standalone_vector"):
         # Both imports resolve their target at CALL time, which is what lets a test
         # substitute the attribute on the source module and have this function
@@ -220,6 +223,56 @@ def _get_vector_store(state: DashboardState):
     return state._standalone_vector  # type: ignore[attr-defined]
 
 
+async def _get_vector_store_async(state: DashboardState):
+    """Async facade over ``_get_vector_store`` honouring init's caller contract.
+
+    ``VectorMemoryStore.init()`` documents that async callers must offload it
+    (the Windows path shells out to icacls, freezing the loop for seconds), so
+    the standalone fallback inside ``_get_vector_store`` must not run inline in
+    a handler (#5221). Fast path: when a store is already resolvable without
+    running ``init()`` — the context_builder supplied one, or a prior call
+    cached the standalone fallback on ``state`` — delegate synchronously, so
+    the common request path pays no thread hop. In both fast-path cases
+    ``_get_vector_store`` returns before reaching its fallback, so ``init()``
+    stays unreachable on the loop.
+    """
+    # Resolve the memory store ON the loop: ``_get_memory``'s
+    # check-create-publish of ``state._standalone_memory`` is atomic here (no
+    # await), exactly as it is for every synchronous caller. Resolving it only
+    # inside the worker would race a concurrent loop-side ``_get_memory`` into
+    # publishing a second MemoryStore, detaching ``vector_store`` from the
+    # object every other handler reads. MemoryStore's own ``init()`` is a
+    # cheap mkdir+seed (not the icacls-bearing one this wrapper offloads) and
+    # ran on the loop for every request before #5221.
+    mem = _get_memory(state)
+    if mem.vector_store or hasattr(state, "_standalone_vector"):
+        return _get_vector_store(state)
+    # Slow path: at most the first standalone request per process constructs
+    # and ``init()``s the store — offload it. All concurrent misses await ONE
+    # shared task, restoring the serialization the synchronous call sites used
+    # to get for free from the event loop: without it, two concurrent first
+    # requests would both miss the cache and both run ``init()``, leaking one
+    # of the two sqlite connections. ``asyncio.shield`` keeps the task (and
+    # its worker thread) alive when a caller is cancelled — e.g. an aiohttp
+    # client disconnect — so a request landing in that window awaits the same
+    # init instead of arming a second one. The slot is armed with no await
+    # between the read and the write (cannot race on one loop) and cleared on
+    # completion: after success the fast path serves from the cache
+    # (``_get_vector_store`` publishes it before the task resolves), and after
+    # failure the next request retries with a fresh task — matching the
+    # pre-#5221 per-request retry semantics.
+    task = getattr(state, "_standalone_vector_init_task", None)
+    if task is None:
+        task = asyncio.get_running_loop().create_task(
+            asyncio.to_thread(_get_vector_store, state)
+        )
+        state._standalone_vector_init_task = task  # type: ignore[attr-defined]
+        task.add_done_callback(
+            lambda _t: setattr(state, "_standalone_vector_init_task", None)
+        )
+    return await asyncio.shield(task)
+
+
 async def api_memory_semantic(request: web.Request) -> web.Response:
     """GET /api/memory/semantic — list semantic memory entries (paginated).
 
@@ -229,7 +282,7 @@ async def api_memory_semantic(request: web.Request) -> web.Response:
     dashboard memory card's client-side filter keeps full coverage for typical
     single-user stores; a store larger than this needs server-side search.
     """
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         limit = min(int(request.query.get("limit", "1000")), 1000)
         offset = int(request.query.get("offset", "0"))
@@ -267,7 +320,7 @@ async def api_memory_semantic_write(request: web.Request) -> web.Response:
             source="dashboard", resources="restricted_session_block",
         )
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         body = await request.json()
     except Exception:
@@ -332,7 +385,7 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
             source="dashboard", resources="restricted_session_block",
         )
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     key = request.match_info["key"]
     # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_semantic, key, source="user_explicit")
@@ -343,7 +396,7 @@ async def api_memory_semantic_delete(request: web.Request) -> web.Response:
 
 async def api_memory_events(request: web.Request) -> web.Response:
     """GET /api/memory/events — paginated audit trail."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         limit = min(int(request.query.get("limit", "50")), 200)
         offset = int(request.query.get("offset", "0"))
@@ -667,17 +720,9 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
         )
 
     prog = reembed_progress()
-    if prog.is_active():
-        # Single-flight: a second apply mid-re-embed would race the first over
-        # the same rows and the same FAISS file.
-        return web.json_response(
-            {"error": "a model change is already being applied",
-             "code": "model_change_in_progress"},
-            status=409
-        )
 
     try:
-        store = _get_vector_store(state)
+        store = await _get_vector_store_async(state)
     except Exception as exc:  # noqa: BLE001 - surfaced to the caller, not swallowed
         # Acquire the store BEFORE begin_apply(). If this raised after the
         # progress tracker was armed, is_active() would stay true for the rest of
@@ -688,6 +733,20 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
             {"ok": False, "error": f"vector memory is unavailable: {exc}",
              "code": "vector_store_unavailable"},
             status=503,
+        )
+
+    if prog.is_active():
+        # Single-flight: a second apply mid-re-embed would race the first over
+        # the same rows and the same FAISS file. Checked once, AFTER the
+        # awaited store acquisition — the acquisition can yield to the loop
+        # (#5221), so a pre-await check could go stale before begin_apply();
+        # and whenever an apply is active, a prior apply already resolved the
+        # store, so the acquisition above was the free sync fast path. Checked
+        # BEFORE the SEL audit so a refused apply is not logged as allowed.
+        return web.json_response(
+            {"error": "a model change is already being applied",
+             "code": "model_change_in_progress"},
+            status=409
         )
 
     # Audit the ALLOWED decision too, not just the restricted-session denial
@@ -996,7 +1055,7 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
                             pass
 
     # Wire embed_fn now that the model file is confirmed present.
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     store.embed_fn = make_sync_embed_fn()
 
     # Build FAISS index for any existing episodic memories with embeddings.
@@ -1058,7 +1117,7 @@ async def api_memory_disable_embeddings(request: web.Request) -> web.Response:
 
 async def api_memory_episodic_search(request: web.Request) -> web.Response:
     """GET /api/memory/episodic/search?q=...&tags=t1,t2 — search episodic memories."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     query = request.query.get("q", "")[:500]
     try:
         limit = min(int(request.query.get("limit", "20")), 50)
@@ -1090,7 +1149,7 @@ async def api_memory_episodic_search(request: web.Request) -> web.Response:
 
 async def api_memory_episodic_list(request: web.Request) -> web.Response:
     """GET /api/memory/episodic?tags=t1,t2 — paginated list of episodic memories."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         limit = min(int(request.query.get("limit", "50")), 100)
         offset = int(request.query.get("offset", "0"))
@@ -1132,7 +1191,7 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
             },
             status=403,
         )
-    store = _get_vector_store(state)
+    store = await _get_vector_store_async(state)
     mem_id = request.match_info["id"]
     # Offload: acquires _db_lock internally (#1947) — see api_memory_semantic.
     ok = await asyncio.to_thread(store.delete_episodic, mem_id)
@@ -1143,7 +1202,7 @@ async def api_memory_episodic_delete(request: web.Request) -> web.Response:
 
 async def api_memory_stats(request: web.Request) -> web.Response:
     """GET /api/memory/stats — memory system statistics."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     # Offload: serializes on _db_lock — see api_memory_semantic.
     stats = await asyncio.to_thread(store.memory_stats)
     # Add embedding status. The shadowing import is deliberate: resolving
@@ -1163,7 +1222,7 @@ async def api_memory_stats(request: web.Request) -> web.Response:
 
 async def api_memory_migrate(request: web.Request) -> web.Response:
     """POST /api/memory/migrate — migrate legacy markdown memory to vector store."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
 
     global _migrate_lock
     if _migrate_lock is None:
@@ -1197,7 +1256,7 @@ async def api_memory_import(request: web.Request) -> web.Response:
             source="dashboard", resources="restricted_session_block",
         )
         return web.json_response({"error": "Memory writes are not allowed in this session mode."}, status=403)
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         data = await request.json()
     except Exception:
@@ -1211,7 +1270,7 @@ async def api_memory_import(request: web.Request) -> web.Response:
 
 async def api_memory_context_preview(request: web.Request) -> web.Response:
     """GET /api/memory/context-preview?q=... — preview what gets injected into prompts."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     query = request.query.get("q", "")[:500]
     # Offload: the fetch serializes on _db_lock (#1947) — see api_memory_semantic.
     # (No query_text is passed, so this is the recency path — no embed calls.)
@@ -1312,7 +1371,7 @@ async def api_memory_consolidate(request: web.Request) -> web.Response:
 
 async def api_memory_observability(request: web.Request) -> web.Response:
     """GET /api/memory/observability — memory health metrics and context preview."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     query = request.query.get("q", "")[:500]
     # Offload: both serialize on _db_lock (#1947) — see api_memory_semantic.
     stats = await asyncio.to_thread(store.memory_stats)
@@ -1332,7 +1391,7 @@ async def api_memory_observability(request: web.Request) -> web.Response:
 
 async def api_memory_promote(request: web.Request) -> web.Response:
     """POST /api/memory/promote — promote repeated episodic patterns to semantic facts."""
-    store = _get_vector_store(request.app["state"])
+    store = await _get_vector_store_async(request.app["state"])
     try:
         body = await request.json()
     except Exception:
