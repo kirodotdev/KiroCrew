@@ -40,7 +40,9 @@ class _FakeLog:
         return list(self._messages)
 
 
-def _slot(messages, *, title="My session", titled=True, agent="", dirty=False, project=""):
+def _slot(
+    messages, *, title="My session", titled=True, agent="", dirty=False, project="", disk_older=0
+):
     return SimpleNamespace(
         key="slot-1",
         title=title,
@@ -51,6 +53,11 @@ def _slot(messages, *, title="My session", titled=True, agent="", dirty=False, p
         _dirty=dirty,
         _resumed_count=len(messages),
         _disk_window_len=len(messages),
+        # Frozen-prefix length for the id-based tail merge (_append_unflushed_tail
+        # scans the disk read from this offset). 0 fits fakes whose disk read IS
+        # the window; a test whose window is a tail of a longer transcript must
+        # override it with the real prefix length.
+        _disk_older_count=disk_older,
         _pending_rewrite=False,
         _dirty_gen=0,
         memory_mode="persistent",
@@ -97,7 +104,9 @@ def test_bundle_reads_full_history_not_just_resident_window():
     """A long session keeps only a tail in memory; the bundle must be complete."""
     on_disk = [{"role": "user", "content": f"turn {i}", "ts": ""} for i in range(10)]
     # slot.messages holds only the last two — bundling those would truncate.
-    slot = _slot(on_disk[-2:])
+    # disk_older=8 is what a real slot reports: eight on-disk rows precede the
+    # resident window, and the tail merge must scan only the window region.
+    slot = _slot(on_disk[-2:], disk_older=8)
     bundle = build_transfer_bundle(_state(on_disk), slot)
 
     assert len(bundle["messages"]) == 10
@@ -112,6 +121,115 @@ def test_bundle_appends_unflushed_tail():
     bundle = build_transfer_bundle(_state(on_disk), slot)
 
     assert [m["content"] for m in bundle["messages"]] == ["persisted", "not yet saved"]
+
+
+def test_durably_injected_row_is_not_duplicated_in_the_bundle():
+    """Regression for #4684 — mirrors #4137's duplication test on the read path.
+
+    A durable injector (``cron_inject``/``workflow_inject``/``crew_chat``) puts
+    the same row into the window AND onto disk with one ``meta.mid``, without a
+    save — so ``_disk_window_len`` does not move while the disk read already
+    returns the row. Sizing the un-flushed tail as
+    ``slot.messages[slot._disk_window_len:]`` then re-appends the injected row
+    on top of its own disk copy, and the exported bundle carries it twice.
+
+    Both rows here carry ids, so this exercises the id-matching arm — the one a
+    durable injector's rows actually take.
+    """
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    slot = _slot([persisted])  # boundary == 1: the save never saw the injection
+    slot.messages = [persisted, dict(injected)]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
+        "a durably-injected row the disk read already returned was appended again"
+    )
+
+
+def test_durably_injected_row_is_not_duplicated_when_older_rows_have_no_id():
+    """Same contract on the ordered-comparison arm.
+
+    A transcript written before ids existed holds id-less rows, so the id arm is
+    ineligible (it requires EVERY window-region disk row to carry one) and the
+    tail must be sized by the ordered body walk instead — which must equally
+    refuse to re-append the injected row.
+    """
+    persisted = {"role": "user", "content": "hello", "ts": "t1"}  # pre-id era row
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    slot = _slot([persisted])
+    slot.messages = [persisted, dict(injected)]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
+        "a durably-injected row the disk read already returned was appended again"
+    )
+
+
+def test_genuinely_owed_row_still_travels_after_an_injection():
+    """Control, mirroring #4137's: a fix that merely stopped appending would pass
+    the duplication tests above and silently drop a real un-flushed turn here."""
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
+    slot = _slot([persisted])
+    slot.messages = [persisted, dict(injected), owed]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == [
+        "hello",
+        "cron result",
+        "follow-up",
+    ], "each turn must appear exactly once, with the owed turn last"
+
+
+def test_durably_injected_row_with_a_frozen_prefix_is_not_duplicated():
+    """The sync path's one new field dependency: ``_disk_older_count``.
+
+    The tail merge scans only the disk WINDOW region, ``all_msgs[disk_older:]``.
+    With two frozen-prefix rows ahead of the window, an off-by-one in that
+    offset would either let a prefix occurrence fund a false id match (dropping
+    an owed row) or re-append the injected row. Exercise the injection with a
+    non-zero prefix to pin the arithmetic.
+    """
+    prefix = [
+        {"role": "user", "content": "old 0", "ts": "t0", "meta": {"mid": "m-p0"}},
+        {"role": "assistant", "content": "old 1", "ts": "t0b", "meta": {"mid": "m-p1"}},
+    ]
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
+    slot = _slot([persisted], disk_older=2)
+    slot.messages = [persisted, dict(injected), owed]
+    bundle = build_transfer_bundle(_state(prefix + [persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == [
+        "old 0",
+        "old 1",
+        "hello",
+        "cron result",
+        "follow-up",
+    ], "each turn must appear exactly once, prefix intact, owed turn last"
 
 
 def test_bundle_title_marker_does_not_compound_across_hops():
@@ -338,14 +456,17 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
 
-def test_bundle_boundary_is_the_disk_window_not_the_resume_count():
-    """Regression: the persisted boundary is ``_disk_window_len``, not ``_resumed_count``.
+def test_bundle_ignores_the_resume_count_and_ships_each_turn_once():
+    """Regression, restated for the id-based tail (#4684).
 
-    ``_resumed_count`` records how many messages were loaded when the slot was
-    REHYDRATED, so for a session created in this gateway run it stays 0 no matter
-    how often the slot flushes. Slicing on it appended the entire resident window
-    on top of the disk history and duplicated every persisted turn — the ordinary
-    case, not an edge case.
+    Originally this pinned "the boundary is ``_disk_window_len``, not
+    ``_resumed_count``": slicing on the resume count (0 for a slot created in
+    this gateway run) appended the entire resident window on top of the disk
+    history and duplicated every persisted turn. The sync builder no longer
+    slices on ANY counter — the tail is sized by message identity — so the
+    surviving contract is the one that always mattered: with two of three
+    window rows already on disk, each turn appears exactly once and the
+    un-flushed one still travels, regardless of what either counter says.
     """
     persisted = [
         {"role": "user", "content": "one", "ts": ""},
