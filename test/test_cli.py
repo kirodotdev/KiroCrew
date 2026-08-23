@@ -1160,6 +1160,61 @@ class TestCronCli:
             ns = mock_cron.call_args[0][0]
             assert ns.agent is None
 
+    def test_cron_remove_emits_sel_audit(self):
+        # Single-job delete must be SEL-audited like cron.add/cron.update:
+        # after the job vanishes from crons.json the audit trail is the only
+        # way to tell a deliberate delete from data loss.
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = True
+            args = argparse.Namespace(cron_action="remove", job_id="abc123")
+            _cron(args)
+            mock_svc.remove_job.assert_called_once_with("abc123")
+            mock_sel.return_value.log_api_access.assert_called_once_with(
+                caller="cli",
+                operation="cron.remove",
+                outcome="allowed",
+                source="cli",
+                resources="job_id=abc123",
+            )
+
+    def test_cron_remove_not_found_audits_not_found(self):
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = False
+            args = argparse.Namespace(cron_action="remove", job_id="ghost")
+            _cron(args)
+            mock_sel.return_value.log_api_access.assert_called_once_with(
+                caller="cli",
+                operation="cron.remove",
+                outcome="not_found",
+                source="cli",
+                resources="job_id=ghost reason=not_found",
+            )
+
+    def test_cron_remove_succeeds_when_audit_raises(self, capsys):
+        # The first sel() of a process constructs the log and can raise; the
+        # job is already removed by then, so the command must still report the
+        # completed delete instead of crashing.
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = True
+            mock_sel.side_effect = RuntimeError("SEL trust root unavailable")
+            args = argparse.Namespace(cron_action="remove", job_id="abc123")
+            _cron(args)
+            out = capsys.readouterr()
+            assert "Removed job: abc123" in out.out
+            assert "audit log write failed" in out.err
+
 
 class TestPortEnvValidatedAtEntry:
     """`main()` rejects an unusable KIROCREW_PORT before any subcommand runs.

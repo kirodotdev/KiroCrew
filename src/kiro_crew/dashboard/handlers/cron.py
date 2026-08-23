@@ -305,6 +305,25 @@ async def api_cron_delete(request: web.Request) -> web.Response:
         ok = await state.crons.remove_job_async(job_id)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    # SEL audit: a destructive single delete must record who/what/when + the
+    # affected job and outcome, mirroring cron.batch_delete below. Written
+    # immediately after the store mutation settles — before history cleanup —
+    # so a history-store failure cannot lose the record of a completed delete.
+    # Best-effort (batched append that swallows write failures), and the call
+    # itself is exception-contained: the first sel() of a process CONSTRUCTS
+    # the log (trust-dir creation, HMAC key validation) and can raise, and by
+    # this point the job is already deleted — a completed delete must never be
+    # reported as a failure because the audit trail is unavailable.
+    try:
+        _sel().log_api_access(
+            caller="dashboard",
+            operation="cron.remove",
+            outcome="ok" if ok else "not_found",
+            source="api_cron_delete",
+            resources=f"job_id={job_id}",
+        )
+    except Exception:
+        logger.warning("SEL audit for cron delete failed (job %s)", job_id, exc_info=True)
     if ok:
         await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
