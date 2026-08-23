@@ -838,6 +838,35 @@ async function parseErrorBody(r: Response): Promise<string> {
   }
 }
 
+/** One dependency edge in the repo's dependency graph: `blocked` cannot proceed
+ * until `blocker` is closed/merged. `source` records where the edge came from —
+ * `native` is a GitHub-native issue dependency; `inferred` is derived from
+ * timeline cross-references (and never written back to GitHub). */
+export interface DepEdge {
+  blocked: number
+  blocker: number
+  source: 'native' | 'inferred'
+}
+
+/** A node in the dependency graph's node map, keyed by its number as a string.
+ * A thin descriptor the client joins against the live issue/PR list rows where
+ * present, and falls back to when a referenced number is not in the loaded list. */
+export interface DepNode {
+  kind: 'issue' | 'pull'
+  state: 'open' | 'closed' | 'merged'
+  title: string
+}
+
+/** The `GET /api/apps/issue-radar/deps` payload. Schema-versioned so a client
+ * can refuse a shape it does not understand rather than mis-render it. */
+export interface DepsResponse {
+  schema: number
+  fetched_at?: string
+  edges: DepEdge[]
+  /** Node descriptors keyed by number-as-string (e.g. `"5190"`). */
+  nodes: Record<string, DepNode>
+}
+
 /** The full identity of a connected repository.
  *
  * A ref is `owner`/`repo` plus the provider and — for self-managed instances —
@@ -1918,6 +1947,18 @@ export const issueRadarApi = {
       // an object and never falls back to reading loose fields.
       body: JSON.stringify({ ...repoBody(ref), settings: patch }),
     })
+    if (!r.ok) throw new Error(await parseErrorBody(r))
+    return r.json()
+  },
+
+  /** The repo's dependency edges (blocked-by / blocking) + a node map, for the
+   * Graph tab and the detail-pane "Blocked by / Blocking" section. Cache-first,
+   * like `/issues`. The backend route lands in a SEPARATE PR (M1), so callers
+   * must treat a 404/500/empty answer as "no dependency data yet" and render a
+   * designed empty state rather than an error — see GraphView / DepsSection. */
+  deps: async (ref: RepoRef): Promise<DepsResponse> => {
+    const q = new URLSearchParams(repoQuery(ref))
+    const r = await fetch(`${API}/deps?${q.toString()}`, { credentials: 'same-origin' })
     if (!r.ok) throw new Error(await parseErrorBody(r))
     return r.json()
   },

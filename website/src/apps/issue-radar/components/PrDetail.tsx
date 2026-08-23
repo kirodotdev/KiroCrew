@@ -23,6 +23,7 @@ import {
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
+import DepsSection from './DepsSection'
 import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import { copyToClipboard } from '../../../utils/clipboard'
@@ -893,6 +894,9 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
                   />
                 )}
             </div>
+
+            {/* Dependency edges — blocked by / blocking (deps cache). */}
+            <DepsSection number={pull.number} />
 
             {/* Activity timeline — newest first, latest node pulsing. */}
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">

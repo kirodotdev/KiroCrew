@@ -1180,6 +1180,14 @@ class TestDetectUnblocks(unittest.TestCase):
             seen.update(self._detect(**changes))
         prev = {**self.BASE, "merged": True}
         seen.update(cr.detect_unblocks(prev, {**prev, "pr_comments": 99}))
+        # The dependency-unblocked signal fires on a >0 → 0 blocker transition,
+        # which BASE cannot express (it has no blockers), so it gets its own pair.
+        seen.update(
+            cr.detect_unblocks(
+                {**self.BASE, "open_blockers": 1},
+                {**self.BASE, "open_blockers": 0},
+            )
+        )
         self.assertEqual(seen, set(cr.UNBLOCK_SIGNALS))
 
 

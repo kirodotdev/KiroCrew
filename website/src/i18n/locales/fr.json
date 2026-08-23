@@ -1998,6 +1998,17 @@
           "connect_repo": "Connecter un dépôt",
           "general": "Général",
           "repository_settings": "Paramètres du dépôt"
+        },
+        "depsSection": {
+          "title": "Dépendances",
+          "blocked_by": "Bloqué par",
+          "blocking": "Bloque",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "Ouvrir {{sigil}}{{number}} ici"
         }
       },
       "connectPanel": {
@@ -2266,7 +2277,8 @@
         },
         "registry": {
           "overview": "Vue d’ensemble",
-          "tagging": "Étiquetage"
+          "tagging": "Étiquetage",
+          "graph": "Graphe"
         },
         "settings": {
           "generalSettings": {
@@ -2426,6 +2438,45 @@
           "untagged_issues": "Tickets non étiquetés",
           "what_you_see_below_is_the_previous_result_not_th": "ce qui s’affiche ci-dessous est le résultat précédent, pas l’état actuel.",
           "write_every_staged_label_to": "Écrire tous les labels préparés dans {{provider}}"
+        },
+        "graphView": {
+          "header": "DÉPENDANCES",
+          "views_label": "Vues de dépendances",
+          "tab_frontier": "FRONTIÈRE",
+          "tab_focus": "ARBRE FOCUS",
+          "jump_label": "Aller à l’élément",
+          "jump_placeholder": "aller à l’élément #…",
+          "loading": "Chargement des dépendances…",
+          "refresh": "Actualiser les données de dépendances",
+          "ready_count": "{{n}} nouvellement débloqués",
+          "frontier_heading": "FRONTIÈRE",
+          "frontier_sub": "{{ready}} nouvellement débloqués · {{waiting}} encore en attente",
+          "no_frontier": "Aucun élément ouvert avec des dépendances enregistrées.",
+          "waiting_heading": "EN ATTENTE ({{n}})",
+          "more_waiting": "… +{{n}} autres",
+          "why_all_satisfied": "Tous les bloqueurs satisfaits : {{refs}}",
+          "why_waiting": "En attente de {{refs}}",
+          "why_satisfied": "Déjà satisfaits : {{refs}}",
+          "open_tree": "ouvrir l’arbre →",
+          "frontier_caption": "Les éléments nouvellement débloqués ont tous leurs bloqueurs enregistrés fermés ou fusionnés. Ouvrez un élément pour le détail, ou ouvrez son arbre.",
+          "focus_caption": "Tout l’arbre de dépendances actif de l’élément sélectionné. Cliquez sur un nœud pour le mettre en racine, Entrée l’ouvre. Pointillé = déduit, barré = satisfait.",
+          "focus_empty": "Sélectionnez un élément pour tracer son arbre de dépendances.",
+          "tree_stat": "arbre de {{kind}}-{{number}} : {{nodes}} nœuds · {{edges}} arêtes actives",
+          "ghost_satisfied": "satisfait",
+          "ci_fail": "ÉCHEC CI",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "Arbre de dépendances de {{kind}}-{{number}} : {{nodes}} nœuds, {{edges}} arêtes actives",
+          "aria_node": "{{kind}}-{{number}}, {{state}} : {{title}}",
+          "empty_board": "CARTE NON PEUPLÉE",
+          "empty_title": "Aucune dépendance pour l’instant",
+          "empty_blurb": "Ce dépôt n’a aucune arête de dépendance à tracer. Définissez une dépendance native avec gh issue edit --add-blocked-by, ou Issue Radar les déduira des références croisées à la prochaine synchronisation.",
+          "empty_unavailable_title": "Données de dépendances indisponibles",
+          "empty_unavailable_blurb": "Impossible de charger le graphe. La route deps n’est peut-être pas encore active pour ce dépôt. Réessayez ensuite.",
+          "retry": "RÉESSAYER"
         }
       },
       "welcomeCarousel": {

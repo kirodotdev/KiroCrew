@@ -1966,6 +1966,17 @@
           "connect_repo": "Collega repo",
           "general": "Generale",
           "repository_settings": "Impostazioni del repository"
+        },
+        "depsSection": {
+          "title": "Dipendenze",
+          "blocked_by": "Bloccato da",
+          "blocking": "Blocca",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "Apri {{sigil}}{{number}} qui"
         }
       },
       "connectPanel": {
@@ -2234,7 +2245,8 @@
         },
         "registry": {
           "overview": "Panoramica",
-          "tagging": "Etichettatura"
+          "tagging": "Etichettatura",
+          "graph": "Grafo"
         },
         "settings": {
           "generalSettings": {
@@ -2394,6 +2406,45 @@
           "untagged_issues": "Issue senza tag",
           "what_you_see_below_is_the_previous_result_not_th": "quello che vedi qui sotto è il risultato precedente, non lo stato attuale.",
           "write_every_staged_label_to": "Scrivi tutte le etichette preparate su {{provider}}"
+        },
+        "graphView": {
+          "header": "DIPENDENZE",
+          "views_label": "Viste delle dipendenze",
+          "tab_frontier": "FRONTIERA",
+          "tab_focus": "ALBERO FOCUS",
+          "jump_label": "Vai all’elemento",
+          "jump_placeholder": "vai all’elemento #…",
+          "loading": "Caricamento delle dipendenze…",
+          "refresh": "Aggiorna i dati delle dipendenze",
+          "ready_count": "{{n}} appena sbloccati",
+          "frontier_heading": "FRONTIERA",
+          "frontier_sub": "{{ready}} appena sbloccati · {{waiting}} ancora in attesa",
+          "no_frontier": "Nessun elemento aperto con dipendenze registrate.",
+          "waiting_heading": "IN ATTESA ({{n}})",
+          "more_waiting": "… +{{n}} altri",
+          "why_all_satisfied": "Tutti i bloccanti soddisfatti: {{refs}}",
+          "why_waiting": "In attesa di {{refs}}",
+          "why_satisfied": "Già soddisfatti: {{refs}}",
+          "open_tree": "apri albero →",
+          "frontier_caption": "Gli elementi appena sbloccati hanno tutti i bloccanti registrati chiusi o uniti. Apri un elemento per il motivo, oppure apri il suo albero.",
+          "focus_caption": "L’intero albero delle dipendenze attivo dell’elemento selezionato. Clicca su un nodo per impostarlo come radice, Invio lo apre. Tratteggiato = dedotto, barrato = soddisfatto.",
+          "focus_empty": "Seleziona un elemento per disegnare il suo albero delle dipendenze.",
+          "tree_stat": "albero di {{kind}}-{{number}}: {{nodes}} nodi · {{edges}} archi attivi",
+          "ghost_satisfied": "soddisfatto",
+          "ci_fail": "CI FALLITA",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "Albero delle dipendenze di {{kind}}-{{number}}: {{nodes}} nodi, {{edges}} archi attivi",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "SCHEDA NON POPOLATA",
+          "empty_title": "Ancora nessuna dipendenza",
+          "empty_blurb": "Questo repository non ha archi di dipendenza da disegnare. Imposta una dipendenza nativa con gh issue edit --add-blocked-by, oppure Issue Radar le dedurrà dai riferimenti incrociati alla prossima sincronizzazione.",
+          "empty_unavailable_title": "Dati delle dipendenze non disponibili",
+          "empty_unavailable_blurb": "Impossibile caricare il grafo. La route deps potrebbe non essere ancora attiva per questo repository. Riprova quando lo sarà.",
+          "retry": "RIPROVA"
         }
       },
       "welcomeCarousel": {

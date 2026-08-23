@@ -1199,6 +1199,17 @@
           "connect_repo": "Connect repo",
           "general": "General",
           "repository_settings": "Repository settings"
+        },
+        "depsSection": {
+          "title": "Dependencies",
+          "blocked_by": "Blocked by",
+          "blocking": "Blocking",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "Open {{sigil}}{{number}} here"
         }
       },
       "connectPanel": {
@@ -1358,6 +1369,48 @@
           "untagged": "Untagged",
           "untagged_issues": "Untagged issues",
           "what_you_see_below_is_the_previous_result_not_th": "what you see below is the previous result, not the current state."
+        },
+        "registry": {
+          "graph": "Graph"
+        },
+        "graphView": {
+          "header": "DEPENDENCIES",
+          "views_label": "Dependency views",
+          "tab_frontier": "FRONTIER",
+          "tab_focus": "FOCUS TREE",
+          "jump_label": "Jump to issue",
+          "jump_placeholder": "jump to issue #…",
+          "loading": "Loading dependencies…",
+          "refresh": "Refresh dependency data",
+          "ready_count": "{{n}} newly unlocked",
+          "frontier_heading": "FRONTIER",
+          "frontier_sub": "{{ready}} newly unlocked · {{waiting}} still waiting",
+          "no_frontier": "No open items with dependencies on record.",
+          "waiting_heading": "WAITING ({{n}})",
+          "more_waiting": "… +{{n}} more",
+          "why_all_satisfied": "All blockers satisfied: {{refs}}",
+          "why_waiting": "Waiting on {{refs}}",
+          "why_satisfied": "Already satisfied: {{refs}}",
+          "open_tree": "open tree →",
+          "frontier_caption": "Newly unlocked items have every blocker on record closed or merged. Open an item to expand why, or open its tree.",
+          "focus_caption": "The whole live dependency tree of the selected item. Click any node to re-root. Enter opens it. Dashed = inferred, struck = satisfied.",
+          "focus_empty": "Select an item to render its dependency tree.",
+          "tree_stat": "tree of {{kind}}-{{number}}: {{nodes}} nodes · {{edges}} live edges",
+          "ghost_satisfied": "satisfied",
+          "ci_fail": "CI FAIL",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "Dependency tree of {{kind}}-{{number}}: {{nodes}} nodes, {{edges}} live edges",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "UNPOPULATED BOARD",
+          "empty_title": "No dependencies yet",
+          "empty_blurb": "This repo has no dependency edges to draw. Set a native dependency with gh issue edit --add-blocked-by, or Issue Radar will infer edges from cross-references on the next sync.",
+          "empty_unavailable_title": "Dependency data unavailable",
+          "empty_unavailable_blurb": "The dependency graph could not be loaded. The backend deps route may not be enabled yet on this repo. Retry once it is available.",
+          "retry": "RETRY"
         }
       },
       "welcomeCarousel": {

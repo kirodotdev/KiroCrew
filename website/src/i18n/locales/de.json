@@ -1957,6 +1957,17 @@
           "connect_repo": "Repo verbinden",
           "general": "Allgemein",
           "repository_settings": "Repository-Einstellungen"
+        },
+        "depsSection": {
+          "title": "Abhängigkeiten",
+          "blocked_by": "Blockiert durch",
+          "blocking": "Blockiert",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "{{sigil}}{{number}} hier öffnen"
         }
       },
       "connectPanel": {
@@ -2223,7 +2234,8 @@
         },
         "registry": {
           "overview": "Übersicht",
-          "tagging": "Verschlagwortung"
+          "tagging": "Verschlagwortung",
+          "graph": "Graph"
         },
         "settings": {
           "generalSettings": {
@@ -2383,6 +2395,45 @@
           "untagged_issues": "Issues ohne Label",
           "what_you_see_below_is_the_previous_result_not_th": "was Sie unten sehen, ist das vorherige Ergebnis, nicht der aktuelle Zustand.",
           "write_every_staged_label_to": "Alle vorgemerkten Labels nach {{provider}} schreiben"
+        },
+        "graphView": {
+          "header": "ABHÄNGIGKEITEN",
+          "views_label": "Abhängigkeitsansichten",
+          "tab_frontier": "FRONTIER",
+          "tab_focus": "FOKUS-BAUM",
+          "jump_label": "Zu Vorgang springen",
+          "jump_placeholder": "zu Vorgang # springen…",
+          "loading": "Abhängigkeiten werden geladen…",
+          "refresh": "Abhängigkeitsdaten aktualisieren",
+          "ready_count": "{{n}} neu freigegeben",
+          "frontier_heading": "FRONTIER",
+          "frontier_sub": "{{ready}} neu freigegeben · {{waiting}} warten noch",
+          "no_frontier": "Keine offenen Vorgänge mit erfassten Abhängigkeiten.",
+          "waiting_heading": "WARTEN ({{n}})",
+          "more_waiting": "… +{{n}} weitere",
+          "why_all_satisfied": "Alle Blocker erfüllt: {{refs}}",
+          "why_waiting": "Wartet auf {{refs}}",
+          "why_satisfied": "Bereits erfüllt: {{refs}}",
+          "open_tree": "Baum öffnen →",
+          "frontier_caption": "Bei neu freigegebenen Vorgängen ist jeder erfasste Blocker geschlossen oder gemergt. Öffne einen Vorgang für den Grund oder öffne seinen Baum.",
+          "focus_caption": "Der gesamte aktive Abhängigkeitsbaum des gewählten Vorgangs. Klick auf einen Knoten setzt ihn als Wurzel, Enter öffnet ihn. Gestrichelt = abgeleitet, durchgestrichen = erfüllt.",
+          "focus_empty": "Wähle einen Vorgang, um seinen Abhängigkeitsbaum zu zeichnen.",
+          "tree_stat": "Baum von {{kind}}-{{number}}: {{nodes}} Knoten · {{edges}} aktive Kanten",
+          "ghost_satisfied": "erfüllt",
+          "ci_fail": "CI FEHLGESCHLAGEN",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "Abhängigkeitsbaum von {{kind}}-{{number}}: {{nodes}} Knoten, {{edges}} aktive Kanten",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "UNBESTÜCKTE PLATINE",
+          "empty_title": "Noch keine Abhängigkeiten",
+          "empty_blurb": "Dieses Repository hat keine zeichenbaren Abhängigkeitskanten. Setze eine native Abhängigkeit mit gh issue edit --add-blocked-by, oder Issue Radar leitet Kanten beim nächsten Sync aus Querverweisen ab.",
+          "empty_unavailable_title": "Abhängigkeitsdaten nicht verfügbar",
+          "empty_unavailable_blurb": "Der Abhängigkeitsgraph konnte nicht geladen werden. Die deps-Route ist für dieses Repository womöglich noch nicht aktiv. Danach erneut versuchen.",
+          "retry": "ERNEUT VERSUCHEN"
         }
       },
       "welcomeCarousel": {

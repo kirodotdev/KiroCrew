@@ -34,7 +34,7 @@ export type PrSortKey = 'number' | 'updated'
  * shared file needs to change, so views can be built by separate agents. The
  * list is exported so persisted state can be validated at runtime (a tab that
  * was removed since it was persisted must not survive a reload). */
-export const DASHBOARD_TABS = ['overview', 'tagging'] as const
+export const DASHBOARD_TABS = ['overview', 'graph', 'tagging'] as const
 export type DashboardTab = (typeof DASHBOARD_TABS)[number]
 
 /** Main-area mode: a dashboard page, the issue list + detail split, the pull-

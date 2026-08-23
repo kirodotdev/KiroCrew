@@ -1925,6 +1925,17 @@
           "connect_repo": "रिपो कनेक्ट करें",
           "general": "सामान्य",
           "repository_settings": "रिपॉज़िटरी सेटिंग"
+        },
+        "depsSection": {
+          "title": "निर्भरताएँ",
+          "blocked_by": "इसके कारण अवरुद्ध",
+          "blocking": "अवरुद्ध कर रहा है",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "{{sigil}}{{number}} यहाँ खोलें"
         }
       },
       "connectPanel": {
@@ -2037,7 +2048,8 @@
         },
         "registry": {
           "overview": "अवलोकन",
-          "tagging": "टैगिंग"
+          "tagging": "टैगिंग",
+          "graph": "ग्राफ़"
         },
         "settings": {
           "generalSettings": {
@@ -2351,6 +2363,45 @@
           "sub_paused": "रुका हुआ — नए इशू नहीं ले रहा",
           "rail_sort": "क्रमबद्ध करें",
           "rail_filters": "फ़िल्टर"
+        },
+        "graphView": {
+          "header": "निर्भरताएँ",
+          "views_label": "निर्भरता दृश्य",
+          "tab_frontier": "फ्रंटियर",
+          "tab_focus": "फ़ोकस ट्री",
+          "jump_label": "आइटम पर जाएँ",
+          "jump_placeholder": "आइटम # पर जाएँ…",
+          "loading": "निर्भरताएँ लोड हो रही हैं…",
+          "refresh": "निर्भरता डेटा रीफ़्रेश करें",
+          "ready_count": "{{n}} नए अनलॉक",
+          "frontier_heading": "फ्रंटियर",
+          "frontier_sub": "{{ready}} नए अनलॉक · {{waiting}} अभी प्रतीक्षारत",
+          "no_frontier": "दर्ज निर्भरताओं वाला कोई खुला आइटम नहीं।",
+          "waiting_heading": "प्रतीक्षारत ({{n}})",
+          "more_waiting": "… +{{n}} और",
+          "why_all_satisfied": "सभी ब्लॉकर पूरे: {{refs}}",
+          "why_waiting": "प्रतीक्षा में {{refs}}",
+          "why_satisfied": "पहले से पूरे: {{refs}}",
+          "open_tree": "ट्री खोलें →",
+          "frontier_caption": "नए अनलॉक आइटम के सभी दर्ज ब्लॉकर बंद या मर्ज हो चुके हैं। कारण देखने के लिए आइटम खोलें, या उसका ट्री खोलें।",
+          "focus_caption": "चयनित आइटम का पूरा सक्रिय निर्भरता ट्री। किसी नोड पर क्लिक से उसे रूट बनाएँ, Enter से खोलें। डैश = अनुमानित, कटा = पूरा।",
+          "focus_empty": "निर्भरता ट्री बनाने के लिए एक आइटम चुनें।",
+          "tree_stat": "{{kind}}-{{number}} का ट्री: {{nodes}} नोड · {{edges}} सक्रिय किनारे",
+          "ghost_satisfied": "पूरा",
+          "ci_fail": "CI विफल",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "{{kind}}-{{number}} का निर्भरता ट्री: {{nodes}} नोड, {{edges}} सक्रिय किनारे",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "खाली बोर्ड",
+          "empty_title": "अभी कोई निर्भरता नहीं",
+          "empty_blurb": "इस रिपॉज़िटरी में खींचने के लिए कोई निर्भरता किनारा नहीं है। gh issue edit --add-blocked-by से नेटिव निर्भरता सेट करें, या अगली सिंक पर Issue Radar क्रॉस-रेफ़रेंस से अनुमान लगाएगा।",
+          "empty_unavailable_title": "निर्भरता डेटा उपलब्ध नहीं",
+          "empty_unavailable_blurb": "ग्राफ़ लोड नहीं हो सका। संभव है इस रिपॉज़िटरी के लिए deps रूट अभी सक्षम न हो। उपलब्ध होने पर पुनः प्रयास करें।",
+          "retry": "पुनः प्रयास"
         }
       },
       "welcomeCarousel": {

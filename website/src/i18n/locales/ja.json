@@ -1916,6 +1916,17 @@
           "connect_repo": "リポジトリを接続",
           "general": "一般",
           "repository_settings": "リポジトリ設定"
+        },
+        "depsSection": {
+          "title": "依存関係",
+          "blocked_by": "ブロック元",
+          "blocking": "ブロック先",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "{{sigil}}{{number}} をここで開く"
         }
       },
       "connectPanel": {
@@ -2180,7 +2191,8 @@
         },
         "registry": {
           "overview": "概要",
-          "tagging": "タグ付け"
+          "tagging": "タグ付け",
+          "graph": "グラフ"
         },
         "settings": {
           "generalSettings": {
@@ -2340,6 +2352,45 @@
           "untagged_issues": "タグなし Issue",
           "what_you_see_below_is_the_previous_result_not_th": "以下に表示されている内容は、現在の状態ではなく、以前の結果です。",
           "write_every_staged_label_to": "ステージ済みのラベルをすべて {{provider}} に書き込む"
+        },
+        "graphView": {
+          "header": "依存関係",
+          "views_label": "依存関係ビュー",
+          "tab_frontier": "フロンティア",
+          "tab_focus": "フォーカスツリー",
+          "jump_label": "項目へジャンプ",
+          "jump_placeholder": "項目 # へジャンプ…",
+          "loading": "依存関係を読み込み中…",
+          "refresh": "依存データを更新",
+          "ready_count": "新たに {{n}} 件解放",
+          "frontier_heading": "フロンティア",
+          "frontier_sub": "新たに {{ready}} 件解放 · 待機中 {{waiting}} 件",
+          "no_frontier": "依存関係が記録されたオープン項目はありません。",
+          "waiting_heading": "待機中（{{n}}）",
+          "more_waiting": "… ほか {{n}} 件",
+          "why_all_satisfied": "すべてのブロッカーが解消: {{refs}}",
+          "why_waiting": "待機中: {{refs}}",
+          "why_satisfied": "解消済み: {{refs}}",
+          "open_tree": "ツリーを開く →",
+          "frontier_caption": "新たに解放された項目は、記録上のブロッカーがすべてクローズまたはマージ済みです。項目を開くと理由を展開、またはそのツリーを開きます。",
+          "focus_caption": "選択した項目のライブ依存ツリー全体。ノードをクリックで再ルート、Enter で開きます。破線=推定、取り消し線=解消済み。",
+          "focus_empty": "項目を選択すると依存ツリーを描画します。",
+          "tree_stat": "{{kind}}-{{number}} のツリー: {{nodes}} ノード · {{edges}} ライブエッジ",
+          "ghost_satisfied": "解消済み",
+          "ci_fail": "CI 失敗",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "{{kind}}-{{number}} の依存ツリー: {{nodes}} ノード、{{edges}} ライブエッジ",
+          "aria_node": "{{kind}}-{{number}}、{{state}}: {{title}}",
+          "empty_board": "未実装ボード",
+          "empty_title": "依存関係はまだありません",
+          "empty_blurb": "このリポジトリには描画できる依存エッジがありません。gh issue edit --add-blocked-by でネイティブ依存を設定するか、次回同期時に Issue Radar が相互参照から推定します。",
+          "empty_unavailable_title": "依存データを取得できません",
+          "empty_unavailable_blurb": "依存グラフを読み込めませんでした。このリポジトリで deps ルートが未有効の可能性があります。利用可能になったら再試行してください。",
+          "retry": "再試行"
         }
       },
       "welcomeCarousel": {

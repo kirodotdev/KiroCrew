@@ -31,6 +31,7 @@ import {
 import type { LucideIcon } from 'lucide-react'
 import RefMarkdown from './RefMarkdown'
 import { parseRepoRef } from '../lib/refLinks'
+import DepsSection from './DepsSection'
 import { safeHttpUrl } from '../../../lib/safeUrl'
 import { copyToClipboard } from '../../../utils/clipboard'
 import { CommentCardSkeleton, HeaderSkeleton, TimelineSkeleton } from './DetailSkeleton'
@@ -966,6 +967,9 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
 
             {/* Linked PRs / issues — their own section, lifted off the rail. */}
             {relatedRefs.length > 0 && <RelatedLinks items={relatedRefs} />}
+
+            {/* Dependency edges — blocked by / blocking (deps cache). */}
+            <DepsSection number={issue.number} />
 
             {/* Activity timeline — newest first, latest node pulsing. */}
             <div className="flex items-center gap-1.5 text-[11px] uppercase tracking-wider text-muted mb-3 font-medium">

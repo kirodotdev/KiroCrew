@@ -2007,6 +2007,17 @@
           "connect_repo": "Подключить репозиторий",
           "general": "Общие",
           "repository_settings": "Настройки репозитория"
+        },
+        "depsSection": {
+          "title": "Зависимости",
+          "blocked_by": "Заблокировано",
+          "blocking": "Блокирует",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "Открыть {{sigil}}{{number}} здесь"
         }
       },
       "connectPanel": {
@@ -2277,7 +2288,8 @@
         },
         "registry": {
           "overview": "Обзор",
-          "tagging": "Расстановка меток"
+          "tagging": "Расстановка меток",
+          "graph": "Граф"
         },
         "settings": {
           "generalSettings": {
@@ -2437,6 +2449,45 @@
           "untagged_issues": "Задачи без меток",
           "what_you_see_below_is_the_previous_result_not_th": "то, что вы видите ниже — предыдущий результат, а не текущее состояние.",
           "write_every_staged_label_to": "Записать все подготовленные метки в {{provider}}"
+        },
+        "graphView": {
+          "header": "ЗАВИСИМОСТИ",
+          "views_label": "Виды зависимостей",
+          "tab_frontier": "ФРОНТ",
+          "tab_focus": "ДЕРЕВО ФОКУСА",
+          "jump_label": "Перейти к элементу",
+          "jump_placeholder": "перейти к элементу #…",
+          "loading": "Загрузка зависимостей…",
+          "refresh": "Обновить данные о зависимостях",
+          "ready_count": "Разблокировано {{n}}",
+          "frontier_heading": "ФРОНТ",
+          "frontier_sub": "Разблокировано {{ready}} · ещё ждут {{waiting}}",
+          "no_frontier": "Нет открытых элементов с учтёнными зависимостями.",
+          "waiting_heading": "В ОЖИДАНИИ ({{n}})",
+          "more_waiting": "… ещё +{{n}}",
+          "why_all_satisfied": "Все блокеры выполнены: {{refs}}",
+          "why_waiting": "Ожидает {{refs}}",
+          "why_satisfied": "Уже выполнены: {{refs}}",
+          "open_tree": "открыть дерево →",
+          "frontier_caption": "У разблокированных элементов все учтённые блокеры закрыты или смерджены. Откройте элемент, чтобы увидеть причину, или откройте его дерево.",
+          "focus_caption": "Всё активное дерево зависимостей выбранного элемента. Клик по узлу делает его корнем, Enter открывает. Пунктир — выведено, зачёркнуто — выполнено.",
+          "focus_empty": "Выберите элемент, чтобы построить его дерево зависимостей.",
+          "tree_stat": "дерево {{kind}}-{{number}}: {{nodes}} узлов · {{edges}} активных рёбер",
+          "ghost_satisfied": "выполнено",
+          "ci_fail": "СБОЙ CI",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "Дерево зависимостей {{kind}}-{{number}}: {{nodes}} узлов, {{edges}} активных рёбер",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "ПУСТАЯ ПЛАТА",
+          "empty_title": "Зависимостей пока нет",
+          "empty_blurb": "В этом репозитории нет рёбер зависимостей. Задайте нативную зависимость через gh issue edit --add-blocked-by, либо Issue Radar выведет их из перекрёстных ссылок при следующей синхронизации.",
+          "empty_unavailable_title": "Данные о зависимостях недоступны",
+          "empty_unavailable_blurb": "Не удалось загрузить граф. Возможно, маршрут deps ещё не включён для этого репозитория. Повторите позже.",
+          "retry": "ПОВТОРИТЬ"
         }
       },
       "welcomeCarousel": {

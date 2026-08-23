@@ -1925,6 +1925,17 @@
           "connect_repo": "রিপো সংযুক্ত করুন",
           "general": "সাধারণ",
           "repository_settings": "রিপোজিটরি সেটিংস"
+        },
+        "depsSection": {
+          "title": "নির্ভরতা",
+          "blocked_by": "যার কারণে অবরুদ্ধ",
+          "blocking": "অবরুদ্ধ করছে",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "{{sigil}}{{number}} এখানে খুলুন"
         }
       },
       "connectPanel": {
@@ -2191,7 +2202,8 @@
         },
         "registry": {
           "overview": "ওভারভিউ",
-          "tagging": "ট্যাগিং"
+          "tagging": "ট্যাগিং",
+          "graph": "গ্রাফ"
         },
         "settings": {
           "generalSettings": {
@@ -2351,6 +2363,45 @@
           "untagged_issues": "ট্যাগ-না-করা ইস্যু",
           "what_you_see_below_is_the_previous_result_not_th": "নিচে যা দেখছেন তা আগের ফলাফল, বর্তমান অবস্থা নয়।",
           "write_every_staged_label_to": "সব স্টেজ করা লেবেল {{provider}}-এ লিখুন"
+        },
+        "graphView": {
+          "header": "নির্ভরতা",
+          "views_label": "নির্ভরতা ভিউ",
+          "tab_frontier": "ফ্রন্টিয়ার",
+          "tab_focus": "ফোকাস ট্রি",
+          "jump_label": "আইটেমে যান",
+          "jump_placeholder": "আইটেম # এ যান…",
+          "loading": "নির্ভরতা লোড হচ্ছে…",
+          "refresh": "নির্ভরতা ডেটা রিফ্রেশ করুন",
+          "ready_count": "{{n}}টি নতুন আনলক",
+          "frontier_heading": "ফ্রন্টিয়ার",
+          "frontier_sub": "{{ready}}টি নতুন আনলক · {{waiting}}টি এখনও অপেক্ষমাণ",
+          "no_frontier": "নথিভুক্ত নির্ভরতাসহ কোনো খোলা আইটেম নেই।",
+          "waiting_heading": "অপেক্ষমাণ ({{n}})",
+          "more_waiting": "… +{{n}}টি আরও",
+          "why_all_satisfied": "সব ব্লকার পূরণ হয়েছে: {{refs}}",
+          "why_waiting": "অপেক্ষায় {{refs}}",
+          "why_satisfied": "ইতিমধ্যে পূরণ: {{refs}}",
+          "open_tree": "ট্রি খুলুন →",
+          "frontier_caption": "নতুন আনলক আইটেমের নথিভুক্ত সব ব্লকার বন্ধ বা মার্জ হয়েছে। কারণ দেখতে আইটেম খুলুন, বা তার ট্রি খুলুন।",
+          "focus_caption": "নির্বাচিত আইটেমের সম্পূর্ণ সক্রিয় নির্ভরতা ট্রি। যেকোনো নোডে ক্লিকে রুট বদলান, Enter-এ খুলুন। ড্যাশ = অনুমিত, কাটা = পূরণ।",
+          "focus_empty": "নির্ভরতা ট্রি আঁকতে একটি আইটেম নির্বাচন করুন।",
+          "tree_stat": "{{kind}}-{{number}} এর ট্রি: {{nodes}}টি নোড · {{edges}}টি সক্রিয় প্রান্ত",
+          "ghost_satisfied": "পূরণ",
+          "ci_fail": "CI ব্যর্থ",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "{{kind}}-{{number}} এর নির্ভরতা ট্রি: {{nodes}}টি নোড, {{edges}}টি সক্রিয় প্রান্ত",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "খালি বোর্ড",
+          "empty_title": "এখনও কোনো নির্ভরতা নেই",
+          "empty_blurb": "এই রিপোজিটরিতে আঁকার মতো কোনো নির্ভরতা প্রান্ত নেই। gh issue edit --add-blocked-by দিয়ে নেটিভ নির্ভরতা দিন, নয়তো পরের সিঙ্কে Issue Radar ক্রস-রেফারেন্স থেকে অনুমান করবে।",
+          "empty_unavailable_title": "নির্ভরতার ডেটা অনুপলব্ধ",
+          "empty_unavailable_blurb": "গ্রাফ লোড করা যায়নি। এই রিপোজিটরির জন্য deps রুট হয়তো এখনও চালু হয়নি। চালু হলে আবার চেষ্টা করুন।",
+          "retry": "আবার চেষ্টা করুন"
         }
       },
       "welcomeCarousel": {

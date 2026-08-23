@@ -54,7 +54,7 @@ from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.safety_override import safety_override
 
-from . import crew_store, provider, store
+from . import crew_store, github_client, provider, store
 
 try:  # the autonudge service is feature-flagged; the runtime degrades without it
     from kiro_crew.autonudge import get_instance as _autonudge_instance
@@ -97,7 +97,7 @@ def _is_crew_slot_key(key: str) -> bool:
     """
     if not str(key).startswith(_CREW_SLOT_PREFIX):
         return False
-    return crew_store.is_crew_id(str(key)[len(_CREW_SLOT_PREFIX):])
+    return crew_store.is_crew_id(str(key)[len(_CREW_SLOT_PREFIX) :])
 
 
 #: Crews get a turn on this idle gap when the sweep has nothing to report. The
@@ -429,9 +429,7 @@ def _assemble_turn_prompt(slot: Any, snapshot: dict[str, Any]) -> str:
 # ── session launch / attach ─────────────────────────────────────────────────
 
 
-def stop_sentinel_path(
-    owner: str, repo: str, crew_id: str, root: Path | None = None
-) -> Path:
+def stop_sentinel_path(owner: str, repo: str, crew_id: str, root: Path | None = None) -> Path:
     """Kill switch for the crew's loop. Lives in the crew's own item dir, which
     ``list_work_items`` globs for ``*.json`` only — so this file is invisible to it."""
     d = crew_store.crews_dir(owner, repo, root) / crew_id
@@ -564,9 +562,7 @@ def sync_trust(slot: Any, crew: dict[str, Any]) -> bool:
     return granted
 
 
-async def revoke_crew_execution(
-    state: Any, crew: dict[str, Any], reason: str = ""
-) -> bool:
+async def revoke_crew_execution(state: Any, crew: dict[str, Any], reason: str = "") -> bool:
     """Take away everything that could give this crew another turn. Idempotent.
 
     The inverse of :func:`sync_trust` plus the loop, and it exists as ONE function
@@ -633,9 +629,7 @@ async def revoke_crew_execution(
     return revoked
 
 
-async def ensure_crew_session(
-    state: Any, owner: str, repo: str, crew: dict[str, Any]
-) -> Any:
+async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str, Any]) -> Any:
     """Attach to (or create) the crew's app-owned slot and return it.
 
     Agent, workspace and model all come from the crew record. ``model`` OVERRIDES
@@ -890,9 +884,7 @@ async def _on_slot_closed(slot_key: str, root: Path | None = None) -> None:
         DISMISSED_PAUSE_REASON,
         scope,
     )
-    logger.info(
-        "issue-radar crew %s paused: its session was closed (%s)", crew.get("id"), slot_key
-    )
+    logger.info("issue-radar crew %s paused: its session was closed (%s)", crew.get("id"), slot_key)
 
 
 async def _on_slot_close_undone(slot_key: str, root: Path | None = None) -> None:
@@ -1218,7 +1210,7 @@ def _call_if_present(obj: Any, name: str, *args: Any) -> None:
 
 # ── unblock signals ─────────────────────────────────────────────────────────
 #
-# The six signals from the brief's table, and the field each one is read from:
+# The seven signals from the brief's table, and the field each one is read from:
 #
 #   requester replied      issue comment count            (issue detail)
 #   CI state changed       check rollup + bucket counts   (batched enrichment)
@@ -1226,6 +1218,7 @@ def _call_if_present(obj: Any, name: str, *args: Any) -> None:
 #   merge conflict         mergeable / merge state        (batched enrichment)
 #   PR merged              merged flag                    (PR detail)
 #   post-merge comment     PR comment count while merged  (PR detail)
+#   dependency unblocked   still-open blocker count       (deps cache)
 #
 # Missing one means an item silently stalls forever, which is why they are named
 # individually here rather than collapsed into "something changed".
@@ -1236,6 +1229,13 @@ SIG_REVIEW = "review-verdict"
 SIG_CONFLICT = "merge-conflict"
 SIG_MERGED = "pr-merged"
 SIG_POST_MERGE = "post-merge-comment"
+# Fires ONCE when a work item's blocker set — the deps-cache edges pointing at
+# this item — transitions from "some blocker still open" to "all blockers
+# closed/merged". Read from the deps cache the sweep already loads for the repo,
+# so it adds NO forge call and NO second polling loop: the item is only re-read
+# on its normal phase cadence, and the blocker count rides along in its
+# fingerprint.
+SIG_DEP_UNBLOCKED = "dependency-unblocked"
 
 UNBLOCK_SIGNALS = (
     SIG_REPLY,
@@ -1244,6 +1244,7 @@ UNBLOCK_SIGNALS = (
     SIG_CONFLICT,
     SIG_MERGED,
     SIG_POST_MERGE,
+    SIG_DEP_UNBLOCKED,
 )
 
 SIGNALS_SCHEMA = 1
@@ -1291,9 +1292,7 @@ def read_signals(owner: str, repo: str, root: Path | None = None) -> dict[str, A
     return items if isinstance(items, dict) else {}
 
 
-def write_signals(
-    owner: str, repo: str, items: dict[str, Any], root: Path | None = None
-) -> None:
+def write_signals(owner: str, repo: str, items: dict[str, Any], root: Path | None = None) -> None:
     atomic_write(
         signals_path(owner, repo, root),
         json.dumps({"schema": SIGNALS_SCHEMA, "items": items}, indent=2),
@@ -1305,7 +1304,7 @@ def _item_key(crew_id: str, number: Any) -> str:
 
 
 def detect_unblocks(prev: dict[str, Any] | None, cur: dict[str, Any]) -> list[str]:
-    """Which of the six signals moved between two fingerprints.
+    """Which of the seven signals moved between two fingerprints.
 
     A FIRST observation reports nothing: it seeds the mark, the same discipline the
     new-issue watcher uses so connecting a repo does not announce its whole
@@ -1332,10 +1331,17 @@ def detect_unblocks(prev: dict[str, Any] | None, cur: dict[str, Any]) -> list[st
         out.append(SIG_CONFLICT)
     if cur.get("merged") and not prev.get("merged"):
         out.append(SIG_MERGED)
-    if cur.get("merged") and _as_int(cur.get("pr_comments")) > _as_int(
-        prev.get("pr_comments")
-    ):
+    if cur.get("merged") and _as_int(cur.get("pr_comments")) > _as_int(prev.get("pr_comments")):
         out.append(SIG_POST_MERGE)
+    # Dependency unblocked: the blocker set went from some-still-open to
+    # all-closed. Both readings must be KNOWN (an integer): a None means the deps
+    # cache could not be read this cycle, and None-vs-known must not read as
+    # "unblocked" — the same guard the CI signal uses. An item with no blockers
+    # sits at 0 in both readings, so it never fires; only a real >0 → 0 does.
+    prev_open = prev.get("open_blockers")
+    cur_open = cur.get("open_blockers")
+    if isinstance(prev_open, int) and isinstance(cur_open, int) and prev_open > 0 and cur_open == 0:
+        out.append(SIG_DEP_UNBLOCKED)
     return out
 
 
@@ -1356,28 +1362,114 @@ def _is_conflicted(mergeable: Any, merge_state: Any) -> bool:
     return str(merge_state or "").lower() == "dirty"
 
 
+def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None:
+    """The sweep's deps source: cache read, refreshed in place when absent/expired.
+
+    Runs in a worker thread (the caller wraps it in ``asyncio.to_thread``).
+    GitHub-only, like the /deps route: other providers have no dependency fetch
+    yet, and for them this stays a plain cache read (normally None). A refresh
+    failure of any kind keeps whatever the cache held — stale beats wrong, and
+    an unknown reading can never fire the unlock (see ``detect_unblocks``).
+    """
+    cached = store.read_deps_cache(key.owner, key.repo, scope)
+    fresh_enough = (
+        isinstance(cached, dict)
+        and (time.time() - float(cached.get("fetched_at") or 0)) < store.DEPS_CACHE_TTL_SEC
+    )
+    if fresh_enough or key.provider != "github":
+        return cached
+
+    # An ABSENT issues cache is unknown scope, not an empty repo: building the
+    # graph from it would overwrite a possibly-good cached graph with a
+    # wrong-empty one (the same unknown-vs-empty distinction the /deps route
+    # makes). Keep whatever we have; the sweep after the issues cache warms
+    # will refresh.
+    open_issues = store.read_issues_cache(key.owner, key.repo, scope, state="open")
+    if open_issues is None:
+        return cached
+    try:
+        hints: dict[int, dict] = {}
+        edges, nodes = github_client.fetch_dependency_edges(key.owner, key.repo, open_issues, hints)
+        store.write_deps_cache(key.owner, key.repo, edges, nodes, root=scope)
+        return store.read_deps_cache(key.owner, key.repo, scope)
+    except Exception:
+        logger.debug(
+            "issue-radar: sweep deps refresh failed for %s/%s; keeping cached graph",
+            key.owner,
+            key.repo,
+            exc_info=True,
+        )
+        return cached
+
+
+def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
+    """How many of ``number``'s blockers are still open, from a deps-cache graph.
+
+    ``deps`` is a ``store.read_deps_cache`` result (``{"edges", "nodes", ...}``) or
+    None. Returns:
+      * ``None`` when the graph is unknown (no deps cache) — an unknown count must
+        never read as "unblocked" (see ``detect_unblocks``);
+      * ``0`` when the item has no blockers at all, or all of them are
+        closed/merged;
+      * the count of blockers whose node state is neither ``closed`` nor
+        ``merged``.
+    A blocker with no node entry is treated as still-open (conservative: better to
+    keep an item blocked than to fire a spurious unlock on a missing node).
+    """
+    if not isinstance(deps, dict):
+        return None
+    if not isinstance(number, int) or number <= 0:
+        return None
+    edges = deps.get("edges")
+    raw_nodes = deps.get("nodes")
+    nodes: dict[str, Any] = raw_nodes if isinstance(raw_nodes, dict) else {}
+    if not isinstance(edges, list):
+        return None
+    open_count = 0
+    for edge in edges:
+        if not isinstance(edge, dict) or edge.get("blocked") != number:
+            continue
+        blocker = edge.get("blocker")
+        node = nodes.get(str(blocker)) if blocker is not None else None
+        state = str((node or {}).get("state") or "open").lower()
+        if state not in ("closed", "merged"):
+            open_count += 1
+    return open_count
+
+
 def fingerprint_item(
     key: provider.RepoKey,
     item: dict[str, Any],
     enriched: dict[int, dict[str, Any]],
     prev: dict[str, Any] | None,
+    deps: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Read the six signals for ONE work item. Blocking ``gh`` calls — run off-loop.
+    """Read the seven signals for ONE work item. Blocking ``gh`` calls — run off-loop.
 
     Cost is one REST call for the issue, one more for the PR when the item has one,
     and (only when the PR's ``updated_at`` moved and the phase makes a review
     plausible) one paginated timeline read. The check rollup and merge state come
     from ``enriched``, which the caller fetched for the whole repo in two batched
-    GraphQL calls.
+    GraphQL calls. The blocker count comes from ``deps`` (the repo's deps cache,
+    read ONCE by the caller), so the seventh signal costs no extra forge call.
     """
     client = provider.client_for(key)
     kwargs = provider.call_kwargs(key)
     number = item.get("number")
     fp: dict[str, Any] = {"phase": item.get("phase") or ""}
     if not isinstance(number, int) or number <= 0:
+        fp["open_blockers"] = None  # no forge-readable number: nothing to count
         return fp  # a record with no issue number has nothing on the forge to read
 
     issue = client.get_issue_detail(key.owner, key.repo, int(number), **kwargs)
+    # The blocker count is read from the deps cache regardless of whether the
+    # item has a PR — an issue can be blocked too. But the graph is scoped to
+    # OPEN issues: a tracked item that is itself closed has NO edges in the
+    # graph, and "no edges" would read as zero open blockers — a prev>0 → 0
+    # transition that falsely fires SIG_DEP_UNBLOCKED the moment someone closes
+    # a nonterminal item. Out of scope must read UNKNOWN, not unblocked.
+    item_state = str((issue or {}).get("state") or "").lower() if isinstance(issue, dict) else ""
+    fp["open_blockers"] = _open_blocker_count(deps, number) if item_state == "open" else None
     if isinstance(issue, dict):
         fp["issue_comments"] = _as_int(issue.get("comments"))
         fp["issue_state"] = issue.get("state")
@@ -1395,9 +1487,7 @@ def fingerprint_item(
     # ``resolve_mergeable=False``: the batched readiness call above already supplies
     # a COMPUTED merge state, so paying this call's retry-plus-sleep for the lazy
     # one would buy a second answer to a question already answered.
-    detail = client.get_pr_detail(
-        key.owner, key.repo, pr, resolve_mergeable=False, **kwargs
-    )
+    detail = client.get_pr_detail(key.owner, key.repo, pr, resolve_mergeable=False, **kwargs)
     detail = detail if isinstance(detail, dict) else {}
     fp["pr_comments"] = _as_int(detail.get("comments"))
     fp["pr_updated_at"] = detail.get("updated_at")
@@ -1478,12 +1568,12 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     notifications would stall every open item with no trace. The app's enabled gate
     is the switch that stops crews, and it stays in ``watch.py``.
     """
-    scope = root if root is not None else store.provider_root(
-        root=None, provider=key.provider, host=key.host
+    scope = (
+        root
+        if root is not None
+        else store.provider_root(root=None, provider=key.provider, host=key.host)
     )
-    crews = await asyncio.to_thread(
-        partial(crew_store.list_crews, key.owner, key.repo, scope)
-    )
+    crews = await asyncio.to_thread(partial(crew_store.list_crews, key.owner, key.repo, scope))
     if not crews:
         return {}
     state = app.get("state") if hasattr(app, "get") else None
@@ -1496,9 +1586,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
     if not live:
         return {}
 
-    stored = await asyncio.to_thread(
-        partial(read_signals, key.owner, key.repo, scope)
-    )
+    stored = await asyncio.to_thread(partial(read_signals, key.owner, key.repo, scope))
     # WALL clock, not the loop's monotonic one: this value is persisted, and a
     # monotonic reading restarts near zero on the next gateway launch — every
     # stored mark would then sit in the future and no item would ever come due
@@ -1539,14 +1627,19 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
             await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
         return {}
 
-    prs = sorted(
-        {
-            pr
-            for _, it in due
-            if isinstance(pr := it.get("pr_number"), int) and pr > 0
-        }
-    )
+    prs = sorted({pr for _, it in due if isinstance(pr := it.get("pr_number"), int) and pr > 0})
     enriched = await _enrich(key, prs) if prs else {}
+
+    # The dependency graph for the whole repo, read ONCE per sweep. Without a
+    # refresh here the signal only works while someone keeps visiting /deps: a
+    # headless gateway would fingerprint the same stale blocker states forever
+    # and a merged blocker would never wake its crew. So an absent or expired
+    # cache is refreshed IN the sweep — one bounded batched fetch per repo per
+    # cycle (the same batched GraphQL walk the route uses, ~1 call per 100 open
+    # issues), gated on there being due items at all. A failed refresh keeps the
+    # stale graph (or None), which per ``detect_unblocks`` never fires the
+    # unlock — fail-closed, exactly like an unknown reading.
+    deps = await asyncio.to_thread(partial(_read_or_refresh_deps, key, scope))
 
     # Pass 2 — fingerprint each due item, compare, then wake each crew ONCE.
     woken: dict[str, Any] = {}
@@ -1558,9 +1651,7 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         entry = stored.get(ikey) if isinstance(stored.get(ikey), dict) else None
         prev = (entry or {}).get("fp") if isinstance((entry or {}).get("fp"), dict) else None
         try:
-            fp = await asyncio.to_thread(
-                partial(fingerprint_item, key, item, enriched, prev)
-            )
+            fp = await asyncio.to_thread(partial(fingerprint_item, key, item, enriched, prev, deps))
         except Exception:
             # A per-item failure leaves its mark UNTOUCHED, so the change is still
             # pending next cycle rather than being silently consumed by the error.
@@ -1576,13 +1667,9 @@ async def sweep_repo(app: Any, key: provider.RepoKey, root: Path | None = None) 
         if not signals:
             continue
         woken.setdefault(crew_id, []).extend(signals)
-        reasons.setdefault(crew_id, []).append(
-            f"#{item.get('number')} {', '.join(signals)}"
-        )
+        reasons.setdefault(crew_id, []).append(f"#{item.get('number')} {', '.join(signals)}")
 
-    await asyncio.to_thread(
-        partial(write_signals, key.owner, key.repo, stored, scope)
-    )
+    await asyncio.to_thread(partial(write_signals, key.owner, key.repo, stored, scope))
 
     # ONE wake per crew, carrying every reason. Two items signalling in the same
     # sweep is one turn's worth of work, and the second call would be dropped as

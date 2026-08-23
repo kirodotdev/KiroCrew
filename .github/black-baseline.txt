@@ -99,12 +99,9 @@ src/kiro_crew/apps/builtins/dev_fleet/gateway_service.py
 src/kiro_crew/apps/builtins/dev_fleet/server.py
 src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e/scripts/pod-playwright.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py
-src/kiro_crew/apps/builtins/issue_radar/backend/crew_runtime.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
-src/kiro_crew/apps/builtins/issue_radar/backend/github_client.py
 src/kiro_crew/apps/builtins/issue_radar/backend/gitlab_client.py
 src/kiro_crew/apps/builtins/issue_radar/backend/provider.py
-src/kiro_crew/apps/builtins/issue_radar/backend/routes.py
 src/kiro_crew/apps/builtins/issue_radar/backend/store.py
 src/kiro_crew/apps/builtins/issue_radar/backend/watch.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_gitlab.py

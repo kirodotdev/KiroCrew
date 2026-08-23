@@ -1884,6 +1884,17 @@
           "connect_repo": "连接仓库",
           "general": "通用",
           "repository_settings": "仓库设置"
+        },
+        "depsSection": {
+          "title": "依赖关系",
+          "blocked_by": "被阻塞于",
+          "blocking": "阻塞着",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "在此打开 {{sigil}}{{number}}"
         }
       },
       "connectPanel": {
@@ -2148,7 +2159,8 @@
         },
         "registry": {
           "overview": "概览",
-          "tagging": "打标签"
+          "tagging": "打标签",
+          "graph": "依赖图"
         },
         "settings": {
           "generalSettings": {
@@ -2308,6 +2320,45 @@
           "untagged_issues": "未标记的 issue",
           "what_you_see_below_is_the_previous_result_not_th": "下方显示的是上一次的结果，而非当前状态。",
           "write_every_staged_label_to": "将所有暂存的标签写入 {{provider}}"
+        },
+        "graphView": {
+          "header": "依赖",
+          "views_label": "依赖视图",
+          "tab_frontier": "前沿",
+          "tab_focus": "聚焦树",
+          "jump_label": "跳转到条目",
+          "jump_placeholder": "跳转到条目 #…",
+          "loading": "正在加载依赖…",
+          "refresh": "刷新依赖数据",
+          "ready_count": "新解锁 {{n}} 个",
+          "frontier_heading": "前沿",
+          "frontier_sub": "新解锁 {{ready}} 个 · 仍在等待 {{waiting}} 个",
+          "no_frontier": "没有记录了依赖的未关闭条目。",
+          "waiting_heading": "等待中（{{n}}）",
+          "more_waiting": "… 还有 {{n}} 个",
+          "why_all_satisfied": "所有阻塞项已满足：{{refs}}",
+          "why_waiting": "正在等待 {{refs}}",
+          "why_satisfied": "已满足：{{refs}}",
+          "open_tree": "打开依赖树 →",
+          "frontier_caption": "新解锁条目的所有阻塞项均已关闭或合并。展开条目查看原因，或打开其依赖树。",
+          "focus_caption": "所选条目的完整活跃依赖树。点击任意节点重设根节点，Enter 打开。虚线为推断，删除线为已满足。",
+          "focus_empty": "选择一个条目以绘制其依赖树。",
+          "tree_stat": "{{kind}}-{{number}} 的树：{{nodes}} 个节点 · {{edges}} 条活跃边",
+          "ghost_satisfied": "已满足",
+          "ci_fail": "CI 失败",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "{{kind}}-{{number}} 的依赖树：{{nodes}} 个节点，{{edges}} 条活跃边",
+          "aria_node": "{{kind}}-{{number}}，{{state}}：{{title}}",
+          "empty_board": "空板",
+          "empty_title": "尚无依赖关系",
+          "empty_blurb": "此仓库暂无可绘制的依赖边。可用 gh issue edit --add-blocked-by 设置原生依赖，或等 Issue Radar 下次同步时从交叉引用推断。",
+          "empty_unavailable_title": "依赖数据不可用",
+          "empty_unavailable_blurb": "依赖图加载失败。该仓库的 deps 后端路由可能尚未启用，可用后重试。",
+          "retry": "重试"
         }
       },
       "welcomeCarousel": {

@@ -1357,6 +1357,148 @@ def drop_tagging_suggestions(
         return {"suggestions": remaining, "generated_at": current["generated_at"]}
 
 
+# ── dependency-edge cache (blocked-by / blocking graph) ──────────────────────
+#
+# One document per repo holding the dependency DAG for its OPEN work items: the
+# GitHub-native blocked-by edges plus the ones we infer from timeline
+# cross-references. Schema-versioned exactly like ISSUES_CACHE_SCHEMA — a stale
+# or missing stamp reads as a MISS (returns None) so the /deps route refetches
+# with the current edge shape rather than serving a graph missing a field.
+#
+#   v1: {schema, fetched_at, edges:[{blocked, blocker, source}], nodes:{...}}
+DEPS_CACHE_SCHEMA = 1
+
+# How long a synced dependency graph is served before /deps refetches it. The
+# graph moves only when a dependency is added/removed or a blocker's lifecycle
+# changes — far slower than the issue list — and a rebuild costs N native +
+# N timeline reads for the open backlog, so a generous TTL keeps that cost off
+# the hot path. Same "plain TTL, not a probe-gated poll" reasoning as the labels
+# cache: a probe here would cost as much as the refetch it guards.
+DEPS_CACHE_TTL_SEC = 600.0
+
+# Edge provenance. A native edge is one GitHub itself records via the
+# dependencies API; an inferred edge is backfilled from a timeline
+# cross-reference so the graph is useful in repos where nobody sets native
+# dependencies. A native edge WINS over an inferred duplicate (see
+# _normalize_deps).
+DEP_SOURCE_NATIVE = "native"
+DEP_SOURCE_INFERRED = "inferred"
+_DEP_SOURCES = (DEP_SOURCE_NATIVE, DEP_SOURCE_INFERRED)
+
+
+def deps_cache_path(owner: str, repo: str, root: Path | None = None) -> Path:
+    return repo_data_dir(owner, repo, root) / "deps-cache.json"
+
+
+def _normalize_deps(
+    edges: Any, nodes: Any
+) -> tuple[list[dict], dict[str, dict]]:
+    """Coerce a raw deps payload to ``(edges, nodes)`` in the stored shape.
+
+    Deliberately tolerant: a partially-written or hand-edited document should
+    degrade to a smaller graph, never break the /deps route. Edges are
+    deduplicated on the ``(blocked, blocker)`` pair with a NATIVE edge winning
+    over an inferred duplicate (a self-edge, or one with a non-positive number,
+    is dropped). ``nodes`` keeps only well-formed entries keyed by the number as
+    a string, matching the on-the-wire JSON object-key type.
+    """
+    by_pair: dict[tuple[int, int], dict] = {}
+    if isinstance(edges, list):
+        for raw in edges:
+            if not isinstance(raw, dict):
+                continue
+            raw_blocked = raw.get("blocked")
+            raw_blocker = raw.get("blocker")
+            if raw_blocked is None or raw_blocker is None:
+                continue
+            try:
+                blocked = int(raw_blocked)
+                blocker = int(raw_blocker)
+            except (TypeError, ValueError):
+                continue
+            if blocked <= 0 or blocker <= 0 or blocked == blocker:
+                continue
+            source = raw.get("source")
+            if source not in _DEP_SOURCES:
+                source = DEP_SOURCE_INFERRED
+            pair = (blocked, blocker)
+            existing = by_pair.get(pair)
+            # Native wins: only overwrite an existing entry when the newcomer is
+            # native and the incumbent is not, so a native edge is never demoted
+            # to inferred by a later duplicate.
+            if existing is None or (
+                source == DEP_SOURCE_NATIVE
+                and existing.get("source") != DEP_SOURCE_NATIVE
+            ):
+                by_pair[pair] = {"blocked": blocked, "blocker": blocker, "source": source}
+    out_edges = [by_pair[p] for p in sorted(by_pair)]
+
+    out_nodes: dict[str, dict] = {}
+    if isinstance(nodes, dict):
+        for key, val in nodes.items():
+            try:
+                number = int(key)
+            except (TypeError, ValueError):
+                continue
+            if number <= 0 or not isinstance(val, dict):
+                continue
+            out_nodes[str(number)] = {
+                "kind": str(val.get("kind") or "issue"),
+                "state": str(val.get("state") or "open"),
+                "title": str(val.get("title") or ""),
+            }
+    return out_edges, out_nodes
+
+
+def read_deps_cache(owner: str, repo: str, root: Path | None = None) -> dict | None:
+    """Return ``{"edges", "nodes", "fetched_at"}`` for a repo, or None when the
+    graph has never been synced.
+
+    An unreadable file, or one written under an older ``DEPS_CACHE_SCHEMA`` (or
+    with no stamp at all), is treated as a MISS — same guard as every other
+    cache — so the route refetches with the current edge shape.
+    """
+    path = deps_cache_path(owner, repo, root)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or data.get("schema") != DEPS_CACHE_SCHEMA:
+        return None  # stale schema → treat as a miss so the route refetches
+    edges, nodes = _normalize_deps(data.get("edges"), data.get("nodes"))
+    fetched_at = data.get("fetched_at")
+    return {
+        "edges": edges,
+        "nodes": nodes,
+        "fetched_at": float(fetched_at)
+        if isinstance(fetched_at, (int, float)) and not isinstance(fetched_at, bool)
+        else 0.0,
+    }
+
+
+def write_deps_cache(
+    owner: str, repo: str, edges: list[dict], nodes: dict[str, dict],
+    *, root: Path | None = None,
+) -> None:
+    """Store the dependency graph for a repo, stamping the current schema and the
+    fetch time. Edges/nodes are normalized on the way in (native-wins dedup,
+    self-edges dropped) so a caller cannot persist a malformed graph."""
+    norm_edges, norm_nodes = _normalize_deps(edges, nodes)
+    atomic_write(
+        deps_cache_path(owner, repo, root),
+        json.dumps(
+            {
+                "schema": DEPS_CACHE_SCHEMA, "owner": owner, "repo": repo,
+                "fetched_at": time.time(),
+                "edges": norm_edges, "nodes": norm_nodes,
+            },
+            indent=2,
+        ),
+    )
+
+
 def add_label_to_cache(owner: str, repo: str, label: dict, *, root: Path | None = None) -> None:
     """Append a newly-created label to the labels cache so the pickers show it
     immediately. No-op when the cache doesn't exist yet (a later refresh fetches

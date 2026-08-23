@@ -1916,6 +1916,17 @@
           "connect_repo": "저장소 연결",
           "general": "일반",
           "repository_settings": "저장소 설정"
+        },
+        "depsSection": {
+          "title": "의존성",
+          "blocked_by": "차단 요인",
+          "blocking": "차단 중",
+          "state_open": "open",
+          "state_closed": "closed",
+          "state_merged": "merged",
+          "source_native": "native",
+          "source_inferred": "inferred",
+          "open_here": "{{sigil}}{{number}} 여기서 열기"
         }
       },
       "connectPanel": {
@@ -2180,7 +2191,8 @@
         },
         "registry": {
           "overview": "개요",
-          "tagging": "태그 지정"
+          "tagging": "태그 지정",
+          "graph": "그래프"
         },
         "settings": {
           "generalSettings": {
@@ -2340,6 +2352,45 @@
           "untagged_issues": "태그 없는 이슈",
           "what_you_see_below_is_the_previous_result_not_th": "아래에 보이는 내용은 현재 상태가 아니라 이전 결과입니다.",
           "write_every_staged_label_to": "준비된 라벨을 모두 {{provider}}에 기록"
+        },
+        "graphView": {
+          "header": "의존성",
+          "views_label": "의존성 보기",
+          "tab_frontier": "프런티어",
+          "tab_focus": "포커스 트리",
+          "jump_label": "항목으로 이동",
+          "jump_placeholder": "항목 #으로 이동…",
+          "loading": "의존성 불러오는 중…",
+          "refresh": "의존성 데이터 새로 고침",
+          "ready_count": "새로 해제 {{n}}개",
+          "frontier_heading": "프런티어",
+          "frontier_sub": "새로 해제 {{ready}}개 · 대기 중 {{waiting}}개",
+          "no_frontier": "의존성이 기록된 열린 항목이 없습니다.",
+          "waiting_heading": "대기 중({{n}})",
+          "more_waiting": "… {{n}}개 더",
+          "why_all_satisfied": "모든 차단 항목 해소됨: {{refs}}",
+          "why_waiting": "대기 중: {{refs}}",
+          "why_satisfied": "해소됨: {{refs}}",
+          "open_tree": "트리 열기 →",
+          "frontier_caption": "새로 해제된 항목은 기록된 차단 항목이 모두 닫히거나 병합되었습니다. 항목을 열어 이유를 펼치거나 그 트리를 여세요.",
+          "focus_caption": "선택한 항목의 전체 활성 의존성 트리입니다. 노드를 클릭하면 루트 재설정, Enter로 열기. 점선=추론, 취소선=해소됨.",
+          "focus_empty": "항목을 선택하면 의존성 트리를 그립니다.",
+          "tree_stat": "{{kind}}-{{number}}의 트리: 노드 {{nodes}}개 · 활성 간선 {{edges}}개",
+          "ghost_satisfied": "해소됨",
+          "ci_fail": "CI 실패",
+          "led_wait": "WAIT",
+          "led_ready": "RDY",
+          "led_run": "RUN",
+          "led_done": "DONE",
+          "led_open": "OPEN",
+          "aria_tree": "{{kind}}-{{number}}의 의존성 트리: 노드 {{nodes}}개, 활성 간선 {{edges}}개",
+          "aria_node": "{{kind}}-{{number}}, {{state}}: {{title}}",
+          "empty_board": "빈 보드",
+          "empty_title": "아직 의존성이 없습니다",
+          "empty_blurb": "이 저장소에는 그릴 의존성 간선이 없습니다. gh issue edit --add-blocked-by로 네이티브 의존성을 설정하거나, 다음 동기화 때 Issue Radar가 상호 참조에서 추론합니다.",
+          "empty_unavailable_title": "의존성 데이터를 사용할 수 없음",
+          "empty_unavailable_blurb": "그래프를 불러오지 못했습니다. 이 저장소에서 deps 라우트가 아직 활성화되지 않았을 수 있습니다. 활성화 후 다시 시도하세요.",
+          "retry": "다시 시도"
         }
       },
       "welcomeCarousel": {
