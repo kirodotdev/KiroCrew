@@ -9162,6 +9162,29 @@ def _inline_interpreter_bindings(text: str) -> str:
     return _INTERP_IDENT_RE.sub(lambda m: bindings.get(m.group(0), m.group(0)), text)
 
 
+def _deny_reason(matched: str, reason_notes: "dict[str, str] | None") -> str:
+    """Refusal text for *matched*, with the operator note on a SECOND line.
+
+    The first line is byte-for-byte what it has always been. That is load bearing,
+    not stylistic: ``RecoveryCard.tsx`` extracts the pattern with
+    ``/Blocked by security policy:\\s*(.+?)\\s*$/gm`` -- per-line and end-anchored --
+    so anything appended to the SAME line is captured as part of the pattern, and
+    ``_denied_by`` in the test suite partitions on the exact
+    ``"Blocked by security policy: "`` separator.  A note therefore goes on its own
+    line, where both readers ignore it.
+
+    Built-in rules never carry a note (the map holds user patterns only), so for them
+    this returns exactly the historical string.
+
+    Module-level rather than a closure because EVERY tier that can refuse must emit
+    the identical micro-format: a second producer would be free to drift from the
+    three consumers that parse it.
+    """
+    head = f"{DENY_REASON_PREFIX}{matched}"
+    note = (reason_notes or {}).get(matched, "").strip()
+    return f"{head}\n{note}" if note else head
+
+
 def is_denied(
     tool_name: str,
     extra_patterns: list[str] | None = None,
@@ -9241,22 +9264,8 @@ def is_denied(
     lower = tool_name.lower()
 
     def _reason(matched: str) -> str:
-        """Refusal text for *matched*, with the operator note on a SECOND line.
-
-        The first line is byte-for-byte what it has always been. That is load
-        bearing, not stylistic: ``RecoveryCard.tsx`` extracts the pattern with
-        ``/Blocked by security policy:\\s*(.+?)\\s*$/gm`` — per-line and
-        end-anchored — so anything appended to the SAME line is captured as part
-        of the pattern, and ``_denied_by`` in the test suite partitions on the
-        exact ``"Blocked by security policy: "`` separator.  A note therefore
-        goes on its own line, where both readers ignore it.
-
-        Built-in rules never carry a note (the map holds user patterns only), so
-        for them this returns exactly the historical string.
-        """
-        head = f"{DENY_REASON_PREFIX}{matched}"
-        note = (reason_notes or {}).get(matched, "").strip()
-        return f"{head}\n{note}" if note else head
+        """Refusal text for *matched* -- see :func:`_deny_reason`, the shared producer."""
+        return _deny_reason(matched, reason_notes)
 
     glob_patterns = list(extra_patterns or [])
     if denied_regexes is None:
@@ -9398,6 +9407,84 @@ def is_denied(
     # feature-branch push, emit the deferred allow audit now (final outcome).
     if push_allow_pending:
         _schedule_push_allow_audit(lower)
+    return None
+
+
+def is_denied_synthesized_target(
+    target: str,
+    patterns: list[str] | None = None,
+    *,
+    extra_patterns: list[str] | None = None,
+    reason_notes: dict[str, str] | None = None,
+) -> str | None:
+    """Evaluate a SYNTHESIZED target against the patterns that participate in one.
+
+    A synthesized target is not a command line.  It is a ``"<namespace> key=value ..."``
+    summary this gate mints from a tool call's structured arguments so a rule can see a
+    scope that exists nowhere in text (``hooks._search_deny_target``).  Handing it to
+    :func:`is_denied` evaluates it against the WHOLE shared rule set, including the ~140
+    command-oriented built-ins -- and those match its path text incidentally: the
+    ``mkfs.*`` rule denies a read-only search of a directory named ``mkfs-tests``.  The
+    only per-rule remedy is disabling that rule by id, which also stops it protecting
+    real shell commands, so the collision costs a real control to clear.
+
+    Which patterns participate: exactly the ones the CALLER passes.  The hooks gate
+    passes the operator's own enabled regexes, and the companion overlay is evaluated
+    separately and unscoped a layer up (``PolicyAuthority``).  The shipped built-in
+    catalogue is NOT passed and takes no part in a synthesized target: a built-in cannot
+    express a scope rule for one -- none is authored against the grammar, ratcheted by
+    ``test_no_shipped_builtin_is_authored_against_the_grammar`` -- so its only possible
+    hit here is the incidental one this tier exists to drop.  A future built-in written
+    against the grammar fails that ratchet, which is the signal to give it an explicit
+    way in.
+
+    This is deliberately a caller-supplied SET rather than a filter applied here.  An
+    earlier revision classified the merged effective set by testing each pattern's text
+    against the shipped catalogue, and text cannot answer that question: an operator who
+    authors a pattern whose text coincides with a shipped one (``mkfs.*`` is a natural
+    thing to type) had their OWN rule read as shipped and dropped -- a silent fail-open on
+    an explicit deny.  Pattern text is not provenance.  Passing only what participates
+    makes provenance structural: there is nothing left to misclassify.
+
+    What this does NOT run, and why:
+
+    * The argv-structural floors (credential mint, self-kill, restart/update/cloud) and
+      the verb-anchored git-publish detector.  Each interprets SHELL SYNTAX, and a
+      synthesized target has none: its tokens are the namespace and ``key=value`` pairs,
+      values are whitespace-encoded by the synthesizer so one cannot split into two
+      tokens, and no such target can name a program.  A search of a tree cannot mint a
+      credential or kill a process, so these can only produce false positives here.  A
+      real command still reaches them through its own ``command`` target.
+    * Per-segment (pass 2) re-evaluation.  Segment splitting exists to isolate a chained
+      command inside one shell line; a synthesized target has no chaining semantics, so
+      splitting it only manufactures pseudo-commands out of path substrings -- the same
+      collision class, one layer down.
+
+    Args:
+        target: The synthesized target, e.g. ``"file-search path=/srv max_depth=3"``.
+        patterns: Regex-tier patterns that participate (the operator's own).  ``None``
+            or empty means the regex tier contributes nothing -- NOT that it falls back
+            to every built-in, which would be the opposite of this tier's contract.
+        extra_patterns: Glob-tier patterns that participate (``auto_deny_tools``).
+        reason_notes: Optional ``{pattern: operator note}`` map, presentation only.
+
+    Returns:
+        Denial reason string (mentioning the matched pattern), or ``None`` if allowed.
+    """
+    lower = target.lower()
+    all_patterns: list[tuple[str, bool]] = [(p, True) for p in list(patterns or [])] + [
+        (p, False) for p in list(extra_patterns or [])
+    ]
+    for pattern, is_regex in all_patterns:
+        if not _deny_pattern_matches(pattern, lower, is_regex):
+            continue
+        # No ``_DENY_EXCEPTIONS`` carve-out here.  That map ships EMPTY and its machinery
+        # is retained in ``is_denied`` only for a future scoped exception, so replicating
+        # it here would be dead symmetry.  If it ever gains an entry, this tier has to be
+        # revisited deliberately -- ``test_the_deny_exception_map_is_still_empty`` reddens
+        # then, so the omission cannot become a silent gap.
+        _emit_deny_event(target, pattern, lower)
+        return _deny_reason(pattern, reason_notes)
     return None
 
 

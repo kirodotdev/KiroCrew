@@ -621,17 +621,42 @@ class HookManager:
         deny_targets = [normalized, tool_name]
         if command:
             deny_targets.append(command)
-        # A file-search builtin's scope lives only in its arguments — it carries no
-        # ``command``, and its title need not name the root it walks — so this target is
-        # the only form in which a deny rule can see a whole-tree walk.
-        search_target = _search_deny_target(raw_params)
-        if search_target:
-            deny_targets.append(search_target)
         for target in deny_targets:
             reason = authority.is_denied(
                 target,
                 self._config.auto_deny_tools,
                 denied_regexes=denied_regexes,
+                reason_notes=denied_notes,
+            )
+            if reason:
+                return ToolHookResult.deny(reason)
+
+        # A file-search builtin's scope lives only in its arguments -- it carries no
+        # ``command``, and its title need not name the root it walks -- so this target is
+        # the only form in which a deny rule can see a whole-tree walk.
+        #
+        # It is evaluated in its OWN tier, not appended to the loop above, because it is
+        # not a command line: run through the shared rule set it collides with the
+        # command-oriented built-ins on argument text (the ``mkfs.*`` rule denying a
+        # read-only search of a directory named ``mkfs-tests``), and the only per-rule
+        # remedy -- disabling that rule by id -- also stops it protecting real shell
+        # commands.
+        #
+        # The patterns that PARTICIPATE are passed explicitly: the operator's own enabled
+        # regexes, never the merged effective set.  That is what makes provenance
+        # structural rather than inferred -- classifying the merged set by pattern TEXT
+        # cannot tell an operator's rule from a shipped one when the text coincides
+        # (``mkfs.*`` is a natural thing to type), and reading the operator's own rule as
+        # shipped would silently drop an explicit deny.  The shipped catalogue takes no
+        # part here at all: none of its rules is authored against the synthesized grammar
+        # (ratcheted in the tests), so a built-in's only possible hit is the incidental
+        # one this tier exists to drop.
+        search_target = _search_deny_target(raw_params)
+        if search_target:
+            reason = authority.is_denied_synthesized_target(
+                search_target,
+                [p.pattern for p in self._config.denied_commands_user_added if p.enabled],
+                extra_patterns=self._config.auto_deny_tools,
                 reason_notes=denied_notes,
             )
             if reason:

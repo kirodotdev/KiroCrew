@@ -129,6 +129,48 @@ class PolicyAuthority:
             reason_notes=reason_notes,
         )
 
+    @final
+    def is_denied_synthesized_target(
+        self,
+        target: str,
+        patterns: "list[str] | None" = None,
+        *,
+        extra_patterns: "list[str] | None" = None,
+        reason_notes: "dict[str, str] | None" = None,
+    ) -> "str | None":
+        """Evaluate a SYNTHESIZED target (see ``security``); overlay stays ADD-only.
+
+        The overlay is evaluated FIRST and through :func:`security.is_denied` with an
+        empty regex tier, so it keeps exactly the semantics it has for a real command.
+        This is the ADD-only invariant: an overlay pattern is opaque enterprise policy,
+        and one restricting a filesystem SCOPE is spelled as bare path text
+        (``*forbidden-share*``), so any host-side narrowing of how it is matched could
+        drop a denial its author meant.  It therefore never travels into the synthesized
+        tier, whose participating patterns are supplied by the caller.
+
+        ``@final`` -- the decision cannot be overridden by a subclass, and
+        ``assert_security_floor`` enforces that at runtime for this method too.
+        """
+        overlay_patterns = list(self._overlay.extra_deny_patterns())
+        if overlay_patterns:
+            # Empty regex tier, NOT None: ``None`` fails closed to every built-in, which
+            # would evaluate the whole shipped catalogue against a synthesized target and
+            # reinstate the collision this tier exists to remove.
+            overlay_reason = security.is_denied(
+                target,
+                overlay_patterns,
+                denied_regexes=[],
+                reason_notes=reason_notes,
+            )
+            if overlay_reason:
+                return overlay_reason
+        return security.is_denied_synthesized_target(
+            target,
+            patterns,
+            extra_patterns=extra_patterns,
+            reason_notes=reason_notes,
+        )
+
 
 def assert_security_floor(authority: object) -> None:
     """Boot-time guard: verify the ADD-only overlay contract is intact.
@@ -154,8 +196,11 @@ def assert_security_floor(authority: object) -> None:
     # subclass could override ``is_denied`` to return ``None`` (allowing every
     # tool).  Verify at runtime that neither decision method was overridden —
     # closes the gap between the documented "no subclass can override the deny
-    # decision" invariant and what static analysis enforces.
-    for method_name in ("is_denied", "effective_patterns"):
+    # decision" invariant and what static analysis enforces.  ``is_denied`` is not
+    # the only decision path: ``is_denied_synthesized_target`` decides the same
+    # question for a synthesized target, so leaving it out would let a subclass
+    # always-allow every file-search call and still pass boot.
+    for method_name in ("is_denied", "is_denied_synthesized_target", "effective_patterns"):
         if getattr(type(authority), method_name) is not getattr(PolicyAuthority, method_name):
             raise PlatformCompositionError(
                 f"security authority overrides {method_name!r}; the deny decision "
