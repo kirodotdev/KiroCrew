@@ -862,6 +862,7 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
         assert recipe._resolve_fetch_url() is None, "a neutralized clone must not yield a target"
 
 
+@pytest.mark.usefixtures("_public_dns")
 class TestOriginUrlMigratesOldConfigs:
     """Neutralizing BOTH clone urls means the trusted publishers can no longer read the
     remote out of git — they take it from config's ``origin_url``. A config written before
@@ -870,6 +871,11 @@ class TestOriginUrlMigratesOldConfigs:
     Found by inspecting the live dogfood configs on this host: both had ``clone`` set and
     no ``origin_url``. Without a migration they would silently degrade to queue-only after
     an upgrade, so the resolver falls back to the retained ``target_url``.
+
+    Every case runs through ``resolve_origin_url`` -> ``validate_target_url``, whose
+    SSRF screen resolves the host live and fails closed on resolver errors — so DNS is
+    pinned (the shared ``_public_dns`` fixture) and the refusal cases below fail for
+    the allowlist/identity reason they assert, never for a resolver hiccup.
     """
 
     def test_a_config_without_origin_url_still_resolves_a_target(self) -> None:
