@@ -133,9 +133,19 @@ describe('TrustDropdown', () => {
     expect(screen.getByText('Trust').closest('button')).toBeDisabled()
   })
 
-  it('truncates long command labels', () => {
-    const longCmd = 'find /very/long/path/to/directory -name "*.tsx" -exec grep -l something'
-    render(<TrustDropdown fullCommand={longCmd} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
+  it('truncates only PATHOLOGICAL command labels — ordinary long ones render whole', () => {
+    // The 256 ceiling only guards the menu layout against pathological input
+    // (a base64 blob, a megabyte one-liner); a realistic long command renders
+    // in full so the user can read exactly what they are trusting.
+    const ordinary = 'find /very/long/path/to/directory -name "*.tsx" -exec grep -l something'
+    const { unmount } = render(<TrustDropdown fullCommand={ordinary} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.queryByText(/…/)).not.toBeInTheDocument()
+    unmount()
+
+    const pathological = `find ${'/very/long/path/segment'.repeat(12)} -name "*.tsx" -exec grep -l something`
+    expect(pathological.length).toBeGreaterThan(256)
+    render(<TrustDropdown fullCommand={pathological} baseCommand="find" isShell className={btnClass} onAction={() => {}} />)
     fireEvent.click(screen.getByText('Trust'))
     expect(screen.getByText(/…/)).toBeInTheDocument()
   })
