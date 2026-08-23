@@ -3767,7 +3767,9 @@
         "co_author": "合著者",
         "co_author_conflict": "协作者已修改此文件",
         "co_author_conflict_discard": "放弃我的修改并重新加载",
+        "co_author_conflict_discard_button": "放弃修改",
         "co_author_conflict_discard_confirm": "放弃你对“{{file}}”未保存的修改并加载协作者的版本？此操作无法撤销。",
+        "co_author_conflict_discard_title": "放弃未保存的修改？",
         "commit_and_push": "提交并推送",
         "commit_message_prompt": "描述此次提交。它将包含论文中的所有更改。",
         "compile": "编译",
@@ -5497,6 +5499,7 @@
       "collapse_unchanged": "折叠未更改内容",
       "copy_content": "复制内容",
       "copy_path": "复制路径",
+      "discard_changes_button": "放弃更改",
       "discard_unsaved_changes": "放弃未保存的更改？",
       "download": "下载",
       "download_failed": "下载失败",
@@ -6734,6 +6737,9 @@
       "confirm_button": "确认并启用",
       "withdraw": "撤销确认"
     },
+    "confirmDialog": {
+      "cancel": "取消"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "无法加载 Webhook，暂时不知道什么会唤醒这个 crew。",
       "inbound_webhooks_are_switched_off": "入站 webhook 已关闭，任何调用都进不来——包括已绑定的 token。",
@@ -7312,7 +7318,13 @@
       "public_by_link_warning": "发布的 URL 为凭链接公开：任何拥有该链接的人都可以查看内容——它通过公共互联网提供，没有任何身份验证。",
       "random_domain_note": "内容通过随机的 *.cloudfront.net 域名提供——不要发布任何你不愿放到公开互联网上的内容。",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "撤回站点？",
+      "recall_button": "撤回站点",
+      "destroy_title": "销毁站点？",
+      "destroy_button": "销毁站点",
+      "remove_profile_title": "移除配置文件？",
+      "remove_profile_button": "移除配置文件"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· 远端副本中有更新的版本",
@@ -7344,6 +7356,7 @@
       "copy_failed": "复制失败",
       "could_not_overwrite": "无法覆盖。",
       "created": "创建于",
+      "discard_changes_button": "放弃更改",
       "discard_unsaved_changes": "放弃未保存的更改？",
       "document_type": "文档类型",
       "download": "下载",

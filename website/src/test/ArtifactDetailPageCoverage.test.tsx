@@ -261,14 +261,34 @@ describe('ArtifactDetailPage — mutation paths', () => {
   it('Escape and Cancel both gate a dirty discard behind a confirm', async () => {
     await mount(mkArtifact())
     await typeIntoEditor('# unsaved work')
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    // The guard is the in-app dialog, never window.confirm — the native
+    // confirm freezes the renderer's event loop.
+    const confirmSpy = vi.spyOn(window, 'confirm')
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+    const first = await screen.findByRole('dialog')
+    expect(within(first).getByText('Discard unsaved changes?')).toBeInTheDocument()
+    fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // Declined — the buffer survives.
     expect(screen.getByLabelText('body editor')).toBeInTheDocument()
-    confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getByTitle(/Cancel \(Esc\)/i))
+    const second = await screen.findByRole('dialog')
+    fireEvent.click(within(second).getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(screen.queryByLabelText('body editor')).toBeNull())
+    expect(confirmSpy).not.toHaveBeenCalled()
+  })
+
+  it('ignores Cmd+S while the discard dialog is open', async () => {
+    // The native confirm blocked the event loop, so no shortcut could fire
+    // mid-question; the async dialog must restore that property — a mid-dialog
+    // save would persist the very draft the user is about to discard.
+    await mount(mkArtifact())
+    await typeIntoEditor('# unsaved work')
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await screen.findByRole('dialog')
+    fireEvent.keyDown(document, { key: 's', metaKey: true })
+    expect(vi.mocked(api).updateArtifact).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('registers a beforeunload guard only while the buffer is dirty', async () => {
@@ -711,18 +731,26 @@ describe('ArtifactDetailPage — mutation paths', () => {
       .mockResolvedValue(mkArtifact({ version: 1, content: '# old' }))
     await mount(mkArtifact({ version: 2 }))
     await typeIntoEditor('# in progress')
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     fireEvent.click(screen.getByText('Back'))
-    expect(confirmSpy).toHaveBeenCalledWith('Discard unsaved changes?')
+    const backDialog = await screen.findByRole('dialog')
+    expect(within(backDialog).getByText('Discard unsaved changes?')).toBeInTheDocument()
+    fireEvent.click(within(backDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     // Declined — still on the artifact, buffer intact.
     expect(screen.queryByText('library page')).toBeNull()
     expect(screen.getByLabelText('body editor')).toBeInTheDocument()
     await pickVersion('v1')
     // The picker is gated the same way, so the buffer survives that too.
+    const pickerDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(pickerDialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(screen.getByLabelText('body editor')).toBeInTheDocument()
-    confirmSpy.mockReturnValue(true)
     fireEvent.click(screen.getByText('Back'))
+    const confirmedDialog = await screen.findByRole('dialog')
+    fireEvent.click(within(confirmedDialog).getByRole('button', { name: 'Discard changes' }))
     expect(await screen.findByText('library page')).toBeInTheDocument()
+    expect(confirmSpy).not.toHaveBeenCalled()
   })
 
   // ── companion chat ────────────────────────────────────────────────────────

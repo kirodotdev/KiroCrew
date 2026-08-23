@@ -3857,7 +3857,9 @@
         "co_author": "Koautor",
         "co_author_conflict": "Co-Autor hat diese Datei geändert",
         "co_author_conflict_discard": "Meine Änderungen verwerfen und neu laden",
+        "co_author_conflict_discard_button": "Änderungen verwerfen",
         "co_author_conflict_discard_confirm": "Nicht gespeicherte Änderungen an „{{file}}“ verwerfen und die Version des Co-Autors laden? Dies kann nicht rückgängig gemacht werden.",
+        "co_author_conflict_discard_title": "Nicht gespeicherte Änderungen verwerfen?",
         "commit_and_push": "Committen & senden",
         "commit_message_prompt": "Beschreibe diesen Commit. Er erfasst jede Änderung im Papier.",
         "compile": "Kompilieren",
@@ -5580,6 +5582,7 @@
       "collapse_unchanged": "Unveränderte ausblenden",
       "copy_content": "Inhalt kopieren",
       "copy_path": "Pfad kopieren",
+      "discard_changes_button": "Änderungen verwerfen",
       "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",
       "download": "Herunterladen",
       "download_failed": "Download fehlgeschlagen",
@@ -6824,6 +6827,9 @@
       "confirm_button": "Bestaetigen und aktivieren",
       "withdraw": "Bestaetigung zuruecknehmen"
     },
+    "confirmDialog": {
+      "cancel": "Abbrechen"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhooks konnten nicht geladen werden, daher ist gerade unbekannt, was diese Crew weckt.",
       "inbound_webhooks_are_switched_off": "Eingehende Webhooks sind abgeschaltet — nichts kann anrufen, gebundene Tokens eingeschlossen.",
@@ -7412,7 +7418,13 @@
       "public_by_link_warning": "Veröffentlichte URLs sind per Link öffentlich: Jeder mit dem Link kann den Inhalt sehen – er wird ohne Authentifizierung im öffentlichen Internet bereitgestellt.",
       "random_domain_note": "Inhalte werden unter einer zufälligen *.cloudfront.net-Domain bereitgestellt – veröffentlichen Sie nichts, was Sie nicht ins offene Internet stellen würden.",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "Website zurückziehen?",
+      "recall_button": "Website zurückziehen",
+      "destroy_title": "Website zerstören?",
+      "destroy_button": "Website zerstören",
+      "remove_profile_title": "Profil entfernen?",
+      "remove_profile_button": "Profil entfernen"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· eine neuere Version ist in der Remote-Kopie verfügbar",
@@ -7444,6 +7456,7 @@
       "copy_failed": "Kopieren fehlgeschlagen",
       "could_not_overwrite": "Überschreiben nicht möglich.",
       "created": "Erstellt",
+      "discard_changes_button": "Änderungen verwerfen",
       "discard_unsaved_changes": "Nicht gespeicherte Änderungen verwerfen?",
       "document_type": "Dokumenttyp",
       "download": "Herunterladen",

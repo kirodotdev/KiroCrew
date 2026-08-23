@@ -307,12 +307,14 @@ describe('MarkdownPanel — snapshot failure', () => {
 
 describe('MarkdownPanel — discard with no owner refresh', () => {
   it('re-reads the file itself when the host supplies no refresh hook', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     const onContentChange = vi.fn()
     fetchOpts.fileReadText = 'the version on disk'
     // Cancel lives in the unsaved-changes banner, which is mode-independent.
     mountPanel({ content: 'edited body', savedBaseline: 'disk body', onContentChange })
     fireEvent.click(screen.getByText('Cancel'))
+    // The discard guard is the in-app dialog, never window.confirm.
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(onContentChange).toHaveBeenCalledWith('the version on disk'))
     expect(fetch).toHaveBeenCalledWith('/api/file-read?path=%2Ftmp%2Fnotes.md')
   })

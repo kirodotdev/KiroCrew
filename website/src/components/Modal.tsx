@@ -99,10 +99,14 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
           <button aria-label={i18nT('components.modal.close')} className="p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer" onClick={dismiss}><X size={16} /></button>
         </div>
       </div>
-      {/* Body */}
-      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-5 py-4">
-        {children}
-      </div>
+      {/* Body — skipped entirely when the caller renders nothing, so a
+          footer-only dialog (e.g. the shared confirm with no detail line)
+          doesn't show an empty padded band between header and footer. */}
+      {children != null && children !== false && children !== '' && (
+        <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden px-5 py-4">
+          {children}
+        </div>
+      )}
       {/* Footer */}
       {footer && (
         <div className="shrink-0 px-5 py-3 border-t border-border flex items-center justify-end gap-2">

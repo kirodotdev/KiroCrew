@@ -3825,7 +3825,9 @@
         "co_author": "सह-लेखक",
         "co_author_conflict": "सह-लेखक ने यह फ़ाइल बदली",
         "co_author_conflict_discard": "मेरे बदलाव छोड़ें और फिर लोड करें",
+        "co_author_conflict_discard_button": "बदलाव छोड़ें",
         "co_author_conflict_discard_confirm": "“{{file}}” में अपने सहेजे न गए बदलाव छोड़कर सह-लेखक का संस्करण लोड करें? इसे पूर्ववत नहीं किया जा सकता।",
+        "co_author_conflict_discard_title": "सहेजे न गए बदलाव छोड़ें?",
         "commit_and_push": "कमिट करें और पुश करें",
         "commit_message_prompt": "इस कमिट का वर्णन करें। इसमें पेपर के सभी बदलाव शामिल होंगे।",
         "compile": "कंपाइल करें",
@@ -5580,6 +5582,7 @@
       "collapse_unchanged": "अपरिवर्तित को समेटें",
       "copy_content": "सामग्री कॉपी करें",
       "copy_path": "पाथ कॉपी करें",
+      "discard_changes_button": "बदलाव छोड़ें",
       "discard_unsaved_changes": "बिना सहेजे बदलाव छोड़ दें?",
       "download": "डाउनलोड",
       "download_failed": "डाउनलोड विफल",
@@ -6824,6 +6827,9 @@
       "confirm_button": "पुष्टि करें और चालू करें",
       "withdraw": "पुष्टि वापस लें"
     },
+    "confirmDialog": {
+      "cancel": "रद्द करें"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhooks लोड नहीं हो सके, इसलिए अभी पता नहीं कि इस crew को क्या जगाता है।",
       "inbound_webhooks_are_switched_off": "इनबाउंड webhooks बंद हैं — बंधे टोकन समेत कोई कॉल नहीं आ सकती।",
@@ -7412,7 +7418,13 @@
       "public_by_link_warning": "प्रकाशित URL लिंक-द्वारा-सार्वजनिक हैं: लिंक वाला कोई भी व्यक्ति सामग्री देख सकता है — यह सार्वजनिक इंटरनेट पर बिना किसी प्रमाणीकरण के परोसी जाती है।",
       "random_domain_note": "सामग्री एक रैंडम *.cloudfront.net डोमेन पर परोसी जाती है — ऐसा कुछ भी प्रकाशित न करें जिसे आप खुले इंटरनेट पर नहीं रखना चाहेंगे।",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "साइट वापस लें?",
+      "recall_button": "साइट वापस लें",
+      "destroy_title": "साइट नष्ट करें?",
+      "destroy_button": "साइट नष्ट करें",
+      "remove_profile_title": "प्रोफ़ाइल हटाएँ?",
+      "remove_profile_button": "प्रोफ़ाइल हटाएँ"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· रिमोट कॉपी में एक नया संस्करण उपलब्ध है",
@@ -7444,6 +7456,7 @@
       "copy_failed": "कॉपी विफल",
       "could_not_overwrite": "ओवरराइट नहीं हो सका।",
       "created": "बनाया गया",
+      "discard_changes_button": "बदलाव छोड़ें",
       "discard_unsaved_changes": "बिना सहेजे गए बदलाव छोड़ दें?",
       "document_type": "दस्तावेज़ प्रकार",
       "download": "डाउनलोड",

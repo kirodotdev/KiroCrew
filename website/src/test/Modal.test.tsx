@@ -46,6 +46,29 @@ async function openDialog(): Promise<HTMLElement> {
 }
 
 describe('Modal — dialog semantics', () => {
+  it('skips the body region entirely when the caller renders no body', async () => {
+    // A footer-only dialog (the shared confirm with no detail line) must not
+    // show an empty padded band between header and footer.
+    const empty = renderWithProviders(
+      <Modal open onClose={() => {}} title="T" footer={<button>ok</button>}>
+        {null}
+      </Modal>,
+    )
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.querySelector('.overflow-y-auto')).toBeNull()
+    // Unmount before the next mount: a second modal opened while the first
+    // holds the scroll lock would capture and restore 'hidden'.
+    empty.unmount()
+    // The body region is back the moment there is content to put in it.
+    renderWithProviders(
+      <Modal open onClose={() => {}} title="T2" footer={<button>ok</button>}>
+        <p>detail</p>
+      </Modal>,
+    )
+    const withBody = await screen.findByRole('dialog')
+    expect(withBody.querySelector('.overflow-y-auto')).not.toBeNull()
+  })
+
   it('names the dialog from its own title, with no per-call-site opt-in', async () => {
     renderWithProviders(<Harness />)
     await openDialog()

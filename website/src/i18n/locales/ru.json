@@ -3941,7 +3941,9 @@
         "co_author": "Соавтор",
         "co_author_conflict": "Соавтор изменил этот файл",
         "co_author_conflict_discard": "Отменить мои правки и перезагрузить",
+        "co_author_conflict_discard_button": "Отменить правки",
         "co_author_conflict_discard_confirm": "Отменить несохранённые правки в «{{file}}» и загрузить версию соавтора? Это действие нельзя отменить.",
+        "co_author_conflict_discard_title": "Отменить несохранённые правки?",
         "commit_and_push": "Зафиксировать и отправить",
         "commit_message_prompt": "Опишите этот коммит. В него войдут все изменения статьи.",
         "compile": "Скомпилировать",
@@ -5746,6 +5748,7 @@
       "collapse_unchanged": "Свернуть неизменённые",
       "copy_content": "Копировать содержимое",
       "copy_path": "Копировать путь",
+      "discard_changes_button": "Отбросить изменения",
       "discard_unsaved_changes": "Отбросить несохранённые изменения?",
       "download": "Скачать",
       "download_failed": "Не удалось скачать",
@@ -7004,6 +7007,9 @@
       "confirm_button": "Подтвердить и включить",
       "withdraw": "Отозвать подтверждение"
     },
+    "confirmDialog": {
+      "cancel": "Отмена"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Не удалось загрузить webhooks, поэтому сейчас неизвестно, что будит эту команду.",
       "inbound_webhooks_are_switched_off": "Входящие webhooks выключены: ни один вызов не пройдёт, включая привязанные токены.",
@@ -7612,7 +7618,13 @@
       "public_by_link_warning": "Опубликованные URL общедоступны по ссылке: любой, у кого есть ссылка, может просмотреть контент — он доступен в общедоступном интернете без аутентификации.",
       "random_domain_note": "Контент доступен на случайном домене *.cloudfront.net — не публикуйте то, что не разместили бы в открытом интернете.",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "Отозвать сайт?",
+      "recall_button": "Отозвать сайт",
+      "destroy_title": "Уничтожить сайт?",
+      "destroy_button": "Уничтожить сайт",
+      "remove_profile_title": "Удалить профиль?",
+      "remove_profile_button": "Удалить профиль"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· в удалённой копии доступна более новая версия",
@@ -7644,6 +7656,7 @@
       "copy_failed": "Не удалось скопировать",
       "could_not_overwrite": "Не удалось перезаписать.",
       "created": "Создано",
+      "discard_changes_button": "Отбросить изменения",
       "discard_unsaved_changes": "Отменить несохранённые изменения?",
       "document_type": "Тип документа",
       "download": "Скачать",

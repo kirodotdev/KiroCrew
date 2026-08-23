@@ -1188,6 +1188,12 @@
         "setting": "Setting",
         "view": "View"
       }
+    },
+    "papyrus": {
+      "workspace": {
+        "co_author_conflict_discard_button": "Discard edits",
+        "co_author_conflict_discard_title": "Discard unsaved edits?"
+      }
     }
   },
   "components": {
@@ -1771,6 +1777,7 @@
       "adding_2": "Adding...",
       "already_in_library": "Already in Library",
       "cannot_read_file": "Cannot read file",
+      "discard_changes_button": "Discard changes",
       "download_failed": "Download failed",
       "edit": "Edit",
       "failed_to_add_source": "Failed to add source",
@@ -2365,6 +2372,9 @@
       "webhook_unbound_short": "No tokens bound",
       "wire_what_it_works_with": "What it works with"
     },
+    "confirmDialog": {
+      "cancel": "Cancel"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Could not load webhooks, so what wakes this crew is unknown right now.",
       "inbound_webhooks_are_switched_off": "Inbound webhooks are switched off, so nothing can call in — bound tokens included.",
@@ -2609,7 +2619,13 @@
       "unknown_2": "(unknown)",
       "update_failed": "update failed",
       "public_by_link_warning": "Published URLs are public-by-link: anyone with the link can view the content — it is served on the public internet with no authentication.",
-      "random_domain_note": "Content is served at a random *.cloudfront.net domain — don't publish anything you wouldn't put on the open internet."
+      "random_domain_note": "Content is served at a random *.cloudfront.net domain — don't publish anything you wouldn't put on the open internet.",
+      "recall_title": "Recall site?",
+      "recall_button": "Recall site",
+      "destroy_title": "Destroy site?",
+      "destroy_button": "Destroy site",
+      "remove_profile_title": "Remove profile?",
+      "remove_profile_button": "Remove profile"
     },
     "artifactDetailPage": {
       "agent_chat": "Agent chat",
@@ -2624,6 +2640,7 @@
       "comment_resolved": "Comment resolved",
       "copy_failed": "Copy failed",
       "could_not_overwrite": "Could not overwrite.",
+      "discard_changes_button": "Discard changes",
       "document_type": "Document type",
       "edit": "Edit",
       "edited": "Edited",

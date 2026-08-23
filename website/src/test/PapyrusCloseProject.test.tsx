@@ -544,7 +544,7 @@ describe('a failed conflict reload keeps the overwrite guard up', () => {
   // version — the same overwrite, reached by a failed recovery instead of an edit.
 
   const resolver = PapyrusPageSource.match(
-    /const resolveConflict = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[reloadOpenFile\]\)/,
+    /const resolveConflict = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[reloadOpenFile, confirm\]\)/,
   )
 
   it('restores both flags when the reload does not adopt', () => {
@@ -615,7 +615,7 @@ describe('an unresolved co-author conflict blocks the save', () => {
     // `reloadOpenFile` refuses to adopt while the buffer is dirty, and its no-flush
     // branch would otherwise re-record the very conflict being resolved.
     const resolver = PapyrusPageSource.match(
-      /const resolveConflict = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[reloadOpenFile\]\)/,
+      /const resolveConflict = useCallback\(async \(\) => \{[\s\S]*?\n  \}, \[reloadOpenFile, confirm\]\)/,
     )
     expect(resolver, 'resolveConflict not found').not.toBeNull()
     expect(resolver![0].indexOf('conflictFileRef.current = null')).toBeLessThan(

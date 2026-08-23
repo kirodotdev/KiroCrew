@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { forwardRef, useImperativeHandle, createRef } from 'react'
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { PierreEditorHandle } from '../pierre'
@@ -403,33 +403,49 @@ describe('MarkdownPanel — save and cancel', () => {
     expect(await screen.findByText('disk is read-only')).toBeInTheDocument()
   })
 
+  // The discard guard is the in-app dialog, never window.confirm: the native
+  // confirm is synchronous and freezes the renderer's event loop, so a Quit
+  // event queued behind it fires the instant it dismisses.
   it('re-reads from disk on Cancel once the discard is confirmed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const onRefresh = vi.fn(async () => {})
     mountDirty({ onRefresh })
     fireEvent.click(screen.getByText('Cancel'))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Discard unsaved changes?')).toBeInTheDocument()
+    // Opening the dialog alone must not discard anything.
+    expect(onRefresh).not.toHaveBeenCalled()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
     await waitFor(() => expect(onRefresh).toHaveBeenCalledWith('/tmp/notes.md'))
-    expect(window.confirm).toHaveBeenCalledWith('Discard unsaved changes?')
+    expect(confirmSpy).not.toHaveBeenCalled()
   })
 
-  it('keeps the edits when the discard confirmation is declined', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('keeps the edits when the discard confirmation is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const onRefresh = vi.fn(async () => {})
     mountDirty({ onRefresh })
     fireEvent.click(screen.getByText('Cancel'))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
     expect(onRefresh).not.toHaveBeenCalled()
     expect(bannerShown()).toBe(true)
+    expect(confirmSpy).not.toHaveBeenCalled()
   })
 
-  it('routes Escape through the same discard guard as the close button', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('routes Escape through the same discard guard as the close button', async () => {
     const onClose = vi.fn()
     mountDirty({ onClose })
     fireEvent.keyDown(document, { key: 'Escape' })
+    // Declining keeps the buffer and the panel.
+    const first = await screen.findByRole('dialog')
+    fireEvent.click(within(first).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(onClose).not.toHaveBeenCalled()
-    vi.mocked(window.confirm).mockReturnValue(true)
+    // Re-asking and confirming closes.
     fireEvent.keyDown(document, { key: 'Escape' })
-    expect(onClose).toHaveBeenCalledOnce()
+    const second = await screen.findByRole('dialog')
+    fireEvent.click(within(second).getByRole('button', { name: 'Discard changes' }))
+    await waitFor(() => expect(onClose).toHaveBeenCalledOnce())
   })
 
   /**
@@ -472,10 +488,10 @@ describe('MarkdownPanel — save and cancel', () => {
     expect(stillClean?.()).toBe(true)
   })
 
-  it('still guards CLOSE with the discard prompt', () => {
+  it('still guards CLOSE with the discard prompt', async () => {
     // Closing does destroy the buffer, so the question is real there. Dropping
     // the navigation prompt must not drop this one.
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const confirmSpy = vi.spyOn(window, 'confirm')
     const onClose = vi.fn()
     const ref = createRef<MarkdownPanelHandle>()
     render(<MarkdownPanel embedded ref={ref} filePath="/tmp/notes.md" content="edited body"
@@ -484,7 +500,9 @@ describe('MarkdownPanel — save and cancel', () => {
 
     act(() => ref.current!.requestClose())
 
-    expect(window.confirm).toHaveBeenCalledWith('Discard unsaved changes?')
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Discard unsaved changes?')).toBeInTheDocument()
+    expect(confirmSpy).not.toHaveBeenCalled()
     expect(onClose).not.toHaveBeenCalled()
   })
 
@@ -519,6 +537,21 @@ describe('MarkdownPanel — save and cancel', () => {
     fireEvent.click(screen.getByText('View Source'))
     fireEvent.keyDown(document, { key: 's', metaKey: true })
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce())
+  })
+
+  it('ignores Cmd+S while the discard dialog is open', async () => {
+    // The native confirm blocked the event loop, so no shortcut could fire
+    // mid-question; the async dialog must restore that property — a mid-dialog
+    // save would persist the very draft the user is about to discard.
+    const onSave = vi.fn(async () => {})
+    mountDirty({ onSave })
+    fireEvent.click(screen.getByText('View Source'))
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await screen.findByRole('dialog')
+    fireEvent.keyDown(document, { key: 's', metaKey: true })
+    expect(onSave).not.toHaveBeenCalled()
+    // The dialog is still up and still answers.
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 
   it('ignores Cmd+S from the rendered preview, which has nothing to save', async () => {

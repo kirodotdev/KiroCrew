@@ -3825,7 +3825,9 @@
         "co_author": "সহ-লেখক",
         "co_author_conflict": "সহ-লেখক এই ফাইলটি পরিবর্তন করেছেন",
         "co_author_conflict_discard": "আমার সম্পাদনা বাতিল করে আবার লোড করুন",
+        "co_author_conflict_discard_button": "সম্পাদনা বাতিল করুন",
         "co_author_conflict_discard_confirm": "“{{file}}”-এ আপনার অসংরক্ষিত সম্পাদনা বাতিল করে সহ-লেখকের সংস্করণ লোড করবেন? এটি আর ফেরানো যাবে না।",
+        "co_author_conflict_discard_title": "অসংরক্ষিত সম্পাদনা বাতিল করবেন?",
         "commit_and_push": "কমিট ও পুশ করুন",
         "commit_message_prompt": "এই কমিটের বর্ণনা দিন। এতে গবেষণাপত্রের সব পরিবর্তন যুক্ত হবে।",
         "compile": "কম্পাইল করুন",
@@ -5580,6 +5582,7 @@
       "collapse_unchanged": "অপরিবর্তিত অংশ সংকুচিত করুন",
       "copy_content": "কনটেন্ট কপি করুন",
       "copy_path": "পাথ কপি করুন",
+      "discard_changes_button": "পরিবর্তন বাতিল করুন",
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তন বাতিল করবেন?",
       "download": "ডাউনলোড",
       "download_failed": "ডাউনলোড ব্যর্থ হয়েছে",
@@ -6824,6 +6827,9 @@
       "confirm_button": "নিশ্চিত করুন এবং সক্রিয় করুন",
       "withdraw": "নিশ্চিতকরণ প্রত্যাহার করুন"
     },
+    "confirmDialog": {
+      "cancel": "বাতিল"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhooks লোড করা যায়নি, তাই এখন জানা নেই কী এই crew-কে জাগায়।",
       "inbound_webhooks_are_switched_off": "ইনবাউন্ড webhooks বন্ধ — বাঁধা টোকেনসহ কোনো কল ঢুকতে পারবে না।",
@@ -7412,7 +7418,13 @@
       "public_by_link_warning": "প্রকাশিত URL লিঙ্কের মাধ্যমে সর্বজনীন: লিঙ্ক থাকা যে কেউ কন্টেন্ট দেখতে পারবে — এটি কোনো প্রমাণীকরণ ছাড়াই পাবলিক ইন্টারনেটে পরিবেশিত হয়।",
       "random_domain_note": "কন্টেন্ট একটি এলোমেলো *.cloudfront.net ডোমেইনে পরিবেশিত হয় — এমন কিছু প্রকাশ করবেন না যা আপনি খোলা ইন্টারনেটে রাখতে চাইবেন না।",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "সাইট প্রত্যাহার করবেন?",
+      "recall_button": "সাইট প্রত্যাহার করুন",
+      "destroy_title": "সাইট ডেস্ট্রয় করবেন?",
+      "destroy_button": "সাইট ডেস্ট্রয় করুন",
+      "remove_profile_title": "প্রোফাইল সরাবেন?",
+      "remove_profile_button": "প্রোফাইল সরান"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· রিমোট কপিতে একটি নতুন সংস্করণ পাওয়া যাচ্ছে",
@@ -7444,6 +7456,7 @@
       "copy_failed": "কপি ব্যর্থ",
       "could_not_overwrite": "ওভাররাইট করা যায়নি।",
       "created": "তৈরি হয়েছে",
+      "discard_changes_button": "পরিবর্তন বাতিল করুন",
       "discard_unsaved_changes": "অসংরক্ষিত পরিবর্তনগুলি বাতিল করবেন?",
       "document_type": "নথির ধরন",
       "download": "ডাউনলোড করুন",

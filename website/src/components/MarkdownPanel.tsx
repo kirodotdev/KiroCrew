@@ -6,6 +6,7 @@ import { useNavigate } from 'react-router-dom'
 import { RefreshCw, Ellipsis, ChevronRight, Columns2, Hash, WrapText, FoldVertical, Maximize2, Minimize2, MessageSquare, MessageSquarePlus, Copy, BookOpen, BookmarkPlus, Camera, Check, X, Component, FileText, FileDiff, Folders, TriangleAlert, CaseSensitive, ChevronUp, ChevronDown } from 'lucide-react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
+import { useConfirm } from './ConfirmDialog'
 import Clickable from './Clickable'
 import { CommentPopover, CommentList, formatCommentsMessage, type InlineComment } from './CommentOverlay'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
@@ -868,6 +869,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // the moment they are about to discard the buffer.
   const dirtyRef = useRef(dirty)
   dirtyRef.current = dirty
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   // When a saved baseline is provided (inline preview), keep `dirty` derived
   // from content-vs-disk so a RESTORED draft is dirty and the close guard fires.
   // No-op for document tabs (savedBaseline undefined) — they keep the manual
@@ -1177,7 +1179,10 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const canPreview = isMarkdown
   const handleCancel = useCallback(async () => {
     if (!dirty) { if (canPreview) setEditing(false); return }
-    if (!window.confirm(i18nT('components.markdownPanel.discard_unsaved_changes'))) return
+    if (!(await confirm({
+      title: i18nT('components.markdownPanel.discard_unsaved_changes'),
+      confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+    }))) return
     setRefreshing(true)
     try {
       if (onRefresh) { await onRefresh(filePath) }
@@ -1188,7 +1193,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       setDirty(false)
       if (canPreview) setEditing(false)
     } finally { setRefreshing(false) }
-  }, [dirty, filePath, onContentChange, onRefresh, canPreview])
+  }, [dirty, filePath, onContentChange, onRefresh, canPreview, confirm])
 
   const resolveSelectionCoords = useCallback((fallbackText?: string) => {
     const sel = window.getSelection()
@@ -1515,10 +1520,13 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     return () => ro.disconnect()
   }, [])
 
-  const guardedClose = useCallback(() => {
-    if (dirty && !window.confirm(i18nT('components.markdownPanel.discard_unsaved_changes'))) return
+  const guardedClose = useCallback(async () => {
+    if (dirty && !(await confirm({
+      title: i18nT('components.markdownPanel.discard_unsaved_changes'),
+      confirmLabel: i18nT('components.markdownPanel.discard_changes_button'),
+    }))) return
     onClose()
-  }, [dirty, onClose])
+  }, [dirty, onClose, confirm])
   const guardedNavigate = useCallback((nav: (stillClean: () => boolean) => void) => {
     // Navigation never destroys this buffer, so there is nothing to confirm: a
     // dirty tab is left exactly as it is and the new file opens as its own tab.
@@ -1534,16 +1542,26 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   // Expose the guarded close so an external control (e.g. the Files-tab inline
   // preview's "Back to files" bar) routes through the same dirty confirmation
   // instead of unmounting the editor and silently dropping unsaved edits.
-  useImperativeHandle(ref, () => ({ requestClose: guardedClose, requestNavigate: guardedNavigate }), [guardedClose, guardedNavigate])
+  // `requestClose` deliberately swallows guardedClose's promise: the handle's
+  // contract is fire-and-forget (() => void), and an imperative caller that
+  // received the promise could `act()` on it un-awaited and wedge React's act
+  // scope in tests — the close outcome is observable via onClose only.
+  useImperativeHandle(ref, () => ({ requestClose: () => { void guardedClose() }, requestNavigate: guardedNavigate }), [guardedClose, guardedNavigate])
 
   useEffect(() => {
     const h = (e: KeyboardEvent) => {
+      // While the discard-confirm dialog is open, the keyboard belongs to it.
+      // Escape dismisses it via the dialog's own handler (re-running the guard
+      // here would re-open the dialog the same keystroke just closed), and the
+      // save shortcut must not fire — a mid-dialog Cmd+S would persist the very
+      // draft the user is about to confirm discarding.
+      if (confirmOpen) return
       if (e.key === 'Escape') { if (popover) { setPopover(null); clearHighlightMarks() } else if (fullscreen) setFullscreen(false); else guardedClose() }
       if ((e.metaKey || e.ctrlKey) && e.key === 's' && editing && dirty) { e.preventDefault(); handleSaveRef.current() }
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [guardedClose, editing, dirty, fullscreen, popover, clearHighlightMarks])
+  }, [guardedClose, editing, dirty, fullscreen, popover, clearHighlightMarks, confirmOpen])
 
   const handleChange = useCallback((v: string) => { onContentChange(v); setDirty(true) }, [onContentChange])
   const clearPopover = useCallback(() => { setPopover(null); clearHighlightMarks() }, [clearHighlightMarks])
@@ -1762,6 +1780,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       </div>,
       document.body
     )}
+    {confirmDialog}
     </>
   )
 }))

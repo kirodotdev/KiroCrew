@@ -3799,7 +3799,9 @@
         "co_author": "共著者",
         "co_author_conflict": "共著者がこのファイルを変更しました",
         "co_author_conflict_discard": "編集を破棄して再度読み込む",
+        "co_author_conflict_discard_button": "編集を破棄",
         "co_author_conflict_discard_confirm": "「{{file}}」への保存されていない編集を破棄して、共著者のバージョンを読み込みますか？これは取り消せません。",
+        "co_author_conflict_discard_title": "保存されていない編集を破棄しますか？",
         "commit_and_push": "コミット＆プッシュ",
         "commit_message_prompt": "このコミットについて説明してください。ペーパー内のすべての変更をステージングします。",
         "compile": "コンパイル",
@@ -5497,6 +5499,7 @@
       "collapse_unchanged": "変更なしを折りたたむ",
       "copy_content": "コンテンツをコピー",
       "copy_path": "パスをコピー",
+      "discard_changes_button": "変更を破棄",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "download": "ダウンロード",
       "download_failed": "ダウンロードに失敗しました",
@@ -6734,6 +6737,9 @@
       "confirm_button": "確認して有効化",
       "withdraw": "確認を取り消す"
     },
+    "confirmDialog": {
+      "cancel": "キャンセル"
+    },
     "crewWebhookSection": {
       "could_not_load_webhooks": "Webhook を読み込めなかったため、何がこのクルーを起こすのか今は不明です。",
       "inbound_webhooks_are_switched_off": "受信 Webhook はオフになっており、紐づけ済みのトークンを含め何も呼び出せません。",
@@ -7312,7 +7318,13 @@
       "public_by_link_warning": "公開された URL はリンクを知っていれば誰でもアクセスできます。リンクを知っている人は誰でもコンテンツを閲覧でき、認証なしで公開インターネット上に配信されます。",
       "random_domain_note": "コンテンツはランダムな *.cloudfront.net ドメインで配信されます。オープンなインターネットに置きたくないものは公開しないでください。",
       "cloud_deployment_disabled": "Cloud deployment is disabled",
-      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake."
+      "cloud_deployment_disabled_detail": "This installation does not permit provisioning infrastructure in a cloud account, so artifact deployment is unavailable. Contact your administrator if you believe this is a mistake.",
+      "recall_title": "サイトを撤回しますか？",
+      "recall_button": "サイトを撤回",
+      "destroy_title": "サイトを完全に削除しますか？",
+      "destroy_button": "サイトを完全に削除",
+      "remove_profile_title": "プロファイルを削除しますか？",
+      "remove_profile_button": "プロファイルを削除"
     },
     "artifactDetailPage": {
       "a_newer_version_is_available_in_the_remote_copy": "· リモートコピーでより新しいバージョンが利用可能です",
@@ -7344,6 +7356,7 @@
       "copy_failed": "コピーに失敗しました",
       "could_not_overwrite": "上書きできませんでした。",
       "created": "作成",
+      "discard_changes_button": "変更を破棄",
       "discard_unsaved_changes": "保存されていない変更を破棄しますか？",
       "document_type": "ドキュメントタイプ",
       "download": "ダウンロード",
