@@ -19,9 +19,12 @@ function basename(p: string): string {
  * The rail is deliberately not hideable in this state: without a file, the
  * tree IS the tab.
  */
-export default function FilesHomePanel({ projectDir, onFileOpen }: {
+export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext }: {
   projectDir: string
   onFileOpen: (absPath: string, diff: boolean) => void
+  /** Right-click "Add to context" on a tree row — forwarded to the composer
+   *  host so a file/folder becomes an `@`-mention. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
@@ -78,7 +81,7 @@ export default function FilesHomePanel({ projectDir, onFileOpen }: {
           )}
         </div>
         {treeAvailable && (
-          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} />
+          <FileBrowserRail projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} />
         )}
       </div>
     </div>

@@ -204,6 +204,10 @@ interface SidePanelProps {
    *  Threaded to the Artifacts tab so its rows open here instead of
    *  hard-navigating to the standalone detail page. */
   onArtifactOpen?: (slug: string) => void
+  /** Right-click "Add to context" on a file-browser row: forwards the ABSOLUTE
+   *  path and whether it is a file or a directory to the composer host, which
+   *  inserts the same `@`-mention the file picker does. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
@@ -354,7 +358,7 @@ export function measureSidePanelReservedW(): number {
 }
 
 export default function SidePanel({
-  tabsCtl, slot, onFileOpen, onArtifactOpen,
+  tabsCtl, slot, onFileOpen, onArtifactOpen, onAddToContext,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, onFileSave, onClose,
@@ -713,6 +717,7 @@ export default function SidePanel({
                 <FilesHomePanel
                   projectDir={projectDir ?? ''}
                   onFileOpen={(abs, diff) => onFileOpen?.(abs, { diffMode: diff })}
+                  onAddToContext={onAddToContext}
                 />
               </div>
             )
@@ -762,6 +767,7 @@ export default function SidePanel({
                 onPathChange={(p) => patchTab(t.id, { path: p, title: p.replace(/\/+$/, '').split('/').pop() || p })}
                 onFileSave={onFileSave}
                 onFileOpen={onFileOpen}
+                onAddToContext={onAddToContext}
                 projectDir={projectDir}
                 onSubmitComments={onSubmitComments}
                 onTerminalSendToChat={onAddSourceToChat}
@@ -841,7 +847,7 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * Rail visibility is a single app-wide preference; the rail only renders at
  * all when the chat has a project dir whose tree the backend serves.
  */
-function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onClose, onSubmitComments, onRevealConsumed }: {
+function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onAddToContext, onClose, onSubmitComments, onRevealConsumed }: {
   tab: PanelTab
   projectDir?: string
   onContentChange: (c: string) => void
@@ -851,6 +857,8 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
   onDiffModeChange: (diffMode: boolean) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  /** Right-click "Add to context" on a rail row. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onClose: () => void
   onSubmitComments?: (m: string) => void
   onRevealConsumed: () => void
@@ -883,6 +891,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
       browserRail={railUsable ? (
         <FileBrowserRail
           projectDir={projectDir}
+          onAddToContext={onAddToContext}
           selectedPath={tab.path || null}
           // In-place navigation: a tree click RE-TARGETS this tab (replaceId)
           // rather than spawning a sibling — only the pinned Files tab fans
@@ -902,7 +911,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
   )
 }
 
-function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
+function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDiskContent, onDiffModeChange, onRevealConsumed, onPathChange, onFileSave, onFileOpen, onAddToContext, onSubmitComments, onTerminalSendToChat, diffLineNumbers, setDiffLineNumbers, diffSideBySide, setDiffSideBySide }: {
   tab: PanelTab; active: boolean; slot: string
   /** The chat's project directory — the file-browser rail's tree root. */
   projectDir?: string
@@ -919,6 +928,8 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   onPathChange: (p: string) => void
   onFileSave: (fp: string, c: string) => Promise<void>
   onFileOpen?: (p: string, opts?: { diffMode?: boolean; replaceId?: string; canReplace?: () => boolean }) => void
+  /** Right-click "Add to context" on a file-browser rail row. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   onSubmitComments?: (m: string) => void
   onTerminalSendToChat?: (text: string) => void
   diffLineNumbers: boolean; setDiffLineNumbers: (fn: (v: boolean) => boolean) => void
@@ -937,6 +948,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         onDiffModeChange={onDiffModeChange}
         onFileSave={onFileSave}
         onFileOpen={onFileOpen}
+        onAddToContext={onAddToContext}
         onClose={onClose}
         onSubmitComments={onSubmitComments}
         onRevealConsumed={onRevealConsumed}

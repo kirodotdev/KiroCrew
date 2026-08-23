@@ -3022,6 +3022,7 @@
         "all_files": "All files",
         "changed": "Changed",
         "close_search": "Close search",
+        "ctx_add_to_chat": "Add to chat",
         "filter_placeholder": "Filter files…",
         "refresh": "Refresh",
         "resize": "Resize file browser",

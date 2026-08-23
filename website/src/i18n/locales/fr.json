@@ -8439,6 +8439,7 @@
         "all_files": "Tous les fichiers",
         "changed": "Modifiés",
         "close_search": "Fermer la recherche",
+        "ctx_add_to_chat": "Ajouter à la conversation",
         "filter_placeholder": "Filtrer les fichiers…",
         "refresh": "Actualiser",
         "resize": "Redimensionner l'explorateur",

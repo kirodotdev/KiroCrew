@@ -56,9 +56,12 @@ export function useTreeAvailable(projectDir: string | null | undefined): boolean
  * Both modes render the SAME Pierre tree; Changed feeds it the git-status
  * path set and its opens land in diff mode (`onFileOpen`'s second argument).
  */
-export default function FileBrowserRail({ projectDir, onFileOpen, selectedPath }: {
+export default function FileBrowserRail({ projectDir, onFileOpen, onAddToContext, selectedPath }: {
   projectDir: string
   onFileOpen: (absPath: string, diff: boolean) => void
+  /** Right-click "Add to context" on a tree row: forwards the ABSOLUTE path
+   *  and whether it is a file or a directory up to the composer host. */
+  onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
   /** Currently-open file, echoed as the tree selection. */
   selectedPath?: string | null
 }) {
@@ -192,6 +195,7 @@ export default function FileBrowserRail({ projectDir, onFileOpen, selectedPath }
               setQuery('')
               onFileOpen(abs, changedMode)
             }}
+            onAddToContext={onAddToContext}
             searchQuery={query || null}
             selectedPath={selectedPath ?? null}
           />

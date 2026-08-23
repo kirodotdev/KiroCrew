@@ -8227,6 +8227,7 @@
         "all_files": "すべてのファイル",
         "changed": "変更あり",
         "close_search": "検索を閉じる",
+        "ctx_add_to_chat": "チャットに追加",
         "filter_placeholder": "ファイルを絞り込む…",
         "refresh": "更新",
         "resize": "ファイルブラウザーのサイズを変更",
