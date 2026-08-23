@@ -208,6 +208,45 @@ describe('TrustDropdown', () => {
   })
 })
 
+describe('TrustDropdown without a command (hasCommand=false)', () => {
+  // The channels surface titles its approval with an agent ROLE, not a
+  // command, and its backend accepts only approved/rejected/trust — so the
+  // command-scoped tiers must disappear entirely there.
+  it('offers only the plain session-trust action', () => {
+    render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toContain('Trust all tools')
+  })
+
+  it('hides trust_base even when the title happens to look like a shell command', () => {
+    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell hasCommand={false} className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).not.toContain('commands')
+    expect(items[0].textContent).toContain('Trust all tools')
+  })
+
+  it('emits the plain trust decision with no pattern', () => {
+    const onAction = vi.fn()
+    render(<TrustDropdown fullCommand="Researcher" baseCommand="Researcher" isShell={false} hasCommand={false} className={btnClass} onAction={onAction} />)
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust all tools'))
+    expect(onAction).toHaveBeenCalledTimes(1)
+    expect(onAction).toHaveBeenCalledWith('trust')
+  })
+
+  it('keeps every tier when hasCommand is not passed (command-bearing surfaces)', () => {
+    // Regression guard for the chat surface, which omits the prop: the
+    // default must stay true so all tiers keep rendering there.
+    render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.getAllByRole('menuitem')).toHaveLength(3)
+  })
+})
+
 describe('TrustDropdown accessibility', () => {
   it('dropdown items are focusable buttons', () => {
     render(<TrustDropdown fullCommand="ls /tmp" baseCommand="ls" isShell className={btnClass} onAction={() => {}} />)

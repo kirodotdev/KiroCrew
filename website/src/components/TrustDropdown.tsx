@@ -11,12 +11,20 @@ interface TrustDropdownProps {
   fullCommand: string
   baseCommand: string
   isShell: boolean
+  /** Whether the mounting surface has an actual tool command behind the
+      approval. Channel approvals carry an agent ROLE in place of a command,
+      so command-scoped tiers there would describe the wrong thing and emit
+      decisions (`trust_command` / `trust_base`) the channel backend refuses;
+      pass false to offer only the session-scoped `trust` action. Explicit
+      prop rather than sniffing `fullCommand`, so command-bearing surfaces
+      keep every tier no matter what the command text looks like. */
+  hasCommand?: boolean
   disabled?: boolean
   className?: string
   onAction: (action: string, pattern?: string) => void
 }
 
-export default function TrustDropdown({ fullCommand, baseCommand, isShell, disabled, className, onAction }: TrustDropdownProps) {
+export default function TrustDropdown({ fullCommand, baseCommand, isShell, hasCommand = true, disabled, className, onAction }: TrustDropdownProps) {
   const [open, setOpen] = useState(false)
 
   // Pattern shaping lives in utils/trustPatterns so every surface that offers
@@ -39,26 +47,28 @@ export default function TrustDropdown({ fullCommand, baseCommand, isShell, disab
           (measured at 320px, the menu reached 440px and ran off the right edge),
           which hides the very label this menu exists to make readable. */}
       <DropdownMenuContent side="top" align="end" className="min-w-[220px] max-w-[min(450px,calc(100vw-2rem))]">
-        <DropdownMenuItem
-          className="gap-2 text-[12px]"
-          onSelect={() => onAction('trust_command', fullCommand)}
-        >
-          <Shield size={12} className="shrink-0 text-accent" />
-          {/* The untruncated command as a tooltip: this grant is an exact-string
-              match, so the user must be able to read the whole thing before
-              agreeing to it. No `truncate` here on purpose -- CSS ellipsis would
-              clip the tail that `truncateCommandLabel` deliberately preserved,
-              re-colliding two commands that differ only in their filename. The
-              label wraps instead; the menu's own max-width still bounds it. */}
-          <span className="min-w-0 break-all" title={fullCommand}>
-            <Trans
-              i18nKey="components.trustDropdown.trust_this_command"
-              values={{ cmd: truncated }}
-              components={{ mono: <span className="font-mono" /> }}
-            />
-          </span>
-        </DropdownMenuItem>
-        {isShell && (
+        {hasCommand && (
+          <DropdownMenuItem
+            className="gap-2 text-[12px]"
+            onSelect={() => onAction('trust_command', fullCommand)}
+          >
+            <Shield size={12} className="shrink-0 text-accent" />
+            {/* The untruncated command as a tooltip: this grant is an exact-string
+                match, so the user must be able to read the whole thing before
+                agreeing to it. No `truncate` here on purpose -- CSS ellipsis would
+                clip the tail that `truncateCommandLabel` deliberately preserved,
+                re-colliding two commands that differ only in their filename. The
+                label wraps instead; the menu's own max-width still bounds it. */}
+            <span className="min-w-0 break-all" title={fullCommand}>
+              <Trans
+                i18nKey="components.trustDropdown.trust_this_command"
+                values={{ cmd: truncated }}
+                components={{ mono: <span className="font-mono" /> }}
+              />
+            </span>
+          </DropdownMenuItem>
+        )}
+        {hasCommand && isShell && (
           <DropdownMenuItem
             className="gap-2 text-[12px]"
             onSelect={() => onAction('trust_base', basePattern)}

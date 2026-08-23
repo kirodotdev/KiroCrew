@@ -4,8 +4,12 @@ import ToolInputPreview from './ToolInputPreview'
 import TrustDropdown from './TrustDropdown'
 
 import { i18nT } from '../i18n/t'
-export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, onApprove }: {
+export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, hasCommand = true, onApprove }: {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
+  /** False when the surface has no tool command behind the approval (the
+      channels surface titles the card with an agent role): forwarded to
+      TrustDropdown so command-scoped tiers are not offered there. */
+  hasCommand?: boolean
   onApprove: (decision: string, pattern?: string) => void
 }) {
   const [decided, setDecided] = useState<string | null>(null)
@@ -32,7 +36,7 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
       {showButtons && !decided && (
         <div className="mt-1.5 flex gap-1.5 flex-wrap">
           <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
-          {showTrust && <TrustDropdown fullCommand={normalized} baseCommand={baseCmd} isShell={isShell} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
+          {showTrust && <TrustDropdown fullCommand={normalized} baseCommand={baseCmd} isShell={isShell} hasCommand={hasCommand} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}

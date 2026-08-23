@@ -151,10 +151,16 @@ function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
           <span className="text-[13px] text-muted ml-auto">{time}</span>
         </div>
         <div className="text-sm text-text">{msg.msgType === 'approval' ? <span className="whitespace-pre-wrap">{msg.content}</span> : <MarkdownRenderer content={msg.content} />}</div>
-        {/* Approval card */}
+        {/* Approval card. hasCommand={false}: the channel approval message has
+            no STRUCTURED command field — the card is titled with the agent's
+            ROLE, and the fenced content is the tool input after credential
+            redaction and truncation (channel.py), which must never serve as an
+            exact-match trust pattern. The approve endpoint also accepts only
+            approved/rejected/trust, so command-scoped tiers stay off this
+            surface until the message schema actually carries a command. */}
         {msg.msgType === 'approval' && onApprove && (
           <div className="mt-2">
-            <ApprovalCard title={msg.fromRole} toolInput={msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')} showButtons={approvalMode === 'normal'} onApprove={onApprove} />
+            <ApprovalCard title={msg.fromRole} hasCommand={false} toolInput={msg.content.replace(/^⚠️ Approval needed:.*\n```\n?/, '').replace(/\n?```$/, '')} showButtons={approvalMode === 'normal'} onApprove={onApprove} />
           </div>
         )}
         {/* Thread badge + reply */}

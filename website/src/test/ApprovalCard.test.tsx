@@ -110,6 +110,40 @@ describe('ApprovalCard', () => {
     expect(screen.queryByText('Trust')).not.toBeInTheDocument()
   })
 
+  // The channels surface passes hasCommand={false}: its card is titled with an
+  // agent ROLE, and its backend accepts only approved/rejected/trust — so the
+  // command-scoped tiers must not be offered there (#4421).
+  it('offers only the plain trust action when hasCommand=false', () => {
+    render(<ApprovalCard title="Researcher" toolInput="" showButtons hasCommand={false} onApprove={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toContain('Trust all tools')
+  })
+
+  it('hasCommand=false emits trust — a decision the channel backend accepts', () => {
+    const onApprove = vi.fn()
+    render(<ApprovalCard title="Researcher" toolInput="" showButtons hasCommand={false} onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust all tools'))
+    expect(onApprove).toHaveBeenCalledTimes(1)
+    expect(onApprove).toHaveBeenCalledWith('trust', undefined)
+  })
+
+  it('hasCommand=false suppresses command tiers even for a shell-looking title', () => {
+    render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons hasCommand={false} onApprove={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).not.toContain('commands')
+  })
+
+  it('keeps all three tiers when hasCommand is omitted (chat-surface regression guard)', () => {
+    render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={() => {}} />)
+    fireEvent.click(screen.getByText('Trust'))
+    expect(screen.getAllByRole('menuitem')).toHaveLength(3)
+  })
+
   it('shows decided state after approval', () => {
     render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={() => {}} />)
     fireEvent.click(screen.getByText('Approve'))
