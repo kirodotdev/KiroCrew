@@ -905,7 +905,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "frontend.py::build_frontend_sync",
         "instances/diagnostics.py::_run_ok",
         "instances/diagnostics.py::_run_stdout",
-        "instances/ssh_tunnel_manager.py::_ps_lines",
         "instances/ssh_tunnel_manager.py::start",
         "instances/token_mint.py::mint_remote_token",
         "instances/token_mint.py::run_remote_kirocrew",

@@ -69,8 +69,8 @@ export function StatusBadge({ status }: { status: InstanceTunnelStatus }) {
   )
 }
 
-export function AddInstanceForm({ onAdded, usedPorts }: { onAdded: () => void; usedPorts: number[] }) {
-  const form = useInstanceFormState(EMPTY_INSTANCE_FORM, usedPorts)
+export function AddInstanceForm({ onAdded }: { onAdded: () => void }) {
+  const form = useInstanceFormState(EMPTY_INSTANCE_FORM)
 
   const addMutation = useMutation({
     mutationFn: () => api.addInstance(form.body()),
@@ -422,7 +422,7 @@ export function InstancesPanel() {
               </div>
             </Card>
           )}
-          <AddInstanceForm onAdded={reload} usedPorts={instances.map(i => i.remote_port)} />
+          <AddInstanceForm onAdded={reload} />
         </>
       )}
     </div>

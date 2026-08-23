@@ -35,6 +35,7 @@ from kiro_crew.dashboard.session_transfer import (
 )
 from kiro_crew.history import SEARCH_MIN_CHARS
 from kiro_crew.instances.registry import (
+    DEFAULT_REMOTE_PORT,
     DuplicateInstanceError,
     InstanceNotFoundError,
     InstancesError,
@@ -241,7 +242,7 @@ async def api_instances_add(request: web.Request) -> web.Response:
             reg.add,
             name=str(body.get("name", "")),
             ssh_host=str(body.get("ssh_host", "")),
-            remote_port=int(body.get("remote_port", 7777)),
+            remote_port=int(body.get("remote_port", DEFAULT_REMOTE_PORT)),
             ttl=str(body.get("ttl", "20h")),
             remote_bin=str(body.get("remote_bin", "")),
             connection_method=str(body.get("connection_method", "ssh")),

@@ -964,7 +964,7 @@ class TestRegistry:
 
         reg = self._reg(tmp_path)
         a = reg.add(name="Cloud Desktop 1", ssh_host="cd-1-alias")
-        assert a.id == "cloud-desktop-1" and a.remote_port == 7777 and a.was_connected is False
+        assert a.id == "cloud-desktop-1" and a.remote_port == 5476 and a.was_connected is False
         b = reg.add(name="Cloud Desktop 1", ssh_host="cd-2-alias")
         assert b.id == "cloud-desktop-1-2"
         with pytest.raises(DuplicateInstanceError):
@@ -1337,9 +1337,11 @@ class TestSshTunnelManager:
         assert st.state == TunnelState.CONNECTED
         assert mgr.get_token("cd-1") == "SECRET_TOK"
         inst = reg.get("cd-1")
-        # CSE SEC-016 mirror: local_port == remote_port (default 7777), not an
-        # allocator-assigned port.
-        assert inst.was_connected is True and inst.local_port == inst.remote_port == 7777
+        # local_port is ALLOCATED from the tunnel base, not mirrored onto
+        # remote_port (#1972).
+        assert inst.was_connected is True
+        assert inst.local_port >= mgr._allocator.base_port
+        assert inst.local_port != inst.remote_port
         assert reg.get_last_active().id == "cd-1"
         # idempotent
         assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
@@ -1413,24 +1415,24 @@ class TestSshTunnelManager:
 
     @pytest.mark.asyncio
     async def test_disconnect_clears_local_port(self, tmp_path):
-        # Regression: connect() records local_port (== remote_port under the
-        # SEC-016 mirror), but disconnect() must reset it to the unallocated
-        # sentinel. Otherwise the freed port stays recorded and reads as
-        # reserved forever, blocking reconnect.
+        # Regression: connect() records the allocated local_port, but
+        # disconnect() must reset it to the unallocated sentinel. Otherwise the
+        # freed port stays recorded and reads as reserved forever.
         from kiro_crew.instances.registry import _UNALLOCATED_PORT
 
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1", instance_id="cd-1")
 
         await mgr.connect("cd-1")
-        assert reg.get("cd-1").local_port == reg.get("cd-1").remote_port == 7777
+        allocated = reg.get("cd-1").local_port
+        assert allocated >= mgr._allocator.base_port
 
         await mgr.disconnect("cd-1")
         inst = reg.get("cd-1")
         assert inst.local_port == _UNALLOCATED_PORT  # port hint cleared
         assert inst.was_connected is False
         # the cleared port is no longer counted as reserved
-        assert 7777 not in mgr._reserved_ports()
+        assert allocated not in mgr._reserved_ports()
 
     @pytest.mark.asyncio
     async def test_disconnect_clears_stale_port_without_live_tunnel(self, tmp_path):
@@ -2091,6 +2093,25 @@ class TestHandlers:
         body = _body(r)
         assert body["diagnosis"]["code"] == "remote_down"
         assert body["diagnosis"]["reason"] == "remote dashboard down"
+
+    def test_add_defaults_remote_port_to_the_stock_gateway_port(self, tmp_path, monkeypatch):
+        """#1972: the ADD endpoint must not carry its own stale port default.
+
+        The registry default and the handler default were separate literals, so
+        correcting the registry left the HTTP path (which is what the Add form
+        actually calls) still handing out an earlier default dashboard port. Every
+        unit test built records via ``reg.add`` directly and so could not see it;
+        an isolated-pod run against the real endpoint did.
+        """
+        from kiro_crew.dashboard import handlers_instances as handlers
+        from kiro_crew.instances.registry import DEFAULT_REMOTE_PORT
+
+        _enable(tmp_path, monkeypatch)
+        reg = self._reg(tmp_path)
+        state = _State(reg)
+        body = {"name": "Defaulted", "ssh_host": "cd-1-alias", "id": "cd-1"}
+        assert asyncio.run(handlers.api_instances_add(_FakeReq(state, body=body))).status == 201
+        assert reg.get("cd-1").remote_port == DEFAULT_REMOTE_PORT == 5476
 
     def test_add_duplicate_and_bad_body(self, tmp_path, monkeypatch):
         from kiro_crew.dashboard import handlers_instances as handlers
@@ -3258,30 +3279,6 @@ class TestSelfHealRefreshRestart:
         assert _recover_backoff_secs(99) == _RECOVER_BACKOFF_MAX_SECS
 
     @pytest.mark.asyncio
-    async def test_reap_orphan_forwarder_kills_only_matching(self, tmp_path, monkeypatch):
-        import os as _os
-        import signal as _signal
-
-        from kiro_crew.instances.registry import InstancesRegistry
-        from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
-
-        reg = InstancesRegistry(path=tmp_path / "i.json")
-        mgr = SshTunnelManager(reg, base_port=53400)  # default (real) factory
-
-        async def fake_ps():
-            return [
-                "111 ssh -N -o BatchMode=yes -L 127.0.0.1:7779:127.0.0.1:7879 host-a",  # match
-                "222 ssh -N -L 127.0.0.1:9999:127.0.0.1:9999 host-b",  # different port
-                "333 some-daemon --flag -L 127.0.0.1:7779: not-ssh",  # not ssh
-            ]
-
-        mgr._ps_lines = fake_ps  # type: ignore[assignment]
-        killed: list[tuple[int, int]] = []
-        monkeypatch.setattr(_os, "kill", lambda pid, sig: killed.append((pid, sig)))
-        n = await mgr._reap_orphan_forwarder(7779)
-        assert n == 1 and killed == [(111, _signal.SIGTERM)]
-
-    @pytest.mark.asyncio
     async def test_refresh_token_once(self, tmp_path):
         reg, mgr = self._mgr(tmp_path)
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", ttl="20h")
@@ -3396,12 +3393,12 @@ class TestSelfHealRefreshRestart:
 
         monkeypatch.setattr(stm, "run_remote_kirocrew", fake_run)
         r = asyncio.run(mgr.restart_remote("cd-1"))
-        # remote_port defaults to 7777 → threaded so restart uses the marker resolver.
+        # remote_port defaults to 5476 → threaded so restart uses the marker resolver.
         # connect_timeout_secs comes from the configured mint budget (unset here,
         # so the ssh default from constants.DEFAULT_MINT_TIMEOUT_SECS), not the
         # 10s ssh-exec fail-fast fallback -- this is the fix for #3579: a restart
         # on a slow-proxy host must reuse the same budget the mint itself gets.
-        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 7777, 30.0)
+        assert r["ok"] and calls["a"] == ("cd-1-alias", "restart", 5476, 30.0)
         # validation failure
         r = asyncio.run(mgr.restart_remote("bad"))
         assert not r["ok"] and "invalid ssh settings" in r["message"]
@@ -3615,7 +3612,7 @@ class TestPortMirror:
         return SshTunnelManager(reg, mint_token=ok_mint, tunnel_factory=factory)
 
     @pytest.mark.asyncio
-    async def test_local_port_mirrors_remote_port(self, tmp_path, monkeypatch):
+    async def test_local_port_allocated_not_mirrored(self, tmp_path, monkeypatch):
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
@@ -3631,12 +3628,54 @@ class TestPortMirror:
 
         status = await mgr.connect("cd-1")
         assert status.state == TunnelState.CONNECTED
-        # local forward port == remote (configured) port
-        assert captured["lp"] == 7900 == captured["rp"]
-        assert reg.get("cd-1").local_port == 7900
+        # The forward still points AT the remote's port...
+        assert captured["rp"] == 7900
+        # ...but the local end is allocated from the tunnel base, NOT mirrored.
+        assert captured["lp"] != 7900
+        assert captured["lp"] >= mgr._allocator.base_port
+        assert reg.get("cd-1").local_port == captured["lp"]
 
     @pytest.mark.asyncio
-    async def test_mirror_overrides_stale_local_port(self, tmp_path, monkeypatch):
+    async def test_two_instances_share_one_remote_port(self, tmp_path, monkeypatch):
+        """#1972: two stock installs both reporting the SAME remote port connect.
+
+        This is the case mirroring made impossible — and the shipped defaults put
+        every stock pair in it.
+        """
+        from kiro_crew.instances.registry import InstancesRegistry
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        seen: dict[str, int] = {}
+
+        def factory(iid, ssh_host, lp, rp, **k):
+            seen[iid] = lp
+            return _FakeTunnel(iid, ssh_host, lp, rp, **k)
+
+        reg = InstancesRegistry(path=tmp_path / "instances.json")
+        # Both remotes are stock: same remote port, which is also the port a
+        # stock hub would itself be holding.
+        reg.add(name="A", ssh_host="host-a", instance_id="cd-a", remote_port=5476)
+        reg.add(name="B", ssh_host="host-b", instance_id="cd-b", remote_port=5476)
+        mgr = self._mgr(reg, factory, monkeypatch)
+
+        assert (await mgr.connect("cd-a")).state == TunnelState.CONNECTED
+        assert (await mgr.connect("cd-b")).state == TunnelState.CONNECTED
+        # Distinct local ports, neither of them the shared remote port.
+        assert seen["cd-a"] != seen["cd-b"]
+        assert 5476 not in seen.values()
+        assert reg.get("cd-a").local_port != reg.get("cd-b").local_port
+
+    @pytest.mark.asyncio
+    async def test_reconnect_does_not_reclaim_its_own_recorded_port(self, tmp_path, monkeypatch):
+        """A recorded port is NOT preferred; allocation is the only path.
+
+        ``shutdown`` documents that it "Leaves registry hints intact", so a
+        recorded ``local_port`` survives a gateway RESTART, not only a crash.
+        Preferring it would look like iframe-origin stability but cannot deliver
+        any: after a restart the token is re-minted and the pane reloads, so there
+        is no origin or ``mc_token_<port>`` cookie left to preserve. The in-session
+        case that does want the same port is served by ``_recover`` instead.
+        """
         from kiro_crew.instances.registry import InstancesRegistry
         from kiro_crew.instances.ssh_tunnel_manager import TunnelState
 
@@ -3648,13 +3687,14 @@ class TestPortMirror:
 
         reg = InstancesRegistry(path=tmp_path / "instances.json")
         reg.add(name="CD", ssh_host="cd-1-alias", instance_id="cd-1", remote_port=7900)
-        reg.update("cd-1", local_port=8123)  # stale random local port from old allocator
         mgr = self._mgr(reg, factory, monkeypatch)
+        base = mgr._allocator.base_port
+        reg.update("cd-1", local_port=base + 2)  # survivor of a restart
 
-        status = await mgr.connect("cd-1")
-        assert status.state == TunnelState.CONNECTED
-        assert captured["lp"] == 7900  # stale 8123 ignored; mirror wins
-        assert reg.get("cd-1").local_port == 7900
+        assert (await mgr.connect("cd-1")).state == TunnelState.CONNECTED
+        # The lower, free base port wins; the recorded one is never asked for.
+        assert captured["lp"] == base
+        assert reg.get("cd-1").local_port == base
 
     @pytest.mark.asyncio
     async def test_port_conflict_hard_fails(self, tmp_path, monkeypatch):
@@ -3673,8 +3713,7 @@ class TestPortMirror:
 
         status = await mgr.connect("cd-1")
         assert status.state == TunnelState.ERROR
-        assert "already in use" in (status.error or "")
-        assert "distinct remote port" in (status.error or "")
+        assert "was taken while connecting" in (status.error or "")
         # We fail before opening the tunnel — factory never invoked.
         assert "called" not in captured
 

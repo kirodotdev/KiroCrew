@@ -108,19 +108,26 @@ class RealLaunchEngine:
     def __init__(self) -> None:
         # Settled once per launch, then reused for BOTH ends: the crew's gateway
         # starts on it (KIROCREW_PORT via the stack) and the registry records it as
-        # remote_port, which the tunnel mirrors locally. See _allocate_port.
+        # remote_port. See _allocate_port.
         self._port = 0
 
     def _allocate_port(self) -> int:
         """Pick a gateway port this crew can actually be reached on.
 
-        The tunnel forces ``local_port == remote_port`` so the embedded dashboard's
-        Origin matches what the remote gateway trusts, and it hard-fails rather than
-        falling back when that port is busy. Registering every crew on the default
-        5476 therefore produced a crew that could never be connected: the operator's
-        own gateway usually owns 5476, and a second crew would collide with the
-        first. Allocate deterministically upward from the tunnel base, skipping every
-        port the registry already hands out.
+        NOTE: the constraint this was written for is gone. The tunnel used to force
+        ``local_port == remote_port`` and hard-fail when that port was busy, so
+        registering every crew on the default 5476 produced a crew that could never
+        be connected -- the operator's own gateway usually owns 5476, and a second
+        crew collided with the first. The hub now allocates its local forward port
+        independently, so crews sharing a remote port connect fine and this could
+        simply pass the registry default.
+
+        It survives here only because deleting it changes which port a provisioned
+        EC2 gateway BINDS, and verifying that means exercising the cloud launch
+        suites -- a provisioning behaviour change does not belong in the instances
+        change that removed the mirror. Tracked as #5253; delete it there rather
+        than growing new callers here. Allocates deterministically upward from the
+        tunnel base, skipping every port the registry already hands out.
         """
         if self._port:
             return self._port
@@ -159,8 +166,8 @@ class RealLaunchEngine:
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
         registered = connect_mod.register_instance(
             instance_id, name=f"Kiro Crew Cloud ({tag})", profile=profile, region=region,
-            # Must match the port the stack started the gateway on, or the mirrored
-            # tunnel would forward to a port nothing is listening on.
+            # Must match the port the stack started the gateway on, or the tunnel
+            # would forward to a port nothing is listening on.
             remote_port=self._allocate_port(),
         )
         if registered is None:

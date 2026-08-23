@@ -19,8 +19,9 @@ from __future__ import annotations
 DEFAULT_WARM_SET_CAP: int = 5
 
 # First local loopback port handed out for an SSH ``-L`` forward. The port
-# allocator increments from here, skipping ports already in use. Chosen to sit
-# just above the default dashboard port (7777).
+# allocator increments from here, skipping ports already in use and ports the
+# registry has already assigned. Sits well clear of the default dashboard port
+# so a stock gateway's own port is never the first candidate.
 DEFAULT_TUNNEL_BASE_PORT: int = 7778
 
 # Enable SSH transport compression (``ssh -C``) on instance tunnels. The whole

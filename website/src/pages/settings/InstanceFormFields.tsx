@@ -15,7 +15,6 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
-import { fmtNumber } from '../../i18n/format'
 
 /** Form-shaped mirror of an instance record: every field is a string the user typed. */
 /**
@@ -45,7 +44,7 @@ export interface InstanceFormValues {
 // Defaults for a brand-new crew. The port and TTL mirror the backend's own
 // defaults so an untouched form round-trips to the same record the API would
 // have created on its own.
-export const DEFAULT_REMOTE_PORT = '7777'
+export const DEFAULT_REMOTE_PORT = '5476'
 export const DEFAULT_TTL = '20h'
 // The backend's own default for the remote account an SSM session runs as. A
 // cleared field falls back to it rather than to the empty string, which the
@@ -97,12 +96,15 @@ export function instanceFormFromView(inst: InstanceView): InstanceFormValues {
 
 /**
  * Form state plus everything derived from it that both forms need to gate their
- * submit button. `usedPorts` must exclude the crew being edited — its own port
- * is not a conflict with itself.
+ * submit button.
+ *
+ * There is deliberately no "this port is already used by another crew" guard.
+ * Crews may share a remote port: the local forward port is allocated
+ * independently of it, so two stock installs — which necessarily report the same
+ * default port — are a supported configuration, not a conflict (#1972).
  */
 export function useInstanceFormState(
   initial: InstanceFormValues,
-  usedPorts: number[],
   /**
    * Values to START from, when the caller is restoring an edit the user already
    * typed. `initial` stays the record snapshot, so `dirty` keeps measuring
@@ -128,10 +130,9 @@ export function useInstanceFormState(
   const portNum = /^[0-9]+$/.test(portRaw) ? Number(portRaw) : NaN
   const portValid = Number.isInteger(portNum) && portNum >= PORT_MIN && portNum <= PORT_MAX
   const ttlValid = TTL_RE.test(values.ttl.trim())
-  const dupPort = portValid && usedPorts.includes(portNum)
   // The transport-specific required field: ssh_host for SSH, ssm_target for SSM.
   const targetFilled = isSsm ? !!values.ssmTarget.trim() : !!values.sshHost.trim()
-  const valid = !!values.name.trim() && targetFilled && !dupPort && portValid && ttlValid
+  const valid = !!values.name.trim() && targetFilled && portValid && ttlValid
   /**
    * The request payload. Fields belonging to the transport that is NOT selected
    * are omitted rather than blanked: the backend validates them only for their
@@ -230,8 +231,6 @@ export function useInstanceFormState(
     patch,
     reset: setValues,
     isSsm,
-    portNum,
-    dupPort,
     portValid,
     ttlValid,
     targetFilled,
@@ -256,7 +255,6 @@ export type InstanceFormState = ReturnType<typeof useInstanceFormState>
  */
 export function EditInstanceForm({
   inst,
-  usedPorts,
   onSaved,
   onCancel,
   draft,
@@ -266,8 +264,6 @@ export function EditInstanceForm({
   lockTransport = false,
 }: {
   inst: InstanceView
-  /** Ports taken by OTHER crews — this crew's own port is not a conflict. */
-  usedPorts: number[]
   /**
    * Receives the SAVED record. Its status says whether the tunnel survived the
    * edit, which the caller needs: a warm pane holds the OLD local port and token,
@@ -329,7 +325,6 @@ export function EditInstanceForm({
   }
   const form = useInstanceFormState(
     instanceFormFromView(baselineRef.current),
-    usedPorts,
     draft?.values,
   )
   // The record as it was when this form opened, held immutably. `inst` is a prop
@@ -446,7 +441,7 @@ export function InstanceFormFields({
   /** Render the machine-identity fields read-only (see EditInstanceForm). */
   lockTransport?: boolean
 }) {
-  const { values, set, isSsm, portNum, dupPort, portValid, ttlValid } = form
+  const { values, set, isSsm, portValid, ttlValid } = form
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label htmlFor={`${idPrefix}-name`} className="flex flex-col gap-1 text-[13px] text-muted">
@@ -505,17 +500,13 @@ export function InstanceFormFields({
       )}
       <label htmlFor={`${idPrefix}-remote-port`} className="flex flex-col gap-1 text-[13px] text-muted">
         {i18nT('pages.settings.instancesPanel.remote_port')}
-        <input id={`${idPrefix}-remote-port`} aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={values.remotePort} onChange={e => set('remotePort', e.target.value)} placeholder="7777" inputMode="numeric" />
+        <input id={`${idPrefix}-remote-port`} aria-label={i18nT('pages.settings.instancesPanel.remote_port')} className={inputCls} value={values.remotePort} onChange={e => set('remotePort', e.target.value)} placeholder="5476" inputMode="numeric" />
         <span className="text-[12px] text-muted leading-snug">
           {i18nT('pages.settings.instancesPanel.must_match_the_port_the_remote_gateway_serves_on')}
         </span>
         {!portValid ? (
           <span className="text-[12px] text-danger leading-snug">
             {i18nT('pages.settings.remoteCrewPanel.port_must_be_in_range')}
-          </span>
-        ) : dupPort ? (
-          <span className="text-[12px] text-danger leading-snug">
-            {i18nT('pages.settings.instancesPanel.port')} {fmtNumber(portNum)} {i18nT('pages.settings.instancesPanel.is_already_used_by_another_instance_choose_a_dif')}
           </span>
         ) : null}
       </label>

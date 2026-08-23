@@ -48,9 +48,7 @@ import contextlib
 import enum
 import json
 import logging
-import os
 import re
-import signal
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -813,9 +811,6 @@ class SshTunnelManager:
         self._mint_timeout = mint_timeout_secs
         self._mint_token = mint_token
         self._tunnel_factory = tunnel_factory or _SshTunnel
-        # Only the real ssh path reaps OS-level orphans; injected fakes (tests)
-        # skip it so unit tests stay hermetic (no `ps`/`kill` side effects).
-        self._reaps_orphans = tunnel_factory is None
         self._tunnels: dict[str, _SshTunnel] = {}
         self._tokens: dict[str, str] = {}
         # Last connect/reconnect failure reason per instance, retained after the
@@ -926,68 +921,6 @@ class SshTunnelManager:
             return _DEFAULT_SSM_MINT_TIMEOUT_SECS
         return _DEFAULT_MINT_TIMEOUT_SECS
 
-    async def _ps_lines(self) -> list[str]:
-        """Return ``<pid> <command>`` lines for all processes (portable ps).
-
-        Factored out so tests can stub it; best-effort (empty on any failure).
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "ps",
-                "-axww",
-                "-o",
-                "pid=,command=",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
-        except Exception:
-            return []
-        return out.decode("utf-8", "replace").splitlines()
-
-    async def _reap_orphan_forwarder(self, local_port: int) -> int:
-        """SIGTERM any stale ssh forwarder still holding *local_port*.
-
-        Graceful shutdown (Ctrl+C / SIGTERM -> on_cleanup -> shutdown()) already
-        tears tunnels down, but a hard kill (SIGKILL / crash / hard restart)
-        bypasses it and — since macOS has no parent-death signal — leaves the
-        ``ssh -N -L 127.0.0.1:<local_port>:...`` child holding the port, so the
-        next connect fails ExitOnForwardFailure forever. This clears such an
-        orphan before we (re)bind. Matches our forward signature only, skips PIDs
-        of live tracked tunnels and our own pid, and never raises.
-        """
-        signature = f"-L {_LOOPBACK}:{int(local_port)}:"
-        live_pids = {p for p in (getattr(t, "pid", None) for t in self._tunnels.values()) if p}
-        own = os.getpid()
-        reaped = 0
-        for line in await self._ps_lines():
-            line = line.strip()
-            if signature not in line:
-                continue
-            parts = line.split(None, 2)  # <pid> <exe> <rest>
-            if len(parts) < 2:
-                continue
-            head, exe = parts[0], parts[1]
-            if exe.rsplit("/", 1)[-1] != "ssh":  # the forwarder must BE ssh
-                continue
-            try:
-                pid = int(head)
-            except ValueError:
-                continue
-            if pid == own or pid in live_pids:
-                continue
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signal.SIGTERM)
-                reaped += 1
-        if reaped:
-            logger.warning(
-                "Reaped %d orphaned ssh forwarder(s) holding 127.0.0.1:%d "
-                "(leftover from an unclean prior exit)",
-                reaped,
-                local_port,
-            )
-        return reaped
-
     def _resolve_transport(self, inst: Instance) -> _TransportParams:
         """Validate + resolve *inst*'s transport params immediately before use.
 
@@ -1079,33 +1012,82 @@ class SshTunnelManager:
                 if not cloud_ssm.session_manager_plugin_installed():
                     return self._error_status(inst, cloud_ssm.session_manager_plugin_install_hint())
 
-            # Mirror the local forward port to the remote (configured)
-            # port. The embedded dashboard runs in an iframe at
-            # http://127.0.0.1:<local_port>, and the remote gateway only trusts
-            # CSRF/WebSocket Origins on its own configured port. Forcing
-            # local_port == remote_port keeps the Origin valid without per-instance
-            # allow-listing. Each simultaneously-connected instance must therefore
-            # use a distinct remote port (a local port cannot be bound twice).
-            local_port = inst.remote_port
+            # Allocate a free loopback port for the forward. It deliberately does
+            # NOT have to equal ``inst.remote_port``. The embedded dashboard runs
+            # in an iframe at http://127.0.0.1:<local_port>, and the remote
+            # gateway accepts that because:
+            #   * ``check_origin`` has a same-origin loopback branch — a loopback
+            #     Origin equal to the request's own Host is trusted at ANY port,
+            #     which is exactly the shape the iframe produces (it is served at
+            #     127.0.0.1:<local_port> and calls that same location.host); and
+            #   * ``build_allowed_hosts`` compares hostname only, so the Host
+            #     header matches regardless of port; and
+            #   * the session cookie is named from the browser-facing port
+            #     (``_cookie_port_from_host``), so distinct local ports get
+            #     distinct cookies instead of colliding in the shared 127.0.0.1
+            #     jar — that helper exists precisely for tunnels whose local port
+            #     differs from the remote's.
+            # This does not reopen CSE SEC-016: a malicious local page on an
+            # arbitrary port sends its own Origin while the Host stays the
+            # gateway's, so the two differ and the same-origin branch rejects it.
+            # Browsers forbid scripts from forging either header.
+            #
+            # Mirroring the remote port instead made the shipped defaults
+            # self-contradictory: a stock gateway binds the same default port on
+            # both ends, so a stock hub already held the port a stock remote
+            # reported and two stock installs could never connect (#1972).
+            #
+            # Every instance's recorded port stays reserved, and the allocator
+            # probes each candidate, so a port anything still holds — including a
+            # leftover forwarder of our own — is skipped rather than fought over.
+            # That skip is why no orphan-reaping step is needed for connect to
+            # make PROGRESS: nothing has to be killed to get a working tunnel.
+            #
+            # The cost that buys, stated rather than implied: an ``ssh -N -L``
+            # child orphaned by a gateway hard-kill is no longer signalled, so it
+            # keeps its loopback port and its session to the remote until the OS
+            # reaps it. That is accepted here deliberately. The reaper this
+            # replaced matched the process table by argv and could SIGTERM a
+            # forward the operator had opened themselves (#1972), and no argv
+            # pattern distinguishes our child from a stranger's. Reclaiming it
+            # safely means tracking our own pid, which is #5235, not a rider on
+            # this change.
+            #
+            # There is deliberately no "take my own previous port back" branch.
+            # It reads as free stability, but the case it fires in cannot benefit:
+            # ``disconnect`` zeroes the port, while ``shutdown`` documents that it
+            # "Leaves registry hints intact", so the recorded port survives a
+            # gateway RESTART rather than only a crash — and after any restart the
+            # token is re-minted and the pane reloads, so there is no iframe
+            # origin or ``mc_token_<port>`` cookie left to keep stable. The
+            # in-session case that genuinely wants the same port is already served
+            # by ``_recover``, which reuses ``current.status.local_port``.
+            #
+            # Everything here runs off the event loop: ``_reserved_ports`` reads
+            # the registry from disk under its own lock, and the port probe binds
+            # a socket. Under the mirror neither happened on this path -- the port
+            # was a fixed field read and one probe -- whereas this reads a file
+            # and can walk upward past every occupied candidate, all inside the
+            # manager lock on the gateway's loop, where a synchronous scan would
+            # stall unrelated requests and heartbeats. This matches how the rest
+            # of the module already reaches the registry (``asyncio.to_thread``).
+            reserved = await asyncio.to_thread(self._reserved_ports)
+            try:
+                local_port = await asyncio.to_thread(self._allocator.allocate, exclude=reserved)
+            except RuntimeError as e:
+                return self._error_status(inst, str(e))
 
-            # Clear any orphaned forwarder still holding this port from an
-            # unclean prior exit (hard kill bypasses graceful shutdown; macOS has no
-            # parent-death signal) so the new tunnel can bind it.
-            if self._reaps_orphans:
-                await self._reap_orphan_forwarder(local_port)
-
-            # Hard-fail with a clear message if the mirrored port is still occupied
-            # (e.g. another instance on the same remote port, or the local gateway).
-            # No dynamic fallback — a different local port would break the
-            # origin match and leave the embedded dashboard unable to stream/act.
-            if not _is_port_free(local_port):
+            # The probe above is advisory — there is an inherent TOCTOU window
+            # between probing and ssh actually binding — so re-check immediately
+            # before spawning and fail with an actionable message rather than
+            # letting the child exit on ExitOnForwardFailure.
+            if not await asyncio.to_thread(_is_port_free, local_port):
                 return self._error_status(
                     inst,
-                    f"local port {local_port} is already in use. Each connected "
-                    f"instance must use a distinct remote port — change this "
-                    f"instance's remote port (and set that same port on the remote "
-                    f"host's dashboard.url), or disconnect whatever is holding "
-                    f"port {local_port}.",
+                    f"local port {local_port} was taken while connecting. Retry; "
+                    f"if it keeps happening, disconnect whatever is holding port "
+                    f"{local_port} or move instances.tunnel_base_port to a "
+                    f"quieter range.",
                 )
 
             # Open the tunnel first so the forward is live.
