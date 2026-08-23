@@ -32,6 +32,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _normalize_slot_key,
     _note_authorized_elsewhere,
+    row_mid,
 )
 from kiro_crew.effort import EFFORT_LEVELS, EFFORT_VALUES
 from kiro_crew.history import (
@@ -1438,28 +1439,44 @@ def _frozen_prefix_and_foreign_appends(
     fully append + release between the snapshot and this save acquiring the lock;
     a bare ``meta + frozen + window`` replace would then silently delete that
     acknowledged message. Carrying these lines into the payload makes the save
-    non-destructive against cross-process appends. A
-    disk line is treated as ours (dropped; the window re-serializes it) when its
-    ``ts`` matches a window entry (covers in-place edits, which keep ``ts`` but
-    change content) OR — as a COUNT-BOUNDED tiebreak — its ``(role, content)``
-    matches an as-yet-unconsumed window entry (covers a same-process
-    ``append_if_absent`` copy persisted with a FRESH ``ts`` distinct from the
-    window entry's in-memory ``ts``). The tiebreak is bounded so each window
-    entry absorbs AT MOST ONE disk copy: if the on-disk window region holds two
-    lines with identical ``(role, content)`` but distinct timestamps — the
-    window's own persisted copy PLUS a genuinely distinct event from another
-    process (e.g. a repeated identical cron / workflow result) — only the first
-    is folded into the window and the second is preserved as a foreign append.
-    A plain ``(role, content)`` set collapsed those two real events into one;
-    the bounded, timestamp-first identity
-    fixes it. Timestamp is the closest thing to a stable per-message id today;
-    the intended successor is a creation-time per-message uuid that demotes this
-    heuristic to a legacy fallback for un-stamped lines (see also
-    ``docs/system-specs/modules/history.md``). ``dedup_dropped`` returns any
-    fresh-``ts`` content-tiebreak drops so the caller can route them through the
-    archive — even the residual ambiguous case (a distinct message
-    indistinguishable from an ``append_if_absent`` copy without a stable id)
-    then loses no data permanently.
+    non-destructive against cross-process appends. Identity is **id-first**: a
+    disk line whose ``meta.mid`` (read via :func:`row_mid`) matches a window
+    entry's id, corroborated by body or ``ts`` (same ``(role, content)`` — a
+    durable copy — or same ``ts`` — an in-place edit), IS that entry's
+    persisted copy, so it is dropped silently (the window re-serializes it)
+    and never archived. The corroboration is required because ``meta.mid`` is
+    caller-suppliable (``_ChatSlot.append`` preserves a pre-existing id), so a
+    bare id equality could pair two genuinely distinct messages; an id match
+    with NO corroborating entry falls back to the legacy ladder as if id-less,
+    which typically preserves the line. A disk line whose ``meta.mid`` matches
+    NO available window entry is a foreign append regardless of body equality,
+    which is what tells two genuinely distinct identical-content messages
+    apart — it still keeps its ``ts`` group ambiguous for the ts-only tier, so
+    its presence can never convert a contested group into a silent id-less
+    fold. Only an **id-less** disk line resolves
+    through the legacy timestamp-first ladder, unchanged: it is treated as
+    ours when
+    its ``ts`` matches a window entry (covers in-place edits, which keep ``ts``
+    but change content) OR — as a COUNT-BOUNDED tiebreak — its
+    ``(role, content)`` matches an as-yet-unconsumed window entry (covers a
+    same-process ``append_if_absent`` copy persisted with a FRESH ``ts``
+    distinct from the window entry's in-memory ``ts``). The tiebreak is bounded
+    so each window entry absorbs AT MOST ONE disk copy: if the on-disk window
+    region holds two id-less lines with identical ``(role, content)`` but
+    distinct timestamps — the window's own persisted copy PLUS a genuinely
+    distinct event from another process (e.g. a repeated identical cron /
+    workflow result) — only the first is folded into the window and the second
+    is preserved as a foreign append. A plain ``(role, content)`` set collapsed
+    those two real events into one; the bounded, timestamp-first identity
+    fixes it for id-less lines, and the ``meta.mid`` tier resolves it exactly
+    for stamped lines (see also ``docs/system-specs/modules/history.md``).
+    ``dedup_dropped`` returns any fresh-``ts`` content-tiebreak drops so the
+    caller can route them through the archive — even the residual ambiguous
+    case (an id-less distinct message indistinguishable from an
+    ``append_if_absent`` copy without a stable id) then loses no data
+    permanently. A corroborated id-matched fold is NOT such a drop: the ids
+    plus body/``ts`` agreeing makes it unambiguous, so it does not churn the
+    archive.
 
     Fast path: when BOTH the on-disk mtime AND size match the frozen-prefix
     cache, THIS slot was the last writer and nothing has landed since, so the
@@ -1515,20 +1532,32 @@ def _frozen_prefix_and_foreign_appends(
         return (prefix, [], [])
     # Scan the on-disk window region for lines the in-memory window does not
     # carry — those are cross-process appends we must preserve. Identity is
-    # timestamp-first (the closest thing to a stable per-message id today), with
-    # (role, content) used only as a COUNT-BOUNDED tiebreak so each window entry
-    # absorbs at most ONE disk copy (see the module docstring / history.md).
+    # id-first (``meta.mid``, the stable per-message id every window append
+    # mints and every durable-copy writer carries through), with the legacy
+    # timestamp-first ladder — exact triple, ts, then a COUNT-BOUNDED
+    # (role, content) tiebreak — retained unchanged for id-less lines (see the
+    # module docstring / history.md).
     #
     # Build COUNT-BOUNDED consumption budgets over the window entries so each
     # on-disk window-region line is matched to AT MOST ONE window entry and each
-    # window entry absorbs AT MOST ONE disk line. Identity is checked in three
+    # window entry absorbs AT MOST ONE disk line. Identity is checked in four
     # tiers of decreasing confidence:
+    #   (0) ``meta.mid`` — the stable id stamped at append time and carried onto
+    #       durable copies (PR #5133); an id match IS the same message, resolved
+    #       first across ALL disk lines so no heuristic tier can steal the
+    #       entry, and an id-carrying line whose id matches NO entry is foreign
+    #       regardless of body (two distinct identical-content messages carry
+    #       distinct ids);
     #   (a) exact (ts, role, content) — an unchanged re-serialization (the common
-    #       steady-save case), resolved first across ALL disk lines so a greedy
+    #       steady-save case), resolved before the ts/rc passes so a greedy
     #       edit/tiebreak match can never steal an entry a later exact line needs;
     #   (b) ts only — an in-place edit (same ``ts``, changed content: window wins);
     #   (c) (role, content) only — a same-content copy persisted with a FRESH
     #       ``ts`` (the ``append_if_absent`` case), routed to the archive.
+    # Tiers (a)-(c) see only id-less disk lines, but every window entry stays
+    # indexed in all of them regardless of whether it carries an id: a legacy
+    # (pre-id) disk line must still fold into its window row even though the
+    # restore minted that row a fresh id.
     # Keying every tier by COUNT (deques of entry indices guarded by a shared
     # ``consumed`` flag) — rather than a ``ts -> entry`` dict plus a per-``ts``
     # ``set`` — is what makes this correct when several messages share one ``ts``.
@@ -1538,6 +1567,7 @@ def _frozen_prefix_and_foreign_appends(
     # genuine window line was mis-classified as a foreign append and DUPLICATED on
     # disk. The bounded multiset below matches them one-for-one regardless of
     # ``ts`` collisions.
+    mid_idx: dict[str, "deque[int]"] = {}
     exact_idx: dict[tuple[object, object, object], "deque[int]"] = {}
     ts_idx: dict[object, "deque[int]"] = {}
     rc_idx: dict[tuple[object, object], "deque[int]"] = {}
@@ -1545,6 +1575,9 @@ def _frozen_prefix_and_foreign_appends(
         _ets = e.get("ts")
         _erole = e.get("role")
         _econtent = e.get("content", "")
+        _emid = row_mid(e)
+        if _emid:
+            mid_idx.setdefault(_emid, deque()).append(_i)
         if _ets:
             exact_idx.setdefault((_ets, _erole, _econtent), deque()).append(_i)
             ts_idx.setdefault(_ets, deque()).append(_i)
@@ -1563,8 +1596,10 @@ def _frozen_prefix_and_foreign_appends(
         return False
 
     # Parse the on-disk window-region lines once (skipping blank/corrupt/transient
-    # lines exactly as before), so the two matching passes share one parse.
-    disk_msgs: list[tuple[str, object, object, object]] = []  # (norm, ts, role, content)
+    # lines exactly as before), so the matching passes share one parse.
+    disk_msgs: list[
+        tuple[str, object, object, object, str | None]
+    ] = []  # (norm, ts, role, content, mid)
     for ln in body[disk_older:]:
         if not ln.strip():
             continue
@@ -1578,14 +1613,61 @@ def _frozen_prefix_and_foreign_appends(
         if role is None or role in _TRANSIENT_ROLES:
             continue
         norm = ln if ln.endswith("\n") else ln + "\n"
-        disk_msgs.append((norm, entry.get("ts"), role, entry.get("content", "")))
+        disk_msgs.append(
+            (norm, entry.get("ts"), role, entry.get("content", ""), row_mid(entry))
+        )
 
-    # Pass 1 — exact (ts, role, content): unambiguously our own unchanged
-    # re-serialization. Resolving these first makes the result independent of the
-    # disk-line order (an earlier edit/tiebreak match can no longer consume an
-    # entry that a later exact line requires).
+    # Pass 0 — ``meta.mid``: id-first identity, resolved across ALL disk lines
+    # before any heuristic tier so a greedy lower-confidence match can never
+    # steal a window entry whose persisted copy is identified by id. An id
+    # match folds ONLY when corroborated by body or ``ts`` — ``meta.mid`` is
+    # caller-suppliable (``_ChatSlot.append`` preserves a pre-existing id, and
+    # the ``/api/chat`` meta rides through), so a bare id equality is not proof
+    # of sameness the way a minted-uuid contract would suggest:
+    #   * corroborated (same (role, content) — a durable copy — or same ``ts``
+    #     — an in-place edit): consume the entry and drop the line (the window
+    #     re-serializes it). The ids matching exactly makes this NOT a dedup
+    #     drop, so it is not routed to the ``foreign-dedup`` archive.
+    #   * id matches an unconsumed entry but NEITHER body nor ``ts`` agrees
+    #     (an id reused across two genuinely distinct messages): leave the
+    #     entry unconsumed and let the line fall through to the legacy tiers
+    #     as if id-less — typically preserved as foreign, so the distinct
+    #     message stays in the transcript rather than being silently folded.
+    #   * id matches NO available window entry (unknown id, or every same-id
+    #     entry already absorbed its one copy): FOREIGN regardless of body
+    #     equality — two genuinely distinct identical-content messages (e.g. a
+    #     cron reporting the same status text twice) carry distinct ids, which
+    #     is exactly what the body tiebreak could never tell apart — so it is
+    #     excluded from the heuristic tiers below (``mid_foreign``) and
+    #     preserved, in disk order, by pass 2.
+    # Id-less lines fall through with tier (a)-(c) behaviour unchanged.
     handled = [False] * len(disk_msgs)
-    for _j, (_norm, ts, role, content) in enumerate(disk_msgs):
+    mid_foreign = [False] * len(disk_msgs)
+    for _j, (_norm, _ts, _role, _content, mid) in enumerate(disk_msgs):
+        if mid is None:
+            continue
+        _live = [_i for _i in mid_idx.get(mid, ()) if not consumed[_i]]
+        if not _live:
+            mid_foreign[_j] = True
+            continue
+        for _i in _live:
+            _e = window_entries[_i]
+            if (_role, _content) == (_e.get("role"), _e.get("content", "")) or (
+                _ts and _ts == _e.get("ts")
+            ):
+                consumed[_i] = True
+                handled[_j] = True
+                break
+        # No corroborated entry → deliberate fallthrough to the legacy tiers.
+
+    # Pass 1 — exact (ts, role, content) over id-less lines: unambiguously our
+    # own unchanged re-serialization. Resolving these before the ts/rc passes
+    # makes the result independent of the disk-line order (an earlier
+    # edit/tiebreak match can no longer consume an entry that a later exact
+    # line requires).
+    for _j, (_norm, ts, role, content, _mid) in enumerate(disk_msgs):
+        if handled[_j] or mid_foreign[_j]:
+            continue
         if ts and _take(exact_idx.get((ts, role, content))):
             handled[_j] = True
 
@@ -1611,14 +1693,26 @@ def _frozen_prefix_and_foreign_appends(
         if _wt and not consumed[_i]:
             w_unmatched_ts[_wt] = w_unmatched_ts.get(_wt, 0) + 1
     d_unmatched_ts: dict[object, int] = {}
-    for _j, (_norm, ts, _role, _content) in enumerate(disk_msgs):
+    for _j, (_norm, ts, _role, _content, _mid) in enumerate(disk_msgs):
         if ts and not handled[_j]:
             d_unmatched_ts[ts] = d_unmatched_ts.get(ts, 0) + 1
 
     # Pass 2 — for still-unmatched disk lines: ts-only (UNAMBIGUOUS in-place edit)
-    # then the bounded (role, content) tiebreak, else genuinely foreign.
-    for _j, (norm, ts, role, content) in enumerate(disk_msgs):
+    # then the bounded (role, content) tiebreak, else genuinely foreign. A line
+    # pass 0 already ruled foreign by id bypasses both heuristics (its identity
+    # is settled) but is emitted HERE so ``foreign`` keeps disk order — the
+    # interleave that re-merges these lines breaks ts ties by adjacency, so
+    # reordering them relative to other foreign lines is not harmless. Such a
+    # line still counts in ``d_unmatched_ts`` above: it keeps its ``ts`` group
+    # ambiguous exactly as it did before the id tier existed, so an id-less
+    # line sharing the ``ts`` is preserved (a rare stale duplicate) rather
+    # than silently ts-folded into an entry the id-foreign line proves
+    # contested (an irreversible drop of an acknowledged append).
+    for _j, (norm, ts, role, content, _mid) in enumerate(disk_msgs):
         if handled[_j]:
+            continue
+        if mid_foreign[_j]:
+            foreign.append(norm)
             continue
         # ts-match: an in-place edit keeps the ``ts`` but changes content, so the
         # window's version wins and the disk line is dropped silently — but ONLY
