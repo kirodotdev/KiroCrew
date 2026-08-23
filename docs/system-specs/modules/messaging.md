@@ -383,6 +383,12 @@ successful mid-turn steer is acknowledged with a short message where Telegram an
 Discord use an emoji — one extra bubble, which is still strictly better than
 losing the message.
 
+WeCom keeps that posture even though it CAN now push proactively: a held message
+would still have to be answered against a request that was already answered, so a
+`/queue` directive there is refused with a resend prompt rather than silently
+steered — merging text the user asked to keep separate is the one outcome worse
+than refusing.
+
 ### `steer` (the default): fold into the running turn
 
 `_handle_busy` injects the text into the in-flight turn via kiro-cli's
@@ -625,7 +631,8 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **A queued burst drains as ONE turn**: `_drain_queue` joins the held texts in arrival order into a single combined turn (capped by `_MAX_COLLAPSE` and, on Discord, the attachment ingest limit), never N replayed turns. Anything past a cap is re-enqueued together with everything behind it so FIFO order stays exact.
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
 - **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
-- **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session.
+- **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session; `WeComClient.close()` owns the same one for its turn tasks, which borrow the client's `aiohttp` session for the `response_url` fallback.
+- **An at-least-once inbound callback is deduped before it drives a turn**: a protocol that documents redelivery (WeCom's `msgid`) needs a bounded suppression window, because a repeat costs a second provider round-trip and repeats every tool side effect. The window is consulted AFTER authorization so unauthorized traffic cannot evict genuine entries, and a frame with no id is never suppressed — no id is no evidence of a duplicate, and dropping it would lose a real message.
 - **A dropped outbound send is loud, never a return value**: `TeamsClient._post_activity` raises `TeamsSendError`. Every caller treats a return as proof of delivery — the renderer records the answer as sent, a proactive leg reports it delivered — so swallowing the failure is what makes the gateway claim a message the user never saw. Callers that genuinely tolerate failure (typing, an in-place edit, a command acknowledgement) catch it explicitly at their own call site, which is where the tolerance is a decision rather than a default.
 - **A self-authenticating external webhook is exempt from CSRF, method-scoped, and from nothing else**: the Bot Framework Connector sends no `Origin` and no `Referer`, and `check_origin` has no configuration that admits a no-Origin non-loopback POST, so without the exemption the route 403s before its own JWT gate can run. The exemption covers `POST` only, leaves `host_validation_middleware` untouched, and is sound precisely because the handler ignores cookies — the threat CSRF addresses does not exist on it. **The set holds exactly one path.** `/api/hooks/agent` shares the shape and has the separate token-auth bypass, but is NOT Origin-exempt: skipping the cookie gate and skipping the Origin check are two different grants, no reported failure named the second for that route, and a perimeter exemption is far harder to withdraw once a caller depends on it than to add later with its own cause. Adding a path to that set is a security review, not a copied line.
 - **Inbound token validation is never reordered behind body USE**: `on_activity` verifies the bearer token before the activity is acted on, and the replay-dedupe check runs AFTER the `serviceUrl` attestation so an unattested activity cannot consume a dedupe slot. The body IS read and JSON-parsed first, under a byte cap — that is what bounds it — so the guarantee is about dispatch, not about reading. A hardening step added ahead of the token check would make the perimeter the trust boundary instead of the signature.
@@ -644,7 +651,7 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, or Weixin-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
 - **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
 - **The proactive PRODUCERS are still Slack-shaped, and the parity claim says so**: `api_send_message` (the LLM-facing `send_message` tool) has exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` posts to the Slack upload route. Neither consults `state.channel_transports`. A cron result still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`), which is the normal path; what is missing is the tool's own explicit channel/user addressing, whose allow-list, threading and unfurl semantics are Slack concepts. This is the largest remaining outbound gap and it hurts Discord and Telegram identically — routing it through the transport ladder is a change to that handler's contract, not to a channel.
-- **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom destinations (including its allow-all policy placeholder) remain visible but unavailable because its reply token is inbound-bound.
+- **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom advertises its allow-listed userids plus, under its allow-all policy, the peers it has learned — each either offered or listed with a reason, because `aibot_send_msg` needs no token but the platform only delivers into a conversation the user has already written to.
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
 - **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.
 - **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`) stores a `ChannelLink` under the `mirror` slot for non-Slack channels, still distinct from the session's own inbound link.
@@ -899,6 +906,394 @@ talk.
   crash between the two cannot resurrect the plaintext copy). Writes are
   serialized under the repo-wide config lock. All fields are boot-read, so
   `restart_required` is true on any actual change.
+
+## WeCom channel
+
+**Transport (`kiro_crew/wecom/`).** A concrete `MessagingTransport` over WeCom's
+AI-bot **long connection** (`client.py`): one outbound WebSocket to
+`wss://openws.work.weixin.qq.com`, authorized with a bot id + secret via an
+`aibot_subscribe` frame. Inbound user messages arrive as `aibot_msg_callback`
+frames carrying a server-assigned `headers.req_id`; the bot replies by echoing
+that `req_id` back on `aibot_respond_msg` frames whose `body.stream.content` is
+the **full accumulated text**, so each frame REPLACES the bubble rather than
+appending to it. A `stream.id` groups the frames of one bubble and `finish=true`
+seals it. Each inbound frame is fast-acked into its own turn task so the single
+socket keeps serving pongs during a long streaming turn. Turns ride the shared
+`TurnDriver` through `drive_turn`, so WeCom inherits redaction, the approval
+ladder, `SilentRenderer` muting and `publish_turn_identity` rather than
+re-deriving them.
+
+**Reply-ACK semantics are the load-bearing detail.** `send_stream` returning True
+means the frame reached the socket, never that WeCom accepted it. Acceptance
+arrives later, on a **cmd-less** frame carrying `headers.req_id` plus an
+`errcode` — the same envelope shape as a pong ack and as the subscribe ack, so
+the three are told apart by id, not by shape:
+
+- The **ping** ids are tracked in a set as they are sent.
+- The **subscribe** id carries a fixed prefix (`_SUBSCRIBE_REQ_PREFIX`), which is
+  what makes a rejected credential detectable at all. Without it the only signal
+  is the server closing the connection immediately, which is also what an
+  anti-kick looks like — so an operator with a wrong secret was pointed at the
+  wrong cause. A rejected subscribe reports not-healthy on the settings badge
+  (the documented compensating control for skipping save-time verification) and
+  does **not** stop reconnecting, because a secret can be corrected while the
+  gateway runs.
+- Anything else is a **reply** ack. `846605` (unroutable `req_id`) and `846608`
+  (bubble past the platform's 10-minute stream lifetime) are terminal for that
+  `stream_id`, so the client records it and `stream_is_dead()` reports it.
+
+Neither the `errcode` nor the `errmsg` is ever logged or put on the badge:
+`errmsg` can echo the rejected payload. Only the classification is surfaced.
+
+**With no usable stream the head goes out CONFIRMED, and it gates the tail.** That
+fallback used `send_reply`, whose one-shot POST returns `None` — a lost head was
+indistinguishable from a delivered one, and the tail went out regardless, leaving a
+fragment the reader cannot tell is incomplete. A push is not a duplicate on this
+path (no bubble is showing the text), so it is preferred, `send_reply` remains the
+last resort when there is no warm conversation, and if neither delivers the head the
+tail is WITHHELD and logged rather than sent alone.
+
+**A withheld tail is the rule on BOTH head paths.** `close()` recovers a refused
+head as a confirmed push and then releases the tail — and that recovery can itself be
+refused, or find no conversation to push into. `_recover_unconfirmed_seal` therefore
+REPORTS whether the head reached the reader, and `_release_pending_overflow` withholds
+and logs when it did not. Without that the recovery path shipped a tail whose head
+never landed, which is the same fragment the no-stream fallback already refuses to
+send.
+
+**A failed dispatch releases its dedupe entry.** The `msgid` window means "already
+delivered", and a turn that RAISED was not. `WeComTransport.receive` calls
+`forget_msgid` before re-raising, so WeCom's own redelivery — the mechanism that
+exists to recover exactly this — is not suppressed as a duplicate of a message nobody
+ever answered. Idempotency still holds for the success path, which is what the window
+is for.
+
+**Everything that awaits AFTER ingest sits inside the cleanup block.** The dispatcher
+deletes the decrypted attachments in a `finally`, so an await outside it is a path on
+which a gateway shutdown strands plaintext. The origin bind is one such await (it
+offloads to a thread), and it now runs inside the `try` — before the turn, so a
+mirrored reply still has its binding, but no longer outside the guard.
+
+**The tail is HELD until the head is resolved.** An over-cap answer seals its head
+into the live bubble and pushes the remainder, and the head's verdict arrives after
+both — so sending the tail immediately put it ahead of a head recovered at
+`close()`, and the reader met the answer's middle before its beginning with nothing
+saying the order was scrambled. `on_done` therefore parks the tail on the renderer
+and `close()` releases it AFTER the head recovery. The cost is that the tail lands
+after persistence rather than before it, so a crash in that one-local-write-wide
+window leaves history holding an answer the reader only partly received; that is the
+lesser evil, because the misordering needed only a refused frame while this needs a
+crash. The alternative considered — re-sending head AND tail on recovery — keeps the
+old timing but duplicates every tail chunk.
+
+**The sealing frame gets a SECOND look, for free.** A stream frame's ACK cannot be
+waited on (every frame of a turn replays the one inbound `req_id`, so a waiter for
+one can be resolved by another's), and `_send_final_chunk`'s dead-bubble check runs
+microseconds after the send — so a refusal is normally invisible there and the
+answer was reported delivered. `close()` asks again: `drive_turn` calls it in its
+`finally`, after persistence and the post-turn notice, so the verdict has had the
+length of that real work to arrive at no added latency. If the bubble is refused by
+then, the head is re-delivered as a CONFIRMED push (its own `req_id`, so acceptance
+is correlatable), consumed once so a second teardown cannot post twice. A bounded
+sleep-and-poll was the alternative and is worse: fixed latency on every turn, and
+it cannot exit early on success because "the ACK said 0" and "no ACK yet" are
+indistinguishable — WeCom is not documented to acknowledge an accepted frame at
+all. Delivering the head through the push path unconditionally is worse still: it
+posts every answer twice and spends double the conversation's 30/minute budget.
+
+**A sealed bubble rolls, it does not swallow the answer.** An agentic turn doing
+tool work routinely runs past ten minutes, and the refusal is asynchronous, so
+without this the renderer keeps "succeeding" into a sealed bubble and the rest of
+the answer — including the final frame — is never seen. `renderer.py` therefore
+consults `stream_is_dead()` before each frame and at `on_done`, and on a seal
+mints a fresh `stream_id` and continues there. Because content is cumulative, the
+continuation sends only the part the earlier bubble does not already carry.
+Where it resumes from is deliberately conservative: the refusal is observed on a
+LATER push, so the most recent frame is exactly the one that may have been
+rejected, and the continuation resumes from the frame **before** it. One frame's
+worth of text can therefore appear twice; a visible repeat is a better failure
+than a silent hole. `on_done` rolls only when something is left to deliver, so a
+sealed bubble that already holds the whole answer is left unsealed rather than
+followed by an empty bubble.
+
+An aged roll resumes EXACTLY, a sealed one conservatively, and the difference is
+evidence rather than assumption. Every frame carries the bubble's full accumulated
+text, so a non-terminal ACK rejection is normally superseded by the next frame in
+the same bubble — unless no next frame comes because the bubble rotates for age,
+in which case its last frame was never delivered and resuming after it would skip
+it silently (`send_stream` returned True, so nothing reports the gap).
+`WeComClient.stream_had_rejection()` answers the narrower question "was everything
+written here accepted", covering terminal and non-terminal refusals alike, and the
+aged path takes the conservative resume only when it says no. It means "the LATEST
+verdict is a refusal", not "was ever refused", and both retirements are load-bearing
+for different orderings: sending the next frame retires it (that frame carries the
+refused one's text, and this is the only route on a deployment that never ACKs an
+accepted frame), and an errcode-0 ACK retires it (the only route when an earlier
+frame's refusal arrives AFTER the seal, since nothing is sent after a seal). Left
+sticky, `_recover_unconfirmed_seal` re-pushed answers the platform had accepted —
+the reader gets the whole thing twice. A TERMINAL refusal is never retired:
+`_dead_streams` is separate and permanent, because that bubble can never be written
+again whatever is sent to it. Making age
+unconditionally conservative instead would repeat a frame's worth of text on every
+turn past the rotation age.
+
+Both offsets are REBASED onto the new bubble's start when it opens. They describe
+deliveries the abandoned bubble accepted, which say nothing about its replacement,
+and 846605 (unroutable `req_id`) refuses every replacement too — so carrying them
+forward made a SECOND roll resume from a position recorded against the FIRST
+bubble, past a span the replacement never delivered. Rebased, a bubble refused
+before it accepted anything resumes exactly where it began, keeping the worst case
+a visible repeat rather than a silent hole.
+
+**Security model.** `authorize` is deny-by-default and owner-only: an empty
+allow-list authorizes nobody, and the only route to "everybody" is the explicit
+`wecom.allow_all_users` opt-in, which still denies a frame with no userid. Two
+further gates run in `receive`, both before a turn is dispatched:
+
+- **1:1 chats only.** Group traffic (`chattype` other than `single`) is refused
+  and SEL-audited (`denied_group_chat`). A WeCom group is a shared disclosure
+  boundary, and sessions are keyed on `userid` alone, so a group message would
+  ALSO run inside that user's private DM session — publishing its history and
+  tool output into the room, and letting the room steer a session the user
+  believes is private. The userid allow-list does not help: the sender is
+  allow-listed, the audience is not. Same posture, and the same reasoning, as
+  Webex's direct-rooms-only gate and iMessage's group fail-closed. Per-group
+  sessions plus a group allow-list are the prerequisite for lifting this.
+- **Redelivery suppression.** WeCom names `msgid` as the dedupe key and documents
+  that a callback may be repeated, and each repeat would run the whole turn
+  again — a second provider round-trip, a second set of tool side effects, two
+  answers in the bubble. A bounded, TTL'd window suppresses the repeat. It is
+  consulted AFTER authorization, so unauthorized traffic cannot evict genuine
+  entries and reopen the gap; an absent `msgid` is never suppressed, because no
+  id is no evidence of a duplicate.
+
+`WECOM_SECRET` / `WECOM_BOT_ID` are on the sandbox agent env denylist, and
+`pod/runtime.py` forces the channel off in a sanitized pod seed.
+
+**Tool approval rides the ONE shared grant, with no WeCom command.** WeCom renders
+no approve/deny widget (`max_buttons=0`), so `decider` is `None` and
+`APPROVAL_INTERACTIVE` is deny-by-default: without an out-of-band grant every tool
+request is refused with nothing the user could click. `ChannelTurn.auto_approve_session`
+supplies `() -> safety_override().is_active()` — the same process-global grant the
+dashboard toggle drives, read per request rather than captured at boot, so arming it
+or letting it lapse takes effect on the next tool instead of after a restart. It does
+not weaken the gate: the keystone, the governance ceiling and the deny-list all run
+ahead of that rung in `TurnDriver`, so a hard DENY still wins and only the prompt is
+skipped.
+
+There is deliberately **no `/yolo` command here**, which is why the surface stays a
+predicate rather than a handler. One switch with one answer beats a per-channel copy:
+a channel-local command would need its own owner rule, and the single global
+`KIROCREW_OWNER_ID` is compared against each channel's own id space, so on a host
+running several channels the configured value belongs to at most one of them. The
+operator arms the grant from the dashboard (or Slack) where that ambiguity does not
+arise.
+
+**Cancellation cleanup is offloaded, and submitting it is what makes it durable.**
+Both `except BaseException` guards (the shared per-attachment ingest loop and
+WeCom's transcribe step) delete through `cleanup_offloaded`, not `cleanup`:
+`os.unlink` is a blocking syscall, TMPDIR is not always local, and the cap is ten
+attachments per message, so inline it stalls the gateway on exactly the path a
+shutdown takes. The two ways the offload can fail need OPPOSITE handling, and
+getting it backwards is invisible either way. `CancelledError` from the await is
+NOT a fallback trigger: `to_thread` submits to the executor before it awaits, so
+by then the worker owns the deletion (and still drains through
+`shutdown_default_executor`) — deleting again would repeat the work and put the
+blocking syscalls back on the loop, on the very path where the stall is worst.
+`RuntimeError` is the only fallback: the loop refused the work outright (closed,
+executor shut down), so nothing else will ever delete those files. Both return
+normally rather than re-raising, because the caller is about to re-raise the
+exception it was handling and this one would replace the real reason the turn
+ended.
+
+**An attachment makes the message CONTENT, never a command.** Every command branch
+returns before `_ingest_media` runs and a WeCom media URL lives ~5 minutes, so a
+photo captioned `/new` reset the conversation and the picture never arrived — no
+error, nothing said about it, and the URL was dead before the user could resend.
+The rule is about the early RETURN, not about parsing: the command intercepts and
+the bare-override usage reply are disabled when `inbound.attachments` is non-empty,
+while `parse_mid_turn_override` stays live because it only strips a prefix and the
+media still reaches ingestion on the same path. Slack draws the same line with `and
+not files` on its stop keyword. A command sent in its own message is unaffected.
+
+**`ChannelTurn.auto_approve_session` is what makes that promise true.**
+`TurnDriver` has always accepted the predicate, but the shared `drive_turn` did not
+forward it, so a channel driven through this skeleton could report the grant as ON
+while every tool request still hit the deny-by-default path — invisible from the
+channel side, since the `ChannelTurn` looked correct. The field is optional and
+defaults to `None`, so every channel that offers no in-channel toggle is unchanged
+and the grant is simply not consulted. It is forwarded as the CALLABLE: a grant
+that lapses mid-turn stops auto-approving the rest of that turn.
+
+**Table rendering converts a SLICE, never the whole answer.** `_carried` /
+`_sent_abs` are offsets into `text()`, and a table conversion changes the string's
+length — so converting the whole answer and slicing the result would index a
+different string and every bubble rotation would drop or repeat text. `_render_slice`
+therefore runs on the slice about to be sent, progress is recorded from the RAW slice
+BEFORE the transform, and the final chunks are converted once after the split so the
+sealing frame, the overflow pushes and the late head recovery all carry the identical
+string. Identity today (`table_mode="off"`), which is why the ordering is pinned by a
+test that fakes a length-changing transform: the two orderings are indistinguishable
+until the policy changes, and then the failure is silent.
+
+**Reply length is denominated in BYTES.** `stream.content` and
+`markdown.content` are capped at 20480 UTF-8 bytes, so the transport declares
+`max_message_chars = WECOM_MAX_REPLY_BYTES // 4` (`WECOM_SAFE_REPLY_CHARS`) and
+`truncate_utf8` is the exact guard at the wire — the same derivation, and the same
+reason, as Webex. Declaring characters directly is what let a Chinese reply sit
+under the cap and land ~3x over it, where WeCom rejects the whole frame and the
+user gets nothing. An answer longer than one bubble is DELIVERED rather than
+truncated: `on_done` splits the remainder with `split_markdown_safe` (fence-safe,
+because WeCom renders markdown), seals the FIRST chunk on the live bubble the user
+is already watching, and delivers the tail as **proactive pushes** — because a
+stream frame's acceptance cannot be confirmed (every frame of a turn replays the
+one inbound `req_id`, which is the only key an ACK carries, so a waiter for one
+frame can be resolved by another's ACK), while `aibot_send_msg` mints its own
+unique `req_id` and its verdict is exact. A refused tail chunk is therefore
+reported with its position rather than assumed delivered. This matters because
+`drive_turn` persists the full text, so a silent truncation would leave history and
+delivery disagreeing about what the user was told.
+
+**Reasoning is redacted on the JOINED text, because the join is the risk.**
+`TurnDriver` redacts each thinking chunk, but with a plain per-chunk pass rather than
+the rolling `StreamRedactor` it uses for the answer — so a credential split across
+two chunks passes both halves and is reconstituted by the renderer's join. The
+assembled string is redacted at the send boundary, which closes that and also covers
+an unsplit credential. Same placement, and the same reason, as Slack's
+`_maybe_post_thinking`.
+
+**Reasoning has a native home.** WeCom renders whatever sits inside
+`<think></think>` in `stream.content` as a collapsed reasoning block, so
+`on_thinking` streams there instead of dropping reasoning (as it did) or faking it
+as body text — no sibling channel has this affordance. The turn-start placeholder
+uses the same wrapper, so it is not stranded above the answer.
+
+**`[OPTIONS:]` degrades to a numbered list** through the shared `format_overflow`
+sink, which also does the display-form credential redaction and mention defanging
+— a choice is LLM-authored text landing in a message body. Deleting the trailer,
+as this did, meant the user never learned the choices existed. `max_buttons` stays
+`0` because no tappable widget is rendered.
+
+**Proactive push works, per-target.** `aibot_send_msg` needs no token and has no
+expiry, but WeCom only delivers into a conversation the user has already written
+to. So `supports_proactive_send` is `True` (the transport CAN push) while
+availability is answered per target by `configured_targets()`: an allow-listed
+userid that has never messaged the bot is listed with a reason rather than offered
+and then failing at send time. Warmth is learned from AUTHORIZED inbound only, so
+an unauthorized sender cannot make itself a mirror target.
+`resolve_configured_target()` rechecks MEMBERSHIP at the side-effect boundary and
+deliberately does not recheck warmth: `_warm_chats` is in-memory while a mirror
+binding is persisted, so after a gateway restart warmth is UNKNOWN rather than
+known-false, and refusing on it would silently disable every mirrored send until
+the user happened to write again. Deliverability is WeCom's answer to give — the
+push is attempted, the refusal arrives on the ACK that `send_proactive` waits for,
+and `send_message` raises `WeComSendError`. Warmth stays where being wrong is
+cheap: the availability hint in `configured_targets`. This is what makes `/link`, the dashboard mirror and cron
+delivery reachable at all; the origin mirror is bound on every turn and withdrawn
+only by `/unlink`, matching Telegram and Discord.
+
+**Every out-of-band ack is a PUSH, and its one-shot fallback reports a verdict.**
+`client.say` carries every command ack, notice and refusal. As a bare stream frame
+its refusal was recorded against the stream and nothing acted on it — the user
+pressed a command and got nothing back, which reads as the command not existing
+rather than as a delivery failure. It now prefers `aibot_send_msg` (own `req_id`, so
+acceptance is confirmed; the conversation is warm by construction because this only
+runs on a turn the user just sent), falls back to a sealed stream frame for a
+deployment where the push is unavailable, then to `response_url`.
+
+`send_reply` returns whether the platform ACCEPTED it. The status and errcode were
+always inspected and then discarded, which forced callers to guess — the renderer
+treated "a `response_url` exists" as proof of delivery, so a failed POST looked
+identical to a delivered one and a headless answer tail went out behind it. Its
+refusal log carries the http status and a classification only: `errmsg` can echo the
+rejected payload, which is the answer text.
+
+**The empty/error seal is recovered like any other.** That branch carries the failure
+notice, and `drive_turn` swallows a provider error — so if the frame is refused and
+nothing recovers it, the user is told nothing at all about a turn that failed while
+the inbound `msgid` stays deduped against WeCom's retry. Routing it through
+`_send_final_chunk` is what keeps "the turn was answered" true, which is the premise
+the dedupe window's correctness rests on.
+
+**The threshold notice is a PUSH, not a stream frame.** It is sent post-turn,
+between `on_done` and the renderer's `close()`, and `client.say` opens a fresh
+stream on the SAME inbound `req_id` — the only key a cmd-less ACK carries, so the
+client attributes an arriving ACK to the newest stream sent on that req_id. Sending
+the notice there retargeted that attribution: a refusal ACK for the ANSWER's
+sealing frame landed against the notice, leaving the answer looking accepted and
+defeating the `close()` recovery in exactly the case it exists for. `send_proactive`
+mints its own req_id, so it cannot collide, and its acceptance is confirmed rather
+than assumed — the better guarantee for a message the user must actually see. The
+conversation is warm by construction: this runs on a turn the user just sent.
+
+**The per-turn origin bind is offloaded too.** `bind_origin_mirror` consults
+`SessionManager.mirror_opt_out`, and that read WRITES — a refusal stored under an
+older generation key is promoted to the bucket inside `batched_save`, whose block
+exit rewrites the whole map inline on the calling thread. That runs on EVERY inbound
+message, so on the loop a one-time migration stalls every other conversation and the
+WS heartbeat behind a disk write. `set_origin_link` beside it deliberately stays on
+the loop: it reaches `_save` unbatched, whose loop-aware branch schedules one
+debounced flush that writes in a worker thread anyway.
+
+**The link commands persist OFF the loop.** `SessionManager.set_mirror_opt_out`
+opens `batched_save` internally (two flag writes, atomically) and
+`release_conversation_location` opens one of its own (three clears, so the location
+is never half-freed while the reply claims ✅). A batch block's exit writes the
+whole map INLINE on the thread leaving the block, so on the event loop it is a
+synchronous disk write on a map that grows with every session ever created —
+stalling every gateway turn and the WS heartbeat. Both calls therefore go through
+`asyncio.to_thread`, awaited in sequence so the refusal still lands before the
+release. The unbatched mutations beside them (`set_mirror_link`,
+`clear_mirror_link`, `set_origin_link`) stay on the loop deliberately:
+`SessionMap._save`'s loop-aware branch marks the map dirty and schedules one
+debounced flush that writes in a worker thread, and wrapping those in a batch would
+reintroduce the inline write. Pinned by thread identity in
+`test_wecom_commands_and_ingest.py`, because what makes the write safe is not being
+on the loop.
+
+**Inbound media is an encrypted CDN fetch with a PER-OBJECT key.** An
+`aibot_msg_callback` never carries bytes: `image` / `file` / `video` carry a
+~5-minute `url` plus their own `aeskey`, and the object is **AES-256-CBC**,
+PKCS#7-padded to a 32-byte multiple, IV = the key's first 16 bytes. `wecom/media.py`
+owns that protocol work and `wecom/attachments.py` maps each item onto the shared
+`messaging/attachments.py` pipeline, so classification, limits, signature
+validation and temp-file ownership stay channel-neutral. This is deliberately NOT
+Weixin's scheme (AES-128-**ECB**, shared key) and the two must not be merged: the
+mode, key length and key scope all differ. The `aeskey` arrives in two encodings
+for the same value (base64 of raw bytes, base64 of ASCII hex), discriminated by
+decoded length plus a strict hex check, because guessing wrong yields plausible
+garbage rather than an error. The download cap is enforced on BYTES READ, never on
+`Content-Length` — and it is the plaintext ceiling **plus the padding**, because
+what is read is ciphertext: PKCS#7 to a 32-byte multiple always adds 1–32 bytes, so
+a file at exactly WeCom's 20 MB maximum arrives larger than it is and a cap set to
+the plaintext figure refused precisely the largest valid attachments, before
+decryption. `WECOM_MAX_PLAINTEXT_BYTES` is exported from `wecom/media.py` and the
+ingest limits take it from there, so the two cannot drift. `voice` is excluded from the download path on purpose: WeCom
+returns its OWN transcript in `voice.content`, so the text is the payload and no
+shipped backend decodes the codec — which is also why `WECOM_INGEST_LIMITS`
+budgets audio at the 20 MB **file** ceiling and not at WeCom's 2 MB voice-message
+limit: no voice bytes ever reach the ingest path, so the only audio that does is a
+file the user attached, and the voice limit would have refused a 5 MB `.mp3` that
+WeCom itself carried. `max_text_bytes` is the one cap left at the shared default
+on purpose — it budgets bytes READ into gateway memory, of which only
+`max_text_inject` can reach the prompt, so it is not a transport ceiling and must
+not be raised to one. A `mixed` message's caption lives in its item
+list rather than in `text`, and is read from there — and a media-only message is a
+message, so the empty-text early return now also requires no attachments.
+
+**Deliberately not implemented here**, and each a platform capability we do not
+use yet rather than a limit: interactive `template_card` buttons and their
+`template_card_event` callbacks (which is why `max_buttons` stays `0` — doc
+`/101032` says the interactive card types require a configured callback URL, which
+is in tension with long-connection mode, and declaring a widget capability that
+cannot be verified against a live bot is the exact dishonesty
+`test_capability_ledger.py` exists to prevent); outbound media upload (the 3-step
+chunked `aibot_upload_media_*` sequence, which needs request/response correlation
+the client does not yet have, so `files_outbound` stays `False` and an image
+reference keeps printing its path — the honest degradation); per-group sessions;
+and the `enter_chat` / `feedback_event` events. `_handle_event` recognizes those
+event types and drops them deliberately: each owes a reply inside a 5-second
+single-delivery window, so answering one is a feature with its own design.
 
 ## WeCom settings API
 

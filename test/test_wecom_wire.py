@@ -22,7 +22,7 @@ from kiro_crew.testing.fake_channel_wire import (
     FakeWireWebSocket,
     WireResponse,
 )
-from kiro_crew.wecom.client import _REPLY_MAX_CHARS, WeComClient
+from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES, WeComClient
 
 CHANNEL_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "channels"
 
@@ -56,16 +56,41 @@ class TestOneShotReply:
 
         assert wire.requests[0].json_body["markdown"]["content"]
 
-    def test_overlong_content_is_truncated_before_sending(self) -> None:
+    def test_overlong_content_is_capped_in_bytes_before_sending(self) -> None:
         wire = FakeWireSession().route("POST", "/cgi-bin/aibot/reply", {"errcode": 0})
         client = _client(wire)
 
-        asyncio.run(client.send_reply(_RESPONSE_URL, "x" * (_REPLY_MAX_CHARS + 500)))
+        asyncio.run(client.send_reply(_RESPONSE_URL, "x" * (WECOM_MAX_REPLY_BYTES + 500)))
 
         sent = wire.requests[0].json_body["markdown"]["content"]
-        assert len(sent) == _REPLY_MAX_CHARS, (
+        assert len(sent.encode("utf-8")) == WECOM_MAX_REPLY_BYTES, (
             "the client must cap at the documented limit, not let the API reject it"
         )
+
+    def test_the_cap_is_bytes_not_characters(self) -> None:
+        # WeCom's limit is 20480 UTF-8 BYTES. Capping by CHARACTERS let a Chinese
+        # reply through at ~3x the byte limit, and WeCom rejects the whole frame --
+        # so the user got nothing at all, which is how this went unnoticed.
+        wire = FakeWireSession().route("POST", "/cgi-bin/aibot/reply", {"errcode": 0})
+        client = _client(wire)
+
+        asyncio.run(client.send_reply(_RESPONSE_URL, "\u6c49" * WECOM_MAX_REPLY_BYTES))
+
+        sent = wire.requests[0].json_body["markdown"]["content"]
+        assert len(sent.encode("utf-8")) <= WECOM_MAX_REPLY_BYTES
+        assert len(sent) < WECOM_MAX_REPLY_BYTES, "a 3-byte character must cost 3 bytes"
+
+    def test_truncation_never_splits_a_code_point(self) -> None:
+        wire = FakeWireSession().route("POST", "/cgi-bin/aibot/reply", {"errcode": 0})
+        client = _client(wire)
+
+        # A 3-byte character straddling the boundary must be dropped whole, not
+        # cut into a replacement character.
+        asyncio.run(client.send_reply(_RESPONSE_URL, "\u6c49" * (WECOM_MAX_REPLY_BYTES // 2)))
+
+        sent = wire.requests[0].json_body["markdown"]["content"]
+        assert "\ufffd" not in sent
+        sent.encode("utf-8").decode("utf-8")  # must round-trip
 
     def test_a_missing_response_url_sends_nothing(self) -> None:
         wire = FakeWireSession()

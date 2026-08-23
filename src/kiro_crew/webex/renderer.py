@@ -113,7 +113,10 @@ class WebexRenderer(Renderer):
         self._buf.append(text)
 
     async def on_thinking(self, text: str) -> None:
-        # Webex does not surface reasoning inline (parity with WeCom).
+        # Webex does not surface reasoning inline: the 10-edit cap is spent on
+        # tool progress and the final answer, so a reasoning edit would cost one of
+        # those. Not a platform limit -- WeCom streams reasoning because its
+        # <think> block costs it no extra frame.
         return None
 
     async def on_tool_call(

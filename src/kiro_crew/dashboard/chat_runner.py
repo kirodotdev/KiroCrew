@@ -2734,8 +2734,11 @@ async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_t
     ``supports_proactive_send``. Slack keeps its dedicated rich streaming mirror
     inline in the turn loop, so it is skipped here. Silent no-op when the session
     has no non-Slack mirror, the transport is not registered, or the channel
-    cannot send proactively (e.g. WeCom, whose replies are bound to an inbound
-    token). Best-effort: a delivery failure never disrupts the dashboard turn.
+    cannot send proactively (WhatsApp outside its 24-hour window). A channel whose
+    push is per-TARGET rather than blanket answers that in ``send_message`` itself
+    — WeCom pushes through ``aibot_send_msg`` but only into a conversation the user
+    has already written to. Best-effort: a delivery failure never disrupts the
+    dashboard turn.
     """
     if not assistant_text:
         return

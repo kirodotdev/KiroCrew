@@ -160,6 +160,17 @@ class TestCorrectedDeclarations:
         finally:
             await client.close()
 
+    def test_wecom_char_declaration_is_safe_under_its_byte_cap(self) -> None:
+        # WeCom caps `stream.content` / `markdown.content` in UTF-8 BYTES
+        # (20480). The declared CHARACTER count must be safe at 4 bytes/char, or
+        # a CJK reply sits under the character cap and ~3x over the byte cap --
+        # and WeCom rejects the whole frame, so the user gets nothing at all.
+        # Declared 20000 CHARS until this was corrected.
+        from kiro_crew.wecom.client import WECOM_MAX_REPLY_BYTES
+        from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+
+        assert WECOM_CAPABILITIES.max_message_chars * 4 <= WECOM_MAX_REPLY_BYTES
+
     def test_the_file_directions_are_declared_separately(self) -> None:
         # One boolean was undecidable: the two directions land per channel and in
         # different changes, so a gate reading a single `files` flag got the wrong

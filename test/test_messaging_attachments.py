@@ -159,7 +159,11 @@ class TestIngestAttachments:
 
     async def test_non_image_masquerading_as_image_is_rejected(self):
         result = await ingest_attachments(
-            [Attachment(name="evil.png", mimetype="image/png", size=20, url="u", suffix_hint="png")],
+            [
+                Attachment(
+                    name="evil.png", mimetype="image/png", size=20, url="u", suffix_hint="png"
+                )
+            ],
             download=_writer(b"#!/bin/sh\nrm -rf /\n"),
             source="test",
         )
@@ -239,7 +243,9 @@ class TestIngestAttachments:
         )
         assert any("no download URL" in r for r in result.rejections)
 
-    async def test_download_failure_is_reported_and_leaves_no_temp_file(self, tmp_path, monkeypatch):
+    async def test_download_failure_is_reported_and_leaves_no_temp_file(
+        self, tmp_path, monkeypatch
+    ):
         import tempfile as _tempfile
 
         created: list[str] = []
@@ -551,3 +557,72 @@ class TestAppendAttachmentContext:
         from kiro_crew.discord.attachments import append_attachment_context as discord_fn
 
         assert discord_fn is append_attachment_context
+
+
+class TestCancellationCleanupOwnership:
+    """Who deletes the plaintext when the ingest is cancelled.
+
+    `cleanup_offloaded` exists because `os.unlink` is a blocking syscall and
+    TMPDIR is not always local, so a cancellation must not put a burst of unlinks
+    on the loop. The subtlety is that the two ways the offload can fail need
+    OPPOSITE handling, and getting it backwards is invisible: one repeats work on
+    the loop, the other leaves a user's decrypted attachment on disk.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_await_does_NOT_clean_up_again_inline(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # asyncio.to_thread submits to the executor BEFORE it awaits, so once a
+        # CancelledError can be observed the worker already owns the deletion.
+        # Cleaning up again here would repeat the work and put the blocking
+        # syscalls back on the loop -- on the very path (a cancel during shutdown)
+        # where the stall is worst.
+        calls: list[int] = []
+        monkeypatch.setattr(
+            attachments, "cleanup", lambda paths: calls.append(threading.get_ident())
+        )
+
+        async def submitted_then_cancelled(fn, *args):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(asyncio, "to_thread", submitted_then_cancelled)
+
+        await attachments.cleanup_offloaded([str(tmp_path / "x.png")])
+
+        assert calls == [], "the queued worker already owns the delete"
+
+    @pytest.mark.asyncio
+    async def test_a_loop_that_refused_the_work_DOES_clean_up_inline(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # The opposite case: RuntimeError means the loop never took the work
+        # (closed, executor shut down), so nothing else will ever delete these.
+        # Blocking a finished loop costs nothing; skipping the delete leaves
+        # decrypted bytes readable.
+        plaintext = tmp_path / "decrypted.png"
+        plaintext.write_bytes(b"cleartext")
+
+        async def refused(fn, *args):
+            raise RuntimeError("Event loop is closed")
+
+        monkeypatch.setattr(asyncio, "to_thread", refused)
+
+        await attachments.cleanup_offloaded([str(plaintext)])
+
+        assert not plaintext.exists(), "nobody else was going to delete this"
+
+    @pytest.mark.asyncio
+    async def test_neither_branch_replaces_the_callers_exception(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # Callers are `except BaseException` handlers about to re-raise. If this
+        # helper raised, it would surface in place of the real reason the turn
+        # ended -- so both branches return normally.
+        for exc in (asyncio.CancelledError(), RuntimeError("closed")):
+
+            async def raising(fn, *args, _e=exc):
+                raise _e
+
+            monkeypatch.setattr(asyncio, "to_thread", raising)
+            await attachments.cleanup_offloaded([str(tmp_path / "y.png")])

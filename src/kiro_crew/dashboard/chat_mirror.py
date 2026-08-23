@@ -111,9 +111,7 @@ def _resumes_inbound(transport: Any) -> bool:
     ``getattr`` chain is the conservative branch: a transport with no capability
     object at all degrades to outbound-only.
     """
-    return bool(
-        getattr(getattr(transport, "capabilities", None), "supports_session_resume", False)
-    )
+    return bool(getattr(getattr(transport, "capabilities", None), "supports_session_resume", False))
 
 
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
@@ -126,8 +124,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     conversation id is never accepted as a send target, so a session's transcript
     can only be anchored into a channel the user has actually configured. The
     target channel's transport must be registered at boot AND
-    ``supports_proactive_send`` — Telegram qualifies; WeCom, whose replies are
-    bound to an inbound token, does not.
+    ``supports_proactive_send`` — Telegram and WeCom both qualify. WeCom's
+    availability is per-TARGET rather than blanket: ``aibot_send_msg`` needs no
+    token, but the platform only delivers into a conversation the user has already
+    written to, so ``configured_targets`` lists an allow-listed userid that has
+    never messaged the bot with a reason instead of offering it. What
+    ``resolve_configured_target`` rechecks here is MEMBERSHIP; deliverability is
+    WeCom's to answer, and it comes back on the send ACK.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info.get("name") or request.match_info.get("slot", "")
@@ -388,7 +391,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         every unit fits, but the reservation pushed the oldest turn out and then
         spent the reserved slot announcing the omission it had just caused.
         """
-        tail = recent_turn_units[total_turns - keep:] if keep else []
+        tail = recent_turn_units[total_turns - keep :] if keep else []
         dropped = total_turns - keep
         marker = 1 if (selection.skipped_turns or dropped) else 0
         head = len(head_units) if with_head else 0
@@ -412,7 +415,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     if not keep_turns and total_turns:
         keep_turns, include_head = 1, False
 
-    kept = recent_turn_units[total_turns - keep_turns:] if keep_turns else []
+    kept = recent_turn_units[total_turns - keep_turns :] if keep_turns else []
     skipped_total = (
         selection.skipped_turns
         + (total_turns - keep_turns)
@@ -642,9 +645,7 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     session_key = effective_session_key(slot)
-    cleared = state.sessions.clear_mirror_link(
-        session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK
-    )
+    cleared = state.sessions.clear_mirror_link(session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

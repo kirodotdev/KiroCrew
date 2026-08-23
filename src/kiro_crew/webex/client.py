@@ -32,6 +32,8 @@ from typing import Any, Awaitable, Callable
 
 import aiohttp
 
+from kiro_crew.messaging.split import truncate_utf8 as _truncate_utf8
+
 logger = logging.getLogger(__name__)
 
 # Webex REST API base.
@@ -45,20 +47,12 @@ WEBEX_MAX_TEXT = 7000
 
 
 def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
-    """Truncate ``text`` to at most *max_bytes* UTF-8 bytes without splitting
-    a code point.
+    """Byte-exact truncation, defaulted to Webex's own cap.
 
-    Webex's message limit is 7439 bytes, so a multibyte-heavy reply can be
-    under the character cap but over the byte limit — Webex would reject the
-    send and the user would get nothing. ``errors="ignore"`` on the decode
-    drops a trailing partial sequence cleanly. Last-resort safety net for
-    single sends; multi-message content must be split losslessly with
-    :func:`chunk_utf8` first.
+    The implementation is the shared one in ``messaging.split``; this wrapper
+    exists only to keep ``WEBEX_MAX_TEXT`` as the default for Webex's call sites.
     """
-    encoded = text.encode("utf-8")
-    if len(encoded) <= max_bytes:
-        return text
-    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+    return _truncate_utf8(text, max_bytes)
 
 
 def chunk_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> list[str]:

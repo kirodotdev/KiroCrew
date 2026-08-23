@@ -285,8 +285,10 @@ class TeamsRenderer(Renderer):
         self._buf.append(text)
 
     async def on_thinking(self, text: str) -> None:
-        # Teams does not surface reasoning inline (parity with every non-Slack
-        # channel: Discord, Telegram, Webex, WeCom and iMessage all no-op here).
+        # Teams does not surface reasoning inline: the edit budget is spent on tool
+        # progress and the answer, which is Webex's reason too. Discord, Telegram and
+        # iMessage also no-op here; WeCom is the one channel that does surface it,
+        # because its native <think> block costs no extra message.
         return None
 
     async def on_tool_call(

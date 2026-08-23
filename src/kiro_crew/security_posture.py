@@ -677,6 +677,19 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "modules are listed as non-egress and this one is not.",
     ),
     (
+        "WeCom reasoning blocks",
+        "wecom/renderer.py",
+        "The reasoning WeCom renders inside its native `<think></think>` block. "
+        "`TurnDriver` redacts each thinking chunk, but with a plain per-chunk pass "
+        "rather than the rolling `StreamRedactor` it uses for the answer -- so a "
+        "credential split across two chunks passes both halves and is reconstituted "
+        "by the renderer when it joins them for the frame. The assembled string "
+        "therefore goes through the shared credential + exfiltration-URL chain at "
+        "the send boundary, which is the only form that ships and also covers a "
+        "credential that was never split. The ANSWER text needs no pass here: it "
+        "reaches this renderer already through the driver's rolling redactor.",
+    ),
+    (
         "Slack render pipeline",
         "slack/format.py",
         "The Slack RENDERING boundary: text that is converted to mrkdwn goes "

@@ -124,8 +124,6 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
     except Exception as exc:
         if orch.dashboard_state is not None:
             orch.dashboard_state.wecom_connected = False
-            orch.dashboard_state.wecom_connect_error = (
-                f"{type(exc).__name__}: {exc}"[:120]
-            )
+            orch.dashboard_state.wecom_connect_error = f"{type(exc).__name__}: {exc}"[:120]
         logger.exception("Failed to start WeCom channel; continuing without it.")
         return None

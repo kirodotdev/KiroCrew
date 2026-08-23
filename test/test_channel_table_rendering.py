@@ -204,6 +204,16 @@ class FakeWeComClient:
     async def send_reply(self, url: str, content: str) -> None:
         self.frames.append((content, True))
 
+    # The renderer checks bubble liveness before every frame and consults the
+    # narrower "was everything written here accepted" question when it rotates for
+    # age, so the fake owes both. Bubbles stay live here: sealing behaviour has its
+    # own coverage in test_wecom_wire_reliability.py.
+    def stream_is_dead(self, stream_id: str) -> bool:
+        return False
+
+    def stream_had_rejection(self, stream_id: str) -> bool:
+        return False
+
     def final(self) -> str:
         return self.frames[-1][0] if self.frames else ""
 
@@ -845,20 +855,29 @@ class TestDeliveryFraming:
         self,
     ) -> None:
         token = "opaque-token-value"
-        body = [f"| Row 000 | Bearer {token} | {'x' * 30} |"]
-        body.extend(f"| Row {index:03d} | ok |  |" for index in range(1, 700))
-        table = "| Request | Authorization | Notes |\n" "| --- | --- | --- |\n" + "\n".join(body)
         cap = WECOM_CAPABILITIES.max_message_chars
+        header = "| Request | Authorization | Notes |\n| --- | --- | --- |\n"
+        body = [f"| Row 000 | Bearer {token} | {'x' * 30} |"]
+        # Grown to fill the cap rather than to a fixed row count: WeCom's budget is
+        # derived from its 20480-BYTE reply limit, so a hardcoded 700 rows was sized
+        # against a cap that no longer exists and the "fits the cap" premise silently
+        # inverted. Derived, the test keeps its meaning whatever the budget becomes.
+        index = 1
+        while len(header + "\n".join(body)) + 24 < cap:
+            body.append(f"| Row {index:03d} | ok |  |")
+            index += 1
+        last_row = f"| Row {index - 1:03d} |"
+        table = header + "\n".join(body)
         client = FakeWeComClient()
         renderer = WeComRenderer(client, "rq", "https://r.test", WECOM_CAPABILITIES)
-        assert len(table) <= cap
+        assert len(table) <= cap, "the fixture must FIT the cap; that is its premise"
         assert renderer.render_tables_for_target(table) == table
         await renderer.on_text_chunk(table)
 
         await renderer.on_done()
 
         assert client.final() == table
-        assert "Row 699" in client.final()
+        assert last_row in client.final(), "the canonical table lost its tail rows"
 
 
 class TestNativeTargetsAreUntouched:

@@ -65,7 +65,45 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-__all__ = ["split_markdown_safe", "iter_fence_spans", "open_fence_at_end"]
+__all__ = [
+    "split_markdown_safe",
+    "iter_fence_spans",
+    "open_fence_at_end",
+    "truncate_utf8",
+]
+
+
+def truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncate *text* to at most *max_bytes* UTF-8 bytes without splitting a
+    code point.
+
+    The exact guard for a channel whose wire limit is denominated in BYTES. A
+    reply can sit under a CHARACTER cap and still be over the byte cap — one CJK
+    character is three bytes and an emoji four — and a platform that refuses the
+    oversize send gives the user nothing at all, so this is the last thing
+    between an authored answer and a rejected frame.
+
+    ``errors="ignore"`` on the decode is what drops a trailing partial sequence
+    rather than raising, so the cut lands on the largest whole-code-point prefix
+    that fits. A non-positive *max_bytes* disables the guard and returns *text*
+    unchanged, matching :func:`split_markdown_safe`'s treatment of a non-positive
+    ``limit``: a caller with no budget to enforce must not lose its whole message
+    to a zero.
+
+    This TRUNCATES, and therefore loses the tail: it is a backstop, not a
+    delivery strategy. A caller with more text than one message may hold splits
+    first — ``split_markdown_safe`` against a byte-safe character budget, which
+    a byte-capped channel derives as ``<its byte budget> // 4`` so the character
+    splitter is byte-safe in the worst case — and reaches this only for a chunk
+    that still does not fit.
+    """
+    if max_bytes <= 0:
+        return text
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
 
 # An opener is <=3 spaces of indent + a run of >=3 backticks/tildes + an info
 # string. A backtick fence's info string may not contain a backtick (otherwise
