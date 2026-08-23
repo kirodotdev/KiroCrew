@@ -58,7 +58,6 @@ import re
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timedelta, timezone
 from urllib.parse import quote, unquote, urlparse
 
 from kiro_crew.apps.registry import minimal_env
@@ -1900,21 +1899,6 @@ def get_ref_summary(
     }
 
 
-def _cutoff_iso(window_days: int) -> str:
-    """ISO cutoff for a lookback window, or ``""`` when the window is unbounded.
-
-    Kept for parity with the other clients' helper (and used by the timeline's
-    bounded reads); Azure's repository list has no timestamp to compare against.
-    """
-    try:
-        days = int(window_days)
-    except (TypeError, ValueError):
-        return ""
-    if days <= 0 or days >= MAX_WINDOW_DAYS:
-        return ""
-    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-
-
 # ── timeline ────────────────────────────────────────────────────────────────
 #
 # GitHub serves one unified `issues/{n}/timeline`. Azure splits the same
@@ -2491,7 +2475,14 @@ def set_issue_state(
     )
     written = str(_field(_obj(data.get("fields")), "System.State", "") or "")
     closed_states = _closed_state_names(org, project, work_item_type, host=host, timeout=timeout)
-    resolved = "closed" if written in closed_states else "open" if written else state
+    if written in closed_states:
+        resolved = "closed"
+    elif written:
+        resolved = "open"
+    else:
+        # No usable System.State came back -- absent, null and "" all normalize to
+        # "" -- so report what was asked for rather than guessing a category.
+        resolved = state
     return {"state": resolved, "state_reason": None}
 
 
@@ -3670,8 +3661,16 @@ def set_pr_state(
         timeout=timeout,
     )
     status = str(data.get("status") or "").lower()
+    if status == "active":
+        resolved = "open"
+    elif status:
+        resolved = "closed"
+    else:
+        # No usable status came back -- absent, null and "" all normalize to "" --
+        # so report what was asked for rather than reading it as "closed".
+        resolved = state
     return {
-        "state": "open" if status == "active" else "closed" if status else state,
+        "state": resolved,
         "merged": status == "completed",
         "draft": bool(data.get("isDraft")),
     }
