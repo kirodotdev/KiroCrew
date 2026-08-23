@@ -112,12 +112,15 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
    * catalogs under a real language switch, so those two failures are reachable.
    */
   afterAll(async () => {
-    const { i18next } = await import('../i18n')
+    const { i18next } = await import('../i18n/all')
     await i18next.changeLanguage('en')
   })
 
   it('highlights a control whose rendered label is translated', async () => {
-    const { i18next } = await import('../i18n')
+    // `/all` for the Japanese catalog: `../i18n` registers English only, so the
+    // switch below would fall back to English and the label match would be
+    // self-consistently wrong.
+    const { i18next } = await import('../i18n/all')
     const { i18nT } = await import('../i18n/t')
     const { SETTINGS_REGISTRY } = await import('../components/commandPalette/settingsRegistry.gen')
 

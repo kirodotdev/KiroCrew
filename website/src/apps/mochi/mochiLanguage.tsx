@@ -34,7 +34,9 @@
  */
 import React, { useEffect, useState } from 'react'
 
-import { changeLanguage, i18next, initI18n } from '../../i18n'
+// The all-languages entry: plain `../../i18n` registers English only, which would
+// leave every override below falling back to it.
+import { changeLanguage, i18next, initI18n } from '../../i18n/all'
 import { readStoredLanguage } from '../../i18n/detect'
 import { api } from './src/mochiApi'
 

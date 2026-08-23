@@ -6,9 +6,11 @@ vi.mock('@radix-ui/react-select', async () => await import('./__mocks__/@radix-u
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent } from '@testing-library/react'
 import React from 'react'
-import i18next from 'i18next'
 
 import { renderWithProviders } from './helpers'
+// The app's own i18next, through `/all` so the Chinese catalog the zoom-description
+// case asserts on is registered — `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 import { LANG_STORAGE_KEY } from '../i18n/detect'
 
 // DisplayPanel pulls in the zoom / theme / UI-mode / palette contexts; none of

@@ -21,7 +21,10 @@
  */
 import { describe, it, expect, afterEach } from 'vitest'
 import { fmtBytes, fmtUnit, __resetFormatterCache } from '../i18n/format'
-import { i18next } from '../i18n'
+// `/all` for the catalogs of the locales below: `../i18n` registers English
+// only, and an unregistered language resolves to `en` — so every locale case
+// would measure the English separator.
+import { i18next } from '../i18n/all'
 
 const LOCALES = ['en', 'zh-CN', 'de', 'ru', 'fr', 'ja']
 

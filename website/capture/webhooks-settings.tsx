@@ -19,7 +19,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import { store } from '../src/store'
 import { WebhooksPanel } from '../src/pages/settings/WebhooksPanel'
 import '../src/index.css'

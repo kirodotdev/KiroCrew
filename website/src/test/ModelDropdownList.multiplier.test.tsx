@@ -10,7 +10,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen } from '@testing-library/react'
 
-import { i18next } from '../i18n'
+// `/all` for the bn/de catalogs: `../i18n` registers English only, and an
+// unregistered language resolves to `en`, which renders Latin digits.
+import { i18next } from '../i18n/all'
 import ModelDropdownList, { formatMultiplier, costTier } from '../components/ModelDropdownList'
 import { withAutoFirst } from '../providers/modelList'
 

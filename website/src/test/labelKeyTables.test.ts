@@ -19,7 +19,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS } from '../i18n/index'
+import { CATALOGS } from '../i18n/catalogs'
 import { EFFORT_LABEL_KEY, effortLabel } from '../lib/effort'
 import { FILTER_LABEL_KEY, FILTER_DESCRIPTION_KEY, SORT_LABEL_KEY } from '../pages/ChatSidebar'
 import { STAT_LABEL_KEY } from '../pages/OverviewPage'

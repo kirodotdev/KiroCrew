@@ -19,7 +19,7 @@ import { createRoot } from 'react-dom/client'
 // Initialise i18next exactly as main.tsx does. Importing the module only DEFINES
 // initI18n — without calling it, every label in the frame is blank, which
 // silently produces screenshots that misrepresent the real UI.
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import { RowDisclosureProvider } from '../src/pages/chat/rowDisclosure'
 import ThinkingBlock from '../src/pages/chat/ThinkingBlock'
 import '../src/index.css'

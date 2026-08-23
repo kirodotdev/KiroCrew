@@ -903,7 +903,7 @@ membership: `context.ui_language_tag()` checks the tag against
 to a language the chrome cannot render (#1130). Adding a language is therefore
 the three frontend edits — add `locales/<tag>.json`, register the picker entry
 in `SUPPORTED_LANGUAGES`, and add the static import plus `AUTHORED_CATALOGS`
-entry in `i18n/index.ts` — **plus one mechanical backend entry** in
+entry in `i18n/catalogs.ts` — **plus one mechanical backend entry** in
 `_UI_LANGUAGE_CATALOGS`, which the drift gate in
 `test/test_context_ui_language.py` names explicitly on failure.
 
@@ -926,10 +926,12 @@ load regardless of the language they read.
 
 The documented next step is therefore to keep `en` static and lazily fetch the
 active non-English catalog. That seam is already isolated to
-`website/src/i18n/index.ts` plus a `<Suspense>` boundary in `main.tsx`; no call
-site changes. **Catalog #13 belongs behind that seam**: Korean is #12 and the last
-one this chunk absorbs in front of it. Re-measure when the seam lands — the figure
-above is what says whether it worked.
+`website/src/i18n/catalogs.ts` — the module that owns every catalog import — plus
+a `<Suspense>` boundary in `main.tsx`; no call site changes, and
+`registerCatalogs()` is where a fetching backend hands its catalog over.
+**Catalog #13 belongs behind that seam**: Korean is #12 and the last one this
+chunk absorbs in front of it. Re-measure when the seam lands — the figure above
+is what says whether it worked.
 
 #### The tag reaches the agent, too
 

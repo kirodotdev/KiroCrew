@@ -29,6 +29,11 @@ import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
+// Registers the zh-CN catalog. `./index` — what the vitest setup file inits — is
+// English only, and a switch that silently falls back to English would leave the
+// control leaf reading 'View' too, so `it.fails` below would pass for the wrong
+// reason and hide the defect it is probing.
+import './all'
 import { LanguageProvider, useLanguage } from './LanguageProvider'
 import { i18nT } from './t'
 import { api } from '../api/client'

@@ -1,10 +1,10 @@
 /**
  * i18n runtime (react-i18next).
  *
- * ## Why the catalogs are imported statically
+ * ## Why every catalog is registered before first render
  *
- * Authored catalogs are bundled and registered up front, so `t()` is always
- * SYNCHRONOUS. That is a deliberate correctness choice, not an oversight:
+ * Catalogs are bundled and registered up front, so `t()` is always SYNCHRONOUS.
+ * That is a deliberate correctness choice, not an oversight:
  *
  *  - ~600 components call `t()` during render. With lazily-fetched catalogs
  *    every one of them becomes Suspense-sensitive, and any component rendering
@@ -14,9 +14,28 @@
  *    synchronous `t()` keeps them all valid with no per-test `await`.
  *
  * The cost is bundle size: every language ships to every user (except the
- * pseudolocale, which is DEV-only — see `CATALOGS`). At 12 catalogs that is
- * ~2.0 MB gzip, ~173 KB of it for each language the user will never read, so
- * this approach does NOT scale indefinitely.
+ * pseudolocale, which is DEV-only). At 12 catalogs that is ~2.0 MB gzip,
+ * ~173 KB of it for each language the user will never read, so this approach
+ * does NOT scale indefinitely.
+ *
+ * ## Which module owns the imports
+ *
+ * THIS module imports English only and seeds the registry with it. `./catalogs`
+ * owns every catalog import; `./all` joins the two by calling
+ * `registerCatalogs(CATALOGS)` at module scope and re-exporting this API.
+ * Production boots through `./all`, so what reaches a browser is unchanged.
+ *
+ * The split exists for the test path: `integration/setup.ts` is a vitest
+ * `setupFiles` entry, so its module graph is re-fetched once per test FILE and
+ * reaching all 14 catalogs from here cost more than running the tests. The cost is
+ * the per-module round trip rather than the JSON, which is why the fix is to keep
+ * modules OUT of this graph and why making them cheaper to parse would not have
+ * worked. Numbers, and the rules that keep the split in place, live in
+ * `website/docs/testing.md` § "What a `setupFiles` entry costs" — one owner, because
+ * four copies of a measurement disagree the first time anyone re-measures.
+ *
+ * This is ownership, not lazy loading: no load is deferred on any path, and
+ * `t()` is synchronous on all of them.
  *
  * ## Lazy-loading seam
  *
@@ -25,106 +44,72 @@
  * `i18next-http-backend` + `Suspense`:
  * catalogs move to `public/locales/<lng>/<ns>.json` and only the active
  * language is fetched. Nothing in the call sites changes — `useTranslation()`
- * and `t()` keep the same signatures — so this is an isolated swap of THIS
- * file plus a `<Suspense>` boundary in `main.tsx`. Keeping call sites free of
- * loading concerns is exactly what makes that migration cheap later.
+ * and `t()` keep the same signatures — so this is an isolated swap of
+ * `./catalogs` plus a `<Suspense>` boundary in `main.tsx`. `registerCatalogs` is
+ * where a backend hands its fetched catalog over, so the seam needs no change to
+ * this module at all.
  */
 
 import i18next from 'i18next'
 import { initReactI18next } from 'react-i18next'
 
-import enGenerated from './locales/en.json'
-import enManual from './locales/en.manual.json'
-import zhCN from './locales/zh-CN.json'
-import hi from './locales/hi.json'
-import es from './locales/es.json'
-import fr from './locales/fr.json'
-import bn from './locales/bn.json'
-import pt from './locales/pt.json'
-import ru from './locales/ru.json'
-import de from './locales/de.json'
-import ja from './locales/ja.json'
-import ko from './locales/ko.json'
-import it from './locales/it.json'
-import enXA from './locales/en-XA.json'
+import { EN_TRANSLATION, mergeCatalogs } from './enCatalog'
 import { DEFAULT_LANGUAGE, SUPPORTED_CODES } from './languages'
 import { readStoredLanguage, resolveLanguage } from './detect'
 
+/** The one namespace every catalog uses — keys carry their own domain prefix. */
+const NAMESPACE = 'translation'
+
 /**
- * Deep-merge two catalogs (later wins on a leaf collision).
+ * The resources `initI18n()` hands to i18next, seeded English-only.
  *
- * English arrives in two files: `en.json` is REGENERATED wholesale by
- * `scripts/i18n-codemod.mjs` (so a fixed source string can't leave a stale key
- * behind), and `en.manual.json` holds hand-authored strings that have no source
- * literal to extract — like the language picker's own labels. Keeping them
- * separate is what lets the codemod overwrite its own output safely.
+ * `./catalogs` holds the full language-to-catalog map; everything beyond English
+ * arrives through `registerCatalogs`.
  */
-function mergeCatalogs(
-  a: Record<string, unknown>,
-  b: Record<string, unknown>,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = { ...a }
-  for (const [key, value] of Object.entries(b)) {
-    const existing = out[key]
-    out[key] = value !== null && typeof value === 'object' && !Array.isArray(value)
-      && existing !== null && typeof existing === 'object' && !Array.isArray(existing)
-      ? mergeCatalogs(existing as Record<string, unknown>, value as Record<string, unknown>)
-      : value
+const REGISTERED_CATALOGS: Record<string, { translation: Record<string, unknown> }> = {
+  en: { translation: EN_TRANSLATION },
+}
+
+/**
+ * Add language catalogs to the registry.
+ *
+ * Works BOTH before and after `initI18n()`, and both cases are reachable:
+ * production registers at module scope before init, while vitest evaluates
+ * `setupFiles` — which calls `initI18n('en')` — BEFORE it imports the test file
+ * that pulls `./all` in. Before init the registry is simply what
+ * `init({ resources })` receives.
+ *
+ * After init, `addResourceBundle` is what makes the post-init case a stated
+ * contract rather than a coincidence: i18next's `ResourceStore` holds the object
+ * given to `init({ resources })` BY REFERENCE, so extending the registry in place
+ * already reaches the live instance. Registering into the registry alone would
+ * rest on that undocumented aliasing, and the day i18next copies instead, every
+ * `changeLanguage` test would fall back to English rather than fail.
+ *
+ * That insurance is not free — `addResourceBundle` deep-copies what it is handed,
+ * measured at 67-109 ms for the twelve catalogs, per file that imports `./all`. It
+ * is kept unconditional anyway: skipping it for a language the store already holds
+ * would silently drop a REPLACEMENT catalog, which is exactly what the lazy-backend
+ * seam above hands over, and ~4 s across the suite is not worth that hole.
+ */
+export function registerCatalogs(
+  extra: Record<string, { translation: Record<string, unknown> }>,
+): void {
+  for (const [lng, bundle] of Object.entries(extra)) {
+    const existing = REGISTERED_CATALOGS[lng]?.translation
+    // `./all` hands back the very English bundle this module seeded, so identity
+    // means there is nothing to merge -- and deep-merging ~11k leaves into
+    // themselves is pure cost on a path that runs before first paint.
+    if (existing === bundle.translation) continue
+
+    const translation = existing ? mergeCatalogs(existing, bundle.translation) : bundle.translation
+    REGISTERED_CATALOGS[lng] = { translation }
+
+    if (i18next.isInitialized) {
+      i18next.addResourceBundle(lng, NAMESPACE, translation, true, true)
+    }
   }
-  return out
 }
-
-/**
- * Catalog registry — the SINGLE place a language's catalog is bound to its code.
- *
- * Holds the authored languages; the generated pseudolocale is appended below in
- * DEV builds only, and `CATALOGS` (not this constant) is the runtime registry.
- *
- * Exported via `CATALOGS` so tests read the same map the runtime uses instead of
- * maintaining a parallel copy. That parallel copy was a real trap: it made "add
- * a language" a 4-edit job where forgetting the 4th produced a confusing parity
- * failure pointing at the catalog rather than at the test's own map.
- *
- * A language listed in `SUPPORTED_LANGUAGES` MUST appear here; `catalogParity.test.ts` asserts the two lists agree, so a language
- * added to one and not the other fails CI instead of silently rendering keys.
- *
- * Single `translation` namespace: keys are already domain-prefixed
- * (`settings.display.view`, `chat.composer.send`), which gives the same
- * grouping a namespace split would without making every call site name one.
- */
-const AUTHORED_CATALOGS: Record<string, { translation: Record<string, unknown> }> = {
-  en: { translation: mergeCatalogs(enGenerated, enManual) },
-  'zh-CN': { translation: zhCN },
-  hi: { translation: hi },
-  es: { translation: es },
-  fr: { translation: fr },
-  bn: { translation: bn },
-  pt: { translation: pt },
-  ru: { translation: ru },
-  de: { translation: de },
-  ja: { translation: ja },
-  ko: { translation: ko },
-  it: { translation: it },
-}
-
-/**
- * The pseudolocale is registered in DEV builds ONLY.
- *
- * It is unreachable in a production build by two independent guards already —
- * `devOnly` hides it from the picker and `isRestorableLanguage()` refuses it
- * from persisted state — so shipping its catalog was pure weight: the accented,
- * expansion-padded copy of every English string is the single largest catalog
- * (~88 KB gzip on first load) and no production user can select it.
- *
- * `import.meta.env.DEV` is statically replaced with `false` at build time, so
- * the ternary below is dead code in a production build and Rollup drops the
- * `en-XA.json` module with it. The import stays static (not `await import`)
- * because `t()` must remain SYNCHRONOUS — see the file header.
- */
-export const CATALOGS: Record<string, { translation: Record<string, unknown> }> =
-  import.meta.env.DEV
-    ? { ...AUTHORED_CATALOGS, 'en-XA': { translation: enXA } }
-    : AUTHORED_CATALOGS
 
 /**
  * The product name rendered by `{{productName}}` in catalog values.
@@ -174,7 +159,7 @@ export function initI18n(initialLanguage?: string): typeof i18next {
   const lng = resolveLanguage(initialLanguage ?? readStoredLanguage())
 
   i18next.use(initReactI18next).init({
-    resources: CATALOGS,
+    resources: REGISTERED_CATALOGS,
     lng,
     fallbackLng: DEFAULT_LANGUAGE,
     supportedLngs: [...SUPPORTED_CODES],
@@ -214,7 +199,32 @@ export function initI18n(initialLanguage?: string): typeof i18next {
  * to the server.
  */
 export async function changeLanguage(code: string): Promise<void> {
-  await i18next.changeLanguage(resolveLanguage(code))
+  const resolved = resolveLanguage(code)
+
+  // Switching to a language nobody registered is otherwise SILENT: i18next falls
+  // back to English, nothing throws, no key renders raw, and in the browser the
+  // caller still sets `<html lang>` — so the page claims Japanese and reads
+  // English. The only way to get here is a caller that reached the English-only
+  // `./index` when it needed `./all`; `resolveLanguage` returns nothing outside
+  // `SUPPORTED_CODES`, which `catalogParity.test.ts` pins against the catalog map.
+  //
+  // It REPORTS rather than throws, and that is deliberate. Both callers invoke
+  // this as `void changeLanguage(...)`, so a rejection here would surface as an
+  // unhandled rejection — which `integration/setup.ts` re-raises, killing the
+  // worker on an exception attributed to no test and no file. A guard that turns a
+  // wrong-language render into an unattributable shard failure costs more than it
+  // explains. `isInitialized` is checked first because `hasResourceBundle` is
+  // installed by `init()` and is undefined before it.
+  if (import.meta.env.DEV && i18next.isInitialized
+      && !i18next.hasResourceBundle(resolved, NAMESPACE)) {
+    console.error(
+      `i18n: no catalog is registered for '${resolved}', so this switch renders `
+        + 'English. Import from `i18n/all` rather than `i18n` — same exports, same '
+        + 'synchronous `t()`, all twelve languages.',
+    )
+  }
+
+  await i18next.changeLanguage(resolved)
 }
 
 export { i18next }

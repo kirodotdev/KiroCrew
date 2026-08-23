@@ -31,7 +31,10 @@
 
 import { describe, it, expect, afterEach } from 'vitest'
 
-import { i18next } from './index'
+// `./all` for the non-English catalogs: `./index` registers English only, and
+// `activeLocale()` reads i18next's RESOLVED language — an unregistered language
+// resolves to `en`, so every locale case below would format in English.
+import { i18next } from './all'
 import { SUPPORTED_LANGUAGES } from './languages'
 import {
   activeLocale,

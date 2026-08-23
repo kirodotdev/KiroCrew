@@ -49,6 +49,18 @@ const bridge = {
   contextMenuAction: vi.fn(),
 }
 vi.mock('../apps/crew-companion/petBridge', () => ({ petBridge: bridge }))
+// Both harnesses re-import the entry per test with `vi.resetModules()`, and the
+// entry boots through `../i18n/all` — so without this every test would re-fetch the
+// twelve non-English catalogs, 434 ms each. They pin `mc-lang` to `en` and assert
+// English only, so not one of those catalogs is ever read: measured 32.7s -> 5.4s
+// here. Delegating to `../i18n/index` keeps
+// real `initI18n`/`t()` behaviour rather than stubbing them, so the English strings
+// these tests assert on still come from the real catalog.
+//
+// `i18nAllLanguagesEntry.test.ts` independently pins that the entry imports
+// `/all`, so mocking the id here cannot hide a regression in what it boots through.
+vi.mock('../i18n/all', async () => await import('../i18n/index'))
+
 
 /** The gateway socket is replaced by a handle on the callbacks the overlay passes. */
 let watch: SessionWatchOptions | null = null

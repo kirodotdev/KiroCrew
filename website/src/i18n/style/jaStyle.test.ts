@@ -14,7 +14,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from '../index'
+import { CATALOGS as RUNTIME_CATALOGS } from '../catalogs'
 
 /** Kana and kanji. Deliberately excludes the CJK punctuation block. */
 const JP = '぀-ゟ゠-ヿ一-鿿々'

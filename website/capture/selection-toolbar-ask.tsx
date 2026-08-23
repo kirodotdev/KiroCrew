@@ -17,7 +17,7 @@
 import { useRef } from 'react'
 import { createRoot } from 'react-dom/client'
 
-import { initI18n } from '../src/i18n'
+import { initI18n } from '../src/i18n/all'
 import SelectionToolbar, { useSelectionActions } from '../src/components/SelectionToolbar'
 import '../src/index.css'
 

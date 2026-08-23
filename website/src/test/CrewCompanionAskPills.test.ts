@@ -16,7 +16,10 @@
  */
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS } from '../i18n'
+// `EN_TRANSLATION` IS the object `catalogs.ts` binds to `en`, so this is the same
+// value with none of the parallel-copy risk — and it reaches two JSON modules
+// instead of fourteen, which the setup graph already pays for.
+import { EN_TRANSLATION } from '../i18n/enCatalog'
 import { ASK_CHOICE_KEYS } from '../apps/crew-companion/ReminderInput'
 
 function flatten(obj: unknown, prefix = ''): Record<string, string> {
@@ -30,7 +33,7 @@ function flatten(obj: unknown, prefix = ''): Record<string, string> {
   return out
 }
 
-const en = flatten((CATALOGS.en as { translation: unknown }).translation)
+const en = flatten(EN_TRANSLATION)
 
 describe('ask-row pill labels resolve', () => {
   it('every pill key is fully namespaced', () => {

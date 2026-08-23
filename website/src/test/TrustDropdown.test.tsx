@@ -4,7 +4,8 @@ vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@
 
 import { render, screen, fireEvent } from '@testing-library/react'
 import TrustDropdown from '../components/TrustDropdown'
-import { i18next } from '../i18n/index'
+// `/all` for the ja/ko/de/zh-CN catalogs: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 const btnClass = 'px-2 py-1 rounded text-sm'
 

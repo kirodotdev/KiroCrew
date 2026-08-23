@@ -37,10 +37,19 @@ export const DEFAULT_BUDGET_BYTES = 500 * KB
  * is a bundle-size regression and needs to be justified in the PR that does it.
  */
 export const CHUNK_BUDGETS = {
-  // Eager i18n catalogs for all shipped languages (src/i18n). Grows a little
-  // with every translated string, which is expected and fine; what this ceiling
-  // catches is a NEW library or surface landing in the catalog chunk.
-  t: 9500 * KB, // measured 9029 KB
+  // Eager i18n catalogs for all shipped languages, reached through
+  // `src/i18n/all.ts` — Rolldown names the chunk after that entry. Grows a
+  // little with every translated string, which is expected and fine; what this
+  // ceiling catches is a NEW library or surface landing in the catalog chunk.
+  all: 9100 * KB, // measured 8666 KB
+
+  // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
+  // named after `src/i18n/t.ts`. Held separately from `all` above because
+  // `src/i18n/index.ts` imports English alone, so the ~600 components that call
+  // `t()` no longer pull the other twelve catalogs in behind them. Sized for the
+  // English catalog plus headroom; a jump here means a non-English catalog, or a
+  // library, reached the runtime module.
+  t: 700 * KB, // measured 641 KB
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

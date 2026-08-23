@@ -63,7 +63,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from './index'
+import { CATALOGS as RUNTIME_CATALOGS } from './catalogs'
 import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
 // One definition of the checks, shared with `check-source-strings.mjs`, which runs the
 // same predicates at ZERO tolerance over the values a branch changed. Two copies would

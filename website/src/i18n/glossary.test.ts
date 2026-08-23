@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest'
 
-import { CATALOGS as RUNTIME_CATALOGS } from './index'
+import { CATALOGS as RUNTIME_CATALOGS } from './catalogs'
 import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES } from './languages'
 import glossary from './glossary.json'
 

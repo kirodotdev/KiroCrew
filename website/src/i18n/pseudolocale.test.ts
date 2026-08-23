@@ -28,7 +28,7 @@ import {
   DEFAULT_LANGUAGE,
 } from './languages'
 import { resolveLanguage } from './detect'
-import { CATALOGS } from './index'
+import { CATALOGS } from './catalogs'
 
 const PSEUDO = 'en-XA'
 const devOnly = SUPPORTED_LANGUAGES.filter((l) => l.devOnly).map((l) => l.code)

@@ -7,7 +7,8 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { adoptDashboardTheme, watchThemeChanges } from './dashboardTheme'
-import { initI18n } from '../../i18n'
+// The all-languages entry: plain `../../i18n` registers English only.
+import { initI18n } from '../../i18n/all'
 import { GalleryPanel } from './GalleryPanel'
 
 const host = document.getElementById('root')

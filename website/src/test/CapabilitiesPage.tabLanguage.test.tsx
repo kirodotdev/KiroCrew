@@ -30,7 +30,8 @@ vi.mock('../pages/overview', () => ({
 vi.mock('../components/RestartButton', () => ({ default: () => <div /> }))
 
 import CapabilitiesPage from '../pages/CapabilitiesPage'
-import { i18next } from '../i18n/index'
+// `/all` for the Japanese catalog: `../i18n` registers English only.
+import { i18next } from '../i18n/all'
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
