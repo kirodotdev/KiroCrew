@@ -21,8 +21,11 @@
         "role_efforts": {},
         "reasoning_effort": "",
         "provider": "acp",
+        "mcp_registry_mode": false,
+        "acp_backend": "",
         "default_agent": "",
-        "sandbox": "off",
+        "sweep_agents_backups": false,
+        "sandbox": "auto",
         "sandbox_allow_no_isolation": false,
         "sandbox_allow_unsandboxed_exec": false,
         "apps_allow_third_party": false,
@@ -34,14 +37,20 @@
         "bot_name": "",
         "conductor_skill": false,
         "tool_search": true,
+        "tool_search_min_pct": 5,
+        "tool_search_min_tokens": 50000,
         "session_sharing": true,
         "max_subagents": 0,
+        "max_stop_hook_nudges": 100,
         "spawn_min_memory_gb": 4.0,
         "resource_pressure_gb": 4.0,
         "resource_critical_gb": 2.0,
+        "admission_gate": true,
         "workflow_run_timeout_secs": 3600,
         "subagent_mem_buffer_pct": 20,
         "chat_turn_timeout_secs": 7200,
+        "session_start_timeout_secs": 90,
+        "tool_approval_timeout_secs": 600,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -203,6 +212,37 @@
       "defaultValue": "acp"
     },
     {
+      "path": "agent.mcp_registry_mode",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Enterprise MCP Registry Mode",
+      "help": "Set true when this Kiro account is governed by an enterprise MCP registry (Kiro console -> Shared settings -> MCP Registry URL, which applies to IAM Identity Center and API-key sign-ins). In registry mode the client connects ONLY to mcpServers entries carrying 'type': \"registry\" that resolve to a catalog entry of the same name, so Kiro Crew stamps that marker on the servers it manages. Leave false on a personal account: with no registry configured the filter inverts and registry-marked entries are the ones dropped. The administrator must also allow-list kirocrew-core, kirocrew-cron and kirocrew-computer in the registry by those exact names.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "agent.acp_backend",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "ACP Backend",
+      "help": "Which ACP agent to drive: '' = kiro-cli (default), 'kas' = kiro-agent. KAS runs chat but has no native subagent progress reporting yet.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "kas"
+      ],
+      "defaultValue": ""
+    },
+    {
       "path": "agent.default_agent",
       "kind": "core",
       "type": "string",
@@ -217,6 +257,20 @@
       "defaultValue": ""
     },
     {
+      "path": "agent.sweep_agents_backups",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Sweep foreign agent backups",
+      "help": "When true, the agents-directory janitor also deletes aged backup files (*.bak-<digits> / *.json.bak.<digits>, older than 14 days) from the shared kiro agents directory. OFF by default: Kiro Crew does not author those backups, so every one it would delete belongs to another tool whose retention policy is not ours to decide. The orphaned atomic-write TEMP sweep (24h) always runs and reclaims most of the growth at near-zero risk; enable this only if you also want foreign backups in that directory reaped.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
       "path": "agent.sandbox",
       "kind": "core",
       "type": "string",
@@ -225,13 +279,13 @@
       "sensitive": false,
       "tags": [],
       "label": "Sandbox",
-      "help": "Sandbox mode for ACP provider. Default 'off' defers isolation to kiro-cli's internal agent sandbox (kiro-cli >= 2.13). Set to 'auto' to re-enable Kiro Crew's OS-level sandbox (namespace on Linux, sandbox-exec on macOS). The two layers are mutually exclusive on macOS (nested seatbelt causes EPERM).",
+      "help": "Sandbox mode for ACP provider. Default 'auto' engages OS-level isolation (namespace on Linux, sandbox-exec on macOS) and automatically defers to kiro-cli's internal sandbox on macOS when it is enabled (kiro-cli >= 2.13; nested seatbelt causes EPERM). Set to 'off' to skip Kiro Crew's own OS-level sandbox — delegation to kiro-cli's internal sandbox still fires on macOS if it is enabled, and a SECURITY warning is logged when neither layer is active.",
       "hasChildren": false,
       "enumValues": [
         "auto",
         "off"
       ],
-      "defaultValue": "off"
+      "defaultValue": "auto"
     },
     {
       "path": "agent.sandbox_allow_no_isolation",
@@ -407,10 +461,38 @@
       "sensitive": false,
       "tags": [],
       "label": "MCP Tool Search",
-      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. When enabled, Kiro Crew forces deferral always-on (minPct=0/minTokens=0) via the per-session kiro settings overlay; disabling reverts to sending full tool specs. No effect on an alternate ACP backend.",
+      "help": "Load MCP tool specs on demand (search-and-call) instead of sending every tool definition each turn, keeping the context window clear when many MCP servers are configured. kiro-cli backend only. Deferral only starts once the specs cross tool_search_min_pct or tool_search_min_tokens; disabling reverts to sending full tool specs. No effect on an alternate ACP backend.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "agent.tool_search_min_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tool Search threshold (% of context)",
+      "help": "Start deferring MCP tool specs once they exceed this percentage of the context window. Paired with tool_search_min_tokens — whichever is crossed first wins. Below both thresholds every spec is sent directly, so the agent never pays a tool_search round-trip for a small tool set. 0 with tool_search_min_tokens 0 defers always. Clamped to 0-100; matches the kiro-cli default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 5
+    },
+    {
+      "path": "agent.tool_search_min_tokens",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tool Search threshold (tokens)",
+      "help": "Start deferring MCP tool specs once they exceed this many tokens. Paired with tool_search_min_pct — whichever is crossed first wins. 0 with tool_search_min_pct 0 defers always. Matches the kiro-cli default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50000
     },
     {
       "path": "agent.session_sharing",
@@ -439,6 +521,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "agent.max_stop_hook_nudges",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Stop-hook nudges",
+      "help": "Maximum consecutive Stop-hook block continuations before the run halts and surfaces a halt card instead of dispatching another turn. Bounds a buggy always-block hook in an unattended session. 0 = uncapped (opt-in for genuinely unbounded feedback loops).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 100
     },
     {
       "path": "agent.spawn_min_memory_gb",
@@ -483,6 +579,20 @@
       "defaultValue": 2.0
     },
     {
+      "path": "agent.admission_gate",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Posture Admission Gate",
+      "help": "While available memory is at or below resource_critical_gb, defer scheduled cron firings to the next tick and refuse new subagent spawns until memory frees. Manually triggered cron runs, in-flight subagents, and direct chat turns are never gated; an unreadable probe admits (fail-open). Set false to make the critical posture advisory-only.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "agent.workflow_run_timeout_secs",
       "kind": "core",
       "type": "integer",
@@ -519,10 +629,38 @@
       "sensitive": false,
       "tags": [],
       "label": "Chat Turn Timeout (secs)",
-      "help": "Wall-clock ceiling for one chat turn. This is a runaway backstop, so it is clamped to 300s..7200s (2h) and can never be disabled. Long babysit and monitoring turns approach the default, so hitting it is no longer silent: the turn ends with a visible card naming the limit. Values above the ACP transport's own prompt timeout are clamped, because the transport bounds the turn first.",
+      "help": "Wall-clock ceiling for one chat turn. This is a runaway backstop, so it is clamped to 300s..86400s (24h) and can never be disabled. Raise it above the 2h default for long unattended turns (full test suites, long builds); the ACP transport's prompt wait follows it. Hitting the ceiling is visible: the turn ends with a card naming the limit. For work spanning days, prefer monitor/goal loops — they end the turn between cycles and survive restarts.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 7200
+    },
+    {
+      "path": "agent.session_start_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Start Timeout (secs)",
+      "help": "Budget for ACP session/new and session/load on the shared runtime. kiro-cli blocks the response while it initializes the agent's MCP servers, so session start scales with server count and per-server cold-start cost (sandboxed launchers, remote servers, loaded hosts). Raise this when a large agent legitimately needs longer than the 90s default. The floor is the default itself: the budget must stay comfortably above the backend's 30s OAuth authorization wait, so values below 90 are clamped up.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 90
+    },
+    {
+      "path": "agent.tool_approval_timeout_secs",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Tool Approval Timeout (secs)",
+      "help": "How long a chat turn waits for a human to answer a tool-approval prompt before declining it and telling the user to resend. Kept well below the chat-turn ceiling on purpose: a window at or above it can never fire, so an unattended turn burns the whole ceiling and is then misreported as a turn timeout. Clamped to 30s..7200s, and additionally to 60s below the turn ceiling at load time.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 600
     },
     {
       "path": "agent.subagent_cost_gb",
@@ -781,6 +919,7 @@
         "pool_size": 0,
         "pool_agent": "",
         "pool_ttl_secs": 1800,
+        "eager_spawn": true,
         "archive_retention_days": 30,
         "watchdog_rss_max_mb": 0
       }
@@ -868,6 +1007,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1800
+    },
+    {
+      "path": "session.eager_spawn",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Eager Session Spawn",
+      "help": "Speculatively create a chat slot's session when the slot is created, its agent is switched, or its project directory changes, instead of on first message. Hides the multi-second session handshake behind user think-time.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "session.archive_retention_days",
@@ -1153,6 +1306,7 @@
       "defaultValue": {
         "embedding_provider": "llama_cpp",
         "embedding_dim": 1024,
+        "embedding_threads": 4,
         "embed_model_url": "",
         "embed_model_path": "",
         "embed_model_id": "",
@@ -1160,6 +1314,7 @@
         "episodic_dedup_threshold": 0.88,
         "episodic_max_results": 8,
         "episodic_max_count": 10000,
+        "decay_rates": {},
         "semantic_keys": [],
         "history_idle_hours": 3.0,
         "history_max_days": 365,
@@ -1195,6 +1350,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1024
+    },
+    {
+      "path": "memory.embedding_threads",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Threads",
+      "help": "CPU threads llama.cpp may use per embedding call. Left unset, llama.cpp sizes its batch pool from the host core count, so even a few-token embed fans out across every core and competes with the rest of the gateway. Embedding a short query does not need many threads; raise this only if bulk re-embedding throughput matters more than interactive latency. Clamped to the machine's core count.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 4
     },
     {
       "path": "memory.embed_model_url",
@@ -1295,6 +1464,34 @@
       "defaultValue": 10000
     },
     {
+      "path": "memory.decay_rates",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Memory Decay Rates",
+      "help": "Per-tag episodic recency decay rates, per day (retrieval score factor exp(-rate * days_old)). Keys are memory tags (case-insensitive); the reserved 'default' key replaces the built-in 0.03 for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. 0 means never ages out of retrieval ranking; 1 drops a memory out of retrieval within about a day. Ranking only: episodic_max_count cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to 0..10; non-numeric values are ignored with a logged warning.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "memory.decay_rates.*",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "memory.semantic_keys",
       "kind": "core",
       "type": "array",
@@ -1377,7 +1574,7 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "auto_ingest_artifacts": true,
+        "auto_ingest_artifacts": false,
         "auto_ingest_artifact_kinds": [
           "markdown",
           "text",
@@ -1388,12 +1585,17 @@
         "embed_timeout_secs": 10.0,
         "embed_content_budget": 0,
         "pool_idle_ttl_secs": 300,
-        "auto_add_documents": true,
-        "auto_register_project_docs": true,
+        "auto_add_documents": false,
+        "auto_register_project_docs": false,
         "auto_ingest_chunk_budget": 150,
         "folder_ingest_chunk_budget": 300,
         "dedup_every_n_sweeps": 12,
         "doc_ingest_hosts": [],
+        "sweep_chunk_budget": 500,
+        "max_sources": 50,
+        "embed_rate_limit": 120,
+        "extraction_model": "",
+        "extraction_pool_size": 3,
         "auto_discover_folder": false,
         "auto_discover_dirname": "knowledge-docs"
       }
@@ -1407,10 +1609,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Ingest Artifacts",
-      "help": "Automatically ingest content-bearing local artifacts (markdown/text documents you save and iterate) into the Knowledge Library so they become searchable, keep them in sync as the artifact changes, and remove them from the Library when the artifact is deleted. They appear as a single aggregate 'Artifacts' source. On by default.",
+      "help": "Automatically ingest content-bearing local artifacts (markdown/text documents you save and iterate) into the Knowledge Library so they become searchable, keep them in sync as the artifact changes, and remove them from the Library when the artifact is deleted. They appear as a single aggregate 'Artifacts' source. Off by default: every ingested chunk costs an LLM extraction call, so a library grows and spends only once you ask for it.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "knowledge.auto_ingest_artifact_kinds",
@@ -1510,10 +1712,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Add Documents",
-      "help": "Let the agent add documents it comes across during normal work to the Knowledge Library, so they become searchable later. The agent reads the document with its own tools, under your approval, and hands over the text -- Kiro Crew fetches nothing itself, so the doc-ingest host allowlist below does not apply. Added documents appear in a single aggregate 'Auto-added' source you can remove in one click. On by default. Renamed from auto_ingest_doc_links, which is still accepted.",
+      "help": "Let the agent add documents it comes across during normal work to the Knowledge Library, so they become searchable later. The agent reads the document with its own tools, under your approval, and hands over the text -- Kiro Crew fetches nothing itself, so the doc-ingest host allowlist below does not apply. Added documents appear in a single aggregate 'Auto-added' source you can remove in one click. Off by default: the Library should only hold what you asked it to hold. Renamed from auto_ingest_doc_links, which is still accepted.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "knowledge.auto_register_project_docs",
@@ -1524,10 +1726,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Auto-Register Project Documents",
-      "help": "Register the documents of each project you work in as a Knowledge source automatically, so a project's design docs, specs and READMEs become searchable without adding the folder by hand. Only documents are taken (.md/.pdf/.docx/.org above a small size floor, excluding agent instructions, generated files and repository boilerplate) -- never source code. No confirmation step: the document filter and the per-sweep chunk budget below bound the cost, and deleting the source keeps it deleted. On by default.",
+      "help": "Register the documents of each project you work in as a Knowledge source automatically, so a project's design docs, specs and READMEs become searchable without adding the folder by hand. Only documents are taken (.md/.pdf/.docx/.org above a small size floor, excluding agent instructions, generated files and repository boilerplate) -- never source code. There is no confirmation step once enabled: the document filter and the per-sweep chunk budget below bound the cost, and deleting the source keeps it deleted. Off by default, because registering a repository is a decision to spend extraction calls on it -- turning this on opts in every project you open.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": true
+      "defaultValue": false
     },
     {
       "path": "knowledge.auto_ingest_chunk_budget",
@@ -1598,6 +1800,76 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "knowledge.sweep_chunk_budget",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Global Sweep Chunk Budget",
+      "help": "Maximum chunks ingested across ALL sources in a single watcher sweep. Each chunk costs one LLM extraction call, so this is the primary global cost control. Once reached, remaining sources are deferred to the next sweep. 0 removes the bound.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 500
+    },
+    {
+      "path": "knowledge.max_sources",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Max Sources",
+      "help": "Maximum number of Knowledge sources that may be registered. Prevents unbounded auto-discovery from registering hundreds of sources when many projects are open. Registration attempts past the cap are skipped (auto) or rejected (manual). 0 removes the bound.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
+    },
+    {
+      "path": "knowledge.embed_rate_limit",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Embedding Rate Limit (items/min)",
+      "help": "Maximum embedding generations per minute across all sources. Back-pressures the ingestion pipeline when a large backlog builds up, preventing memory/CPU saturation from parallel embed batches. 0 removes the bound.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 120
+    },
+    {
+      "path": "knowledge.extraction_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extraction Model",
+      "help": "LLM model used for document extraction and summarization. Empty uses the default model (agent.model). Set to a specific model id (e.g. 'claude-haiku-4.5') to use a cheaper model for extraction without changing your chat default.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "knowledge.extraction_pool_size",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extraction Pool Size",
+      "help": "Number of concurrent LLM workers for document extraction. More workers = faster ingestion but higher peak cost. Each worker holds a long-lived session. Requires restart to take effect.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 3
     },
     {
       "path": "knowledge.auto_discover_folder",
@@ -1867,6 +2139,111 @@
       "defaultValue": null
     },
     {
+      "path": "session_summary",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Summary",
+      "help": "Intent-level session summaries for the chat right panel. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "min_user_turns": 2,
+        "regenerate_after_turns": 1,
+        "max_intents": 50,
+        "max_constraints": 50,
+        "assistant_excerpt_chars": 400
+      }
+    },
+    {
+      "path": "session_summary.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Summaries",
+      "help": "When true, summarize each session by intent after a turn completes so the chat right panel can show what the session is about, what has happened, and what to do next. Costs tokens on turns that change the session; an unchanged session is served from cache for free. Disabled by default; enable in Settings.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "session_summary.min_user_turns",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Minimum User Turns",
+      "help": "Skip summarization until the session has at least this many user messages (>=1). A one-exchange session has no intent structure worth extracting, and the session title already covers it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 2
+    },
+    {
+      "path": "session_summary.regenerate_after_turns",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Regenerate Every N Turns",
+      "help": "How many completed turns must pass before the summary is rebuilt (>=1). 1 keeps the panel current at the cost of one pass per turn; raise it to trade freshness for tokens. A cached summary whose session has not changed is never rebuilt regardless of this value.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1
+    },
+    {
+      "path": "session_summary.max_intents",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Maximum Intents",
+      "help": "Safety ceiling on intents stored per session (>=1). Trimming runs before the summary is saved, so whatever exceeds this is dropped from the record rather than hidden -- the panel itself withholds nothing, rendering every intent it receives and collapsing all but the most recently touched one. The ceiling therefore sits high enough that reaching it is unusual rather than routine.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
+    },
+    {
+      "path": "session_summary.max_constraints",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Maximum Project Notes",
+      "help": "Safety ceiling on session-level operational notes -- the recurring facts about how this project is run (>=0). Whatever exceeds this is dropped from the record rather than hidden: how many are worth writing at all is governed by the generation prompt, and the panel bounds the expanded list's height rather than its length. Durable cross-session preferences belong in lessons rather than here.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 50
+    },
+    {
+      "path": "session_summary.assistant_excerpt_chars",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Assistant Excerpt Size",
+      "help": "Characters kept from each end of an assistant message when building the summarization input (>=80). User messages are always included in full -- they carry intent and are small -- while assistant output is excerpted because it holds the progress detail but dominates the transcript.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 400
+    },
+    {
       "path": "telemetry",
       "kind": "core",
       "type": "object",
@@ -2019,6 +2396,7 @@
         "whisper_path": "",
         "model": "turbo",
         "mlx_model": "mlx-community/whisper-large-v3-turbo",
+        "parakeet_model": "mlx-community/parakeet-tdt-0.6b-v3",
         "device": "cpu",
         "timeout_secs": 300,
         "transcribe_region": "us-east-1",
@@ -2058,6 +2436,7 @@
         "whisper",
         "mlx",
         "apple",
+        "parakeet",
         "transcribe"
       ],
       "defaultValue": "whisper"
@@ -2105,6 +2484,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "mlx-community/whisper-large-v3-turbo"
+    },
+    {
+      "path": "stt.parakeet_model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Parakeet Model",
+      "help": "Hugging Face repo for the parakeet-mlx model (parakeet provider only).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "mlx-community/parakeet-tdt-0.6b-v3"
     },
     {
       "path": "stt.device",
@@ -2355,12 +2748,16 @@
       "enumValues": null,
       "defaultValue": {
         "enabled": false,
+        "apps_enabled": true,
         "forward_declared_env": true,
         "socket_path": "",
         "overlay_dir": "",
         "idle_timeout_secs": 300,
+        "resolve_once_refresh_hours": 24,
         "max_backends": 64,
+        "stub_servers": [],
         "poolable_servers": [],
+        "pool_identity_env": [],
         "prewarm_count": 0,
         "read_buffer_limit_bytes": 67108864,
         "response_spill_threshold_bytes": 262144
@@ -2374,11 +2771,25 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Enabled",
-      "help": "Route MCP traffic through the shared sidecar broker. Default False — opt-in.",
+      "label": "Share MCP Backends",
+      "help": "Let sessions with an identical server configuration share one MCP server process instead of each getting its own. Off, every session gets its own backend — the same process topology as running without the broker. Either this or MCP Apps starts the broker; see docs/architecture/design-notes/mcp-stub-decoupling.md. Default False — opt-in.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "mcp_gateway.apps_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP Apps (retired, opt-out still honoured)",
+      "help": "RETIRED GOING FORWARD, but a stored `false` KEEPS ITS OPT-OUT. Nothing writes this key any more and MCP Management does not surface it: MCP Apps capability follows whether a server gets a stub, because the stub is what carries the render and callback path, so a preference cannot grant it. It can still WITHHOLD it — a released version treated `false` here as a trustworthy opt-out, so an operator who turned MCP Apps off stays off (tightest-wins: it beats KIROCREW_MCP_APPS=1, and an unreadable config fails closed). Absent defaults True, so 'not configured' is not an opt-out. To GET server-authored UI, turn on the server's stub in MCP Management — and clear a stored `false` here if you have one. The only other MCP Apps preference is where it renders (dashboard.mcp_app_panel). See docs/architecture/design-notes/mcp-stub-decoupling.md.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "mcp_gateway.forward_declared_env",
@@ -2389,10 +2800,10 @@
       "sensitive": false,
       "tags": [],
       "label": "Forward Declared Env",
-      "help": "Apply a pooled server's declared env (mcpServers.<name>.env) to the shared backend. Only non-secret keys are forwarded — rotating-secret and credential-prefixed keys are never applied to a shared backend. Default False — opt-in.",
+      "help": "Apply a pooled server's declared env (mcpServers.<name>.env) to the shared backend. Only non-secret keys are forwarded — rotating-secret and credential-prefixed keys are never applied to a shared backend, and gatewayd re-hashes the sidecar at spawn and forwards nothing on mismatch, so every forwarded key is one all co-tenants of that backend declared identically. Turn it OFF to make an env-declaring server run unwrapped (no stub, no pooling) instead.",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": false
+      "defaultValue": true
     },
     {
       "path": "mcp_gateway.socket_path",
@@ -2437,6 +2848,20 @@
       "defaultValue": 300
     },
     {
+      "path": "mcp_gateway.resolve_once_refresh_hours",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pre-resolve Refresh",
+      "help": "Hours before an UNPINNED npm-launcher MCP server (an npx spec at @latest, a range, or no version) is re-resolved from the registry. Pre-resolving lets a launch exec the installed tree directly, so session start does no dependency resolution and needs no network; this is how often that resolution is refreshed so such a spec still tracks upstream. A spec pinned to an exact version ignores this -- re-asking about an exact version cannot change the answer. 0 re-resolves on every prefetch pass; a server with no resolution yet simply launches the way it does today.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 24
+    },
+    {
       "path": "mcp_gateway.max_backends",
       "kind": "core",
       "type": "integer",
@@ -2451,6 +2876,34 @@
       "defaultValue": 64
     },
     {
+      "path": "mcp_gateway.stub_servers",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Routed Servers",
+      "help": "MCP server names given a stub. The stub interposes a stub, which is what makes server-authored UI (MCP Apps) and backend sharing possible for that server — so it is the one per-server decision. Empty by default: an unstubbed server is launched by the session itself, the same process topology as running without the broker, and an empty list means no broker runs at all. Whether stubbed servers SHARE one backend is the separate global switch (mcp_gateway.enabled). Managed from MCP Management.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "mcp_gateway.stub_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "mcp_gateway.poolable_servers",
       "kind": "core",
       "type": "array",
@@ -2458,14 +2911,42 @@
       "deprecated": false,
       "sensitive": false,
       "tags": [],
-      "label": "Poolable Servers",
-      "help": "MCP server names allowed to share a pooled backend across sessions. A stdio server is pooled when its name appears here OR its agent-JSON entry sets poolable:true. Safe by default — non-listed servers run per-session. Managed from Settings -> Shared MCP gateway.",
+      "label": "Poolable Servers (deprecated)",
+      "help": "DEPRECATED alias for stub_servers. Read only when stub_servers is absent, so a config written before the stub became the per-server decision keeps working: a server that was pooled already had a stub, so migrating it to the stub set preserves its behaviour. There is no per-server sharing switch any more — sharing is global over the stub set.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
     },
     {
       "path": "mcp_gateway.poolable_servers.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "mcp_gateway.pool_identity_env",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pool Identity Env Keys",
+      "help": "Env variable NAMES whose value is part of a shared backend's identity. Names listed here are folded into the backend's env hash even when they look like a rotating secret (AWS_SECRET*, AWS_SESSION*, OAUTH*), which is what makes them safe to apply to a shared backend: two sessions declaring different values get different backends instead of colliding onto one. Use it to let a server that authenticates from such a variable be shared at all — by default it declares one, so nothing is forwarded and the server runs unwrapped. The cost is the reason the exclusion exists: rotating a named value re-partitions that server's pool, so the next session cold-starts a backend. Exact names, not prefixes. Names the daemon's own credential scrub removes (AWS_ACCESS*, AWS_SECRET*, AWS_SESSION*, SSH_AUTH_SOCK*, GNUPGHOME*, GIT_ASKPASS*) are ignored here — that scrub is a separate, broader guard this setting does not lift. Empty by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "mcp_gateway.pool_identity_env.*",
       "kind": "core",
       "type": "string",
       "required": false,
@@ -2521,6 +3002,50 @@
       "defaultValue": 262144
     },
     {
+      "path": "mcp",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "MCP",
+      "help": "How MCP servers are found and launched — applies with the broker off too.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "extra_path_dirs": []
+      }
+    },
+    {
+      "path": "mcp.extra_path_dirs",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Extra MCP Binary Directories",
+      "help": "Additional directories to search for MCP server binaries, ahead of the built-in locations. Add one when a package manager installs its MCP launchers somewhere Kiro Crew does not know about: a server declared by bare name that resolves nowhere never starts, and the session just comes up short of tools. Each entry must be a single absolute directory (``~`` is expanded); anything else is ignored with a warning. These directories are prepended to the search path used by the MCP probe, the agent-config command resolver, and the broker's rewriter alike, so a binary found here is found everywhere. They do NOT join the search for the agent runtime itself, which must not be shadowable by a configured directory.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "mcp.extra_path_dirs.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
       "path": "instances",
       "kind": "core",
       "type": "object",
@@ -2537,6 +3062,7 @@
         "warm_set_cap": 5,
         "tunnel_base_port": 7778,
         "ssh_compression": true,
+        "connect_timeout_secs": null,
         "mint_timeout_secs": null,
         "max_recovery_attempts": 8,
         "recover_backoff_max_secs": 30.0,
@@ -2600,6 +3126,21 @@
       "defaultValue": true
     },
     {
+      "path": "instances.connect_timeout_secs",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Connect Timeout (secs)",
+      "help": "How long to wait for the local forward port to accept connections before declaring a connect attempt failed. When unset, SSH uses 15s and SSM uses 25s. Fifteen seconds is sufficient for a direct ssh TCP connect, but hosts behind a ProxyCommand or jump host routinely need longer (the proxy handshake runs before ssh begins the forward). Raise this if connecting a remote instance times out while the same ssh forward succeeds by hand. An explicit value applies to both transports. Clamped to [1, 120].",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
       "path": "instances.mint_timeout_secs",
       "kind": "core",
       "type": "number",
@@ -2611,7 +3152,8 @@
       "help": "How long to wait for the remote `kirocrew token` mint to return before failing a connect. When unset, SSH uses 30s and SSM uses 90s (its dispatch latency is higher). The mint runs over the same ssh transport as the tunnel, so a host behind a ProxyCommand or jump host pays the proxy handshake here too. An explicit value applies to both transports, so size it for the slowest transport you use. Clamped to [10, 120].",
       "hasChildren": false,
       "enumValues": null,
-      "defaultValue": null
+      "defaultValue": null,
+      "nullable": true
     },
     {
       "path": "instances.max_recovery_attempts",
@@ -3341,6 +3883,7 @@
         "soft_threshold_pct": 80,
         "allow_forum": false,
         "allowed_forum_chat_ids": [],
+        "accounts": {},
         "session_folder": ""
       }
     },
@@ -3467,6 +4010,144 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "telegram.accounts",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": true,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Accounts",
+      "help": "Deprecated and inert: named Telegram bot accounts no longer start a bot. Multi-bot operation is withdrawn until a bot is a governable unit (its own enable switch, its own posture ceiling, and honest audit attribution) rather than a second inbound door that only the global telegram.enabled can close. The map is still parsed and written back so an existing config keeps its tokens and allow-lists, but nothing reads it: move the token you want served to telegram.bot_token.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
+    },
+    {
+      "path": "telegram.accounts.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telegram.accounts.*.bot_token",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Bot Token",
+      "help": "Telegram Bot API token for this account.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "telegram.accounts.*.allowed_user_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Allowed User IDs",
+      "help": "Numeric Telegram user IDs permitted to DM this bot account.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "telegram.accounts.*.allowed_user_ids.*",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telegram.accounts.*.allow_forum",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Allow Forum Topics",
+      "help": "Serve forum Topics for this account.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "telegram.accounts.*.allowed_forum_chat_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Allowed Forum Chat IDs",
+      "help": "Supergroup chat_ids permitted for this account.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "telegram.accounts.*.allowed_forum_chat_ids.*",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "telegram.accounts.*.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "telegram"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt threshold for this account.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
     },
     {
       "path": "telegram.session_folder",
@@ -3687,6 +4368,8 @@
         "bot_token": "",
         "allowed_user_ids": [],
         "allowed_thread_ids": [],
+        "allowed_channel_ids": [],
+        "auto_thread": true,
         "soft_threshold_pct": 80,
         "session_folder": ""
       }
@@ -3782,6 +4465,52 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "discord.allowed_channel_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Allowed Channel IDs",
+      "help": "Discord server channels where approved users may start a new agent thread.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "discord.allowed_channel_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "discord.auto_thread",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Auto-create Threads",
+      "help": "Create one Discord thread per approved message in an allowed channel.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "discord.soft_threshold_pct",
@@ -4116,6 +4845,156 @@
       "defaultValue": ""
     },
     {
+      "path": "imessage",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "iMessage",
+      "help": "iMessage integration settings (macOS only, local bridge, no bot token).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "db_path": "",
+        "allowed_handles": [],
+        "service": "imessage",
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95,
+        "session_folder": ""
+      }
+    },
+    {
+      "path": "imessage.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Enabled",
+      "help": "Enable the iMessage channel. macOS only, and the gateway must run on the Mac that is signed in to Messages. Needs no bot and no token — it drives Messages.app through the local imsg bridge, so the transport involves no third party. The turn itself still goes to the configured model provider, as on any channel.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "imessage.db_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Messages Database Path",
+      "help": "Override the Messages database location. Empty (the default) lets the bridge use ~/Library/Messages/chat.db. Reading it needs Full Disk Access for the process the gateway runs as.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "imessage.allowed_handles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Allowed Handles",
+      "help": "Phone numbers or Apple ID emails permitted to message the agent. Empty = deny all (fail closed): anyone who knows this Mac's handle can send to it. Formatting is ignored, so '+61 400 000 000' and '+61400000000' are the same handle.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "imessage.allowed_handles.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "imessage.service",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Send Service",
+      "help": "Which service outbound replies use: 'imessage' (default), 'sms', or 'auto' to let the bridge fall back to SMS when iMessage is unavailable. Inbound is unaffected — the channel answers on whichever service the message arrived over.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "imessage"
+    },
+    {
+      "path": "imessage.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a conversation's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "imessage.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this, even without a user decision, so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
+      "path": "imessage.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "imessage"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "dashboard",
       "kind": "core",
       "type": "object",
@@ -4130,7 +5009,10 @@
       "defaultValue": {
         "url": "",
         "tailscale": {
-          "enabled": false
+          "enabled": false,
+          "trust_identity": false,
+          "allowed_logins": [],
+          "pin_scope": "node"
         },
         "restore_sessions": false,
         "restore_window_minutes": 30,
@@ -4140,7 +5022,9 @@
         "merge_queued_messages": false,
         "mcp_probe_timeout_secs": 15,
         "loop_stall_exit_after_secs": 25,
+        "cautious_boot": true,
         "widget_density": "more",
+        "use_builtin_browser": true,
         "verbosity": "default",
         "link_previews": false,
         "usage_text_scrape_enabled": false,
@@ -4173,7 +5057,9 @@
         "tips_recency_decay": 0.6,
         "tips_model": "auto",
         "tips_explore_ratio": 0.2,
-        "gitlab_hosts": []
+        "gitlab_hosts": [],
+        "jira_hosts": [],
+        "jira_auth": []
       }
     },
     {
@@ -4203,7 +5089,10 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {
-        "enabled": false
+        "enabled": false,
+        "trust_identity": false,
+        "allowed_logins": [],
+        "pin_scope": "node"
       }
     },
     {
@@ -4219,6 +5108,62 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.tailscale.trust_identity",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Trust Tailnet Identity",
+      "help": "Pin dashboard sessions arriving via `tailscale serve` to the daemon-verified tailnet peer instead of the tunnel's shared loopback address, and record that identity in the audit trail. Explicit opt-in, never inferred, and requires a non-empty allowed_logins — enabling it with an empty allowlist is refused at load. Every failure to verify a peer falls back to the ordinary token path. POSIX only. Takes effect on the next gateway start (the trust settings are read once at startup).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.tailscale.allowed_logins",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Allowed Tailnet Logins",
+      "help": "Tailscale logins permitted when trust_identity is on. Mandatory: a shared tailnet can have hundreds of members, so identity trust without an allowlist would hand each of them the dashboard. A verified peer whose login is not listed is denied.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.tailscale.allowed_logins.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "dashboard.tailscale.pin_scope",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pin Scope",
+      "help": "What an identity-pinned session binds to: 'node' (default — a leaked cookie is usable only from the original device) or 'login' (usable from any device carrying that Tailscale identity). An unrecognised value falls back to 'node'. An ACL-tagged node is always pinned at node scope regardless of this setting. Takes effect on the next gateway start.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "node"
     },
     {
       "path": "dashboard.restore_sessions",
@@ -4333,6 +5278,20 @@
       "defaultValue": 25
     },
     {
+      "path": "dashboard.cautious_boot",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Cautious Boot After Crash",
+      "help": "When the gateway starts and finds a recent loop-stall crash dump (under 30 minutes old) from the previous instance, stagger the startup burst — MCP servers, cron scheduler, app backends, session restores — with short pauses instead of launching everything at once, so a host still under memory pressure is not pushed straight back into the same collapse.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
       "path": "dashboard.widget_density",
       "kind": "core",
       "type": "string",
@@ -4348,6 +5307,20 @@
         "less"
       ],
       "defaultValue": "more"
+    },
+    {
+      "path": "dashboard.use_builtin_browser",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Use Built-in Browser",
+      "help": "When on, the browser tool opens pages in Kiro Crew's built-in panel (desktop app only). When off, the agent browses via playwright-cli.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.verbosity",
@@ -4508,6 +5481,20 @@
       "defaultValue": {
         "enabled": true
       }
+    },
+    {
+      "path": "dashboard.terminal.shell",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Default shell",
+      "help": "Shell the built-in terminal launches — an absolute path or a command on PATH. Empty = the system default ($SHELL).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard.default_project",
@@ -4807,6 +5794,90 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null
+    },
+    {
+      "path": "dashboard.jira_hosts",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Self-Hosted Jira Hosts",
+      "help": "Exact hostnames (optionally host:port) of self-managed Jira or Jira Data Center instances whose issue URLs the Issues panel may recognize. Atlassian Cloud instances (*.atlassian.net) are always accepted without listing. Empty = Cloud-only (deny-by-default): a Jira issue URL is only recognized if its host matches an entry here. Suffixes and wildcards are not matched.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.jira_hosts.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "dashboard.jira_auth",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Jira Authentication",
+      "help": "Per-host credentials for the Jira REST API so the Issues panel can fetch issue details inline. Each entry pairs a host with an API token. Atlassian Cloud (*.atlassian.net) uses email + API token (Basic auth); Jira Server/Data Center uses a Personal Access Token (Bearer). When no entry matches the issue host, the panel falls back to the link-out 'Open in Jira' behavior.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.jira_auth.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "dashboard.jira_auth.*.host",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Host",
+      "help": "Jira instance hostname (e.g. 'myorg.atlassian.net' or 'jira.internal.corp:8443'). Must match the host in the issue URL.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.jira_auth.*.email",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Email",
+      "help": "Atlassian account email for Cloud instances (used in Basic auth header). Leave empty for Server/DC instances that use a PAT.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "tunnel",
@@ -5138,7 +6209,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Tool stall suspect override (s)",
-      "help": "Per-agent override for watchdog.tool_stall_suspect_secs on sessions running this agent. 0 inherits the global window (default 1h). Set low (e.g. 900) for a pure-LLM agent whose longest legitimate silent gap is minutes, not hours.",
+      "help": "Per-agent override for watchdog.tool_stall_suspect_secs on sessions running this agent. 0 inherits the global window (default 1h, tuned for long builds). Set low (e.g. 900) for a pure-LLM agent whose longest legitimate silent gap is minutes, not hours.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
@@ -5156,6 +6227,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0.0
+    },
+    {
+      "path": "agents.*.telegram_account",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": true,
+      "sensitive": false,
+      "tags": [],
+      "label": "Telegram Account",
+      "help": "Deprecated and inert: a binding to a named telegram.accounts entry no longer routes anything, because named accounts no longer start a bot. Preserved on load and save so an existing config is not rewritten out from under the operator.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "default_agent",
@@ -5411,6 +6496,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": "main"
+    },
+    {
+      "path": "registries.*.trust",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Trust",
+      "help": "How much a registry's INDEX is trusted, which selects the credential posture for cloning the apps it lists. 'index' (the default) treats the index as untrusted content: every app it lists is cloned credential-free so a hostile entry cannot read a private sibling repo with this machine's git identity. 'owner' means the index is under change control the build owns, so its apps may clone with this machine's credentials. Setting it HERE has no effect: the trusted tier is honoured only for registries the build supplies, because this file is agent-writable and a tier read from it would not be your assertion. A value other than 'index' on a configured registry is read as 'index'.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "index"
     }
   ]
 }

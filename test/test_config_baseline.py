@@ -26,10 +26,11 @@ pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SCRIPT_PATH = os.path.join(_REPO_ROOT, "scripts", "generate_config_baseline.py")
+_COMMITTED_BASELINE = os.path.join(_REPO_ROOT, "config-baseline.json")
 
 
-def _run_generator(tmp_path: str) -> dict:
-    """Run the baseline generator and return the parsed JSON output."""
+def _generate_bytes(tmp_path: str) -> bytes:
+    """Run the baseline generator and return the raw bytes it wrote."""
     env = os.environ.copy()
     out_path = os.path.join(str(tmp_path), "config-baseline.json")
     env["KIROCREW_BASELINE_OUTPUT"] = out_path
@@ -44,8 +45,13 @@ def _run_generator(tmp_path: str) -> dict:
     assert result.returncode == 0, f"Script failed:\n{result.stderr}"
     assert os.path.exists(out_path), "config-baseline.json was not created"
 
-    with open(out_path, encoding="utf-8") as f:
-        return json.load(f)
+    with open(out_path, "rb") as f:
+        return f.read()
+
+
+def _run_generator(tmp_path: str) -> dict:
+    """Run the baseline generator and return the parsed JSON output."""
+    return json.loads(_generate_bytes(tmp_path).decode("utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -154,3 +160,100 @@ class TestBaselineGenerator:
         entry = entries_by_path.get("telemetry.otlp_endpoint")
         assert entry is not None, "telemetry.otlp_endpoint entry missing"
         assert entry["sensitive"] is True
+
+
+# ---------------------------------------------------------------------------
+# Committed-snapshot parity
+# ---------------------------------------------------------------------------
+
+
+def _drift_report(committed: dict, generated: dict) -> str:
+    """Summarize how the committed snapshot differs from generator output.
+
+    The raw diff of this file runs to four figures of lines, so report entry
+    paths rather than content: a caller only needs to know the snapshot is
+    behind, and the fix is always the same one command.
+    """
+    committed_entries = {e["path"]: e for e in committed.get("entries", [])}
+    generated_entries = {e["path"]: e for e in generated.get("entries", [])}
+
+    missing = sorted(set(generated_entries) - set(committed_entries))
+    extra = sorted(set(committed_entries) - set(generated_entries))
+    changed = sorted(
+        path
+        for path, entry in generated_entries.items()
+        if path in committed_entries and committed_entries[path] != entry
+    )
+
+    def _sample(paths: list[str]) -> str:
+        head = ", ".join(paths[:10])
+        return f"{head}, ... (+{len(paths) - 10} more)" if len(paths) > 10 else head
+
+    lines = [
+        f"committed {len(committed_entries)} entries, generator produces "
+        f"{len(generated_entries)}",
+    ]
+    if missing:
+        lines.append(f"{len(missing)} missing from the snapshot: {_sample(missing)}")
+    if extra:
+        lines.append(f"{len(extra)} no longer in the schema: {_sample(extra)}")
+    if changed:
+        lines.append(f"{len(changed)} with drifted content: {_sample(changed)}")
+    if not (missing or extra or changed):
+        # Entry-for-entry identical, so the mismatch is serialization only
+        # (key order, indentation, trailing newline).
+        lines.append("entries are equivalent; the files differ in serialization only")
+    return "\n  ".join(lines)
+
+
+class TestCommittedBaselineParity:
+    """The committed snapshot must match what the generator produces.
+
+    Without this the snapshot is unchecked: every other test in this module
+    runs the generator into a temp directory and compares it against the
+    in-memory ``SCHEMA_REGISTRY``, so ``config-baseline.json`` at the repo root
+    can fall arbitrarily far behind and nothing goes red. It did -- by 72
+    entries (#3664), and by a stale default before that (#2862).
+    """
+
+    def test_committed_snapshot_matches_generator(self, tmp_path: str) -> None:
+        """``config-baseline.json`` is byte-identical to generator output."""
+        with open(_COMMITTED_BASELINE, "rb") as f:
+            committed_bytes = f.read()
+        generated_bytes = _generate_bytes(tmp_path)
+
+        if committed_bytes == generated_bytes:
+            return
+
+        report = _drift_report(
+            json.loads(committed_bytes.decode("utf-8")),
+            json.loads(generated_bytes.decode("utf-8")),
+        )
+        pytest.fail(
+            "config-baseline.json is out of date with the config schema.\n"
+            f"  {report}\n"
+            "Regenerate and commit it in the same change that touched the schema:\n"
+            "  python scripts/generate_config_baseline.py"
+        )
+
+    def test_drift_report_names_each_kind_of_difference(self) -> None:
+        """The failure message distinguishes added, removed and changed entries."""
+        committed = {
+            "entries": [{"path": "kept"}, {"path": "gone"}, {"path": "moved", "type": "a"}]
+        }
+        generated = {"entries": [{"path": "kept"}, {"path": "new"}, {"path": "moved", "type": "b"}]}
+
+        report = _drift_report(committed, generated)
+
+        assert "committed 3 entries, generator produces 3" in report
+        assert "1 missing from the snapshot: new" in report
+        assert "1 no longer in the schema: gone" in report
+        assert "1 with drifted content: moved" in report
+
+    def test_drift_report_reports_serialization_only_mismatch(self) -> None:
+        """Byte parity is stricter than entry parity, and says so when that is why."""
+        entries = {"entries": [{"path": "kept", "type": "string"}]}
+
+        report = _drift_report(entries, {"entries": [dict(entries["entries"][0])]})
+
+        assert "serialization only" in report
