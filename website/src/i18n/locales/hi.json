@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "टनल एज ने रेट-लिमिट लगा दिया (HTTP 429) — कम समय में बहुत ज़्यादा अनुरोध। डैशबोर्ड अपने आप फिर कोशिश करता है; अगर यह बना रहे, तो कुछ सेकंड रुककर रीलोड करें।",
       "session_expired": "सत्र समाप्त हो गया।",
       "session_expired_sign_in_again": "सत्र समाप्त हो गया। टर्मिनल में kirocrew token चलाएँ, फिर फिर से साइन इन करने के लिए इस पृष्ठ के शीर्ष पर बैनर में URL पेस्ट करें।",
+      "stale_owner_session": "यह सत्र कॉन्फ़िगर किए गए स्वामी से पहले का है। फिर से साइन इन करें।",
+      "stale_owner_session_sign_in_again": "यह सत्र कॉन्फ़िगर किए गए स्वामी से पहले का है (साइन इन KIROCREW_OWNER_ID सेट होने से पहले हुआ था)। टर्मिनल में kirocrew token चलाएँ, फिर फिर से साइन इन करने के लिए इस पृष्ठ के शीर्ष पर बैनर में URL पेस्ट करें।",
       "stream_ended_without_completion": "स्ट्रीम पूरी होने से पहले समाप्त हो गई",
       "unexpected_server_response": "सर्वर से अनपेक्षित प्रतिक्रिया"
     }
@@ -5510,8 +5512,10 @@
       "set_up_kiro": "Kiro सेट अप करें",
       "setup": "सेटअप",
       "setup_check_unavailable": "सेटअप जाँच उपलब्ध नहीं",
+      "sign_in_again_to_continue": "जारी रखने के लिए फिर से साइन इन करें।",
       "sign_in_method_note": "दोनों साइन-इन पूरा करने के लिए ब्राउज़र खोलते हैं। वही चुनें जो तुम्हारे प्लान से मेल खाता हो — साइन-इन पेज पर व्यक्तिगत Builder ID संगठन के SSO के साथ ही दिखती है, और Builder ID में कम मॉडल शामिल होते हैं।",
       "sign_in_personal_label": "व्यक्तिगत खाता — Builder ID, Google या GitHub",
+      "sign_in_required": "साइन इन आवश्यक",
       "sign_in_sso_hint": "तुम्हारे संगठन का आरंभिक URL और क्षेत्र पूछा जाता है।",
       "sign_in_sso_label": "संगठन का SSO — IAM Identity Center",
       "sign_in_to_kiro": "Kiro में साइन इन करें",

@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "トンネルエッジでレート制限されています (HTTP 429) — バーストでリクエストが多すぎます。ダッシュボードは自動的に再試行します。これが続く場合は、数秒待ってからリロードしてください。",
       "session_expired": "セッションの有効期限が切れました。",
       "session_expired_sign_in_again": "セッションの有効期限が切れました。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
+      "stale_owner_session": "このセッションはオーナー設定前のものです。再度サインインしてください。",
+      "stale_owner_session_sign_in_again": "このセッションはオーナー設定前のものです（KIROCREW_OWNER_ID の設定前にサインインされました）。ターミナルで kirocrew token を実行し、このページ上部のバナーに URL を貼り付けて再度サインインしてください。",
       "stream_ended_without_completion": "ストリームが完了せずに終了しました",
       "unexpected_server_response": "予期しないサーバーレスポンス"
     }
@@ -5427,8 +5429,10 @@
       "set_up_kiro": "Kiro をセットアップする",
       "setup": "セットアップ",
       "setup_check_unavailable": "セットアップチェックは利用できません",
+      "sign_in_again_to_continue": "続行するには再度サインインしてください。",
       "sign_in_method_note": "どちらもブラウザーを開いてサインインを完了します。ご利用のプランに合うものを選んでください。サインインページでは個人用の Builder ID が組織の SSO と並んで表示され、Builder ID で使えるモデルは少なくなります。",
       "sign_in_personal_label": "個人アカウント — Builder ID、Google、または GitHub",
+      "sign_in_required": "サインインが必要です",
       "sign_in_sso_hint": "組織の開始 URL とリージョンの入力を求められます。",
       "sign_in_sso_label": "組織の SSO — IAM Identity Center",
       "sign_in_to_kiro": "Kiro にサインイン",

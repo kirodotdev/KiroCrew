@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Débit limité par la bordure du tunnel (HTTP 429) — trop de requêtes d’un coup. Le tableau de bord réessaie automatiquement ; si cela persiste, attends quelques secondes et recharge la page.",
       "session_expired": "Session expirée.",
       "session_expired_sign_in_again": "Session expirée. Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",
+      "stale_owner_session": "Cette session est antérieure au propriétaire configuré. Reconnectez-vous.",
+      "stale_owner_session_sign_in_again": "Cette session est antérieure au propriétaire configuré (elle a été ouverte avant la définition de KIROCREW_OWNER_ID). Exécutez kirocrew token dans un terminal, puis collez l'URL dans la bannière en haut de cette page pour vous reconnecter.",
       "stream_ended_without_completion": "Flux interrompu avant la fin",
       "unexpected_server_response": "Réponse inattendue du serveur"
     }
@@ -5593,8 +5595,10 @@
       "set_up_kiro": "Configurer Kiro",
       "setup": "Configuration",
       "setup_check_unavailable": "Vérification de la configuration indisponible",
+      "sign_in_again_to_continue": "Reconnectez-vous pour continuer.",
       "sign_in_method_note": "Les deux ouvrent un navigateur pour terminer la connexion. Choisissez celle qui correspond à votre forfait : la page de connexion propose une Builder ID personnelle à côté du SSO de l'organisation, et une Builder ID donne accès à moins de modèles.",
       "sign_in_personal_label": "Compte personnel — Builder ID, Google ou GitHub",
+      "sign_in_required": "Connexion requise",
       "sign_in_sso_hint": "Demande l'URL de départ et la région de votre organisation.",
       "sign_in_sso_label": "SSO de l'organisation — IAM Identity Center",
       "sign_in_to_kiro": "Se connecter à Kiro",

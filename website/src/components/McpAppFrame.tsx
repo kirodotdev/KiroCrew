@@ -10,6 +10,7 @@ import {
   type McpAppRenderPayload,
 } from '../lib/mcpAppSrcdoc'
 import { planReveal, prefersReducedMotion, hasRevealed, markRevealed } from './mcpAppReveal'
+import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 
 /** Inline height for a rendered MCP App before it reports its own size. */
 const DEFAULT_HEIGHT = 480
@@ -667,6 +668,10 @@ export default function McpAppFrame({ payload }: { payload: McpAppRenderPayload 
               const body = (await resp.json().catch(() => null)) as
                 | { result?: unknown; error?: unknown }
                 | null
+              // Raise the dashboard's re-auth prompt when the relay was denied
+              // for a stale pre-owner session; the error below still reaches
+              // the app iframe, which keeps its own failure handling.
+              if (!resp.ok) noteStaleOwnerResponse(resp.status, body)
               if (resp.ok && body && 'result' in body) {
                 post({ jsonrpc: '2.0', id: msg.id, result: body.result })
               } else if (body && body.error && typeof body.error === 'object') {

@@ -1897,6 +1897,7 @@ def _deny_non_owner_browser_request(
     # module's sibling, so a top-level import would close a cycle.
     from kiro_crew.dashboard.handlers.source_providers import (
         is_owner_dashboard_request,
+        stale_owner_session_response,
     )
 
     if is_owner_dashboard_request(request):
@@ -1931,6 +1932,11 @@ def _deny_non_owner_browser_request(
         resources=request.path,
         error="browser mutations require the dashboard owner",
     )
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
     return web.json_response(
         {"error": "dashboard user required",
          "code": "dashboard_user_required"},

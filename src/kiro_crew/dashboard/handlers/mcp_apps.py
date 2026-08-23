@@ -26,7 +26,10 @@ from aiohttp import web
 from kiro_crew import security
 from kiro_crew.dashboard.chat_utils import _history_key_for, effective_session_key
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session, _read_session_key
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.mcp_apps_render import load_spool
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.rewriter import default_socket_path
@@ -140,6 +143,11 @@ async def api_mcp_apps_call(request: web.Request) -> web.Response:
             )
         except Exception:  # pragma: no cover
             logger.debug("SEL audit for non-owner mcp-apps call failed", exc_info=True)
+        # Deny decision made above; only the response label changes for a
+        # signed pre-owner bootstrap subject (see stale_owner_session_response).
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "owner authorization required"}, status=403)
 
     # Ephemeral gate: incognito/guest sessions must not be able to drive

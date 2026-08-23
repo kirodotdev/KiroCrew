@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "隧道边缘已限流（HTTP 429）— 短时间内请求过多。仪表板会自动重试；如果持续出现，等待几秒后重新加载。",
       "session_expired": "会话已过期。",
       "session_expired_sign_in_again": "会话已过期。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
+      "stale_owner_session": "此会话早于已配置的所有者。请重新登录。",
+      "stale_owner_session_sign_in_again": "此会话早于已配置的所有者（登录发生在设置 KIROCREW_OWNER_ID 之前）。请在终端运行 kirocrew token，然后将 URL 粘贴到本页顶部的横幅中重新登录。",
       "stream_ended_without_completion": "流在完成前结束",
       "unexpected_server_response": "服务器响应异常"
     }
@@ -5427,8 +5429,10 @@
       "set_up_kiro": "设置 Kiro",
       "setup": "安装设置",
       "setup_check_unavailable": "无法检查安装状态",
+      "sign_in_again_to_continue": "请重新登录以继续。",
       "sign_in_method_note": "两者都会打开浏览器以完成登录。请选择适合你套餐的方式：登录页面将个人 Builder ID 与组织 SSO 并列显示，而 Builder ID 可用模型更少。",
       "sign_in_personal_label": "个人账户 — Builder ID、Google 或 GitHub",
+      "sign_in_required": "需要重新登录",
       "sign_in_sso_hint": "会提示输入组织的起始 URL 和区域。",
       "sign_in_sso_label": "组织 SSO — IAM Identity Center",
       "sign_in_to_kiro": "登录 Kiro",

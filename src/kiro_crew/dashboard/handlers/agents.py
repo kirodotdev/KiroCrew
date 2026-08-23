@@ -61,7 +61,10 @@ from kiro_crew.dashboard.handlers._shared import (
     apply_skill_mapping,
 )
 from kiro_crew.dashboard.handlers.discover import _redact_external
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
@@ -153,6 +156,11 @@ async def _require_owner(request: web.Request, operation: str) -> web.Response |
         )
     except Exception:  # pragma: no cover — audit must never change the outcome
         logger.debug("SEL audit for non-owner %s failed", operation, exc_info=True)
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
     return web.json_response(
         {"error": "owner authorization required", "code": "owner_only"},
         status=403,

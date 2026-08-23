@@ -33,7 +33,10 @@ from kiro_crew.cloud import source as source_mod
 from kiro_crew.cloud import ssm
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.launch_engine import RealLaunchEngine
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -91,6 +94,11 @@ def _guard(request: web.Request, operation: str) -> Optional[web.Response]:
     # with no owner configured, the owner's own local token still matches.
     if not is_owner_dashboard_request(request):
         _audit(operation, "denied", error="non-owner rejected")
+        # Deny decision made above; only the response label changes for a
+        # signed pre-owner bootstrap subject (see stale_owner_session_response).
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response(
             {
                 "error": "cloud provisioning is owner-only (the dashboard owner, "

@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitazione della frequenza applicata dall'edge del tunnel (HTTP 429) — troppe richieste ravvicinate. La dashboard riprova automaticamente; se il problema persiste, attendi qualche secondo e ricarica.",
       "session_expired": "Sessione scaduta.",
       "session_expired_sign_in_again": "Sessione scaduta. Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",
+      "stale_owner_session": "Questa sessione è precedente al proprietario configurato. Accedi di nuovo.",
+      "stale_owner_session_sign_in_again": "Questa sessione è precedente al proprietario configurato (l'accesso è avvenuto prima che KIROCREW_OWNER_ID fosse impostato). Esegui kirocrew token in un terminale, quindi incolla l'URL nel banner in cima a questa pagina per accedere di nuovo.",
       "stream_ended_without_completion": "Lo stream è terminato senza completarsi",
       "unexpected_server_response": "Risposta del server inaspettata"
     }
@@ -5593,8 +5595,10 @@
       "set_up_kiro": "Configura Kiro",
       "setup": "Configurazione",
       "setup_check_unavailable": "Controllo della configurazione non disponibile",
+      "sign_in_again_to_continue": "Accedi di nuovo per continuare.",
       "sign_in_method_note": "Entrambi aprono un browser per completare l'accesso. Scegli quello corrispondente al tuo piano: la pagina di accesso propone una Builder ID personale accanto al SSO dell'organizzazione, e una Builder ID comprende meno modelli.",
       "sign_in_personal_label": "Account personale — Builder ID, Google o GitHub",
+      "sign_in_required": "Accesso richiesto",
       "sign_in_sso_hint": "Richiede l'URL iniziale e la regione della tua organizzazione.",
       "sign_in_sso_label": "SSO dell'organizzazione — IAM Identity Center",
       "sign_in_to_kiro": "Accedi a Kiro",

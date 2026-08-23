@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
       "session_expired": "세션이 만료되었습니다.",
       "session_expired_sign_in_again": "세션이 만료되었습니다. 터미널에서 kirocrew token 을 실행한 뒤 이 페이지 상단 배너에 URL을 붙여넣어 다시 로그인하세요.",
+      "stale_owner_session": "이 세션은 소유자 설정 이전에 만들어졌습니다. 다시 로그인하세요.",
+      "stale_owner_session_sign_in_again": "이 세션은 소유자 설정 이전에 만들어졌습니다(KIROCREW_OWNER_ID 설정 전에 로그인됨). 터미널에서 kirocrew token 을 실행한 뒤 이 페이지 상단 배너에 URL을 붙여넣어 다시 로그인하세요.",
       "stream_ended_without_completion": "스트림이 완료되지 않은 채 종료되었습니다",
       "unexpected_server_response": "예기치 않은 서버 응답"
     }
@@ -5427,8 +5429,10 @@
       "set_up_kiro": "Kiro 설정",
       "setup": "설정",
       "setup_check_unavailable": "설정 확인을 사용할 수 없음",
+      "sign_in_again_to_continue": "계속하려면 다시 로그인하세요.",
       "sign_in_method_note": "둘 다 브라우저를 열어 로그인을 완료합니다. 플랜에 맞는 방식을 선택하세요 — 로그인 페이지에서는 조직 SSO와 함께 개인용 Builder ID를 제공하며, Builder ID로 사용할 수 있는 모델은 더 적습니다.",
       "sign_in_personal_label": "개인 계정 — Builder ID, Google 또는 GitHub",
+      "sign_in_required": "로그인 필요",
       "sign_in_sso_hint": "조직의 시작 URL과 리전을 입력하라는 메시지가 표시됩니다.",
       "sign_in_sso_label": "조직 SSO — IAM Identity Center",
       "sign_in_to_kiro": "Kiro에 로그인",

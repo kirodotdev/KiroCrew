@@ -22,6 +22,7 @@ import {
   type WatchStatus,
 } from '../api'
 import { approvalRoute } from './approvalActions'
+import { noteStaleOwnerResponse } from '../../../api/staleOwnerSignal'
 import { purposeFromToolArgs } from '../../../utils/toolPurpose'
 import type { NotificationPayload, PetMood, PetState } from '../src/shared/types'
 import type { PackManifest, PackMeta } from '../src/shared/appearanceTypes'
@@ -1273,7 +1274,7 @@ export async function respondApproval(
   id: string,
   action: string,
   pattern?: string,
-): Promise<{ ok: boolean; error?: string }> {
+): Promise<{ ok: boolean; error?: string; staleOwnerSession?: boolean }> {
   const route = approvalRoute(action)
   try {
     const res =
@@ -1294,7 +1295,34 @@ export async function respondApproval(
               ...(pattern ? { pattern } : {}),
             }),
           })
-    if (!res.ok) return { ok: false, error: `approval failed (${res.status})` }
+    if (!res.ok) {
+      // A stale pre-owner session (signed in before KIROCREW_OWNER_ID was set)
+      // is the one denial a retry can never clear — surface the backend's own
+      // explanation instead of the opaque status so the panel user learns the
+      // remedy (sign in again). Other failures keep the terse status form.
+      // try/catch rather than promise .catch: a Response-shaped stub without a
+      // text() method throws synchronously, which .catch cannot intercept.
+      let text = ''
+      try {
+        text = await res.text()
+      } catch {
+        /* body unreadable — fall through to the status form */
+      }
+      if (noteStaleOwnerResponse(res.status, text)) {
+        let reason = ''
+        try {
+          reason = String((JSON.parse(text) as { error?: unknown }).error ?? '')
+        } catch { /* body unreadable — fall through to the status form */ }
+        // The flag lets the panel render its LOCALIZED remedy; `error` keeps
+        // the backend prose for logs and any consumer without a catalog.
+        return {
+          ok: false,
+          staleOwnerSession: true,
+          error: reason || `approval failed (${res.status})`,
+        }
+      }
+      return { ok: false, error: `approval failed (${res.status})` }
+    }
     return { ok: true }
   } catch (err) {
     return { ok: false, error: String(err) }

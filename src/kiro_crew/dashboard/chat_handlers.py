@@ -4337,7 +4337,10 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
     # Imported here, not at module scope: source_providers imports chat state
     # helpers, so a top-level import would close a cycle (same pattern as
     # api_chat_slots' owner-only check-status gate above).
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import (
+        is_owner_dashboard_request,
+        stale_owner_session_response,
+    )
 
     if not is_owner_dashboard_request(request):
         try:
@@ -4350,6 +4353,11 @@ def deny_non_dashboard_caller(request: web.Request, operation: str) -> web.Respo
             )
         except Exception:  # pragma: no cover - audit is best-effort
             logger.debug("SEL audit failed for %s denial", operation, exc_info=True)
+        # Deny decision made above; only the response label changes for a
+        # signed pre-owner bootstrap subject (see stale_owner_session_response).
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "forbidden"}, status=403)
     return None
 

@@ -5,6 +5,8 @@
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "Limitación de peticiones en el borde del túnel (HTTP 429) — demasiadas solicitudes en una ráfaga. El panel lo reintenta automáticamente; si esto continúa, espera unos segundos y recarga la página.",
       "session_expired": "La sesión ha caducado.",
       "session_expired_sign_in_again": "La sesión ha caducado. Ejecuta kirocrew token en una terminal y pega la URL en el banner de la parte superior de esta página para volver a iniciar sesión.",
+      "stale_owner_session": "Esta sesión es anterior al propietario configurado. Vuelve a iniciar sesión.",
+      "stale_owner_session_sign_in_again": "Esta sesión es anterior al propietario configurado (se inició antes de establecer KIROCREW_OWNER_ID). Ejecuta kirocrew token en una terminal y pega la URL en el banner de la parte superior de esta página para volver a iniciar sesión.",
       "stream_ended_without_completion": "La transmisión terminó sin completarse",
       "unexpected_server_response": "Respuesta inesperada del servidor"
     }
@@ -5593,8 +5595,10 @@
       "set_up_kiro": "Configurar Kiro",
       "setup": "Configuración",
       "setup_check_unavailable": "Comprobación de la configuración no disponible",
+      "sign_in_again_to_continue": "Vuelve a iniciar sesión para continuar.",
       "sign_in_method_note": "Ambos abren un navegador para completar el inicio de sesión. Elige el que corresponda a tu plan: la página de inicio de sesión ofrece una Builder ID personal junto al SSO de la organización, y una Builder ID incluye menos modelos.",
       "sign_in_personal_label": "Cuenta personal — Builder ID, Google o GitHub",
+      "sign_in_required": "Inicio de sesión requerido",
       "sign_in_sso_hint": "Solicita la URL de inicio y la región de tu organización.",
       "sign_in_sso_label": "SSO de la organización — IAM Identity Center",
       "sign_in_to_kiro": "Iniciar sesión en Kiro",

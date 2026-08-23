@@ -4092,6 +4092,52 @@ async def _github_dismiss_review(ref: SourceRef, review_id: str) -> bool:
 
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
+# The one owner-gate denial that gets a machine-readable label of its own. A
+# token subject is fixed at mint time as ``owner_id or <bootstrap subject>``,
+# and every refresh re-mints from the INCOMING subject, so a session signed in
+# before ``KIROCREW_OWNER_ID`` was configured carries `local-app` /
+# `local-startup` for its whole life. Once an owner exists, the gate denies
+# that subject — correctly — but a generic ``403 forbidden`` gives the user no
+# way to tell "sign in again" apart from any other authorization failure.
+STALE_OWNER_SESSION_CODE = "stale_session_reauth"
+
+
+def stale_owner_session_response(request: web.Request) -> web.Response | None:
+    """The distinct denial label for a signed pre-owner bootstrap session.
+
+    Called strictly AFTER an owner-gate deny decision has been made: it never
+    grants, widens, or re-orders access — it only chooses the response body for
+    a request that is already refused. Returns the ``401 stale_session_reauth``
+    body when the denied caller is a SIGNED dashboard-user bootstrap subject
+    while an owner is configured, and ``None`` for every other denied caller,
+    who keeps the call site's existing generic response. The discriminator is
+    reserved for already-authenticated callers on purpose: an unsigned, absent,
+    or app-token caller must not learn which denial class it hit.
+
+    401 rather than 403 because re-authentication is the remedy — the caller's
+    credential is stale, not merely under-privileged. Only a fresh sign-in (a
+    newly minted token, whose subject is derived from the now-configured owner)
+    clears it; a token refresh cannot, since refresh preserves the subject.
+    """
+    caller = str(request.get("user") or "")
+    if request.get("app") != "":
+        # App tokens keep their generic denial, and an absent app claim means
+        # the middleware never authenticated this caller as a dashboard user.
+        return None
+    if caller not in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        return None
+    state = request.app["state"]
+    owner_id = str(getattr(state, "owner_id", "") or "")
+    if not owner_id:
+        return None
+    return web.json_response(
+        {
+            "error": "this session predates the configured owner; sign in again",
+            "code": STALE_OWNER_SESSION_CODE,
+        },
+        status=401,
+    )
+
 
 def is_owner_dashboard_request(request: web.Request) -> bool:
     """Return whether request has a configured or implicit local owner identity."""
@@ -4154,6 +4200,11 @@ def _authorize_owner_request(
         return web.json_response({"error": "forbidden"}, status=403)
     if caller != owner_id:
         _audit_source_api(request, operation, "denied", "non_owner")
+        # Deny decision made above; the helper only relabels the response for a
+        # signed pre-owner bootstrap subject. Every other caller stays generic.
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "forbidden"}, status=403)
     return None
 
