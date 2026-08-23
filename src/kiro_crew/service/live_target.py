@@ -45,7 +45,6 @@ import os
 import sys
 from pathlib import Path
 
-from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import loader
 
@@ -54,11 +53,6 @@ from kiro_crew.config import loader
 #: if the pointer is somehow still satisfiable — the loop guard that does not
 #: depend on path comparison being correct.
 EXEC_MARKER = "KIROCREW_LIVE_EXECED"
-
-#: Owner-only: the pointer is a code-execution input, and mode does not isolate
-#: another process running as the same UID, but a world-writable one would be
-#: strictly worse.
-_MODE = 0o600
 
 _FILENAME = "live_target.json"
 
@@ -190,13 +184,16 @@ def write_target(checkout: Path | str) -> Path:
     resolved = validate(str(checkout))
     payload = json.dumps({"checkout": str(resolved)}, indent=2) + "\n"
     path = pointer_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, payload, mode=_MODE)
-    # atomic_write's mode is a POSIX permission bit and a no-op on Windows, which
-    # would leave a code-execution input inheriting the directory's ACL there.
-    # restrict_to_owner applies the owner-only DACL instead, so the pointer is
-    # owner-only on every platform.
-    platform_compat.restrict_to_owner(path)
+    # ``restrict_to_owner=True`` locks the temp file down BEFORE the payload
+    # reaches it: the pointer is a code-execution input read at every startup,
+    # and the previous post-rename lockdown left it inheriting the directory's
+    # ACL on Windows for the whole write window (issue #5285). It implies the
+    # owner-only POSIX mode, so the pointer is owner-only on every platform,
+    # and a lockdown failure refuses the write before the final path is
+    # touched. ``atomic_write`` also creates the parent directory itself,
+    # AFTER its planted-link check — a caller-side mkdir would walk through a
+    # pre-planted link before that check could see it.
+    atomic_write(path, payload, restrict_to_owner=True)
     return resolved
 
 
@@ -226,14 +223,18 @@ def restore(prior: str | None) -> bool:
         if prior is None:
             path.unlink(missing_ok=True)
         else:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_write(path, prior, mode=_MODE)
             # Harden the restored file for the same reason write_target does:
-            # atomic_write's mode is a POSIX permission bit and a no-op on
-            # Windows, so without this the pointer — a code-execution input read
-            # at every startup — would come back inheriting the directory's ACL.
-            # A rollback must not be the step that widens access to it.
-            platform_compat.restrict_to_owner(path)
+            # the pointer is a code-execution input read at every startup, and
+            # a rollback must not be the step that widens access to it.
+            # ``restrict_to_owner=True`` locks the temp file down before the
+            # content reaches it (the previous post-rename lockdown left the
+            # restored pointer inheriting the directory's ACL on Windows for
+            # the write window, issue #5285), and a lockdown failure surfaces
+            # as the OSError this except already maps to ``False`` — before
+            # the final path is touched, so a failed rollback never publishes
+            # an unprotected pointer. The parent mkdir lives inside
+            # ``atomic_write``, after its planted-link check.
+            atomic_write(path, prior, restrict_to_owner=True)
         return True
     except OSError:
         return False

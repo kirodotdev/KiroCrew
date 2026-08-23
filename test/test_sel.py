@@ -535,6 +535,57 @@ class TestHmacKeyManagementExtras:
         assert (tmp_path / "trust" / "sel_hmac.key").exists()
         assert log._hmac_key
 
+    def test_lockdown_failure_is_fail_soft(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A restrict_to_owner failure must not crash SecurityEventLog init.
+
+        The chmod test above only exercises the POSIX arm of
+        ``restrict_to_owner``; on Windows it runs icacls instead, so this
+        variant injects the failure at ``restrict_to_owner`` itself — the seam
+        ``atomic_write`` calls on every platform — pinning that
+        ``restrict_on_error="warn"`` keeps key creation fail-soft.
+        """
+        def _refuse(_target):
+            raise OSError("icacls failed")
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _refuse)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert (tmp_path / "trust" / "sel_hmac.key").exists()
+        assert log._hmac_key
+
+    def test_key_lockdown_precedes_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh HMAC key must never exist in a file that has not been
+        locked down yet.
+
+        atomic_write(restrict_to_owner=True) applies the lockdown to the TEMP
+        file before the key bytes reach it (the previous post-rename lockdown
+        left a brand-new key readable under the inherited DACL on Windows for
+        the write window, issue #5285). Asserted by measuring the file's SIZE
+        at lockdown time — zero means no key byte existed yet.
+        """
+        from kiro_crew import platform_compat
+
+        trust_dir = tmp_path / "trust"
+        calls: list[tuple[Path, int]] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            p = Path(str(target))
+            if p.is_file() and p.parent == trust_dir:
+                calls.append((p, os.stat(p).st_size))
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+
+        assert log._hmac_key
+        assert calls, "premise: the key lockdown ran at all"
+        _, size = calls[0]
+        assert size == 0, f"the key file already held {size} bytes at lockdown time"
+
     def test_singleton_init_is_idempotent(self, tmp_path: Path) -> None:
         a = SecurityEventLog(base_dir=tmp_path, sync=True)
         # Second call must reuse the original instance and ignore base_dir.

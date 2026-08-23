@@ -54,10 +54,6 @@ logger = logging.getLogger(__name__)
 #: rename cannot silently drop the keystone protection.
 SECRETS_FILENAME = "ops_mission_control_secrets.json"
 
-#: Owner-only mode for the secret file (POSIX). Windows gets an owner-only DACL
-#: via ``platform_compat.restrict_to_owner``.
-_SECRET_FILE_MODE = 0o600
-
 #: Value returned to callers in place of a stored secret. Secrets are write-only
 #: over the API: the UI shows whether a field is set, never what it is.
 REDACTED_PLACEHOLDER = "••••••••"
@@ -219,19 +215,23 @@ class KeystoneFileBackend:
 
     def _write(self, data: dict[str, dict[str, str]]) -> None:
         payload = json.dumps(data, indent=2, sort_keys=True)
-        atomic_write(self._path, payload, mode=_SECRET_FILE_MODE)
-        # Fail-loud lockdown. ``atomic_write``'s mode covers POSIX; this also
-        # applies an owner-only DACL on Windows, where POSIX mode bits are not
-        # enforced. A lockdown failure must not leave a world-readable token on
-        # disk, so we unlink and re-raise rather than continue.
-        try:
-            platform_compat.restrict_to_owner(self._path)
-        except OSError:
-            try:
-                self._path.unlink()
-            except OSError:
-                logger.exception("failed to remove secret file after lockdown failure")
-            raise
+        # Fail-loud lockdown BEFORE any content lands: ``restrict_to_owner=True``
+        # applies the owner-only DACL to the temp file before the payload
+        # reaches it (a post-rename lockdown left every stored provider token
+        # readable under the inherited DACL on Windows for the write window,
+        # issue #5285) and implies the owner-only POSIX mode. The default
+        # ``restrict_on_error="raise"`` refuses to publish a token file it
+        # cannot protect.
+        #
+        # No cleanup on failure: every failure inside ``atomic_write`` —
+        # lockdown, payload write (ENOSPC), rename — happens BEFORE the final
+        # path is touched, so an unprotectable file never exists at
+        # ``self._path`` at all. The unlink the old code ran on lockdown
+        # failure existed to remove a NEW store already PUBLISHED at a wide
+        # DACL; that state is unreachable now, and keeping the unlink would
+        # instead delete the PREVIOUS, healthy, already-locked-down store —
+        # every stored provider token — on one transient icacls failure.
+        atomic_write(self._path, payload, restrict_to_owner=True)
 
     # -- SecretBackend -----------------------------------------------------
 

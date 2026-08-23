@@ -26,7 +26,6 @@ its own and is a pure, side-effect-light helper library.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -38,6 +37,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.mcp_apps_render import MAX_SPOOL_BYTES, SPOOL_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -165,28 +165,20 @@ def write_spool(payload: dict) -> str:
             f"mcp-apps spool record {len(data)} bytes exceeds cap {MAX_SPOOL_BYTES}"
         )
     path = directory / f"{spool_id}.json"
-    # O_CREAT|O_EXCL would be ideal, but uuid4 collision is negligible and
-    # O_TRUNC keeps this idempotent on the (impossible) reuse. Mode honours
-    # umask so chmod after to guarantee 0600.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover
-        logger.debug("could not chmod spool file %s to 0600", path, exc_info=True)
-    if not platform_compat.IS_POSIX:  # pragma: no cover — exercised on Windows CI
-        # POSIX mode bits above are meaningless on Windows — apply the
-        # owner-only DACL (repo rule for secret-bearing files). Fail closed:
-        # if the lockdown cannot be established, remove the record rather
-        # than leave a readable capability token behind, then propagate so
-        # the interception failure-safe path delivers the original result.
-        try:
-            platform_compat.restrict_to_owner(path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                path.unlink()
-            raise
+    # Lockdown-before-content + atomic publish: ``restrict_to_owner=True``
+    # applies the owner-only DACL (and 0o600 on POSIX) to the temp file BEFORE
+    # any byte of the record — whose filename and callback_secret are live
+    # capability tokens — reaches it. The previous hand-rolled ``os.open`` at
+    # the final path published the content first and applied the Windows DACL
+    # only afterwards, leaving it readable under the inherited ACL for the
+    # write window (issue #5285). Fail closed is now structural: every failure
+    # (lockdown, write, rename) happens before the final path is touched, so
+    # an unprotected record never exists there and no unlink is needed; the
+    # raised OSError propagates so the interception caller's failure-safe path
+    # delivers the original tool result with no app render. uuid4 collision is
+    # negligible, and the atomic replace keeps this idempotent on the
+    # (impossible) reuse.
+    atomic_write(path, data, restrict_to_owner=True)
     return spool_id
 
 
@@ -486,6 +478,16 @@ def sweep_spool(max_age_hours: float = 24.0) -> int:
         try:
             if not sidecar.with_suffix(".json").exists() and sidecar.stat().st_mtime < cutoff:
                 sidecar.unlink()
+        except OSError:
+            continue
+    # Orphaned atomic_write temps. write_spool's atomic_write cleans its temp
+    # up on every exception, so one can only survive a hard kill (SIGKILL,
+    # power loss) mid-write — but this directory's whole point is bounded
+    # lifetime and nothing else reaps it, so age them out with the records.
+    for temp in directory.glob("*.tmp"):
+        try:
+            if temp.stat().st_mtime < cutoff:
+                temp.unlink()
         except OSError:
             continue
     return removed

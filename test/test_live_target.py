@@ -24,7 +24,6 @@ import pytest
 
 from kiro_crew.service.live_target import (
     _FILENAME,
-    _MODE,
     EXEC_MARKER,
     InvalidTarget,
     maybe_reexec,
@@ -287,26 +286,40 @@ class TestWriteTarget:
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
         if os.name != "posix":
-            # Windows has no POSIX bits: write_target applies an owner-only DACL
-            # through restrict_to_owner, which the next test pins directly.
+            # Windows has no POSIX bits: atomic_write(restrict_to_owner=True)
+            # applies an owner-only DACL, which the next test pins directly.
             pytest.skip("POSIX permission bits are not meaningful here")
-        assert pointer_path().stat().st_mode & 0o777 == _MODE
+        assert pointer_path().stat().st_mode & 0o777 == 0o600
 
-    def test_applies_owner_only_lockdown(self, tmp_path, monkeypatch):
-        """restrict_to_owner is called on the written pointer.
+    def test_lockdown_precedes_content(self, tmp_path, monkeypatch):
+        """The pointer — a code-execution input read at startup — must never
+        exist in a file that has not been locked down yet.
 
-        This is the only owner-only mechanism on Windows, where atomic_write's
-        mode argument is a no-op, so it must be asserted independently of the
-        POSIX bit check above.
+        atomic_write(restrict_to_owner=True) locks the TEMP file down before
+        any content reaches it (the previous post-rename lockdown left the
+        pointer inheriting the directory ACL on Windows for the write window,
+        issue #5285). Asserted by measuring the file's SIZE at lockdown time —
+        zero means no payload byte existed yet. A post-write stat passes on
+        the buggy ordering too, so it would not be a regression test.
         """
-        seen: list = []
-        monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner",
-            lambda path: seen.append(Path(path)),
-        )
+        from kiro_crew import platform_compat
+
+        calls: list[tuple[Path, int]] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            calls.append((Path(target), os.stat(target).st_size))
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
         checkout = _make_valid_checkout(tmp_path)
         write_target(checkout)
-        assert seen == [pointer_path()]
+        # Filter to the pointer's directory: the hook is patched process-wide,
+        # so an unrelated secret write must not shift the indexing.
+        pointer_calls = [(p, s) for p, s in calls if p.parent == pointer_path().parent]
+        assert pointer_calls, f"the pointer lockdown never ran: {calls}"
+        _, size = pointer_calls[0]
+        assert size == 0, f"the file already held {size} payload bytes at lockdown time"
 
     def test_round_trips_through_read_target(self, tmp_path):
         checkout = _make_valid_checkout(tmp_path)
@@ -361,26 +374,38 @@ class TestSnapshotRestore:
     def test_restore_reapplies_the_owner_only_dacl(self, tmp_path, monkeypatch):
         """A rollback must not be the step that widens access to the pointer.
 
-        atomic_write's mode is a POSIX bit and a no-op on Windows, so without an
-        explicit restrict_to_owner the restored pointer -- a code-execution input
-        read at every startup -- comes back inheriting the directory ACL, and on
-        a shared data home another local account could redirect it.
+        atomic_write(restrict_to_owner=True) locks the temp file down BEFORE
+        the restored content reaches it — the pointer is a code-execution
+        input read at every startup, and on a shared data home another local
+        account could otherwise redirect it during the write window.
         """
-        hardened: list = []
-        monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+        from kiro_crew import platform_compat
+
+        calls: list[tuple[Path, int]] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            calls.append((Path(target), os.stat(target).st_size))
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
         assert restore('{"checkout": "/old/path"}\n') is True
 
-        assert hardened == [path], "restore must harden the file it wrote"
+        # Filter to the pointer's directory: the hook is patched process-wide,
+        # so an unrelated secret write must not shift the indexing.
+        pointer_calls = [(p, s) for p, s in calls if p.parent == path.parent]
+        assert pointer_calls, f"restore must harden the file it writes: {calls}"
+        _, size = pointer_calls[0]
+        assert size == 0, f"the file already held {size} payload bytes at lockdown time"
 
     def test_restore_none_does_not_harden_a_deleted_pointer(self, tmp_path, monkeypatch):
         """Deleting leaves no file, so there is nothing to apply a DACL to."""
         hardened: list = []
         monkeypatch.setattr(
-            "kiro_crew.service.live_target.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
+            "kiro_crew.platform_compat.restrict_to_owner", lambda path: hardened.append(path))
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("anything")
@@ -391,15 +416,20 @@ class TestSnapshotRestore:
         assert hardened == []
 
     def test_restore_returns_false_when_hardening_fails(self, tmp_path, monkeypatch):
-        """A partial rollback reports False so the caller can warn the operator."""
+        """A partial rollback reports False so the caller can warn the operator.
+
+        The lockdown failure now happens BEFORE the rename, so a rollback that
+        could not be hardened also never publishes an unprotected pointer.
+        """
         def boom(_path):
             raise OSError(5, "icacls failed")
 
-        monkeypatch.setattr("kiro_crew.service.live_target.platform_compat.restrict_to_owner", boom)
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", boom)
         path = pointer_path()
         path.parent.mkdir(parents=True, exist_ok=True)
 
         assert restore('{"checkout": "/old/path"}\n') is False
+        assert not path.exists(), "a failed rollback published an unprotected pointer"
 
     def test_restore_returns_false_on_oserror(self, tmp_path, monkeypatch):
         """Best-effort: returns False rather than raising."""

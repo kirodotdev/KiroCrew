@@ -46,6 +46,7 @@ from pathlib import Path
 from typing import IO, Literal, NamedTuple, overload
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -800,60 +801,26 @@ class SecurityEventLog:
                 )
             return existing
         key = os.urandom(32)
-        # Create the key ATOMICALLY: write the full 32 bytes to a temp file in
-        # the same dir (0o600 from birth, so never briefly world-readable) and
-        # os.replace() it into place — the same pattern prune() uses. A plain
-        # os.open()+os.write() is NOT atomic: a crash or full-disk partial
-        # write between the two calls leaves a 0-byte/short key on disk, which
-        # the load-time length check above would then reject with a hard
-        # RuntimeError on the NEXT boot — bricking every SecurityEventLog()
+        # Create the key ATOMICALLY (temp file + rename via ``atomic_write``,
+        # whose short-write loop was modelled on the hand-rolled one this call
+        # replaces): a plain os.open()+os.write() is NOT atomic — a crash or
+        # full-disk partial write leaves a 0-byte/short key on disk, which the
+        # load-time length check above would then reject with a hard
+        # RuntimeError on the NEXT boot, bricking every SecurityEventLog()
         # init until an operator manually removes the file. os.replace() makes
-        # the key file visible only once it is complete, so KiroCrew itself can
-        # never manufacture the hard-fail state; it fires solely on genuine
-        # external corruption/tampering (which is what the error message is
-        # written for).
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(key_path.parent), prefix=".sel_hmac_", suffix=".tmp"
-        )
-        try:
-            # os.write() may return a SHORT count (fewer bytes than len(key)),
-            # notably when storage is nearly full. Ignoring it would publish a
-            # truncated key while the running process keeps signing with the
-            # full in-memory key — the next boot then hard-fails on the short
-            # on-disk key and the existing records can't be verified. Loop
-            # until every byte is written; treat a 0-byte write as an error.
-            mv = memoryview(key)
-            while mv:
-                n = os.write(tmp_fd, mv)
-                if n == 0:
-                    raise OSError("short write persisting SEL HMAC key (wrote 0 bytes)")
-                mv = mv[n:]
-            os.close(tmp_fd)
-            tmp_fd = -1
-            os.replace(tmp_path, str(key_path))
-        except BaseException:
-            if tmp_fd != -1:
-                os.close(tmp_fd)
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        # Re-enforce owner-only perms (POSIX 0o600 / Windows owner-only DACL).
-        # Fail-SOFT by design: a read-only FS must not crash SecurityEventLog
-        # init (see test_chmod_failure_is_swallowed). Unlike token_secret.py,
-        # which treats the same failure as merely a warning too, the SEL key
-        # tolerates chmod failure at startup.
-        try:
-            platform_compat.restrict_to_owner(key_path)
-        except OSError:
-            # Logs the key file PATH, never the key bytes.
-            logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                "failed to set owner-only permissions on SEL HMAC key %s; "
-                "file may be readable by other users",
-                key_path,
-                exc_info=True,
-            )
+        # the key file visible only once it is complete.
+        #
+        # ``restrict_to_owner=True`` locks the temp file down BEFORE the key
+        # bytes reach it — the previous post-rename lockdown left a brand-new
+        # key readable under the inherited DACL on Windows for the write
+        # window (issue #5285) — and implies 0o600 on POSIX.
+        # ``restrict_on_error="warn"`` keeps this site's fail-SOFT policy: a
+        # read-only FS / chmod failure must not crash SecurityEventLog init
+        # (see test_chmod_failure_is_swallowed). The linked-parent refusal
+        # implied by ``restrict_to_owner=True`` raises unconditionally, which
+        # is the right behavior for the key that signs the audit chain: a
+        # pre-planted link under the trust dir is hostile (#4381).
+        atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
         return key
 
     @contextmanager

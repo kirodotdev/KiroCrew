@@ -122,10 +122,6 @@ OPERATOR_ONLY_KEYS: tuple[str, ...] = (
     PRIMARY_KEY,
 )
 
-#: Owner-only, matching the secret file. The value is not a credential, but it IS a control
-#: whose confidentiality and integrity both matter, so it gets the same lockdown.
-_POLICY_FILE_MODE = 0o600
-
 
 def policy_path() -> Path:
     """Absolute path to the keystone policy file (honors ``KIROCREW_HOME``)."""
@@ -182,18 +178,22 @@ class _PolicyLock:
 
 def _write(data: dict[str, Any]) -> None:
     payload = json.dumps(data, indent=2, sort_keys=True)
-    atomic_write(policy_path(), payload, mode=_POLICY_FILE_MODE)
-    # Fail-loud lockdown, same as the secret store: ``atomic_write``'s mode covers POSIX,
-    # and this applies the owner-only DACL on Windows. A lockdown failure must not leave the
-    # ceiling world-readable, so unlink and re-raise rather than continue.
-    try:
-        platform_compat.restrict_to_owner(policy_path())
-    except OSError:
-        try:
-            policy_path().unlink()
-        except OSError:
-            logger.exception("failed to remove ops policy file after lockdown failure")
-        raise
+    # Fail-loud lockdown BEFORE any content lands, same as the secret store:
+    # ``restrict_to_owner=True`` applies the owner-only DACL to the temp file
+    # before the payload reaches it (a post-rename lockdown left the ceiling
+    # readable under the inherited DACL on Windows for the write window, issue
+    # #5285) and implies the owner-only POSIX mode. The default
+    # ``restrict_on_error="raise"`` refuses to publish a ceiling it cannot
+    # protect.
+    #
+    # No cleanup on failure: every failure inside ``atomic_write`` happens
+    # BEFORE the final path is touched, so an unprotectable file never exists
+    # at ``policy_path()`` at all. The unlink the old code ran on lockdown
+    # failure existed to remove a NEW file already PUBLISHED at a wide DACL;
+    # that state is unreachable now, and keeping the unlink would instead
+    # delete the PREVIOUS, healthy governance ceiling on one transient icacls
+    # failure — silently resetting the operator's autonomy policy.
+    atomic_write(policy_path(), payload, restrict_to_owner=True)
 
 
 def read_mode(default: str) -> str:
