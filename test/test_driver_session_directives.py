@@ -496,13 +496,14 @@ class TestChannelApplierBoundary:
         assert [c["outcome"] for c in directive_calls] == ["denied"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("kind", ["set_project", "suggest_followup", "ask_question"])
+    @pytest.mark.parametrize("kind", ["suggest_followup", "ask_question"])
     async def test_dashboard_only_directives_refused_on_channel_transport(
         self, kind, no_dashboard_tabs
     ):
         """SECURITY INVARIANT (#4540): _DASHBOARD_ONLY_DIRECTIVES stay DENIED
         for non-dashboard sessions — the channel consumer must not widen the
-        gate."""
+        gate. set_project left this set (#3543): it is refused on the channel
+        transport by the slot-less gate instead, pinned below."""
         state = _ChannelDirectiveState(sessions=_ChannelSessions("x"))
         result = await apply_session_directive(
             state, None, "slack:1755000000.123456", kind, {"project": "/tmp"}
@@ -532,7 +533,32 @@ class TestChannelApplierBoundary:
         finally:
             session_surface.set_dashboard_surfaced(before)
         assert result.startswith("Error:")
-        assert "only works from a dashboard chat session" in result
+        assert "targets this turn's chat slot" in result
+
+    @pytest.mark.asyncio
+    async def test_slotless_set_project_refusal_audits_denied(self, monkeypatch, no_dashboard_tabs):
+        """SEL truthfulness for the slot-less set_project refusal: it is a
+        permission DECISION, so it must audit ``denied`` — never ``error``
+        (the crash shape a missing slot-None guard would produce) and never
+        ``success``. Nothing may be mutated on the way out."""
+        calls: list[dict] = []
+
+        class _SelSpy:
+            def log_tool_invocation(self, **kw):
+                calls.append(kw)
+
+        monkeypatch.setattr("kiro_crew.sel.sel", lambda: _SelSpy())
+        result = await apply_session_directive(
+            _ChannelDirectiveState(sessions=_ChannelSessions("x")),
+            None,
+            "slack:1755000000.123456",
+            "set_project",
+            {"project": "/tmp"},
+        )
+        assert result.startswith("Error:")
+        assert "targets this turn's chat slot" in result
+        directive_calls = [c for c in calls if c.get("source") == "mcp-directive"]
+        assert [c["outcome"] for c in directive_calls] == ["denied"]
 
 
 # ── build_directive_consumer wiring ──────────────────────────────────────────

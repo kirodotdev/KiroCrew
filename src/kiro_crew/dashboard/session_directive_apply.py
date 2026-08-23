@@ -153,6 +153,20 @@ async def apply_session_directive(
             f"sub-agents are refused (this turn is {session_key!r}). "
             "Nothing was changed."
         )
+    if kind in _USER_SURFACE_DIRECTIVES and slot is None:
+        # set_project mutates the SLOT (its project and session CWD). A
+        # slot-less caller — a channel transport's TurnDriver — holds no slot
+        # for the effect to land on, so refuse it as a decision here: letting
+        # it fall through would crash `_set_project` on the missing slot and
+        # the fail-soft wrapper would audit "error" for what is a permission
+        # boundary. Slot-BEARING channel sessions pass — the user-surface gate
+        # above already vetted the surface, and the applier can deliver the
+        # effect to a real slot.
+        _audit(session_key, kind, "denied")
+        return (
+            f"Error: {kind} targets this turn's chat slot, and this turn "
+            f"holds none (this turn is {session_key!r}). Nothing was changed."
+        )
     try:
         if kind == "monitor_start":
             result = await _monitor_start(state, session_key, args)
