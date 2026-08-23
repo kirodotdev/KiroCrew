@@ -1411,9 +1411,13 @@ export default function App() {
   // shown up while only the Main branch was gated.
   const advertisedNavItems = useMemo(
     () => NAV_ITEMS.filter(surfacePreviewEnabled),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- the revision is an
-    // invalidation token: what `surfacePreviewEnabled` reads lives in
-    // localStorage, not in React state, so nothing else here can express the dep.
+    // The revision is an invalidation token: what `surfacePreviewEnabled` reads
+    // lives in localStorage, not in React state, so nothing else here can
+    // express the dep. The directive stays on ONE line directly above the deps
+    // array -- `eslint-disable-next-line` targets the literal next line, so a
+    // rationale wrapped after it aims the directive at its own continuation and
+    // suppresses nothing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [previewFlagRevision],
   )
   // Apps nav reorder is dnd-kit sortable (mirrors QueueStack): rows reflow to

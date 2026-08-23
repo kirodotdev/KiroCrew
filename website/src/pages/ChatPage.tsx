@@ -1738,8 +1738,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       setFileDraft(fileDrafts.current, s, pendingFiles)
       saveDraftsDebounced()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- draft key is
-    // composerSlotRef; slot-change effect handles that transition
+    // Draft key is composerSlotRef; the slot-change effect handles that
+    // transition.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pendingFiles, saveDraftsDebounced])
   // Collapsed paste blocks backing the `[ Paste #N · M lines ]` tokens in
   // `input`. Persisted per-slot via chatPasteDrafts (localStorage, 30-day TTL)
