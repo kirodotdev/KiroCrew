@@ -346,26 +346,28 @@ def snapshot_main(
         try:
             with tarfile.open(str(tmp_tar), "w:gz") as tar:
                 tar.add(str(stage), arcname=name, filter=_data_filter)
+            # Lock the archive down BEFORE it is published. This tarball can
+            # contain sel_hmac.key (see the warning below), and the window
+            # between the rename and a lockdown applied afterwards is not
+            # Windows-only: tarfile does not create its file 0600, so on POSIX
+            # the archive is readable at its final, predictable path until the
+            # chmod lands too.
+            #
+            # restrict_to_owner (fail-loud), NOT chmod_safe: chmod_safe swallows
+            # OSError and would let the snapshot land group/world-readable while
+            # still printing success. Failing here leaves the temp for the
+            # handler below to remove and publishes nothing, which is what makes
+            # the "abort rather than ship an under-protected archive" promise
+            # true by construction. POSIX applies chmod 0o600; Windows applies an
+            # owner-only DACL via icacls, and a same-directory rename carries the
+            # explicit ACE with the file.
+            platform_compat.restrict_to_owner(str(tmp_tar))
             tmp_tar.rename(outfile)
         except BaseException:
             tmp_tar.unlink(missing_ok=True)
             raise
 
     sz = outfile.stat().st_size
-    # restrict_to_owner (fail-loud), NOT chmod_safe: this tarball can contain
-    # sel_hmac.key (see the warning below). chmod_safe swallows OSError and
-    # would let the snapshot land group/world-readable while still printing
-    # success. Fail loudly instead — better to abort than ship a
-    # secret-bearing archive under-protected. POSIX applies chmod 0o600;
-    # Windows applies an owner-only DACL via icacls.
-    # Unlink+reraise on failure so the "abort" the comment promises actually
-    # removes the exposed artifact — otherwise the tarball would sit on disk
-    # with the destination's inherited DACL after a Python traceback.
-    try:
-        platform_compat.restrict_to_owner(str(outfile))
-    except OSError:
-        outfile.unlink(missing_ok=True)
-        raise
     human = f"{sz // 1024}K" if sz < 1024 * 1024 else f"{sz / 1024 / 1024:.1f}M"
     print(f"✅ Snapshot created: {outfile} ({human})")
 

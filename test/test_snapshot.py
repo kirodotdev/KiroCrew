@@ -966,3 +966,80 @@ class TestConcurrentSnapshot:
         tarballs = list(out.glob("kirocrew-snapshot-*.tar.gz"))
         assert len(tarballs) == 2
         assert tarballs[0].name != tarballs[1].name
+
+
+class TestTheArchiveIsLockedDownBeforeItIsPublished:
+    """The snapshot tarball can contain ``sel_hmac.key``, so it is secret-bearing.
+
+    It was built at a ``.tmp`` sibling, renamed into place, and only then locked
+    down — so between the rename and the lockdown the archive sat at its final,
+    predictable path under whatever the destination directory gave it. Unlike
+    the other writers in this family that window is not Windows-only: ``tarfile``
+    does not create its file ``0600``, so on POSIX the archive is readable at the
+    final path until the ``chmod`` lands too.
+
+    Locking the temp down before the rename closes it on both platforms, and
+    makes the "abort rather than ship an under-protected archive" promise in the
+    code's own comment true by construction: a failure now happens before there
+    is anything published to take back.
+    """
+
+    def test_the_lockdown_runs_before_the_archive_is_published(self, tmp_path, monkeypatch):
+        from kiro_crew import platform_compat
+
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        real = platform_compat.restrict_to_owner
+        locked: list[Path] = []
+
+        def _recording(path):
+            locked.append(Path(path))
+            return real(path)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _recording)
+        snapshot_main([str(out)])
+
+        published = sorted(out.glob("kirocrew-snapshot-*.tar.gz"))
+        assert published, "no snapshot was produced"
+        archive_locks = [p for p in locked if p.parent == out]
+        assert archive_locks, "the snapshot archive was never locked down"
+        assert not [p for p in archive_locks if p in published], (
+            "the archive was locked down AFTER it was published at its final "
+            f"path, leaving a secret-bearing tarball readable first: {archive_locks}"
+        )
+
+    def test_a_failed_lockdown_publishes_no_archive(self, tmp_path, monkeypatch):
+        """The comment promises an abort; nothing may be left at the final path."""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+
+        with pytest.raises(OSError):
+            snapshot_main([str(out)])
+
+        assert not list(
+            out.glob("kirocrew-snapshot-*.tar.gz")
+        ), "an archive whose lockdown failed was left at its final path"
+        assert not list(out.glob("*.tmp")), "the temp archive was not cleaned up"
+
+    def test_a_successful_snapshot_is_still_owner_only(self, tmp_path, monkeypatch):
+        """Preservation: the permission the lockdown exists to apply still lands."""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        snapshot_main([str(out)])
+        tarball = sorted(out.glob("kirocrew-snapshot-*.tar.gz"))[0]
+        assert tarball.is_file()
+        if os.name == "posix":
+            assert tarball.stat().st_mode & 0o777 == 0o600, oct(tarball.stat().st_mode)
