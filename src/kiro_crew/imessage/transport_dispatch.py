@@ -25,7 +25,6 @@ Dependency direction is ``imessage -> messaging`` (allowed).
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.imessage.client import redact_handle
@@ -41,6 +40,7 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
+from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
@@ -137,22 +137,19 @@ class IMessageDispatcher:
             await self._notify(handle, HELP_TEXT)
             return
 
-        # -- Mid-turn concurrency: check the CURRENT-generation key for an
-        # in-flight turn BEFORE any idle/daily rotation (rotating first could
-        # mint a new key and miss the running turn, letting a second concurrent
-        # turn bypass steer). Fold the message into the running turn via steer.
-        session_key = self._session_key(handle)
-        if self.sessions.is_busy(session_key):
-            await self._handle_busy(inbound, session_key)
-            return
-
-        self._conv.maybe_rotate(
-            handle,
-            time.time(),
+        # Busy check, then rotation, then a re-derived key -- the ordering and the
+        # reasons it matters live in messaging.pre_turn.
+        session_key = await resolve_pre_turn(
+            conv=self._conv,
+            sessions=self.sessions,
+            key=handle,
+            session_key_for=self._session_key,
             idle_minutes=self.cfg.messaging.idle_reset_minutes,
             daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            on_busy=lambda sk: self._handle_busy(inbound, sk),
         )
-        session_key = self._session_key(handle)
+        if session_key is None:
+            return  # folded into the running turn
         conversation_id = f"imessage:{handle}"
         agent = self._resolve_agent()
 
