@@ -403,3 +403,68 @@ describe("denial logging", () => {
     assert.equal(real(null, "geolocation", undefined, circular), false);
   });
 });
+
+describe("HTML fullscreen — the dead fullscreen button", () => {
+  // Electron routes element.requestFullscreen() through these handlers as
+  // permission === "fullscreen". The handlers granted nothing but `media`, so a
+  // <video> file card's fullscreen button was answered callback(false) and did
+  // nothing at all when clicked.
+  it("GRANTS fullscreen to the dashboard", () => {
+    const req = createPermissionRequestHandler(quiet);
+    assert.equal(grant(req, APP, "fullscreen", {}), true);
+    const check = createPermissionCheckHandler(quiet);
+    assert.equal(check(APP, "fullscreen", ORIGIN, {}), true);
+  });
+
+  it("DENIES fullscreen to the untrusted embedded browser view", () => {
+    // A third-party page owning the whole screen can repaint it as a fake of
+    // this app, so the untrusted rule outranks the localhost origin heuristic
+    // here exactly as it does for the microphone.
+    const untrusted = { isUntrusted: (wc) => wc === APP, onDeny: () => {} };
+    const req = createPermissionRequestHandler(untrusted);
+    assert.equal(grant(req, APP, "fullscreen", {}), false);
+    const check = createPermissionCheckHandler(untrusted);
+    assert.equal(check(APP, "fullscreen", ORIGIN, {}), false);
+  });
+
+  it("DENIES fullscreen to a foreign origin", () => {
+    const foreign = wcAt("https://evil.example/");
+    assert.equal(grant(createPermissionRequestHandler(quiet), foreign, "fullscreen", {}), false);
+    assert.equal(
+      createPermissionCheckHandler(quiet)(foreign, "fullscreen", "https://evil.example", {}),
+      false,
+    );
+  });
+
+  it("answers fullscreen WITHOUT entering the macOS mic path", () => {
+    // Fullscreen claims no OS resource. If it fell through into the media rule's
+    // TCC leg, a fullscreen click would be gated on — or prompt for — microphone
+    // access. These deps throw if that leg is ever reached.
+    const boom = () => { throw new Error("TCC leg must not run for fullscreen"); };
+    const req = createPermissionRequestHandler({
+      ...quiet,
+      getMicAccessStatus: boom,
+      askForMicAccess: boom,
+      onMicBlocked: boom,
+    });
+    assert.equal(grant(req, APP, "fullscreen", {}), true);
+  });
+
+  it("request and check handlers AGREE on fullscreen", () => {
+    // A check that contradicts the async grant is the asymmetry this module's
+    // header documents; pin the two together for every trust combination.
+    for (const isUntrusted of [() => false, () => true]) {
+      const deps = { ...quiet, isUntrusted };
+      const fromRequest = grant(createPermissionRequestHandler(deps), APP, "fullscreen", {});
+      const fromCheck = createPermissionCheckHandler(deps)(APP, "fullscreen", ORIGIN, {});
+      assert.equal(fromRequest, fromCheck);
+    }
+  });
+
+  it("does not widen anything else — geolocation stays denied", () => {
+    const req = createPermissionRequestHandler(quiet);
+    for (const p of ["geolocation", "notifications", "midi", "clipboard-read", "pointerLock"]) {
+      assert.equal(grant(req, APP, p, {}), false, `${p} must stay denied`);
+    }
+  });
+});

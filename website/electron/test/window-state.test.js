@@ -181,3 +181,32 @@ test("round-trip: a fullscreen window restores fullscreen with its normal size",
   assert.strictEqual(restored.x, 100);
   assert.strictEqual(restored.y, 80);
 });
+
+// ── captureWindowState: transient (app-raised) fullscreen ──
+
+test("transientFullScreen records fullScreen:false even while the window IS fullscreen", () => {
+  // A fullscreen raised by html-fullscreen.js for a <video> is the app's doing,
+  // not a window preference. Persisting it would relaunch into a fullscreen
+  // Space the user never chose if the app quit or crashed mid-playback — the
+  // restore path this module's header calls the "blacked out" failure.
+  const win = fakeWin({ normal: { x: 5, y: 6, width: 1100, height: 800 }, fullScreen: true });
+  const s = captureWindowState(win, { transientFullScreen: true });
+  assert.strictEqual(s.fullScreen, false);
+  // Geometry is unaffected — only the flag is suppressed.
+  assert.deepStrictEqual(
+    { x: s.x, y: s.y, width: s.width, height: s.height },
+    { x: 5, y: 6, width: 1100, height: 800 },
+  );
+});
+
+test("a USER fullscreen is still persisted (the flag is not blanket-suppressed)", () => {
+  const win = fakeWin({ normal: { width: 1000, height: 700 }, fullScreen: true });
+  assert.strictEqual(captureWindowState(win, { transientFullScreen: false }).fullScreen, true);
+  assert.strictEqual(captureWindowState(win, {}).fullScreen, true);
+  assert.strictEqual(captureWindowState(win).fullScreen, true, "default must stay backward compatible");
+});
+
+test("transientFullScreen cannot invent a fullscreen that is not happening", () => {
+  const win = fakeWin({ normal: { width: 1000, height: 700 }, fullScreen: false });
+  assert.strictEqual(captureWindowState(win, { transientFullScreen: true }).fullScreen, false);
+});
