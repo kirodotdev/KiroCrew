@@ -33,6 +33,7 @@ _EXTRA_PATH_DIRS = (
     "{mise_data}/shims",
     "{home}/.volta/bin",
     "/opt/homebrew/bin",  # Apple Silicon Homebrew node / global npm bins
+    "/usr/local/bin",  # Intel Homebrew + pkg-installer symlink dir
 )
 
 

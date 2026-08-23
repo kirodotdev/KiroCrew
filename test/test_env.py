@@ -111,6 +111,42 @@ class TestAugmentedPath:
         toolbox_idx = next(i for i, d in enumerate(dirs) if ".toolbox/bin" in d)
         assert local_idx < toolbox_idx
 
+    def test_includes_both_macos_install_prefixes(self) -> None:
+        """``/usr/local/bin`` belongs beside ``/opt/homebrew/bin``, not instead of it.
+
+        The two are different install locations, not alternatives: Homebrew uses
+        ``/opt/homebrew`` on Apple Silicon and ``/usr/local`` on Intel, and macOS
+        ``.pkg`` installers symlink into ``/usr/local/bin`` regardless of
+        architecture. A GUI-launched app inherits launchd's minimal
+        ``/usr/bin:/bin:/usr/sbin:/sbin``, so anything absent here is unresolvable
+        for an in-process ``shutil.which()`` even though it works in a shell.
+
+        Every other bin-dir list in the tree already pairs them -- see
+        ``deploy/engine._AWS_BIN_DIRS``, ``kiro_cli._kiro_cli_dirs`` and
+        ``dashboard/tailnet`` -- so omitting one here made this helper the
+        outlier those call sites had to compensate for locally.
+        """
+        # The declaration is platform-independent, so assert it directly rather
+        # than inferring it from a composed PATH.
+        assert "/opt/homebrew/bin" in env_mod._EXTRA_PATH_DIRS
+        assert "/usr/local/bin" in env_mod._EXTRA_PATH_DIRS
+        # Apple Silicon's prefix stays ahead of the Intel/pkg one, matching the
+        # ordering `_AWS_BIN_DIRS` uses.
+        assert env_mod._EXTRA_PATH_DIRS.index("/opt/homebrew/bin") < env_mod._EXTRA_PATH_DIRS.index(
+            "/usr/local/bin"
+        )
+
+        # Both reach the composed PATH ahead of the inherited base_path -- but only
+        # where they survive `_validated_bin_dir`, whose sole test is absoluteness.
+        # Gating on that same predicate keeps this assertion honest on a host whose
+        # os.path flavour does not consider a POSIX root path absolute, instead of
+        # encoding a Python version or platform name that would go stale.
+        if os.path.isabs("/usr/local/bin"):
+            dirs = augmented_path("/usr/bin").split(os.pathsep)
+            assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/bin")
+            assert dirs.index("/usr/local/bin") < dirs.index("/usr/bin")
+            assert dirs.index("/opt/homebrew/bin") < dirs.index("/usr/local/bin")
+
     def test_empty_base(self) -> None:
         result = augmented_path("")
         assert result  # not empty
