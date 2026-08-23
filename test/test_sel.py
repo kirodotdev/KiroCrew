@@ -2555,8 +2555,10 @@ class TestRetentionStopsAtAnUndeletableSegment:
         accumulated = log._segments_oldest_first()
         assert len(accumulated) == 6, f"precondition: expected 6 segments, got {len(accumulated)}"
 
-        monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 3)
-        assert len(accumulated) - sel_mod._SEGMENT_KEEP == 3, "precondition: 3 to sweep"
+        # The keep-count is read once at construction, so tightening it on a live
+        # instance means patching the instance attribute, not the module default.
+        monkeypatch.setattr(log, "_segment_keep", 3)
+        assert len(accumulated) - log._segment_keep == 3, "precondition: 3 to sweep"
         oldest = accumulated[0]
         real_unlink = Path.unlink
 
@@ -3657,3 +3659,322 @@ class TestTimeWindowRead:
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)
         assert log.recent(limit=0) == []
+
+
+class TestEnvOverrides:
+    """The rotation limits are operator-tunable via env vars (issue #4993).
+
+    Read ONCE at ``SecurityEventLog`` construction; the module constants stay
+    the defaults. The overrides are RAISE-ONLY (floor = compiled default): the
+    audited agent controls child-process environments, so a lowerable limit
+    would let it erase shared audit history through the trusted writer.
+    Malformed values fail SOFT — an audit logger that refuses to start
+    converts a typo into lost audit coverage — and the fallback warning
+    must name the variable only, never echo the rejected value (a mis-pasted
+    deployment value can contain a secret, and the SEL process log is a small
+    exfiltration surface).
+    """
+
+    def test_defaults_unchanged_when_vars_unset(self, sel_dir):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+
+    def test_max_bytes_raise_reaches_the_rotation_gate(self, sel_dir, monkeypatch):
+        """An env raise must govern the actual rotation trigger, not just the
+        attribute. Shrink the compiled default (and thus the raise-only floor)
+        so the env value 8192 is a genuine raise over it, then prove rotation
+        happens at the env value."""
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 4096)
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "8192")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == 8192
+        _fill(log, 300)
+        segments = log._segments_oldest_first()
+        assert segments, "an 8 KiB cap over 300 events must have rolled the live log"
+        live = sel_dir / "security_events.jsonl"
+        assert live.stat().st_size < 8192 * 2
+
+    def test_keep_raise_controls_retained_segment_count(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_SEGMENT_MAX_BYTES", 4096)
+        monkeypatch.setattr(sel_mod, "_SEGMENT_KEEP", 2)
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "3")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == 3
+        _fill(log, 900)
+        assert len(log._segments_oldest_first()) == 3
+
+    def test_retention_days_raise_reaches_prune(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "40")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._retention_days == 40
+        now = datetime.now(tz=timezone.utc)
+        log.log(_make_event(event_id="old", timestamp=(now - timedelta(days=50)).isoformat()))
+        log.log(_make_event(event_id="mid", timestamp=(now - timedelta(days=35)).isoformat()))
+        # No explicit keep_days: prune must pick up the overridden 40-day
+        # window — the 35-day entry survives it (it would not survive the
+        # patched 30-day default).
+        assert log.prune() == 1
+        remaining = (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
+        assert "old" not in remaining and "mid" in remaining
+
+    def test_explicit_keep_days_still_wins_over_the_override(self, sel_dir, monkeypatch):
+        monkeypatch.setattr(sel_mod, "_RETENTION_DAYS", 30)
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "40")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        now = datetime.now(tz=timezone.utc)
+        log.log(_make_event(event_id="old", timestamp=(now - timedelta(days=50)).isoformat()))
+        assert log.prune(keep_days=365) == 0
+
+    @pytest.mark.parametrize("raw", ["not-a-number", "0", "-5", "1.5"])
+    def test_malformed_values_fall_back_with_a_redacting_warning(
+        self, sel_dir, monkeypatch, caplog, raw
+    ):
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", raw)
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        warnings = [
+            r.getMessage()
+            for r in caplog.records
+            if "KIROCREW_SEL_MAX_BYTES" in r.getMessage()
+        ]
+        assert warnings, "the fallback must be visible, not silent"
+        # Assert on the message BEFORE the interpolated default: the default's
+        # own digits must not be able to collide with the rejected raw value.
+        assert all(raw not in msg.split("using the default")[0] for msg in warnings), (
+            "the rejected value must never be echoed into the log"
+        )
+
+    def test_each_variable_falls_back_independently(self, sel_dir, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "junk")
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "20")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "-1")
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == 20
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+
+    def test_lowering_attempts_clamp_to_the_compiled_defaults(
+        self, sel_dir, monkeypatch, caplog
+    ):
+        """The audit-erasure vector from review: an agent-controlled child env
+        (`KIROCREW_SEL_MAX_BYTES=65536 KIROCREW_SEL_KEEP=1 kirocrew ...`) must
+        NOT be able to narrow the shared log's protection. Every lowering
+        attempt clamps up to the compiled default, with a warning."""
+        monkeypatch.setenv("KIROCREW_SEL_MAX_BYTES", "65536")
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "1")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "1")
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_max_bytes == sel_mod._SEGMENT_MAX_BYTES
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+        for var in (
+            "KIROCREW_SEL_MAX_BYTES",
+            "KIROCREW_SEL_KEEP",
+            "KIROCREW_SEL_RETENTION_DAYS",
+        ):
+            assert any(
+                var in r.getMessage() and "minimum" in r.getMessage()
+                for r in caplog.records
+            ), f"the clamp on {var} must be visible, not silent"
+
+    def test_keep_count_clamps_below_the_scan_cap(self, sel_dir, monkeypatch, caplog):
+        """A keep-count the enumeration cap cannot admit would disable count
+        retention entirely (excess could never go positive)."""
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", str(sel_mod._SEGMENT_SCAN_CAP + 100))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP_MAX
+        assert log._segment_keep < sel_mod._SEGMENT_SCAN_CAP
+        assert any(
+            "KIROCREW_SEL_KEEP" in r.getMessage() and "maximum" in r.getMessage()
+            for r in caplog.records
+        )
+
+    def test_scrubbed_env_child_cannot_lower_a_raised_deletion_floor(
+        self, sel_dir, monkeypatch
+    ):
+        """The review PoC, round 2: operator raises KEEP/RETENTION via env; a
+        second process constructed WITHOUT those variables (scrubbed child
+        env) must inherit the raised deletion bounds from the shared marker,
+        never enforce the compiled defaults on the shared directory."""
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "400")
+        operator = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert operator._segment_keep == 100
+        marker = sel_dir / "security_events.d" / "retention_floor.json"
+        assert marker.is_file(), "the raise must be persisted for other processes"
+        # Simulate the scrubbed-env child: SEL is a per-process singleton, so
+        # drop it (the idiom used across this file) and construct with the
+        # variables unset — a genuinely fresh instance on the same directory.
+        SecurityEventLog._instance = None
+        monkeypatch.delenv("KIROCREW_SEL_KEEP", raising=False)
+        monkeypatch.delenv("KIROCREW_SEL_RETENTION_DAYS", raising=False)
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert child._segment_keep == 100, "child must inherit the raised keep"
+        assert child._retention_days == 400, "child must inherit the raised window"
+
+    def test_a_child_constructed_before_the_raise_prunes_with_the_raised_floor(
+        self, sel_dir, monkeypatch
+    ):
+        """The other ordering of the same attack: the scrubbed-env process is
+        constructed FIRST (compiled defaults in memory), the operator raises
+        the bounds afterwards. The child's deletion paths must re-read the
+        shared floor at prune time instead of trusting construction-time
+        state, or its next sweep deletes segments the operator protected."""
+        child = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert child._segment_keep == sel_mod._SEGMENT_KEEP
+        # The operator raises the bounds in a separate process afterwards
+        # (fresh singleton on the same directory).
+        SecurityEventLog._instance = None
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        monkeypatch.setenv("KIROCREW_SEL_RETENTION_DAYS", "400")
+        SecurityEventLog(base_dir=sel_dir, sync=True)  # operator stamps the floor
+        child.prune()  # deletion entry point must refresh from the marker
+        assert child._segment_keep == 100, "prune used the stale compiled keep"
+        assert child._retention_days == 400, "prune used the stale compiled window"
+
+    def test_a_damaged_floor_marker_fails_soft(self, sel_dir):
+        """A corrupt marker must not stop the audit logger from constructing;
+        it reads as no floor and the env/default values apply."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        (seg_dir / "retention_floor.json").write_text("{not json", encoding="utf-8")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == sel_mod._SEGMENT_KEEP
+        assert log._retention_days == sel_mod._RETENTION_DAYS
+
+    def test_the_floor_merge_is_per_field_monotone(self, sel_dir):
+        """Two processes raised via DIFFERENT variables must not erase each
+        other's raise: the persist site merges per field against the stored
+        marker instead of blindly publishing its own pair."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        (seg_dir / "retention_floor.json").write_text(
+            json.dumps({"keep": 50, "retention_days": 500}), encoding="utf-8"
+        )
+        # A process that raised only keep persists (100, compiled default days).
+        sel_mod._persist_retention_floor(seg_dir, 100, sel_mod._RETENTION_DAYS)
+        merged = json.loads((seg_dir / "retention_floor.json").read_text(encoding="utf-8"))
+        assert merged == {"keep": 100, "retention_days": 500}, (
+            "the stored 500-day raise was clobbered by a blind write"
+        )
+        # Nothing raises -> the marker must not be rewritten (never lowered).
+        sel_mod._persist_retention_floor(seg_dir, 7, 365)
+        again = json.loads((seg_dir / "retention_floor.json").read_text(encoding="utf-8"))
+        assert again == {"keep": 100, "retention_days": 500}
+
+    def test_a_planted_marker_link_is_not_trusted_and_is_replaced(
+        self, sel_dir, monkeypatch
+    ):
+        """A pre-planted marker symlink pointing at agent-writable HIGH values
+        must not suppress the operator's stamp: the fenced reader ignores it,
+        so the raise is detected and the persist replaces the link itself with
+        a real file holding the operator's values."""
+        outside = sel_dir.parent / "agent-values.json"
+        outside.write_text(
+            json.dumps({"keep": 4000, "retention_days": 9000}), encoding="utf-8"
+        )
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = seg_dir / "retention_floor.json"
+        try:
+            marker.symlink_to(outside)
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks unavailable on this platform/filesystem")
+        assert sel_mod._read_retention_floor(seg_dir) == (0, 0), (
+            "planted link values were trusted"
+        )
+        monkeypatch.setenv("KIROCREW_SEL_KEEP", "100")
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        assert log._segment_keep == 100, "planted values inflated the instance"
+        assert not marker.is_symlink(), "persist wrote through the planted link"
+        stamped = json.loads(marker.read_text(encoding="utf-8"))
+        assert stamped["keep"] == 100
+        assert outside.read_text(encoding="utf-8"), "the link target was clobbered"
+
+    def test_a_contended_stamp_defers_instead_of_writing(self, sel_dir):
+        """The round-3 contract: a stamp NEVER blocks and NEVER falls back to
+        an unlocked write. While another holder owns the rotation lock the
+        persist returns without touching the marker; after release it lands."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        marker = seg_dir / "retention_floor.json"
+        lock_path = seg_dir / ".rotate.lock"
+        with open(lock_path, "a+b") as holder:
+            holder.write(b"\0")
+            holder.flush()
+            assert platform_compat.try_acquire_lock(holder.fileno(), exclusive=True)
+            try:
+                sel_mod._persist_retention_floor(seg_dir, 100, 400)
+                assert not marker.exists(), (
+                    "a contended stamp wrote the marker (fail-open regression)"
+                )
+            finally:
+                platform_compat.release_lock(holder.fileno())
+        sel_mod._persist_retention_floor(seg_dir, 100, 400)
+        assert json.loads(marker.read_text(encoding="utf-8")) == {
+            "keep": 100,
+            "retention_days": 400,
+        }
+
+    def test_a_retention_window_past_the_date_range_prunes_nothing(self, sel_dir, caplog):
+        """An over-wide window means "keep everything" — the sweep must not raise."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        log.log(_make_event(event_id="evt", timestamp="2020-01-01T00:00:00+00:00"))
+        with caplog.at_level("WARNING", logger="kiro_crew.sel"):
+            assert log.prune(keep_days=10**9) == 0
+        assert any("representable" in r.getMessage() for r in caplog.records)
+
+    def test_a_planted_fifo_marker_neither_blocks_nor_is_trusted(self, sel_dir):
+        """A pre-planted FIFO at the marker path must not park the reader
+        (constructions run on event-loop threads): the non-blocking open plus
+        the regular-file gate read it as no floor, promptly."""
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("FIFOs unavailable on this platform")
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        os.mkfifo(seg_dir / "retention_floor.json")
+        result: list[tuple[int, int]] = []
+        reader = threading.Thread(
+            target=lambda: result.append(sel_mod._read_retention_floor(seg_dir)),
+            daemon=True,
+        )
+        reader.start()
+        reader.join(timeout=5.0)
+        assert not reader.is_alive(), "the marker read blocked on a planted FIFO"
+        assert result == [(0, 0)]
+
+    def test_an_oversized_marker_decoy_is_ignored(self, sel_dir):
+        """A marker past the size cap is not ours: the bounded read rejects it
+        instead of synchronously parsing arbitrary bytes on the hot path."""
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        decoy = {"keep": 4000, "retention_days": 9000, "pad": "x" * 8192}
+        (seg_dir / "retention_floor.json").write_text(json.dumps(decoy), encoding="utf-8")
+        assert sel_mod._read_retention_floor(seg_dir) == (0, 0), (
+            "an oversized decoy marker was trusted"
+        )
+
+    def test_a_hard_linked_marker_is_not_trusted(self, sel_dir):
+        """A marker hard-linked from an agent-writable alias stays externally
+        mutable even after os.replace, so planted-high-then-lowered values
+        could defeat the monotone persist: st_nlink != 1 reads as no floor."""
+        outside = sel_dir.parent / "agent-alias.json"
+        outside.write_text(
+            json.dumps({"keep": 4000, "retention_days": 9000}), encoding="utf-8"
+        )
+        seg_dir = sel_dir / "security_events.d"
+        seg_dir.mkdir(mode=0o700, exist_ok=True)
+        try:
+            os.link(outside, seg_dir / "retention_floor.json")
+        except (OSError, NotImplementedError):
+            pytest.skip("hard links unavailable on this platform/filesystem")
+        assert sel_mod._read_retention_floor(seg_dir) == (0, 0), (
+            "a hard-linked marker's values were trusted"
+        )
