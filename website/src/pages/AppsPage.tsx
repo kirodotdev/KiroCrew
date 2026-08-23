@@ -560,7 +560,11 @@ export default function AppsPage() {
       : a.displayName.localeCompare(b.displayName))
   }, [browseApps, category, query, sort])
 
-  const showEditorial = category === 'All' && !query.trim() && featuredSections.length > 0
+  /* The editorial layer survives a CATEGORY pick -- curated placements are
+     content, not list rows, so the rail only filters the All-apps list below.
+     A SEARCH still hides it: a typed query is a stated intent to find one
+     thing, and the spotlight would push the results below the fold. */
+  const showEditorial = !query.trim() && featuredSections.length > 0
 
   // ---- Library data --------------------------------------------------------
 
@@ -808,6 +812,12 @@ export default function AppsPage() {
       />
 
       <div className="px-4 md:px-6 pb-8 overflow-y-auto flex-1 min-h-0">
+        {/* Width cap on the content column only (the scrollbar stays at the
+            viewport edge). Discover is the one storefront surface: uncapped,
+            an ultrawide monitor stretches the lead card's 16:9 art and the
+            copy's line length past comfortable reading. Utility pages stay
+            full-width; a content shelf follows store convention instead. */}
+        <div className="max-w-[1200px] mx-auto">
         {/* Notifications. No hand-off on the error notice: the SourcesPopover's
             install-path input shares this page — navigating away would discard
             what the user typed. */}
@@ -1213,6 +1223,7 @@ export default function AppsPage() {
             </>
           )
         )}
+        </div>
       </div>
     </>
   )

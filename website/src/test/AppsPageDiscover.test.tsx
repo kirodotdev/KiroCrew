@@ -131,15 +131,19 @@ describe('AppsPage — hybrid Discover', () => {
     expect(screen.getByText('1 app')).toBeInTheDocument()
   })
 
-  it('selecting a category filters the list and hides the editorial layer', async () => {
+  it('selecting a category filters the list but KEEPS the editorial layer', async () => {
     renderPage()
-    await screen.findAllByText('FEATURED')
+    const kickersBefore = (await screen.findAllByText('FEATURED')).length
     fireEvent.click(screen.getByRole('button', { name: /On-call & Ops 1/ }))
-    await waitFor(() => expect(screen.queryAllByText('FEATURED')).toHaveLength(0))
-    // Section heading switches to the category, list shows only the match
-    expect(screen.getByRole('heading', { name: 'On-call & Ops' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /View details for Oncall Radar/ })).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: /View details for Code Review Sage/ })).not.toBeInTheDocument()
+    // Section heading switches to the category, list shows only the match…
+    await screen.findByRole('heading', { name: 'On-call & Ops' })
+    const listRows = screen.getAllByRole('button', { name: /View details for Oncall Radar/ })
+    expect(listRows.length).toBeGreaterThan(0)
+    // …but curated placements are content, not list rows: the spotlight
+    // survives the category pick untouched (same card count as before), and a
+    // featured app OUTSIDE the picked category still shows there.
+    expect(screen.getAllByText('FEATURED')).toHaveLength(kickersBefore)
+    expect(screen.getAllByRole('button', { name: /View details for Code Review Sage/ }).length).toBeGreaterThan(0)
   })
 
   it('search filters rows and hides editorial; row click routes to detail', async () => {
