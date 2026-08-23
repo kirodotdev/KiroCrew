@@ -38,7 +38,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import NoReturn
 
-from kiro_crew import __version__, platform_compat
+from kiro_crew import __version__, cli_help, platform_compat
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.config import KiroCrewConfig, config_dir, ensure_data_home
 from kiro_crew.config.loader import (
@@ -932,6 +932,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         prog="kirocrew",
         description="Kiro Crew — personal AI agent",
+        usage=cli_help.TOP_USAGE,
+        epilog=cli_help.render_epilog(),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--version", action="version", version=f"kirocrew {__version__}")
     parser.add_argument(
@@ -964,15 +967,28 @@ def main() -> None:
         "the public edition, which has no jail backend).",
     )
 
-    sub = parser.add_subparsers(dest="command")
+    # ``help=SUPPRESS`` drops argparse's own flat subcommand block — ~40 commands
+    # in registration order, with the three anybody needs first buried in the
+    # middle — in favour of the grouped listing rendered into ``epilog`` above.
+    # It also drops the placeholder from the usage line, hence the explicit
+    # ``usage=``. ``metavar`` is what an "invalid choice" error names, and
+    # ``prog`` must be pinned because argparse otherwise derives each
+    # subcommand's prog from the parent's ``usage=`` string, which would prefix
+    # every ``kirocrew <cmd> --help`` with the whole top-level usage line.
+    sub = parser.add_subparsers(
+        dest="command",
+        metavar="<command>",
+        help=argparse.SUPPRESS,
+        prog="kirocrew",
+    )
 
     # Helper for commands with examples
     _fmt = argparse.RawDescriptionHelpFormatter
 
     # chat
-    chat_parser = sub.add_parser(
+    chat_parser = cli_help.add_command(
+        sub,
         "chat",
-        help="Chat with the agent",
         epilog="""
 Examples:
   kirocrew chat                      # Interactive mode
@@ -987,7 +1003,7 @@ Examples:
     chat_parser.add_argument("--agent", help="Agent to use (default: from config)")
 
     # doctor
-    _doctor_parser = sub.add_parser("doctor", help="Verify Kiro Crew setup")
+    _doctor_parser = cli_help.add_command(sub, "doctor")
     _doctor_parser.add_argument(
         "--bundle",
         action="store_true",
@@ -995,9 +1011,7 @@ Examples:
     )
 
     # gateway
-    gw_parser = sub.add_parser(
-        "gateway", help="Start the Kiro Crew server (dashboard + messaging channels)"
-    )
+    gw_parser = cli_help.add_command(sub, "gateway")
     gw_parser.add_argument(
         "--slack-only",
         action="store_true",
@@ -1083,7 +1097,7 @@ Examples:
     )
 
     # setup
-    setup_parser = sub.add_parser("setup", help="Install agent config and run the setup wizard")
+    setup_parser = cli_help.add_command(sub, "setup")
     setup_parser.add_argument(
         "--agent-only",
         action="store_true",
@@ -1109,7 +1123,7 @@ Examples:
     )
 
     # manifest
-    manifest_parser = sub.add_parser("manifest", help="Generate Slack manifest with your alias")
+    manifest_parser = cli_help.add_command(sub, "manifest")
     manifest_parser.add_argument("--alias", help="Override alias (default: auto-detect)")
     manifest_parser.add_argument("-o", "--output", help="Output file (default: stdout)")
     manifest_parser.add_argument(
@@ -1119,9 +1133,9 @@ Examples:
     )
 
     # cron
-    cron_parser = sub.add_parser(
+    cron_parser = cli_help.add_command(
+        sub,
         "cron",
-        help="Manage scheduled jobs",
         epilog="""
 Examples:
   kirocrew cron list
@@ -1230,9 +1244,9 @@ Examples:
     )
 
     # spawn
-    spawn_parser = sub.add_parser(
+    spawn_parser = cli_help.add_command(
+        sub,
         "spawn",
-        help="Manage background subagents",
         epilog="""
 Examples:
   kirocrew spawn run 'check my open CRs'        # Wait for result
@@ -1254,9 +1268,9 @@ Examples:
     spawn_parser.add_argument("--port", type=int, default=DASHBOARD_PORT, help="Dashboard port")
 
     # run (autonomous task runner)
-    run_parser = sub.add_parser(
+    run_parser = cli_help.add_command(
+        sub,
         "run",
-        help="Run an autonomous task from a spec file",
         epilog="""
 Examples:
   kirocrew run TASK.md                  # Run task with auto-resume
@@ -1294,7 +1308,7 @@ Examples:
     )
 
     # snapshot / restore
-    snap_parser = sub.add_parser("snapshot", help="Create a portable backup of Kiro Crew state")
+    snap_parser = cli_help.add_command(sub, "snapshot")
     snap_parser.add_argument(
         "output_dir",
         nargs="?",
@@ -1306,7 +1320,7 @@ Examples:
         "--list", action="store_true", dest="list_snapshots", help="List existing snapshots"
     )
 
-    rest_parser = sub.add_parser("restore", help="Restore Kiro Crew state from a snapshot")
+    rest_parser = cli_help.add_command(sub, "restore")
     rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")
     rest_parser.add_argument(
         "--mode",
@@ -1325,12 +1339,12 @@ Examples:
     )
 
     # security
-    sec_parser = sub.add_parser("security", help="Security audit and deny list")
+    sec_parser = cli_help.add_command(sub, "security")
 
     # eval (benchmark harness)
-    eval_parser = sub.add_parser(
+    eval_parser = cli_help.add_command(
+        sub,
         "eval",
-        help="Run multi-session evaluation scenarios",
         epilog="""
 Examples:
   kirocrew eval                         # smoke test (~30s)
@@ -1370,9 +1384,7 @@ Examples:
     sec_sub.add_parser("verify", help="Verify security event log HMAC integrity")
 
     # policy — governance model inspection (read-only; MCP-safe)
-    tn_parser = sub.add_parser(
-        "tailnet", help="Publish this dashboard on your tailnet (Tailscale)"
-    )
+    tn_parser = cli_help.add_command(sub, "tailnet")
     tn_sub = tn_parser.add_subparsers(dest="tailnet_action")
     for _tn_name, _tn_help in (
         ("status", "Show whether the dashboard is published and trusted on your tailnet"),
@@ -1393,7 +1405,7 @@ Examples:
             help="Dashboard port to publish (default: discover the running gateway)",
         )
 
-    tel_parser = sub.add_parser("telemetry", help="Inspect or disable anonymous usage telemetry")
+    tel_parser = cli_help.add_command(sub, "telemetry")
     tel_sub = tel_parser.add_subparsers(dest="telemetry_action")
     tel_sub.add_parser(
         "status", help="Show exactly what the anonymous beacon sends (and whether it will)"
@@ -1401,9 +1413,7 @@ Examples:
     tel_sub.add_parser("disable", help="Turn the anonymous beacon off permanently")
     tel_sub.add_parser("enable", help="Turn the anonymous beacon back on")
 
-    policy_parser = sub.add_parser(
-        "policy", help="Inspect the governance security policy + profiles"
-    )
+    policy_parser = cli_help.add_command(sub, "policy")
     policy_sub = policy_parser.add_subparsers(dest="policy_action")
     policy_show = policy_sub.add_parser("show", help="Show the effective enterprise security policy")
     policy_show.add_argument(
@@ -1435,7 +1445,7 @@ Examples:
     register_bench_parser(sub)
     register_desktop_parser(sub)
 
-    kn_parser = sub.add_parser("knowledge", help="Knowledge Base maintenance")
+    kn_parser = cli_help.add_command(sub, "knowledge")
     kn_sub = kn_parser.add_subparsers(dest="knowledge_action")
     kn_dedup = kn_sub.add_parser(
         "dedup", help="Collapse cross-source duplicate documents (dry-run unless --apply)"
@@ -1447,10 +1457,7 @@ Examples:
     )
 
     # pod — isolated, throwaway, full-stack test instances per worktree (kubectl-style)
-    pod_parser = sub.add_parser(
-        "pod",
-        help="Isolated, throwaway, full-stack test instances per worktree (kubectl-style)",
-    )
+    pod_parser = cli_help.add_command(sub, "pod")
     pod_sub = pod_parser.add_subparsers(
         dest="pod_action",
         metavar="{up,down,ls,prune,status,token,url,logs,exec,provision,install}",
@@ -1560,10 +1567,10 @@ Examples:
     pod_cleanup = pod_sub.add_parser("_cleanup")
     pod_cleanup.add_argument("name")
 
-    sub.add_parser("update", help="Update Kiro Crew to the latest version")
+    cli_help.add_command(sub, "update")
 
     # stop
-    stop_parser = sub.add_parser("stop", help="Stop a running Kiro Crew gateway")
+    stop_parser = cli_help.add_command(sub, "stop")
     stop_parser.add_argument(
         "--port",
         type=int,
@@ -1580,9 +1587,7 @@ Examples:
     # restart — service-aware: restarts the systemd/launchd service if active,
     # otherwise SIGTERMs the foreground gateway and respawns it detached so the
     # shell returns immediately. Mirrors `stop`.
-    restart_parser = sub.add_parser(
-        "restart", help="Restart a running Kiro Crew gateway (service-aware)"
-    )
+    restart_parser = cli_help.add_command(sub, "restart")
     restart_parser.add_argument(
         "--port",
         type=int,
@@ -1600,10 +1605,7 @@ Examples:
     # /etc/systemd/system/, requires sudo) or launchd LaunchAgent (macOS,
     # ~/Library/LaunchAgents/, no sudo) so the gateway survives SSH disconnect,
     # auto-restarts on crash, and auto-starts on boot.
-    svc_parser = sub.add_parser(
-        "service",
-        help="Manage the Kiro Crew gateway as a system service (requires sudo on Linux)",
-    )
+    svc_parser = cli_help.add_command(sub, "service")
     svc_sub = svc_parser.add_subparsers(dest="service_action")
     svc_sub.add_parser("install", help="Install and start the gateway service (sudo on Linux)")
     svc_sub.add_parser("uninstall", help="Stop and remove the gateway service (sudo on Linux)")
@@ -1615,9 +1617,9 @@ Examples:
     # so the agent sandbox fails closed on every spawn. These subcommands attach
     # the same single `userns` grant to the app's own executable path, which the
     # kernel applies at exec time without any privileged transition.
-    sbx_parser = sub.add_parser(
+    sbx_parser = cli_help.add_command(
+        sub,
         "sandbox",
-        help="Manage the AppArmor profile the agent sandbox needs (Linux/Ubuntu)",
         epilog="""
 Examples:
   kirocrew sandbox status                      # is THIS launch covered?
@@ -1656,9 +1658,9 @@ Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
 
     # cloud — provision + run KiroCrew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
-    cloud_parser = sub.add_parser(
+    cloud_parser = cli_help.add_command(
+        sub,
         "cloud",
-        help="Run Kiro Crew on your own AWS EC2 instance",
         epilog="""
 Examples:
   kirocrew cloud launch                  # interactive: provision + configure + open dashboard
@@ -1786,7 +1788,7 @@ Examples:
     # logs — tail the gateway log. Reads from the systemd journal when running
     # as a service on Linux, the launchd stdout file on macOS, or the
     # foreground gateway log file otherwise.
-    logs_parser = sub.add_parser("logs", help="Show gateway logs")
+    logs_parser = cli_help.add_command(sub, "logs")
     logs_parser.add_argument(
         "-f", "--follow", action="store_true", help="Follow log output (live tail)"
     )
@@ -1795,10 +1797,10 @@ Examples:
     )
 
     # token
-    token_parser = sub.add_parser("token", help="Print a dashboard access URL with auth token")
+    token_parser = cli_help.add_command(sub, "token")
 
     # logout
-    logout_parser = sub.add_parser("logout", help="Revoke all active dashboard sessions")
+    logout_parser = cli_help.add_command(sub, "logout")
     logout_parser.add_argument(
         "--port",
         type=int,
@@ -1825,7 +1827,7 @@ Examples:
     )
 
     # status
-    status_parser = sub.add_parser("status", help="Show runtime stats")
+    status_parser = cli_help.add_command(sub, "status")
     status_parser.add_argument(
         "--port",
         type=int,
@@ -1834,14 +1836,10 @@ Examples:
     )
 
     # mcp-cron (MCP server — spawned by the agent backend, not user-facing)
-    sub.add_parser("mcp-cron", help=argparse.SUPPRESS)
+    sub.add_parser("mcp-cron")
 
     # consolidate
-    consolidate_parser = sub.add_parser(
-        "consolidate",
-        help="Force history consolidation (triggers auto-skill extraction)",
-        parents=[_jail_opts],
-    )
+    consolidate_parser = cli_help.add_command(sub, "consolidate", parents=[_jail_opts])
     consolidate_parser.add_argument(
         "session_key",
         nargs="?",
@@ -1856,26 +1854,26 @@ Examples:
     )
 
     # mcp-core (MCP server — spawned by the agent backend, not user-facing)
-    sub.add_parser("mcp-core", help=argparse.SUPPRESS)
+    sub.add_parser("mcp-core")
 
     # mcp-computer (MCP server — spawned by the agent backend, not user-facing).
     # A THIN SHIM: it forwards to the gateway over loopback, where the
     # fail-closed governance gate and all accessibility work live.
-    sub.add_parser("mcp-computer", help=argparse.SUPPRESS)
+    sub.add_parser("mcp-computer")
 
     # mcp-dashboard (MCP server — spawned by the agent backend, not user-facing).
     # Mounted only for an agent whose spec grants it, so an unassigned set costs
     # a session nothing: kiro-cli loads a server only when `tools` names it.
-    sub.add_parser("mcp-dashboard", help=argparse.SUPPRESS)
+    sub.add_parser("mcp-dashboard")
 
     # Builtin app MCP servers (spawned by the agent backend, not user-facing)
     for _bname in _BUILTIN_NAMES:
-        sub.add_parser(f"mcp-{_bname}", help=argparse.SUPPRESS)
+        sub.add_parser(f"mcp-{_bname}")
 
     # them in the ``kirocrew-computer`` MCP server instead.
-    computer_parser = sub.add_parser(
+    computer_parser = cli_help.add_command(
+        sub,
         "computer",
-        help="Computer-use (desktop automation) diagnostics",
         epilog="""
 Examples:
   kirocrew computer doctor                     # Support + permission report
@@ -1894,9 +1892,9 @@ Computer use is OFF by default and is enabled only from the dashboard
     )
 
     # learn
-    learn_parser = sub.add_parser(
+    learn_parser = cli_help.add_command(
+        sub,
         "learn",
-        help="Save or manage learned corrections",
         epilog="""
 Examples:
   kirocrew learn list
@@ -1920,9 +1918,9 @@ Examples:
     learn_rm.add_argument("query", help="Substring to match against lesson rules")
 
     # artifact
-    art_parser = sub.add_parser(
+    art_parser = cli_help.add_command(
+        sub,
         "artifact",
-        help="Manage saved artifacts (LLM-generated UI)",
         epilog="""
 Examples:
   kirocrew artifact list
@@ -1986,7 +1984,7 @@ Examples:
     art_ver.add_argument("slug", help="Artifact slug")
 
     # Memory
-    mem_parser = sub.add_parser("memory", help="Manage memory (vector store + markdown layer)")
+    mem_parser = cli_help.add_command(sub, "memory")
     mem_sub = mem_parser.add_subparsers(dest="mem_action")
     mem_sub.add_parser("list", help="Show semantic memory entries")
     mem_search = mem_sub.add_parser("search", help="Search episodic memories")
@@ -2024,7 +2022,7 @@ Examples:
     mem_import.add_argument("file", help="Path to JSON file (export format)")
 
     # agent
-    agent_parser = sub.add_parser("agent", help="Manage Kiro Crew agent definitions")
+    agent_parser = cli_help.add_command(sub, "agent")
     agent_sub = agent_parser.add_subparsers(dest="agent_action")
     agent_sub.add_parser("list", help="List Kiro Crew agents")
     agent_create = agent_sub.add_parser("create", help="Create a Kiro Crew agent")
@@ -2041,7 +2039,7 @@ Examples:
     agent_delete.add_argument("name", help="Agent name to delete")
 
     # workspace
-    ws_parser = sub.add_parser("workspace", help="Manage workspace definitions")
+    ws_parser = cli_help.add_command(sub, "workspace")
     ws_sub = ws_parser.add_subparsers(dest="workspace_action")
     ws_sub.add_parser("list", help="List workspaces")
     ws_create = ws_sub.add_parser("create", help="Create a workspace")
@@ -2069,9 +2067,9 @@ Examples:
     ws_delete.add_argument("name", help="Workspace name to delete")
 
     # app
-    app_parser = sub.add_parser(
+    app_parser = cli_help.add_command(
+        sub,
         "app",
-        help="Manage Kiro Crew apps",
         epilog="""
 Examples:
   kirocrew app install /path/to/oncall-watchtower
@@ -2120,9 +2118,9 @@ Examples:
     app_init.add_argument("--cron", action="store_true", help="Include sample cron job")
 
     # config
-    cfg_parser = sub.add_parser(
+    cfg_parser = cli_help.add_command(
+        sub,
         "config",
-        help="Get or set configuration values",
         epilog="""
 Examples:
   kirocrew config get                   # Show all config
@@ -2147,6 +2145,11 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
         help="Save to config.local.json (persists across upgrades)",
     )
     cfg_sub.add_parser("edit", help="Open config in $EDITOR")
+
+    # Last registration done: stop argparse from answering an unknown command
+    # with the internal mcp-* server names. Must come after every add_parser,
+    # and before parse_args.
+    cli_help.hide_internal_commands(sub)
 
     args = parser.parse_args()
 

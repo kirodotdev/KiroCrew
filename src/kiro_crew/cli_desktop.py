@@ -22,7 +22,7 @@ import os
 import sys
 from pathlib import Path
 
-from kiro_crew import platform_compat
+from kiro_crew import cli_help, platform_compat
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.perf_sampler import gate_refusal_message, profiling_enabled
 
@@ -311,10 +311,7 @@ def desktop_cmd(args: argparse.Namespace) -> int:
 
 def register_desktop_parser(sub: argparse._SubParsersAction) -> None:
     """Register ``kirocrew desktop`` and its subcommands."""
-    parser = sub.add_parser(
-        "desktop",
-        help="Debug-only desktop app diagnostics (requires KIROCREW_DEBUG)",
-    )
+    parser = cli_help.add_command(sub, "desktop")
     # dest must NOT be "command": that collides with the top-level subparsers'
     # dest and silently overwrites the "desktop" value, so dispatch falls through
     # to the argparse help instead of running the subcommand.
