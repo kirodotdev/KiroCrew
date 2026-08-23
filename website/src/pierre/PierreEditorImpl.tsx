@@ -3,7 +3,7 @@
  * editing surface for every code-editing view. Lives beside `PierreImpl` in
  * the same lazy chunk; reach it through `../pierre` only.
  */
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
@@ -90,11 +90,12 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     }),
     [dark, options, diffSplit, diffExpandUnchanged],
   )
+  const surfaceId = useId()
   const baseFile = useMemo<FileContents | null>(
     () => (diffBase == null
       ? null
-      : { name: file.name, contents: diffBase, cacheKey: contentCacheKey(file.name, diffBase) }),
-    [diffBase, file.name],
+      : { name: file.name, contents: diffBase, cacheKey: contentCacheKey(file.name, diffBase, surfaceId + ':edit-base') }),
+    [diffBase, file.name, surfaceId],
   )
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */

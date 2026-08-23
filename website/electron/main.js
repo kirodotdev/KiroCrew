@@ -73,7 +73,8 @@ const {
   unrecoverableGatewayDialog,
 } = require("./gateway-recovery");
 const { capturePySpyDump } = require("./pyspy-dump");
-const { createMetricsRecorder } = require("./perf-metrics");
+const { createMetricsRecorder, profilingEnabled } = require("./perf-metrics");
+const { createPierrePerfLog } = require("./pierre-perf-log");
 const { identityFamily, decideGatewayAction, classifyGatewayReadiness, FAMILY_META, HEALTH_IDENTITY_PATH, READY_PATH } = require("./instance-guard");
 const { initMochi, shutdownMochi } = require("./mochi/index");
 const { borrowSessionToken } = require("./mochi-session-token");
@@ -380,6 +381,12 @@ function glog(line) {
   try { fs.appendFileSync(gatewayLogPath(), entry); } catch { /* never let logging break launch */ }
   console.log(`[gateway-launch] ${line}`);
 }
+
+// Highlight-churn history for the renderer-crash post-mortem. Module scope
+// because the reports arrive on an ipcMain channel while the flush happens in
+// the window's render-process-gone handler. Holds only plain numbers, bounded to
+// its capacity, and writes nothing until a crash.
+const pierrePerfLog = createPierrePerfLog();
 
 // ── Cross-app gateway ownership (shared ~/.kiro/crew, shared port) ─────────
 // The nightly app and the production app are different bundles sharing one
@@ -2294,6 +2301,13 @@ function createWindow() {
     },
   });
   mainWindow.webContents.on("render-process-gone", (_e, details) => {
+    // Flush the highlight history FIRST so the log reads in causal order: what
+    // the highlighter was doing, then the death and what the processes had grown
+    // to. Unconditional -- this is the moment the buffer was kept for, and it is
+    // also the one moment the write cost is justified. An empty flush is itself
+    // informative: no highlighting in the last two minutes points away from the
+    // Pierre worker pool as the cause.
+    for (const line of pierrePerfLog.flush()) glog(line);
     rendererRecovery.handleGone(details || {});
   });
 
@@ -3918,6 +3932,34 @@ app.whenReady().then(async () => {
     } catch {
       /* status probe unavailable — stay silent rather than guess */
     }
+  });
+
+  // Pierre highlight-churn reports (src/lib/pierrePerf.ts). Buffered in memory
+  // and flushed to the log only when the renderer dies -- see pierre-perf-log.js
+  // for why nothing is written in steady state (glog has no rotation, so a line
+  // every few seconds would grow the user's log without bound).
+  //
+  // The payoff: every future renderer crash carries the two minutes of
+  // highlighter activity that preceded it, on a normal install, with no env var
+  // set ahead of time.
+  //
+  // KIROCREW_DEBUG additionally logs each window as it arrives, for watching a
+  // live reproduction instead of reading a post-mortem. Checked per message so
+  // toggling the variable needs no rebuild.
+  ipcMain.on("pierre-perf", (_event, w) => {
+    // Only the primary renderer's activity belongs in this buffer. The channel is
+    // reachable from any window that loads the shared preload (companion panels,
+    // secondary dashboards), but the flush is triggered by THIS window's
+    // render-process-gone -- so accepting a sibling's reports would file its
+    // highlighting under the primary renderer's crash history and point the
+    // post-mortem at the wrong process. Mis-attributed evidence is worse than
+    // none, because it is acted upon.
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    if (_event.sender !== mainWindow.webContents) return;
+    if (!pierrePerfLog.record(w)) return;
+    if (!profilingEnabled(process.env)) return;
+    const line = pierrePerfLog.lastLine();
+    if (line) glog(line);
   });
 
   createTray();
