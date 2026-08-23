@@ -123,7 +123,7 @@ export default function Workspace({ specs, sel, setSel, setErr, onNew, loading =
           <Btn label={i18nT('apps.specBuilder.components.workspace.start_your_first_spec')} primary big onClick={onNew} />
         </div>
       ) : sel && specs.some((s) => s.name === sel) ? (
-        <SpecDetail key={sel} name={sel} setErr={setErr} />
+        <SpecDetail key={sel} name={sel} setErr={setErr} onDuplicated={selectSpec} />
       ) : (
         <div className="flex-1 min-w-0 flex items-center justify-center text-muted text-[13px] gap-1.5">
           {/* Points at where the list actually IS: beside this pane on a desktop,

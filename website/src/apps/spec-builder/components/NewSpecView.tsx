@@ -51,7 +51,7 @@ export default function NewSpecView({ onCancel, onCreated, setErr, onSettings }:
   // last and mislabel the current one (repo `use-react-query` rule).
   const gitQuery = useQuery({
     queryKey: ['spec-builder', 'browse', wd],
-    queryFn: () => specApi.browse(wd),
+    queryFn: ({ signal }) => specApi.browse(wd, signal),
     enabled: !!wd,
   })
   const isGit: boolean | null = !wd || gitQuery.isPending ? null : !!gitQuery.data?.is_git

@@ -156,8 +156,6 @@ src/kiro_crew/apps/builtins/personal_shopper/tests/test_routes.py
 src/kiro_crew/apps/builtins/personal_shopper/tests/test_store.py
 src/kiro_crew/apps/builtins/pptx_maker/backend/engine_source.py
 src/kiro_crew/apps/builtins/pptx_maker/backend/library.py
-src/kiro_crew/apps/builtins/spec_builder/backend/routes.py
-src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py
 src/kiro_crew/apps/builtins/workflows/server.py
 src/kiro_crew/apps/cron_sdk.py
 src/kiro_crew/apps/dependencies.py
@@ -422,7 +420,6 @@ src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
 src/kiro_crew/service/macos.py
-src/kiro_crew/session.py
 src/kiro_crew/session_directive.py
 src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
@@ -1172,7 +1169,6 @@ test/test_sel_prune_streaming.py
 test/test_send_message_targeted.py
 test/test_service.py
 test/test_serving_loop_unified.py
-test/test_session.py
 test/test_session_cleanup.py
 test/test_session_core_audit.py
 test/test_session_coverage.py

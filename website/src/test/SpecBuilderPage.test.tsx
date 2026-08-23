@@ -111,7 +111,8 @@ describe('SpecBuilder accessibility contract', () => {  const SPECS = [{ name: '
 
   function stubSpecs() {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((url: string) => {
-      const body = String(url).includes('/specs/')
+      const requestUrl = String(url)
+      const body = requestUrl.includes('/specs/')
         ? { name: 'my-spec', phase: 'requirements', status: 'idle', running: false, working_dir: '/tmp/p', files: {} }
         : { specs: SPECS }
       return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(JSON.stringify(body)) })

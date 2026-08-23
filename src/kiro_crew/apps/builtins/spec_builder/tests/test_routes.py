@@ -14,6 +14,7 @@ the port from the external app:
     (credentials never reach the browser), recursively across nested values;
   * the slot-key prefix is ``spec-builder-`` (renamed from the external app).
 """
+
 from __future__ import annotations
 
 import ast
@@ -28,6 +29,7 @@ import threading
 import time
 import types
 from pathlib import Path
+from typing import cast
 
 import pytest
 from aiohttp import web
@@ -54,6 +56,12 @@ def _redirect_state(monkeypatch, tmp_path):
     monkeypatch.setattr(routes, "_DELETED_PATH", state_dir / "deleted.json")
     monkeypatch.setattr(routes, "is_app_enabled", lambda name: True)
     return state_dir
+
+
+def _stage_identity(path: Path) -> dict[str, int]:
+    """Serialize the inode identity captured with a duplicate reservation."""
+    info = path.stat()
+    return {"stage_dev": info.st_dev, "stage_ino": info.st_ino}
 
 
 def _live_state_snapshot() -> dict[str, int]:
@@ -91,9 +99,9 @@ def _never_touch_the_real_state(monkeypatch, tmp_path):
     before = _live_state_snapshot()
     _redirect_state(monkeypatch, tmp_path / "_autouse_state")
     yield
-    assert _live_state_snapshot() == before, (
-        f"a test wrote to the live state dir: {_REAL_STATE_DIR}"
-    )
+    assert (
+        _live_state_snapshot() == before
+    ), f"a test wrote to the live state dir: {_REAL_STATE_DIR}"
 
 
 #: The un-redirected state dir the autouse guard watches. ``None`` until
@@ -126,12 +134,15 @@ def test_register_routes_wires_expected_set(tmp_path, monkeypatch):
     # paths directly on the router (the external app's AppRoute-list contract
     # was converted during the port). mypy flags asserting a None return
     # (func-returns-value), so just call it.
+    startup_before = list(app.on_startup)
     routes.register_routes(app)
 
+    assert (
+        list(app.on_startup) == startup_before
+    ), "Spec Builder filesystem recovery would block socket readiness"
+
     wired = {
-        (r.method, r.resource.canonical)
-        for r in app.router.routes()
-        if r.resource is not None
+        (r.method, r.resource.canonical) for r in app.router.routes() if r.resource is not None
     }
     expected = {
         ("GET", f"{_BASE}/settings"),
@@ -147,9 +158,31 @@ def test_register_routes_wires_expected_set(tmp_path, monkeypatch):
         ("POST", f"{_BASE}/specs/{{name}}/handoff"),
         ("POST", f"{_BASE}/specs/{{name}}/execute"),
         ("POST", f"{_BASE}/specs/{{name}}/stop"),
+        # Direct authority over the artifacts: record a phase approval, run one
+        # task, and the label / archive / duplicate lifecycle.
+        ("POST", f"{_BASE}/specs/{{name}}/approve"),
+        ("POST", f"{_BASE}/specs/{{name}}/task"),
+        ("POST", f"{_BASE}/specs/{{name}}/title"),
+        ("POST", f"{_BASE}/specs/{{name}}/archive"),
+        ("POST", f"{_BASE}/specs/{{name}}/duplicate"),
         ("DELETE", f"{_BASE}/specs/{{name}}"),
     }
     assert expected <= wired
+
+
+@pytest.mark.asyncio
+async def test_duplicate_recovery_runs_once_on_first_enabled_request(tmp_path, monkeypatch):
+    recovered: list[str] = []
+    monkeypatch.setattr(routes, "is_app_enabled", lambda _name: True)
+    monkeypatch.setattr(
+        routes, "_recover_abandoned_reservations", lambda: recovered.append("recovered")
+    )
+
+    async with _make_client(monkeypatch, tmp_path) as client:
+        assert (await client.get(f"{_BASE}/settings")).status == 200
+        assert (await client.get(f"{_BASE}/specs")).status == 200
+
+    assert recovered == ["recovered"]
 
 
 def test_slot_key_prefix_renamed():
@@ -185,7 +218,9 @@ async def test_settings_model_roundtrips_and_empty_means_inherit(tmp_path, monke
     literal model name. An unknown name is kept (availability is only decidable
     in a live session, where the withhold path owns it)."""
     async with _make_client(monkeypatch, tmp_path) as client:
-        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": "  test-model-x  "})
+        resp = await client.put(
+            f"{_BASE}/settings", json={"base_path": "", "model": "  test-model-x  "}
+        )
         assert resp.status == 200
         assert (await resp.json()) == {"ok": True, "base_path": "", "model": "test-model-x"}
 
@@ -205,7 +240,9 @@ async def test_settings_write_without_model_key_preserves_the_stored_model(tmp_p
     base_path must not silently erase a configured model. Absence preserves;
     clearing requires an explicit ''."""
     async with _make_client(monkeypatch, tmp_path) as client:
-        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": "test-model-x"})
+        resp = await client.put(
+            f"{_BASE}/settings", json={"base_path": "", "model": "test-model-x"}
+        )
         assert resp.status == 200
 
         # Legacy-shaped write: no model key at all.
@@ -223,7 +260,9 @@ async def test_settings_rejects_malformed_model(tmp_path, monkeypatch):
     names the problem, and an over-length id is rejected rather than truncated
     (a sliced id is a different string that is never served)."""
     async with _make_client(monkeypatch, tmp_path) as client:
-        resp = await client.put(f"{_BASE}/settings", json={"base_path": "", "model": ["not", "a", "string"]})
+        resp = await client.put(
+            f"{_BASE}/settings", json={"base_path": "", "model": ["not", "a", "string"]}
+        )
         assert resp.status == 400
         assert (await resp.json())["code"] == "model_not_a_string"
 
@@ -443,7 +482,11 @@ async def test_create_rejects_sensitive_working_dir(tmp_path, monkeypatch):
     async with _make_client(monkeypatch, tmp_path) as client:
         resp = await client.post(
             f"{_BASE}/specs",
-            json={"name": "probe", "working_dir": os.path.expanduser("~/.ssh"), "spec_type": "feature"},
+            json={
+                "name": "probe",
+                "working_dir": os.path.expanduser("~/.ssh"),
+                "spec_type": "feature",
+            },
         )
         assert resp.status == 400
         assert "sensitive" in (await resp.json())["error"]
@@ -606,7 +649,7 @@ def test_browse_scan_is_offloadable_and_bounded(tmp_path):
 
     out = routes._scan_subdirs(str(tmp_path))
     names = {d["name"] for d in out}
-    assert names == {f"dir{i}" for i in range(5)}      # no hidden, no skip-list, no files
+    assert names == {f"dir{i}" for i in range(5)}  # no hidden, no skip-list, no files
     assert routes._BROWSE_MAX_DIRS > 0
 
 
@@ -738,8 +781,8 @@ async def test_halt_execution_leaves_user_trust_alone(tmp_path):
     spec_dir = tmp_path / "spec"
     spec_dir.mkdir()
     await routes._halt_execution(_State(), "s", spec_dir, reason="user stop")
-    assert (spec_dir / routes._STOP_FILE).is_file()   # loop is sentinelled
-    assert slot._trust is True                        # user's choice preserved
+    assert (spec_dir / routes._STOP_FILE).is_file()  # loop is sentinelled
+    assert slot._trust is True  # user's choice preserved
 
 
 # ── GPT round-5 findings (#518) ───────────────────────────────────────────────
@@ -772,8 +815,8 @@ def test_list_handler_offloads_folder_discovery():
         assert inline not in src, f"{inline} still called inline in the list handler"
 
 
-def test_collect_spec_documents_returns_the_detail_triple(tmp_path):
-    """Non-vacuous: the bundled collector actually produces phase + docs + state."""
+def test_collect_spec_documents_returns_the_detail_bundle(tmp_path):
+    """The bundled collector produces phase, docs, state and task metadata."""
 
     spec_dir = tmp_path / "spec"
     spec_dir.mkdir()
@@ -781,10 +824,16 @@ def test_collect_spec_documents_returns_the_detail_triple(tmp_path):
     (spec_dir / "design.md").write_text("# design")
     (spec_dir / ".spec-state.json").write_text(json.dumps({"blocking": "waiting on you"}))
 
-    phase, files, state = routes._collect_spec_documents(spec_dir)
-    assert phase == "design"                      # newest present phase file wins
+    phase, files, state, meta = routes._collect_spec_documents(spec_dir)
+    assert phase == "design"  # newest present phase file wins
     assert files["requirements.md"] == "# reqs"
     assert state is not None and state["blocking"] == "waiting on you"
+    # The hash is of the file AS STORED because it binds a phase approval to the
+    # exact document reviewed.
+    assert meta["docs"]["requirements.md"]["hash"] == routes._sha256_text("# reqs")
+    assert set(meta["docs"]["requirements.md"]) == {"hash"}
+    # No tasks.md here, so the list is empty rather than absent.
+    assert meta["tasks"] == [] and meta["task_progress"] == {"done": 0, "total": 0}
 
 
 # (2) deleting a spec must tear down its worker slot
@@ -805,6 +854,7 @@ async def test_delete_cancels_and_removes_the_worker_slot(tmp_path):
         def __await__(self):
             async def _done():
                 return None
+
             return _done().__await__()
 
     class _Slot:
@@ -830,6 +880,7 @@ async def test_delete_cancels_and_removes_the_worker_slot(tmp_path):
 async def test_teardown_refuses_a_slot_this_app_does_not_own():
     """Anti-collision: a slot whose _app is not ours must be left alone rather
     than deleted because its key happens to match."""
+
     class _Slot:
         _app = "some-other-app"
         running = False
@@ -872,8 +923,12 @@ async def test_mutate_index_reads_a_fresh_index_not_the_callers_snapshot(tmp_pat
 
     # Stand in for the concurrent request that lands during the await: it edits
     # the file directly, exactly as another handler's own mutation would.
-    routes._save_index({"kept": {"spec_dir": "/a/kept", "status": "planning"},
-                        "added-meanwhile": {"spec_dir": "/a/added", "status": "planning"}})
+    routes._save_index(
+        {
+            "kept": {"spec_dir": "/a/kept", "status": "planning"},
+            "added-meanwhile": {"spec_dir": "/a/added", "status": "planning"},
+        }
+    )
 
     assert await routes._mutate_index(lambda idx: idx.pop("kept", None) is not None) is True
     after = routes._load_index()
@@ -904,9 +959,785 @@ def test_load_index_releases_a_reservation_left_by_a_dead_process(tmp_path, monk
     loaded = routes._load_index()
 
     assert "orphaned" in loaded, "the entry must survive -- the delete never completed"
-    assert routes._DELETING not in loaded["orphaned"], (
-        "a reservation from a process that is gone still hides the spec and reserves its name"
+    assert (
+        routes._DELETING not in loaded["orphaned"]
+    ), "a reservation from a process that is gone still hides the spec and reserves its name"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="atomic no-replace directory publication is unavailable",
+)
+def test_duplicate_publication_never_replaces_a_destination_created_concurrently(
+    tmp_path, monkeypatch
+):
+    """The destination's creation and the publish syscall are one arbitration.
+
+    An existence check followed by ordinary rename loses this race on POSIX:
+    rename replaces an empty directory, including its identity and metadata.
+    """
+    stage = tmp_path / ".copy.stage"
+    stage.mkdir()
+    (stage / "requirements.md").write_text("# staged")
+    target = tmp_path / "copy"
+    target_identity: list[tuple[int, int]] = []
+    real_rename = routes.rename_noreplace
+
+    def _writer_wins_before_the_syscall(*args, **kwargs):
+        target.mkdir(mode=0o700)
+        stat = target.stat()
+        target_identity.append((stat.st_dev, stat.st_ino))
+        return real_rename(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "rename_noreplace", _writer_wins_before_the_syscall)
+
+    assert routes._publish_staged_copy(stage, target) == "conflict"
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == target_identity[0]
+    assert stage.is_dir(), "the losing staged copy replaced the concurrent destination"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PIN_DIR,
+    reason="descriptor-pinned duplicate writes are unavailable",
+)
+def test_duplicate_doc_creation_refuses_an_ancestor_swapped_after_validation(tmp_path, monkeypatch):
+    """The opened directory, not its raceable pathname, owns authorization."""
+    project = tmp_path / "project"
+    spec_dir = project / "copy"
+    spec_dir.mkdir(parents=True)
+    external_parent = tmp_path / "external"
+    external_spec = external_parent / "copy"
+    external_spec.mkdir(parents=True)
+    original_project = tmp_path / "original-project"
+    real_verified = routes._verified_spec_dir
+    swapped = False
+
+    def _verify_then_swap(path):
+        nonlocal swapped
+        verified = real_verified(path)
+        if path == spec_dir and verified is not None and not swapped:
+            project.rename(original_project)
+            project.symlink_to(external_parent, target_is_directory=True)
+            swapped = True
+        return verified
+
+    monkeypatch.setattr(routes, "_verified_spec_dir", _verify_then_swap)
+
+    result, identity = routes._create_spec_doc(spec_dir, "requirements.md", "# copied")
+
+    assert result == "unsafe_dir"
+    assert identity is None
+    assert not (external_spec / "requirements.md").exists()
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PIN_DIR,
+    reason="descriptor-pinned duplicate cleanup is unavailable",
+)
+def test_duplicate_rollback_refuses_an_ancestor_swapped_after_validation(tmp_path, monkeypatch):
+    """A redirected path cannot make rollback unlink an external matching inode."""
+    project = tmp_path / "project"
+    spec_dir = project / "copy"
+    spec_dir.mkdir(parents=True)
+    external_parent = tmp_path / "external"
+    external_spec = external_parent / "copy"
+    external_spec.mkdir(parents=True)
+    external_doc = external_spec / "requirements.md"
+    external_doc.write_text("# external")
+    stat = external_doc.stat()
+    identity = (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+    original_project = tmp_path / "original-project"
+    real_verified = routes._verified_spec_dir
+    swapped = False
+
+    def _verify_then_swap(path):
+        nonlocal swapped
+        verified = real_verified(path)
+        if path == spec_dir and verified is not None and not swapped:
+            project.rename(original_project)
+            project.symlink_to(external_parent, target_is_directory=True)
+            swapped = True
+        return verified
+
+    monkeypatch.setattr(routes, "_verified_spec_dir", _verify_then_swap)
+
+    routes._rollback_staged_docs(spec_dir, {"requirements.md": identity})
+
+    assert external_doc.read_text() == "# external"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PIN_DIR,
+    reason="descriptor-pinned duplicate cleanup is unavailable",
+)
+def test_duplicate_cleanup_leaves_the_empty_stage_instead_of_racing_replacement(tmp_path):
+    """POSIX has no inode-bound rmdir, so safe cleanup stops at an empty stage."""
+    stage = tmp_path / ".copy.duplicate-deadbeef"
+    stage.mkdir()
+
+    routes._rollback_staged_docs(stage, {})
+
+    assert stage.is_dir()
+    assert not any(stage.iterdir())
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PIN_DIR,
+    reason="descriptor-pinned duplicate staging is unavailable",
+)
+def test_duplicate_marker_failure_does_not_remove_a_redirected_stage(tmp_path, monkeypatch):
+    """Marker unwind cannot follow a swapped ancestor into an external tree."""
+    project = tmp_path / "project"
+    project.mkdir()
+    external_parent = tmp_path / "external"
+    external_parent.mkdir()
+    token = "d" * 32
+    stage = project / f".copy.duplicate-{token}"
+    external_stage = external_parent / stage.name
+    external_stage.mkdir()
+    original_project = tmp_path / "original-project"
+
+    def _swap_then_refuse(_stage_fd, _duplicate_token):
+        project.rename(original_project)
+        project.symlink_to(external_parent, target_is_directory=True)
+        return False
+
+    monkeypatch.setattr(routes, "_write_duplicate_marker_at", _swap_then_refuse)
+
+    result = routes._create_duplicate_stage(stage, token)
+
+    assert result == "write_failed"
+    assert external_stage.is_dir()
+    assert (original_project / stage.name).is_dir()
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+def test_duplicate_write_failure_retains_provenance_until_documents_are_rolled_back(
+    tmp_path, monkeypatch
+):
+    """Failure cleanup cannot create markerless staged-document residue."""
+    token = "d" * 32
+    stage = tmp_path / f".copy.duplicate-{token}"
+    target = tmp_path / "copy"
+    assert routes._create_duplicate_stage(stage, token) == ""
+    real_create = routes._create_spec_doc
+    calls = 0
+
+    def _fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return "write_failed", None
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_create_spec_doc", _fail_second)
+    result, created = routes._write_and_publish_duplicate(
+        stage,
+        target,
+        {"requirements.md": "# copied", "design.md": "# fails"},
+        token,
     )
+
+    assert result == "write_failed"
+    assert routes._duplicate_marker_matches(stage, token)
+    assert routes._rollback_staged_docs(stage, created) is True
+    assert routes._duplicate_marker_matches(stage, token)
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+def test_duplicate_fsyncs_staged_directory_entries_before_publication(tmp_path, monkeypatch):
+    """A durable rename cannot expose child entries that were never persisted."""
+    token = "d" * 32
+    stage = tmp_path / f".copy.duplicate-{token}"
+    target = tmp_path / "copy"
+    assert routes._create_duplicate_stage(stage, token) == ""
+    stage_stat = stage.stat()
+    stage_identity = (stage_stat.st_dev, stage_stat.st_ino)
+    stage_synced = False
+    real_fsync = routes.os.fsync
+
+    def _record_stage_fsync(fd):
+        nonlocal stage_synced
+        current = os.fstat(fd)
+        if (current.st_dev, current.st_ino) == stage_identity:
+            stage_synced = True
+        return real_fsync(fd)
+
+    monkeypatch.setattr(routes.os, "fsync", _record_stage_fsync)
+
+    result, _created = routes._write_and_publish_duplicate(
+        stage, target, {"requirements.md": "# copied"}, token
+    )
+
+    assert result == ""
+    assert stage_synced
+    assert (target / "requirements.md").read_text() == "# copied"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+def test_duplicate_refuses_a_stage_replaced_at_the_publication_boundary(tmp_path, monkeypatch):
+    """The renamed directory must be the descriptor-pinned transaction stage."""
+    token = "d" * 32
+    stage = tmp_path / f".copy.duplicate-{token}"
+    displaced_stage = tmp_path / ".displaced-transaction"
+    target = tmp_path / "copy"
+    assert routes._create_duplicate_stage(stage, token) == ""
+    real_publish = routes._publish_staged_copy
+
+    def _replace_then_publish(stage_dir, target_dir):
+        stage_dir.rename(displaced_stage)
+        stage_dir.mkdir()
+        (stage_dir / "requirements.md").write_text("# attacker payload")
+        return real_publish(stage_dir, target_dir)
+
+    monkeypatch.setattr(routes, "_publish_staged_copy", _replace_then_publish)
+
+    result, _created = routes._write_and_publish_duplicate(
+        stage, target, {"requirements.md": "# intended payload"}, token
+    )
+
+    assert result == "identity_mismatch"
+    assert (target / "requirements.md").read_text() == "# attacker payload"
+    assert (displaced_stage / "requirements.md").read_text() == "# intended payload"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+def test_duplicate_refuses_a_stage_replaced_before_document_creation(tmp_path, monkeypatch):
+    """Copied documents are written only through the reservation's stage inode."""
+    token = "d" * 32
+    stage = tmp_path / f".copy.duplicate-{token}"
+    displaced_stage = tmp_path / ".displaced-transaction"
+    target = tmp_path / "copy"
+    assert routes._create_duplicate_stage(stage, token) == ""
+    expected_identity = routes._duplicate_stage_identity(stage, token)
+    assert expected_identity is not None
+    real_create = routes._create_spec_doc
+
+    def _replace_then_create(*args, **kwargs):
+        stage.rename(displaced_stage)
+        stage.mkdir()
+        (stage / routes._DUPLICATE_MARKER).write_text(token)
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_create_spec_doc", _replace_then_create)
+
+    result, _created = routes._write_and_publish_duplicate(
+        stage,
+        target,
+        {"requirements.md": "# intended payload"},
+        token,
+        expected_identity,
+    )
+
+    assert result == "identity_mismatch"
+    assert not (stage / "requirements.md").exists()
+    assert (displaced_stage / routes._DUPLICATE_MARKER).read_text() == token
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires atomic no-replace directory publication",
+)
+def test_startup_recovery_publishes_a_complete_duplicate_staged_by_a_dead_process(
+    tmp_path, monkeypatch
+):
+    """A crash after all documents are staged must not hide the copy forever.
+
+    Custom ``base_path`` roots are not part of folder discovery, so dropping the
+    reservation would strand the files while their name remains unusable.
+    """
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    documents = {"requirements.md": "# copied", "design.md": ""}
+    for fname, text in documents.items():
+        (stage / fname).write_text(text)
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(stage),
+                    "documents": {
+                        fname: routes._sha256_text(text) for fname, text in documents.items()
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" in loaded
+    assert routes._DUPLICATING not in loaded["copy"]
+    assert not stage.exists()
+    assert (target / "requirements.md").read_text() == "# copied"
+    assert (target / "design.md").read_text() == ""
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires atomic no-replace directory publication",
+)
+def test_startup_recovery_refuses_a_stage_replaced_at_the_publication_boundary(
+    tmp_path, monkeypatch
+):
+    """Recovery must publish the inode whose marker and manifest it validated."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    displaced_stage = target.parent / ".displaced-transaction"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    (stage / "requirements.md").write_text("# intended payload")
+    identity = _stage_identity(stage)
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **identity,
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# intended payload"),
+                    },
+                },
+            }
+        }
+    )
+    real_publish = routes._publish_staged_copy
+
+    def _replace_then_publish(stage_dir, target_dir):
+        stage_dir.rename(displaced_stage)
+        stage_dir.mkdir()
+        (stage_dir / "requirements.md").write_text("# attacker payload")
+        return real_publish(stage_dir, target_dir)
+
+    monkeypatch.setattr(routes, "_publish_staged_copy", _replace_then_publish)
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" not in loaded
+    assert (target / "requirements.md").read_text() == "# attacker payload"
+    assert (displaced_stage / "requirements.md").read_text() == "# intended payload"
+
+
+def test_startup_recovery_does_not_adopt_a_competing_target_after_identity_check_crash(
+    tmp_path, monkeypatch
+):
+    """An ambiguous post-rename crash remains reserved instead of adopting files."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    displaced_stage = target.parent / ".displaced-transaction"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    (stage / "requirements.md").write_text("# intended payload")
+    identity = _stage_identity(stage)
+    stage.rename(displaced_stage)
+    target.mkdir()
+    (target / "requirements.md").write_text("# attacker payload")
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **identity,
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# intended payload"),
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert routes._DUPLICATING in loaded["copy"]
+    assert (target / "requirements.md").read_text() == "# attacker payload"
+    assert (displaced_stage / routes._DUPLICATE_MARKER).read_text() == token
+
+
+def test_startup_recovery_preserves_a_spec_with_unproven_duplicate_metadata(tmp_path, monkeypatch):
+    """Untrusted reservation metadata is not proof that the entry is disposable."""
+    _redirect_state(monkeypatch, tmp_path)
+    spec_dir = tmp_path / "custom" / "real-spec"
+    spec_dir.mkdir(parents=True)
+    (spec_dir / "requirements.md").write_text("# keep me")
+    token = "d" * 32
+    routes._save_index(
+        {
+            "real-spec": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(spec_dir),
+                "status": "planning",
+                "slot_key": "spec-builder-real-spec-deadbeef",
+                "approvals": {"requirements": {"hash": "a" * 64}},
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(spec_dir.parent / f".real-spec.duplicate-{token}"),
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# keep me"),
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "real-spec" in loaded
+    assert routes._DUPLICATING not in loaded["real-spec"]
+    assert loaded["real-spec"]["approvals"] == {"requirements": {"hash": "a" * 64}}
+    assert (spec_dir / "requirements.md").read_text() == "# keep me"
+
+
+def test_startup_recovery_preserves_an_unproven_reservation_with_no_files(tmp_path, monkeypatch):
+    """Well-shaped metadata alone cannot prove that recovery may delete a spec."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "offline" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    approvals = {"requirements": {"hash": "a" * 64}}
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                "approvals": approvals,
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# copied"),
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" in loaded
+    assert routes._DUPLICATING not in loaded["copy"]
+    assert loaded["copy"]["approvals"] == approvals
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires atomic no-replace directory publication",
+)
+@pytest.mark.parametrize("target_exists_before_recovery", [False, True])
+def test_startup_recovery_discards_duplicate_when_an_external_target_wins(
+    tmp_path, monkeypatch, target_exists_before_recovery
+):
+    """A proven duplicate must not adopt a competing writer's target files."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    (stage / "requirements.md").write_text("# copied")
+    if target_exists_before_recovery:
+        target.mkdir()
+        (target / "requirements.md").write_text("# external")
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(stage),
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# copied"),
+                    },
+                },
+            }
+        }
+    )
+
+    def _concurrent_writer_wins(stage_dir, target_dir):
+        assert not target_exists_before_recovery
+        target_dir.mkdir()
+        (target_dir / "requirements.md").write_text("# external")
+        return "conflict"
+
+    monkeypatch.setattr(routes, "_publish_staged_copy", _concurrent_writer_wins)
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" not in loaded
+    assert (target / "requirements.md").read_text() == "# external"
+    assert stage.is_dir()
+    assert not any(stage.iterdir())
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires descriptor-pinned cleanup",
+)
+@pytest.mark.parametrize("external_target", [False, True])
+def test_startup_recovery_cleanup_stays_on_the_proven_stage_inode(
+    tmp_path, monkeypatch, external_target
+):
+    """Cleanup cannot unlink files from a replacement at the reserved stage name."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    displaced_stage = target.parent / ".displaced-transaction"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    (stage / "requirements.md").write_text("# copied")
+    if external_target:
+        target.mkdir()
+        (target / "requirements.md").write_text("# external")
+    documents = {"requirements.md": routes._sha256_text("# copied")}
+    if not external_target:
+        documents["design.md"] = routes._sha256_text("# missing")
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(stage),
+                    "documents": documents,
+                },
+            }
+        }
+    )
+    real_clear = routes._clear_duplicate_stage_documents_at
+
+    def _replace_then_clear(dir_fd, marker_token, manifest):
+        stage.rename(displaced_stage)
+        stage.mkdir()
+        (stage / "requirements.md").write_text("# unrelated")
+        return real_clear(dir_fd, marker_token, manifest)
+
+    monkeypatch.setattr(routes, "_clear_duplicate_stage_documents_at", _replace_then_clear)
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" not in loaded
+    assert (stage / "requirements.md").read_text() == "# unrelated"
+    assert not (displaced_stage / "requirements.md").exists()
+    assert (displaced_stage / routes._DUPLICATE_MARKER).read_text() == token
+    if external_target:
+        assert (target / "requirements.md").read_text() == "# external"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires atomic no-replace directory publication",
+)
+def test_startup_recovery_keeps_a_duplicate_published_by_a_dead_process(tmp_path, monkeypatch):
+    """The exact post-rename/pre-index crash window keeps the visible copy."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    target.mkdir(parents=True)
+    (target / routes._DUPLICATE_MARKER).write_text(token)
+    (target / "requirements.md").write_text("# copied")
+    stage = target.parent / f".copy.duplicate-{token}"
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(target),
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# copied"),
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" in loaded
+    assert routes._DUPLICATING not in loaded["copy"]
+    assert (target / "requirements.md").read_text() == "# copied"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires atomic no-replace directory publication",
+)
+def test_startup_recovery_discards_an_incomplete_duplicate_stage_from_a_dead_process(
+    tmp_path, monkeypatch
+):
+    """A marker-provenanced partial stage is transaction residue, not user data."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    (stage / "requirements.md").write_text("# only the first document landed")
+    documents = {
+        "requirements.md": routes._sha256_text("# only the first document landed"),
+        "design.md": routes._sha256_text("# never written"),
+    }
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(stage),
+                    "documents": documents,
+                },
+            }
+        }
+    )
+
+    real_save = routes._save_index
+
+    def _assert_cleanup_order(index):
+        if "copy" not in index:
+            assert routes._duplicate_marker_matches(stage, token)
+            assert not (stage / "requirements.md").exists()
+        real_save(index)
+
+    monkeypatch.setattr(routes, "_save_index", _assert_cleanup_order)
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert "copy" not in loaded
+    assert stage.is_dir()
+    assert not any(stage.iterdir()), "the abandoned transaction left hidden copied documents"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate recovery requires descriptor-pinned cleanup",
+)
+@pytest.mark.parametrize("external_target", [False, True])
+def test_startup_recovery_preserves_a_mismatched_staged_document(
+    tmp_path, monkeypatch, external_target
+):
+    """A marker proves the stage directory, not ownership of replaced files."""
+    _redirect_state(monkeypatch, tmp_path)
+    token = "d" * 32
+    target = tmp_path / "custom" / "copy"
+    stage = target.parent / f".copy.duplicate-{token}"
+    stage.mkdir(parents=True)
+    (stage / routes._DUPLICATE_MARKER).write_text(token)
+    moved_file = tmp_path / "user-requirements.md"
+    moved_file.write_text("# user file moved into the abandoned stage")
+    moved_file.replace(stage / "requirements.md")
+    if external_target:
+        target.mkdir()
+        (target / "requirements.md").write_text("# external target")
+    routes._save_index(
+        {
+            "copy": {
+                "working_dir": str(tmp_path),
+                "spec_dir": str(target),
+                "status": "planning",
+                "slot_key": "spec-builder-copy-deadbeef",
+                routes._DUPLICATING: {
+                    "owner": "1234:deadbeef",
+                    "at": 1.0,
+                    "token": token,
+                    "stage_dir": str(stage),
+                    **_stage_identity(stage),
+                    "documents": {
+                        "requirements.md": routes._sha256_text("# copied"),
+                    },
+                },
+            }
+        }
+    )
+
+    routes._recover_abandoned_reservations()
+    loaded = routes._load_index()
+
+    assert routes._DUPLICATING in loaded["copy"]
+    assert (stage / "requirements.md").read_text() == "# user file moved into the abandoned stage"
+    if external_target:
+        assert (target / "requirements.md").read_text() == "# external target"
 
 
 def test_load_index_releases_a_legacy_bare_timestamp_reservation(tmp_path, monkeypatch):
@@ -939,9 +1770,9 @@ async def test_load_index_keeps_a_reservation_this_process_still_owns(tmp_path, 
     )
 
     loaded = routes._load_index()
-    assert routes._DELETING in loaded["live"], (
-        "this process's own in-flight reservation was released by its own read"
-    )
+    assert (
+        routes._DELETING in loaded["live"]
+    ), "this process's own in-flight reservation was released by its own read"
 
 
 @pytest.mark.asyncio
@@ -963,9 +1794,9 @@ async def test_released_reservation_is_persisted_by_the_next_mutation(tmp_path, 
     assert await routes._touch_spec("orphaned", status="planning") is not None
 
     on_disk = json.loads((tmp_path / "spec-builder" / "index.json").read_text())
-    assert routes._DELETING not in on_disk["orphaned"], (
-        "the stale reservation is still on disk after a mutation"
-    )
+    assert (
+        routes._DELETING not in on_disk["orphaned"]
+    ), "the stale reservation is still on disk after a mutation"
 
 
 @pytest.mark.asyncio
@@ -994,9 +1825,10 @@ async def test_touch_spec_returns_the_fresh_entry(tmp_path, monkeypatch):
 
 
 def test_no_handler_writes_the_index_from_a_stale_snapshot():
-    """Source guard for the CLASS, not the two reported instances. Every handler
+    """Source guard for the CLASS, not the reported instances. Every handler
     awaits somewhere, so none of them may call _save_index directly: the only
-    sanctioned writers are the re-reading mutator and the discovery loader."""
+    sanctioned writers are the re-reading mutator, startup recovery, and the
+    discovery loader."""
 
     src = inspect.getsource(routes)
     writers = [
@@ -1004,8 +1836,8 @@ def test_no_handler_writes_the_index_from_a_stale_snapshot():
         for ln in src.splitlines()
         if "_save_index(" in ln and not ln.strip().startswith(("#", "*", "def _save_index"))
     ]
-    # _mutate_index and _load_index_with_discovery hold the only write sites.
-    assert len(writers) == 2, f"unexpected _save_index call sites: {writers}"
+    # Each sanctioned writer holds _INDEX_LOCK around its read-modify-write.
+    assert len(writers) == 3, f"unexpected _save_index call sites: {writers}"
     for handler in (
         routes._handle_create,
         routes._handle_message,
@@ -1014,9 +1846,9 @@ def test_no_handler_writes_the_index_from_a_stale_snapshot():
         routes._handle_delete,
         routes._handle_list,
     ):
-        assert "_save_index(" not in inspect.getsource(handler), (
-            f"{handler.__name__} writes the index directly; it must go through _mutate_index"
-        )
+        assert "_save_index(" not in inspect.getsource(
+            handler
+        ), f"{handler.__name__} writes the index directly; it must go through _mutate_index"
 
 
 def test_handoff_commits_before_dispatch_and_unwinds_on_deletion():
@@ -1043,9 +1875,9 @@ def test_handoff_commits_before_dispatch_and_unwinds_on_deletion():
     assert claim < src.index("_ensure_worker_slot("), "the slot is created before the claim"
     assert claim < arm, "the loop is armed before the execution state is recorded"
     assert claim < dispatch, "handoff dispatches before claiming the run"
-    assert src[claim:dispatch].count("_release(") == 4, (
-        "an abort arm does not release the loop, the recorded state and the slot"
-    )
+    assert (
+        src[claim:dispatch].count("_release(") == 4
+    ), "an abort arm does not release the loop, the recorded state and the slot"
 
 
 # ── blocking sentinel write on the event loop ────────────────────────────────
@@ -1081,7 +1913,8 @@ def test_prepare_handoff_arms_under_the_same_lock_as_the_identity_check():
 
     def calls_arm(node):
         return any(
-            isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
             and c.func.id == "_arm_stop_sentinel"
             for c in ast.walk(node)
         )
@@ -1116,9 +1949,9 @@ def test_stop_write_is_refused_for_a_replaced_spec(tmp_path, monkeypatch):
     )
 
     assert routes._write_stop_sentinel_for_spec(spec_dir, "s", "stale-key") is False
-    assert not (spec_dir / routes._STOP_FILE).exists(), (
-        "a stale Stop wrote a STOP into the replacement's directory"
-    )
+    assert not (
+        spec_dir / routes._STOP_FILE
+    ).exists(), "a stale Stop wrote a STOP into the replacement's directory"
     # Ordinary case: the caller's captured key still matches, so it writes.
     assert routes._write_stop_sentinel_for_spec(spec_dir, "s", "new-key") is True
     assert (spec_dir / routes._STOP_FILE).exists()
@@ -1136,9 +1969,9 @@ def test_halt_execution_writes_the_sentinel_off_the_loop():
     src = inspect.getsource(routes._halt_execution)
     # Whitespace-insensitive: the call spans lines, and a literal anchor that a
     # reformat can break is a guard that silently stops guarding.
-    assert re.search(r"asyncio\.to_thread\(\s*_write_stop_sentinel_for_spec", src), (
-        "the STOP write no longer rides the identity-pinned wrapper off-loop"
-    )
+    assert re.search(
+        r"asyncio\.to_thread\(\s*_write_stop_sentinel_for_spec", src
+    ), "the STOP write no longer rides the identity-pinned wrapper off-loop"
     assert "\n    _write_stop_sentinel(" not in src, "sentinel still written on the event loop"
 
 
@@ -1149,9 +1982,9 @@ def test_handoff_does_no_filesystem_work_on_the_loop():
     src = inspect.getsource(routes._handle_handoff)
     # Whitespace-insensitive: the call spans lines, and a literal anchor that
     # a reformat can break is a guard that silently stops guarding.
-    assert re.search(r"asyncio\.to_thread\(\s*_prepare_handoff", src), (
-        "handoff no longer hands _prepare_handoff to a worker thread"
-    )
+    assert re.search(
+        r"asyncio\.to_thread\(\s*_prepare_handoff", src
+    ), "handoff no longer hands _prepare_handoff to a worker thread"
     for inline in ("_clear_stop_sentinel(", "os.path.realpath(", '/ "tasks.md"'):
         assert inline not in src, f"{inline} still runs on the event loop in handoff"
 
@@ -1170,6 +2003,62 @@ def test_prepare_handoff_reports_tasks_and_clears_a_stale_sentinel(tmp_path):
     assert sentinel.endswith(routes._STOP_FILE)
 
     (spec_dir / "tasks.md").write_text("- [ ] task")
+    assert routes._prepare_handoff(spec_dir)[0] is True
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "   \n\n\t\n",
+        "# Tasks\n\nProse with no checkbox at all.\n",
+        "- [x] done\n- [X] also done\n",
+        "- [ x] not an empty box\n",
+        "-[ ] no space after the marker\n",
+    ],
+)
+def test_open_task_predicate_rejects_a_plan_with_nothing_to_do(body):
+    """A tasks.md the autonomous prompt cannot act on: the prompt tells the agent
+    to work through each UNCHECKED task, so an empty file, prose, or an
+    all-checked list leaves the run with no work."""
+    assert routes._has_open_task(body) is False
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "- [ ] task",
+        "* [ ] star marker",
+        "+ [ ] plus marker",
+        "1. [ ] ordered marker",
+        "2) [ ] paren-ordered marker",
+        "- [] bare brackets",
+        "  - [ ] indented under a heading",
+        "\t- [ ] tab-indented",
+        "- [x] done first\n- [ ] then this one is open\n",
+    ],
+)
+def test_open_task_predicate_accepts_the_marker_styles_a_model_writes(body):
+    """The list is model-written and its marker style varies between runs, so the
+    gate accepts every Markdown checkbox spelling rather than only ``- [ ]``."""
+    assert routes._has_open_task(body) is True
+
+
+def test_prepare_handoff_refuses_a_tasks_file_with_no_open_task(tmp_path):
+    """The reported gap: the gate stat-ed tasks.md and accepted it on existence
+    alone, so a zero-byte or all-checked plan armed an autonomous loop that had
+    nothing to act on while the spec still read as a finished Tasks phase."""
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    tasks = spec_dir / "tasks.md"
+
+    tasks.write_text("")
+    assert routes._prepare_handoff(spec_dir)[0] is False, "empty tasks.md armed a run"
+
+    tasks.write_text("- [x] everything already done\n")
+    assert routes._prepare_handoff(spec_dir)[0] is False, "all-checked tasks.md armed a run"
+
+    tasks.write_text("- [x] done\n- [ ] still open\n")
     assert routes._prepare_handoff(spec_dir)[0] is True
 
 
@@ -1200,6 +2089,7 @@ async def test_concurrent_index_transactions_do_not_lose_a_write(tmp_path, monke
         def _apply(index):
             index[key] = {"spec_dir": f"/a/{key}", "status": "planning"}
             return True
+
         return _apply
 
     await asyncio.gather(*(routes._mutate_index(_insert(f"spec-{i}")) for i in range(6)))
@@ -1301,7 +2191,9 @@ def _stub_spawn(monkeypatch):
     """Replace the sandboxed argv with a trivial no-op binary. The host running
     the suite may have no sandbox backend available, and this test is about the
     AUDIT contract, not about sandboxing or git itself."""
-    monkeypatch.setattr(routes, "sandboxed_spawn_argv", lambda argv: ([sys.executable, "-c", ""], None, ""))
+    monkeypatch.setattr(
+        routes, "sandboxed_spawn_argv", lambda argv: ([sys.executable, "-c", ""], None, "")
+    )
 
 
 @pytest.mark.asyncio
@@ -1367,6 +2259,7 @@ async def test_detail_payload_reports_live_running_state(tmp_path, monkeypatch):
     """The reported defect: the detail payload carried `status` but not `running`,
     so the selected spec's working indicator, document skeleton and fast 2.5s poll
     were all permanently off — the one place they matter."""
+    monkeypatch.setattr(routes, "_CAN_PUBLISH_DIR_NOREPLACE", False)
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "live"
     spec_dir.mkdir(parents=True)
@@ -1400,6 +2293,7 @@ async def test_detail_payload_reports_live_running_state(tmp_path, monkeypatch):
         await client.close()
 
     assert body["running"] is True, "detail payload omits the live running flag"
+    assert body["duplicate_supported"] is False
 
 
 # ── GPT round-9 findings (#518) ──────────────────────────────────────────────
@@ -1454,9 +2348,9 @@ def test_create_arbitrates_the_index_before_touching_the_shared_slot():
     src = inspect.getsource(routes._handle_create)
     arbitration = src.index("_mutate_index(_insert)")
     for acquisition in ("get_or_create_slot(", "_ensure_worker_slot("):
-        assert acquisition not in src[:arbitration], (
-            "create acquires the shared slot before the index arbitration"
-        )
+        assert (
+            acquisition not in src[:arbitration]
+        ), "create acquires the shared slot before the index arbitration"
     for mutation in ("slot.project =", "slot._app =", "slot.title ="):
         assert mutation not in src[:arbitration], f"{mutation} happens before arbitration"
     assert "_ensure_worker_slot(" in src[arbitration:]
@@ -1486,6 +2380,7 @@ async def test_handoff_refuses_when_authorization_is_unavailable(tmp_path, monke
             class _S:
                 key = name
                 _app = app
+
             return _S()
 
         def get_slot(self, key):
@@ -1527,6 +2422,7 @@ async def test_handoff_refuses_when_authorization_raises(tmp_path, monkeypatch):
             class _S:
                 key = name
                 _app = app
+
             return _S()
 
         def get_slot(self, key):
@@ -1561,6 +2457,7 @@ async def test_pause_stops_the_in_flight_turn(tmp_path):
         def __await__(self):
             async def _done():
                 return None
+
             return _done().__await__()
 
     class _Slot:
@@ -1588,6 +2485,7 @@ async def test_pause_stops_the_in_flight_turn(tmp_path):
 async def test_pause_leaves_a_foreign_slot_alone():
     """Anti-collision: a slot this app does not own must not be stopped because
     its key happens to match."""
+
     class _Slot:
         key = "spec-builder-x"
         _app = "some-other-app"
@@ -1695,7 +2593,9 @@ async def test_discovered_spec_gets_a_scoped_slot(tmp_path, monkeypatch):
     assert out is slot
     assert created == ["spec-builder-found"], "the missing slot was not created"
     assert slot._app == routes.APP_NAME, "slot left unscoped — it would show in the main sidebar"
-    assert slot.project == "/projects/thing", "slot has no project — tools would run in the wrong dir"
+    assert (
+        slot.project == "/projects/thing"
+    ), "slot has no project — tools would run in the wrong dir"
     assert slot._titled is True
 
 
@@ -1717,9 +2617,9 @@ def test_every_slot_acquisition_goes_through_the_scoping_chokepoint():
         routes._handle_handoff,
         routes._handle_create,
     ):
-        assert "_ensure_worker_slot(" in inspect.getsource(handler), (
-            f"{handler.__name__} does not scope the slot it uses"
-        )
+        assert "_ensure_worker_slot(" in inspect.getsource(
+            handler
+        ), f"{handler.__name__} does not scope the slot it uses"
 
 
 # ── GPT round-12 findings (#518) ─────────────────────────────────────────────
@@ -1749,12 +2649,14 @@ def test_no_handler_reads_the_index_on_the_event_loop():
         "_aload_index",
         "_mutate_index",
         "_load_index_with_discovery",
+        "_recover_abandoned_reservations",
         "_load_index",
         "_prepare_handoff",
         "_write_stop_sentinel_for_spec",
     }
     for off_loop in (
         "_load_index_with_discovery",
+        "_recover_abandoned_reservations",
         "_prepare_handoff",
         "_write_stop_sentinel_for_spec",
     ):
@@ -1786,9 +2688,9 @@ def test_no_handler_reads_the_index_on_the_event_loop():
         routes._handle_delete,
         routes._handle_create,
     ):
-        assert "await _aload_index()" in inspect.getsource(handler), (
-            f"{handler.__name__} does not read the index off the loop"
-        )
+        assert "await _aload_index()" in inspect.getsource(
+            handler
+        ), f"{handler.__name__} does not read the index off the loop"
 
 
 @pytest.mark.asyncio
@@ -1827,9 +2729,7 @@ def test_read_recent_projects_filters_to_existing_dirs(tmp_path, monkeypatch):
     home.mkdir()
     real = tmp_path / "real-project"
     real.mkdir()
-    (home / "recent_projects.json").write_text(
-        json.dumps([str(real), str(tmp_path / "gone"), 42])
-    )
+    (home / "recent_projects.json").write_text(json.dumps([str(real), str(tmp_path / "gone"), 42]))
     monkeypatch.setattr(routes, "config_dir", lambda: home)
 
     assert routes._read_recent_projects() == [str(real)]
@@ -1860,6 +2760,7 @@ async def test_missing_git_degrades_instead_of_500(tmp_path, monkeypatch):
 async def test_git_reports_unavailable_when_the_sandbox_refuses(tmp_path, monkeypatch):
     """Same contract when the sandbox cannot build an argv at all — this host has
     no sandbox backend, which is exactly how the suite hits that path."""
+
     def _boom(_argv):
         raise RuntimeError("sandbox backend unavailable")
 
@@ -1879,9 +2780,7 @@ def test_repo_info_validates_through_the_chokepoint_off_loop():
 
     src = inspect.getsource(routes._handle_repo_info)
     assert "asyncio.to_thread(_safe_dir" in src
-    code = [
-        ln for ln in src.splitlines() if ln.strip() and not ln.strip().startswith("#")
-    ]
+    code = [ln for ln in src.splitlines() if ln.strip() and not ln.strip().startswith("#")]
     for ln in code:
         assert "is_dir()" not in ln, f"repo-info still stats on the event loop: {ln.strip()}"
 
@@ -1955,9 +2854,9 @@ async def test_persisted_transcript_is_read_off_the_event_loop():
             continue
         if "conversation_log.read_messages" not in stripped:
             continue
-        assert stripped.startswith("state.conversation_log.read_messages,"), (
-            f"read_messages still called on the loop: {stripped}"
-        )
+        assert stripped.startswith(
+            "state.conversation_log.read_messages,"
+        ), f"read_messages still called on the loop: {stripped}"
     # And the caller must await it, not schedule a coroutine into the payload.
     assert "await _serialize_messages(" in inspect.getsource(routes._handle_messages)
 
@@ -2251,19 +3150,13 @@ def test_load_settings_degrades_a_credential_shaped_model_to_inherit(tmp_path, m
     fake redactor mirrors the real one's contract (clean text passes unchanged)."""
     monkeypatch.setattr(routes, "_SETTINGS_PATH", tmp_path / "settings.json")
     monkeypatch.setattr(routes, "_STATE_DIR", tmp_path)
-    monkeypatch.setattr(
-        routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]")
-    )
-    (tmp_path / "settings.json").write_text(
-        json.dumps({"base_path": "", "model": "SECRET-MARKER"})
-    )
-    assert routes._load_settings()["model"] == "", (
-        "a credential-shaped model survived the read chokepoint"
-    )
+    monkeypatch.setattr(routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]"))
+    (tmp_path / "settings.json").write_text(json.dumps({"base_path": "", "model": "SECRET-MARKER"}))
+    assert (
+        routes._load_settings()["model"] == ""
+    ), "a credential-shaped model survived the read chokepoint"
     # Contract check on the fake: a clean id passes through untouched.
-    (tmp_path / "settings.json").write_text(
-        json.dumps({"base_path": "", "model": "clean-model"})
-    )
+    (tmp_path / "settings.json").write_text(json.dumps({"base_path": "", "model": "clean-model"}))
     assert routes._load_settings()["model"] == "clean-model"
 
 
@@ -2272,9 +3165,7 @@ async def test_settings_write_rejects_a_credential_shaped_model(tmp_path, monkey
     """The write path is the other half of the load-chokepoint degrade: a
     credential-shaped value gets a machine-readable 400 instead of being
     persisted and riding the slot stamp to the browser."""
-    monkeypatch.setattr(
-        routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]")
-    )
+    monkeypatch.setattr(routes, "_redact", lambda t: t.replace("SECRET-MARKER", "[redacted]"))
     async with _make_client(monkeypatch, tmp_path) as client:
         resp = await client.put(
             f"{_BASE}/settings", json={"base_path": "", "model": "SECRET-MARKER"}
@@ -2408,9 +3299,7 @@ async def test_detail_refuses_when_the_spec_is_recreated_mid_request(tmp_path, m
     old_dir = tmp_path / "old" / ".kiro" / "specs" / "moved"
     new_dir = tmp_path / "new" / ".kiro" / "specs" / "moved"
     new_dir.mkdir(parents=True)
-    routes._save_index(
-        {"moved": {"spec_dir": str(old_dir), "working_dir": str(tmp_path / "old")}}
-    )
+    routes._save_index({"moved": {"spec_dir": str(old_dir), "working_dir": str(tmp_path / "old")}})
 
     real_collect = routes._collect_spec_documents
 
@@ -2462,9 +3351,7 @@ async def test_detail_serves_normally_when_nothing_changes(tmp_path, monkeypatch
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "steady"
     spec_dir.mkdir(parents=True)
     (spec_dir / "requirements.md").write_text("# r")
-    routes._save_index(
-        {"steady": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"steady": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     class _Slot:
         key = "spec-builder-steady"
@@ -2533,6 +3420,7 @@ async def test_abort_cleanup_spares_a_replacement_slot():
     """The reported defect, introduced by round 20's abort path: both cleanups look
     the slot up BY NAME, so unwinding a refused handoff destroyed the slot of the
     same-name spec that had replaced ours."""
+
     class _Slot:
         def __init__(self, tag):
             self.tag = tag
@@ -2601,8 +3489,13 @@ async def test_stale_executing_status_settles_back_to_planning(tmp_path, monkeyp
     _redirect_state(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "done"
     routes._save_index(
-        {"done": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-                  "status": "executing"}}
+        {
+            "done": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "status": "executing",
+            }
+        }
     )
     meta = routes._load_index()["done"]
 
@@ -2635,6 +3528,7 @@ async def test_live_execution_is_not_settled(tmp_path, monkeypatch):
         class _Svc:
             def get_by_slot(self, key):
                 return _Loop(active)
+
         return lambda: _Svc()
 
     monkeypatch.setattr(routes, "_autonudge_instance", _svc(True))
@@ -2685,9 +3579,7 @@ async def test_handoff_confirms_identity_before_acquiring_the_slot(tmp_path, mon
     for d in (old_dir, new_dir):
         d.mkdir(parents=True)
         (d / "tasks.md").write_text("- [ ] task")
-    routes._save_index(
-        {"swap": {"spec_dir": str(old_dir), "working_dir": str(tmp_path / "old")}}
-    )
+    routes._save_index({"swap": {"spec_dir": str(old_dir), "working_dir": str(tmp_path / "old")}})
 
     def _prepare_then_recreate(spec_dir, name="", expect_slot_key=""):
         # Mirrors the real signature: the handler now passes the name and the
@@ -2730,7 +3622,7 @@ def test_handoff_checks_identity_before_slot_acquisition():
     """Source guard on the ORDERING, which is the whole fix."""
 
     src = inspect.getsource(routes._handle_handoff)
-    check = src.index('!= str(spec_dir)')
+    check = src.index("!= str(spec_dir)")
     acquire = src.index("_ensure_worker_slot(")
     assert check < acquire, "handoff acquires the slot before confirming identity"
 
@@ -2755,9 +3647,7 @@ async def test_message_refuses_a_recreated_spec(tmp_path, monkeypatch):
 
     async def _read_then_recreate(request):
         body = await real_read(request)
-        routes._save_index(
-            {"t": {"spec_dir": str(new_dir), "working_dir": str(tmp_path / "new")}}
-        )
+        routes._save_index({"t": {"spec_dir": str(new_dir), "working_dir": str(tmp_path / "new")}})
         return body
 
     monkeypatch.setattr(routes, "_read_json", _read_then_recreate)
@@ -2854,9 +3744,9 @@ def test_name_only_operations_are_identity_pinned():
     ):
         src = inspect.getsource(handler)
         assert f"{cap} = _exec_loop_id(" in src, f"{handler.__name__} does not capture the loop"
-        assert "only_loop_id=" in src and "only_slot=" in src, (
-            f"{handler.__name__} does not pin its cleanups"
-        )
+        assert (
+            "only_loop_id=" in src and "only_slot=" in src
+        ), f"{handler.__name__} does not pin its cleanups"
         # The capture must precede the teardown it pins (nothing may await in
         # between and let a recreate become the thing we act on).
         assert src.index(cap) < src.index(acts_on), f"{handler.__name__} captures too late"
@@ -2877,9 +3767,7 @@ def test_sandbox_setup_is_offloaded():
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            assert inline not in stripped, (
-                f"spawn setup still runs on the event loop: {stripped}"
-            )
+            assert inline not in stripped, f"spawn setup still runs on the event loop: {stripped}"
     prep = inspect.getsource(routes._prepare_git_spawn)
     assert "sandboxed_spawn_argv(" in prep
     # Limits are applied AFTER exec by the shim (see test_spawn_preexec_guard), so no
@@ -2986,9 +3874,9 @@ def test_seed_prompt_is_self_contained_and_type_aware():
 
     quick = routes._seed_prompt("quick", "thing", spec_dir, "/w", "make it fast")
     assert "spec-workflow" not in quick, "seed still points at an unavailable skill"
-    assert "design.md" not in quick.split("Do NOT write design.md")[0], (
-        "quick spec is still told to write design.md"
-    )
+    assert (
+        "design.md" not in quick.split("Do NOT write design.md")[0]
+    ), "quick spec is still told to write design.md"
     assert "Do NOT write design.md" in quick
     assert str(spec_dir / "requirements.md") in quick
     assert str(spec_dir / "tasks.md") in quick
@@ -3071,9 +3959,7 @@ async def test_handoff_unwinds_when_the_index_commit_raises(tmp_path, monkeypatc
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "boom"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index(
-        {"boom": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"boom": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     removed: list[str] = []
     dispatched: list[str] = []
@@ -3192,15 +4078,16 @@ async def test_pause_refuses_an_unscoped_slot():
 
             def get_slot(self, key):
                 return slot
+
         return _State()
 
     for owner in (None, "", "some-other-app"):
         stopped.clear()
         cancelled["v"] = False
         slot = _Slot(owner)
-        assert await routes._halt_active_turn(_state_for(slot), "shared") is False, (
-            f"stopped a turn on a slot owned by {owner!r}"
-        )
+        assert (
+            await routes._halt_active_turn(_state_for(slot), "shared") is False
+        ), f"stopped a turn on a slot owned by {owner!r}"
         assert stopped == [] and cancelled["v"] is False
 
     # Our own slot is still stopped.
@@ -3233,9 +4120,7 @@ async def test_failed_handoff_keeps_a_pre_existing_conversation(tmp_path, monkey
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "chatty"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index(
-        {"chatty": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"chatty": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     class _Loop:
         id = "loop-armed"
@@ -3298,9 +4183,9 @@ async def test_failed_handoff_keeps_a_pre_existing_conversation(tmp_path, monkey
         await client.close()
 
     assert resp.status == 500
-    assert slots.get("spec-builder-chatty") is existing, (
-        "a pre-existing conversation was destroyed by the failed handoff"
-    )
+    assert (
+        slots.get("spec-builder-chatty") is existing
+    ), "a pre-existing conversation was destroyed by the failed handoff"
 
 
 @pytest.mark.asyncio
@@ -3310,9 +4195,7 @@ async def test_delete_commits_the_index_before_closing_the_session(tmp_path, mon
     conversation already discarded -- unusable and unrecoverable."""
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "keepme"
-    routes._save_index(
-        {"keepme": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"keepme": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     async def _boom(_mutate):
         raise OSError("index write failed")
@@ -3343,9 +4226,9 @@ async def test_delete_commits_the_index_before_closing_the_session(tmp_path, mon
     finally:
         await client.close()
 
-    assert slots.get("spec-builder-keepme") is slot, (
-        "the session was discarded before the delete was committed"
-    )
+    assert (
+        slots.get("spec-builder-keepme") is slot
+    ), "the session was discarded before the delete was committed"
 
 
 def test_delete_orders_reserve_teardown_remove():
@@ -3372,10 +4255,8 @@ def test_handoff_unwind_is_gated_on_having_created_the_slot():
     # Delimit by the unwind's own last statement rather than the next "try:" —
     # the body contains one now (the best-effort loop removal), and slicing to it
     # cut the assertion's search space to nothing.
-    release = src[start:src.index('_audit("spec_handoff_aborted"', start)]
-    assert "if not slot_pre_existed:" in release, (
-        "unwind tears down a slot it may not have created"
-    )
+    release = src[start : src.index('_audit("spec_handoff_aborted"', start)]
+    assert "if not slot_pre_existed:" in release, "unwind tears down a slot it may not have created"
 
 
 # ── GPT round-31 findings (#518) ─────────────────────────────────────────────
@@ -3479,15 +4360,14 @@ async def test_indexed_working_dir_is_revalidated(tmp_path, monkeypatch):
     assert slot.project == "", "a sensitive directory became the agent's cwd"
 
     # Non-existent path -> also refused (the chokepoint requires an existing dir).
-    assert await routes._ensure_worker_slot(
-        _State(), "x", {"working_dir": str(tmp_path / "gone")}
-    ) is None
+    assert (
+        await routes._ensure_worker_slot(_State(), "x", {"working_dir": str(tmp_path / "gone")})
+        is None
+    )
     assert slot.project == ""
 
     # Ordinary project -> accepted and scoped.
-    assert await routes._ensure_worker_slot(
-        _State(), "x", {"working_dir": str(ordinary)}
-    ) is slot
+    assert await routes._ensure_worker_slot(_State(), "x", {"working_dir": str(ordinary)}) is slot
     assert slot.project == str(ordinary)
 
 
@@ -3496,9 +4376,9 @@ def test_working_dir_validation_is_offloaded():
     run BEFORE the assignment it protects."""
     src = inspect.getsource(routes._ensure_worker_slot)
     assert "asyncio.to_thread(_safe_dir" in src
-    assert src.index("safe_wd = await asyncio.to_thread") < src.index("slot.project ="), (
-        "the cwd is assigned before it is validated"
-    )
+    assert src.index("safe_wd = await asyncio.to_thread") < src.index(
+        "slot.project ="
+    ), "the cwd is assigned before it is validated"
     assert "slot.project = wd" not in src, "the raw indexed value is still assigned"
 
 
@@ -3557,9 +4437,9 @@ async def test_create_refuses_when_the_spec_is_replaced_during_slot_setup(tmp_pa
     assert resp.status == 409, "create dispatched against a replaced spec"
     assert dispatched == []
     # The REPLACEMENT's index entry survives -- the unwind is identity-pinned.
-    assert routes._load_index()["racy"]["spec_dir"] == str(other), (
-        "the unwind deleted the replacement spec's index entry"
-    )
+    assert routes._load_index()["racy"]["spec_dir"] == str(
+        other
+    ), "the unwind deleted the replacement spec's index entry"
 
 
 def test_create_unwind_is_identity_pinned():
@@ -3568,7 +4448,7 @@ def test_create_unwind_is_identity_pinned():
     src = inspect.getsource(routes._handle_create)
     assert "idx.pop(name, None)" not in src, "create unwinds by name alone"
     assert "_pop_if_ours" in src
-    recheck = src.index('!= str(spec_dir)')
+    recheck = src.index("!= str(spec_dir)")
     assert recheck < src.index("_dispatch_turn("), "create dispatches before rechecking identity"
 
 
@@ -3611,8 +4491,9 @@ async def test_list_survives_a_malformed_index_entry(tmp_path, monkeypatch):
     spec_dir.mkdir(parents=True)
     routes._index_path().parent.mkdir(parents=True, exist_ok=True)
     routes._index_path().write_text(
-        json.dumps({"good": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")},
-                    "bad": None})
+        json.dumps(
+            {"good": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}, "bad": None}
+        )
     )
 
     await client.start_server()
@@ -3633,7 +4514,7 @@ async def test_message_identity_comes_from_the_client(tmp_path, monkeypatch):
     be the one the CLIENT captured."""
     src = inspect.getsource(routes._handle_message)
     assert 'body.get("spec_dir"' in src, "message still derives identity from the index"
-    assert 'expect_spec_dir=str(index[name]' not in src
+    assert "expect_spec_dir=str(index[name]" not in src
 
     client = _make_client(monkeypatch, tmp_path)
     old_dir = tmp_path / "old" / ".kiro" / "specs" / "m"
@@ -3733,9 +4614,11 @@ async def test_controls_reject_a_stale_client_identity(tmp_path, monkeypatch):
     finally:
         await client.close()
 
-    assert (ex.status, st.status, rm.status) == (409, 409, 409), (
-        f"a stale control was honoured: {(ex.status, st.status, rm.status)}"
-    )
+    assert (ex.status, st.status, rm.status) == (
+        409,
+        409,
+        409,
+    ), f"a stale control was honoured: {(ex.status, st.status, rm.status)}"
     assert halted == [], "a side effect ran for a stale client"
     assert "c" in routes._load_index(), "the replacement spec was deleted by a stale tab"
 
@@ -3813,9 +4696,10 @@ async def test_restart_restores_the_worker_transcript(tmp_path, monkeypatch):
     slot = await routes._ensure_worker_slot(state, "s1", {"working_dir": str(tmp_path)})
 
     assert slot is not None
-    assert [m["content"] for m in slot.messages] == ["build me a spec", "on it"], (
-        "the persisted conversation did not come back"
-    )
+    assert [m["content"] for m in slot.messages] == [
+        "build me a spec",
+        "on it",
+    ], "the persisted conversation did not come back"
     assert state.created == [], "an empty slot was created instead of restoring"
 
 
@@ -3859,9 +4743,9 @@ def test_transcript_restore_runs_before_slot_creation():
     resume in the sidebar."""
     # Compare CODE only: the docstring names get_or_create_slot too.
     body = inspect.getsource(routes._ensure_worker_slot).split('"""')[-1]
-    assert body.index("_restore_worker_transcript") < body.index("get_or_create_slot"), (
-        "the empty slot is created before the transcript is restored"
-    )
+    assert body.index("_restore_worker_transcript") < body.index(
+        "get_or_create_slot"
+    ), "the empty slot is created before the transcript is restored"
 
 
 # ── GPT round-37 findings + scrub/CodeQL fallout (#518) ──────────────────────
@@ -3874,7 +4758,12 @@ def test_settings_reader_normalizes_a_non_string_base_path(tmp_path, monkeypatch
     _redirect_state(monkeypatch, tmp_path)
     routes._settings_path().parent.mkdir(parents=True, exist_ok=True)
 
-    for bad in ('{"base_path": []}', '{"base_path": 7}', '{"base_path": null}', '{"base_path": {}}'):
+    for bad in (
+        '{"base_path": []}',
+        '{"base_path": 7}',
+        '{"base_path": null}',
+        '{"base_path": {}}',
+    ):
         routes._settings_path().write_text(bad)
         assert routes._load_settings()["base_path"] == "", bad
         # The real crash was downstream: this must not raise.
@@ -3891,9 +4780,9 @@ def test_opt_in_flags_require_a_real_boolean():
     flags cause side effects a retry cannot undo, so the check is exact."""
     rejected: tuple[object, ...] = ("false", "0", "no", "", 0, [], None, 1, "true")
     for truthy_but_not_true in rejected:
-        assert routes._opted_in({"use_worktree": truthy_but_not_true}, "use_worktree") is False, (
-            f"{truthy_but_not_true!r} opted in"
-        )
+        assert (
+            routes._opted_in({"use_worktree": truthy_but_not_true}, "use_worktree") is False
+        ), f"{truthy_but_not_true!r} opted in"
     assert routes._opted_in({"use_worktree": True}, "use_worktree") is True
     assert routes._opted_in({}, "import_existing") is False
 
@@ -3925,7 +4814,9 @@ async def test_slot_acquisition_refuses_an_out_of_grammar_name(tmp_path, monkeyp
 
     for bad in ("x" * 400, "../etc/passwd", "has space", "", "9" * 200 + "." + "9" * 200):
         state = _State()
-        assert await routes._ensure_worker_slot(state, bad, {"working_dir": str(tmp_path)}) is None, bad
+        assert (
+            await routes._ensure_worker_slot(state, bad, {"working_dir": str(tmp_path)}) is None
+        ), bad
         assert state.touched == [], f"{bad[:20]!r} reached the slot layer"
 
 
@@ -3935,9 +4826,9 @@ def test_browse_skip_list_carries_no_hidden_paths():
     literal internal path marker in the source, which the repo's scrub lint
     rejects."""
     assert not [n for n in routes._BROWSE_SKIP if n.startswith(".")]
-    assert "startswith(\".\")" in inspect.getsource(routes._scan_subdirs), (
-        "the hidden-entry skip that makes the dotted names redundant is gone"
-    )
+    assert 'startswith(".")' in inspect.getsource(
+        routes._scan_subdirs
+    ), "the hidden-entry skip that makes the dotted names redundant is gone"
 
 
 # ── GPT round-38 findings (#518) ──────────────────────────────────────────────
@@ -3956,7 +4847,7 @@ async def test_stop_reads_the_body_before_the_index(tmp_path, monkeypatch):
     capture_at = src.index("_exec_loop_id(name)")
     assert body_at < index_at < capture_at, "the body await is not first"
     # And no await may sit between the verified identity and the capture.
-    between = src[src.index("_client_identity_mismatch(claimed"):capture_at]
+    between = src[src.index("_client_identity_mismatch(claimed") : capture_at]
     assert "await" not in between, "an await reopened the capture window"
 
 
@@ -4012,9 +4903,7 @@ def test_sentinel_clear_is_pinned_to_the_verified_directory(tmp_path, monkeypatc
 def test_sentinel_pin_capability_is_resolved_once():
     """Guard: the confinement must be decided from real platform capability, not
     a per-call guess, and the source must not fall back to a bare path unlink."""
-    assert routes._CAN_PIN_DIR is (
-        hasattr(os, "O_DIRECTORY") and os.unlink in os.supports_dir_fd
-    )
+    assert routes._CAN_PIN_DIR is (hasattr(os, "O_DIRECTORY") and os.unlink in os.supports_dir_fd)
     src = inspect.getsource(routes._clear_stop_sentinel)
     assert "dir_fd=dir_fd" in src
     assert "O_NOFOLLOW" in src
@@ -4043,12 +4932,16 @@ def test_index_entries_missing_identity_fields_are_dropped(tmp_path, monkeypatch
     _redirect_state(monkeypatch, tmp_path)
     routes._index_path().parent.mkdir(parents=True, exist_ok=True)
     good = {"spec_dir": str(tmp_path / "s"), "working_dir": str(tmp_path)}
-    routes._index_path().write_text(json.dumps({
-        "demo": {},                                  # the reported shape
-        "blank": {"spec_dir": "   "},
-        "typed": {"spec_dir": []},
-        "ok": good,
-    }))
+    routes._index_path().write_text(
+        json.dumps(
+            {
+                "demo": {},  # the reported shape
+                "blank": {"spec_dir": "   "},
+                "typed": {"spec_dir": []},
+                "ok": good,
+            }
+        )
+    )
 
     index = routes._load_index()
 
@@ -4067,18 +4960,14 @@ async def test_delete_aborts_when_the_loop_cannot_be_removed(tmp_path, monkeypat
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "doomed"
     spec_dir.mkdir(parents=True)
-    routes._save_index(
-        {"doomed": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"doomed": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     async def _boom(*_a, **_k):
         raise OSError("autonudge store is read-only")
 
     monkeypatch.setattr(routes, "_remove_nudge_loop", _boom)
     torn_down: list[str] = []
-    monkeypatch.setattr(
-        routes, "_teardown_worker_slot", lambda *a, **k: _noop_await(torn_down)
-    )
+    monkeypatch.setattr(routes, "_teardown_worker_slot", lambda *a, **k: _noop_await(torn_down))
 
     await client.start_server()
     try:
@@ -4097,17 +4986,20 @@ async def _noop_await(sink: list) -> None:
 
 
 @pytest.mark.asyncio
-async def test_stop_reports_failure_instead_of_a_halt_that_did_not_happen(
-    tmp_path, monkeypatch
-):
+async def test_stop_reports_failure_instead_of_a_halt_that_did_not_happen(tmp_path, monkeypatch):
     """Same class on the stop path: reporting "planning" while the loop can still
     nudge tells the user to stop worrying about a run that is still going."""
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "running"
     spec_dir.mkdir(parents=True)
     routes._save_index(
-        {"running": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-                     "status": "executing"}}
+        {
+            "running": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "status": "executing",
+            }
+        }
     )
 
     async def _boom(*_a, **_k):
@@ -4123,9 +5015,9 @@ async def test_stop_reports_failure_instead_of_a_halt_that_did_not_happen(
         await client.close()
 
     assert resp.status == 503, await resp.text()
-    assert routes._load_index()["running"].get("status") == "executing", (
-        "the spec was marked stopped after a failed halt"
-    )
+    assert (
+        routes._load_index()["running"].get("status") == "executing"
+    ), "the spec was marked stopped after a failed halt"
 
 
 def test_loop_removal_does_not_swallow_failures():
@@ -4160,9 +5052,7 @@ async def test_create_does_not_inherit_a_deleted_specs_conversation(tmp_path, mo
             return None
 
         def get_or_create_slot(self, name, app=""):
-            return types.SimpleNamespace(
-                key=name, _app=app, project="", messages=[], _titled=False
-            )
+            return types.SimpleNamespace(key=name, _app=app, project="", messages=[], _titled=False)
 
     meta = {"working_dir": str(tmp_path), "spec_dir": str(tmp_path / "s")}
     await routes._ensure_worker_slot(_State(), "reused-name", meta, adopt_closed=False)
@@ -4180,9 +5070,9 @@ def test_create_handler_refuses_closed_history():
     Matching the bare keyword also matched the comment above it explaining why —
     a guard a revert could not fail."""
     src = inspect.getsource(routes._handle_create)
-    assert "_ensure_worker_slot(state, name, entry, adopt_closed=False)" in src, (
-        "create can adopt a deleted conversation again"
-    )
+    assert (
+        "_ensure_worker_slot(state, name, entry, adopt_closed=False)" in src
+    ), "create can adopt a deleted conversation again"
 
 
 @pytest.mark.asyncio
@@ -4194,12 +5084,14 @@ async def test_delete_restores_the_spec_when_archiving_fails(tmp_path, monkeypat
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "keepme"
     spec_dir.mkdir(parents=True)
-    entry = {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-             "spec_type": "plan"}
+    entry = {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"), "spec_type": "plan"}
     routes._save_index({"keepme": entry})
 
     slot = types.SimpleNamespace(
-        key=routes._slot_key("keepme"), _app=routes.APP_NAME, running=False, task=None,
+        key=routes._slot_key("keepme"),
+        _app=routes.APP_NAME,
+        running=False,
+        task=None,
         messages=[{"role": "user", "content": "unsaved work"}],
     )
 
@@ -4217,6 +5109,7 @@ async def test_delete_restores_the_spec_when_archiving_fails(tmp_path, monkeypat
         raise OSError("history volume is full")
 
     import kiro_crew.dashboard.chat_persistence as cp
+
     monkeypatch.setattr(cp, "save_slot_off_loop", _archive_boom)
 
     await client.start_server()
@@ -4363,9 +5256,9 @@ def test_detail_reports_the_slot_key_it_scoped(tmp_path, monkeypatch):
     a reused name would mount the embed on the previous spec's transcript. The
     detail payload therefore names the session the app itself scoped."""
     src = inspect.getsource(routes._handle_get)
-    assert '"slot_key": getattr(slot, "key", None) or _slot_key(name)' in src, (
-        "detail no longer tells the client which slot to mount"
-    )
+    assert (
+        '"slot_key": getattr(slot, "key", None) or _slot_key(name)' in src
+    ), "detail no longer tells the client which slot to mount"
 
 
 @pytest.mark.asyncio
@@ -4389,6 +5282,7 @@ async def test_teardown_uses_the_captured_slots_own_key(tmp_path, monkeypatch):
 
     state = _State()
     import kiro_crew.dashboard.chat_persistence as cp
+
     monkeypatch.setattr(cp, "save_slot_off_loop", lambda *a, **k: _noop_await([]))
 
     assert await routes._teardown_worker_slot(state, "s", only_slot=slot) is True
@@ -4462,9 +5356,9 @@ def test_sentinel_write_is_pinned_to_the_verified_directory(tmp_path, monkeypatc
     routes._write_stop_sentinel(link)
 
     if routes._CAN_PIN_DIR:
-        assert not (victim / routes._STOP_FILE).exists(), (
-            "the sentinel write followed a replaced directory and halted another spec"
-        )
+        assert not (
+            victim / routes._STOP_FILE
+        ).exists(), "the sentinel write followed a replaced directory and halted another spec"
     else:  # pragma: no cover - Windows fallback
         assert True
 
@@ -4510,10 +5404,13 @@ def test_redirect_state_covers_every_path_the_app_writes():
     app learns to write fails here instead of in someone's home directory.
     """
     written = {
-        n for n, v in vars(routes).items()
+        n
+        for n, v in vars(routes).items()
         if n.endswith("_PATH") and isinstance(v, Path) and n != "SPEC_STATE_PATH"
     }
-    redirected = set(re.findall(r'setattr\(routes, "(\w+_PATH)"', inspect.getsource(_redirect_state)))
+    redirected = set(
+        re.findall(r'setattr\(routes, "(\w+_PATH)"', inspect.getsource(_redirect_state))
+    )
     assert written <= redirected, f"not redirected in tests: {sorted(written - redirected)}"
 
 
@@ -4556,23 +5453,29 @@ def test_slot_key_is_the_deciding_identity(tmp_path, monkeypatch):
     old_key, new_key = "spec-builder-s-aaaa1111", "spec-builder-s-bbbb2222"
 
     # Same directory, different creation -> refused on the key alone.
-    assert routes._client_identity_mismatch(
-        routes._ClientClaim(same_dir, old_key), same_dir, new_key
-    ) is True
+    assert (
+        routes._client_identity_mismatch(routes._ClientClaim(same_dir, old_key), same_dir, new_key)
+        is True
+    )
     # Same creation -> allowed.
-    assert routes._client_identity_mismatch(
-        routes._ClientClaim(same_dir, new_key), same_dir, new_key
-    ) is False
+    assert (
+        routes._client_identity_mismatch(routes._ClientClaim(same_dir, new_key), same_dir, new_key)
+        is False
+    )
     # A directory mismatch still refuses on its own.
-    assert routes._client_identity_mismatch(
-        routes._ClientClaim("/p/other", new_key), same_dir, new_key
-    ) is True
+    assert (
+        routes._client_identity_mismatch(
+            routes._ClientClaim("/p/other", new_key), same_dir, new_key
+        )
+        is True
+    )
     # Unpinned stays unpinned: an older tab sends neither field.
     assert routes._client_identity_mismatch(routes._ClientClaim("", ""), same_dir, new_key) is False
     # A server-side entry with no key yet cannot refuse on the key.
-    assert routes._client_identity_mismatch(
-        routes._ClientClaim(same_dir, old_key), same_dir, ""
-    ) is False
+    assert (
+        routes._client_identity_mismatch(routes._ClientClaim(same_dir, old_key), same_dir, "")
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -4631,17 +5534,34 @@ async def test_second_handoff_is_refused_while_executing(tmp_path, monkeypatch):
     monkeypatch.setattr(routes, "authorize_and_add_nudge", _authz)
 
     for label, index, slot_running in (
-        ("indexed status", {"busy": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-                                     "status": "executing"}}, False),
-        ("live slot", {"busy": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}, True),
+        (
+            "indexed status",
+            {
+                "busy": {
+                    "spec_dir": str(spec_dir),
+                    "working_dir": str(tmp_path / "wd"),
+                    "status": "executing",
+                }
+            },
+            False,
+        ),
+        (
+            "live slot",
+            {"busy": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}},
+            True,
+        ),
     ):
         # The client redirects state, so the index must be written AFTER it exists
         # (the autouse fixture points elsewhere until then).
         client = _make_client(monkeypatch, tmp_path)
         routes._save_index(index)
         slot = types.SimpleNamespace(
-            key=routes._slot_key("busy"), _app=routes.APP_NAME, running=slot_running,
-            project="", messages=[], _titled=True,
+            key=routes._slot_key("busy"),
+            _app=routes.APP_NAME,
+            running=slot_running,
+            project="",
+            messages=[],
+            _titled=True,
         )
 
         class _State:
@@ -4684,14 +5604,14 @@ async def test_touch_spec_pins_the_creation_not_just_the_directory(tmp_path, mon
     request passed the check and stamped (or dropped) the replacement."""
     _redirect_state(monkeypatch, tmp_path)
     same_dir = str(tmp_path / "p" / ".kiro" / "specs" / "s")
-    routes._save_index(
-        {"s": {"spec_dir": same_dir, "slot_key": "spec-builder-s-bbbb2222"}}
-    )
+    routes._save_index({"s": {"spec_dir": same_dir, "slot_key": "spec-builder-s-bbbb2222"}})
 
     # Stale claim: right directory, previous creation -> refused.
     assert (
         await routes._touch_spec(
-            "s", expect_spec_dir=same_dir, expect_slot_key="spec-builder-s-aaaa1111",
+            "s",
+            expect_spec_dir=same_dir,
+            expect_slot_key="spec-builder-s-aaaa1111",
             status="executing",
         )
         is None
@@ -4700,7 +5620,9 @@ async def test_touch_spec_pins_the_creation_not_just_the_directory(tmp_path, mon
 
     # Current creation -> accepted.
     fresh = await routes._touch_spec(
-        "s", expect_spec_dir=same_dir, expect_slot_key="spec-builder-s-bbbb2222",
+        "s",
+        expect_spec_dir=same_dir,
+        expect_slot_key="spec-builder-s-bbbb2222",
         status="executing",
     )
     assert fresh is not None and fresh["status"] == "executing"
@@ -4709,7 +5631,9 @@ async def test_touch_spec_pins_the_creation_not_just_the_directory(tmp_path, mon
     routes._save_index({"old": {"spec_dir": same_dir}})
     assert (
         await routes._touch_spec(
-            "old", expect_spec_dir=same_dir, expect_slot_key="spec-builder-old-1",
+            "old",
+            expect_spec_dir=same_dir,
+            expect_slot_key="spec-builder-old-1",
             status="planning",
         )
         is not None
@@ -4741,8 +5665,13 @@ async def test_authorization_failure_reverts_the_recorded_execution_state(tmp_pa
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
     routes._save_index(
-        {"nope": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-                  "slot_key": "spec-builder-nope-1234abcd"}}
+        {
+            "nope": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": "spec-builder-nope-1234abcd",
+            }
+        }
     )
     dispatched: list[str] = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append("x"))
@@ -4762,8 +5691,13 @@ async def test_authorization_failure_reverts_the_recorded_execution_state(tmp_pa
     monkeypatch.setattr(routes, "authorize_and_add_nudge", _refuse)
 
     slot = types.SimpleNamespace(
-        key=routes._slot_key("nope"), _app=routes.APP_NAME, running=False,
-        project="", messages=[], _titled=True, task=None,
+        key=routes._slot_key("nope"),
+        _app=routes.APP_NAME,
+        running=False,
+        project="",
+        messages=[],
+        _titled=True,
+        task=None,
     )
     slots: dict = {}
 
@@ -4801,9 +5735,7 @@ async def test_deletion_during_authorization_removes_the_armed_loop(tmp_path, mo
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "gone"
     spec_dir.mkdir(parents=True)
     (spec_dir / "tasks.md").write_text("- [ ] task")
-    routes._save_index(
-        {"gone": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"gone": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
     removed: list[str] = []
     dispatched: list[str] = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append("x"))
@@ -4834,8 +5766,13 @@ async def test_deletion_during_authorization_removes_the_armed_loop(tmp_path, mo
     monkeypatch.setattr(routes, "authorize_and_add_nudge", _authz)
 
     slot = types.SimpleNamespace(
-        key=routes._slot_key("gone"), _app=routes.APP_NAME, running=False,
-        project="", messages=[], _titled=True, task=None,
+        key=routes._slot_key("gone"),
+        _app=routes.APP_NAME,
+        running=False,
+        project="",
+        messages=[],
+        _titled=True,
+        task=None,
     )
     slots: dict = {}
 
@@ -4908,9 +5845,9 @@ def test_handoff_stamps_and_clears_the_arming_marker():
     loop exists, so the exemption lasts for the arming window and no longer."""
     # The stamp is part of the atomic claim; the clear is in the handler, after the
     # loop exists.
-    assert 'meta["exec_arming_at"] = now' in inspect.getsource(routes._claim_execution), (
-        "the claim no longer marks the pre-arm window"
-    )
+    assert 'meta["exec_arming_at"] = now' in inspect.getsource(
+        routes._claim_execution
+    ), "the claim no longer marks the pre-arm window"
     src = inspect.getsource(routes._handle_handoff)
     claim = src.index("await _claim_execution(")
     arm = src.index("await authorize_and_add_nudge(")
@@ -4964,7 +5901,20 @@ async def test_claim_refuses_a_different_creation(tmp_path, monkeypatch):
     assert reason == routes._CLAIM_GONE
     assert routes._load_index()["s"].get("status") != "executing"
 
+    # Delete publishes its reservation before tearing down the slot. A handoff
+    # queued behind that boundary must not claim the hidden entry while teardown
+    # is in flight.
+    deleting = routes._load_index()
+    deleting["s"][routes._DELETING] = {"owner": routes._PROCESS_ID, "at": time.time()}
+    routes._save_index(deleting)
+    reason, _entry = await routes._claim_execution(
+        "s", expect_spec_dir=spec_dir, expect_slot_key="spec-builder-s-new", live_running=False
+    )
+    assert reason == routes._CLAIM_GONE
+
     # A live turn on the slot counts as taken even when the index says planning.
+    deleting["s"].pop(routes._DELETING)
+    routes._save_index(deleting)
     reason, _entry = await routes._claim_execution(
         "s", expect_spec_dir=spec_dir, expect_slot_key="spec-builder-s-new", live_running=True
     )
@@ -4981,9 +5931,7 @@ async def test_delete_tombstones_before_dropping_the_entry(tmp_path, monkeypatch
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "bye"
     spec_dir.mkdir(parents=True)
     (spec_dir / "requirements.md").write_text("# r")
-    routes._save_index(
-        {"bye": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"bye": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
     order: list[str] = []
     real_remember = routes._remember_deleted
 
@@ -5023,9 +5971,7 @@ async def test_failed_delete_clears_the_tombstone(tmp_path, monkeypatch):
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "stay"
     spec_dir.mkdir(parents=True)
     (spec_dir / "requirements.md").write_text("# r")
-    routes._save_index(
-        {"stay": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"stay": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     async def _teardown_fails(*_a, **_kw):
         return False
@@ -5042,9 +5988,9 @@ async def test_failed_delete_clears_the_tombstone(tmp_path, monkeypatch):
 
     assert status == 503
     assert "stay" in routes._load_index(), "the spec was not restored"
-    assert str(spec_dir) not in routes._load_deleted(), (
-        "a spec that still exists is tombstoned; discovery will hide its documents"
-    )
+    assert (
+        str(spec_dir) not in routes._load_deleted()
+    ), "a spec that still exists is tombstoned; discovery will hide its documents"
 
 
 def test_delete_orders_the_tombstone_before_the_pop():
@@ -5054,9 +6000,7 @@ def test_delete_orders_the_tombstone_before_the_pop():
     remember = src.index("_remember_deleted")
     pop = src.index("_mutate_index(_pop_if_same)")
     assert remember < pop, "the entry is dropped before the directory is tombstoned"
-    assert src.count("_forget_deleted") >= 2, (
-        "a non-deleting arm leaves the tombstone behind"
-    )
+    assert src.count("_forget_deleted") >= 2, "a non-deleting arm leaves the tombstone behind"
 
 
 # ── GPT round-50 findings (#518) ───────────────────────────────────────────────
@@ -5088,8 +6032,7 @@ def test_concurrent_tombstone_writes_do_not_lose_deletions(tmp_path, monkeypatch
     monkeypatch.setattr(routes, "_load_deleted", _slow_load)
 
     threads = [
-        threading.Thread(target=routes._remember_deleted, args=(f"/p/spec-{i}",))
-        for i in range(2)
+        threading.Thread(target=routes._remember_deleted, args=(f"/p/spec-{i}",)) for i in range(2)
     ]
     for t in threads:
         t.start()
@@ -5103,9 +6046,9 @@ def test_concurrent_tombstone_writes_do_not_lose_deletions(tmp_path, monkeypatch
 
     monkeypatch.setattr(routes, "_load_deleted", real_load)
     recorded = routes._load_deleted()
-    assert "/p/spec-0" in recorded and "/p/spec-1" in recorded, (
-        f"a concurrent delete lost its tombstone: {recorded}"
-    )
+    assert (
+        "/p/spec-0" in recorded and "/p/spec-1" in recorded
+    ), f"a concurrent delete lost its tombstone: {recorded}"
     assert "/p/keep-me" in recorded, "an unrelated tombstone was dropped"
 
 
@@ -5178,8 +6121,13 @@ async def test_create_abort_does_not_drop_a_replacement_spec(tmp_path, monkeypat
     }
 
     slot = types.SimpleNamespace(
-        key="spec-builder-reused-99999999", _app=routes.APP_NAME, running=False,
-        project="", messages=[], _titled=True, task=None,
+        key="spec-builder-reused-99999999",
+        _app=routes.APP_NAME,
+        running=False,
+        project="",
+        messages=[],
+        _titled=True,
+        task=None,
     )
 
     class _State:
@@ -5204,8 +6152,12 @@ async def test_create_abort_does_not_drop_a_replacement_spec(tmp_path, monkeypat
         client.app["state"] = _State()
         resp = await client.post(
             f"{_BASE}/specs",
-            json={"name": "reused", "working_dir": str(working), "spec_type": "feature",
-                  "import_existing": True},
+            json={
+                "name": "reused",
+                "working_dir": str(working),
+                "spec_type": "feature",
+                "import_existing": True,
+            },
         )
         status, body = resp.status, await resp.json()
     finally:
@@ -5225,12 +6177,12 @@ def test_create_identity_checks_pin_the_creation():
     directory."""
     src = inspect.getsource(routes._handle_create)
     pop = src.index("def _pop_if_ours(")
-    pop_body = src[pop:src.index("del idx[name]", pop)]
+    pop_body = src[pop : src.index("del idx[name]", pop)]
     assert "slot_key" in pop_body, "the unwind pops on the directory alone"
     post = src.index("live = current.get(name) or {}")
-    assert "slot_key" in src[post:src.index("_unwind_create()", post)], (
-        "the post-slot-setup check compares the directory alone"
-    )
+    assert (
+        "slot_key" in src[post : src.index("_unwind_create()", post)]
+    ), "the post-slot-setup check compares the directory alone"
 
 
 # ── GPT round-52 findings (#518) ───────────────────────────────────────────────
@@ -5276,9 +6228,7 @@ async def test_index_derived_strings_are_redacted_on_egress(tmp_path, monkeypatc
         assert entry[field] == "[SCRUBBED]", f"list leaked {field}: {entry[field]}"
         assert detail[field] == "[SCRUBBED]", f"detail leaked {field}: {detail[field]}"
     # spec_type still goes through _redact -- proven by a path-shaped value in it.
-    routes._save_index(
-        {"leaky": {**routes._load_index()["leaky"], "spec_type": "feature/../etc"}}
-    )
+    routes._save_index({"leaky": {**routes._load_index()["leaky"], "spec_type": "feature/../etc"}})
     assert detail["context"]["worktree_branch"] == "[SCRUBBED]", "detail leaked the branch"
 
 
@@ -5359,7 +6309,9 @@ def test_no_sentinel_path_is_resolved_by_string():
             if stripped.startswith("#") or "_STOP_FILE" not in stripped:
                 continue
             if "os.open(" in stripped or "os.unlink(" in stripped or "os.replace(" in stripped:
-                assert "dir_fd" in stripped, f"{fn.__name__} touches the sentinel by path: {stripped}"
+                assert (
+                    "dir_fd" in stripped
+                ), f"{fn.__name__} touches the sentinel by path: {stripped}"
         # And no path arithmetic builds a sentinel target any more.
         assert "real_dir / _STOP_FILE" not in src, f"{fn.__name__} still joins the path"
 
@@ -5425,9 +6377,9 @@ async def test_git_refuses_when_only_the_durable_audit_write_fails(tmp_path, mon
     assert rc == routes._GIT_UNAVAILABLE, rc
     assert "audit" in err
     assert spawned == [], "git ran despite the audit write failing"
-    assert calls and calls[0]["critical"] is True, (
-        f"the invocation audit did not ask for a durable write: {calls}"
-    )
+    assert (
+        calls and calls[0]["critical"] is True
+    ), f"the invocation audit did not ask for a durable write: {calls}"
 
 
 def test_only_the_invocation_audit_is_critical():
@@ -5544,8 +6496,13 @@ async def test_failed_archive_restores_the_original_name_and_key(tmp_path, monke
     spec_dir.mkdir(parents=True)
     key = "spec-builder-keeper-abcd1234"
     routes._save_index(
-        {"keeper": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd"),
-                    "slot_key": key}}
+        {
+            "keeper": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(tmp_path / "wd"),
+                "slot_key": key,
+            }
+        }
     )
 
     async def _archive_fails(*_a, **_kw):
@@ -5584,8 +6541,13 @@ async def test_a_reserved_name_cannot_be_taken_mid_delete(tmp_path, monkeypatch)
     spec_dir = working / ".kiro" / "specs" / "busy"
     spec_dir.mkdir(parents=True)
     routes._save_index(
-        {"busy": {"spec_dir": str(spec_dir), "working_dir": str(working),
-                  "slot_key": "spec-builder-busy-11112222"}}
+        {
+            "busy": {
+                "spec_dir": str(spec_dir),
+                "working_dir": str(working),
+                "slot_key": "spec-builder-busy-11112222",
+            }
+        }
     )
     # Mark the entry as a delete in flight, then try to create the same name.
     assert await routes._mark_deleting(
@@ -5616,9 +6578,7 @@ async def test_removal_failure_keeps_the_spec_hidden_for_a_retry(tmp_path, monke
     client = _make_client(monkeypatch, tmp_path)
     spec_dir = tmp_path / "wd" / ".kiro" / "specs" / "stuck"
     spec_dir.mkdir(parents=True)
-    routes._save_index(
-        {"stuck": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}}
-    )
+    routes._save_index({"stuck": {"spec_dir": str(spec_dir), "working_dir": str(tmp_path / "wd")}})
 
     async def _ok_teardown(*_a, **_kw):
         return True
@@ -5722,8 +6682,13 @@ async def test_list_serves_only_allowlisted_statuses(tmp_path, monkeypatch):
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "odd").mkdir(parents=True)
     routes._save_index(
-        {"odd": {"spec_dir": str(base / "odd"), "working_dir": str(tmp_path / "wd"),
-                 "status": "AKIAIOSFODNN7EXAMPLE"}}
+        {
+            "odd": {
+                "spec_dir": str(base / "odd"),
+                "working_dir": str(tmp_path / "wd"),
+                "status": "AKIAIOSFODNN7EXAMPLE",
+            }
+        }
     )
 
     await client.start_server()
@@ -5845,9 +6810,7 @@ async def test_cancelled_git_is_killed_before_the_handler_unwinds(tmp_path, monk
     # timeout rather than on the behaviour it exists to check. The assertion is
     # only about the process being killed, so sandbox preparation is setup here,
     # not subject: stubbing it makes the window depend on scheduling alone.
-    monkeypatch.setattr(
-        routes, "_prepare_git_spawn", lambda argv: (list(argv), {}, None)
-    )
+    monkeypatch.setattr(routes, "_prepare_git_spawn", lambda argv: (list(argv), {}, None))
 
     await client.start_server()
     try:
@@ -5904,9 +6867,7 @@ def test_git_kills_the_process_on_every_exceptional_exit():
     )
     reraise_arms = [
         handler
-        for handler in (
-            h for t in ast.walk(target) if isinstance(t, ast.Try) for h in t.handlers
-        )
+        for handler in (h for t in ast.walk(target) if isinstance(t, ast.Try) for h in t.handlers)
         if any(isinstance(n, ast.Raise) and n.exc is None for n in ast.walk(handler))
     ]
     assert reraise_arms, "_git no longer re-raises; this guard needs rewriting"
@@ -5969,9 +6930,9 @@ async def test_index_entry_without_a_working_dir_is_refused_a_slot(tmp_path, mon
     assert routes._entry_is_usable(meta)
 
     state, slot = _slot_stub()
-    assert await routes._ensure_worker_slot(state, "s", meta) is None, (
-        "a projectless entry was handed a slot"
-    )
+    assert (
+        await routes._ensure_worker_slot(state, "s", meta) is None
+    ), "a projectless entry was handed a slot"
     assert slot.project == "", "the slot was scoped from a missing working_dir"
 
 
@@ -5995,9 +6956,9 @@ async def test_working_dir_absent_and_invalid_refuse_identically(tmp_path, monke
         ("not-a-dir", {**common, "working_dir": str(base / "s" / "requirements.md")}),
     ):
         state, _ = _slot_stub()
-        assert await routes._ensure_worker_slot(state, "s", meta) is None, (
-            f"{label} working_dir was allowed to produce a slot"
-        )
+        assert (
+            await routes._ensure_worker_slot(state, "s", meta) is None
+        ), f"{label} working_dir was allowed to produce a slot"
 
     # ...and a real one still works, so the guard is not vacuous.
     state, slot = _slot_stub()
@@ -6031,15 +6992,17 @@ async def test_touch_spec_refuses_an_entry_reserved_for_deletion(tmp_path, monke
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "doomed").mkdir(parents=True)
     sd = str(base / "doomed")
-    routes._save_index({
-        "doomed": {
-            "spec_dir": sd,
-            "working_dir": str(tmp_path / "wd"),
-            "spec_type": "feature",
-            "status": "planning",
-            "slot_key": routes._new_slot_key("doomed"),
+    routes._save_index(
+        {
+            "doomed": {
+                "spec_dir": sd,
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": routes._new_slot_key("doomed"),
+            }
         }
-    })
+    )
 
     # Live: the stamp lands.
     assert await routes._touch_spec("doomed", expect_spec_dir=sd, status="planning") is not None
@@ -6062,15 +7025,17 @@ async def test_message_during_delete_is_refused_not_dispatched(tmp_path, monkeyp
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "doomed").mkdir(parents=True)
     sd = str(base / "doomed")
-    routes._save_index({
-        "doomed": {
-            "spec_dir": sd,
-            "working_dir": str(tmp_path / "wd"),
-            "spec_type": "feature",
-            "status": "planning",
-            "slot_key": routes._new_slot_key("doomed"),
+    routes._save_index(
+        {
+            "doomed": {
+                "spec_dir": sd,
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": routes._new_slot_key("doomed"),
+            }
         }
-    })
+    )
     dispatched: list = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a))
     assert await routes._mark_deleting("doomed", expect_spec_dir=sd, expect_slot_key="")
@@ -6127,15 +7092,17 @@ async def test_failed_loop_removal_releases_both_tombstone_and_reservation(tmp_p
     base = tmp_path / "wd" / ".kiro" / "specs"
     (base / "keeper").mkdir(parents=True)
     sd = str(base / "keeper")
-    routes._save_index({
-        "keeper": {
-            "spec_dir": sd,
-            "working_dir": str(tmp_path / "wd"),
-            "spec_type": "feature",
-            "status": "planning",
-            "slot_key": routes._new_slot_key("keeper"),
+    routes._save_index(
+        {
+            "keeper": {
+                "spec_dir": sd,
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": routes._new_slot_key("keeper"),
+            }
         }
-    })
+    )
 
     async def _explode(*_a, **_k):
         raise RuntimeError("loop service down")
@@ -6151,7 +7118,9 @@ async def test_failed_loop_removal_releases_both_tombstone_and_reservation(tmp_p
     assert resp.status == 503
     idx = await routes._aload_index()
     assert "keeper" in idx, "the spec was dropped despite the abort"
-    assert not idx["keeper"].get(routes._DELETING), "reservation left behind — spec hidden from the list"
+    assert not idx["keeper"].get(
+        routes._DELETING
+    ), "reservation left behind — spec hidden from the list"
     # The tombstone must be gone too, or discovery would refuse to re-adopt it.
     assert await routes._touch_spec("keeper", expect_spec_dir=sd) is not None
 
@@ -6174,15 +7143,17 @@ async def test_predispatch_repin_uses_captured_key_when_client_sends_none(tmp_pa
     (base / "s").mkdir(parents=True)
     sd = str(base / "s")
     original_key = routes._new_slot_key("s")
-    routes._save_index({
-        "s": {
-            "spec_dir": sd,
-            "working_dir": str(tmp_path / "wd"),
-            "spec_type": "feature",
-            "status": "planning",
-            "slot_key": original_key,
+    routes._save_index(
+        {
+            "s": {
+                "spec_dir": sd,
+                "working_dir": str(tmp_path / "wd"),
+                "spec_type": "feature",
+                "status": "planning",
+                "slot_key": original_key,
+            }
         }
-    })
+    )
 
     dispatched: list = []
     monkeypatch.setattr(routes, "_dispatch_turn", lambda *a, **k: dispatched.append(a))
@@ -6456,19 +7427,19 @@ def test_unwind_gates_the_rollback_on_the_pinned_pop():
     """Source guard on the WIRING: the unwind must pass the pop's own result
     through, not re-derive ownership or hardcode it."""
     src = inspect.getsource(routes._handle_create)
-    unwind = src[src.index("async def _unwind_create"):]
+    unwind = src[src.index("async def _unwind_create") :]
     pop = unwind.index("was_ours = await _mutate_index(_pop_if_ours)")
     call = unwind.index("_rollback_worktree_if_ours(")
     assert pop < call, "ownership must be established before the rollback"
-    args = unwind[call:unwind.index(")", unwind.index("worktree_branch=worktree_branch", call))]
+    args = unwind[call : unwind.index(")", unwind.index("worktree_branch=worktree_branch", call))]
     assert "was_ours=was_ours" in args, (
         "the rollback is not gated on the pinned pop -- a stale unwind would "
         "force-delete a replacement spec's worktree and branch"
     )
     # The raw destructive call must NOT survive alongside the gated one.
-    assert "_remove_worktree(" not in unwind, (
-        "the unwind still calls _remove_worktree directly, bypassing the gate"
-    )
+    assert (
+        "_remove_worktree(" not in unwind
+    ), "the unwind still calls _remove_worktree directly, bypassing the gate"
 
 
 def test_remove_worktree_is_destructive_enough_to_need_the_gate():
@@ -6489,7 +7460,7 @@ def test_only_the_post_insert_unwind_needs_the_gate():
     acquisition) during which a delete + recreate can land.
     """
     src = inspect.getsource(routes._handle_create)
-    early = src[:src.index("async def _unwind_create")]
+    early = src[: src.index("async def _unwind_create")]
     assert early.count("_remove_worktree(") == 3, (
         "the early-rollback count changed -- re-audit whether the new one spans "
         "an await after the index insert (if so it needs the ownership gate too)"
@@ -6537,9 +7508,7 @@ async def test_replacement_during_transcript_restore_is_refused(monkeypatch, tmp
     monkeypatch.setattr(routes, "_restore_worker_transcript", _restore)
     state, created = _identity_state("spec-builder-old")
 
-    got = await routes._ensure_worker_slot(
-        state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)}
-    )
+    got = await routes._ensure_worker_slot(state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)})
     assert got is None, "a stale request acquired the replacement spec's slot"
     assert created == [], "the stale request created a slot under the new identity"
 
@@ -6563,9 +7532,7 @@ async def test_replacement_during_working_dir_check_is_refused(monkeypatch, tmp_
 
     monkeypatch.setattr(routes, "_safe_dir", _safe_dir_then_replace)
 
-    got = await routes._ensure_worker_slot(
-        state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)}
-    )
+    got = await routes._ensure_worker_slot(state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)})
     assert got is None, "the stale request kept going after its spec was replaced"
     assert ours.project == "", "a replaced spec's slot was repointed at the stale project"
     assert ours._app == routes.APP_NAME
@@ -6581,9 +7548,7 @@ async def test_stable_identity_still_acquires_the_slot(monkeypatch, tmp_path):
     )
     state, _ = _identity_state("spec-builder-stable", slot=ours)
 
-    got = await routes._ensure_worker_slot(
-        state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)}
-    )
+    got = await routes._ensure_worker_slot(state, _IDENTITY_SPEC, {"working_dir": str(tmp_path)})
     assert got is ours, "a stable identity failed to acquire its own slot"
     assert got.project == str(tmp_path), "the slot was not scoped to the spec's project"
 
@@ -6605,14 +7570,16 @@ def test_slot_key_is_resolved_once_and_both_awaits_are_guarded():
         src.index("await asyncio.to_thread(_safe_dir"),
     ]
     assert resolve < min(awaits), "the identity is captured after an await"
-    guards = [i for i in range(len(src)) if src.startswith("_slot_identity_moved(name, slot_key)", i)]
+    guards = [
+        i for i in range(len(src)) if src.startswith("_slot_identity_moved(name, slot_key)", i)
+    ]
     assert len(guards) == 2, f"expected 2 identity re-checks, found {len(guards)}"
     for a in awaits:
         assert any(g > a for g in guards), "an await is not followed by an identity re-check"
     # Creation must use the captured key.
-    assert "get_or_create_slot(name=slot_key" in src, (
-        "slot creation does not use the captured identity"
-    )
+    assert (
+        "get_or_create_slot(name=slot_key" in src
+    ), "slot creation does not use the captured identity"
 
 
 def test_identity_guard_refuses_and_audits():
@@ -6702,7 +7669,7 @@ def test_handoff_captures_its_identity_before_the_await_and_pins_on_both():
     claim previously had no identity check at all.
     """
     src = inspect.getsource(routes._handle_handoff)
-    capture = src.index("started_slot_key = str(meta.get(\"slot_key\", \"\"))")
+    capture = src.index('started_slot_key = str(meta.get("slot_key", ""))')
     await_match = re.search(r"await asyncio\.to_thread\(\s*_prepare_handoff", src)
     assert await_match, "handoff no longer hands _prepare_handoff to a worker thread"
     await_at = await_match.start()
@@ -6712,18 +7679,17 @@ def test_handoff_captures_its_identity_before_the_await_and_pins_on_both():
     # sentinel, so a stale execute that reaches it disarms a replacement's Pause
     # before any comparison has run.
     claim_at = src.index("_client_identity_mismatch(claimed, spec_dir, started_slot_key)")
-    assert claim_at < await_at, (
-        "the client-claim check moved after the sentinel clear it is meant to gate"
-    )
+    assert (
+        claim_at < await_at
+    ), "the client-claim check moved after the sentinel clear it is meant to gate"
     assert await_at < guard, "the reread guard does not follow the await"
     window = src[await_at:guard]
     assert "!= started_slot_key" in window, (
-        "the reread is pinned on spec_dir only -- a same-name, same-path "
-        "replacement passes it"
+        "the reread is pinned on spec_dir only -- a same-name, same-path " "replacement passes it"
     )
-    assert 'str(meta.get("spec_dir", "")) != str(spec_dir)' in window, (
-        "the directory pin was dropped"
-    )
+    assert (
+        'str(meta.get("spec_dir", "")) != str(spec_dir)' in window
+    ), "the directory pin was dropped"
 
 
 def test_no_index_mutation_is_pinned_on_the_directory_alone():
@@ -6741,12 +7707,13 @@ def test_no_index_mutation_is_pinned_on_the_directory_alone():
                 if depth == 0:
                     break
             i += 1
-        call = src[match.start():i + 1]
+        call = src[match.start() : i + 1]
         if "expect_spec_dir" in call:
             assert "expect_slot_key" in call, (
                 "a _touch_spec call pins the directory without the creation key, "
                 f"so a same-path replacement passes it:\n{call}"
             )
+
 
 # ── index admission: the write side must use the read side's predicate ──
 
@@ -6787,9 +7754,9 @@ async def test_create_refuses_a_name_the_loader_would_discard(tmp_path, monkeypa
         assert resp.status == 400
         body = await resp.json()
         assert body["code"] == "invalid_name"
-        assert not (tmp_path / ".kiro" / "specs" / _CREDENTIAL_SHAPED_NAME).exists(), (
-            "create left a spec directory for a name the index cannot hold"
-        )
+        assert not (
+            tmp_path / ".kiro" / "specs" / _CREDENTIAL_SHAPED_NAME
+        ).exists(), "create left a spec directory for a name the index cannot hold"
 
 
 def test_discovery_does_not_adopt_a_name_the_loader_would_discard(tmp_path, monkeypatch):
@@ -6850,6 +7817,7 @@ def test_no_index_write_path_admits_on_the_grammar_alone():
         f"_load_index discards: {offenders}"
     )
 
+
 # ── _safe_dir: absolute-only, enforced where it can actually fail ──
 
 
@@ -6862,9 +7830,9 @@ def test_safe_dir_refuses_a_relative_working_dir(tmp_path, monkeypatch):
     """
     monkeypatch.chdir(tmp_path)
     for relative in (".", "..", "relative/path", "./sub", ""):
-        assert routes._safe_dir(relative) is None, (
-            f"_safe_dir accepted the relative value {relative!r}"
-        )
+        assert (
+            routes._safe_dir(relative) is None
+        ), f"_safe_dir accepted the relative value {relative!r}"
 
 
 def test_safe_dir_still_accepts_absolute_and_tilde(tmp_path, monkeypatch):
@@ -6875,9 +7843,9 @@ def test_safe_dir_still_accepts_absolute_and_tilde(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HOME", str(tmp_path))
     (tmp_path / "inside").mkdir()
-    assert routes._safe_dir("~/inside") is not None, (
-        "_safe_dir rejected a ~-relative path, which expands to an absolute one"
-    )
+    assert (
+        routes._safe_dir("~/inside") is not None
+    ), "_safe_dir rejected a ~-relative path, which expands to an absolute one"
 
 
 def test_absoluteness_is_checked_before_realpath():
@@ -6893,9 +7861,10 @@ def test_absoluteness_is_checked_before_realpath():
     src = inspect.getsource(routes._safe_dir)
     isabs_at = src.index("os.path.isabs(")
     realpath_at = src.index("os.path.realpath(")
-    assert isabs_at < realpath_at, (
-        "the absoluteness test moved after realpath, where it can never fail"
-    )
+    assert (
+        isabs_at < realpath_at
+    ), "the absoluteness test moved after realpath, where it can never fail"
+
 
 # ── a stale execute must not clear a replacement's STOP sentinel ──
 
@@ -6957,6 +7926,7 @@ def test_prepare_handoff_unpinned_call_keeps_working(tmp_path, monkeypatch):
     assert routes._prepare_handoff(spec_dir, "paused", "")[0] is True
     assert not stop.exists()
 
+
 # ── broadcast-eligible appends must not carry raw caller text ──
 
 
@@ -7006,12 +7976,10 @@ def test_the_host_still_exempts_only_these_roles_from_broadcast():
 
     src = inspect.getsource(_ChatSlot.append)
     assert 'role not in ("chunk", "done")' in src, (
-        "the host's unconditional broadcast skip set changed; "
-        "_NON_BROADCAST_ROLES is now stale"
+        "the host's unconditional broadcast skip set changed; " "_NON_BROADCAST_ROLES is now stale"
     )
     assert '(role != "user" or broadcast_user)' in src, (
-        "the host no longer skips user rows by default; _NON_BROADCAST_ROLES is "
-        "now stale"
+        "the host no longer skips user rows by default; _NON_BROADCAST_ROLES is " "now stale"
     )
     assert "broadcast_user" not in inspect.getsource(routes._dispatch_turn), (
         "this app now opts into broadcasting user rows, so 'user' is broadcast "
@@ -7031,14 +7999,14 @@ def test_queued_append_is_redacted_before_it_is_broadcast(monkeypatch):
     assert slot.appended, "nothing was appended for a running slot"
     role, content = slot.appended[-1]
     assert role == "queued"
-    assert secret not in content, (
-        "the queued message reached the broadcast path with the credential intact"
-    )
+    assert (
+        secret not in content
+    ), "the queued message reached the broadcast path with the credential intact"
     # The queue itself still carries the real text: the agent must receive what
     # the user actually typed. Only the broadcast copy is scrubbed.
-    assert slot.queued and secret in slot.queued[-1], (
-        "the redaction leaked into the queue, so the agent would get scrubbed input"
-    )
+    assert (
+        slot.queued and secret in slot.queued[-1]
+    ), "the redaction leaked into the queue, so the agent would get scrubbed input"
 
 
 def test_no_broadcast_eligible_append_passes_raw_caller_text():
@@ -7080,6 +8048,7 @@ def test_no_broadcast_eligible_append_passes_raw_caller_text():
         f"that did not go through _redact: {offenders}"
     )
 
+
 # ── the settings egress redacts like every other stored value ──
 
 
@@ -7096,9 +8065,9 @@ async def test_get_settings_redacts_an_agent_written_base_path(tmp_path, monkeyp
 
         assert resp.status == 200
         body = await resp.json()
-        assert secret not in body["base_path"], (
-            "the agent-written base_path reached the dashboard with the credential intact"
-        )
+        assert (
+            secret not in body["base_path"]
+        ), "the agent-written base_path reached the dashboard with the credential intact"
 
 
 @pytest.mark.asyncio
@@ -7143,3 +8112,1683 @@ def test_every_handler_that_returns_settings_redacts_it():
         "these handlers return agent-writable settings without _redact, so a "
         f"credential in the file reaches the dashboard raw: {offenders}"
     )
+
+
+# ── direct authority over the artifacts ──────────────────────────────────────
+# Before these endpoints the user could only ASK the agent to change anything:
+# a typo cost a model turn, an approval was a chat message that left no trace,
+# and the task list could only be handed over whole. Each test below pins the
+# guard that makes the new write path safe rather than merely present.
+
+
+def _seed_spec(tmp_path, name="live", *, files=None, extra=None):
+    """Seed one spec on disk and in the index. Returns (spec_dir, working_dir)."""
+    working_dir = tmp_path / "wd"
+    spec_dir = working_dir / ".kiro" / "specs" / name
+    spec_dir.mkdir(parents=True)
+    for fname, text in (files or {}).items():
+        (spec_dir / fname).write_text(text)
+    entry = {
+        "spec_dir": str(spec_dir),
+        "working_dir": str(working_dir),
+        "spec_type": "feature",
+        "status": "planning",
+        "slot_key": routes._slot_key(name),
+        "created_at": 1.0,
+        "updated_at": 1.0,
+    }
+    entry.update(extra or {})
+    routes._save_index({name: entry})
+    return spec_dir, working_dir
+
+
+def _spec_identity(name="live"):
+    """Return the creation identity a detail response gives the client."""
+    entry = routes._load_index()[name]
+    return {"spec_dir": entry["spec_dir"], "slot_key": entry["slot_key"]}
+
+
+class _IdleSlot:
+    """A slot of OUR app that is not mid-turn."""
+
+    running = False
+    messages: list = []
+    _app = routes.APP_NAME
+    project = ""
+    _titled = False
+    title = ""
+
+    def __init__(self, key):
+        self.key = key
+        self.dispatched: list[str] = []
+
+
+def _state_for(*names):
+    """A fake gateway state serving an idle slot per spec name."""
+    slots = {routes._slot_key(n): _IdleSlot(routes._slot_key(n)) for n in names}
+
+    class _State:
+        def get_slot(self, key):
+            return slots.get(key)
+
+        def get_or_create_slot(self, name, app=""):
+            key = routes._slot_key(name)
+            slots.setdefault(key, _IdleSlot(key))
+            return slots[key]
+
+    return _State(), slots
+
+
+# ── gap 1: documents are reviewable through their redacted rendering ─────────
+
+
+def test_read_spec_files_returns_only_the_raw_hash_for_a_redacted_document(tmp_path, monkeypatch):
+    """The browser gets safe rendering plus the hash needed for approval."""
+    monkeypatch.setattr(routes, "_redact", lambda t: t.replace("sk-secret", "[redacted]"))
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    (spec_dir / "requirements.md").write_text("token is sk-secret")
+    (spec_dir / "design.md").write_text("nothing sensitive")
+
+    files, docs, tasks = routes._read_spec_files(spec_dir)
+
+    assert files["requirements.md"] == "token is [redacted]"
+    # The hash is of the file AS STORED, never of the redacted copy: an approval
+    # binds to the real version that was reviewed.
+    assert docs["requirements.md"] == {"hash": routes._sha256_text("token is sk-secret")}
+    assert set(docs["design.md"]) == {"hash"}
+    assert tasks == []
+
+
+def test_duplicate_doc_create_only_succeeds_while_the_file_is_absent(tmp_path):
+    """O_EXCL makes an external writer the winner rather than its victim."""
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+
+    result, identity = routes._create_spec_doc(spec_dir, "design.md", "# fresh")
+    assert result == "" and identity is not None
+    assert (spec_dir / "design.md").read_text() == "# fresh"
+
+    result, identity = routes._create_spec_doc(spec_dir, "design.md", "# second")
+    assert result == "conflict" and identity is None
+    assert (spec_dir / "design.md").read_text() == "# fresh"
+
+
+@pytest.mark.skipif(
+    not routes._CAN_PIN_DIR,
+    reason="duplicate document writes require descriptor-relative directory pinning",
+)
+def test_duplicate_doc_create_refuses_a_spec_directory_swapped_for_a_symlink(tmp_path):
+    """Same attack the sentinel writers refuse: an agent replaces its own indexed
+    directory with a symlink, and a path-based write then lands user-authored text
+    somewhere else entirely."""
+    real = tmp_path / "elsewhere"
+    real.mkdir()
+    attacker = tmp_path / "attacker-spec"
+    os.symlink(real, attacker)
+
+    assert routes._create_spec_doc(attacker, "design.md", "# text")[0] == "unsafe_dir"
+    assert not (real / "design.md").exists()
+
+
+def test_duplicate_doc_create_retries_short_writes(tmp_path, monkeypatch):
+    """A successful save means the complete UTF-8 payload reached the temporary
+    file; a regular-file write is allowed to accept only a prefix."""
+    spec_dir = tmp_path / "spec"
+    spec_dir.mkdir()
+    real_write = routes.os.write
+    writes: list[int] = []
+
+    def _short_write(fd, data):
+        chunk = data[:2]
+        writes.append(len(chunk))
+        return real_write(fd, chunk)
+
+    monkeypatch.setattr(routes.os, "write", _short_write)
+    content = "complete payload"
+
+    assert routes._create_spec_doc(spec_dir, "design.md", content)[0] == ""
+    assert (spec_dir / "design.md").read_text() == content
+    assert len(writes) > 1
+
+
+# ── gap 2: approval is recorded against the version approved ─────────────────
+
+
+@pytest.mark.asyncio
+async def test_approve_records_the_version_and_the_user(tmp_path, monkeypatch):
+    """Approval used to be nothing but a chat message: the server never knew a
+    phase had been signed off, by whom, or against which text."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reviewed"})
+    digest = routes._sha256_text("# reviewed")
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/approve",
+            json={**_spec_identity(), "phase": "requirements", "hash": digest},
+        )
+        assert resp.status == 200, await resp.json()
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+    finally:
+        await client.close()
+
+    stored = routes._load_index()["live"]["approvals"]["requirements"]
+    assert stored["hash"] == digest and stored["user"] == "tester" and stored["at"] > 0
+    assert detail["approvals"]["requirements"]["stale"] is False
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_a_hash_that_is_not_the_current_document(tmp_path, monkeypatch):
+    """Approving a version nobody has seen records nothing meaningful, so the
+    claim is checked against the file rather than trusted."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# actually on disk"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/approve",
+            json={
+                **_spec_identity(),
+                "phase": "requirements",
+                "hash": routes._sha256_text("# something else"),
+            },
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "doc_changed"
+    assert "approvals" not in routes._load_index()["live"]
+
+
+@pytest.mark.asyncio
+async def test_approve_refuses_a_same_path_spec_recreated_during_hash_read(tmp_path, monkeypatch):
+    """A directory path is reusable; the per-creation slot key is the identity."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reviewed"})
+    old_key = routes._load_index()["live"]["slot_key"]
+    real_read = routes._read_spec_text
+    replaced = False
+
+    def _replace_identity(spec_dir, fname):
+        nonlocal replaced
+        text = real_read(spec_dir, fname)
+        if fname == "requirements.md" and not replaced:
+            replaced = True
+            index = routes._load_index()
+            index["live"]["slot_key"] = old_key + "-replacement"
+            routes._save_index(index)
+        return text
+
+    monkeypatch.setattr(routes, "_read_spec_text", _replace_identity)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/approve",
+            json={
+                **_spec_identity(),
+                "phase": "requirements",
+                "hash": routes._sha256_text("# reviewed"),
+            },
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "stale_client"
+    assert "approvals" not in routes._load_index()["live"]
+
+
+def test_approvals_report_stale_once_the_document_moves(tmp_path):
+    """Why the approved VERSION is recorded rather than a bare flag: a document the
+    agent rewrote after sign-off must stop reading as approved."""
+    approved = routes._sha256_text("# as reviewed")
+    record = {"requirements": {"hash": approved, "at": 5.0, "user": "tester"}}
+
+    unchanged = routes._normalize_approvals(record, {"requirements.md": {"hash": approved}})
+    assert unchanged["requirements"]["stale"] is False
+
+    moved = routes._normalize_approvals(
+        record, {"requirements.md": {"hash": routes._sha256_text("# rewritten since")}}
+    )
+    assert moved["requirements"]["stale"] is True
+
+    # The document disappearing is also stale: nothing is left that it describes.
+    assert routes._normalize_approvals(record, {})["requirements"]["stale"] is True
+
+
+def test_approvals_from_the_index_are_normalized_not_trusted():
+    """The index is reachable by the agent (it runs shell commands as the user),
+    exactly like every other index field this module scrubs on egress. A forged
+    or malformed record must not reach the browser as-is."""
+    junk = {
+        "requirements": {"hash": "not-a-digest", "at": "soon", "user": "x"},
+        "design": "not even a dict",
+        "tasks": {"hash": "0" * 64},  # not an approvable phase
+        "../evil": {"hash": "0" * 64},
+    }
+    out = routes._normalize_approvals(junk, {})
+    assert out == {}, out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["tasks", "new", "", "../requirements"])
+async def test_approve_rejects_a_phase_outside_the_approvable_two(phase, tmp_path, monkeypatch):
+    """There is no "approve tasks" step: approving the task list IS the handoff."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# r"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/approve",
+            json={**_spec_identity(), "phase": phase, "hash": "0" * 64},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 400 and body["code"] == "invalid_phase"
+
+
+# ── gap 3: one task at a time, addressed by position AND text ────────────────
+
+
+def test_parse_tasks_enumerates_hashes_and_derives_progress():
+    text = (
+        "# Tasks\n\n"
+        "- [x] wire the endpoint\n"
+        "- [ ] add the tests\n"
+        "1. [ ] update the docs\n"
+        "- [ ]\n"  # no text: not something a user can run
+        "just prose\n"
+    )
+    tasks = routes._parse_tasks(text)
+
+    assert [t["index"] for t in tasks] == [0, 1, 2]
+    assert [t["done"] for t in tasks] == [True, False, False]
+    assert [t["text"] for t in tasks] == ["wire the endpoint", "add the tests", "update the docs"]
+    assert tasks[1]["hash"] == routes._sha256_text("add the tests")
+    # The gate's predicate reads the same parse, so the two cannot disagree.
+    assert routes._has_open_task(text) is True
+
+
+@pytest.mark.asyncio
+async def test_task_run_dispatches_one_scoped_turn(tmp_path, monkeypatch):
+    """Deliberately a single turn and NOT an autonudge loop: the whole-list handoff
+    arms a loop that keeps going, while running one task must end where the user
+    expects it to."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, working_dir = _seed_spec(
+        tmp_path, files={"tasks.md": "- [x] done already\n- [ ] add the tests\n"}
+    )
+    state, slots = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+        target = detail["tasks"][1]
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": target["index"], "hash": target["hash"]},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, body
+    assert detail["task_progress"] == {"done": 1, "total": 2}
+    assert len(sent) == 1
+    # Names the task by text and occurrence, and tells the agent to stop rather than continue.
+    assert "add the tests" in sent[0]
+    assert "checklist item 2" in sent[0]
+    assert "Do NOT continue" in sent[0]
+    assert str(spec_dir / "tasks.md") in sent[0] and str(working_dir) in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_task_run_identifies_the_selected_duplicate_occurrence(tmp_path, monkeypatch):
+    """Repeated labels still dispatch the exact checkbox occurrence the user clicked."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] run the tests\n- [ ] run the tests\n"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+        target = detail["tasks"][1]
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": target["index"], "hash": target["hash"]},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, body
+    assert len(sent) == 1
+    assert "checklist item 2" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_task_run_revalidates_the_task_after_slot_setup(tmp_path, monkeypatch):
+    """An IDE edit during the awaited slot setup must win over the stale click."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _ = _seed_spec(tmp_path, files={"tasks.md": "- [ ] original task\n"})
+    state, slots = _state_for("live")
+    sent: list[str] = []
+
+    async def _setup_then_edit(_state, _name, _meta):
+        (spec_dir / "tasks.md").write_text("- [ ] replacement task\n")
+        return slots[routes._slot_key("live")]
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _setup_then_edit)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": 0, "hash": routes._sha256_text("original task")},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "task_changed"
+    assert sent == [], "dispatched the snapshot captured before slot setup"
+
+
+@pytest.mark.asyncio
+async def test_task_run_refuses_a_task_whose_text_moved(tmp_path, monkeypatch):
+    """The reason position alone is not an identity: the agent rewrites tasks.md
+    between polls, so a click on "task 2" could otherwise dispatch whatever ended
+    up second."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] the list was reordered\n"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={
+                **_spec_identity(),
+                "index": 0,
+                "hash": routes._sha256_text("what the user actually clicked"),
+            },
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "task_changed"
+    assert sent == [], "dispatched a task the user did not choose"
+
+
+@pytest.mark.asyncio
+async def test_task_run_uses_the_same_redacted_identity_the_detail_endpoint_serves(
+    tmp_path, monkeypatch
+):
+    """Reloading produces a runnable raw identity and a redacted task label."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] rotate sk-secret\n"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_redact", lambda text: text.replace("sk-secret", "[redacted]"))
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+        task = detail["tasks"][0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": task["index"], "hash": task["hash"]},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 200, body
+    assert len(sent) == 1 and "rotate [redacted]" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_task_run_hashes_raw_text_when_redaction_hides_a_change(tmp_path, monkeypatch):
+    """A stale click must not survive when only a redacted credential changes."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _ = _seed_spec(tmp_path, files={"tasks.md": "- [ ] rotate secret-old\n"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(
+        routes,
+        "_redact",
+        lambda text: re.sub(r"secret-(?:old|new)", "[redacted]", text),
+    )
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+        task = detail["tasks"][0]
+        (spec_dir / "tasks.md").write_text("- [ ] rotate secret-new\n")
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": task["index"], "hash": task["hash"]},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert task["text"] == "rotate [redacted]"
+    assert resp.status == 409 and body["code"] == "task_changed"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_task_run_is_refused_while_the_whole_list_is_building(tmp_path, monkeypatch):
+    """A loop already working the list and a single-task turn write the same files
+    and check off the same boxes, so they must not overlap."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"}, extra={"status": "executing"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+    monkeypatch.setattr(routes, "_effective_status", _always_executing)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "already_executing"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_task_run_refuses_a_handoff_that_claims_during_slot_setup(tmp_path, monkeypatch):
+    """The handoff owns the spec as soon as its index claim lands, before its
+    nudge loop or first turn makes the slot look busy."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, _ = _state_for("live")
+    real_ensure = routes._ensure_worker_slot
+    sent: list[str] = []
+
+    async def _ensure_after_handoff_claim(*args, **kwargs):
+        slot = await real_ensure(*args, **kwargs)
+        await routes._touch_spec(
+            "live",
+            status="executing",
+            exec_arming_at=time.time(),
+        )
+        return slot
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _ensure_after_handoff_claim)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: sent.append("sent"))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "already_executing"
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_task_runs_dispatch_only_once(tmp_path, monkeypatch):
+    """Two requests may pass the early status check before either owns the slot."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, slots = _state_for("live")
+    slot = slots[routes._slot_key("live")]
+    real_ensure = routes._ensure_worker_slot
+    first_waiting = asyncio.Event()
+    release = asyncio.Event()
+    arrivals = 0
+    sent: list[str] = []
+
+    async def _held_ensure(*args, **kwargs):
+        nonlocal arrivals
+        resolved = await real_ensure(*args, **kwargs)
+        arrivals += 1
+        if arrivals == 1:
+            first_waiting.set()
+        await release.wait()
+        return resolved
+
+    def _mark_running(_state, _slot, message):
+        sent.append(message)
+        slot.running = True
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _held_ensure)
+    monkeypatch.setattr(routes, "_dispatch_turn", _mark_running)
+    body = {**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")}
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        first = asyncio.create_task(client.post(f"{_BASE}/specs/live/task", json=body))
+        second = asyncio.create_task(client.post(f"{_BASE}/specs/live/task", json=body))
+        await asyncio.wait_for(first_waiting.wait(), timeout=5)
+        release.set()
+        responses = await asyncio.gather(first, second)
+        payloads = [await response.json() for response in responses]
+    finally:
+        release.set()
+        await client.close()
+
+    assert sorted(response.status for response in responses) == [200, 409]
+    assert any(payload.get("code") == "agent_running" for payload in payloads)
+    assert arrivals == 1, "the losing request materialized the slot before checking the winner"
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_slot_materialization_serializes_delete_capture(tmp_path, monkeypatch):
+    """Delete cannot capture no slot while a task is about to restore that slot."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, slots = _state_for()
+    ensure_waiting = asyncio.Event()
+    release_ensure = asyncio.Event()
+    delete_waiting = asyncio.Event()
+    mark_entered = asyncio.Event()
+    real_lock = routes._spec_execution_lock
+    real_mark = routes._mark_deleting
+    lock_calls = 0
+    captured: list[object] = []
+    order: list[str] = []
+
+    async def _held_slot_materialization(_state, _name, _meta):
+        ensure_waiting.set()
+        await release_ensure.wait()
+        key = routes._slot_key("live")
+        slots[key] = _IdleSlot(key)
+        return slots[key]
+
+    def _watched_lock(request, name):
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 2:
+            delete_waiting.set()
+        return real_lock(request, name)
+
+    async def _watched_mark(*args, **kwargs):
+        mark_entered.set()
+        order.append("reserve-delete")
+        return await real_mark(*args, **kwargs)
+
+    async def _remove_loop(*args, **kwargs):
+        return None
+
+    async def _capture_teardown(*args, **kwargs):
+        captured.append(kwargs.get("only_slot"))
+        return True
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _held_slot_materialization)
+    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_mark_deleting", _watched_mark)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: order.append("dispatch-task"))
+    monkeypatch.setattr(routes, "_remove_nudge_loop", _remove_loop)
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _capture_teardown)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")}
+        task_request = asyncio.create_task(client.post(f"{_BASE}/specs/live/task", json=body))
+        await asyncio.wait_for(ensure_waiting.wait(), timeout=5)
+        delete_request = asyncio.create_task(client.delete(f"{_BASE}/specs/live"))
+        await asyncio.wait_for(delete_waiting.wait(), timeout=5)
+        assert not mark_entered.is_set(), "Delete captured the runtime during slot restore"
+        release_ensure.set()
+        task_response, delete_response = await asyncio.gather(task_request, delete_request)
+    finally:
+        release_ensure.set()
+        await client.close()
+
+    assert task_response.status == 200 and delete_response.status == 200
+    assert order == ["dispatch-task", "reserve-delete"]
+    assert captured == [slots[routes._slot_key("live")]], "Delete missed the restored slot"
+
+
+@pytest.mark.asyncio
+async def test_task_final_snapshot_serializes_the_whole_plan_claim(tmp_path, monkeypatch):
+    """Execute cannot claim the spec while a task's final disk snapshot awaits."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, slots = _state_for("live")
+    slot = slots[routes._slot_key("live")]
+    release_snapshot = asyncio.Event()
+    snapshot_waiting = asyncio.Event()
+    execute_waiting = asyncio.Event()
+    claim_entered = asyncio.Event()
+    real_to_thread = routes.asyncio.to_thread
+    real_lock = routes._spec_execution_lock
+    real_claim = routes._claim_execution
+    snapshot_calls = 0
+    lock_calls = 0
+    sent: list[str] = []
+
+    async def _held_final_snapshot(func, *args, **kwargs):
+        nonlocal snapshot_calls
+        if getattr(func, "__name__", "") == "_task_snapshot":
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                snapshot_waiting.set()
+                await release_snapshot.wait()
+        return await real_to_thread(func, *args, **kwargs)
+
+    def _watched_lock(request, name):
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 2:
+            execute_waiting.set()
+        return real_lock(request, name)
+
+    async def _watched_claim(*args, **kwargs):
+        claim_entered.set()
+        return await real_claim(*args, **kwargs)
+
+    def _mark_running(_state, _slot, message):
+        sent.append(message)
+        slot.running = True
+
+    monkeypatch.setattr(routes.asyncio, "to_thread", _held_final_snapshot)
+    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_claim_execution", _watched_claim)
+    monkeypatch.setattr(routes, "_dispatch_turn", _mark_running)
+    monkeypatch.setattr(routes, "_autonudge_instance", lambda: object())
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")}
+        task_request = asyncio.create_task(client.post(f"{_BASE}/specs/live/task", json=body))
+        await asyncio.wait_for(snapshot_waiting.wait(), timeout=5)
+        execute_request = asyncio.create_task(client.post(f"{_BASE}/specs/live/execute"))
+        await asyncio.wait_for(execute_waiting.wait(), timeout=5)
+        assert not claim_entered.is_set(), "Execute crossed the task's final snapshot"
+        release_snapshot.set()
+        task_response, execute_response = await asyncio.gather(task_request, execute_request)
+        execute_body = await execute_response.json()
+    finally:
+        release_snapshot.set()
+        slot.running = False
+        await client.close()
+
+    assert task_response.status == 200
+    assert execute_response.status == 409 and execute_body["code"] == "already_executing"
+    assert claim_entered.is_set() and len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_task_final_snapshot_serializes_delete_reservation(tmp_path, monkeypatch):
+    """Delete reserves teardown only after a final task snapshot has dispatched."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, _ = _state_for("live")
+    release_snapshot = asyncio.Event()
+    snapshot_waiting = asyncio.Event()
+    delete_waiting = asyncio.Event()
+    mark_entered = asyncio.Event()
+    real_to_thread = routes.asyncio.to_thread
+    real_lock = routes._spec_execution_lock
+    real_mark = routes._mark_deleting
+    snapshot_calls = 0
+    lock_calls = 0
+    order: list[str] = []
+
+    async def _held_final_snapshot(func, *args, **kwargs):
+        nonlocal snapshot_calls
+        if getattr(func, "__name__", "") == "_task_snapshot":
+            snapshot_calls += 1
+            if snapshot_calls == 2:
+                snapshot_waiting.set()
+                await release_snapshot.wait()
+        return await real_to_thread(func, *args, **kwargs)
+
+    def _watched_lock(request, name):
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 2:
+            delete_waiting.set()
+        return real_lock(request, name)
+
+    async def _watched_mark(*args, **kwargs):
+        mark_entered.set()
+        order.append("reserve-delete")
+        return await real_mark(*args, **kwargs)
+
+    async def _remove_loop(*args, **kwargs):
+        return None
+
+    async def _teardown(*args, **kwargs):
+        return True
+
+    monkeypatch.setattr(routes.asyncio, "to_thread", _held_final_snapshot)
+    monkeypatch.setattr(routes, "_spec_execution_lock", _watched_lock)
+    monkeypatch.setattr(routes, "_mark_deleting", _watched_mark)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: order.append("dispatch-task"))
+    monkeypatch.setattr(routes, "_remove_nudge_loop", _remove_loop)
+    monkeypatch.setattr(routes, "_teardown_worker_slot", _teardown)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        body = {**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")}
+        task_request = asyncio.create_task(client.post(f"{_BASE}/specs/live/task", json=body))
+        await asyncio.wait_for(snapshot_waiting.wait(), timeout=5)
+        delete_request = asyncio.create_task(client.delete(f"{_BASE}/specs/live"))
+        await asyncio.wait_for(delete_waiting.wait(), timeout=5)
+        assert not mark_entered.is_set(), "Delete crossed the task's final snapshot"
+        release_snapshot.set()
+        task_response, delete_response = await asyncio.gather(task_request, delete_request)
+    finally:
+        release_snapshot.set()
+        await client.close()
+
+    assert task_response.status == 200 and delete_response.status == 200
+    assert order == ["dispatch-task", "reserve-delete"]
+
+
+@pytest.mark.asyncio
+async def test_task_run_refuses_between_orchestration_stages(tmp_path, monkeypatch):
+    """A staged plan owns the slot even when no individual turn task is live."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [ ] add the tests\n"})
+    state, slots = _state_for("live")
+    slots[routes._slot_key("live")]._in_stage_execution = True
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: sent.append("sent"))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={**_spec_identity(), "index": 0, "hash": routes._sha256_text("add the tests")},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "agent_running"
+    assert sent == []
+
+
+async def _always_executing(name, meta, slot):
+    return "executing"
+
+
+@pytest.mark.asyncio
+async def test_task_run_refuses_a_task_already_checked_off(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"tasks.md": "- [x] already finished\n"})
+    state, _ = _state_for("live")
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/task",
+            json={
+                **_spec_identity(),
+                "index": 0,
+                "hash": routes._sha256_text("already finished"),
+            },
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "task_done"
+
+
+# ── gap 5: label, archive, duplicate ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_title_relabels_without_touching_the_identity(tmp_path, monkeypatch):
+    """A rename of the LABEL only. The name is simultaneously the on-disk directory,
+    the git branch and the chat slot key -- and _owns_slot_key requires the key to
+    ENCODE the name -- so renaming the identity would move a directory the IDE and
+    CLI also read and orphan the spec's transcript, which is exactly what
+    delete-and-recreate loses."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _ = _seed_spec(tmp_path)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/title",
+            json={**_spec_identity(), "title": "Checkout rewrite"},
+        )
+        assert resp.status == 200, await resp.json()
+    finally:
+        await client.close()
+
+    entry = routes._load_index()["live"]
+    assert entry["title"] == "Checkout rewrite"
+    assert entry["spec_dir"] == str(spec_dir), "the directory moved"
+    assert entry["slot_key"] == routes._slot_key("live"), "the transcript was orphaned"
+    assert spec_dir.is_dir()
+
+
+@pytest.mark.asyncio
+async def test_archive_marks_the_spec_without_deleting_it(tmp_path, monkeypatch):
+    """The non-destructive counterpart to delete: documents, transcript and index
+    entry all stay. Delete used to be the only way out of the rail, so tidying up
+    and destroying the work were the same action."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _ = _seed_spec(tmp_path, files={"requirements.md": "# keep me"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        assert (
+            await client.post(
+                f"{_BASE}/specs/live/archive",
+                json={**_spec_identity(), "archived": True},
+            )
+        ).status == 200
+
+        listed = await (await client.get(f"{_BASE}/specs")).json()
+        # Still reachable directly, and still on disk.
+        detail = await (await client.get(f"{_BASE}/specs/live")).json()
+
+        assert (
+            await client.post(
+                f"{_BASE}/specs/live/archive",
+                json={**_spec_identity(), "archived": False},
+            )
+        ).status == 200
+        restored = await (await client.get(f"{_BASE}/specs")).json()
+    finally:
+        await client.close()
+
+    assert [(s["name"], s["archived"]) for s in listed["specs"]] == [("live", True)]
+    assert detail["archived"] is True
+    assert (spec_dir / "requirements.md").read_text() == "# keep me"
+    assert [s["name"] for s in restored["specs"]] == ["live"]
+
+
+@pytest.mark.asyncio
+async def test_archive_is_refused_while_the_spec_is_building(tmp_path, monkeypatch):
+    """Archiving a running spec would hide a loop that keeps editing files, leaving
+    the user no surface to stop it from."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, extra={"status": "executing"})
+    monkeypatch.setattr(routes, "_effective_status", _always_executing)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/archive",
+            json={**_spec_identity(), "archived": True},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "spec_executing"
+    assert routes._load_index()["live"].get("archived") is not True
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_copies_the_documents_into_a_fresh_spec(tmp_path, monkeypatch):
+    """The recovery path rename cannot serve: a spec whose NAME is wrong once it
+    already has a branch or history. The copy takes the documents and nothing
+    else, so it gets its own slot key and therefore its own conversation."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reqs", "design.md": "# design"})
+    state, _ = _state_for("live")
+    sent: list[str] = []
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda st, slot, msg: sent.append(msg))
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 201, body
+    copy_dir = Path(body["spec_dir"])
+    assert copy_dir.name == "live-copy"
+    assert (copy_dir / "requirements.md").read_text() == "# reqs"
+    assert (copy_dir / "design.md").read_text() == "# design"
+    assert not (copy_dir / routes._DUPLICATE_MARKER).exists()
+
+    index = routes._load_index()
+    assert index["live"]["spec_dir"] != index["live-copy"]["spec_dir"]
+    assert index["live-copy"]["slot_key"] != index["live"]["slot_key"], "shared a transcript"
+    # A duplicate never inherits a worktree: branching off someone's repo is not a
+    # copy operation, and it is an opt-in at create time.
+    assert index["live-copy"]["worktree_branch"] == ""
+    # The fresh conversation is told what it is looking at, and told not to rewrite it.
+    assert len(sent) == 1 and "copy of 'live'" in sent[0] and "Do NOT rewrite" in sent[0]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refuses_while_the_source_agent_is_writing(tmp_path, monkeypatch):
+    """A live agent turn can rewrite phase files while they are being copied."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reqs"})
+    state, slots = _state_for("live")
+    slots[routes._slot_key("live")].running = True
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "agent_running"
+    assert "live-copy" not in routes._load_index()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_refuses_a_mixed_source_document_snapshot(tmp_path, monkeypatch):
+    """Every copied phase file must belong to one stable source snapshot."""
+    client = _make_client(monkeypatch, tmp_path)
+    spec_dir, _working_dir = _seed_spec(
+        tmp_path,
+        files={"requirements.md": "# requirements v1", "design.md": "# design v1"},
+    )
+    real_read = routes._read_spec_text
+    changed = False
+
+    def _change_plan_between_reads(directory, fname):
+        nonlocal changed
+        text = real_read(directory, fname)
+        if fname == "requirements.md" and not changed:
+            changed = True
+            (spec_dir / "requirements.md").write_text("# requirements v2")
+            (spec_dir / "design.md").write_text("# design v2")
+        return text
+
+    monkeypatch.setattr(routes, "_read_spec_text", _change_plan_between_reads)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "mixed-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "spec_changed_during_duplicate"
+    assert "mixed-copy" not in routes._load_index()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_redacts_the_returned_spec_directory(tmp_path, monkeypatch):
+    """A credential-like project path must not cross the HTTP response boundary raw."""
+    client = _make_client(monkeypatch, tmp_path)
+    secret_root = tmp_path / "secret-segment"
+    _seed_spec(secret_root, files={"requirements.md": "# copied"})
+    monkeypatch.setattr(
+        routes,
+        "_redact",
+        lambda text: text.replace("secret-segment", "[REDACTED]"),
+    )
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda _state, _slot, _message: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 201, body
+    assert "secret-segment" not in body["spec_dir"]
+    assert "[REDACTED]" in body["spec_dir"]
+    assert Path(routes._load_index()["live-copy"]["spec_dir"]).is_dir()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_publishes_recovery_provenance_before_index_reservation(
+    tmp_path, monkeypatch
+):
+    """A crash after reservation must leave proof that recovery may discard it."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    real_mutate = routes._mutate_index
+
+    async def _assert_provenance(fn):
+        changed = await real_mutate(fn)
+        if changed and getattr(fn, "__name__", "") == "_insert":
+            meta = routes._load_index()["live-copy"]
+            held = meta[routes._DUPLICATING]
+            assert routes._duplicate_marker_matches(Path(held["stage_dir"]), held["token"])
+        return changed
+
+    monkeypatch.setattr(routes, "_mutate_index", _assert_provenance)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 201, body
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_cancelled_duplicate_finishes_its_published_transaction(tmp_path, monkeypatch):
+    """Request cancellation cannot hide a published copy behind our reservation."""
+    _redirect_state(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    state, _ = _state_for("live")
+    published = threading.Event()
+    release_write = threading.Event()
+    real_write = routes._write_and_publish_duplicate
+
+    def _publish_then_block(*args, **kwargs):
+        result = real_write(*args, **kwargs)
+        assert result[0] == ""
+        published.set()
+        assert release_write.wait(5), "cancelled transaction was never released"
+        return result
+
+    async def _body(_request):
+        return {"new_name": "cancelled-copy"}
+
+    async def _fresh(_request, _name, _body):
+        return routes._load_index()["live"]
+
+    monkeypatch.setattr(routes, "_require_auth", lambda _request: None)
+    monkeypatch.setattr(routes, "_read_json", _body)
+    monkeypatch.setattr(routes, "_pinned_entry", _fresh)
+    monkeypatch.setattr(routes, "_write_and_publish_duplicate", _publish_then_block)
+    request = cast(
+        web.Request,
+        types.SimpleNamespace(match_info={"name": "live"}, app={"state": state}),
+    )
+
+    handler = asyncio.create_task(routes._handle_duplicate(request))
+    try:
+        assert await asyncio.to_thread(published.wait, 5)
+        handler.cancel()
+        release_write.set()
+        with pytest.raises(asyncio.CancelledError):
+            await handler
+    finally:
+        release_write.set()
+
+    meta = routes._load_index()["cancelled-copy"]
+    target = Path(meta["spec_dir"])
+    assert routes._DUPLICATING not in meta
+    assert (target / "requirements.md").read_text() == "# copied"
+    assert not (target / routes._DUPLICATE_MARKER).exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_preserves_an_existing_empty_document(tmp_path, monkeypatch):
+    """An empty phase file is data, not the same thing as a missing document."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reqs", "design.md": ""})
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 201, body
+    copy_dir = Path(body["spec_dir"])
+    assert (copy_dir / "requirements.md").read_text() == "# reqs"
+    assert (copy_dir / "design.md").is_file()
+    assert (copy_dir / "design.md").read_text() == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_refuses_an_existing_document_that_cannot_be_read(tmp_path, monkeypatch):
+    """An oversized source document must not be silently omitted from a copy."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(
+        tmp_path,
+        files={
+            "requirements.md": "# copied",
+            "design.md": "x" * (routes._MAX_SPEC_BYTES + 1),
+        },
+    )
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "incomplete-copy"},
+        )
+        assert resp.status == 409
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert body["code"] == "spec_document_unreadable"
+    assert "incomplete-copy" not in routes._load_index()
+    assert not (working_dir / ".kiro" / "specs" / "incomplete-copy").exists()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refuses_a_name_already_in_use(tmp_path, monkeypatch):
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# reqs"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        same = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live"},
+        )
+        same_body = await same.json()
+        bad = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "../escape"},
+        )
+        bad_body = await bad.json()
+    finally:
+        await client.close()
+
+    assert same.status == 409 and same_body["code"] == "spec_exists"
+    assert bad.status == 400 and bad_body["code"] == "invalid_name"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_refuses_a_spec_with_no_documents_yet(tmp_path, monkeypatch):
+    """Nothing to copy is a refusal, not an empty spec created as a side effect."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "empty-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "nothing_to_copy"
+    assert "empty-copy" not in routes._load_index()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_reserves_its_name_before_populating_the_destination(tmp_path, monkeypatch):
+    """A concurrent create must not win the destination index entry while the
+    duplicate is already copying documents into that same directory."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    state, _ = _state_for("live")
+    real_create = routes._create_spec_doc
+    save_started = threading.Event()
+    release_save = threading.Event()
+
+    def _held_save(*args, **kwargs):
+        save_started.set()
+        assert release_save.wait(5), "concurrent create never reached arbitration"
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_create_spec_doc", _held_save)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args, **_kwargs: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        duplicate_request = asyncio.create_task(
+            client.post(
+                f"{_BASE}/specs/live/duplicate",
+                json={**_spec_identity(), "new_name": "shared-name"},
+            )
+        )
+        assert await asyncio.to_thread(save_started.wait, 5)
+        create = await client.post(
+            f"{_BASE}/specs",
+            json={
+                "name": "shared-name",
+                "working_dir": str(working_dir),
+                "spec_type": "feature",
+                "description": "concurrent create",
+                "use_worktree": False,
+            },
+        )
+        create_body = await create.json()
+        release_save.set()
+        duplicate = await duplicate_request
+        duplicate_body = await duplicate.json()
+    finally:
+        release_save.set()
+        await client.close()
+
+    assert create.status == 409 and create_body["code"] == "spec_exists"
+    assert duplicate.status == 201, duplicate_body
+    copy_dir = Path(duplicate_body["spec_dir"])
+    assert (copy_dir / "requirements.md").read_text() == "# copied"
+    assert routes._load_index()["shared-name"]["spec_dir"] == str(copy_dir)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_refuses_when_the_destination_changes_after_reservation(
+    tmp_path, monkeypatch
+):
+    """The index reservation and copied files must always name one directory."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    moved_base = tmp_path / "moved-specs"
+    moved_base.mkdir()
+    state, _ = _state_for("live")
+    real_mutate = routes._mutate_index
+    moved = False
+
+    async def _move_settings_after_reservation(fn):
+        nonlocal moved
+        changed = await real_mutate(fn)
+        if changed and not moved and "live-copy" in routes._load_index():
+            moved = True
+            routes._save_settings({"base_path": str(moved_base), "model": ""})
+        return changed
+
+    monkeypatch.setattr(routes, "_mutate_index", _move_settings_after_reservation)
+    monkeypatch.setattr(routes, "_dispatch_turn", lambda *_args, **_kwargs: None)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "live-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409 and body["code"] == "spec_destination_changed"
+    assert "live-copy" not in routes._load_index()
+    assert not (moved_base / "live-copy").exists()
+    assert not (working_dir / ".kiro" / "specs" / "live-copy").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_rolls_back_only_files_it_created_after_a_partial_failure(
+    tmp_path, monkeypatch
+):
+    """A failed copy must not become discoverable as an incomplete spec."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(
+        tmp_path,
+        files={"requirements.md": "# copied", "design.md": "# fails"},
+    )
+    state, _ = _state_for("live")
+    real_create = routes._create_spec_doc
+    calls = 0
+
+    def _fail_second(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            return "write_failed", None
+        return real_create(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "_create_spec_doc", _fail_second)
+
+    await client.start_server()
+    try:
+        client.app["state"] = state
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "partial-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    target = working_dir / ".kiro" / "specs" / "partial-copy"
+    assert resp.status == 400 and body["code"] == "doc_write_failed"
+    assert "partial-copy" not in routes._load_index()
+    assert not target.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_preserves_a_published_copy_when_index_finalization_fails(
+    tmp_path, monkeypatch
+):
+    """A post-rename failure remains recoverable instead of poisoning retries."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    real_mutate = routes._mutate_index
+
+    async def _fail_finish(fn):
+        if getattr(fn, "__name__", "") == "_finish":
+            return False
+        return await real_mutate(fn)
+
+    monkeypatch.setattr(routes, "_mutate_index", _fail_finish)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "recoverable-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    target = working_dir / ".kiro" / "specs" / "recoverable-copy"
+    assert resp.status == 409 and body["code"] == "spec_changed_during_create"
+    assert (target / "requirements.md").read_text() == "# copied"
+    assert (target / routes._DUPLICATE_MARKER).is_file()
+    assert routes._DUPLICATING in routes._load_index()["recoverable-copy"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_contains_an_index_finalization_exception(tmp_path, monkeypatch):
+    """A post-publication index error must return the recoverable-copy response."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+    real_mutate = routes._mutate_index
+
+    async def _raise_finish(fn):
+        if getattr(fn, "__name__", "") == "_finish":
+            raise OSError("index storage unavailable")
+        return await real_mutate(fn)
+
+    monkeypatch.setattr(routes, "_mutate_index", _raise_finish)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "recoverable-copy"},
+        )
+        assert resp.status == 409
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    target = working_dir / ".kiro" / "specs" / "recoverable-copy"
+    assert body["code"] == "spec_changed_during_create"
+    assert (target / "requirements.md").read_text() == "# copied"
+    assert (target / routes._DUPLICATE_MARKER).is_file()
+    assert routes._DUPLICATING in routes._load_index()["recoverable-copy"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not routes._CAN_PUBLISH_DIR_NOREPLACE,
+    reason="duplicate publication requires atomic no-replace directory publication",
+)
+async def test_duplicate_keeps_its_committed_copy_when_slot_setup_is_refused(tmp_path, monkeypatch):
+    """Session arbitration must not delete a copy already committed to the index."""
+    client = _make_client(monkeypatch, tmp_path)
+    _, working_dir = _seed_spec(tmp_path, files={"requirements.md": "# copied"})
+
+    async def _refuse_slot(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(routes, "_ensure_worker_slot", _refuse_slot)
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await client.post(
+            f"{_BASE}/specs/live/duplicate",
+            json={**_spec_identity(), "new_name": "committed-copy"},
+        )
+        body = await resp.json()
+    finally:
+        await client.close()
+
+    target = working_dir / ".kiro" / "specs" / "committed-copy"
+    assert resp.status == 409 and body["code"] == "slot_owned_by_another_app"
+    assert (target / "requirements.md").read_text() == "# copied"
+    assert "committed-copy" in routes._load_index()
+
+
+# ── shared guards for the new mutations ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "approve", {"phase": "requirements", "hash": "0" * 64}),
+        ("post", "task", {"index": 0, "hash": "0" * 64}),
+        ("post", "title", {"title": "t"}),
+        ("post", "archive", {"archived": True}),
+        ("post", "duplicate", {"new_name": "a-copy"}),
+    ],
+)
+async def test_new_mutations_refuse_a_stale_client_identity(
+    method, path, body, tmp_path, monkeypatch
+):
+    """Every mutation carries the identity the CLIENT rendered, so a stale tab
+    cannot drive a same-name spec that was deleted and recreated elsewhere. The
+    per-creation slot key is the decisive field: two specs can share a directory
+    across a delete + re-import, but never a key."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# r", "tasks.md": "- [ ] t\n"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await getattr(client, method)(
+            f"{_BASE}/specs/live/{path}",
+            json={**body, "spec_dir": "/somewhere/else", "slot_key": "spec-builder-live-deadbeef"},
+        )
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload["code"] == "stale_client"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("post", "approve", {"phase": "requirements", "hash": "0" * 64}),
+        ("post", "task", {"index": 0, "hash": "0" * 64}),
+        ("post", "title", {"title": "t"}),
+        ("post", "archive", {"archived": True}),
+        ("post", "duplicate", {"new_name": "a-copy"}),
+    ],
+)
+async def test_new_mutations_require_a_complete_client_identity(
+    method, path, body, tmp_path, monkeypatch
+):
+    """A control rendered before detail loads must not mutate whatever creation
+    currently happens to own the same name."""
+    client = _make_client(monkeypatch, tmp_path)
+    _seed_spec(tmp_path, files={"requirements.md": "# r", "tasks.md": "- [ ] t\n"})
+
+    await client.start_server()
+    try:
+        client.app["state"] = _state_for("live")[0]
+        resp = await getattr(client, method)(f"{_BASE}/specs/live/{path}", json=body)
+        payload = await resp.json()
+    finally:
+        await client.close()
+
+    assert resp.status == 409, payload
+    assert payload["code"] == "stale_client"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("post", "approve"),
+        ("post", "task"),
+        ("post", "title"),
+        ("post", "archive"),
+        ("post", "duplicate"),
+    ],
+)
+async def test_new_mutations_require_authentication(method, path, tmp_path, monkeypatch):
+    """No auth middleware, so request['user'] is unset: every new write must 401
+    rather than fall through to the filesystem."""
+    _redirect_state(monkeypatch, tmp_path)
+    app = web.Application()  # deliberately WITHOUT _auth_mw
+    routes.register_routes(app)
+    async with TestClient(TestServer(app)) as client:
+        resp = await getattr(client, method)(f"{_BASE}/specs/live/{path}", json={})
+        assert resp.status == 401
+
+
+def test_new_mutations_do_not_write_the_index_from_a_stale_snapshot():
+    """Extends the existing class guard to the new handlers: each awaits (a body
+    read at minimum), so none of them may call _save_index directly."""
+    for handler in (
+        routes._handle_approve,
+        routes._handle_run_task,
+        routes._handle_title,
+        routes._handle_archive,
+        routes._handle_duplicate,
+    ):
+        assert "_save_index(" not in inspect.getsource(
+            handler
+        ), f"{handler.__name__} writes the index directly; it must go through _mutate_index"
+
+
+def test_document_and_task_reads_stay_off_the_event_loop():
+    """Source guard, same reason the detail handler has one: these handlers read
+    and write caller-supplied paths, and the detail endpoint beside them is polled
+    every 2.5s. Blocking filesystem work must ride a worker thread."""
+    for handler, blocking in (
+        (routes._handle_approve, "_current_hash"),
+        (routes._handle_run_task, "_tasks"),
+        (routes._handle_duplicate, "_copy"),
+    ):
+        src = inspect.getsource(handler)
+        # Matched on the two tokens rather than one formatted call string: the
+        # arguments wrap, so pinning the exact whitespace would fail on a reformat
+        # while saying nothing about whether the work is still offloaded.
+        assert (
+            "asyncio.to_thread(" in src and blocking in src
+        ), f"{handler.__name__} may be doing filesystem work inline"

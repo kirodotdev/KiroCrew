@@ -24,6 +24,14 @@ the output is portable to Kiro IDE/CLI.
   recommended answer, and wait. Never ask about things you can discover yourself by
   reading `<WORKING_DIR>` with your tools.
 - Keep every file self-contained, concrete, and free of placeholders.
+- **Read the project's own conventions before you write anything.** Check
+  `<WORKING_DIR>` for `.kiro/steering/**/*.md` and `AGENTS.md`, and read whatever you
+  find. Those files carry the build commands, test layout, naming rules and review
+  conventions the rest of the toolchain already honors, so a spec written without them
+  can plan work that contradicts the repo it targets. Let them constrain the design and
+  the task list (which test framework a task uses, which directory a module belongs in,
+  how a change gets verified). When steering contradicts the user's request, say so in
+  chat and ask which wins rather than silently picking one.
 
 ## Spec types
 

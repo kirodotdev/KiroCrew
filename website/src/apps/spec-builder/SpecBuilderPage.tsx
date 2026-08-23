@@ -53,7 +53,7 @@ function SpecBuilderInner() {
   // also the repo's standard for server state.
   const specsQuery = useQuery({
     queryKey: ['spec-builder', 'specs'],
-    queryFn: () => specApi.list(),
+    queryFn: ({ signal }) => specApi.list(signal),
     refetchInterval: 15000,
   })
   // useMemo so the array identity is stable across renders — otherwise the
@@ -73,9 +73,9 @@ function SpecBuilderInner() {
 
   // Drop a restored selection that no longer exists (spec removed elsewhere).
   useEffect(() => {
-    if (specsQuery.isPending || !sel) return
+    if (specsQuery.isPending || specsQuery.isFetching || !sel) return
     if (!specs.some((s) => s.name === sel)) setSelRaw(null)
-  }, [specsQuery.isPending, specs, sel])
+  }, [specsQuery.isFetching, specsQuery.isPending, specs, sel])
 
   return (
     <div

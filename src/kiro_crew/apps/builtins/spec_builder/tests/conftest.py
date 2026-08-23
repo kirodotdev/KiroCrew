@@ -41,11 +41,17 @@ _POSIX_SENTINEL_PINNING = {
     "test_sentinel_clear_is_pinned_to_the_verified_directory",
     "test_stop_sentinel_write_destroys_planted_symlink",
     "test_prepare_handoff_reports_tasks_and_clears_a_stale_sentinel",
+    "test_prepare_handoff_refuses_a_tasks_file_with_no_open_task",
     "test_prepare_handoff_still_clears_for_the_matching_identity",
     "test_prepare_handoff_unpinned_call_keeps_working",
     "test_stop_write_is_refused_for_a_replaced_spec",
     "test_halt_execution_leaves_user_trust_alone",
     "test_verified_spec_dir_accepts_an_ordinary_directory",
+    # Duplicate creation writes through the SAME pinned descriptor and fails
+    # closed without it. These assert bytes written by that POSIX-only path.
+    "test_duplicate_doc_create_only_succeeds_while_the_file_is_absent",
+    "test_duplicate_doc_create_retries_short_writes",
+    "test_duplicate_copies_the_documents_into_a_fresh_spec",
 }
 
 #: POSIX path shape: separators, absolute-path spelling and ``~`` expansion all

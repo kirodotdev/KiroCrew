@@ -143,6 +143,25 @@ describe('App routing', () => {
       onboarded: false,
       import_onboarded: false,
     } as never)
+    // Keep the import chapter open after its scan. An empty scan deliberately
+    // auto-completes the chapter, so asserting on the transient dialog races
+    // that completion under a loaded test shard.
+    vi.mocked(api.onboardingImportScan).mockResolvedValueOnce({
+      sources: [{
+        id: 'codex',
+        name: 'Codex',
+        detected: true,
+        detail: '~/.codex',
+        categories: [{
+          id: 'instructions',
+          label: 'Instructions',
+          count: 1,
+          description: 'Agent instructions',
+        }],
+      }],
+      skipped: [],
+      merge_only: true,
+    } as never)
 
     renderWithProviders(<App />, { route: '/chat' })
 

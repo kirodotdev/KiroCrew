@@ -717,29 +717,45 @@ class TestDerivePhase:
 
 class TestCollectSpecDocuments:
     def test_absent_documents_read_as_none_and_the_state_file_as_none(self, tmp_path):
-        phase, files, state = r._collect_spec_documents(tmp_path)
+        phase, files, state, meta = r._collect_spec_documents(tmp_path)
         assert phase == "new"
         assert files == {"tasks.md": None, "design.md": None, "requirements.md": None}
         assert state is None
+        # An absent document carries no metadata at all: there is no hash to edit
+        # against, so the editor has nothing to base a write on. And an unwritten
+        # tasks.md is zero of zero rather than a missing progress reading.
+        assert meta == {"docs": {}, "tasks": [], "task_progress": {"done": 0, "total": 0}}
 
     def test_documents_are_redacted_on_their_way_out(self, tmp_path):
         (tmp_path / "requirements.md").write_text(f"token is {CRED_NAME}")
-        phase, files, _state = r._collect_spec_documents(tmp_path)
+        phase, files, _state, meta = r._collect_spec_documents(tmp_path)
         assert phase == "requirements"
         assert files["requirements.md"] is not None
         assert CRED_NAME not in files["requirements.md"]
+        # Approval hashes always name the bytes as stored, while the rendered
+        # document remains redacted.
+        assert set(meta["docs"]["requirements.md"]) == {"hash"}
 
     def test_a_valid_state_file_is_normalized(self, tmp_path):
         (tmp_path / ".spec-state.json").write_text(
             json.dumps({"blocking": "review", "surprise": 1})
         )
-        _phase, _files, state = r._collect_spec_documents(tmp_path)
+        _phase, _files, state, _docs = r._collect_spec_documents(tmp_path)
         assert state == {"decisions": [], "blocking": "review", "context": {"template": ""}}
 
     def test_a_malformed_state_file_is_none_rather_than_an_error(self, tmp_path):
         (tmp_path / ".spec-state.json").write_text("{ not json")
-        _phase, _files, state = r._collect_spec_documents(tmp_path)
+        _phase, _files, state, _docs = r._collect_spec_documents(tmp_path)
         assert state is None
+
+    def test_an_unredacted_document_carries_its_stored_hash(self, tmp_path):
+        (tmp_path / "requirements.md").write_text("plain prose, nothing secret")
+        _phase, _files, _state, meta = r._collect_spec_documents(tmp_path)
+        doc = meta["docs"]["requirements.md"]
+        # Approval still names the file AS STORED even though direct dashboard
+        # writes are disabled: it records the exact revision the user reviewed.
+        assert doc["hash"] == r._sha256_text("plain prose, nothing secret")
+        assert set(doc) == {"hash"}
 
 
 # -- the STOP sentinel --------------------------------------------------------
@@ -2617,18 +2633,29 @@ class TestRequireEnabled:
         # would otherwise stay callable.
         inner = mock.AsyncMock(return_value=web.json_response({"ok": True}))
         wrapped = r._require_enabled(inner)
-        with mock.patch.object(r, "is_app_enabled", return_value=False):
+        recovery = mock.AsyncMock()
+        with (
+            mock.patch.object(r, "is_app_enabled", return_value=False),
+            mock.patch.object(r, "_ensure_duplicate_recovery", recovery),
+        ):
             out = await wrapped(_mk("GET", "specs"))
         assert out.status == 403 and _body(out)["code"] == "app_disabled"
         inner.assert_not_awaited()
+        recovery.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_an_enabled_app_reaches_the_handler(self):
         inner = mock.AsyncMock(return_value=web.json_response({"ok": True}))
         wrapped = r._require_enabled(inner)
-        with mock.patch.object(r, "is_app_enabled", return_value=True):
-            out = await wrapped(_mk("GET", "specs"))
+        request = _mk("GET", "specs")
+        recovery = mock.AsyncMock()
+        with (
+            mock.patch.object(r, "is_app_enabled", return_value=True),
+            mock.patch.object(r, "_ensure_duplicate_recovery", recovery),
+        ):
+            out = await wrapped(request)
         assert _body(out) == {"ok": True}
+        recovery.assert_awaited_once_with(request.app)
 
     def test_the_wrapper_keeps_the_handlers_identity(self):
         assert r._require_enabled(r._handle_list).__name__ == "_handle_list"
@@ -3390,7 +3417,7 @@ class TestHandleGet:
 
         def _collect_then_delete(_spec_dir):
             r._save_index({})
-            return "new", {}, None
+            return "new", {}, None, {}
 
         with mock.patch.object(r, "_collect_spec_documents", _collect_then_delete):
             out = await r._handle_get(
@@ -3406,7 +3433,7 @@ class TestHandleGet:
 
         def _collect_then_replace(_spec_dir):
             r._save_index({"demo": _entry(tmp_path / "somewhere-else")})
-            return "new", {}, None
+            return "new", {}, None, {}
 
         with mock.patch.object(r, "_collect_spec_documents", _collect_then_replace):
             out = await r._handle_get(
@@ -4125,6 +4152,14 @@ class TestRegisterRoutes:
             ("POST", f"{base}/specs/{{name}}/execute"),
             ("POST", f"{base}/specs/{{name}}/stop"),
             ("DELETE", f"{base}/specs/{{name}}"),
+            # The user's own authority over the artifacts, rather than asking the
+            # agent for every change: record an approval of the version on screen,
+            # run ONE task from tasks.md, and rename/archive/duplicate the spec.
+            ("POST", f"{base}/specs/{{name}}/approve"),
+            ("POST", f"{base}/specs/{{name}}/task"),
+            ("POST", f"{base}/specs/{{name}}/title"),
+            ("POST", f"{base}/specs/{{name}}/archive"),
+            ("POST", f"{base}/specs/{{name}}/duplicate"),
         }
 
     def test_registration_creates_nothing_on_disk(self, tmp_path):

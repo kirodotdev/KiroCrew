@@ -11,7 +11,13 @@ const list = vi.fn()
 
 vi.mock('../apps/spec-builder/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../apps/spec-builder/api')>()
-  return { ...actual, specApi: { ...actual.specApi, list: () => list() } }
+  return {
+    ...actual,
+    specApi: {
+      ...actual.specApi,
+      list: (signal?: AbortSignal) => list(signal),
+    },
+  }
 })
 
 interface WorkspaceStub {
@@ -102,6 +108,21 @@ describe('SpecBuilderPage selection', () => {
     expect(screen.getByTestId('sel')).toHaveTextContent('zz-one')
   })
 
+  it('loads archived specs so a restored selection remains recoverable', async () => {
+    localStorage.setItem(LS.lastOpen, 'zz-archived')
+    list.mockResolvedValue({
+      specs: [
+        { name: 'zz-one', phase: 'requirements' },
+        { name: 'zz-archived', phase: 'tasks', archived: true },
+      ],
+    })
+    renderPage()
+    await workspace()
+    await waitFor(() => expect(screen.getByTestId('names')).toHaveTextContent('zz-one,zz-archived'))
+    expect(screen.getByTestId('sel')).toHaveTextContent('zz-archived')
+    expect(list).toHaveBeenCalledWith(expect.any(AbortSignal))
+  })
+
   it('forgets the selection when it is cleared', async () => {
     localStorage.setItem(LS.lastOpen, 'zz-one')
     renderPage()
@@ -160,11 +181,7 @@ describe('SpecBuilderPage view swaps', () => {
     expect(await workspace()).toBeInTheDocument()
   })
 
-  // NOTE: creating a spec should also SELECT it, but the stale-selection guard
-  // races the list invalidation and drops `sel` before the refetch lands (see
-  // the bug reported alongside this suite). That is deliberately NOT asserted
-  // here in either direction — only the list refresh, which is correct today.
-  it('refreshes the specs list after one is created', async () => {
+  it('refreshes the specs list and selects the spec after one is created', async () => {
     renderPage()
     await workspace()
     await waitFor(() => expect(screen.getByTestId('names')).toHaveTextContent('zz-one'))
@@ -173,6 +190,7 @@ describe('SpecBuilderPage view swaps', () => {
     fireEvent.click(screen.getByText('zz-finish-new'))
     expect(screen.queryByTestId('new-spec-view')).not.toBeInTheDocument()
     await waitFor(() => expect(screen.getByTestId('names')).toHaveTextContent('zz-one,zz-two'))
+    expect(screen.getByTestId('sel')).toHaveTextContent('zz-two')
   })
 
   it('opens and closes the settings modal from the workspace', async () => {

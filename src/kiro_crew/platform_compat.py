@@ -38,6 +38,32 @@ IS_POSIX: bool = not IS_WINDOWS
 IS_LINUX: bool = sys.platform == "linux"
 IS_MACOS: bool = sys.platform == "darwin"
 
+# Python's os.rename() replaces an existing empty directory on POSIX. Directory
+# publication sometimes needs the stronger create-if-absent contract, which the
+# kernel exposes but the stdlib does not: renameat2(RENAME_NOREPLACE) on Linux
+# and renameatx_np(RENAME_EXCL) on macOS. Resolve the native seam once so callers
+# can advertise the capability honestly and fail closed everywhere else.
+_RENAME_NOREPLACE_FN: Any = None
+_RENAME_NOREPLACE_FLAG = 0
+if IS_LINUX or IS_MACOS:
+    try:
+        _rename_libc = ctypes.CDLL(None, use_errno=True)
+        _rename_symbol = "renameat2" if IS_LINUX else "renameatx_np"
+        _RENAME_NOREPLACE_FN = getattr(_rename_libc, _rename_symbol)
+        _RENAME_NOREPLACE_FN.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        _RENAME_NOREPLACE_FN.restype = ctypes.c_int
+        _RENAME_NOREPLACE_FLAG = 1 if IS_LINUX else 4
+    except (AttributeError, OSError):
+        _RENAME_NOREPLACE_FN = None
+
+RENAME_NOREPLACE_AVAILABLE: bool = _RENAME_NOREPLACE_FN is not None
+
 # Portable signal constants — signal.SIGKILL is undefined on Windows.
 SIGKILL: int = getattr(signal, "SIGKILL", 9)
 
@@ -175,6 +201,47 @@ TCC_LIBRARY_WALKABLE_CHILDREN: frozenset[str] = frozenset(
 #: The single ``~/Library`` component name, kept as a constant because the walk
 #: pruner compares it positionally rather than by membership.
 _LIBRARY_DIR = "Library"
+
+
+def rename_noreplace(
+    src: str | os.PathLike,
+    dst: str | os.PathLike,
+    *,
+    src_dir_fd: int,
+    dst_dir_fd: int,
+) -> None:
+    """Atomically rename *src* to an absent *dst*, or raise.
+
+    Unlike :func:`os.rename`, an existing destination is never replaced. Both
+    names are resolved relative to caller-pinned directory descriptors. A
+    filesystem or platform that cannot preserve that contract raises
+    :class:`NotImplementedError`; callers must not fall back to a check followed
+    by ordinary rename because another writer can create the destination between
+    those two operations.
+    """
+    fn = _RENAME_NOREPLACE_FN
+    if fn is None:
+        raise NotImplementedError("atomic no-replace rename is unavailable")
+    src_bytes = os.fsencode(src)
+    dst_bytes = os.fsencode(dst)
+    ctypes.set_errno(0)
+    if fn(
+        src_dir_fd,
+        src_bytes,
+        dst_dir_fd,
+        dst_bytes,
+        _RENAME_NOREPLACE_FLAG,
+    ) == 0:
+        return
+    error = ctypes.get_errno()
+    if error in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise FileExistsError(error, os.strerror(error), os.fspath(dst))
+    unsupported = {errno.ENOSYS, errno.EINVAL}
+    unsupported.add(getattr(errno, "EOPNOTSUPP", errno.EINVAL))
+    unsupported.add(getattr(errno, "ENOTSUP", errno.EINVAL))
+    if error in unsupported:
+        raise NotImplementedError("filesystem lacks atomic no-replace rename")
+    raise OSError(error, os.strerror(error), os.fspath(dst))
 
 
 def tcc_protected_dirs_for_walk(root: str | os.PathLike) -> frozenset[str]:

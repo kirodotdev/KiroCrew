@@ -103,6 +103,7 @@ const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
 import CliPanel, {
+  __resetTerminalThemeSyncForTests,
   disposeTerminalSession,
   isThemeSignal,
   useDeleteTerminalSession,
@@ -194,12 +195,14 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  __resetTerminalThemeSyncForTests()
   for (const id of live) disposeTerminalSession(id)
   live.clear()
   restoreLayout()
   __resetTerminalFontStore()
   vi.unstubAllGlobals()
   document.documentElement.removeAttribute('data-theme')
+  document.documentElement.style.removeProperty('--accent')
   for (const s of Array.from(document.head.querySelectorAll('style'))) {
     if (s.id.startsWith('mc-custom-theme-') || s.id === 'unrelated-style') s.remove()
   }

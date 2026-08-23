@@ -410,7 +410,6 @@ describe('a parked signal is visibly parked, not silently gone', () => {
 
   it('uses a Lucide icon and no emoji', () => {
     expect(panel).toContain('BellOff')
-    // eslint-disable-next-line no-control-regex
     expect(panel).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
   })
 })
@@ -848,7 +847,6 @@ describe('the Board renders the artifact a colleague gets handed', () => {
 
   it('uses a Lucide icon for the section, never an emoji', () => {
     expect(page).toMatch(/FileText className="lucide-inline"/)
-    // eslint-disable-next-line no-control-regex
     expect(page).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
   })
 
@@ -941,7 +939,6 @@ describe('Settings surfaces the notification channels and their on/off', () => {
   it('uses Lucide icons for the card and every channel, never an emoji', () => {
     expect(panel).toMatch(/BellRing className="lucide-inline"/)
     expect(panel).toMatch(/UserCheck className="lucide-inline"/)
-    // eslint-disable-next-line no-control-regex
     expect(panel).not.toMatch(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u)
   })
 
