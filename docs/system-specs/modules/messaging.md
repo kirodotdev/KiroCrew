@@ -84,6 +84,8 @@ Consumes a provider's `AcpEvent` stream and emits abstract `OutputEvent`s to a p
 
 The dashboard does **not** flow through `TurnDriver`; it remains unchanged as the authoritative transcript surface. Direct channel paths that bypass the driver are sanitized at source: Discord's explicit five-message resume replay strips legacy steering frames and summary-bearing compaction notices, shortens each entry to the shared splitter's first (sealed) chunk so a replayed code block cannot arrive with its fence cut in half, and puts the role icon on its own line so the body's first line still starts where the fence grammar needs it; direct compact commands publish only terse receipts. Stored transcripts remain intact for audit.
 
+**Session-directive consumption** — an optional `directive_consumer` callback (`(kind, args) -> awaitable`) makes the driver the channel-side consumer of the stateless session-directive protocol (`session_directive.py`): the trusted `_meta.kiro` identity (`mcp_server_name == CORE_MCP_SERVER`, `match_tool(tool_name)`) is recorded at `EVENT_TOOL_CALL`, and the matching `EVENT_TOOL_RESULT`'s marker is decoded and handed to the consumer — single-consume across result frames, forged markers under any other tool ignored, `encode()` refusals logged, a lost marker on the final frame logged at WARNING. A tool call announced as a NATIVE sub-agent's (`EVENT_SUBAGENT_ACTIVITY` with a `tool_call_id`) is refused with a SEL `denied` audit rather than applied — a child session must never arm/mutate its parent, mirroring the dashboard consumer's isolation. Dispatchers inject `messaging.dispatch.build_directive_consumer(session_key=…, sessions=…, dispatcher=…)`, which funnels into the same `apply_session_directive` core the dashboard consumer uses with `slot=None` (so dashboard-only directives stay refused for channel turns). The monitor trio takes effect where the session is nudge-able (`slack:`/`discord:`); on the other six transports (Telegram, iMessage, Teams, Webex, WeCom, Weixin) the applier answers "not supported from this session type" — logged and SEL-audited instead of the old silent drop, but no loop is armed there until `autonudge.binding_key_for` admits those keys. Without a consumer, directive markers are inert exactly as before.
+
 **`run(message) -> str`** — calls `renderer.on_turn_start()`, then translates each provider event into a dispatched `OutputEvent` and returns the accumulated (redacted) assistant text:
 
 | Provider event | Emitted `OutputEvent` |
@@ -91,7 +93,8 @@ The dashboard does **not** flow through `TurnDriver`; it remains unchanged as th
 | `EVENT_TEXT_CHUNK` | `TEXT_CHUNK` (protocol-framed, redacted, accumulated); inline steering frames become `STEER_CONSUMED`, compaction summary notices become a terse receipt |
 | `EVENT_THINKING_CHUNK` | `THINKING` |
 | `EVENT_STEER_CONSUMED` | paired with the inline frame so exactly one `STEER_CONSUMED` boundary reaches the renderer |
-| `EVENT_TOOL_CALL` | `TOOL_CALL` (uniform — each call completes the prior task + starts a new one) |
+| `EVENT_TOOL_CALL` | `TOOL_CALL` (uniform — each call completes the prior task + starts a new one); records the directive-tool identity when a `directive_consumer` is injected |
+| `EVENT_TOOL_RESULT` | nothing rendered; decodes + applies a session-directive marker via the injected `directive_consumer` (inert without one) |
 | `EVENT_PERMISSION_REQUEST` | `PROMPT_CHOICE` (interactive w/ decider only) then approve/reject |
 | `EVENT_COMPACTION_STATUS` | `COMPACTION` |
 | `EVENT_COMPLETE` | `DONE` |

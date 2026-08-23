@@ -27,15 +27,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
-from kiro_crew.messaging.driver import TurnDriver
+from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.renderer import SilentRenderer
+from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,10 @@ class ChannelTurn:
     after_persist: Optional[Callable[[], Awaitable[None]]] = None
     """Optional loop-side callback after persistence, such as dashboard surfacing."""
 
+    directive_consumer: Optional[DirectiveConsumer] = None
+    """Session-directive consumer for this turn (``build_directive_consumer``).
+    ``None`` leaves directive-tool results inert — the pre-consumer behavior."""
+
     audit_caller: str = ""
     """SEL audit caller label; defaults to ``<channel_type>:unknown``."""
 
@@ -151,6 +156,69 @@ def build_auto_approve(ctx_builder: Any) -> Callable[[str], bool]:
         )
 
     return _auto_approve
+
+
+@dataclass
+class _ChannelDirectiveState:
+    """Minimal ``NudgeAuthzState`` stand-in for a turn with no gateway state.
+
+    Carries the one thing the monitor-trio authorizer can validate for a
+    channel session — ``sessions`` (Slack routability). The empty ``_slots`` /
+    ``channel_transports`` make every other lookup fail CLOSED (deny), never
+    crash.
+    """
+
+    sessions: Any
+    channel_transports: dict[str, Any] = field(default_factory=dict)
+    _slots: dict[str, Any] = field(default_factory=dict)
+
+
+def build_directive_consumer(
+    *,
+    session_key: str,
+    sessions: Any,
+    dispatcher: Any = None,
+) -> DirectiveConsumer:
+    """Session-directive consumer for one channel turn (``TurnDriver`` injection).
+
+    Applies a decoded directive against THIS turn's *session_key* via the shared
+    ``apply_session_directive`` core — the same applier the dashboard's
+    ``chat_runner`` consumer uses, so the security boundaries (the
+    dashboard-only denial, the monitor-trio authorization chokepoint) live in
+    exactly one place. A channel turn has no dashboard chat slot, so
+    ``slot=None`` is passed and the dashboard-only directives are refused there
+    (fail-closed).
+
+    *dispatcher* supplies the live gateway state: each channel dispatcher gets
+    ``dashboard_state`` attached at boot (``register_channel_transport``), and
+    it is re-read per directive so a consumer built before that attachment
+    still sees it. Slack's function-style dispatch has no dispatcher object;
+    the minimal *sessions*-backed stand-in covers the Slack routability check,
+    and everything it cannot answer fails CLOSED in the authorizer.
+    """
+
+    async def _consume(kind: str, args: dict[str, Any]) -> None:
+        # Deferred import: the dashboard package imports every channel package
+        # at boot, and the channel packages import this module (cycle).
+        from kiro_crew.dashboard.session_directive_apply import apply_session_directive
+
+        state: Any = getattr(dispatcher, "dashboard_state", None)
+        if state is None:
+            state = _ChannelDirectiveState(sessions=sessions)
+        result = await apply_session_directive(state, None, session_key, kind, args)
+        # The channel surface never renders tool results, so the applier's
+        # confirmation has no user-facing sink here; this log is the operator's
+        # record (the applier itself SEL-audits every outcome). Failures log at
+        # WARNING because a silently dropped effect is the defect this consumer
+        # exists to remove. The string interpolates LLM-derived text (a stop
+        # reason, a rejected path, exception args), so scrub it like every
+        # other LLM-influenced output before it lands anywhere.
+        result, _ = redact_exfiltration_urls(result)
+        result, _ = redact_credentials(result)
+        log = logger.warning if result.startswith(("Error", "Failed")) else logger.info
+        log("session directive %s on %s: %s", kind, session_key, result)
+
+    return _consume
 
 
 def delivery_is_muted(sessions: Any, session_key: str, channel_type: str) -> bool:
@@ -260,6 +328,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             decider=turn.decider,
             auto_approve_tool=build_auto_approve(ctx_builder),
             tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
+            directive_consumer=turn.directive_consumer,
         )
         accumulated = await driver.run(full_message)
 

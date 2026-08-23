@@ -9,11 +9,17 @@ refused because a session-sharing subagent would misattribute to its parent).
 Rather than invent a per-process identity source, these tools stay STATELESS:
 the tool VALIDATES its arguments and returns a *directive* — a human-readable
 confirmation line plus a machine-readable marker carrying the validated payload
-(and NO session key). The session-aware consumer that processes the tool result
-(:func:`dashboard.chat_runner._run_chat`'s ``EVENT_TOOL_RESULT`` handler, which
-runs for every interactive surface and owns ``slot.key``) decodes the marker and
-applies the effect against ITS OWN session, then strips the marker from the
-stored transcript.
+(and NO session key). A session-aware consumer that processes the tool result
+decodes the marker and applies the effect against ITS OWN session, then keeps
+the marker out of what it stores or renders. There are TWO consumers, one per
+turn loop: :func:`dashboard.chat_runner._run_chat`'s ``EVENT_TOOL_RESULT``
+handler (the dashboard-driven surfaces, which own ``slot.key``), and
+:class:`messaging.driver.TurnDriver` (the standalone channel transports —
+Telegram, Discord, standalone Slack, iMessage, Teams, Webex, WeCom, Weixin —
+whose dispatchers inject a consumer bound to the turn's session key via
+``messaging.dispatch.build_directive_consumer``). Both funnel into
+``dashboard.session_directive_apply.apply_session_directive``, so the security
+boundaries live in one place.
 
 Subagent isolation is therefore STRUCTURAL, not cryptographic: a subagent's
 tool result flows through the subagent's own runner, so it can only ever bind to

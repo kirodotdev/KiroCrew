@@ -27,7 +27,12 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn, inbound_permitted
+from kiro_crew.messaging.dispatch import (
+    ChannelTurn,
+    build_directive_consumer,
+    drive_turn,
+    inbound_permitted,
+)
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.wecom.client import new_stream_id
@@ -164,6 +169,13 @@ class WeComDispatcher:
             ChannelTurn(
                 channel_type="wecom",
                 session_key=session_key,
+                # Session-directive consumer: monitor_start / autonudge_stop /
+                # ... return a marker TurnDriver decodes; apply it against THIS
+                # turn's session key (dashboard-only directives stay refused
+                # for channel sessions).
+                directive_consumer=build_directive_consumer(
+                    session_key=session_key, sessions=self.sessions, dispatcher=self
+                ),
                 conversation_id=conversation_id,
                 agent=agent,
                 user_text=text,

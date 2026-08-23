@@ -50,7 +50,7 @@ from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.dispatch import delivery_is_muted
+from kiro_crew.messaging.dispatch import build_directive_consumer, delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
@@ -541,6 +541,13 @@ class DiscordDispatcher:
                     and title == "spawn_run"
                 ),
                 tool_gate=_tool_gate,
+                # Session-directive consumer: monitor_start / autonudge_stop /
+                # ... return a marker the driver decodes; apply it against THIS
+                # turn's session key (dashboard-only directives stay refused
+                # for channel sessions).
+                directive_consumer=build_directive_consumer(
+                    session_key=session_key, sessions=self.sessions, dispatcher=self
+                ),
             )
             accumulated = await driver.run(full_message)
 

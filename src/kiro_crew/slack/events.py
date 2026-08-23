@@ -1642,6 +1642,10 @@ async def _dispatch_queued(
                 show_thinking=KiroCrewConfig.load().slack.show_thinking,
                 consolidator=orch.consolidator,
                 user_display_name=kwargs.get("user_display_name"),
+                # Live gateway state for the session-directive consumer (a
+                # monitor directive on a dashboard-owned thread resolves its
+                # slot through orch.dashboard_state).
+                gateway=orch,
             )
             return
         await handle_message(
@@ -2524,6 +2528,10 @@ async def _route_message(
                 # handle_message (parity: don't drop these on the transport path).
                 consolidator=orch.consolidator,
                 user_display_name=_sender_display,
+                # Live gateway state for the session-directive consumer (a
+                # monitor directive on a dashboard-owned thread resolves its
+                # slot through orch.dashboard_state).
+                gateway=orch,
             )
         )
         orch._session_tasks[session_key] = t
