@@ -908,10 +908,13 @@ _MANAGED_SERVER_TOOL_MODULES = {
 }
 
 
-#: Managed servers that advertise ``kirocrew.caller-identity`` -- that is, the ones
-#: consuming the per-call caller block gatewayd injects instead of reading identity
-#: from their own process. Every other name in ``_MANAGED_SERVER_SUBCOMMANDS``
-#: resolves the session from its process and can serve only one at a time.
+#: Managed servers that advertise ``kirocrew.caller-identity`` AND are safe to
+#: classify shareable -- the ones consuming the per-call caller block gatewayd
+#: injects instead of reading identity from their own process, whose behaviour
+#: for a caller the gateway CANNOT name is also pooling-safe (refusal, or a
+#: correctly separated namespace). A name absent from this set reads as
+#: session-bound: either it does not consume the block at all, or it is in
+#: ``_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD`` below.
 #:
 #: A NAME SET rather than a runtime read of each module's own constant. Reading the
 #: constant means ``importlib.import_module`` on the request path, which executes
@@ -928,7 +931,26 @@ _MANAGED_SERVER_TOOL_MODULES = {
 #: argument actually handed to the shim. That check imports the modules in the
 #: TEST process, where running package code is the point rather than a hazard.
 _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
-    {"kirocrew-core", "kirocrew-cron"}
+    {"kirocrew-core", "kirocrew-cron", "kirocrew-dashboard"}
+)
+
+#: Managed servers that ADVERTISE the capability but are deliberately withheld
+#: from ``_MANAGED_SERVERS_CALLER_AWARE`` — advertising is necessary for the
+#: not-session-bound classification but not sufficient. ``kirocrew-computer``
+#: consumes the injected caller block (its pooled attribution is correct for
+#: every caller the gateway can name), but a caller the gateway CANNOT name
+#: proceeds under ``unresolved:<pid>`` by product decision — and on a pooled
+#: backend that pid is the shared process, so two unnamed co-tenants collapse
+#: onto one ``SnapshotIndex`` namespace and can act on each other's element
+#: indices (#5322). Unnamed is the NORMAL case on macOS, the only platform
+#: with a computer-use driver, so recommending co-tenancy would recommend the
+#: collision. Contrast ``kirocrew-dashboard``, which refuses an unidentified
+#: caller and is therefore safe to classify shareable. Remove this exception
+#: when #5322 gives unnamed callers isolated namespaces;
+#: ``test_mcp_managed_caller_identity.py`` pins it so it cannot silently
+#: persist or silently widen.
+_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD: frozenset[str] = frozenset(
+    {"kirocrew-computer"}
 )
 
 

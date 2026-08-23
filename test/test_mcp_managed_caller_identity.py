@@ -73,28 +73,62 @@ def test_the_constant_matches_what_the_server_advertises(name: str, monkeypatch)
 
 
 @pytest.mark.parametrize("name", sorted(_SERVE_ENTRY))
-def test_session_bound_is_the_inverse_of_advertising(name: str, monkeypatch) -> None:
+def test_session_bound_follows_advertising_modulo_the_withheld_set(name: str, monkeypatch) -> None:
+    """Session-bound is the inverse of advertising, EXCEPT the documented set.
+
+    Advertising is necessary for the shareable classification but not
+    sufficient: ``_MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD`` names servers
+    whose pooled attribution is correct for every caller the gateway can name
+    but whose UNNAMED co-tenants would collide (#5322), so they are kept
+    session-bound deliberately. Every other server must follow the inverse
+    rule exactly.
+    """
     module_name = _MANAGED_SERVER_TOOL_MODULES[name]
     advertised = _advertised_by_serve_entry(module_name, _SERVE_ENTRY[name], monkeypatch)
-    assert managed_server_is_session_bound(name) is (not advertised)
+    withheld = name in mcp_discovery._MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD
+    if withheld:
+        assert managed_server_is_session_bound(name) is True
+    else:
+        assert managed_server_is_session_bound(name) is (not advertised)
+
+
+def test_the_withheld_set_is_a_real_exception_not_a_stale_one(monkeypatch) -> None:
+    """Each withheld name must be managed, actually advertise, and not also
+    be claimed caller-aware — otherwise the exception is stale (the server
+    stopped advertising, or #5322 landed and the name was promoted without
+    deleting it here) or self-contradictory.
+    """
+    withheld = mcp_discovery._MANAGED_SERVERS_ADVERTISING_BUT_WITHHELD
+    assert withheld <= set(_MANAGED_SERVER_TOOL_MODULES)
+    assert not (withheld & mcp_discovery._MANAGED_SERVERS_CALLER_AWARE)
+    for name in withheld:
+        module_name = _MANAGED_SERVER_TOOL_MODULES[name]
+        advertised = _advertised_by_serve_entry(module_name, _SERVE_ENTRY[name], monkeypatch)
+        assert advertised, (
+            f"{name} is in the advertising-but-withheld set but its serve entry "
+            "does not advertise — the exception no longer describes the server."
+        )
 
 
 def test_the_concrete_verdicts_are_spelled_out() -> None:
     """The concrete answers the dashboard renders, spelled out.
 
     Kept alongside the derived checks above because those pass just as happily if
-    every managed server flipped at once. ``kirocrew-core`` and ``kirocrew-cron``
-    both consume the injected caller block, so neither is session-bound.
-    ``kirocrew-computer`` and ``kirocrew-dashboard`` do not advertise yet -- they
-    are pooled all the same (nothing declines to pool an unadvertised backend), so
-    what this verdict records is our own unfinished adoption, not a property of
-    those servers. It flips when they adopt it, and the reason code can be deleted
-    once nothing produces it.
+    every managed server flipped at once. ``kirocrew-core``, ``kirocrew-cron``
+    and ``kirocrew-dashboard`` consume the injected caller block and refuse or
+    safely namespace an unidentified caller, so none is session-bound.
+    ``kirocrew-computer`` also advertises and consumes the block (#4659 — its
+    pooled attribution is correct for every caller the gateway can name), but
+    it stays session-bound DELIBERATELY: an unnamed caller proceeds under
+    ``unresolved:<pid>``, which on a pooled backend is one shared namespace for
+    every unnamed co-tenant (#5322) — and unnamed is the normal case on macOS,
+    the only platform with a driver. It flips when #5322 gives unnamed callers
+    isolated namespaces.
     """
     assert managed_server_is_session_bound("kirocrew-core") is False
     assert managed_server_is_session_bound("kirocrew-cron") is False
     assert managed_server_is_session_bound("kirocrew-computer") is True
-    assert managed_server_is_session_bound("kirocrew-dashboard") is True
+    assert managed_server_is_session_bound("kirocrew-dashboard") is False
 
 
 def test_a_third_party_server_is_not_claimed_either_way() -> None:

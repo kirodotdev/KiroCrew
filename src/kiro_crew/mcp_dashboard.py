@@ -46,12 +46,18 @@ require authorization needs its own keystone leaf, and being merely unreferenced
 in the default spec is not that. Session control (driving or stopping another
 session) is that shape.
 
-Identity posture: these tools use the NON-strict session resolver (inherited
-from the ``mcp_core`` request helpers). The header is ATTRIBUTION here, not
-authorization — the endpoints authorize on the internal secret, and the session
-a move targets is named explicitly by slot key, never derived from the caller's
-identity. The strict resolver would fail closed in sandboxed sessions without
-protecting anything, since no effect here reads the header.
+Identity posture: two resolvers, for two different jobs. The SEL invocation log
+(``_call_tool``) uses the NON-strict resolver — that header is ATTRIBUTION, and
+a lenient misattribution there is tolerable. Every decision that SCOPES what a
+caller may see or verify-writes — ``_visible_chat_slots``,
+``_refuse_tree_shaping_if_unverifiable``, and ``chat_folder_move_session``'s own
+caller check (the one tool here that writes to a session other than the
+caller's) — uses :func:`mcp_core._resolve_session_key_strict`, whose first
+source is the gateway-injected per-call caller block — the only identity that
+holds on a pooled backend serving many sessions (this server advertises
+``kirocrew.caller-identity`` so gatewayd injects one; see
+``ADVERTISE_CALLER_IDENTITY``). An unverifiable caller is refused by those
+paths, never waved through on the lenient walk.
 """
 
 from __future__ import annotations
@@ -900,6 +906,37 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     )
 
 
+#: Whether this server advertises ``kirocrew.caller-identity`` — i.e. whether it
+#: consumes the per-call caller block gatewayd injects instead of reading identity
+#: from its own process. True here because it does: every scoping decision
+#: (``_visible_chat_slots``, ``_refuse_tree_shaping_if_unverifiable``) resolves
+#: the caller through :func:`mcp_core._resolve_session_key_strict`, whose first
+#: source is that block.
+#:
+#: Advertising is not cosmetic. ``mcp_gateway/backend.py`` strips any client-forged
+#: caller block from EVERY forwarded request and re-injects its own only when the
+#: backend advertised this capability — so without the advertisement the block
+#: never arrives, and this server's resolver reads an empty identity no matter how
+#: correctly it is written. Nothing declines to POOL an unadvertised backend
+#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: read only to decide injection), so the unadvertised state was not "per-session
+#: spawn" — it was pooled AND identity-blind. For this server that fail-closed
+#: every scoped tool on a pooled backend: an unverifiable caller is refused, so
+#: the tools stopped working for exactly the sessions pooling was built to serve.
+#:
+#: A module-level constant rather than a bare argument below so the value is
+#: readable without executing :func:`run_mcp_server`, and so
+#: ``test/test_mcp_managed_caller_identity.py`` can assert it against the argument
+#: actually handed to the shim.
+ADVERTISE_CALLER_IDENTITY = True
+
+
 def run_mcp_server() -> None:
     """Run the MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
-    run_mcp_stdio_loop(SERVER_NAME, SERVER_VERSION, _list_tools, _call_tool)
+    run_mcp_stdio_loop(
+        SERVER_NAME,
+        SERVER_VERSION,
+        _list_tools,
+        _call_tool,
+        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+    )
