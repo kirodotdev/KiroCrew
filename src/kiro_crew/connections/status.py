@@ -126,9 +126,7 @@ def _load_connected_since() -> dict[str, str] | None:
     """
     try:
         raw = json.loads(_connection_state_path().read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        return {}
-    except ValueError:
+    except (FileNotFoundError, ValueError):
         return {}
     except OSError:
         return None
