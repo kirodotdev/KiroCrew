@@ -7835,6 +7835,7 @@
         "recovered_continuing": "자동으로 후속 요청 전송됨",
         "resuming_the_interrupted_turn": "중단된 턴을 다시 시작하는 중",
         "safety_policy_continuing": "안전 정책이 호출을 차단함 · 자동으로 후속 요청 전송됨",
+        "safety_policy_told_in_turn": "안전 정책이 호출을 차단함 · 이번 턴 내에 에이전트에 이유 전달됨",
         "session_busy_continuing": "세션 사용 중 · 자동으로 후속 요청 전송됨",
         "subagents_finished": "서브에이전트 완료됨",
         "system_notice": "시스템 알림",

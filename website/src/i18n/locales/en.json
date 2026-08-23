@@ -5335,6 +5335,7 @@
         "recovered_continuing": "continuation sent automatically",
         "resuming_the_interrupted_turn": "resuming the interrupted turn",
         "safety_policy_continuing": "safety policy blocked the call · continuation sent automatically",
+        "safety_policy_told_in_turn": "safety policy blocked the call · the agent was told why, in this turn",
         "session_busy_continuing": "session busy · continuation sent automatically",
         "subagents_finished": "Sub-agents finished",
         "system_notice": "System notice",

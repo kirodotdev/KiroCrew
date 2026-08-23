@@ -7839,6 +7839,7 @@
         "recovered_continuing": "継続を自動送信しました",
         "resuming_the_interrupted_turn": "中断したターンを再開中",
         "safety_policy_continuing": "安全ポリシーにより呼び出しがブロックされました・継続を自動送信しました",
+        "safety_policy_told_in_turn": "安全ポリシーが呼び出しをブロックしました · このターン内でエージェントに理由を伝えました",
         "session_busy_continuing": "セッションが使用中です・継続を自動送信しました",
         "subagents_finished": "サブエージェントが完了しました",
         "system_notice": "システム通知",

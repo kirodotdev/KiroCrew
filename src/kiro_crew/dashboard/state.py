@@ -1107,10 +1107,30 @@ HOOK_CONTINUATION_RECOVERY_PREFIX = "[Hook continuation — automatic]"
 # The VALUE does not say "recovery": nothing failed or recovered, a safety cap
 # fired.
 HOOK_HALTED_RECOVERY_PREFIX = "[Stop-hook nudge cap reached]"
+# Prefix on the DISPLAY-ONLY row appended when a tool deny's reason was steered
+# into the running turn (see chat_runner._steer_policy_notice). Nothing is
+# queued and no turn is dispatched — the agent already has the reason — so this
+# row exists purely so the person sees the same blocked-tool card they used to
+# get from the recovery continuation, instead of only a generic "Steered" chip
+# that reads as though they had steered the turn themselves.
+#
+# Named into the *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py
+# keys its cross-language drift guard on that suffix — a marker outside the
+# family is invisible to it and the row would render as a full-width bubble of
+# machine prose. The VALUE deliberately does not say "recovery": nothing was
+# recovered and no continuation was sent, which is the whole point. Same
+# reasoning as HOOK_HALTED_RECOVERY_PREFIX, whose row is also display-only.
+REFUSAL_INBAND_RECOVERY_PREFIX = "[Tool blocked — reason sent to the agent]"
 
 
 def should_queue_refusal_recovery(
-    refusal_reasons: list, stopping: bool, needs_reset: bool, stop_reason: str
+    refusal_reasons: list,
+    stopping: bool,
+    needs_reset: bool,
+    stop_reason: str,
+    *,
+    notices_sent: int = 0,
+    notices_pending: int = 0,
 ) -> bool:
     """Decide whether to auto-queue a refusal-recovery prompt after a turn.
 
@@ -1119,7 +1139,24 @@ def should_queue_refusal_recovery(
     - A stop is still in progress
     - A session reset is already re-queuing
     - The turn was cancelled by the user (not a policy block)
+    - Every refusal was already explained IN-BAND and the backend confirmed it
+
+    ``notices_sent`` is how many :func:`build_refusal_steer_notice` bodies were
+    steered into the turn, and ``notices_pending`` how many of those the
+    ``steering_consumed`` echo did NOT account for. The extra turn is skipped only
+    when every refusal got a notice AND none is still pending — an unconfirmed
+    steer is treated as undelivered, so the fallback continuation still runs. The
+    check is deliberately coarse (counts, not a per-refusal pairing): its two
+    failure directions are not symmetric. Skipping wrongly leaves the model with
+    kiro-cli's "User denied tool execution" and no correction, while queueing
+    wrongly costs one turn the model would otherwise have been told twice — which
+    is exactly what this path already cost before in-band delivery existed.
+
+    Both are keyword-only with defaults so a caller on a harness without mid-turn
+    steer keeps the original three-condition behaviour unchanged.
     """
+    if refusal_reasons and notices_sent >= len(refusal_reasons) and notices_pending == 0:
+        return False
     return bool(
         refusal_reasons
         and not stopping
@@ -1170,10 +1207,17 @@ def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
 
     When a tool call is refused for a recoverable, system-side reason — a
     host-gate policy deny, the read-only bash safety gate, or a PreToolUse policy
-    hook block — kiro-cli ends the turn early with an attribution-free
-    "tool uses were interrupted" marker. The refusal reason is otherwise surfaced
-    only to the dashboard pill and the SEL audit log, never to the model, so the
-    agent stalls and waits for the user.
+    hook block — the reason reaches the dashboard pill and the SEL audit log but
+    never the model: kiro-cli's own tool result for a rejected permission is the
+    fixed string "User denied tool execution", which is indistinguishable from a
+    human having clicked No. So the agent apologises for a cancellation that
+    never happened and yields.
+
+    This continuation is the FALLBACK path. The primary path is
+    :func:`build_refusal_steer_notice`, which delivers the same reason in-band on
+    a harness that supports mid-turn steer, costing no extra turn. This one runs
+    when that was impossible (harness without steer) or when the steer was never
+    folded in (no ``steering_consumed`` echo covered it).
 
     ``refusals`` is a list of ``(tool_title, reason)`` tuples recorded during the
     turn (already redacted by the caller). The returned text hands those reasons
@@ -1206,6 +1250,46 @@ def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
         "task where you left off.",
     ]
     return "\n".join(lines)
+
+
+def build_refusal_steer_notice(title: str, reason: str) -> str:
+    """Body of the in-band policy notice steered into the RUNNING turn on a deny.
+
+    Sent BEFORE the permission rejection goes back on the wire, which is what
+    makes it race-free: while the ``session/request_permission`` is still
+    unanswered the turn is provably in flight, so the steer is queued rather than
+    dropped, and kiro-cli folds it in at the next model-inference boundary — the
+    one immediately after the rejected tool resolves. The model therefore learns
+    why inside the SAME turn and no recovery continuation is needed.
+
+    The notice must correct an attribution the model has already been handed:
+    a rejected permission is reported to the model as a generic tool failure with
+    no channel for the host to say more (ACP's permission response carries only
+    ``outcome``/``optionId``). Naming kiro-cli's exact wording — measured against
+    kiro-cli 2.19.1 — is what lets the model overwrite the wrong conclusion rather
+    than hold both, and attributing the quote to that backend keeps the sentence
+    true on another steer-capable harness whose wording has not been measured.
+    ``title``/``reason`` must already be redacted by the caller.
+
+    Returns "" when there is nothing to say, so a caller can treat the empty
+    string as "no notice was sent" and fall back to the recovery continuation.
+    """
+    if not (title or "").strip() and not (reason or "").strip():
+        return ""
+    what = f"{title}: {reason}" if reason else title
+    return (
+        "[Kiro Crew policy notice] The tool call you just made was blocked by a "
+        "Kiro Crew safety policy. This was NOT a user action — the user did not "
+        "cancel, reject, or interrupt anything. The tool result you were handed for "
+        "it is generic and wrong about who denied it — on kiro-cli it reads "
+        '"User denied tool execution".\n\n'
+        f"Blocked: {what}\n\n"
+        "Do not apologise for a cancellation and do not ask the user whether to "
+        "retry. Decide and continue in this same turn: use an allowed "
+        "alternative (for a shell command, a read-only variant), use a different "
+        "tool, or — if the block is correct and you genuinely cannot proceed — "
+        "say so and stop with the reason."
+    )
 
 
 def build_stale_recovery_prompt() -> str:

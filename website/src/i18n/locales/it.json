@@ -8047,6 +8047,7 @@
         "recovered_continuing": "continuazione inviata automaticamente",
         "resuming_the_interrupted_turn": "ripresa del turno interrotto",
         "safety_policy_continuing": "la policy di sicurezza ha bloccato la chiamata · continuazione inviata automaticamente",
+        "safety_policy_told_in_turn": "la policy di sicurezza ha bloccato la chiamata · l’agente è stato informato del motivo in questo turno",
         "session_busy_continuing": "sessione occupata · continuazione inviata automaticamente",
         "subagents_finished": "Subagenti completati",
         "system_notice": "Avviso di sistema",

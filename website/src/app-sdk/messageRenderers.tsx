@@ -28,6 +28,7 @@ import PastedChip from '../components/PastedChip'
 import { type PasteBlock, findTokenRanges, recollapsePastes } from '../utils/pasteTokens'
 import type { ChatMessage } from '../types'
 import { fmtMessageTime, fmtMessageTimeFull } from '../pages/chat/messageTime'
+import { turnHadPolicyBlock } from './turnPolicyBlock'
 
 /** Everything a renderer may read. Passed per row so entries stay pure functions. */
 export interface MessageRenderContext {
@@ -271,6 +272,7 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
             variants={m.variants}
             variantIdx={m.variant_idx}
             turnStats={(m.meta as Record<string, unknown> | undefined)?.turn_stats as TurnStats | undefined}
+            suppressSteerAck={turnHadPolicyBlock(ctx.messages, ctx.index)}
           />
         </div>,
       )

@@ -125,6 +125,7 @@ from kiro_crew.dashboard.state import (
     NATIVE_SUBAGENT_OUTPUT_TAIL,
     NATIVE_SUBAGENT_TERMINAL_KEEP,
     NATIVE_SUBAGENT_TERMINAL_TTL_SECS,
+    REFUSAL_INBAND_RECOVERY_PREFIX,
     REFUSAL_RECOVERY_PREFIX,
     STALE_RECOVERY_PREFIX,
     SUBAGENT_COMPLETION_PREFIXES,
@@ -135,6 +136,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _mark_permission_resolved,
     build_refusal_recovery_prompt,
+    build_refusal_steer_notice,
     build_stale_recovery_prompt,
     build_tool_stall_recovery_prompt,
     context_entry_expired,
@@ -480,6 +482,89 @@ def _redacted_hook_block(event: Any, pre_hook_results: Any) -> tuple[str, str]:
     )
 
 
+def _refined_tool_row_content(existing: str, new_title: str) -> str | None:
+    """The rewritten content for a tool row a ``tool_call_update`` refines, or None.
+
+    kiro-cli sends the resolved title after a permission is answered, and the row
+    is re-rendered as ``"<icon> <title>"``, preserving whichever leading icon the
+    row already carries (🔧 running / ✅ done / 🚫 refused).
+
+    Returns None for a REFUSAL row, which must be left alone: it is terminal (the
+    tool will not run, so a better title adds nothing) and its content is
+    ``"🚫 <title> — <reason>"``, so re-rendering from the title alone deletes the
+    reason. That tail is the user's only visible explanation, and the model has
+    already been told the reason in-band — dropping it leaves the human looking at
+    a blocked row with no cause while the agent acts on one they cannot see.
+    """
+    prefix = existing[:1] if existing[:1] in ("🔧", "✅", "🚫") else "🔧"
+    if prefix == "🚫":
+        return None
+    return f"{prefix} {new_title}"
+
+
+async def _steer_policy_notice(
+    client: Any,
+    title: str,
+    reason: str,
+    notices: list[str],
+    slot: Any = None,
+    state: Any = None,
+) -> bool:
+    """Hand a deny reason to the model IN-BAND, before the rejection is answered.
+
+    Must be called while the ``session/request_permission`` is still unanswered.
+    That ordering is the whole mechanism: the turn is provably in flight (the
+    backend is blocked on our response), so ``_session/steer`` is queued instead
+    of dropped, and the backend folds it in at the next model-inference boundary
+    — the one right after the rejected tool resolves. The model reads the real
+    reason inside the SAME turn, so the fallback recovery continuation (a second
+    billed turn) is not needed.
+
+    Opt-in by positive capability, never by harness identity: a backend outside
+    ``ACP_BACKENDS_STEER`` has no ``_session/steer``, reports
+    ``supports_steer`` False, and keeps the recovery-continuation behaviour
+    unchanged. ``getattr`` guards the attribute because the reject paths also run
+    against minimal test doubles.
+
+    Appends the notice to *notices* (the turn's pending list, settled later by the
+    ``steering_consumed`` echo) and returns whether it was written. Best-effort:
+    steering is an optimisation on top of a fallback that still works, so a
+    failure here must never turn a clean policy block into a turn error.
+    """
+    if not getattr(client, "supports_steer", False):
+        return False
+    notice = build_refusal_steer_notice(title, reason)
+    if not notice:
+        return False
+    try:
+        sent = await client.steer(notice)
+    except Exception:
+        logger.debug("policy-notice steer failed; falling back to recovery turn", exc_info=True)
+        return False
+    if not sent:
+        return False
+    notices.append(notice)
+    # Display-only row, appended ONLY once the steer is actually on the wire: it
+    # tells the person a policy blocked the call and why, rendered by the same
+    # blocked-tool card the recovery continuation used to produce. Nothing is
+    # queued and no turn is dispatched (the agent already has the reason), which
+    # is why the marker's own copy does not claim a recovery. Appending it when
+    # the steer had NOT been written would assert an explanation the model never
+    # received. Best-effort for the same reason as the steer itself.
+    if slot is not None:
+        try:
+            slot.append(
+                "inject",
+                f"{REFUSAL_INBAND_RECOVERY_PREFIX}\n{notice}",
+                "msg msg-inject",
+            )
+            if state is not None:
+                state.push_slots_update()
+        except Exception:
+            logger.debug("policy-notice display row failed", exc_info=True)
+    return True
+
+
 async def _reject_hook_blocked(
     client: Any,
     slot: Any,
@@ -488,17 +573,23 @@ async def _reject_hook_blocked(
     session_key: str,
     pre_hook_results: Any,
     refusal_reasons: list[tuple[str, str]],
+    refusal_notices: list[str] | None = None,
     metadata: dict | None = None,
 ) -> None:
     """Deny a tool a PreToolUse hook blocked, and record WHY for the model.
 
-    Four things have to happen together: reject the call, show the user a blocked
-    row, audit the denial, and append the hook's reason to ``refusal_reasons`` so
-    the recovery nudge tells the model what it did wrong. Doing the first three
-    without the fourth is the defect this fixes — the turn dies silently and the
-    model stalls with no reason to adapt to, while every other signal looks
-    correct. They live here rather than at each permission path so a path added
-    later cannot deny by omission.
+    Five things have to happen together: reject the call, show the user a blocked
+    row, audit the denial, tell the model the reason in-band, and append that
+    reason to ``refusal_reasons`` so the fallback recovery nudge can carry it when
+    the in-band notice could not be delivered. Doing the first three without the
+    last two is the defect this fixes — the turn dies silently and the model
+    stalls with no reason to adapt to, while every other signal looks correct.
+    They live here rather than at each permission path so a path added later
+    cannot deny by omission.
+
+    ``refusal_notices`` is the turn's pending in-band notice list; omitted (None)
+    means the caller wants the fallback-only behaviour, which is what the direct
+    unit tests of this helper exercise.
     """
     # event.title prefers the model's own `description` field (_select_tool_title),
     # so it is LLM-controlled display text. Redact once up front and use that
@@ -506,6 +597,10 @@ async def _reject_hook_blocked(
     # ConversationLog, and the sibling reject path (_safe_reject_title) redacts for
     # both that row and the audit.
     title, reason = _redacted_hook_block(event, pre_hook_results)
+    # BEFORE reject_tool: the unanswered permission request is what proves the
+    # turn is still in flight, so the steer is queued rather than dropped.
+    if refusal_notices is not None:
+        await _steer_policy_notice(client, title, reason, refusal_notices, slot)
     await client.reject_tool(event.request_id)
     slot.append("tool", f"🚫 {title} (hook blocked)", "msg msg-tool")
     sel().log_tool_invocation(
@@ -4650,10 +4745,17 @@ async def _run_chat(
     # graceful-cancel and empty-re-queue paths that reach the success check.
     _turn_landed = False
     # Recoverable tool refusals (host-gate policy deny / read-only bash gate)
-    # recorded during this turn as (redacted_title, reason). If non-empty when
-    # the turn ends — and the user did not stop it — a recovery continuation is
-    # enqueued so the model learns why and can adapt instead of stalling.
+    # recorded during this turn as (redacted_title, reason). Each deny also gets
+    # its reason steered in-band (see _refusal_notices); this ledger is what the
+    # FALLBACK continuation carries when that could not be delivered.
     _refusal_reasons: list[tuple[str, str]] = []
+    # In-band policy notices steered into THIS turn (see _steer_policy_notice).
+    # The list holds only those still unconfirmed: the `steering_consumed` echo
+    # settles entries out of it and counts them here instead, so the total ever
+    # written stays derivable as list + settled WITHOUT any bookkeeping at the
+    # deny sites — a path added later cannot forget to increment a counter.
+    _refusal_notices: list[str] = []
+    _refusal_notices_settled = 0
     # Track how deep an unbroken hook-continuation run is, so the Stop hook can
     # see it: each consecutive hook continuation is one deeper; any other turn
     # (a real user message, a refusal recovery) breaks the run and resets it.
@@ -5984,11 +6086,16 @@ async def _run_chat(
                         if m.get("meta", {}).get("tool_call_id") != _tcid_upd:
                             continue
                         if _title_upd:
-                            existing = m.get("content", "") or ""
-                            prefix = existing[:1] if existing[:1] in ("🔧", "✅", "🚫") else "🔧"
-                            _patched_content = f"{prefix} {_title_upd}"
-                            m["content"] = _patched_content
-                            slot.invalidate_source_links()
+                            _refined = _refined_tool_row_content(
+                                m.get("content", "") or "", _title_upd
+                            )
+                            # None == a refusal row: keep its reason (see the
+                            # helper). Meta patches below still apply; only the
+                            # content rewrite is skipped.
+                            if _refined is not None:
+                                _patched_content = _refined
+                                m["content"] = _patched_content
+                                slot.invalidate_source_links()
                         if _meta_patch:
                             m_meta = m.setdefault("meta", {})
                             m_meta.update(_meta_patch)
@@ -6282,7 +6389,6 @@ async def _run_chat(
                         resolved_agent=read_effective_agent(client),
                     )
                     if tool_result.action == TOOL_DENY:
-                        await client.reject_tool(event.request_id)
                         # Surface WHY: carry the deny reason into the pill so
                         # the user sees "Blocked by security policy: ..." rather
                         # than an opaque "(blocked)" (or, on the claude provider,
@@ -6291,6 +6397,17 @@ async def _run_chat(
                         _deny_title = _redact_display_text(event.title)
                         _deny_msg, _ = redact_exfiltration_urls(_deny_reason)
                         _deny_msg, _ = redact_credentials(_deny_msg)
+                        # In-band first, and BEFORE the rejection goes on the
+                        # wire: holding the unanswered permission request is what
+                        # guarantees the turn is still in flight, so the notice is
+                        # queued and folded in at the boundary after this tool
+                        # resolves. Without it the model only ever sees kiro-cli's
+                        # generic "User denied tool execution" and concludes the
+                        # user cancelled.
+                        await _steer_policy_notice(
+                            client, _deny_title, _deny_msg, _refusal_notices, slot, state
+                        )
+                        await client.reject_tool(event.request_id)
                         slot.append(
                             "tool",
                             f"🚫 {_deny_title} — {_deny_msg}",
@@ -6385,6 +6502,7 @@ async def _run_chat(
                                     session_key=session_key,
                                     pre_hook_results=pre_hook_results,
                                     refusal_reasons=_refusal_reasons,
+                                    refusal_notices=_refusal_notices,
                                 )
                                 continue
                             await client.approve_tool(event.request_id)
@@ -6444,6 +6562,7 @@ async def _run_chat(
                             session_key=session_key,
                             pre_hook_results=pre_hook_results,
                             refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
                         )
                         continue
                     _pre_tool_hooks_fired = True
@@ -6725,6 +6844,7 @@ async def _run_chat(
                                 session_key=session_key,
                                 pre_hook_results=pre_hook_results,
                                 refusal_reasons=_refusal_reasons,
+                                refusal_notices=_refusal_notices,
                             )
                             continue
                     # always=False — KiroCrew owns trust scope; per-call request_permission
@@ -7061,6 +7181,7 @@ async def _run_chat(
                             session_key=session_key,
                             pre_hook_results=pre_hook_results,
                             refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
                             metadata={"reason": "interactive"},
                         )
                     else:
@@ -7127,6 +7248,15 @@ async def _run_chat(
                     continue
             elif event.kind == EVENT_STEER_CONSUMED:
                 _settle_consumed_steers(slot, event.text or "")
+                if _refusal_notices:
+                    # Same echo, same parser as the user-steer ledger, but
+                    # settle_all_on_empty stays False here: an empty echo is no
+                    # evidence, and treating it as delivery would drop the
+                    # fallback continuation and leave the model holding
+                    # kiro-cli's "User denied tool execution" uncorrected.
+                    _still_pending = settle_consumed_steers(_refusal_notices, event.text or "")
+                    _refusal_notices_settled += len(_refusal_notices) - len(_still_pending)
+                    _refusal_notices[:] = _still_pending
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
                 if _broadcast_compaction_result(state, slot, event):
@@ -8191,17 +8321,26 @@ async def _run_chat(
                 )
                 state.push_slots_update()
 
-        # ── Tool-refusal recovery ──────────────────────────────────────────
-        # A recoverable refusal (host-gate policy deny or the read-only bash
-        # gate) ended this turn early via kiro-cli's tool-interrupted marker.
-        # Hand the reason back to the model as a continuation so it can adapt —
-        # an allowed alternative, a different tool, or a reasoned stop — instead
-        # of stalling for the user. Skipped on a user stop or when a session
-        # reset is already re-queuing. No turn cap by design: the model decides
-        # when to stop, and the user's Stop button stays the hard breaker. The
-        # finally block's dequeue loop picks this up and dispatches it.
+        # ── Tool-refusal recovery (FALLBACK) ───────────────────────────────
+        # The primary path already ran: each deny steered its reason into this
+        # turn before answering the permission request, so a model on a
+        # steer-capable backend has been told and no extra turn is owed. This
+        # continuation covers what that could not reach — a backend without
+        # mid-turn steer, or a notice the backend never echoed as folded in
+        # (the turn died before a model-inference boundary). Then hand the
+        # reason back so the model can adapt — an allowed alternative, a
+        # different tool, or a reasoned stop — instead of stalling for the user.
+        # Skipped on a user stop or when a session reset is already re-queuing.
+        # No turn cap by design: the model decides when to stop, and the user's
+        # Stop button stays the hard breaker. The finally block's dequeue loop
+        # picks this up and dispatches it.
         if should_queue_refusal_recovery(
-            _refusal_reasons, slot._stopping, needs_session_reset, _stop_reason
+            _refusal_reasons,
+            slot._stopping,
+            needs_session_reset,
+            _stop_reason,
+            notices_sent=len(_refusal_notices) + _refusal_notices_settled,
+            notices_pending=len(_refusal_notices),
         ):
             _recovery_body = build_refusal_recovery_prompt(_refusal_reasons)
             if _recovery_body:

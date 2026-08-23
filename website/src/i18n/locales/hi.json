@@ -7943,6 +7943,7 @@
         "recovered_continuing": "जारी रखने का अनुरोध अपने-आप भेज दिया गया",
         "resuming_the_interrupted_turn": "बाधित टर्न फिर से शुरू हो रहा है",
         "safety_policy_continuing": "सुरक्षा नीति ने कॉल को रोक दिया · जारी रखने का अनुरोध अपने-आप भेज दिया गया",
+        "safety_policy_told_in_turn": "सुरक्षा नीति ने कॉल रोक दी · इसी टर्न में एजेंट को कारण बता दिया गया",
         "session_busy_continuing": "सेशन व्यस्त है · जारी रखने का अनुरोध अपने-आप भेज दिया गया",
         "subagents_finished": "सब-एजेंट पूरे हुए",
         "system_notice": "सिस्टम सूचना",
