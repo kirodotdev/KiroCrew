@@ -106,11 +106,19 @@ async def api_portability_import(request: web.Request) -> web.Response:
 
         summary = await asyncio.to_thread(apply_import_zip, zip_path, mode)
 
+        # `staging` is recorded here, not only returned. Review pointed out that nothing
+        # renders it, which made a field added for truthfulness invisible to everyone -- and
+        # whether an import was pinned, mixed or unpinned is a security property of the
+        # operation, so the audit trail is where it belongs more than a UI badge does. The
+        # response still carries it for whatever renders it later.
         _sel().log_api_access(
             caller=caller,
             operation="portability.import",
             outcome="ok",
-            resources=f"mode={mode},items={len(summary.get('items', []))}",
+            resources=(
+                f"mode={mode},items={len(summary.get('items', []))},"
+                f"staging={summary.get('staging', 'unknown')}"
+            ),
         )
 
         return web.json_response({"ok": True, "summary": summary, "manifest": manifest})

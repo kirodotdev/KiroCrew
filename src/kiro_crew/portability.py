@@ -35,34 +35,39 @@ from kiro_crew.snapshot import (
     _merge_crons,
     _merge_memory,
     _merge_notifications,
+    _staging_is_pinned,
 )
 
 logger = logging.getLogger(__name__)
 
-EXPORT_EXCLUDE = frozenset({
-    ".env",
-    ".local_secret",
-    "sel_hmac.key",
-    "telemetry_salt",
-    # NOTE: the beacon's per-install identity files (beacon_install_id /
-    # beacon_last_sent) are deliberately NOT listed here. This set is matched by
-    # BASENAME and `_is_excluded` runs over the workspace/, plan_memory/ and
-    # skills/ trees, so an entry here would silently drop any USER file that
-    # happens to share the name. They need no entry: root-level export is a
-    # hard-coded allowlist (config.json, hooks.json, crons.json,
-    # notifications.jsonl, project_dir, workspace_dir), so a root beacon file is
-    # never selected in the first place.
-    "session_map.json",
-    "kiro_session_pids.txt",
-    "kiro_pids.txt",
-})
+EXPORT_EXCLUDE = frozenset(
+    {
+        ".env",
+        ".local_secret",
+        "sel_hmac.key",
+        "telemetry_salt",
+        # NOTE: the beacon's per-install identity files (beacon_install_id /
+        # beacon_last_sent) are deliberately NOT listed here. This set is matched by
+        # BASENAME and `_is_excluded` runs over the workspace/, plan_memory/ and
+        # skills/ trees, so an entry here would silently drop any USER file that
+        # happens to share the name. They need no entry: root-level export is a
+        # hard-coded allowlist (config.json, hooks.json, crons.json,
+        # notifications.jsonl, project_dir, workspace_dir), so a root beacon file is
+        # never selected in the first place.
+        "session_map.json",
+        "kiro_session_pids.txt",
+        "kiro_pids.txt",
+    }
+)
 
-EXCLUDE_DIRS = frozenset({
-    "snapshots",
-    "outbox",
-    "uploads",
-    "__pycache__",
-})
+EXCLUDE_DIRS = frozenset(
+    {
+        "snapshots",
+        "outbox",
+        "uploads",
+        "__pycache__",
+    }
+)
 
 
 def _mc_dir() -> Path:
@@ -126,8 +131,14 @@ def create_export_zip() -> tuple[bytes, dict]:
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         # Core JSON/text files
-        for fname in ("config.json", "hooks.json", "crons.json", "notifications.jsonl",
-                      "project_dir", "workspace_dir"):
+        for fname in (
+            "config.json",
+            "hooks.json",
+            "crons.json",
+            "notifications.jsonl",
+            "project_dir",
+            "workspace_dir",
+        ):
             src = mc / fname
             if src.is_file() and not src.is_symlink():
                 zf.write(str(src), f"{prefix}/{fname}")
@@ -185,7 +196,7 @@ def create_export_zip() -> tuple[bytes, dict]:
 # millions of entries) is rejected before extraction rather than filling the
 # host disk.
 _MAX_IMPORT_MEMBERS = 50_000
-_MAX_IMPORT_UNCOMPRESSED = 2 * 1024 ** 3  # 2 GiB
+_MAX_IMPORT_UNCOMPRESSED = 2 * 1024**3  # 2 GiB
 
 
 def _is_link_entry(info: zipfile.ZipInfo) -> bool:
@@ -223,13 +234,21 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
             # Zip-bomb guard: bound entry count and total uncompressed size.
             infos = zf.infolist()
             if len(infos) > _MAX_IMPORT_MEMBERS:
-                return False, f"Rejected: archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})", {}
+                return (
+                    False,
+                    f"Rejected: archive has too many entries ({len(infos)} > {_MAX_IMPORT_MEMBERS})",
+                    {},
+                )
             total_uncompressed = sum(i.file_size for i in infos)
             if total_uncompressed > _MAX_IMPORT_UNCOMPRESSED:
-                return False, (
-                    f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
-                    f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
-                ), {}
+                return (
+                    False,
+                    (
+                        f"Rejected: uncompressed size {total_uncompressed} exceeds cap "
+                        f"{_MAX_IMPORT_UNCOMPRESSED} (possible zip bomb)"
+                    ),
+                    {},
+                )
 
             # Link members can redirect a later write outside the extraction root
             # even when every name passes the traversal check above.
@@ -388,7 +407,56 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     Returns summary dict of what was imported.
     """
     mc = _mc_dir()
-    summary: dict = {"mode": mode, "items": []}
+    # Asked once, at the top, before anything is extracted or written. Both branches
+    # below mutate the data home, and the merge branch writes core files with
+    # shutil.copy2 BEFORE it reaches the first tree call -- so gating inside the tree
+    # helpers let a merge on a platform that cannot pin half-apply the core files and
+    # then raise, against this function's own "fails loudly, nothing was written"
+    # contract. Raised in review. This is the third site of the same defect (after
+    # _build_snapshot and _do_merge), which is why the gate now lives at the entry of
+    # every operation that mutates rather than next to the individual writes.
+    #
+    # There is no flag to pass here: an import is a UI action, not a command line. I first
+    # concluded from that that the gate should refuse, and it was the wrong conclusion drawn
+    # from a correct observation -- CI proved it by failing four PRE-EXISTING portability
+    # tests on Windows. Refuse-by-default only means "ask the user" where a consent surface
+    # exists. Where none does, it means removing the feature on that platform, which is not
+    # a security decision anyone made.
+    #
+    # So this path PERMITS a by-name traversal and records that it happened, while snapshot
+    # and restore keep refusing -- because they have `--allow-unpinned-staging` and can
+    # actually ask. The per-entry screens still apply either way: the copy opens with
+    # O_NOFOLLOW and the walk rejects links and reparse points, so what is given up here is
+    # ancestor-swap resistance, not link resistance.
+    staging_pinned = _staging_is_pinned(allow_unpinned=True, what=f"{mode} import")
+
+    # What this field may honestly say depends on the MODE, not only the platform. Review
+    # caught it reporting "pinned" for a merge whose core files and skills are still copied
+    # by name with `shutil` -- true of the platform, false of the operation, and this field
+    # exists to tell a reader what actually happened.
+    #
+    # replace delegates the whole apply to `_do_replace`, which is pinned throughout. merge
+    # routes only its tree copy through the primitive; its core files (including the
+    # databases, deliberately out of scope -- see #5451) and its skills copy are by name. So
+    # merge on a pinnable platform is MIXED, and saying so is the point.
+    if not staging_pinned:
+        staging_mode = "unpinned"
+    elif mode == "replace":
+        staging_mode = "pinned"
+    else:
+        staging_mode = "mixed"
+    if not staging_pinned:
+        logger.warning(
+            "%s import staged by name: this platform cannot open a directory relative to a "
+            "descriptor, so an ancestor swapped mid-import could redirect the copy. The "
+            "summary records staging=unpinned.",
+            mode,
+        )
+    summary: dict = {
+        "mode": mode,
+        "items": [],
+        "staging": staging_mode,
+    }
 
     with tempfile.TemporaryDirectory() as work_str:
         work = Path(work_str)
@@ -416,9 +484,7 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
         snap_dirs = [d for d in work.iterdir() if d.is_dir()]
         if len(snap_dirs) != 1:
-            raise ValueError(
-                f"Expected 1 top-level directory in zip, found {len(snap_dirs)}"
-            )
+            raise ValueError(f"Expected 1 top-level directory in zip, found {len(snap_dirs)}")
         snap = snap_dirs[0]
 
         # Re-vet imported cron commands before ANY path below consumes
@@ -453,7 +519,14 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
             auto_dir = snap / "skills" / "auto"
             if auto_dir.is_dir():
                 shutil.rmtree(str(auto_dir))
-            _do_replace(snap, mc, None)
+            # A platform that cannot pin a directory by descriptor refuses this
+            # staging pass, and the refusal is allowed to propagate. An earlier
+            # revision caught it and returned the summary, which was worse than the
+            # crash it avoided: the caller reads a returned summary as success, so the
+            # dashboard rendered "Import complete" over a data home nothing had been
+            # written to. Raised in review. Propagating reaches the existing error
+            # path, which is the one that tells the user the import did not happen.
+            _do_replace(snap, mc, None, allow_unpinned=not staging_pinned)
             summary["items"].append("full replace")
         else:
             # Merge mode
@@ -488,14 +561,10 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
             if (snap / "notifications.jsonl").is_file():
                 if (mc / "notifications.jsonl").is_file():
-                    _merge_notifications(
-                        snap / "notifications.jsonl", mc / "notifications.jsonl"
-                    )
+                    _merge_notifications(snap / "notifications.jsonl", mc / "notifications.jsonl")
                     summary["items"].append("notifications (merged)")
                 else:
-                    shutil.copy2(
-                        str(snap / "notifications.jsonl"), str(mc / "notifications.jsonl")
-                    )
+                    shutil.copy2(str(snap / "notifications.jsonl"), str(mc / "notifications.jsonl"))
                     summary["items"].append("notifications (copied)")
 
             for dirname in ("workspace", "plan_memory"):
@@ -503,7 +572,10 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                 if sd.is_dir():
                     dd = mc / dirname
                     dd.mkdir(parents=True, exist_ok=True)
-                    _copy_tree_no_overwrite(sd, dd)
+                    # The permission decided once at entry flows down; otherwise the inner
+                    # gate re-asks and refuses, which is the same platform outage by a
+                    # longer route.
+                    _copy_tree_no_overwrite(sd, dd, allow_unpinned=not staging_pinned)
                     summary["items"].append(f"{dirname} (merged)")
 
             if (snap / "skills").is_dir():

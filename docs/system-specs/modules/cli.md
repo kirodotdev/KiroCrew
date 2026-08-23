@@ -169,6 +169,51 @@ choice blob makes the usage line unreadable.
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
 | `kirocrew restore <file> --dry-run` | Preview restore without writing |
 | `kirocrew restore --list-components` | Show available component names |
+| `kirocrew snapshot --allow-unpinned-staging` | Stage by path name where a directory cannot be pinned by descriptor |
+| `kirocrew restore <file> --allow-unpinned-staging` | Same, for the restore side |
+
+### Staging is descriptor-pinned, and refuses rather than degrading silently
+
+Snapshot and restore stage through `kiro_crew.pinned_fs`: the parent chain is resolved
+once, pinned component by component with `openat` + `O_NOFOLLOW`, and everything
+downstream is addressed through the descriptor already held. A validated path and the
+inode later opened are otherwise not the same thing, and anything running as the user
+— which in this product includes an agent — can plant the swap between the two.
+
+`os.supports_dir_fd` is empty and `O_NOFOLLOW` does not exist on Windows, so pinning
+is unavailable there. The decision, recorded here rather than only in the pull request
+that made it: staging is **refused** on such a platform unless
+`--allow-unpinned-staging` is passed, and when it is, the archive's `MANIFEST.json`
+carries `"staging": "unpinned"` and `kirocrew restore --dry-run` prints that the
+archive was staged by name. The refusal is the default because a by-name walk is not a
+slightly weaker version of a pinned one; it is the mechanism whose failure closed two
+earlier attempts at this change. The flag is a permission for a platform that cannot
+pin, **not** a switch that turns pinning off where it works.
+
+`MANIFEST.json` also carries `"skipped"`: any file omitted during staging (a hardlink
+alias, a symlink, an entry that vanished mid-walk) with its reason, so an incomplete
+archive says so in its own record instead of only in the console output of whoever ran
+the command.
+
+SQLite databases are **out of scope** for the pinned staging described here: they keep the
+`sqlite3.backup()` path they already had, which reopens the live name. Capturing a live
+database without reopening its name is a genuine conflict of requirements — SQLite accepts
+only a path and cannot be pointed at a held descriptor — so it is tracked separately rather
+than solved alongside the tree walk. The exposure is unchanged from before this staging
+work, not introduced by it.
+
+A refusal to stage is a permission decision and is written to the SEL audit log —
+`snapshot_rejected` or `state_restore_rejected`, both with `reason=unpinnable_staging`.
+
+The dashboard's import path (`portability.apply_import_zip`) is the **exception**, and
+deliberately: it has no flag and no consent surface, so refusing there would not mean
+"ask the user", it would mean deleting import on that platform. It therefore proceeds with
+a by-name traversal where pinning is unavailable and records `"staging": "unpinned"` in its
+returned summary, with a logged warning. Snapshot and restore keep refusing, because
+`--allow-unpinned-staging` lets them ask. The per-entry screens apply on both paths — the
+copy opens `O_NOFOLLOW` and the walk rejects links and reparse points — so what the import
+path gives up is ancestor-swap resistance, not link resistance.
+
 | `kirocrew config get [key]` | Print full config or a dot-path value |
 | `kirocrew config set <key> <val>` | Set a config value (auto type detection) |
 | `kirocrew config set --file <path>` | Replace config from a JSON file |

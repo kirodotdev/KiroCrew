@@ -1328,6 +1328,17 @@ Examples:
     snap_parser.add_argument(
         "--list", action="store_true", dest="list_snapshots", help="List existing snapshots"
     )
+    snap_parser.add_argument(
+        "--allow-unpinned-staging",
+        action="store_true",
+        dest="allow_unpinned",
+        help=(
+            "Stage by path name on a platform that cannot open a directory relative to "
+            "a descriptor (Windows). Without this the snapshot is refused there rather "
+            "than taken with a traversal an ancestor swap could redirect. The archive's "
+            "MANIFEST.json records that it was staged unpinned."
+        ),
+    )
 
     rest_parser = cli_help.add_command(sub, "restore")
     rest_parser.add_argument("snapshot", nargs="?", help="Path to snapshot .tar.gz")
@@ -1345,6 +1356,16 @@ Examples:
     )
     rest_parser.add_argument(
         "--force", action="store_true", help="Restore even if gateway is running"
+    )
+    rest_parser.add_argument(
+        "--allow-unpinned-staging",
+        action="store_true",
+        dest="allow_unpinned",
+        help=(
+            "Restore by path name on a platform that cannot open a directory relative "
+            "to a descriptor (Windows). Without this the restore is refused there "
+            "rather than run with a destination an ancestor swap could redirect."
+        ),
     )
 
     # security
@@ -1385,8 +1406,7 @@ Examples:
     # (issue #4843). Reading the file directly is correctly refused by the
     # credential-path gate, so the time selector has to live here.
     _time_help = (
-        "a relative age (30m, 2h, 7d) or an ISO 8601 instant "
-        "(2026-08-21, 2026-08-21T04:00:00Z)"
+        "a relative age (30m, 2h, 7d) or an ISO 8601 instant " "(2026-08-21, 2026-08-21T04:00:00Z)"
     )
     sel_parser.add_argument("--since", default="", help=f"Only entries at or after {_time_help}")
     sel_parser.add_argument("--until", default="", help=f"Only entries before {_time_help}")
@@ -1424,7 +1444,9 @@ Examples:
 
     policy_parser = cli_help.add_command(sub, "policy")
     policy_sub = policy_parser.add_subparsers(dest="policy_action")
-    policy_show = policy_sub.add_parser("show", help="Show the effective enterprise security policy")
+    policy_show = policy_sub.add_parser(
+        "show", help="Show the effective enterprise security policy"
+    )
     policy_show.add_argument(
         "--ids",
         action="store_true",
@@ -1534,9 +1556,7 @@ Examples:
         action="store_true",
         help="Classify and print what would be reclaimed without deleting anything",
     )
-    pod_prune.add_argument(
-        "--json", action="store_true", help="Emit per-name results as JSON"
-    )
+    pod_prune.add_argument("--json", action="store_true", help="Emit per-name results as JSON")
     pod_status = pod_sub.add_parser("status", help="Up/down + health for one pod")
     pod_status.add_argument("name", help="Worktree name")
     pod_status.add_argument("--json", action="store_true", help="Emit status as JSON")
@@ -1666,12 +1686,8 @@ Only needed on hosts with kernel.apparmor_restrict_unprivileged_userns=1
     sbx_status = sbx_sub.add_parser(
         "status", help="Report whether this launch is covered by the profile"
     )
-    sbx_status.add_argument(
-        "--path", default=None, help="Executable to check instead of $APPIMAGE"
-    )
-    sbx_sub.add_parser(
-        "remove-profile", help="Unload and remove the profile (sudo on Linux)"
-    )
+    sbx_status.add_argument("--path", default=None, help="Executable to check instead of $APPIMAGE")
+    sbx_sub.add_parser("remove-profile", help="Unload and remove the profile (sudo on Linux)")
 
     # cloud — provision + run KiroCrew on the user's own AWS EC2 (bring-your-own
     # AWS; credentials resolved by the aws CLI, never stored by KiroCrew).
