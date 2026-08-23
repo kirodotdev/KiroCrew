@@ -545,3 +545,24 @@ def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
         assert not offenders, (
             f"pooling assertions were added to the Windows skip list: {offenders}"
         )
+
+
+@pytest.mark.asyncio
+async def test_backends_hosting_stub_covers_exclusive() -> None:
+    """The stub lookup must cover exclusive (private) backends too: a
+    private stub rekeys like a pooled one, and omitting it would leave the
+    previous caller's subscriptions routing to the new owner."""
+    from kiro_crew.mcp_gateway.pool import BackendPool
+
+    class _Stub:
+        def __init__(self, inboxes: dict) -> None:
+            self._stub_inboxes = inboxes
+
+    pool = BackendPool(max_backends=4)
+    pooled = _Stub({"s-pooled": object()})
+    private = _Stub({"s-private": object()})
+    pool._backends["d1"] = pooled  # type: ignore[assignment]
+    pool._exclusive["d2"] = private  # type: ignore[assignment]
+    assert pool.backends_hosting_stub("s-pooled") == [pooled]
+    assert pool.backends_hosting_stub("s-private") == [private]
+    assert pool.backends_hosting_stub("s-none") == []

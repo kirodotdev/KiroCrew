@@ -143,9 +143,10 @@ class TestDisqualifiers:
         """The two must not collapse into one rule.
 
         ``rotating_secret_env`` withholds because a live guard declines the work.
-        A broker gap has no such guard -- pooling proceeds and a subscription simply
-        stops firing -- so it must stay pure information. Sharing one flag between
-        them would silently re-introduce the disqualifier this change removed.
+        A broker gap has no such guard -- pooling proceeds and log verbosity simply
+        follows the last caller's level -- so it must stay pure information.
+        Sharing one flag between them would silently re-introduce the disqualifier
+        this change removed.
         """
         verdict = assess(
             ShareEvidence(
@@ -154,7 +155,7 @@ class TestDisqualifiers:
                 has_tools=True,
                 capabilities={
                     "experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}},
-                    "resources": {"subscribe": True},
+                    "logging": {},
                 },
                 preflight_ran=True,
             )
@@ -228,15 +229,17 @@ class TestDisqualifiers:
         verdict = assess(ShareEvidence(name="x", is_stdio=False, probe_ok=True))
         assert _codes(verdict) == {"not_stdio"}
 
-    def test_resources_subscribe_is_a_note_not_a_disqualifier(self) -> None:
-        """A lost feature is not a hazard.
+    def test_resources_subscribe_no_longer_produces_a_degradation_note(self) -> None:
+        """Subscriptions survive pooling, so there is nothing to warn about.
 
-        ``notifications/resources/updated`` carries no request id, so a shared
-        backend cannot attribute it and DROPS it (deny-by-default in
-        ``backend._notification_owner``). The subscription silently stops working
-        -- nobody receives anybody else's content. That costs the operator a
-        feature, which is worth reporting, and it is not a reason to refuse the
-        stub: a stub keeps the backend 1:1 with the session.
+        The broker keeps a ``uri -> {stub_uuid}`` table
+        (``backend._resource_subscriptions``) and routes each
+        ``notifications/resources/updated`` to exactly the stubs subscribed to
+        its URI. The degradation table's contract is delete-not-relax: an
+        entry leaves the moment the broker learns to attribute the frames it
+        covers, and this test pins ``resources.subscribe``'s absence. A
+        subscribe-capable server is otherwise unremarkable evidence and lands
+        on the ordinary no-objection tier.
         """
         verdict = assess(
             ShareEvidence(
@@ -250,19 +253,7 @@ class TestDisqualifiers:
         assert verdict.recommend_stub is True
         assert verdict.recommend_share is False
         notes = [r for r in verdict.reasons if r.code == "degrades_when_shared"]
-        assert [r.detail for r in notes] == ["resources_subscribe"]
-
-    def test_subscribe_false_is_an_explicit_no_and_does_not_count(self) -> None:
-        """``{"subscribe": false}`` is the server saying it does NOT subscribe."""
-        verdict = assess(
-            ShareEvidence(
-                name="x",
-                probe_ok=True,
-                has_tools=True,
-                capabilities={"resources": {"subscribe": False, "listChanged": True}},
-            )
-        )
-        assert verdict.strength is Strength.NO_OBJECTION
+        assert notes == []
 
     def test_list_changed_alone_is_not_a_disqualifier(self) -> None:
         """Those notifications are global broadcasts, safe to fan out."""
@@ -430,16 +421,19 @@ class TestPositiveDeclaration:
     def test_a_broker_gap_is_reported_but_does_not_withhold_sharing(self) -> None:
         """The note names OUR missing feature, so it cannot be the server's cost.
 
-        ``notifications/resources/updated`` carries no request id, but it does not
-        need one: the broker saw which stub subscribed to which URI, so a
-        ``uri -> {stub_uuid}`` table would route the update exactly. It keeps no
-        such table today -- that is the defect, and it is ours. Withholding
-        pooling here would charge the operator for work we have not done, which is
-        the failure mode of a layer whose whole job is to say yes.
+        ``logging/setLevel`` is process-global, but a proxy can emit at the
+        finest level any tenant asked for and filter DOWN per stub, giving each
+        tenant the verbosity it requested from one process. The broker does not
+        do that today -- that is the defect, and it is ours. Withholding pooling
+        here would charge the operator for work we have not done, which is the
+        failure mode of a layer whose whole job is to say yes.
 
-        The note still ships, because until the broker learns to attribute them a
-        subscription really does stop firing once pooled, and the operator is
-        entitled to know that before pressing a bulk action.
+        The note still ships, because until the broker learns to attribute it,
+        log verbosity really does follow the last caller's level once pooled,
+        and the operator is entitled to know that before pressing a bulk action.
+        The degradation table's contract is delete-not-relax: an entry leaves
+        the moment the broker attributes the frames it covers, as
+        ``resources.subscribe``'s absence demonstrates.
         """
         verdict = assess(
             ShareEvidence(
@@ -448,7 +442,7 @@ class TestPositiveDeclaration:
                 has_tools=True,
                 capabilities={
                     "experimental": {shareability.CALLER_IDENTITY_CAPABILITY: {}},
-                    "resources": {"subscribe": True},
+                    "logging": {},
                 },
                 preflight_ran=True,
             )
@@ -1550,7 +1544,11 @@ class TestBackendRecordsHazards:
         hazards.flush_sink()  # must not raise
 
     def test_both_observation_sites_call_the_recorder(self) -> None:
-        """Ratchet: the two hazard sites must stay wired to the ledger.
+        """Ratchet: the hazard sites must stay wired to the ledger.
+
+        Three sites: the unattributable request-scoped notification drop, the
+        unroutable server->client request recycle, and the terminal
+        resources/updated drop for a URI nobody subscribed to.
 
         Asserted on the source because reproducing either frame end to end
         needs a live shared backend and a misbehaving server; the value here is
@@ -1561,6 +1559,6 @@ class TestBackendRecordsHazards:
         import kiro_crew.mcp_gateway.backend as backend_mod
 
         src = _Path(backend_mod.__file__).read_text(encoding="utf-8")
-        assert src.count("self._record_hazard(") == 2, "expected exactly two hazard sites"
+        assert src.count("self._record_hazard(") == 3, "expected exactly three hazard sites"
         assert "hazards.HAZARD_UNATTRIBUTABLE_NOTIFICATION" in src
         assert "hazards.HAZARD_UNROUTABLE_SERVER_REQUEST" in src

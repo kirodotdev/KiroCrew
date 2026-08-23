@@ -921,6 +921,21 @@ class BackendPool:
         digest = key.stable_hash()
         self._reserved_digests[digest] = self._reserved_digests.get(digest, 0) + 1
 
+    def backends_hosting_stub(self, stub_uuid: str) -> list["Backend"]:
+        """Live backends whose inbox table names ``stub_uuid`` — normally at
+        most one; a list because a stub mid-respawn can transiently appear
+        on two. Covers BOTH pooled and exclusive (private) backends: a
+        private stub rekeys the same way a pooled one does, and omitting it
+        would leave the previous caller's subscriptions routing to the new
+        owner. Read-only snapshot for callers that must reach the backend a
+        stub is attached to (e.g. the claim rekey's subscription eviction).
+        """
+        return [
+            b
+            for b in (*self._backends.values(), *self._exclusive.values())
+            if stub_uuid in b._stub_inboxes
+        ]
+
     def unreserve(self, key: PoolKey) -> None:
         """Release the in-flight reservation for ``key``.
 

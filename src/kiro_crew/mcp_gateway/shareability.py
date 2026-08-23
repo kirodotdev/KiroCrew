@@ -85,36 +85,33 @@ ROTATING_SECRET_ENV_PREFIXES: tuple[str, ...] = ("AWS_SECRET", "AWS_SESSION", "O
 # not withhold a recommendation. Two reasons, and the second is the load-bearing
 # one.
 #
-# First, neither is a leak. The broker already refuses to guess: an unattributable
+# First, it is not a leak. The broker already refuses to guess: an unattributable
 # request-scoped notification is DROPPED (deny-by-default in
 # ``backend._notification_owner``) rather than broadcast, so no co-tenant ever
 # receives another tenant's content.
 #
-# Second, and this is why they inform rather than gate: **both describe a gap in
+# Second, and this is why it informs rather than gates: **it describes a gap in
 # OUR broker, not a property of the server.** A proxy that can correlate a frame
 # to a caller can route it, and correlation is a feature we can build:
-#
-# ``resources.subscribe`` -- ``notifications/resources/updated`` carries no
-# request id, but it does not need one. The broker saw which stub sent
-# ``resources/subscribe`` for which URI, so a ``uri -> {stub_uuid}`` table routes
-# the update exactly. It does not keep one today, which is the actual defect. The
-# notification also carries only the URI and not the resource's content, so the
-# failure it currently causes is a subscription that stops firing.
 #
 # ``logging`` -- ``logging/setLevel`` is process-global, but a proxy can emit at
 # the finest level any tenant asked for and filter DOWN per stub, giving each
 # tenant the verbosity it requested from one process.
 #
-# Withholding pooling for either would be charging the operator for work we have
-# not done. Both are filed as broker gaps instead; when the broker learns to
-# attribute them, these entries are deleted rather than relaxed.
+# Withholding pooling for it would be charging the operator for work we have
+# not done. It is filed as a broker gap instead, and the contract on this table
+# is that an entry is DELETED — not relaxed — the moment the broker learns to
+# attribute the frames it covers. ``resources.subscribe`` is absent from this
+# table under exactly that contract: the broker keeps a ``uri -> {stub_uuid}``
+# subscription table (``backend._resource_subscriptions``) and routes each
+# ``notifications/resources/updated`` to the stubs subscribed to its URI, so
+# subscriptions survive pooling and there is nothing to warn about.
 #
 # ``*.listChanged`` is deliberately NOT here: those notifications are global
 # broadcasts (``backend._GLOBAL_BROADCAST_NOTIFICATIONS``) and are safe to
 # fan out to every attached stub.
-_SHARED_BACKEND_DEGRADATIONS: tuple[tuple[tuple[str, ...], str, str], ...] = (
-    (("resources", "subscribe"), "resources_subscribe", "truthy"),
-    (("logging",), "logging_level", "present"),
+_SHARED_BACKEND_DEGRADATIONS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("logging",), "logging_level"),
 )
 
 
@@ -234,24 +231,22 @@ def rotating_secret_env(
 def _shared_backend_degradations(capabilities: dict) -> list[Reason]:
     """Capabilities whose behaviour degrades on a shared backend.
 
-    Pure information: see the table's comment for why each of these is a gap in
+    Pure information: see the table's comment for why each entry is a gap in
     our own broker rather than a property of the server, which is what makes
-    gating on them charging the operator for work we have not done.
+    gating on it charging the operator for work we have not done.
 
-    Two detection modes, because a capability and a flag inside one are different
-    claims:
-
-    ``truthy`` -- the leaf is a FLAG. ``resources: {"subscribe": false}`` is the
-    server explicitly saying it does not subscribe, so it must not count against
+    Detection is by PRESENCE of the capability key. In MCP an empty object is
+    the standard way to advertise a capability that takes no sub-options, so
+    ``{"logging": {}}`` means ``logging/setLevel`` is supported; testing
+    truthiness there would read a server that advertises logging as one that
+    does not. A flag-leaf entry — one whose leaf can be ``false``, the server
+    explicitly declining the capability — needs a truthiness test instead, so
+    adding one to the table means adding a per-entry detection mode alongside
+    it; the table deliberately carries no such machinery while no entry needs
     it.
-
-    ``present`` -- the leaf IS the capability. In MCP an empty object is the
-    standard way to advertise a capability that takes no sub-options, so
-    ``{"logging": {}}`` means ``logging/setLevel`` is supported. Testing
-    truthiness there read a server that advertises logging as one that does not.
     """
     out: list[Reason] = []
-    for path, code, mode in _SHARED_BACKEND_DEGRADATIONS:
+    for path, code in _SHARED_BACKEND_DEGRADATIONS:
         node: object = capabilities
         missing = False
         for key in path:
@@ -261,8 +256,7 @@ def _shared_backend_degradations(capabilities: dict) -> list[Reason]:
             node = node[key]
         if missing:
             continue
-        if mode == "present" or node:
-            out.append(Reason("degrades_when_shared", code))
+        out.append(Reason("degrades_when_shared", code))
     return out
 
 
