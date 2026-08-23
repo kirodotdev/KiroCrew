@@ -151,6 +151,17 @@ one scope down:
   undoes it, so a test driving that code cannot avoid it.
   `log_redaction.uninstall_log_redaction()` exists for a test that wants to assert on
   the uninstalled state itself.
+* `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
+  inherited. `AutoNudgeService.start()` publishes itself there and `stop()` clears it, so
+  a test that starts the service — or drives a dashboard handler that does — leaves a live
+  instance holding timer TASKS created on that test's event loop. Every later test in the
+  same worker then reaches those tasks through the singleton on a loop that has since
+  closed, which is how `test_dashboard_chat.py`'s `TestCloseBroadcastDurability` came to
+  answer 500 from a leak in an unrelated file. Restored rather than blamed, for the same
+  reason the CWD restore is: production really does publish this singleton. The teardown
+  retires the leaked instance's timers through `_cancel_timer`, which is the one place
+  that knows a task on a closed loop must be DROPPED rather than cancelled — `Task.cancel`
+  schedules through `loop.call_soon` and raises `RuntimeError: Event loop is closed`.
 
 It registers the xdist worker budget too — the policy is in the repo-root
 `xdist_budget.py`, a plain module rather than a second conftest, because the module
