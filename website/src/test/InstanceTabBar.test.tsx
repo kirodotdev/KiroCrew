@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders, createTestStore } from './helpers'
 import InstanceTabBar, {
   setCrewPins,
+  setStableOrder,
   resolvePinnedPref,
   clippedChipIds,
 } from '../components/InstanceTabBar'
@@ -51,6 +52,7 @@ beforeEach(() => {
   vi.clearAllMocks()
   localStorage.clear()
   setCrewPins([])
+  setStableOrder(false)
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
 })
 
@@ -399,6 +401,64 @@ describe('InstanceTabBar', () => {
     const row = await screen.findByTestId('crew-chip-row')
     expect(row.textContent).toMatch(/Cloud One/)
     expect(row.textContent).not.toMatch(/Local/)
+  })
+
+  it('stable order keeps a pinned active crew in place instead of leading with it', async () => {
+    // Frequent switchers opt in: the crew on screen holds its configured slot and
+    // is only highlighted, so switching never reshuffles the row.
+    setCrewPins(['__local__', 'cd-1'])
+    setStableOrder(true)
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const { container } = renderWithProviders(<InstanceTabBar />, { store })
+
+    // No separate leading active chip — the active crew lives inside the row.
+    const row = await screen.findByTestId('crew-chip-row')
+    expect(container.querySelector('.tb-crew-active-chip')).toBeNull()
+    // Both pinned destinations are in the row, in their configured order.
+    expect(row.textContent).toMatch(/Local/)
+    expect(row.textContent).toMatch(/Cloud One/)
+    // ...and the active crew is highlighted where it sits, not moved.
+    expect(within(row).getByRole('button', { name: /Cloud One/i })).toHaveAttribute('aria-current', 'true')
+  })
+
+  it('still leads with the active crew under stable order when it is NOT pinned', async () => {
+    // Stable order fixes the pinned row; an unpinned active crew has no slot
+    // there, so it still leads to stay reachable without opening the dropdown.
+    setCrewPins(['__local__'])
+    setStableOrder(true)
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const { container } = renderWithProviders(<InstanceTabBar />, { store })
+
+    const lead = await waitFor(() => {
+      const el = container.querySelector('.tb-crew-active-chip')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    })
+    expect(lead.textContent).toMatch(/Cloud One/)
+  })
+
+  it('toggles stable order from the dropdown, persists it, and keeps the menu open', async () => {
+    vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
+    const store = createTestStore({
+      instances: { warm: { 'cd-1': { port: 7778, token: 't' } }, activeId: 'cd-1', mru: ['cd-1'], unread: {} },
+    })
+    const u = userEvent.setup()
+    renderWithProviders(<InstanceTabBar />, { store })
+
+    await u.click(await screen.findByRole('button', { name: /Switch crew/i }))
+    const toggle = await screen.findByTestId('crew-stable-order-toggle')
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await u.click(toggle)
+    // Persisted, and the menu stayed open so the checkmark flip is visible and a
+    // second adjustment needs no reopen.
+    await waitFor(() => expect(localStorage.getItem('mc-crew-switcher-stable-order')).toBe('1'))
+    expect(await screen.findByTestId('crew-stable-order-toggle')).toHaveAttribute('aria-checked', 'true')
   })
 
 })

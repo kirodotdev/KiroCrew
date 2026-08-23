@@ -5419,7 +5419,8 @@
       "stopped": "arrêté",
       "pin_crew": "Épingler {{name}} dans l’en-tête",
       "unpin_crew": "Désépingler {{name}}",
-      "pinned_no_room": "épinglé, pas de place dans l’en-tête"
+      "pinned_no_room": "épinglé, pas de place dans l’en-tête",
+      "keep_tab_order_fixed": "Conserver l’ordre des onglets"
     },
     "instancesViewport": {
       "connecting": "Connexion…",

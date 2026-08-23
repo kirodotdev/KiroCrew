@@ -1630,7 +1630,8 @@
       "stopped": "stopped",
       "pin_crew": "Pin {{name}} to the header",
       "unpin_crew": "Unpin {{name}} from the header",
-      "pinned_no_room": "pinned, no room in the header"
+      "pinned_no_room": "pinned, no room in the header",
+      "keep_tab_order_fixed": "Keep tab order fixed"
     },
     "issuePanel": {
       "add_to_chat": "Add to chat",

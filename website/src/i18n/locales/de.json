@@ -5336,7 +5336,8 @@
       "stopped": "gestoppt",
       "pin_crew": "{{name}} an die Kopfzeile anpinnen",
       "unpin_crew": "{{name}} von der Kopfzeile loslösen",
-      "pinned_no_room": "angepinnt, kein Platz in der Kopfzeile"
+      "pinned_no_room": "angepinnt, kein Platz in der Kopfzeile",
+      "keep_tab_order_fixed": "Tab-Reihenfolge beibehalten"
     },
     "instancesViewport": {
       "connecting": "Wird verbunden…",

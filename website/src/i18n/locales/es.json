@@ -5419,7 +5419,8 @@
       "stopped": "detenido",
       "pin_crew": "Fijar {{name}} en la cabecera",
       "unpin_crew": "Dejar de fijar {{name}}",
-      "pinned_no_room": "fijado, sin espacio en la cabecera"
+      "pinned_no_room": "fijado, sin espacio en la cabecera",
+      "keep_tab_order_fixed": "Mantener el orden de las pestañas"
     },
     "instancesViewport": {
       "connecting": "Conectando…",

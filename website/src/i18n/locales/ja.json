@@ -5253,7 +5253,8 @@
       "stopped": "停止中",
       "pin_crew": "{{name}} をヘッダーにピン留め",
       "unpin_crew": "{{name}} のピン留めを解除",
-      "pinned_no_room": "ピン留め済み、ヘッダーに空きがありません"
+      "pinned_no_room": "ピン留め済み、ヘッダーに空きがありません",
+      "keep_tab_order_fixed": "タブの順序を固定"
     },
     "instancesViewport": {
       "connecting": "接続中…",

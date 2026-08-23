@@ -5336,7 +5336,8 @@
       "stopped": "বন্ধ",
       "pin_crew": "{{name}} হেডারে পিন করুন",
       "unpin_crew": "{{name}} অানপিন করুন",
-      "pinned_no_room": "পিন করা, হেডারে জায়গা নেই"
+      "pinned_no_room": "পিন করা, হেডারে জায়গা নেই",
+      "keep_tab_order_fixed": "ট্যাবের ক্রম স্থির রাখুন"
     },
     "instancesViewport": {
       "connecting": "কানেক্ট হচ্ছে…",

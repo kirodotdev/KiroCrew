@@ -5502,7 +5502,8 @@
       "stopped": "остановлен",
       "pin_crew": "Закрепить {{name}} в заголовке",
       "unpin_crew": "Открепить {{name}}",
-      "pinned_no_room": "закреплено, нет места в заголовке"
+      "pinned_no_room": "закреплено, нет места в заголовке",
+      "keep_tab_order_fixed": "Сохранять порядок вкладок"
     },
     "instancesViewport": {
       "connecting": "Подключение…",

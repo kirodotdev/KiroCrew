@@ -5253,7 +5253,8 @@
       "stopped": "已停止",
       "pin_crew": "将 {{name}} 置顶到顶栅",
       "unpin_crew": "取消置顶 {{name}}",
-      "pinned_no_room": "已置顶，顶栅空间不足"
+      "pinned_no_room": "已置顶，顶栅空间不足",
+      "keep_tab_order_fixed": "固定标签页顺序"
     },
     "instancesViewport": {
       "connecting": "正在连接…",

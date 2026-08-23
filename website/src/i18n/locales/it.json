@@ -5419,7 +5419,8 @@
       "stopped": "arrestato",
       "pin_crew": "Fissa {{name}} nell’intestazione",
       "unpin_crew": "Rimuovi {{name}} dall’intestazione",
-      "pinned_no_room": "fissato, nessuno spazio nell’intestazione"
+      "pinned_no_room": "fissato, nessuno spazio nell’intestazione",
+      "keep_tab_order_fixed": "Mantieni l’ordine delle schede"
     },
     "instancesViewport": {
       "connecting": "Connessione in corso…",

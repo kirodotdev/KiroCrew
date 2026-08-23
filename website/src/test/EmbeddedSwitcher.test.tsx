@@ -93,6 +93,20 @@ describe('EmbeddedInstanceTabBar (option B)', () => {
     expect(screen.queryByTestId('crew-chip-row')).toBeNull()
   })
 
+  it('does not offer the stable-order toggle, which has no host-model relay yet', async () => {
+    // The stable-order preference is not relayed through the host model, so a
+    // pane toggling it would write only its own cross-origin localStorage and
+    // drift from the parent header and sibling panes. Until that relay exists the
+    // embedded switcher hides the control rather than half-working.
+    const store = createTestStore({
+      instances: { warm: {}, activeId: null, mru: [], unread: {}, host: model({ activeId: null }) },
+    })
+    renderWithProviders(<InstanceTabBar variant="inline" />, { store })
+    await userEvent.click(screen.getByRole('button', { name: /Switch crew/i }))
+    await screen.findByRole('menuitemradio', { name: /Cloud One/ })
+    expect(screen.queryByTestId('crew-stable-order-toggle')).toBeNull()
+  })
+
   it('relays a pin toggle up to the parent instead of writing its own store', async () => {
     const post = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
     const store = createTestStore({

@@ -5253,7 +5253,8 @@
       "stopped": "중지됨",
       "pin_crew": "{{name}}을(를) 헤더에 고정",
       "unpin_crew": "{{name}} 고정 해제",
-      "pinned_no_room": "고정됨, 헤더에 공간 없음"
+      "pinned_no_room": "고정됨, 헤더에 공간 없음",
+      "keep_tab_order_fixed": "탭 순서 고정"
     },
     "instancesViewport": {
       "connecting": "연결 중…",
