@@ -2466,6 +2466,151 @@ class TestAutoApplyUpdateGitPath:
         ds.clear_update_progress.assert_called()
 
 
+class TestAutoApplyUpdateDivergenceGuard:
+    """The version-floor trigger must not hard-reset away committed local work.
+
+    ``_auto_apply_update`` ends in ``git reset --hard origin/<branch>``. The
+    ordinary ``auto_update`` trigger can only reach it with the update check's
+    ``can_fast_forward`` verdict (``behind > 0 and ahead == 0``), but the
+    mandatory version-floor trigger gates only on ``can_apply`` -- which reports
+    the INSTALL SHAPE, not how the tree relates to the remote -- so any git
+    checkout below the floor reaches the reset, whether it is diverged or merely
+    ahead. Either way the reset discards committed local work. Neither pre-existing check stops it: the content diff is
+    present for a diverged tree like any other, and the porcelain check only
+    warns about UNCOMMITTED edits before proceeding.
+
+    Every test drives the real method and asserts on the argv actually handed to
+    ``create_subprocess_exec``, so "no reset happened" is observed at the process
+    boundary rather than inferred from a return value.
+    """
+
+    @staticmethod
+    def _exec_recorder(counts_stdout: bytes, counts_rc: int = 0):
+        """Fake ``create_subprocess_exec`` driving the git sequence to the reset.
+
+        Dispatches on the git subcommand rather than a call counter, so
+        inserting or reordering an unrelated git call cannot silently make a
+        test assert against the wrong process.
+        """
+        calls: list[tuple] = []
+
+        async def _fake_exec(*args, **kwargs):
+            calls.append(args)
+            proc = AsyncMock()
+            proc.returncode = 0
+            if "rev-parse" in args:
+                proc.communicate = AsyncMock(return_value=(b"mainline\n", b""))
+            elif "fetch" in args:
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            elif "diff" in args:
+                # 1 == there IS a diff, so the update proceeds past the
+                # already-up-to-date early return.
+                proc.returncode = 1
+            elif "rev-list" in args:
+                proc.returncode = counts_rc
+                proc.communicate = AsyncMock(return_value=(counts_stdout, b""))
+            elif "status" in args:
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            else:
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+            proc.wait = AsyncMock(return_value=proc.returncode)
+            return proc
+
+        return calls, _fake_exec
+
+    @staticmethod
+    def _reset_calls(calls: list[tuple]) -> list[tuple]:
+        return [c for c in calls if "reset" in c and "--hard" in c]
+
+    async def _run(self, counts_stdout: bytes, counts_rc: int = 0):
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        calls, fake_exec = self._exec_recorder(counts_stdout, counts_rc)
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+                    await orch._auto_apply_update()
+        return orch, ds, calls
+
+    @pytest.mark.asyncio
+    async def test_diverged_checkout_is_not_reset(self):
+        """3 ahead / 5 behind: committed local work must survive."""
+        _orch, ds, calls = await self._run(b"3\t5\n")
+
+        assert self._reset_calls(calls) == [], (
+            "git reset --hard ran on a checkout with 3 committed local commits: "
+            "the version-floor trigger discarded work no human agreed to lose"
+        )
+        failed = [
+            c.args
+            for c in ds.push_update_progress.call_args_list
+            if c.args and c.args[0] == "failed"
+        ]
+        assert failed, (
+            "the refusal never reached the update-status surface, so the user "
+            "sees a silently stalled update rather than a reason"
+        )
+        assert "3 commit" in failed[-1][1] and "5 behind" in failed[-1][1], failed
+
+    @pytest.mark.asyncio
+    async def test_ahead_only_checkout_is_not_reset(self):
+        """2 ahead / 0 behind: local commits the remote does not have.
+
+        Reachable for the same reason the diverged case is -- `can_apply` reports
+        the INSTALL SHAPE, not the tree's relation to the remote -- and the reset
+        discards those commits just as thoroughly. This is the likelier shape on
+        a developer box that simply has not pushed.
+        """
+        _orch, ds, calls = await self._run(b"2\t0\n")
+
+        assert self._reset_calls(calls) == [], (
+            "git reset --hard ran on a checkout holding 2 unpushed commits"
+        )
+        failed = [
+            c.args
+            for c in ds.push_update_progress.call_args_list
+            if c.args and c.args[0] == "failed"
+        ]
+        assert failed and "2 commit" in failed[-1][1], failed
+
+    @pytest.mark.asyncio
+    async def test_fast_forward_checkout_still_updates(self):
+        """Preservation: 0 ahead / 5 behind is the normal case and must proceed."""
+        _orch, _ds, calls = await self._run(b"0\t5\n")
+
+        assert self._reset_calls(calls), (
+            "a clean fast-forwardable checkout was refused; the guard is not "
+            "supposed to narrow the ordinary auto-update path"
+        )
+
+    @pytest.mark.asyncio
+    async def test_identical_checkout_still_updates(self):
+        """Preservation: 0/0 (diff present, no commit divergence) still proceeds."""
+        _orch, _ds, calls = await self._run(b"0\t0\n")
+
+        assert self._reset_calls(calls), "an undiverged checkout was refused"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_counts_fail_closed(self):
+        """rev-list failing must refuse, not fall through to the reset."""
+        _orch, ds, calls = await self._run(b"", counts_rc=128)
+
+        assert self._reset_calls(calls) == [], (
+            "the reset ran while the tree's relation to the remote was unknown; "
+            "this path must fail closed"
+        )
+        assert ds.push_update_progress.call_args_list
+
+    @pytest.mark.asyncio
+    async def test_unparseable_counts_fail_closed(self):
+        """rev-list succeeding with output nobody can parse must also refuse."""
+        _orch, _ds, calls = await self._run(b"not-a-count\n")
+
+        assert self._reset_calls(calls) == [], (
+            "unparseable rev-list output was treated as 'not diverged'"
+        )
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: run method (partial — covers init sequence)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -3314,6 +3459,16 @@ class TestAutoApplyUpdateVenvPath:
         call_count = [0]
 
         async def _fake_exec(*args, **kwargs):
+            # The fast-forward-only gate runs `git rev-list --left-right
+            # --count` between the diff check and the reset. Answered by ARGS
+            # and returned before `call_count` is touched, so every position
+            # in the sequence below keeps the meaning it already had.
+            if "rev-list" in args:
+                _rl = AsyncMock()
+                _rl.returncode = 0
+                _rl.communicate = AsyncMock(return_value=(b"0\t5\n", b""))
+                _rl.wait = AsyncMock(return_value=0)
+                return _rl
             call_count[0] += 1
             proc = AsyncMock()
             proc.kill = MagicMock()
@@ -3915,6 +4070,16 @@ class TestAutoApplyUpdateResetPath:
         call_count = [0]
 
         async def _fake_exec(*args, **kwargs):
+            # The fast-forward-only gate runs `git rev-list --left-right
+            # --count` between the diff check and the reset. Answered by ARGS
+            # and returned before `call_count` is touched, so every position
+            # in the sequence below keeps the meaning it already had.
+            if "rev-list" in args:
+                _rl = AsyncMock()
+                _rl.returncode = 0
+                _rl.communicate = AsyncMock(return_value=(b"0\t5\n", b""))
+                _rl.wait = AsyncMock(return_value=0)
+                return _rl
             call_count[0] += 1
             proc = AsyncMock()
             proc.kill = MagicMock()
@@ -4029,6 +4194,16 @@ class TestAutoApplyUpdateResetPath:
         call_count = [0]
 
         async def _fake_exec(*args, **kwargs):
+            # The fast-forward-only gate runs `git rev-list --left-right
+            # --count` between the diff check and the reset. Answered by ARGS
+            # and returned before `call_count` is touched, so every position
+            # in the sequence below keeps the meaning it already had.
+            if "rev-list" in args:
+                _rl = AsyncMock()
+                _rl.returncode = 0
+                _rl.communicate = AsyncMock(return_value=(b"0\t5\n", b""))
+                _rl.wait = AsyncMock(return_value=0)
+                return _rl
             call_count[0] += 1
             proc = AsyncMock()
             proc.kill = MagicMock()
@@ -4075,6 +4250,16 @@ class TestAutoApplyUpdateResetPath:
         call_count = [0]
 
         async def _fake_exec(*args, **kwargs):
+            # The fast-forward-only gate runs `git rev-list --left-right
+            # --count` between the diff check and the reset. Answered by ARGS
+            # and returned before `call_count` is touched, so every position
+            # in the sequence below keeps the meaning it already had.
+            if "rev-list" in args:
+                _rl = AsyncMock()
+                _rl.returncode = 0
+                _rl.communicate = AsyncMock(return_value=(b"0\t5\n", b""))
+                _rl.wait = AsyncMock(return_value=0)
+                return _rl
             call_count[0] += 1
             proc = AsyncMock()
             proc.kill = MagicMock()

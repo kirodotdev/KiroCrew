@@ -8290,6 +8290,91 @@ class GatewayOrchestrator:
                     self.dashboard_state.clear_update_progress()
                 return
 
+            # Fast-forward-only gate, checked after the fetch so the counts are
+            # against the revision this would reset to.
+            #
+            # The ordinary `auto_update` trigger cannot reach here with local
+            # commits: it requires the update check's `can_fast_forward` verdict,
+            # which is `behind > 0 AND ahead == 0`. The mandatory version-floor
+            # trigger deliberately bypasses `available` and gates only on
+            # `can_apply` -- and `can_apply` reports the INSTALL SHAPE (a git
+            # checkout has an apply command; a wheel or a .deb does not), so it
+            # says nothing at all about how this tree relates to the remote.
+            # Every git checkout below the floor therefore reaches the reset,
+            # diverged or merely ahead.
+            #
+            # Neither check above stops that: a tree carrying local commits has a
+            # content diff like any other, and the porcelain check below only
+            # warns about UNCOMMITTED edits before proceeding -- so
+            # `git reset --hard` discards committed local work unattended,
+            # leaving only a log line.
+            #
+            # The condition is therefore `ahead > 0`, not `ahead > 0 and
+            # behind > 0`. Mirroring `can_fast_forward` means refusing whenever
+            # the tree is ahead: an ahead-only checkout (local commits, remote
+            # unmoved) loses them to this reset exactly as a diverged one does,
+            # and is the more likely shape on a developer box that has simply
+            # not pushed yet.
+            #
+            # The floor mandate does not need the reset to be its mechanism: a
+            # violation that can only be resolved by discarding committed work
+            # needs a human. Refuse, report the counts through the update-status
+            # surface, and leave the host below the floor.
+            #
+            # Fail CLOSED. This is the most privileged path in the product (no
+            # auth, no click, `reset --hard` + pip + execv on boot), so a tree
+            # whose divergence cannot be established is not one to hard-reset.
+            ahead = behind = -1
+            counts_proc = await asyncio.create_subprocess_exec(
+                "git",
+                "rev-list",
+                "--left-right",
+                "--count",
+                f"HEAD...origin/{branch}",
+                cwd=proj,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            counts_out, _ = await asyncio.wait_for(counts_proc.communicate(), timeout=10)
+            if counts_proc.returncode == 0 and counts_out:
+                parts = counts_out.decode(errors="replace").split()
+                if len(parts) == 2 and all(p.isdigit() for p in parts):
+                    ahead, behind = int(parts[0]), int(parts[1])
+            if ahead < 0 or behind < 0:
+                logger.error(
+                    "Auto-update refused: could not determine how %s relates to "
+                    "origin/%s, so a hard reset cannot be shown to be safe",
+                    proj,
+                    branch,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed",
+                        "Update refused: could not determine whether the local "
+                        "checkout has diverged. Check the logs.",
+                    )
+                return
+            if ahead > 0:
+                logger.warning(
+                    "Auto-update refused: %s carries %d commit(s) that origin/%s "
+                    "does not (%d behind). A hard reset would discard committed "
+                    "local work, so this host stays below the version floor until "
+                    "the branch is reconciled by hand.",
+                    proj,
+                    ahead,
+                    branch,
+                    behind,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "failed",
+                        f"Update refused: this checkout has {ahead} commit(s) "
+                        f"that origin/{branch} does not ({behind} behind). "
+                        "Updating would discard committed local work — "
+                        "reconcile the branch manually.",
+                    )
+                return
+
             # Warn if local tracked-file edits will be discarded
             status_proc = await asyncio.create_subprocess_exec(
                 "git",
