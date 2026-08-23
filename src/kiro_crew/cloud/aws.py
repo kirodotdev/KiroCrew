@@ -21,6 +21,7 @@ import os
 import subprocess
 from typing import Any, Optional
 
+from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.sandbox import cgroup_scope_argv, popen_limited, wrap_argv
 
 logger = logging.getLogger(__name__)
@@ -180,8 +181,11 @@ def _build_argv(args: list[str], profile: str, region: str) -> list[str]:
     Never appends a raw credential — only the profile *name* and region, both of
     which the caller has already charset-validated (see ``cloud.iam`` /
     ``cloud.ec2``).
+
+    The CLI is resolved absolutely through the deploy engine's shared resolver
+    so a GUI-launched gateway's minimal PATH still finds it (#4770).
     """
-    cmd = ["aws", *args]
+    cmd = [resolve_aws_bin(), *args]
     if profile:
         cmd += ["--profile", profile]
     if region:

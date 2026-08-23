@@ -1181,7 +1181,33 @@ class TestIdentityProbeInputs:
         with patch("shutil.which", return_value=None):
             identity = asyncio.run(aws_consent.probe_identity("", "", use_cache=False))
         assert identity.ok is False
-        assert "not on PATH" in identity.detail
+        assert "could not be found" in identity.detail
+
+    def test_cli_probe_resolves_under_minimal_path(self, home, monkeypatch, tmp_path):
+        """A GUI-launched gateway's minimal PATH must not fail the consent gate
+        closed: the probe routes through the deploy engine's well-known-dirs
+        resolver (#4770), agreeing with the resolved spawn below it."""
+        import os as _os
+
+        if _os.name == "nt":
+            pytest.skip("fallback install dirs are POSIX literals; dead on Windows by design")
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        fake_aws = tmp_path / "aws"
+        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+
+        payload = '{"Account": "111122223333", "Arn": "arn:aws:iam::1:user/x"}'
+        with patch.object(aws_consent, "_run_aws", return_value=(0, payload, "")) as run:
+            identity = asyncio.run(aws_consent.probe_identity("", "", use_cache=False))
+        assert identity.ok is True
+        assert run.call_count == 1  # the gate passed; the probe reached the spawn
 
     def test_the_local_half_of_the_gate_never_probes(self, home):
         """``is_granted`` stays local; only ``authorize`` may probe.

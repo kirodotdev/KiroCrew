@@ -334,6 +334,14 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
                 "or environment variables."
             )
         python_bin = sys.executable or "python3"
+        # Deliberately a bare "aws" (NOT the deploy engine's absolute resolver,
+        # #4770): this command is persisted into ~/.aws/config and later run by
+        # whichever AWS CLI/SDK reads that profile — possibly a different user
+        # shell, possibly long after the CLI was reinstalled elsewhere. An
+        # absolute path resolved in the gateway's environment today can be
+        # wrong or stale in that consumer's environment, and would turn a
+        # PATH-configurable lookup into a frozen location. The consumer
+        # resolves "aws" against its own PATH.
         script = (
             "import json,subprocess;"
             'r=subprocess.run(["aws","sts","assume-role","--role-arn",'

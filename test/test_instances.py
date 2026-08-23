@@ -4271,6 +4271,74 @@ class TestSsmRegistry:
 class TestSsmTunnelArgv:
     """The SSM port-forward argv (loopback-bound, no shell, no injected opts)."""
 
+    @pytest.fixture(autouse=True)
+    def _bare_resolver(self, monkeypatch):
+        """Pin the shared aws-CLI resolver (#4770) to the bare name so the
+        argv-shape assertions stay deterministic across hosts."""
+        from kiro_crew.cloud import ssm
+
+        monkeypatch.setattr(ssm, "resolve_aws_bin", lambda: "aws")
+
+    def test_start_builds_argv_off_the_event_loop(self, monkeypatch):
+        """The SSM branch's argv build resolves the aws CLI (#4770), which
+        probes the filesystem — start() must run it in a worker thread, never
+        on the gateway event loop (a stalled network mount on PATH would
+        otherwise freeze every request)."""
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+        from kiro_crew.instances.ssh_tunnel_manager import _SshTunnel
+
+        seen: dict = {}
+
+        def probe_builder(*a, **k):
+            try:
+                asyncio.get_running_loop()
+                seen["on_loop"] = True
+            except RuntimeError:
+                seen["on_loop"] = False
+            return ["aws", "ssm", "start-session"]
+
+        monkeypatch.setattr(stm, "_build_ssm_tunnel_argv", probe_builder)
+
+        class FakeProc:
+            returncode = None
+            stderr = None
+            pid = 4242
+
+            def terminate(self):
+                self.returncode = -15
+
+            def kill(self):
+                self.returncode = -9
+
+            async def wait(self):
+                return self.returncode
+
+        async def fake_exec(*a, **k):
+            return FakeProc()
+
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+
+        async def main():
+            t = _SshTunnel(
+                "cd-1",
+                "",
+                7778,
+                7777,
+                transport="ssm",
+                ssm_target="i-0123456789abcdef0",
+            )
+
+            async def _reachable():
+                return True
+
+            t._port_reachable = _reachable
+            ok = await t.start()
+            assert ok
+            await t.stop()
+
+        asyncio.run(main())
+        assert seen["on_loop"] is False  # built in a worker thread, not on the loop
+
     def test_argv_shape(self):
         from kiro_crew.instances.ssh_tunnel_manager import _build_ssm_tunnel_argv
 

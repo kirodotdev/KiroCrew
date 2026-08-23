@@ -381,8 +381,8 @@ class TestVoiceVoices:
         config_dir().mkdir(parents=True, exist_ok=True)
         _consent_to_polly(profile="", region="")
         # The gate also verifies the LIVE account, which would spawn the AWS CLI
-        # and collide with this class's single-argument `shutil.which` stub.
-        # These cases are about the catalogue, so return a matching identity.
+        # behind this class's `resolve_polly_cli` stub. These cases are about
+        # the catalogue, so return a matching identity.
         from kiro_crew import aws_consent
 
         async def _probe(_profile, _region, *, use_cache=True):
@@ -420,7 +420,9 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
-        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -479,7 +481,9 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
-        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -514,7 +518,9 @@ class TestVoiceVoices:
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", mock_exec)
-        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
 
         from kiro_crew.dashboard.chat_voice import api_voice_voices
         app = web.Application()
@@ -534,7 +540,7 @@ class TestVoiceVoices:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
 
-        monkeypatch.setattr("shutil.which", lambda cmd: None)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: None)
         spawn = AsyncMock()
         monkeypatch.setattr("asyncio.create_subprocess_exec", spawn)
 
@@ -565,7 +571,9 @@ class TestVoiceVoices:
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache", None)
         monkeypatch.setattr("kiro_crew.dashboard.chat_voice._voices_cache_ts", 0)
 
-        monkeypatch.setattr("shutil.which", lambda cmd: "/usr/local/bin/aws")
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_voice.resolve_polly_cli", lambda: "/usr/local/bin/aws"
+        )
 
         async def mock_exec(*args, **kwargs):
             raise FileNotFoundError(2, "No such file or directory", "aws")

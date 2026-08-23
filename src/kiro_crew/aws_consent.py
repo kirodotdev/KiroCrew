@@ -554,11 +554,11 @@ async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -
 
     if not _inputs_are_safe(profile, region):
         return Identity(ok=False, detail="The configured AWS profile or region is not valid.")
-    if await asyncio.to_thread(shutil.which, "aws") is None:
+    if not await asyncio.to_thread(_aws_cli_resolvable):
         return Identity(
             ok=False,
             detail=(
-                "The AWS CLI is not on PATH, so the account cannot be shown. "
+                "The AWS CLI could not be found, so the account cannot be shown. "
                 "Install it, or choose a local provider that needs no AWS account."
             ),
         )
@@ -595,6 +595,21 @@ async def probe_identity(profile: str, region: str, *, use_cache: bool = True) -
 
     _probe_cache[key] = (now, identity)
     return identity
+
+
+def _aws_cli_resolvable() -> bool:
+    """Thread-side probe: is the ``aws`` CLI invocable from where we spawn?
+
+    Routes through the deploy engine's shared well-known-dirs resolver (#4770)
+    so a GUI-launched gateway's minimal PATH does not fail the consent gate
+    closed before the voice sites' own resolved spawns ever run — the spawn
+    below already resolves absolutely via ``cloud.aws.run_aws``, so the probe
+    must agree with it. Imported at call time for the same reason as
+    ``_run_aws``.
+    """
+    from kiro_crew.deploy.engine import resolve_aws_bin
+
+    return shutil.which(resolve_aws_bin()) is not None
 
 
 def _run_aws(args: list[str], profile: str, region: str) -> tuple[int, str, str]:

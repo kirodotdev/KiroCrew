@@ -10,6 +10,12 @@ from kiro_crew.cloud import aws
 
 
 class TestBuildArgv:
+    @pytest.fixture(autouse=True)
+    def _bare_resolver(self, monkeypatch):
+        """Pin the shared resolver to the bare name so argv-shape assertions
+        stay deterministic across hosts (with/without an installed CLI)."""
+        monkeypatch.setattr(aws, "resolve_aws_bin", lambda: "aws")
+
     def test_bare(self):
         assert aws._build_argv(["sts", "get-caller-identity"], "", "") == [
             "aws",
@@ -24,6 +30,32 @@ class TestBuildArgv:
     def test_profile_only(self):
         argv = aws._build_argv(["s3", "ls"], "prod", "")
         assert argv == ["aws", "s3", "ls", "--profile", "prod"]
+
+    def test_argv_head_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
+        """A GUI-launched gateway's minimal PATH must not yield a bare 'aws'
+        head that fails execvp: the builder routes through the deploy engine's
+        well-known-dirs resolver (#4770)."""
+        import os as _os
+
+        if _os.name == "nt":
+            pytest.skip("fallback install dirs are POSIX literals; dead on Windows by design")
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        fake_aws = tmp_path / "aws"
+        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+        # Undo this class's bare-name pin: this test exercises the real resolver.
+        monkeypatch.setattr(aws, "resolve_aws_bin", engine.resolve_aws_bin)
+
+        argv = aws._build_argv(["sts", "get-caller-identity"], "dev", "")
+        assert argv[0] == str(fake_aws)
+        assert argv[1:] == ["sts", "get-caller-identity", "--profile", "dev"]
 
 
 class TestRunAws:

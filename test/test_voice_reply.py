@@ -247,6 +247,11 @@ def _patch_aws_on_path(monkeypatch) -> None:
         "kiro_crew.voice_reply.shutil.which",
         lambda name, *a, **k: _FAKE_AWS_CLI if name == "aws" else None,
     )
+    # The which stub above is name-sensitive ("aws" only), but the shared
+    # deploy-engine resolver (#4770) would feed it a PATH-hit absolute path.
+    # Pin the resolver to the bare name so this fixture keeps meaning exactly
+    # "the aws CLI is present" regardless of the host.
+    monkeypatch.setattr("kiro_crew.voice_reply.resolve_aws_bin", lambda: "aws")
 
 
 @pytest.fixture(autouse=True)
@@ -343,6 +348,49 @@ class TestIsAvailable:
 
     def test_unknown_provider_returns_false(self, caplog) -> None:
         assert is_available("bogus") is False
+
+
+# ── resolve_polly_cli() (#4770) ─────────────────────────────────────────
+
+
+class TestResolvePollyCli:
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="fallback install dirs are POSIX literals; dead on Windows by design",
+    )
+    def test_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path) -> None:
+        """A GUI-launched gateway's minimal PATH must still resolve the CLI
+        absolutely via the deploy engine's well-known-dirs resolver instead of
+        silently skipping TTS (#4770)."""
+        from kiro_crew import github_runner, voice_reply
+        from kiro_crew.deploy import engine
+
+        fake_aws = tmp_path / "aws"
+        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+
+        assert voice_reply.resolve_polly_cli() == str(fake_aws)
+        # The converted is_available() probe site sees the same resolution.
+        assert is_available(PROVIDER_POLLY) is True
+
+    def test_none_when_cli_absent_everywhere(self, monkeypatch, tmp_path) -> None:
+        """Bare-name fallback that is not invocable maps to None — the value
+        every probe site already treats as 'unavailable'."""
+        from kiro_crew import voice_reply
+        from kiro_crew.deploy import engine
+
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", ())
+
+        assert voice_reply.resolve_polly_cli() is None
+        assert is_available(PROVIDER_POLLY) is False
 
 
 # ── _resolve_piper_binary() ─────────────────────────────────────────────

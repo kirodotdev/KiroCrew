@@ -14,7 +14,6 @@ import contextlib
 import json
 import logging
 import os
-import shutil
 import tempfile
 import time
 
@@ -30,6 +29,7 @@ from kiro_crew.voice_reply import (
     PROVIDER_POLLY,
     VALID_ENGINES,
     VALID_PROVIDERS,
+    resolve_polly_cli,
     stitch_mp3s,
     streaming_voice_reply,
     synthesize_speech,
@@ -330,18 +330,21 @@ async def api_voice_voices(request: web.Request) -> web.Response:
     ):
         return web.json_response({"voices": []})
 
-    if await asyncio.to_thread(shutil.which, "aws") is None:
+    aws_bin = await asyncio.to_thread(resolve_polly_cli)
+    if aws_bin is None:
         # Polly voice listing needs the AWS CLI, which is optional (the
-        # default Piper provider works without it). When the gateway runs
-        # under launchd, its PATH may also lack the dirs where `aws` is
-        # installed (e.g. /usr/local/bin). Degrade to an empty list instead
-        # of a 500 + traceback. Not cached, so the list recovers as soon as
-        # `aws` becomes resolvable. The probe runs in a thread so a wedged
-        # network mount on PATH cannot stall the event loop.
-        logger.info("aws CLI not found on PATH — returning empty voices list")
+        # default Piper provider works without it). Resolution goes through
+        # the deploy engine's shared well-known-dirs resolver, so a gateway
+        # running under launchd with a minimal PATH still finds a Homebrew /
+        # official-pkg install (#4770). When the CLI genuinely is not
+        # installed, degrade to an empty list instead of a 500 + traceback.
+        # Not cached, so the list recovers as soon as `aws` becomes
+        # resolvable. The probe runs in a thread so a wedged network mount
+        # on PATH cannot stall the event loop.
+        logger.info("aws CLI not resolvable — returning empty voices list")
         return web.json_response({"voices": []})
 
-    cmd = ["aws", "polly", "describe-voices", "--output", "json"]
+    cmd = [aws_bin, "polly", "describe-voices", "--output", "json"]
     if _vc.aws_profile:
         cmd += ["--profile", _vc.aws_profile]
     if _vc.region:

@@ -116,7 +116,7 @@ def test_aws_bin_path_hit_wins_without_fallback(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path))
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", ())
 
-    assert engine._resolve_aws_bin() == str(fake_aws)
+    assert engine.resolve_aws_bin() == str(fake_aws)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="fallback branch is dead on Windows")
@@ -139,7 +139,7 @@ def test_aws_bin_fallback_hit_failing_provenance_returns_bare_name(monkeypatch, 
 
     monkeypatch.setattr(github_runner, "validate_provider_executable", _refuse)
 
-    assert engine._resolve_aws_bin() == "aws"
+    assert engine.resolve_aws_bin() == "aws"
 
 
 def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
@@ -148,7 +148,7 @@ def test_aws_bin_prefers_path_then_falls_back_to_bare_name(monkeypatch):
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(engine, "_AWS_BIN_DIRS", ())
 
-    assert engine._resolve_aws_bin() == "aws"
+    assert engine.resolve_aws_bin() == "aws"
     assert engine._aws(["s3", "ls"], "")[0] == "aws"
 
 

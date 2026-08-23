@@ -8,7 +8,8 @@ Two kinds of SSM interaction:
 2. **Open a long-lived port-forward tunnel** — ``start-session`` with the
    ``AWS-StartPortForwardingSession`` document. This is a streaming child
    process, so it is spawned directly with ``subprocess.Popen`` (not through the
-   capture-only chokepoint). The argv builders are pure and testable.
+   capture-only chokepoint). The argv builders are testable (the CLI head is
+   resolved via the deploy engine's shared resolver, #4770).
 
 Requires the ``session-manager-plugin`` on the client for #2 (bundled by the
 launcher prerequisites); #1 needs only the ``aws`` CLI.
@@ -29,6 +30,7 @@ from typing import Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.cloud import aws
+from kiro_crew.deploy.engine import resolve_aws_bin
 
 logger = logging.getLogger(__name__)
 
@@ -166,9 +168,13 @@ def build_port_forward_argv(
     profile: str = "",
     region: str = "",
 ) -> list[str]:
-    """Build the ``aws ssm start-session`` port-forward argv (pure/testable)."""
+    """Build the ``aws ssm start-session`` port-forward argv (testable).
+
+    The CLI head is resolved absolutely through the deploy engine's shared
+    resolver so a GUI-launched gateway's minimal PATH still finds it (#4770).
+    """
     argv = [
-        "aws",
+        resolve_aws_bin(),
         "ssm",
         "start-session",
         "--target",
@@ -188,8 +194,11 @@ def build_port_forward_argv(
 def build_interactive_session_argv(
     instance_id: str, profile: str = "", region: str = ""
 ) -> list[str]:
-    """Build the plain ``aws ssm start-session`` argv (interactive shell)."""
-    argv = ["aws", "ssm", "start-session", "--target", instance_id]
+    """Build the plain ``aws ssm start-session`` argv (interactive shell).
+
+    Same absolute CLI resolution as :func:`build_port_forward_argv` (#4770).
+    """
+    argv = [resolve_aws_bin(), "ssm", "start-session", "--target", instance_id]
     if region:
         argv += ["--region", region]
     if profile:

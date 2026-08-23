@@ -12,6 +12,12 @@ from kiro_crew.cloud import aws, ssm
 
 
 class TestArgvBuilders:
+    @pytest.fixture(autouse=True)
+    def _bare_resolver(self, monkeypatch):
+        """Pin the shared resolver to the bare name so argv-shape assertions
+        stay deterministic across hosts (with/without an installed CLI)."""
+        monkeypatch.setattr(ssm, "resolve_aws_bin", lambda: "aws")
+
     def test_port_forward_argv(self):
         argv = ssm.build_port_forward_argv("i-0abc", 5476, 5599, "dev", "us-east-1")
         assert argv[:3] == ["aws", "ssm", "start-session"]
@@ -39,6 +45,36 @@ class TestArgvBuilders:
             "--profile",
             "dev",
         ]
+
+    def test_argv_heads_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
+        """Both start-session builders must resolve the CLI absolutely under a
+        GUI-launched gateway's minimal PATH via the deploy engine's shared
+        well-known-dirs resolver (#4770)."""
+        import os as _os
+
+        if _os.name == "nt":
+            pytest.skip("fallback install dirs are POSIX literals; dead on Windows by design")
+        from kiro_crew import github_runner
+        from kiro_crew.deploy import engine
+
+        fake_aws = tmp_path / "aws"
+        fake_aws.write_text("#!/bin/sh\n")
+        fake_aws.chmod(0o755)
+        empty_bin = tmp_path / "emptybin"
+        empty_bin.mkdir()
+        monkeypatch.setenv("PATH", str(empty_bin))
+        monkeypatch.setattr(engine, "_AWS_BIN_DIRS", (str(tmp_path),))
+        monkeypatch.setattr(github_runner, "validate_provider_executable", lambda c: c)
+        # Undo this class's bare-name pin: this test exercises the real resolver.
+        monkeypatch.setattr(ssm, "resolve_aws_bin", engine.resolve_aws_bin)
+
+        pf = ssm.build_port_forward_argv("i-0abc", 5476, 5599, "dev", "us-east-1")
+        assert pf[0] == str(fake_aws)
+        assert pf[1:3] == ["ssm", "start-session"]
+
+        it = ssm.build_interactive_session_argv("i-0abc")
+        assert it[0] == str(fake_aws)
+        assert it[1:3] == ["ssm", "start-session"]
 
 
 class TestOpenPortForward:

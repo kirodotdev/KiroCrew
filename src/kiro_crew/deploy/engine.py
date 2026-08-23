@@ -98,7 +98,7 @@ _AWS_BIN_DIRS = (
 )
 
 
-def _resolve_aws_bin() -> str:
+def resolve_aws_bin() -> str:
     """Resolve ``aws`` to an absolute path, falling back to the bare name.
 
     Searches the inherited ``PATH`` first, then the well-known install dirs in
@@ -106,6 +106,11 @@ def _resolve_aws_bin() -> str:
     how it was launched (Finder/Dock give a minimal PATH; a terminal launch does
     not). Falling back to the bare ``"aws"`` preserves the prior behaviour — and
     its "not found" error — when the CLI genuinely is not installed anywhere.
+
+    Public: this is the repo's single ``aws``-CLI resolution chokepoint, reused
+    by every sibling spawn site (``cloud.aws``, ``cloud.ssm``, ``voice_reply``,
+    ``dashboard.chat_voice``, the artifact-deploy skill scripts) so each one
+    survives a GUI-launched gateway's minimal PATH the same way (#4770).
 
     A hit found only through the fallback dirs (i.e. NOT reachable via the
     inherited ``PATH``, which the pre-existing bare-argv behaviour already
@@ -137,7 +142,7 @@ def _resolve_aws_bin() -> str:
 
 def _aws(args: list[str], profile: str) -> list[str]:
     """Build an ``aws`` CLI argv with an optional ``--profile`` (never a raw key)."""
-    cmd = [_resolve_aws_bin()] + list(args)
+    cmd = [resolve_aws_bin()] + list(args)
     if profile:
         cmd += ["--profile", profile]
     return cmd

@@ -362,7 +362,12 @@ class _SshTunnel:
         self._stopping = False
         self.status.state = TunnelState.CONNECTING
         self.status.error = ""
-        argv = self._build_argv()
+        # Built in a worker thread: the SSM branch resolves the aws CLI
+        # absolutely (#4770), which probes the filesystem (PATH scan +
+        # well-known install dirs) — synchronous work that must not run on the
+        # gateway event loop, where a stalled network mount on PATH would
+        # freeze every request and heartbeat.
+        argv = await asyncio.to_thread(self._build_argv)
         target = self._ssm_target if self._transport == "ssm" else self._ssh_host
         logger.info(
             "Opening %s tunnel for %s: 127.0.0.1:%d -> %s:%d",

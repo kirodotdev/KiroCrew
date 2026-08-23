@@ -29,6 +29,7 @@ import tempfile
 from typing import TYPE_CHECKING
 
 from kiro_crew import aws_consent
+from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -41,6 +42,21 @@ if TYPE_CHECKING:
     from kiro_crew.slack.client import SlackClientOps
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_polly_cli() -> str | None:
+    """Resolve the ``aws`` CLI for Polly spawn sites; ``None`` when not invocable.
+
+    Routes through the deploy engine's shared well-known-dirs resolver so a
+    GUI-launched gateway's minimal PATH still finds the CLI instead of silently
+    skipping TTS / degrading to an empty voice list (#4770). The trailing
+    ``shutil.which`` turns the resolver's bare-name fallback into the ``None``
+    these probe sites already treat as "unavailable", and confirms an absolute
+    hit is still actually executable.
+    """
+    aws_bin = resolve_aws_bin()
+    return aws_bin if shutil.which(aws_bin) else None
+
 
 # ── Provider constants ──
 PROVIDER_POLLY = "polly"
@@ -69,7 +85,7 @@ def is_available(
     when voice output was requested but cannot be produced.
     """
     if provider == PROVIDER_POLLY:
-        return shutil.which("aws") is not None
+        return resolve_polly_cli() is not None
     if provider == PROVIDER_PIPER:
         bin_path = _resolve_piper_binary(piper_binary)
         if not bin_path:
@@ -447,9 +463,13 @@ async def _synthesize_polly(
         return None
     # Polly is OPTIONAL and driven via the ``aws`` CLI (no boto3 dependency).
     # On a vanilla machine without the CLI installed, degrade gracefully here
-    # instead of raising FileNotFoundError from create_subprocess_exec.
-    if shutil.which("aws") is None:
-        logger.info("voice_reply: Polly unavailable (aws CLI not on PATH); skipping TTS")
+    # instead of raising FileNotFoundError from create_subprocess_exec. Resolved
+    # absolutely (shared deploy-engine resolver) so a GUI-launched gateway's
+    # minimal PATH does not silently skip TTS (#4770); resolution probes the
+    # filesystem, so it runs in a thread rather than on the event loop.
+    aws_bin = await asyncio.to_thread(resolve_polly_cli)
+    if aws_bin is None:
+        logger.info("voice_reply: Polly unavailable (aws CLI not resolvable); skipping TTS")
         return None
     if not aws_profile:
         # The reporter's core case: with no profile the argv below carries no
@@ -468,7 +488,7 @@ async def _synthesize_polly(
     sandbox_cleanup: str | None = None
     try:
         try:
-            cmd: list[str] = ["aws", "polly", "synthesize-speech"]
+            cmd: list[str] = [aws_bin, "polly", "synthesize-speech"]
             if aws_profile:
                 cmd += ["--profile", aws_profile]
             if region:
