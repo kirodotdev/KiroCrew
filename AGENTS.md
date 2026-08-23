@@ -332,6 +332,12 @@ flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
 
+**On macOS, add `--platform linux` to mypy.** CI type-checks on Linux, and
+typeshed guards `os.listxattr` / `getxattr` / `setxattr` behind
+`sys.platform == "linux"` even though macOS has them — so a local run reports 4
+errors in files you did not touch, and it MISSES Linux-only errors CI fails on.
+`mypy --platform linux src/kiro_crew` is the parity invocation.
+
 **Do not run bare `black src/kiro_crew test`.** 1,420 files are not black-clean
 yet, so it reformats ~95,800 lines on top of whatever you changed and buries your
 diff. The gate above enforces black on every file *outside*

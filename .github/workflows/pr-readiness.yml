@@ -145,12 +145,34 @@ jobs:
       - name: Install bounded retry helper for read-only gh calls
         run: |
           cat > "$RUNNER_TEMP/gh-retry.sh" <<'HELPER'
+          # `timeout` is GNU coreutils: present on the runner, ABSENT on macOS by
+          # default -- and these step scripts are extracted and executed verbatim
+          # by test_pr_readiness_evaluate.py / _publish.py, so they have to run
+          # there too. Missing, `timeout` makes every call exit 127, `gh_retry`
+          # reads that as a transient failure, and the lane publishes `pending`
+          # for a reason that has nothing to do with the PR under test.
+          #
+          # Resolved once here rather than at each call site, so the 120s bound
+          # also has a single definition. Falling back to UNBOUNDED is deliberate:
+          # a call with no ceiling is a weaker guarantee than a bounded one, but a
+          # far better answer than treating the tool's absence as the request
+          # having failed. Written for bash 3.2, which is what macOS ships.
+          bounded() {
+            if command -v timeout >/dev/null 2>&1; then
+              timeout 120 "$@"
+            elif command -v gtimeout >/dev/null 2>&1; then
+              gtimeout 120 "$@"
+            else
+              "$@"
+            fi
+          }
+
           gh_retry() {
             local attempt out err rc=1
             for attempt in 1 2 3; do
-              # timeout bounds a HANGING attempt (gh applies no HTTP request
+              # `bounded` caps a HANGING attempt (gh applies no HTTP request
               # timeout of its own); rc 124 is just another retryable failure.
-              if out="$(timeout 120 "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
+              if out="$(bounded "$@" 2>"$RUNNER_TEMP/gh-retry-err")"; then
                 cat "$RUNNER_TEMP/gh-retry-err" >&2
                 printf '%s\n' "$out"
                 return 0
@@ -599,7 +621,7 @@ jobs:
             # verdict is block a merge that a re-evaluation will unblock;
             # and pending-over-pending / no-status just refresh the
             # self-heal sweep's staleness clock.
-            existing_state="$(timeout 120 gh api "repos/$REPO/commits/$SHA/status" \
+            existing_state="$(bounded gh api "repos/$REPO/commits/$SHA/status" \
               --jq '[.statuses[] | select(.context == "PR Readiness")][0].state // empty' \
               2>/dev/null)" || existing_state="__unreadable__"
             if [ "$existing_state" = "failure" ] || [ "$existing_state" = "error" ]; then
@@ -812,7 +834,7 @@ jobs:
               description: $description,
               context: "PR Readiness"
             }' > "$RUNNER_TEMP/readiness-status.json"
-          if ! timeout 120 gh api --method POST "repos/$REPO/statuses/$SHA" \
+          if ! bounded gh api --method POST "repos/$REPO/statuses/$SHA" \
             --input "$RUNNER_TEMP/readiness-status.json" >/dev/null; then
             echo "::error::Failed to publish the readiness status for $SHA." \
               "The POST is not retried (a retry can overwrite a concurrent" \

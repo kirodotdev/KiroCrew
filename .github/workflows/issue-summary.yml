@@ -183,7 +183,13 @@ jobs:
           # valuable answer this lane can give, and it is unreachable from open
           # issues alone. The cap keeps a three-year-old namesake out of the
           # prompt.
-          CUTOFF="$(date -u -d '120 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          # GNU date on the runner, BSD date on a contributor's macOS. This script
+          # is extracted and executed verbatim by `test_issue_summary_workflow.py`,
+          # so it runs on both, and BSD `date` rejects `-d` outright ("illegal
+          # option") rather than ignoring it -- which failed every test in that
+          # file on macOS while CI stayed green.
+          CUTOFF="$(date -u -d '120 days ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
+            || date -u -v-120d +%Y-%m-%dT%H:%M:%SZ)"
           gh issue list --repo "$REPO" --state all --limit 300 \
             --json number,title,state,closedAt > neighbours.json
           # `10#` forces base 10 so a dispatch of "007" still excludes issue 7

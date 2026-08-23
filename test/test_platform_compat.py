@@ -12,9 +12,9 @@ output we can assert directly), and the process-helper return contracts.
 from __future__ import annotations
 
 import errno
-import gc
 import json
 import logging
+import mmap
 import os
 import re
 import shutil
@@ -495,17 +495,27 @@ class TestResourceShims:
         much the gateway had ever transiently used. ``ru_maxrss`` never
         decreases, so this drives a real allocation and requires the number to
         come back down — the one property a peak cannot have.
+
+        The allocation is an ``mmap`` rather than a ``bytearray`` because the
+        RELEASE has to be observable on every platform, and only ``munmap`` is:
+        freeing a ``bytearray`` returns the pages to the allocator, which decides
+        for itself whether to hand them back to the OS. macOS's keeps all 128MB
+        resident, so the current reading did not move and this failed there while
+        agreeing exactly with ``ps -o rss=`` — a correct reading judged against an
+        allocator's discretion rather than against the property under test.
+        Closing a mapping unmaps immediately on Linux, macOS and Windows alike.
         """
         chunk = 128 * 1024 * 1024
         page = 4096
         baseline = pc.proc_rss_bytes()
-        buf = bytearray(chunk)
-        for offset in range(0, chunk, page):  # fault the pages in
-            buf[offset] = 1
-        while_held = pc.proc_rss_bytes()
-        peak_while_held = pc.proc_peak_rss_bytes()
-        del buf
-        gc.collect()
+        buf = mmap.mmap(-1, chunk)
+        try:
+            for offset in range(0, chunk, page):  # fault the pages in
+                buf[offset] = 1
+            while_held = pc.proc_rss_bytes()
+            peak_while_held = pc.proc_peak_rss_bytes()
+        finally:
+            buf.close()
         after_free = pc.proc_rss_bytes()
 
         # Rose by most of the buffer while it was resident.

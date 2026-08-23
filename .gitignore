@@ -29,10 +29,14 @@ __pycache__/
 # Generated per-machine by install_cc_agent_config()
 .mcp.json
 
-/venv/
-/.venv/
-/.venv-x86/
-/.venv311/
+# No trailing slash: a slash matches a DIRECTORY only, and a venv is commonly a
+# SYMLINK in a git worktree (one interpreter shared by several checkouts). With the
+# slash, `git add -A` in a worktree stages that symlink -- and the brand gate is
+# what catches it, reporting `.venv` as a changed file it cannot decode as UTF-8.
+/venv
+/.venv
+/.venv-x86
+/.venv311
 
 # Editor / IDE
 .vscode/
@@ -46,7 +50,10 @@ pyrightconfig.json
 .install-method
 
 # Frontend
-node_modules/
+# No trailing slash, for the same reason as the venv entries above: in a git
+# worktree node_modules is often a SYMLINK to a sibling checkout's, and a slash
+# matches a directory only.
+node_modules
 frontend/package-lock.json
 frontend/dist/
 tui/dist/
@@ -111,7 +118,7 @@ test_plan_atomic_writes_subagent_progress.md
 /electron/
 website/electron/backend-dist/
 website/electron/dist/
-website/electron/node_modules/
+website/electron/node_modules
 # Generated launcher icon (created from icon.png when making the desktop shortcut)
 website/electron/KiroCrew.ico
 tui/

@@ -35,7 +35,10 @@ this" contract failed at least once:
   directory for the whole process, so a bare ``mkdtemp()`` whose cleanup is missing
   or skipped leaves its directory somewhere this run owns and removes, instead of
   accumulating in the shared temp root forever. What was left behind is REPORTED
-  first, so the leak is a red rather than silent inode consumption.
+  first, so the leak is a red rather than silent inode consumption. On macOS the
+  base is additionally moved to ``/tmp`` -- the prefix Linux and CI already use --
+  because the launchd per-user temp dir is long enough to break an AF_UNIX bind and
+  random enough to read as a credential. See :data:`_SHORT_TMP_BASE`.
 * **The repository checkout.** The run fails when it ends with residue anywhere in
   the checkout, which is how a subprocess spawned without ``cwd=`` announces
   itself.
@@ -470,8 +473,52 @@ _TESTS_SINCE_LINECACHE_CLEAR = 0
 _FROZEN_AT_COLLECTION: int | None = None
 
 
+#: A short, path-shaped temp prefix for Darwin. macOS resolves the per-user temp dir to
+#: ``/var/folders/<2 chars>/<30 random chars>/T``, which is both LONG and free of any
+#: character outside ``[A-Za-z0-9/]`` -- and two limits the suite has nothing to do with
+#: fall straight out of that:
+#:
+#: * ``sun_path`` for an AF_UNIX socket is 104 bytes on Darwin (108 on Linux), so a
+#:   socket under a pytest temp dir cannot be bound at all: ``OSError: AF_UNIX path too
+#:   long`` is raised before the behaviour under test runs.
+#: * ``security._BARE_SECRET_RUN_RE`` matches a >=40-character run of ``[A-Za-z0-9+/]``,
+#:   and ``/`` is IN that class, so a temp path is ONE contiguous run. The 30-character
+#:   random segment carries that run over the 4.3-bits/char entropy floor whose whole
+#:   job is to keep file paths out, so any temp path echoed through a redactor comes
+#:   back ``[REDACTED: credential]`` and the assertion sees a mangled path.
+#:
+#: Both are properties of the HOST's temp prefix rather than of the code under test:
+#: these same tests pass on Linux and in CI, where ``gettempdir()`` is ``/tmp``. Giving
+#: macOS the prefix Linux already has is the smallest change that removes both, and it
+#: removes them for every test at once instead of teaching each one about a platform
+#: limit it is not about.
+#:
+#: The posture does not change. ``/tmp`` is world-writable with a sticky bit on Linux
+#: too, pytest still builds its per-user ``pytest-of-<user>`` tree inside it, and this
+#: file's own temp root is still ``mkdtemp``-created with O_EXCL and mode 0700 -- see
+#: :func:`_create_tmp_root` for why that is what makes a shared parent safe.
+_SHORT_TMP_BASE = "/tmp"
+
+
+def _prefer_short_tmp_base() -> None:
+    """Point this run's temp base at :data:`_SHORT_TMP_BASE` on Darwin.
+
+    Called from ``pytest_configure``, which is early enough: pytest resolves its
+    ``basetemp`` lazily from ``tempfile.gettempdir()`` on the first ``mktemp`` /
+    ``getbasetemp()``, and that cannot happen before a fixture runs. Both the module
+    global and the env vars are set, because ``gettempdir()`` MEMOISES into
+    ``tempfile.tempdir`` and a spawned child reads the env instead.
+    """
+    if sys.platform != "darwin" or not os.path.isdir(_SHORT_TMP_BASE):
+        return
+    tempfile.tempdir = _SHORT_TMP_BASE
+    for name in _TMP_ENV_VARS:
+        os.environ[name] = _SHORT_TMP_BASE
+
+
 def pytest_configure(config: pytest.Config) -> None:
     """Record the working directory pytest started in, before any test can move it."""
+    _prefer_short_tmp_base()
     global _SESSION_CWD
     try:
         _SESSION_CWD = os.getcwd()
