@@ -774,6 +774,7 @@ def decide(
     readiness_context,
     marker_eval=None,
     head_run="skip",
+    rollup_notice="",
 ):
     """Resolve PR state to (exit_code, status line). Fail-closed.
 
@@ -802,6 +803,12 @@ def decide(
        defect. Both fail closed on "could not read". Advisory FINDING counts
        never gate -- whether a non-blocking finding should hold the loop open
        is a judgment call the exit code deliberately does not make.
+       ``rollup_notice`` -- the non-empty NOTICE string when the rollup read
+       degraded (fetch failure, or a concurrent push between the two reads) --
+       never changes the exit code either, only which reason an empty rollup
+       earns: a degraded read names its environment cause, so the reason (and
+       ``progress_key.status``, which carries it) distinguishes an environment
+       gap from a genuinely check-less PR.
     """
     if state != "OPEN":
         return 20, "STATUS: BLOCKED - PR state is {} (not OPEN; terminal)".format(state or "?")
@@ -833,7 +840,28 @@ def decide(
     elif readiness_kind is None and n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
     if n_checks == 0:
-        reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
+        # An empty rollup has two very different causes, and the reason chosen
+        # here travels in ``progress_key.status``, which a polling loop
+        # compares byte-for-byte across runs. A degraded rollup read (the
+        # NOTICE the caller printed) is an environment gap -- token scope, an
+        # API error, a concurrent push -- while an empty rollup from a healthy
+        # read means the host truly reports no checks for this head. One
+        # shared reason would make those indistinguishable, so a loop would
+        # re-poll a token problem forever instead of escalating it.
+        if rollup_notice == ROLLUP_HEAD_MOVED_NOTICE:
+            reasons.append(
+                "CI status unreadable - the PR head moved between reads "
+                "(concurrent push) - transient environment, re-run for a "
+                "consistent snapshot (fail-closed)"
+            )
+        elif rollup_notice:
+            reasons.append(
+                "CI status unreadable - the rollup fetch failed (a token "
+                "without Checks read access, a 403, or a rate limit) - "
+                "environment gap, not a code defect (fail-closed)"
+            )
+        else:
+            reasons.append("no CI checks reported - cannot confirm CI (fail-closed)")
     if marker_eval is not None:
         if not marker_eval.get("ok"):
             reasons.append("reviewer comments could not be read (fail-closed)")
@@ -1047,6 +1075,7 @@ def main(argv):
         readiness_context=readiness_context,
         marker_eval=marker_eval,
         head_run=head_run,
+        rollup_notice=rollup_notice,
     )
     print(status)
     if "--json" in argv[1:]:
