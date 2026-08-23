@@ -1662,25 +1662,36 @@ def caller_record_is_missing(
 
 
 def _cron_job_exists(jobs: object, job_id: str) -> bool:
-    """Whether a cron job id is in the registry (cache-only read, see ``_cron_job_owner``)."""
+    """Whether a cron job id is in the registry (cache-only read, see ``_cron_job_owner``).
+
+    Fails CLOSED: an unreadable/erroring registry returns ``False`` ("does not
+    exist") so the ``_internal_caller_record_missing`` DENY branch fires and the
+    delegated caller is refused rather than admitted as the unscoped dashboard
+    user. Per SAX-04 outcome_3, an auth decision must fail closed when the source
+    it depends on is unavailable; the in-memory registry makes this rare, but the
+    branch must not silently escalate a delegated caller on a torn read.
+    """
     try:
         snapshot = list(cast("Iterable[Any]", jobs))
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        # Cannot read the registry: do not manufacture a refusal from a failure
-        # to look, which would deny every delegated caller on a transient error.
-        return True
+        return False
     return any(str(getattr(j, "id", "") or "") == job_id for j in snapshot)
 
 
 def _subagent_record_exists(subagents: object, agent_id: str) -> bool:
-    """Whether a subagent id is in the registry (plain dict lookup)."""
+    """Whether a subagent id is in the registry (plain dict lookup).
+
+    Fails CLOSED on an unreadable registry (no ``get`` / lookup raises): returns
+    ``False`` so the delegated caller is denied rather than escalated. See
+    ``_cron_job_exists`` for the SAX-04 fail-closed rationale.
+    """
     lookup = getattr(subagents, "get", None)
     if lookup is None:
-        return True  # unreadable registry: see ``_cron_job_exists``
+        return False  # unreadable registry: fail closed, see ``_cron_job_exists``
     try:
         return lookup(agent_id) is not None
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return True
+        return False
 
 
 def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:

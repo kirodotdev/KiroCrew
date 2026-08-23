@@ -534,9 +534,19 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
         assert caller_record_is_missing("cron:job-9", None, None) is False
         assert caller_record_is_missing("subagent:abc", None, None) is False
 
-    def test_an_unreadable_registry_is_not_a_refusal(self) -> None:
-        """Do not manufacture a refusal from a failure to LOOK -- that would deny
-        every delegated caller on a transient error."""
+    def test_an_unreadable_present_registry_fails_closed(self) -> None:
+        """A registry that IS present but throws on read must fail CLOSED (CWE-636).
+
+        This is distinct from ``test_an_absent_registry_is_not_a_refusal``: there
+        the surface is wired without a registry ON PURPOSE (the ``--slack-only``
+        API server), and ``caller_record_is_missing`` short-circuits on ``None``
+        before ever reaching the existence helpers. Here the registry object is
+        present but torn / mid-swap, so the read raises. Admitting the delegated
+        caller on that error escalates it to the unscoped dashboard user with its
+        app-scope silently dropped, which SAX-04 outcome_3 forbids: an auth
+        decision must fail closed when the source it depends on is unavailable.
+        A present-but-unreadable registry therefore reports the record as MISSING
+        (``caller_record_is_missing`` -> True), so the caller is refused."""
 
         class _Boom:
             def __iter__(self):  # noqa: ANN204
@@ -545,8 +555,18 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
             def get(self, _k):  # noqa: ANN001, ANN202
                 raise RuntimeError("mid-mutation")
 
-        assert caller_record_is_missing("cron:j", _Boom(), None) is False
-        assert caller_record_is_missing("subagent:a", None, _Boom()) is False
+        assert caller_record_is_missing("cron:j", _Boom(), None) is True
+        assert caller_record_is_missing("subagent:a", None, _Boom()) is True
+
+    def test_a_subagents_registry_without_get_fails_closed(self) -> None:
+        """A subagent registry object missing a ``get`` (unreadable shape) fails
+        closed too: the record reads as MISSING, so the delegated caller is
+        refused rather than escalated (CWE-636 / SAX-04 outcome_3)."""
+
+        class _NoGet:
+            pass
+
+        assert caller_record_is_missing("subagent:a", None, _NoGet()) is True
 
     def test_a_resolvable_app_owner_is_never_refused(self) -> None:
         """The deny is the else-branch of resolution, so a found owner wins."""

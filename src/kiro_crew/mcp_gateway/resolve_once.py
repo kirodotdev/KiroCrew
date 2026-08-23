@@ -340,6 +340,15 @@ def resolved_launch(
     record = read_record(directory)
     if record is None:
         return None
+    # `spec_dir` keys on `NpmSpec.digest`, a SHA-256 truncated to 64 bits, so a
+    # birthday-bound collision (~2^32 specs) could resolve one spec to the tree
+    # installed for another and exec the WRONG program. The path-containment and
+    # isfile checks below do not catch that: both would pass for the colliding
+    # tree. Confirm the stored record was written for THIS spec before trusting
+    # its entrypoint; on mismatch treat it as a cache miss and let the caller
+    # keep today's invocation.
+    if record.package != spec.package:
+        return None
     entrypoint = os.path.join(directory, record.entrypoint)
     # Re-check containment on read, not just on write: the record is a plain
     # file, so a hand-edit or a partially-overwritten one must not turn into an

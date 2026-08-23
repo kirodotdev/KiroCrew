@@ -618,7 +618,10 @@ async def _handle_issues_first_page(
             partial(client.list_open_issues_first_page, owner, repo, **pkw)
         )
     except GhCliError as exc:
-        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+        logger.warning("issue-radar list_open_issues provider error: %s", exc)
+        return web.json_response(
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
+        )
     return web.json_response({
         **_identity(key), "state": "open",
         "issues": issues, "from_cache": False, "partial": True,
@@ -1159,7 +1162,10 @@ async def _handle_pulls_first_page(
             partial(client.list_open_pulls_first_page, owner, repo, **pkw)
         )
     except GhCliError as exc:
-        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+        logger.warning("issue-radar list_open_pulls provider error: %s", exc)
+        return web.json_response(
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
+        )
     return web.json_response({
         **_identity(key), "state": "open",
         "pulls": pulls, "from_cache": False, "partial": True,
@@ -2555,7 +2561,7 @@ async def _handle_issue_assignees(request: web.Request) -> web.Response:
     except GhCliError as exc:
         _audit("issue_assignees", target, "failure", error=str(exc))
         return web.json_response(
-            {"error": str(exc), "code": "provider_error"}, status=502
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
         )
 
     if final_assignees is None:
