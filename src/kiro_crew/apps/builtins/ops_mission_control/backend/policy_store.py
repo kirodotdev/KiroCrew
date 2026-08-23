@@ -122,10 +122,6 @@ OPERATOR_ONLY_KEYS: tuple[str, ...] = (
     PRIMARY_KEY,
 )
 
-#: Owner-only, matching the secret file. The value is not a credential, but it IS a control
-#: whose confidentiality and integrity both matter, so it gets the same lockdown.
-_POLICY_FILE_MODE = 0o600
-
 
 def policy_path() -> Path:
     """Absolute path to the keystone policy file (honors ``KIROCREW_HOME``)."""
@@ -181,19 +177,19 @@ class _PolicyLock:
 
 
 def _write(data: dict[str, Any]) -> None:
+    # Locked down BEFORE the payload is published, same as the secret store:
+    # ``atomic_write`` applies the owner-only DACL to its temp file ahead of the
+    # content and the rename, so a lockdown failure leaves the PREVIOUS ceiling
+    # in place. It implies 0o600 on POSIX, so the explicit mode is gone.
+    #
+    # The post-publish spelling this replaces unlinked the ceiling it had just
+    # written, which is worse than it sounds: with the file gone every reader
+    # silently falls back to its caller-supplied default, so a transient icacls
+    # failure did not surface as "the ceiling is missing" but as "the ceiling
+    # says whatever the default is". Fail-loud is unchanged -- the write still
+    # raises when the lockdown cannot be applied.
     payload = json.dumps(data, indent=2, sort_keys=True)
-    atomic_write(policy_path(), payload, mode=_POLICY_FILE_MODE)
-    # Fail-loud lockdown, same as the secret store: ``atomic_write``'s mode covers POSIX,
-    # and this applies the owner-only DACL on Windows. A lockdown failure must not leave the
-    # ceiling world-readable, so unlink and re-raise rather than continue.
-    try:
-        platform_compat.restrict_to_owner(policy_path())
-    except OSError:
-        try:
-            policy_path().unlink()
-        except OSError:
-            logger.exception("failed to remove ops policy file after lockdown failure")
-        raise
+    atomic_write(policy_path(), payload, restrict_to_owner=True)
 
 
 def read_mode(default: str) -> str:

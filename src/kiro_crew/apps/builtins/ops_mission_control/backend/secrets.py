@@ -54,10 +54,6 @@ logger = logging.getLogger(__name__)
 #: rename cannot silently drop the keystone protection.
 SECRETS_FILENAME = "ops_mission_control_secrets.json"
 
-#: Owner-only mode for the secret file (POSIX). Windows gets an owner-only DACL
-#: via ``platform_compat.restrict_to_owner``.
-_SECRET_FILE_MODE = 0o600
-
 #: Value returned to callers in place of a stored secret. Secrets are write-only
 #: over the API: the UI shows whether a field is set, never what it is.
 REDACTED_PLACEHOLDER = "••••••••"
@@ -218,20 +214,21 @@ class KeystoneFileBackend:
         return _SecretLock(self._path)
 
     def _write(self, data: dict[str, dict[str, str]]) -> None:
+        # Locked down BEFORE the payload is published, not after. ``atomic_write``
+        # applies the owner-only DACL to its temp file before any content reaches
+        # it and before the rename, so a lockdown failure raises with the
+        # PREVIOUS store still on disk and nothing to clean up. It implies
+        # 0o600 on POSIX, so the explicit mode is gone rather than duplicated.
+        #
+        # The post-publish spelling this replaces had already written the new
+        # file, which left its failure path unlinking a store that by then held
+        # EVERY provider token -- this is a read-modify-write of the whole
+        # document -- so one transient icacls failure logged every integration
+        # out. Fail-loud is unchanged: ``restrict_on_error`` defaults to
+        # "raise", so a secret that cannot be protected is still never
+        # published.
         payload = json.dumps(data, indent=2, sort_keys=True)
-        atomic_write(self._path, payload, mode=_SECRET_FILE_MODE)
-        # Fail-loud lockdown. ``atomic_write``'s mode covers POSIX; this also
-        # applies an owner-only DACL on Windows, where POSIX mode bits are not
-        # enforced. A lockdown failure must not leave a world-readable token on
-        # disk, so we unlink and re-raise rather than continue.
-        try:
-            platform_compat.restrict_to_owner(self._path)
-        except OSError:
-            try:
-                self._path.unlink()
-            except OSError:
-                logger.exception("failed to remove secret file after lockdown failure")
-            raise
+        atomic_write(self._path, payload, restrict_to_owner=True)
 
     # -- SecretBackend -----------------------------------------------------
 
