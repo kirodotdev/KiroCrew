@@ -1179,6 +1179,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.webapp_preview import register_webapp_preview_routes
 
     register_webapp_preview_routes(app)
+    # The document channel artifact and widget frames load from — see
+    # handlers/sandbox_doc.py for why a blob: URL was not survivable.
+    from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes
+
+    register_sandbox_doc_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)

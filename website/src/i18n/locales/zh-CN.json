@@ -4619,8 +4619,10 @@
     },
     "artifactBody": {
       "artifact": "工件：{{slug}}",
+      "could_not_render": "无法渲染此工件",
       "image_could_not_be_loaded": "无法加载图片",
-      "rendering": "渲染中…"
+      "rendering": "渲染中…",
+      "retry": "重试"
     },
     "artifactChatPanel": {
       "agent_chat": "智能体对话",
@@ -6613,12 +6615,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "无法加星标：小组件没有 slug 或消息上下文",
+      "could_not_render": "无法渲染此小组件",
       "download_as_html": "下载为 HTML",
       "expand": "展开",
       "minimize": "最小化",
       "open_in_new_tab": "在新标签页打开",
       "remove_artifact_from_library": "从库中移除工件 {{name}}",
       "rendering": "正在渲染…",
+      "retry": "重试",
       "save_failed": "保存失败",
       "star_as_artifact": "加星标为工件",
       "starred_as_click_to_remove": "已加星标为“{{name}}” — 点击取消"

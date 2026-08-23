@@ -33,6 +33,13 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { ArtifactComment } from '../types'
 
+// The HTML body loads a gateway-minted document, not a blob; the automock
+// resolves every api method to `undefined`, which the page cannot await.
+beforeEach(() => {
+  vi.mocked(api.sandboxDocUrl).mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+})
+
+
 vi.mock('../api/client')
 
 const PROVIDER = 'companion'
@@ -155,7 +162,7 @@ function selectInMarkdown(word: string): boolean {
   return true
 }
 
-describe('RemoteArtifactDetailPage', () => {
+describe('RemoteArtifactDetailPage', async () => {
   // The object-URL stubs below are direct property assignments on the URL global,
   // which `vi.restoreAllMocks()` does NOT undo — capture the originals so this
   // file's stubs cannot leak into later files in the same worker.
@@ -269,15 +276,18 @@ describe('RemoteArtifactDetailPage', () => {
       expect(pre.tagName).toBe('PRE')
     })
 
-    it('renders an html body inside a sandboxed blob iframe', async () => {
+    it('renders an html body inside a sandboxed document iframe', async () => {
       vi.mocked(api).remoteArtifactDetail = vi.fn().mockResolvedValue(
         mkDetail({ content_type: 'text/html', content: '<p>widget body</p>' }),
       )
       renderPage()
       const frame = await screen.findByTitle(`Remote artifact: ${EXT_ID}`)
-      expect(frame).toHaveAttribute('src', 'blob:http://localhost:6776/remote-test')
+      // The frame addresses a gateway-minted document. Asserting the ABSENCE of
+      // a blob is the load-bearing half: a blob URL renders fine in Chromium,
+      // which is why the crashing form could come back unnoticed here.
+      expect(frame).toHaveAttribute('src', '/sandbox-doc/test/tok')
       expect(frame).toHaveAttribute('sandbox', expect.stringContaining('allow-scripts'))
-      expect(URL.createObjectURL).toHaveBeenCalled()
+      expect(URL.createObjectURL).not.toHaveBeenCalled()
     })
 
     it('flattens a nested "artifact" payload so content_type still selects the html renderer', async () => {
@@ -592,8 +602,11 @@ describe('RemoteArtifactDetailPage', () => {
       )
       renderPage()
       await screen.findByTitle(`Remote artifact: ${EXT_ID}`)
-      const blob = vi.mocked(globalThis.URL.createObjectURL).mock.calls[0][0] as Blob
-      const html = await blob.text()
+      // The document html is what the page POSTs to mint its URL, so read it
+      // from the mint call's argument. It used to be read back out of a mocked
+      // `Blob`, which no longer sees anything now the page stopped building one.
+      // Every assertion below is unchanged.
+      const html = String(vi.mocked(api.sandboxDocUrl).mock.calls[0][0])
       // The remote page reads the live custom properties rather than hardcoding a
       // palette, so a remote artifact matches the dashboard theme.
       expect(html).toContain('--accent:#3355ff')

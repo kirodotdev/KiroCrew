@@ -31,6 +31,8 @@ beforeEach(() => {
   })
   localStorage.clear()
   vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:zzq-widget')
+  // The frame mints a gateway document instead of building a blob for itself.
+  vi.spyOn(api, 'sandboxDocUrl').mockResolvedValue({ url: '/sandbox-doc/test/tok' })
   vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {})
   // Unsaved artifact so the toolbar renders its default (hollow-star) shape.
   vi.spyOn(api, 'artifact').mockRejectedValue(new ApiError(404, 'zzq missing'))
@@ -40,6 +42,19 @@ afterEach(() => {
   vi.restoreAllMocks()
   queryClient.clear()
 })
+
+/** Let the minted document URL resolve so the frame mounts.
+ *
+ * The frame's src now comes from a gateway round trip rather than a `blob:` URL
+ * built inline, so the iframe is absent for one microtask after render. This
+ * flushes that promise and applies the resulting React update.
+ *
+ * Deliberately NOT `waitFor`: several tests here run on fake timers, where
+ * waitFor's own polling never advances and the wait never settles. A microtask
+ * flush needs no clock. */
+async function settleMint(): Promise<void> {
+  await act(async () => {})
+}
 
 describe('staggeredBuildWait', () => {
   it('adds one stagger step per slot and then plateaus at the cap', () => {
@@ -100,10 +115,11 @@ describe('WidgetFrame toolbar actions', () => {
       .toBeInTheDocument()
   })
 
-  it('grows immediately, defers a shrink, and ignores a repeat of the same height', () => {
+  it('grows immediately, defers a shrink, and ignores a repeat of the same height', async () => {
     vi.useFakeTimers()
     try {
       const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+      await settleMint()
       const iframe = container.querySelector('iframe') as HTMLIFrameElement
       const post = (height: number) => {
         act(() => {
@@ -140,8 +156,9 @@ describe('WidgetFrame toolbar actions', () => {
     }
   })
 
-  it('ignores a height message from a window that is not its own iframe', () => {
+  it('ignores a height message from a window that is not its own iframe', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await settleMint()
     const iframe = container.querySelector('iframe') as HTMLIFrameElement
     const before = iframe.style.height
     act(() => {
@@ -174,10 +191,11 @@ describe('WidgetFrame toolbar actions', () => {
     }
   })
 
-  it('persists the height cache once the write debounce elapses', () => {
+  it('persists the height cache once the write debounce elapses', async () => {
     vi.useFakeTimers()
     try {
       const { container } = wrap(<WidgetFrame html="<p>zzq-persist</p>" title="zzq widget" />)
+      await settleMint()
       const iframe = container.querySelector('iframe') as HTMLIFrameElement
       act(() => {
         window.dispatchEvent(new MessageEvent('message', {
@@ -193,10 +211,11 @@ describe('WidgetFrame toolbar actions', () => {
     }
   })
 
-  it('reserves the median of already-measured heights for an unseen widget', () => {
+  it('reserves the median of already-measured heights for an unseen widget', async () => {
     const { container, unmount } = wrap(
       <WidgetFrame html="<p>zzq-measured</p>" title="zzq widget" />,
     )
+    await settleMint()
     const iframe = container.querySelector('iframe') as HTMLIFrameElement
     act(() => {
       window.dispatchEvent(new MessageEvent('message', {
@@ -209,6 +228,7 @@ describe('WidgetFrame toolbar actions', () => {
     // Different content ⇒ a cache miss, so the reserve comes from the median of
     // what has been measured rather than the fixed 200px default.
     const second = wrap(<WidgetFrame html="<p>zzq-unseen</p>" title="zzq widget" />)
+    await settleMint()
     const reserved = (second.container.querySelector('iframe') as HTMLIFrameElement).style.height
     expect(reserved).not.toBe('200px')
     expect(Number.parseInt(reserved, 10)).toBeGreaterThanOrEqual(80)
@@ -216,7 +236,7 @@ describe('WidgetFrame toolbar actions', () => {
 })
 
 describe('WidgetFrame reveal', () => {
-  it('renders a reserved skeleton until the observer reports it near', () => {
+  it('renders a reserved skeleton until the observer reports it near', async () => {
     const observed: Array<(entries: { isIntersecting: boolean }[]) => void> = []
     const original = globalThis.IntersectionObserver
     class FakeIO {
@@ -230,28 +250,32 @@ describe('WidgetFrame reveal', () => {
       expect(container.querySelector('iframe')).toBeNull()
       expect(screen.getByText('zzq-skeleton')).toBeInTheDocument()
       // An entry that is not intersecting must not reveal it.
+      // Absent here means genuinely not revealed, not merely a pending mint: an
+      // unrevealed frame is passed no html at all, so no mint is even started.
       act(() => { observed[0]([{ isIntersecting: false }]) })
       expect(container.querySelector('iframe')).toBeNull()
       act(() => { observed[0]([{ isIntersecting: true }]) })
+      await settleMint()
       expect(container.querySelector('iframe')).not.toBeNull()
     } finally {
       globalThis.IntersectionObserver = original
     }
   })
 
-  it('reveals eagerly where IntersectionObserver does not exist', () => {
+  it('reveals eagerly where IntersectionObserver does not exist', async () => {
     const original = globalThis.IntersectionObserver
     // @ts-expect-error — deliberately modelling an environment without the API.
     delete globalThis.IntersectionObserver
     try {
       const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+      await settleMint()
       expect(container.querySelector('iframe')).not.toBeNull()
     } finally {
       globalThis.IntersectionObserver = original
     }
   })
 
-  it('staggers the build behind a programmatic scroll jump', () => {
+  it('staggers the build behind a programmatic scroll jump', async () => {
     const original = globalThis.IntersectionObserver
     // @ts-expect-error — force the eager `near` path so only the jump delay gates.
     delete globalThis.IntersectionObserver
@@ -265,6 +289,7 @@ describe('WidgetFrame reveal', () => {
       const { container } = wrap(<WidgetFrame html="<p>zzq-jump</p>" title="zzq-jump" />)
       expect(container.querySelector('iframe')).toBeNull()
       act(() => { vi.advanceTimersByTime(MAX_WIDGET_BUILD_WAIT_MS) })
+      await settleMint()
       expect(container.querySelector('iframe')).not.toBeNull()
     } finally {
       now.mockRestore()
@@ -273,8 +298,9 @@ describe('WidgetFrame reveal', () => {
     }
   })
 
-  it('fades the iframe in on load', () => {
+  it('fades the iframe in on load', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
+    await settleMint()
     const iframe = container.querySelector('iframe') as HTMLIFrameElement
     expect(iframe.style.opacity).toBe('0')
     fireEvent.load(iframe)
@@ -283,7 +309,9 @@ describe('WidgetFrame reveal', () => {
 })
 
 describe('WidgetFrame widget actions', () => {
-  const post = (container: HTMLElement, data: unknown) => {
+  // Waits for the frame itself, so each caller keeps reading as one step.
+  const post = async (container: HTMLElement, data: unknown) => {
+    await settleMint()
     const iframe = container.querySelector('iframe') as HTMLIFrameElement
     act(() => {
       window.dispatchEvent(new MessageEvent('message', {
@@ -301,29 +329,29 @@ describe('WidgetFrame widget actions', () => {
   })
   afterEach(() => { window.removeEventListener('mc-widget-send', listener) })
 
-  it('prefills the composer with the action and its payload', () => {
+  it('prefills the composer with the action and its payload', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
-    post(container, { type: 'mc-widget-action', action: 'zzq-act', payload: { a: 1 } })
+    await post(container, { type: 'mc-widget-action', action: 'zzq-act', payload: { a: 1 } })
     expect(sent).toHaveLength(1)
     expect(sent[0].detail).toEqual({ text: '[UI] zzq-act: {"a":1}', action: 'zzq-act' })
   })
 
-  it('omits the payload segment when there is nothing to carry', () => {
+  it('omits the payload segment when there is nothing to carry', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
-    post(container, { type: 'mc-widget-action', action: 'zzq-act', payload: [1, 2] })
+    await post(container, { type: 'mc-widget-action', action: 'zzq-act', payload: [1, 2] })
     expect(sent[0].detail.text).toBe('[UI] zzq-act')
   })
 
-  it('refuses an action whose name is not a string', () => {
+  it('refuses an action whose name is not a string', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
-    post(container, { type: 'mc-widget-action', action: { evil: true } })
-    post(container, { type: 'mc-widget-action', action: '' })
+    await post(container, { type: 'mc-widget-action', action: { evil: true } })
+    await post(container, { type: 'mc-widget-action', action: '' })
     expect(sent).toHaveLength(0)
   })
 
-  it('caps an oversized payload so a widget cannot stuff the composer', () => {
+  it('caps an oversized payload so a widget cannot stuff the composer', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
-    post(container, {
+    await post(container, {
       type: 'mc-widget-action',
       action: 'zzq-act',
       payload: { blob: 'z'.repeat(9000) },
@@ -332,9 +360,9 @@ describe('WidgetFrame widget actions', () => {
     expect(sent[0].detail.text.endsWith('…')).toBe(true)
   })
 
-  it('truncates an over-long action name to 64 characters', () => {
+  it('truncates an over-long action name to 64 characters', async () => {
     const { container } = wrap(<WidgetFrame html="<p>zzq</p>" title="zzq widget" />)
-    post(container, { type: 'mc-widget-action', action: 'z'.repeat(200) })
+    await post(container, { type: 'mc-widget-action', action: 'z'.repeat(200) })
     expect(sent[0].detail.action).toHaveLength(64)
   })
 })

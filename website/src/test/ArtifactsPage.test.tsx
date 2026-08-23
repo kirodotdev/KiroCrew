@@ -6,6 +6,13 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
+// The thumbnail frame mints a gateway document instead of building a blob. The
+// automock resolves every api method to `undefined`, which it cannot await.
+beforeEach(() => {
+  vi.mocked(api.sandboxDocUrl).mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+})
+
+
 vi.mock('../api/client')
 
 // VirtuosoMasonry virtualizes against real layout, which jsdom lacks, so it

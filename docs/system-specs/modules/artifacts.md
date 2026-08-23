@@ -491,7 +491,17 @@ every write-side unit test still green — so test the round-trip
   defaults for missing keys, so future schema additions don't break existing
   files.
 - **Frontend rendering** — artifact bodies are rendered in the same sandboxed
-  iframe that powers `<mcwidget>`. No `dangerouslySetInnerHTML` without
+  iframe that powers `<mcwidget>`, and that frame loads a **real document** from
+  `GET /sandbox-doc/{doc_id}/{tok}` rather than a browser-built `blob:` URL. A
+  blob URL is refused outright by some WebKit-based in-app browsers (which can
+  take the whole page down with it) and a sandboxed `srcdoc` frame blank-renders
+  on WebKit, so a plain document URL is the only form that loads everywhere. The
+  authed `POST /api/sandbox-doc` stashes the html the caller already holds and
+  returns the URL; the path credential is client-bound with a short TTL, and the
+  response pins `Content-Security-Policy: sandbox` so the document keeps an
+  opaque origin even when opened top-level. Flags match what the embedding frame
+  already grants, so nothing is newly permitted or denied. See
+  `dashboard/handlers/sandbox_doc.py`. No `dangerouslySetInnerHTML` without
   DOMPurify; no inline event handlers.
 
 ## Versioning
