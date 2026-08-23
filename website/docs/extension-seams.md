@@ -9,10 +9,10 @@ The backend has the sibling mechanism, Composed Platform Providers: see
 [`docs/system-specs/modules/platform-context.md`](../../docs/system-specs/modules/platform-context.md).
 The two are independent. Nothing here reads `CONTRACT_VERSION`.
 
-## The nine registry seams
+## The ten registry seams
 
 Each entry is one registrar the edition may call, paired with the reader the core
-already calls. `src/extensions.ts` names exactly these nine in its header, and
+already calls. `src/extensions.ts` names exactly these ten in its header, and
 `src/test/extensionSeams.test.tsx` exercises each one.
 
 | Seam | Module | Registrar to reader |
@@ -24,6 +24,7 @@ already calls. `src/extensions.ts` names exactly these nine in its header, and
 | Top-bar widgets | `apps/topBarWidgets.tsx` | `registerTopBarWidgets()` to `getTopBarWidgets()` |
 | Readout-capsule segments | `apps/capsuleSegments.tsx` | `registerCapsuleSegment()` to `getCapsuleSegments()` |
 | Overview status cards | `pages/overviewStatCards.tsx` | `registerOverviewStatCards()` to `getOverviewStatCards()` |
+| Overview lower panel (single owner) | `pages/overviewPanel.tsx` | `registerOverviewPanel()` to `getOverviewPanel()` |
 | Panel-navigation chords | `hooks/useKeyboardShortcuts.ts` | `registerPanelShortcut()`, read by the shortcut handler and `DEFAULT_SHORTCUTS` |
 | Non-app route prefixes | `components/MigrationCheck.tsx` | `registerNonAppPrefix()`, read by `MigrationCheck` |
 
@@ -32,7 +33,7 @@ registry; see "API methods" below.
 
 Other `register*()` functions in `src/` (built-in surfaces, command-palette
 providers, tool pills, terminal sockets, highlight.js languages) are core-internal
-wiring, not edition seams. Only the nine above are called from the composition
+wiring, not edition seams. Only the ten above are called from the composition
 root.
 
 ## Composition root
@@ -361,6 +362,18 @@ which hides registered segments along with the core readouts.
 adds a self-contained `StatCard` (owning its own query and state, like the core
 `TunnelStatus`) to the Settings Overview grid, after the core cards, in ascending
 `order`. Each receives a `delay` prop for the grid's stagger animation.
+
+**Overview lower panel.** `registerOverviewPanel({ id, component })` claims the
+region below the Usage/Memory summary grid, which the stock build leaves empty.
+Unlike every other registry here this slot holds **at most one** entry: the first
+registration owns the region, and a second is a collision (throws in dev/test,
+warns and is ignored in production) rather than appending or replacing. That is
+the point — the region has one owner who renders whatever internal layout it
+wants and owns all of it, so there is no layout negotiation between parties who
+cannot see each other. Reach for `registerOverviewStatCards` instead when the
+contribution really is one more tile in the status grid; use this slot when the
+content does not fit a 150px tile. The component receives no props and is wrapped
+in an `ErrorBoundary`, so a throwing panel disables only itself.
 
 **Non-app route prefixes.** `registerNonAppPrefix(prefix)` tells `MigrationCheck`
 that a route can never host a migratable app, so the migration banner does not

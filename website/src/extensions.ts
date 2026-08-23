@@ -17,6 +17,7 @@
  *   import { registerTheme }             from '@/hooks/useTheme'
  *   import { registerCapsuleSegment }    from '@/apps/capsuleSegments'
  *   import { registerOverviewStatCards } from '@/pages/overviewStatCards'
+ *   import { registerOverviewPanel }     from '@/pages/overviewPanel'
  *
  * For edition-owned API methods there is no registrar — the edition imports the
  * blessed `apiTransport` (`@/api/apiTransport`) and builds its own typed API
