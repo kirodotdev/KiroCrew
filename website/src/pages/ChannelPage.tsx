@@ -127,7 +127,7 @@ function AgentBadge({ agent, index }: { agent: ChannelAgent; index: number }) {
 
 function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
   msg: ChannelMessage; agents: ChannelAgent[]
-  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string) => void
+  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string) => void | Promise<unknown>
 }) {
   const isHuman = msg.fromId === 'human'
   const approvalMode = useAppSelector((s: RootState) => s.dashboard.approvalMode)
@@ -669,7 +669,7 @@ export default function ChannelPage() {
                 <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
                   onReply={() => openThread(msg.id)}
                   onOpenThread={() => openThread(msg.id)}
-                  onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action).catch(() => {}) : undefined} />
+                  onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action) : undefined} />
               ))}
               {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                 <div key={a.id + '-typing'} className="flex items-center gap-2 px-3 py-1.5 text-[13px] text-muted animate-pulse">
@@ -693,12 +693,12 @@ export default function ChannelPage() {
                   }} />
                 }>
                   <div className="flex flex-col gap-1 -mx-3 -mt-2">
-                    {parent && <MessageBubble msg={parent} agents={channel.agents}
-                      onApprove={parent.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, parent.fromId, action).catch(() => {}) : undefined} />}
+                    {parent && <MessageBubble key={parent.id} msg={parent} agents={channel.agents}
+                      onApprove={parent.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, parent.fromId, action) : undefined} />}
                     {replies.length > 0 && <div className="border-t border-border my-2" />}
                     {replies.map(msg => (
                       <MessageBubble key={msg.id} msg={msg} agents={channel.agents}
-                        onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action).catch(() => {}) : undefined} />
+                        onApprove={msg.msgType === 'approval' ? (action) => api.channelApproveAgent(channel.id, msg.fromId, action) : undefined} />
                     ))}
                     {channel.agents.filter(a => a.state === 'working' || a.state === 'tool_running').map(a => (
                       <div key={a.id + '-typing-t'} className="flex items-center gap-2 px-2 py-1 text-[13px] text-muted animate-pulse">

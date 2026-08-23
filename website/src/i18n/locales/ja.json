@@ -4450,8 +4450,11 @@
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
     },
     "approvalCard": {
+      "approval_no_longer_pending": "この承認は期限切れか、すでに決定済みです — エージェントはもう待機していません。",
       "approve": "承認",
       "approved": "承認済み",
+      "decision_failed": "この決定は記録されていない可能性があります — リクエストが失敗しました。",
+      "decision_not_recorded_error": "この決定は記録されませんでした: {{error}}",
       "reject": "却下",
       "rejected": "却下済み",
       "running": "実行中:",

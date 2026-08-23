@@ -2,8 +2,9 @@ import { describe, it, expect, vi } from 'vitest'
 
 vi.mock("@radix-ui/react-dropdown-menu", async () => await import("./__mocks__/@radix-ui/react-dropdown-menu"))
 
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import ApprovalCard from '../components/ApprovalCard'
+import { ApiError } from '../api/client'
 
 describe('ApprovalCard', () => {
   it('renders tool title when no toolInput', () => {
@@ -154,5 +155,117 @@ describe('ApprovalCard', () => {
   it('applies warn border color initially', () => {
     const { container } = render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={() => {}} />)
     expect(container.firstChild).toHaveClass('border-l-warn')
+  })
+
+  it('rolls decided back and shows a failure state when the decision rejects (#5204)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(500, 'internal error')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    await waitFor(() => expect(screen.queryByText('Approved')).not.toBeInTheDocument())
+    expect(screen.getByRole('alert').textContent).toContain('internal error')
+    // rollback re-renders the buttons so the user can retry
+    expect(screen.getByText('Approve')).toBeInTheDocument()
+    expect(screen.getByText('Reject')).toBeInTheDocument()
+  })
+
+  it('renders a terminal state without buttons when the approval is gone (400 no pending approval)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'no pending approval')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('no longer waiting')
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
+    expect(screen.queryByText('Reject')).not.toBeInTheDocument()
+  })
+
+  it('renders a terminal state without buttons on 404 (channel or agent gone)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'not found')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('no longer waiting')
+    expect(screen.queryByText('Approve')).not.toBeInTheDocument()
+  })
+
+  it('keeps a live approval retryable on other 400 refusals (e.g. invalid action)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'invalid action')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('invalid action')
+    expect(screen.getByText('Approve')).toBeInTheDocument()
+  })
+
+  it('returns focus to the Approve button after a failed approve', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(500, 'internal error')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    await screen.findByRole('alert')
+    await waitFor(() => expect(document.activeElement?.textContent).toContain('Approve'))
+  })
+
+  it('returns focus to the Reject button after a failed reject (never Approve)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(500, 'internal error')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Reject'))
+    await screen.findByRole('alert')
+    await waitFor(() => expect(document.activeElement?.textContent).toContain('Reject'))
+    expect(document.activeElement?.textContent).not.toContain('Approve')
+  })
+
+  it('asserts the decision was not recorded when the server itself refused (ApiError)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(400, 'invalid action')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain("This decision wasn't recorded: invalid action")
+    expect(alert.textContent).not.toContain('may not have been recorded')
+  })
+
+  it('hedges with generic copy on a response-less transport error (no raw exception text)', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new TypeError('Failed to fetch')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('may not have been recorded')
+    expect(alert.textContent).not.toContain('Failed to fetch')
+  })
+
+  it('rolls a trust decision back on rejection instead of showing Trusted', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(404, 'channel gone')))
+    render(<ApprovalCard title="Running: ls /tmp" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Trust'))
+    fireEvent.click(screen.getByText('Trust all tools'))
+    await waitFor(() => expect(screen.queryByText(/auto-approving future calls/)).not.toBeInTheDocument())
+    expect(screen.getByRole('alert').textContent).toContain('no longer waiting')
+  })
+
+  it('shows a generic failure message when the rejection carries no message', async () => {
+    const onApprove = vi.fn(() => Promise.reject(new ApiError(500, '')))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toContain('the request failed')
+  })
+
+  it('clears the failure state on retry and keeps the decided state when the retry resolves', async () => {
+    const onApprove = vi.fn()
+      .mockRejectedValueOnce(new ApiError(500, 'internal error'))
+      .mockResolvedValueOnce({ status: 'ok' })
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByText('Approve'))
+    await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument())
+    expect(screen.getByText('Approved')).toBeInTheDocument()
+  })
+
+  it('keeps the decided state when the decision promise resolves', async () => {
+    const onApprove = vi.fn(() => Promise.resolve({ status: 'ok' }))
+    render(<ApprovalCard title="ls" toolInput="" showButtons onApprove={onApprove} />)
+    fireEvent.click(screen.getByText('Approve'))
+    await waitFor(() => expect(onApprove).toHaveBeenCalled())
+    expect(screen.getByText('Approved')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 })

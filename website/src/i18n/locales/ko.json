@@ -4450,8 +4450,11 @@
       "this_app_provides_agents_and_skills_but_no_visua": "이 앱은 에이전트와 스킬을 제공하지만 시각적 인터페이스는 없습니다.\n 채팅에서 이 앱의 에이전트를 사용하세요."
     },
     "approvalCard": {
+      "approval_no_longer_pending": "이 승인은 만료되었거나 이미 결정되었습니다 — 에이전트가 더 이상 기다리지 않습니다.",
       "approve": "승인",
       "approved": "승인됨",
+      "decision_failed": "이 결정이 기록되지 않았을 수 있습니다 — 요청이 실패했습니다.",
+      "decision_not_recorded_error": "이 결정이 기록되지 않았습니다: {{error}}",
       "reject": "거부",
       "rejected": "거부됨",
       "running": "실행 중:",

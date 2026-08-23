@@ -4466,8 +4466,11 @@
       "this_app_provides_agents_and_skills_but_no_visua": "此应用提供代理和技能，但没有可视界面。\n            请在聊天中使用它的代理。"
     },
     "approvalCard": {
+      "approval_no_longer_pending": "这条审批已过期或已被处理 — 代理不再等待它。",
       "approve": "批准",
       "approved": "已批准",
+      "decision_failed": "这次决定可能未被记录 — 请求失败。",
+      "decision_not_recorded_error": "这次决定未被记录：{{error}}",
       "reject": "拒绝",
       "rejected": "已拒绝",
       "running": "正在运行：",

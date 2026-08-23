@@ -1234,6 +1234,11 @@
     "appHost": {
       "not_installed": "\"{{name}}\" is not installed"
     },
+    "approvalCard": {
+      "approval_no_longer_pending": "This approval has expired or was already decided — the agent is no longer waiting on it.",
+      "decision_failed": "This decision may not have been recorded — the request failed.",
+      "decision_not_recorded_error": "This decision wasn't recorded: {{error}}"
+    },
     "approvalModePicker": {
       "approval_mode_aria": "Approval mode: {{mode}}",
       "normal_label": "Normal",

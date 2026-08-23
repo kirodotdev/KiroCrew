@@ -4531,8 +4531,11 @@
       "this_app_provides_agents_and_skills_but_no_visua": "यह ऐप एजेंट और स्किल देता है, लेकिन कोई विज़ुअल इंटरफ़ेस नहीं।\n            इसके एजेंट चैट से उपयोग करें।"
     },
     "approvalCard": {
+      "approval_no_longer_pending": "यह स्वीकृति समाप्त हो गई है या पहले ही तय हो चुकी है — एजेंट अब इसकी प्रतीक्षा नहीं कर रहा है।",
       "approve": "स्वीकृत करें",
       "approved": "स्वीकृत",
+      "decision_failed": "यह निर्णय शायद दर्ज नहीं हुआ — अनुरोध विफल रहा।",
+      "decision_not_recorded_error": "यह निर्णय दर्ज नहीं हुआ: {{error}}",
       "reject": "अस्वीकार करें",
       "rejected": "अस्वीकृत",
       "running": "चल रहा है:",

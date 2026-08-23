@@ -4596,8 +4596,11 @@
       "this_app_provides_agents_and_skills_but_no_visua": "Este app fornece agentes e habilidades, mas nenhuma interface visual.\n            Use os agentes dele pelo chat."
     },
     "approvalCard": {
+      "approval_no_longer_pending": "Esta aprovação expirou ou já foi decidida — o agente não está mais aguardando por ela.",
       "approve": "Aprovar",
       "approved": "Aprovado",
+      "decision_failed": "Esta decisão pode não ter sido registrada — a solicitação falhou.",
+      "decision_not_recorded_error": "Esta decisão não foi registrada: {{error}}",
       "reject": "Rejeitar",
       "rejected": "Rejeitado",
       "running": "Executando:",
