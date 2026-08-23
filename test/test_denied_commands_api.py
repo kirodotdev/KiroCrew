@@ -17,6 +17,7 @@ avoids ``@pytest_asyncio.fixture`` by convention.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -828,3 +829,91 @@ def test_enforce_denied_commands_settable_key_removed():
     from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 
     assert "agent.enforce_denied_commands" not in _EDITABLE_CONFIG
+
+
+# ── keystone lockdown ──
+#
+# Regression: the keystone ``denied_commands.json`` lives in ``_SENSITIVE_HOME_DIRS``
+# and is the user-editable opt-out of the agent's own security ceiling. The
+# agent process must NEVER leave it world-readable, even briefly — and the
+# lockdown must hold on Windows, where ``chmod_safe`` is a documented no-op.
+# These tests pin the contract that ``_write_denied_state`` finishes with a
+# ``restrict_to_owner`` call so the file is owner-only on both POSIX and Windows.
+
+
+async def _run_write_denied_state(home: Path, config_file: Path, mutate):
+    """Run ``_write_denied_state`` synchronously enough to assert on the file.
+
+    The helper is ``async`` and runs the read-modify-write in the default
+    thread executor. Driving the event loop here is enough to surface the
+    after-write lockdown without going through the full aiohttp app.
+    """
+    from kiro_crew.dashboard.handlers.security import _write_denied_state
+
+    return await _write_denied_state(mutate)
+
+
+def test_write_denied_state_lands_owner_only_on_posix(
+    home: Path, config_file: Path
+) -> None:
+    """``_write_denied_state`` finishes with mode 0o600 on POSIX.
+
+    Pre-fix, the helper called ``chmod_safe(path, 0o600)``. ``chmod_safe`` does
+    set 0o600 on POSIX, so the original code was sound there. The fix replaces
+    it with ``restrict_to_owner``; this test pins the POSIX behavior so the
+    replacement cannot regress the POSIX path while it widens the Windows one.
+    """
+    if sys.platform == "win32":
+        pytest.skip("POSIX-only behavior")
+
+    import asyncio
+
+    def _noop(denied: dict) -> None:
+        denied.setdefault("disabled_ids", [])
+
+    asyncio.run(_run_write_denied_state(home, config_file, _noop))
+
+    mode = config_file.stat().st_mode & 0o777
+    assert mode == 0o600, (
+        f"keystone denied_commands.json must be owner-only; got mode={mode:o}"
+    )
+
+
+def test_write_denied_state_calls_restrict_to_owner(
+    home: Path, config_file: Path
+) -> None:
+    """``_write_denied_state`` invokes ``restrict_to_owner`` (not ``chmod_safe``).
+
+    Pins the fix at the call-site so a future "refactor" cannot silently
+    regress to ``chmod_safe``, which would no-op on Windows and re-open the
+    keystone to the inherited parent DACL. The test patches the symbol at
+    the import site the helper actually uses (late-bound import inside the
+    inner function).
+    """
+    import kiro_crew.platform_compat as platform_compat
+
+    with patch.object(platform_compat, "restrict_to_owner") as m_restrict, patch(
+        "kiro_crew.platform_compat.chmod_safe"
+    ) as m_chmod:
+        import asyncio
+
+        def _noop(denied: dict) -> None:
+            denied.setdefault("disabled_ids", [])
+
+        asyncio.run(_run_write_denied_state(home, config_file, _noop))
+
+        assert m_restrict.called, (
+            "_write_denied_state must call restrict_to_owner to lock the keystone "
+            "down on both POSIX and Windows (see dashboard/handlers/security.py "
+            "_write_denied_state and upstream issues #5240 / #5285 / #5307)"
+        )
+        # The path argument must point at the keystone file.
+        called_path = m_restrict.call_args.args[0]
+        assert Path(called_path).resolve() == config_file.resolve()
+        # Regression guard: the OLD helper called chmod_safe; the NEW helper
+        # must not. chmod_safe no-ops on Windows and would leave the file
+        # under the inherited parent DACL.
+        assert not m_chmod.called, (
+            "_write_denied_state must not fall back to chmod_safe "
+            "(no-op on Windows — see SF-1 in AUDIT_PR/audit-2026-08-24.md)"
+        )

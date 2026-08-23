@@ -352,8 +352,11 @@ async def _write_denied_state(mutate) -> dict:
 
     ``mutate(denied: dict) -> None`` edits the opt-out object (the file root) in
     place. Runs under the shared config lock. Returns the updated object so the
-    caller can hot-reload the live HookManager. The file is written 0600 (owner-
-    only, like other keystone secrets).
+    caller can hot-reload the live HookManager. The file is locked down to the
+    owner only (``restrict_to_owner``), matching every other keystone secret
+    writer in the dashboard: 0600 on POSIX and an owner-only DACL on Windows.
+    Using ``chmod_safe`` here would no-op on Windows and leave the file under
+    the inherited parent DACL — a regression against #5240 / #5285 / #5307.
 
     The blocking read-modify-write (disk read, JSON (de)serialize, atomic
     replace) runs in a thread executor so it never stalls the gateway event
@@ -367,13 +370,15 @@ async def _write_denied_state(mutate) -> dict:
         mutate(denied)
         path.parent.mkdir(parents=True, exist_ok=True)
         _atomic_json_write(path, denied)
-        # Keystone file: restrict to owner (best-effort; matches other secrets).
+        # Keystone file: restrict to owner (POSIX 0600 + Windows owner-only
+        # DACL). ``restrict_to_owner`` shells out to whoami/icacls on Windows,
+        # which is why this whole helper runs in the thread executor above.
         try:
-            from kiro_crew.platform_compat import chmod_safe
+            from kiro_crew.platform_compat import restrict_to_owner
 
-            chmod_safe(path, 0o600)
-        except Exception:
-            logger.debug("could not chmod denied_commands.json to 0600", exc_info=True)
+            restrict_to_owner(path)
+        except OSError:
+            logger.warning("could not restrict denied_commands.json to owner", exc_info=True)
         return denied
 
     async with _get_config_lock():
