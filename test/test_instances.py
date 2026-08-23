@@ -1029,6 +1029,30 @@ class TestRegistry:
 # ── SshTunnelManager (mocked) ─────────────────────────────────────────────────
 
 
+def _patch_port_probe(monkeypatch, *, manager_free: bool = True, allocator_free: bool = True):
+    """Make loopback port probing deterministic in BOTH namespaces that probe.
+
+    The connect path probes twice, and each site resolves ``_is_port_free`` from
+    its own module, so patching one leaves the other binding real sockets:
+
+    * ``PortAllocator.allocate`` resolves the name in ``port_allocator``. Left
+      real, allocation walks upward past whatever the host happens to be
+      holding, so which port an instance is handed depends on host state — and
+      a test asserting an exact port passes only where the base port is free.
+    * ``ssh_tunnel_manager`` holds its own re-bound reference for the advisory
+      re-probe it runs on the port it just allocated.
+
+    The two knobs are separate because the answers legitimately differ: the
+    conflict case models a TOCTOU loss, where allocation succeeds and the
+    re-probe then finds that port taken.
+    """
+    import kiro_crew.instances.port_allocator as pa
+    import kiro_crew.instances.ssh_tunnel_manager as stm
+
+    monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": manager_free)
+    monkeypatch.setattr(pa, "_is_port_free", lambda port, host="127.0.0.1": allocator_free)
+
+
 class _FakeTunnel:
     def __init__(
         self,
@@ -1076,9 +1100,7 @@ class _FakeTunnel:
 class TestSshTunnelArgvCompression:
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def test_compression_flag_present_by_default(self):
         from kiro_crew.instances.ssh_tunnel_manager import _build_ssh_tunnel_argv
@@ -1307,9 +1329,7 @@ class TestSshTunnelManager:
     def _free_ports(self, monkeypatch):
         # Connect now probes _is_port_free (CSE SEC-016 mirror conflict check).
         # Keep these unit tests hermetic / independent of the host's real ports.
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -3072,9 +3092,7 @@ class TestTunnelStatus:
 class TestSelfHealRefreshRestart:
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_ResilTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -3599,10 +3617,12 @@ class TestPortMirror:
 
     @staticmethod
     def _mgr(reg, factory, monkeypatch, *, port_free=True):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
         from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": port_free)
+        # Allocation must still succeed when ``port_free`` is False: that case
+        # models the TOCTOU loss where the port is taken between allocating it
+        # and the manager's re-probe.
+        _patch_port_probe(monkeypatch, manager_free=port_free)
 
         async def ok_mint(
             host, *, remote_bin="", ttl="20h", remote_port=None, embed_parent_port=None, timeout_secs=None
@@ -3724,9 +3744,7 @@ class TestLastError:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -3826,9 +3844,7 @@ class TestStatusForRetainedError:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -3900,9 +3916,7 @@ class TestStartupRevive:
 
     @pytest.fixture(autouse=True)
     def _free_ports(self, monkeypatch):
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, factory=_FakeTunnel):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -4409,9 +4423,7 @@ class TestSsmTransportSelection:
         # tunnel, so `mgr._tunnels[id]` raises KeyError and the test flakes. Stub
         # the probe to always-free, exactly as the other SshTunnelManager test
         # classes do, so transport selection is tested deterministically.
-        import kiro_crew.instances.ssh_tunnel_manager as stm
-
-        monkeypatch.setattr(stm, "_is_port_free", lambda port, host="127.0.0.1": True)
+        _patch_port_probe(monkeypatch)
 
     def _mgr(self, tmp_path, *, mint=None, connect_timeout_secs=None):
         from kiro_crew.instances.registry import InstancesRegistry
