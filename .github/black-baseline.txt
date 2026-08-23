@@ -9,10 +9,8 @@
 #   python3 scripts/check_black_formatting.py --update-baseline
 src/kiro_crew/_process_group_supervisor.py
 src/kiro_crew/acp/_dispatch.py
-src/kiro_crew/acp/client.py
 src/kiro_crew/acp/kas_wire.py
 src/kiro_crew/acp/liveness.py
-src/kiro_crew/acp/runtime.py
 src/kiro_crew/acp/session_handle.py
 src/kiro_crew/acp/worker_pool.py
 src/kiro_crew/apps/__init__.py
@@ -414,7 +412,6 @@ src/kiro_crew/pod/provision.py
 src/kiro_crew/pod/runtime.py
 src/kiro_crew/pod/unit.py
 src/kiro_crew/portability.py
-src/kiro_crew/providers/acp.py
 src/kiro_crew/publish_governance.py
 src/kiro_crew/publish_sync.py
 src/kiro_crew/resource_status.py
@@ -426,7 +423,6 @@ src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
 src/kiro_crew/service/macos.py
-src/kiro_crew/session.py
 src/kiro_crew/session_directive.py
 src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
@@ -487,7 +483,6 @@ test/metrics/test_local_exporter.py
 test/metrics/test_mcp_gateway_metrics.py
 test/metrics/test_provider_bucket_views.py
 test/metrics/test_schema.py
-test/metrics/test_startup_channel_attrs.py
 test/metrics/test_telemetry_handler.py
 test/metrics/test_telemetry_titles.py
 test/metrics/test_turn_metric.py

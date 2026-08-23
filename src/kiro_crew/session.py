@@ -334,6 +334,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "bypass_stateless",
         "bypass_cwd",
         "bypass_env",
+        "bypass_devcontainer",
         "disabled",
         "other",
     }
@@ -1931,6 +1932,26 @@ class SessionManager:
         except Exception:
             logger.debug("pool decision metric emit failed", exc_info=True)
 
+    async def _cwd_has_trusted_devcontainer(self, cwd: str | None) -> bool:
+        """True when *cwd* has a trusted Dev Container that would containerize.
+
+        Warm-pool runtimes are spawned against ``default_project_dir()`` before
+        trust is known, so their locus is host. Handing one to a work dir that
+        should run inside a container would leave the operator believing the
+        session is containerized when it is not.
+        """
+        if not cwd:
+            return False
+
+        def _check() -> bool:
+            from kiro_crew.devcontainer import devcontainers_enabled, is_trusted
+
+            if not devcontainers_enabled():
+                return False
+            return is_trusted(cwd)
+
+        return await asyncio.to_thread(_check)
+
     def _claim_from_pool(self, agent: str | None) -> tuple[LLMProvider, float] | None:
         """Try to claim a pre-warmed provider if the agent matches.
         Deny-by-default: normalize both sides and positively compare.
@@ -2781,6 +2802,8 @@ class SessionManager:
             pool_decision = "bypass_cwd"
         elif extra_env:
             pool_decision = "bypass_env"
+        elif await self._cwd_has_trusted_devcontainer(cwd):
+            pool_decision = "bypass_devcontainer"
         else:
             pool_decision = ""
         pooled = None if pool_decision else await self._drain_and_claim(agent)
@@ -2826,9 +2849,7 @@ class SessionManager:
                         )
                         return _crew, _load_watchdog_settings(_crew)
 
-                    _claim_crew, _claim_wd = await asyncio.to_thread(
-                        _resolve_claim_watchdog
-                    )
+                    _claim_crew, _claim_wd = await asyncio.to_thread(_resolve_claim_watchdog)
                     provider.client.rekey(
                         key,
                         channel_id,
@@ -2930,9 +2951,7 @@ class SessionManager:
                 is_cc_now = (
                     ClaudeCodeProvider is not None and isinstance(provider, ClaudeCodeProvider)
                 ) or _is_claude_backend(provider)
-                current_provider = (
-                    PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
-                )
+                current_provider = PROVIDER_LABEL_CLAUDE if is_cc_now else _provider_label(provider)
                 if detect_provider_switch(self._session_map, key, current_provider):
                     resume_sid = None
                     _provider_switched = True
@@ -3071,9 +3090,7 @@ class SessionManager:
                         approval_policy=approval_policy,
                         agent=agent or "",
                     )
-                    _replay_needed = (
-                        getattr(provider, "_history_replay_needed", False) is True
-                    )
+                    _replay_needed = getattr(provider, "_history_replay_needed", False) is True
                     if _provider_switched or _replay_needed:
                         # provider_switch_replay OR F2 load-recovery fell back to
                         # a fresh native session (stale lock never cleared):

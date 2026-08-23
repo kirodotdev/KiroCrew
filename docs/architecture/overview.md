@@ -674,6 +674,7 @@ detail; this table is only an index.
 | Cloud launcher (own EC2 instance) | `src/kiro_crew/cloud/` | [cloud.md](../system-specs/modules/cloud.md) |
 | Computer use (desktop GUI automation) | `src/kiro_crew/computer_use/` | [computer-use.md](../system-specs/modules/computer-use.md) |
 | Configuration (dataclasses, loader, schema) | `src/kiro_crew/config/` | [config.md](../system-specs/modules/config.md) |
+| Dev Containers (session agent in the project's container) | `src/kiro_crew/devcontainer.py`, `devcontainer_mcp.py` | [devcontainers.md](../system-specs/modules/devcontainers.md) |
 | Dev Fleet app | `src/kiro_crew/apps/builtins/dev_fleet/` | [dev-fleet.md](../system-specs/modules/dev-fleet.md) |
 | Governance model (POLICY ∩ PROFILE) | `src/kiro_crew/platform/governance.py` | [governance.md](../system-specs/modules/governance.md) |
 | Heartbeat (periodic background tasks) | `src/kiro_crew/heartbeat.py` | [heartbeat.md](../system-specs/modules/heartbeat.md) |

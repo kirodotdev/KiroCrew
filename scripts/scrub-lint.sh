@@ -214,7 +214,7 @@ fi
 dim "[3/5] Scanning for personal identity leaks (structural)..."
 
 # User segments that are intentional documentation placeholders / system users.
-GENERIC_USER='user|users|otheruser|someuser|u|me|you|your|youruser|dev|developer|example|someone|somebody|alice|bob|carol|dave|eve|jane|john|foo|bar|baz|secret|weird|root|runner|ubuntu|node|builder|linuxbrew|kirocrew|kirocrew-workspace|mcp-gateway|nimbus|src|admin|test|tester|testuser|du|voce|você|tu|vous|usuario|usuário|utente|utilisateur|benutzer|<user>|\$USER|\$\{USER\}|\{user\}|%USERNAME%'
+GENERIC_USER='user|users|otheruser|someuser|u|me|you|your|youruser|dev|developer|example|someone|somebody|alice|bob|carol|dave|eve|jane|john|foo|bar|baz|secret|weird|root|runner|ubuntu|node|builder|linuxbrew|kirocrew|kirocrew-workspace|mcp-gateway|nimbus|src|admin|test|tester|testuser|vscode|du|voce|você|tu|vous|usuario|usuário|utente|utilisateur|benutzer|<user>|\$USER|\$\{USER\}|\{user\}|%USERNAME%'
 
 # Fake personas permitted in email fixtures.
 GENERIC_EMAIL_LOCAL='alice|bob|carol|dave|eve|user|test|tester|example|someone|noreply|no-reply|opensource-codeofconduct|dev|admin'

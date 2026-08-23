@@ -38,6 +38,14 @@ def env_flag_enabled(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ENV_TRUTHY
 
 
+#: Developer opt-in that admits the Dev Container path at all. Lives HERE rather
+#: than in ``devcontainer.py`` so the dashboard can test the gate without
+#: importing that module: an import placed before the check still loads the whole
+#: optional subsystem on the gateway boot path, which is the cost the gate exists
+#: to avoid.
+DEVCONTAINER_ENV_VAR = "KIROCREW_DEVCONTAINERS"
+
+
 DATA_WARNING = (
     "⚠️  Do not enter sensitive, secret, or regulated data into KiroCrew.\n"
     "   Treat anything you send as potentially logged or processed by the\n"

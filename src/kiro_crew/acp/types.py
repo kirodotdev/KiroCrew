@@ -192,6 +192,32 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # membership rather than "not claude" (harness-parity H5).
 ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO})
 
+# Backends whose agent process may be launched INSIDE a project's Dev Container.
+#
+# Containerizing replaces the spawn argv with a ``docker exec`` into the
+# container running a harness binary from the IMAGE's PATH, so membership is a
+# claim about that image: only a harness the container actually carries can be
+# started this way. The containerized argv is built from ``KIRO_CLI_BIN``, so
+# granting this to another harness would spawn kiro-cli in place of the selected
+# one and silently discard it -- the session would report the backend the user
+# chose while running a different agent.
+#
+# Memberships, each an explicit decision rather than a default:
+#   * kiro     -- IN. The documented preview installs kiro-cli in the image, and
+#                 the preflight refuses to start when it is absent.
+#   * kas      -- OUT. KAS is a Node server Crew starts itself; no image carries
+#                 it, and there is no ``docker exec`` form that reaches it.
+#   * claude   -- OUT. Runs through AcpClient as its own adapter process; the
+#                 container has no claude-agent-acp to exec.
+#   * codex    -- OUT. Same reason as claude -- the standalone adapter is a host
+#                 install, not part of a devcontainer image.
+#
+# A harness added later is OUT until someone states how the container obtains
+# its binary; defaulting to IN is what would collapse every harness onto the
+# kiro spawn form.
+ACP_BACKENDS_DEVCONTAINER = frozenset({ACP_BACKEND_KIRO})
+
+
 # ── Provider labels ──
 # The backend identity key persisted in the session map. It indexes three
 # things, so every producer must agree on it: resume compatibility

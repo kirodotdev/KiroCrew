@@ -103,7 +103,9 @@ def _write_cli_overlay(work_dir: Path, model: str, effort: str) -> None:
             model_cfg.pop(other_key, None)
     model_defaults[model] = model_cfg
     existing["chat.modelDefaults"] = model_defaults
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 #: kiro-cli's own Tool Search activation thresholds. Mirrored as the defaults of
@@ -187,7 +189,9 @@ def _write_tool_search_overlay(
         # would take effect if a later build flips the global default on.
         existing.pop("toolSearch.minPct", None)
         existing.pop("toolSearch.minTokens", None)
-    atomic_write(cli_json, json.dumps(existing, indent=2))  # atomic: readers never see a partial file (#426)
+    atomic_write(
+        cli_json, json.dumps(existing, indent=2)
+    )  # atomic: readers never see a partial file (#426)
 
 
 def _clear_cli_overlay_effort(work_dir: Path, model: str) -> None:
@@ -694,7 +698,17 @@ class AcpProvider(LLMProvider):
         work_dir = self._client._work_dir
         agent = getattr(self._client, "_agent", None) or ""
         sandbox_mode = getattr(self._client, "_sandbox_mode", "auto")
-        extra_env = getattr(self._client, "_extra_env", None) or {}
+        extra_env = dict(getattr(self._client, "_extra_env", None) or {})
+        # The runtime containerize path forwards extra_env into docker exec
+        # and into the host MCP bridge children. AcpClient puts these on the
+        # process env itself; without copying them here a containerized
+        # runtime session has no KIROCREW_SESSION_KEY.
+        session_key = getattr(self._client, "_session_key", None)
+        if session_key and "KIROCREW_SESSION_KEY" not in extra_env:
+            extra_env["KIROCREW_SESSION_KEY"] = session_key
+        channel_id = getattr(self._client, "_channel_id", None)
+        if channel_id and "KIROCREW_CHANNEL_ID" not in extra_env:
+            extra_env["KIROCREW_CHANNEL_ID"] = channel_id
         mcp_gateway_overlay = getattr(self._client, "_mcp_gateway_overlay", None)
         mcp_gateway_settings_mcp_json = getattr(
             self._client, "_mcp_gateway_settings_mcp_json", None
