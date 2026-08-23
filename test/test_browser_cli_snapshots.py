@@ -5,20 +5,39 @@ from __future__ import annotations
 import os
 import time
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
 from kiro_crew.browser_cli import snapshots as mod
 
 
-def _write(directory: Path, name: str, age_s: float) -> Path:
-    """Create *name* in *directory* with an mtime *age_s* seconds in the past."""
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / name
-    path.write_text("- generic [ref=e1]\n", encoding="utf-8")
-    stamp = time.time() - age_s
-    os.utime(path, (stamp, stamp))
-    return path
+class _Writer(Protocol):
+    def __call__(self, directory: Path, name: str, age_s: float) -> Path: ...
+
+
+@pytest.fixture
+def write() -> _Writer:
+    """Create files whose mtimes all share ONE time base.
+
+    Every stamp a test sets is anchored to the single ``time.time()`` captured
+    here, so file ordering depends only on the ``age_s`` arguments. A per-call
+    base lets slow pacing between writes (cold FS caches, AV scanning on
+    Windows CI runners) advance the clock enough to reverse the intended
+    ordering of files written with ages ~1 second apart.
+    """
+    base = time.time()
+
+    def _write(directory: Path, name: str, age_s: float) -> Path:
+        """Create *name* in *directory* with an mtime *age_s* seconds in the past."""
+        directory.mkdir(parents=True, exist_ok=True)
+        path = directory / name
+        path.write_text("- generic [ref=e1]\n", encoding="utf-8")
+        stamp = base - age_s
+        os.utime(path, (stamp, stamp))
+        return path
+
+    return _write
 
 
 def _names(directory: Path) -> set[str]:
@@ -80,12 +99,12 @@ def test_cli_env_override_value_is_absolute(
 
 
 def test_prune_removes_by_count_keeping_the_newest(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
     for i in range(5):
-        _write(d, f"page-2026-02-{i + 1:02d}T00-00-00-000Z.yml", age_s=i)
+        write(d, f"page-2026-02-{i + 1:02d}T00-00-00-000Z.yml", age_s=i)
 
     removed = mod.prune(max_age_s=10_000, max_files=2, grace_s=0)
 
@@ -98,14 +117,14 @@ def test_prune_removes_by_count_keeping_the_newest(
 
 
 def test_prune_removes_by_age_within_the_count_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """Age alone must evict: a count bound would keep these forever on an idle host."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-06-01T00-00-00-000Z.yml", age_s=5)
-    _write(d, "page-2026-01-01T00-00-00-000Z.yml", age_s=9_000)
-    _write(d, "page-2026-01-02T00-00-00-000Z.yml", age_s=9_500)
+    write(d, "page-2026-06-01T00-00-00-000Z.yml", age_s=5)
+    write(d, "page-2026-01-01T00-00-00-000Z.yml", age_s=9_000)
+    write(d, "page-2026-01-02T00-00-00-000Z.yml", age_s=9_500)
 
     removed = mod.prune(max_age_s=3_600, max_files=100)
 
@@ -114,15 +133,15 @@ def test_prune_removes_by_age_within_the_count_budget(
 
 
 def test_prune_applies_both_bounds_in_one_pass(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """Neither bound alone produces this outcome."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-03-01T00-00-00-000Z.yml", age_s=1)
-    _write(d, "page-2026-03-02T00-00-00-000Z.yml", age_s=2)
-    _write(d, "page-2026-03-03T00-00-00-000Z.yml", age_s=3)
-    _write(d, "page-2026-03-04T00-00-00-000Z.yml", age_s=99_999)
+    write(d, "page-2026-03-01T00-00-00-000Z.yml", age_s=1)
+    write(d, "page-2026-03-02T00-00-00-000Z.yml", age_s=2)
+    write(d, "page-2026-03-03T00-00-00-000Z.yml", age_s=3)
+    write(d, "page-2026-03-04T00-00-00-000Z.yml", age_s=99_999)
 
     # Count alone (3) would drop only "old"; age alone would drop only "old".
     # Together: "old" for age, "new-3" for count.
@@ -136,13 +155,13 @@ def test_prune_applies_both_bounds_in_one_pass(
 
 
 def test_prune_never_removes_the_newest_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """The current session most likely still refers to it."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-12T00-00-00-000Z.yml", age_s=100_000)
-    _write(d, "page-2026-01-13T00-00-00-000Z.yml", age_s=200_000)
+    write(d, "page-2026-01-12T00-00-00-000Z.yml", age_s=100_000)
+    write(d, "page-2026-01-13T00-00-00-000Z.yml", age_s=200_000)
 
     removed = mod.prune(max_age_s=1, max_files=1)
 
@@ -151,39 +170,39 @@ def test_prune_never_removes_the_newest_file(
 
 
 def test_prune_keeps_newest_even_with_a_zero_budget(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """A setting that could empty the directory would break a live turn."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-10T00-00-00-000Z.yml", age_s=100_000)
+    write(d, "page-2026-01-10T00-00-00-000Z.yml", age_s=100_000)
 
     assert mod.prune(max_age_s=1, max_files=0) == 0
     assert _names(d) == {"page-2026-01-10T00-00-00-000Z.yml"}
 
 
 def test_prune_keeps_everything_within_both_bounds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-05T00-00-00-000Z.yml", age_s=1)
-    _write(d, "page-2026-01-06T00-00-00-000Z.yml", age_s=2)
+    write(d, "page-2026-01-05T00-00-00-000Z.yml", age_s=1)
+    write(d, "page-2026-01-06T00-00-00-000Z.yml", age_s=2)
 
     assert mod.prune(max_age_s=3_600, max_files=10) == 0
     assert _names(d) == {"page-2026-01-05T00-00-00-000Z.yml", "page-2026-01-06T00-00-00-000Z.yml"}
 
 
 def test_prune_leaves_subdirectories_alone(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """The CLI keeps traces in subdirectories; a recording may be in progress."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
-    _write(d, "page-2026-01-11T00-00-00-000Z.yml", age_s=100_000)
+    write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
+    write(d, "page-2026-01-11T00-00-00-000Z.yml", age_s=100_000)
     traces = d / "traces"
-    _write(traces, "trace-old.zip", age_s=100_000)
+    write(traces, "trace-old.zip", age_s=100_000)
 
     mod.prune(max_age_s=1, max_files=1)
 
@@ -201,13 +220,13 @@ def test_prune_returns_zero_when_the_directory_is_absent(
 
 
 def test_prune_never_raises_when_a_delete_fails(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """It runs on a schedule with no caller to receive an exception."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
-    _write(d, "page-2026-01-07T00-00-00-000Z.yml", age_s=100_000)
+    write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
+    write(d, "page-2026-01-07T00-00-00-000Z.yml", age_s=100_000)
 
     def refuse(self: Path, missing_ok: bool = False) -> None:
         raise OSError("permission denied")
@@ -219,10 +238,10 @@ def test_prune_never_raises_when_a_delete_fails(
 
 
 def test_prune_never_raises_when_the_directory_is_unreadable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    _write(mod.snapshot_dir(), "page-2026-01-05T00-00-00-000Z.yml", age_s=0)
+    write(mod.snapshot_dir(), "page-2026-01-05T00-00-00-000Z.yml", age_s=0)
 
     def refuse(self: Path) -> object:
         raise OSError("permission denied")
@@ -233,13 +252,13 @@ def test_prune_never_raises_when_the_directory_is_unreadable(
 
 
 def test_prune_tolerates_a_file_vanishing_mid_scan(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, write: _Writer
 ) -> None:
     """The daemon writes concurrently, so an entry can disappear between calls."""
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     d = mod.snapshot_dir()
-    _write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
-    _write(d, "page-2026-01-08T00-00-00-000Z.yml", age_s=100_000)
+    write(d, "page-2026-01-09T00-00-00-000Z.yml", age_s=0)
+    write(d, "page-2026-01-08T00-00-00-000Z.yml", age_s=100_000)
 
     real_stat = Path.stat
 
@@ -273,8 +292,9 @@ class TestGracePeriodPreventsRace:
             p = tmp_path / (
                 f"page-2026-07-01T00-{sec:02d}-00-{ms:03d}Z.yml"
             )
+            # Freshly written, so each is newer than target; no explicit
+            # stamps, whose sub-second gradient slow pacing could reorder.
             p.write_text("- generic\n")
-            os.utime(p, (time.time() - (i * 0.01), time.time() - (i * 0.01)))
 
         mod.prune(max_age_s=mod.DEFAULT_MAX_AGE_S, max_files=mod.DEFAULT_MAX_FILES)
 
@@ -379,10 +399,12 @@ class TestSavedStorageStateSurvivesPruning:
         for i in range(5):
             (tmp_path / f"storage-state-2026-02-{i + 1:02d}T00-00-00-000Z.json").write_text("{}")
         pages = []
+        # One base for all stamps: ordering must depend only on the offsets.
+        base = time.time()
         for i in range(3):
             p = tmp_path / f"page-2026-02-{i + 1:02d}T00-00-00-000Z.yml"
             p.write_text("- generic")
-            os.utime(p, (time.time() - (10 - i), time.time() - (10 - i)))
+            os.utime(p, (base - (10 - i), base - (10 - i)))
             pages.append(p)
 
         mod.prune(max_age_s=0, max_files=2, grace_s=0)
