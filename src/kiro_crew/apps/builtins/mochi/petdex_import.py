@@ -32,6 +32,8 @@ from urllib.parse import urlparse
 
 import aiohttp
 
+from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
+
 logger = logging.getLogger(__name__)
 
 #: Where the petdex CLI installs pets. Fixed by that CLI, not configurable.
@@ -59,14 +61,12 @@ _MAX_SHEET_BYTES = 16 * 1024 * 1024
 #: Total seconds for one import, connect through last byte.
 _TIMEOUT_SECS = 30
 
-#: Accepted sheet formats, by magic bytes. The renderer decodes the sheet in an
-#: <img>, so the browser is the real parser -- this only keeps non-images out.
-_MAGIC: tuple[tuple[bytes, str], ...] = (
-    (b"\x89PNG\r\n\x1a\n", "image/png"),
-    (b"GIF87a", "image/gif"),
-    (b"GIF89a", "image/gif"),
-    (b"\xff\xd8\xff", "image/jpeg"),
-)
+#: Accepted sheet formats. The renderer decodes the sheet in an <img>, so the
+#: browser is the real parser -- this only keeps non-images out. Detection is
+#: the shared raster sniffer (:mod:`kiro_crew.messaging.raster`); this local
+#: allowlist keeps the accept-set exactly as before (notably: BMP, which the
+#: sniffer knows, stays rejected here).
+_ALLOWED_SHEET_MIMES = frozenset({"image/png", "image/gif", "image/jpeg", "image/webp"})
 
 _PET_JSON_NAME = "pet.json"
 #: Sheet names the CLI writes, in preference order.
@@ -120,13 +120,10 @@ def _assert_allowed_url(url: str) -> None:
 
 
 def _sniff_mime(blob: bytes) -> str:
-    for magic, mime in _MAGIC:
-        if blob.startswith(magic):
-            return mime
-    # WebP is RIFF<size>WEBP, so the tag is not a plain prefix.
-    if blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
-        return "image/webp"
-    raise PetdexError("the spritesheet is not a recognized image")
+    mime = sniff_raster_mime(blob[:SNIFF_BYTES])
+    if mime is None or mime not in _ALLOWED_SHEET_MIMES:
+        raise PetdexError("the spritesheet is not a recognized image")
+    return mime
 
 
 def parse_pet_json(text: str) -> dict[str, str]:
