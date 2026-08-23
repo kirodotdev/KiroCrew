@@ -12,6 +12,12 @@
  * class strings are copied verbatim from ToolCallLine.tsx.
  *
  * Query params: ?theme=dark|light
+ *
+ * i18n is pinned to English rather than booted bare. A bare `initI18n()` resolves
+ * the language from `readStoredLanguage()`, so the same capture would render
+ * different chrome on two machines and a before/after pair would no longer isolate
+ * the layout change it exists to show. The sample content below is deliberately
+ * Chinese -- that is the CJK line-height case being captured, not a locale setting.
  */
 import { createRoot } from 'react-dom/client'
 import { CircleDot } from 'lucide-react'
@@ -22,7 +28,7 @@ import ThinkingBlock from '../src/pages/chat/ThinkingBlock'
 import { PanelRightSolid } from '../src/components/icons/panels'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS } from '../src/pages/chat/rowPill'
 
-initI18n()
+initI18n('en')
 
 const params = new URLSearchParams(location.search)
 const theme = params.get('theme') === 'light' ? 'light' : 'dark'

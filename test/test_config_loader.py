@@ -3085,9 +3085,7 @@ class TestFeishuConfigCoercionFailsClosed:
     def test_null_id_lists_do_not_crash_config_load(self) -> None:
         # A null or non-list value must yield the deny-everybody default rather
         # than reaching an iteration that would raise during gateway startup.
-        cfg = _load_from_dict(
-            {"feishu": {"allowed_open_ids": None, "allowed_group_ids": "oc_g1"}}
-        )
+        cfg = _load_from_dict({"feishu": {"allowed_open_ids": None, "allowed_group_ids": "oc_g1"}})
         assert cfg.feishu.allowed_open_ids == []
         assert cfg.feishu.allowed_group_ids == []
 
@@ -3600,9 +3598,7 @@ class TestOrchestratorWatchdogThemeAreParsed:
                 captured.append(kwargs)
 
         monkeypatch.setattr(acp_mod, "AcpProvider", _FakeProvider)
-        cfg = _load_from_dict(
-            {"agents": {"pr-reviewer": {"kiro_agent": "pr-reviewer-kiro"}}}
-        )
+        cfg = _load_from_dict({"agents": {"pr-reviewer": {"kiro_agent": "pr-reviewer-kiro"}}})
         factory = cfg.create_provider_factory()
 
         factory("k1", agent="pr-reviewer-kiro", crew_agent="pr-reviewer")
@@ -5022,10 +5018,9 @@ class TestMigrationBackupContainment:
     _LEGACY = {"telegram": {"allow_forum": True}}
 
     def _load_with(self, home: Path, cfg_file: Path) -> KiroCrewConfig:
-        with unittest.mock.patch(
-            "kiro_crew.config.loader.config_dir", return_value=home
-        ), unittest.mock.patch(
-            "kiro_crew.config.loader.config_path", return_value=cfg_file
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=home),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_file),
         ):
             return KiroCrewConfig.load()
 
@@ -5045,8 +5040,8 @@ class TestMigrationBackupContainment:
         # Guard the guard: assert the migration branch actually ran, otherwise
         # this test would pass for the wrong reason if that branch stops firing.
         assert cfg.agents, "migration write-back did not run, test is vacuous"
-        assert after == before, (
-            "load() left orphans beside the caller's config: %s" % sorted(after - before)
+        assert after == before, "load() left orphans beside the caller's config: %s" % sorted(
+            after - before
         )
 
     def test_real_config_in_the_data_home_is_still_backed_up(self, tmp_path: Path) -> None:
@@ -5153,9 +5148,7 @@ class TestTransportThresholdConsistency:
         # An inverted pair (soft=90, hard=50) would make the soft nudge
         # unreachable -- the transports check pct >= hard first.
         section = self._section(
-            _load_from_dict(
-                {transport: {"soft_threshold_pct": 90, "hard_threshold_pct": 50}}
-            ),
+            _load_from_dict({transport: {"soft_threshold_pct": 90, "hard_threshold_pct": 50}}),
             transport,
         )
         assert section.hard_threshold_pct == 50
@@ -5235,10 +5228,79 @@ class TestTransportThresholdConsistency:
         cfg = _load_from_dict(
             {
                 "telegram": {
-                    "accounts": {
-                        "acct-1": {"bot_token": "123:abc", "soft_threshold_pct": 400}
-                    }
+                    "accounts": {"acct-1": {"bot_token": "123:abc", "soft_threshold_pct": 400}}
                 }
             }
         )
         assert cfg.telegram.accounts["acct-1"].soft_threshold_pct == 100
+
+
+#: One non-default sample per ``WeComConfig`` field, keyed by field name. The map
+#: must cover EVERY field: ``load()`` enumerates the section's keys by hand, so a
+#: field added to the dataclass but forgotten there loads as its default and is
+#: then written back as its default — the operator's setting is both ignored and
+#: erased, with nothing failing — a key that looks wired (it appears in the config
+#: schema, which IS derived from the dataclass) while being discarded at load. This
+#: map is the ratchet: a new field fails the test below until a sample is added,
+#: which forces the author through the load path.
+_WECOM_FIELD_SAMPLES: dict[str, object] = {
+    "enabled": True,
+    "allowed_users": [{"userid": "zhangsan", "name": "Z"}],
+    "allow_all_users": True,
+    "ws_url": "wss://example.invalid/ws",
+    "soft_threshold_pct": 71,
+    "hard_threshold_pct": 91,
+    "session_folder": "wecom-folder",
+}
+
+
+class TestWeComSectionSurvivesLoad:
+    def test_the_sample_map_covers_every_field(self) -> None:
+        import dataclasses
+
+        declared = {f.name for f in dataclasses.fields(loader_module.WeComConfig)}
+        missing = declared - set(_WECOM_FIELD_SAMPLES)
+        assert not missing, (
+            f"WeComConfig gained field(s) {sorted(missing)} with no sample here. Add one, "
+            "and check KiroCrewConfig.load() actually reads the key -- it enumerates them "
+            "by hand, so an omission silently discards the operator's value."
+        )
+        assert not set(_WECOM_FIELD_SAMPLES) - declared, "sample for a field that no longer exists"
+
+    @pytest.mark.parametrize("field_name", sorted(_WECOM_FIELD_SAMPLES))
+    def test_each_configured_value_survives_load(self, field_name: str) -> None:
+        sample = _WECOM_FIELD_SAMPLES[field_name]
+        cfg = _load_from_dict({"wecom": {field_name: sample}})
+        loaded = getattr(cfg.wecom, field_name)
+        default = getattr(loader_module.WeComConfig(), field_name)
+        assert loaded != default, (
+            f"wecom.{field_name} loaded as its default {default!r} despite being configured "
+            f"as {sample!r} -- KiroCrewConfig.load() is not reading the key"
+        )
+
+    @pytest.mark.parametrize("junk", [None, 7, "zhangsan", {"a": 1}, True])
+    def test_a_non_list_allow_list_degrades_to_empty_rather_than_crashing_load(
+        self, junk: object
+    ) -> None:
+        # An explicit `null`, or any non-list, must not raise out of load(): a
+        # config file the operator can write is not a trusted type, and a TypeError
+        # here prevents STARTUP rather than degrading one setting. A bare string is
+        # the subtle one -- iterating it would char-split into single-letter userids.
+        cfg = _load_from_dict({"wecom": {"allowed_users": junk}})
+        assert cfg.wecom.allowed_users == []
+
+    @pytest.mark.parametrize("field", ["enabled", "allow_all_users"])
+    @pytest.mark.parametrize("junk", ["false", "off", "0", 0, 1, [], {}, None, "true"])
+    def test_a_non_bool_never_turns_a_switch_ON(self, field: str, junk: object) -> None:
+        # `bool("false")` is True, so a JSON string would invert the operator's
+        # intent -- enabling the channel, or opening it to every org member, from a
+        # value that says the opposite. Even the "helpfully" correct-looking "true"
+        # must not enable it: a parse that guesses at a string is the same parse that
+        # cannot refuse "false".
+        cfg = _load_from_dict({"wecom": {field: junk}})
+        assert getattr(cfg.wecom, field) is False
+
+    @pytest.mark.parametrize("field", ["enabled", "allow_all_users"])
+    def test_a_real_bool_still_works(self, field: str) -> None:
+        cfg = _load_from_dict({"wecom": {field: True}})
+        assert getattr(cfg.wecom, field) is True

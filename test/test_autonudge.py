@@ -266,9 +266,7 @@ async def test_runtime_budget_unspent_fires_normally(svc, monkeypatch):
     events: list[str] = []
     svc.subscribe(lambda ev, lp: events.append(ev))
     await svc.start()
-    loop = await svc.add(
-        slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=86400
-    )
+    loop = await svc.add(slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=86400)
     await svc._timers[loop.id]
     assert len(fired) == 1
     assert "expired" not in events
@@ -309,9 +307,7 @@ async def test_runtime_budget_persists_across_restart(tmp_path):
     both max_runtime_secs and the created_ts anchor round-trip the store."""
     svc1 = AutoNudgeService(base_dir=tmp_path)
     await svc1.start()
-    loop = await svc1.add(
-        slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=3600
-    )
+    loop = await svc1.add(slot_key="chat-1-123", message="go", idle_secs=15, max_runtime_secs=3600)
     created = svc1._loops[loop.id].created_ts
     svc1.stop()
 
@@ -373,9 +369,9 @@ async def test_bound_deactivation_never_overwrites_a_manual_pause(svc):
     assert svc._loops[loop.id].stopped_reason == "manual"
     # The timer's shielded update arrives second with the bound tag.
     await svc.update(loop.id, active=False, stopped_reason="runtime_budget")
-    assert svc._loops[loop.id].stopped_reason == "manual", (
-        "a terminal bound must never overwrite an existing deactivation"
-    )
+    assert (
+        svc._loops[loop.id].stopped_reason == "manual"
+    ), "a terminal bound must never overwrite an existing deactivation"
     assert svc._loops[loop.id].active is False
     svc.stop()
 
@@ -838,6 +834,203 @@ def test_is_channel_key():
     # Fully-qualified dashboard keys never appear as binding keys, but must
     # not be misclassified either.
     assert not is_channel_key("dashboard:chat-1-123")
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "telegram:kirocrew:direct:4242",
+        "webex:kirocrew:direct:user@example.com",
+        "teams:kirocrew:direct:29:1abcdef",
+        "weixin:kirocrew:direct:oUserOpenId",
+        "imessage:kirocrew:direct:+15550100",
+    ],
+)
+def test_proactive_channel_namespaces_are_channel_keys(key):
+    """Every transport that CAN send unattended classifies as a channel session.
+
+    ``is_channel_key`` selects the re-arm strategy and the expiry-notification
+    metadata: a channel loop self-re-arms, while a dashboard loop waits for
+    ``notify_turn_complete``, which never fires for a channel key. Leaving
+    webex/teams/weixin/imessage out therefore made those sessions structurally
+    unrunnable rather than merely unsupported — misread as dashboard slots they
+    would stall with no armed timer and carry a ``dashboard:<namespace>:<id>``
+    jump link pointing at no slot — even though each of those transports declares
+    ``supports_proactive_send=True``.
+    """
+    from kiro_crew.autonudge import is_channel_key
+
+    assert is_channel_key(key)
+
+
+def test_wecom_is_classified_because_it_gained_a_proactive_send_path():
+    """The classifier and the capability are asserted TOGETHER so they cannot drift.
+
+    WeCom was excluded while its reply was bound to the inbound request's own reply
+    token: a nudge cycle there would wake, spend a turn and have nowhere to put the
+    answer. #5105 gave the channel a proactive path over its long connection and
+    flipped the capability, so the exclusion's own stated condition fired and the
+    namespace is now classified like every other channel.
+
+    Keeping both halves in one test is the point. Either alone can go stale
+    silently: a classifier entry for a channel that cannot send unattended arms
+    loops with nowhere to deliver, and a flipped capability with no entry leaves a
+    channel that CAN be nudged unreachable.
+    """
+    from kiro_crew.autonudge import is_channel_key
+    from kiro_crew.wecom.transport import WECOM_CAPABILITIES
+
+    assert WECOM_CAPABILITIES.supports_proactive_send is True
+    assert is_channel_key("wecom:kirocrew:direct:oUserOpenId")
+
+
+def test_channel_key_prefixes_mirror_the_shipped_namespaces():
+    """The tuple is spelled out in ``autonudge``, so pin it against drift.
+
+    Deriving it would make ``autonudge`` — imported at module scope by
+    ``mcp_core`` (every MCP server process) and by the dashboard chat layer —
+    name ``kiro_crew.messaging.link``, whose package ``__init__`` pulls the
+    driver/renderer/transport layer and with it the ACP client, agent, hooks,
+    artifacts, metrics and sqlite: 48 extra ``kiro_crew`` modules to obtain one
+    tuple of string literals. This assertion buys the drift protection that
+    import would have bought, at no import cost.
+
+    Equality, not containment: a namespace added to ``CHANNEL_SESSION_NAMESPACES``
+    must be classified here too, with no escape hatch for "excluded on purpose".
+    The exclusion that looks tempting — a channel nothing can currently deliver a
+    nudge to — is precisely the misclassification this guards against, because an
+    unlisted key reads as a dashboard slot and stops being re-armed silently.
+    Undeliverability belongs to the ladder; see ``_CHANNEL_KEY_PREFIXES``.
+    """
+    from kiro_crew.autonudge import _CHANNEL_KEY_PREFIXES
+    from kiro_crew.messaging.link import CHANNEL_SESSION_NAMESPACES
+
+    assert {p.rstrip(":") for p in _CHANNEL_KEY_PREFIXES} == set(CHANNEL_SESSION_NAMESPACES)
+
+
+@pytest.mark.asyncio
+async def test_unrouted_channel_namespace_degrades_instead_of_raising(svc, monkeypatch):
+    """A classified namespace with no fire route degrades; it never raises.
+
+    ``whatsapp`` is in the prefix tuple but has no transport package in this fork
+    at all, so the gateway's ``_fire`` dispatcher reaches its "unsupported channel
+    key" arm: it logs the reason, removes the loop and returns False. The service
+    must treat that as a TERMINAL non-delivery — no backoff re-arm, no
+    resurrection, no exception escaping the timer — so classifying a namespace can
+    never turn an undeliverable session into a loop that hot-polls forever.
+    """
+    import asyncio as _asyncio
+
+    import kiro_crew.autonudge as _an
+
+    real_sleep = _asyncio.sleep  # capture before patching
+    sleep_calls: list[float] = []
+
+    async def _sleep(secs):
+        sleep_calls.append(secs)
+        return None
+
+    monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
+
+    removed = _asyncio.Event()
+
+    async def on_fire_unsupported(loop):
+        # Mirrors slack/gateway.py::_fire's else-branch for a channel key with
+        # no implemented fire route.
+        await svc.remove(loop.id)
+        removed.set()
+        return False
+
+    svc._on_fire = on_fire_unsupported
+    await svc.start()
+    loop = await svc.add(
+        slot_key="whatsapp:kirocrew:direct:15550100", message="watch", idle_secs=60
+    )
+    for _ in range(500):
+        if removed.is_set() and loop.id not in svc._timers:
+            break
+        await real_sleep(0.005)
+    assert loop.id not in svc._loops
+    assert loop.id not in svc._timers
+    assert loop.id not in svc._rearm_fail_count
+    # Only the initial idle sleep ran — no backoff re-arm was scheduled.
+    assert sleep_calls == [pytest.approx(60, abs=1)]
+    svc.stop()
+
+
+@pytest.mark.asyncio
+async def test_cross_surface_ladder_still_refuses_unroutable_channels(tmp_path):
+    """The delivery ladder, not the key classifier, is the enforcement point.
+
+    Membership in ``_CHANNEL_KEY_PREFIXES`` asserts "this key names a
+    conversation", never "a send will succeed", so the fail-closed ladder in
+    ``dashboard/chat_runner.py`` (``_resolve_channel_target``: governance → a
+    REGISTERED transport → ``supports_proactive_send``) has to keep refusing on
+    its own. Both of its transport arms are pinned here: a namespace with no
+    registered transport (``whatsapp``) and a registered transport that declares
+    no proactive send (a SYNTHETIC capability — every shipped channel now declares
+    True, and the arm still has to refuse). Each logs its reason and degrades to a
+    no-op rather than raising into the turn.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.chat_runner import _deliver_cross_surface_reply
+    from kiro_crew.messaging.link import ChannelLink
+    from kiro_crew.messaging.transport import TransportCapabilities
+
+    state = _make_state(tmp_path)
+
+    # (a) Nothing registered for the namespace — the ladder's transport arm.
+    state.sessions.get_mirror_link = MagicMock(
+        return_value=ChannelLink("whatsapp", channel_id="15550100", thread_id=None)
+    )
+    assert state.get_channel_transport("whatsapp") is None
+    await _deliver_cross_surface_reply(state, "whatsapp:kirocrew:direct:15550100", "cycle 1 output")
+
+    # (b) Registered, but declaring no unattended send — the
+    # ``supports_proactive_send`` arm. SYNTHETIC on purpose: every shipped channel
+    # declares True now, and this arm must keep refusing regardless, or a future
+    # transport that cannot send unattended would be handed a nudge to deliver.
+    bound = SimpleNamespace(
+        channel_type="telegram",
+        capabilities=TransportCapabilities(supports_proactive_send=False),
+        send_message=AsyncMock(return_value="mid-1"),
+    )
+    state.register_channel_transport(bound)
+    state.sessions.get_mirror_link = MagicMock(
+        return_value=ChannelLink("telegram", channel_id="4242", thread_id=None)
+    )
+    await _deliver_cross_surface_reply(state, "telegram:kirocrew:direct:4242", "cycle 1 output")
+    bound.send_message.assert_not_awaited()
+
+
+def test_binding_key_for_does_not_widen_with_the_classifier():
+    """Classifying a namespace must NOT make it armable ahead of its arm path.
+
+    ``binding_key_for`` is the "may this session be armed?" answer, and honouring
+    it additionally needs an ownership check in ``autonudge_authz`` and a fire
+    route in the gateway's ``_fire`` dispatcher — both implemented for ``slack:``
+    and ``discord:`` only. Passing weixin/webex/teams/imessage through here ahead
+    of those two would arm a loop that the chokepoint denies (or that is removed
+    on its first fire), which is strictly worse than the clean "not supported from
+    this session type" refusal it replaces.
+    """
+    from kiro_crew.autonudge import binding_key_for, is_channel_key
+
+    for key in (
+        "weixin:kirocrew:direct:oUserOpenId",
+        "webex:kirocrew:direct:user@example.com",
+        "teams:kirocrew:direct:29:1abcdef",
+        "imessage:kirocrew:direct:+15550100",
+    ):
+        assert is_channel_key(key)
+        assert binding_key_for(key) is None
+    # The two namespaces that DO have both halves still pass through.
+    assert binding_key_for("slack:1700000000.123456") == "slack:1700000000.123456"
+    assert binding_key_for("discord:kirocrew:direct:42") == "discord:kirocrew:direct:42"
 
 
 @pytest.mark.asyncio
@@ -1603,8 +1796,8 @@ class TestAutonudgeUpdateConcurrency:
             timer = svc._timers[loop_obj.id]
             await asyncio.sleep(0.15)  # delivered; parked inside the persist
             assert loop_obj.id in svc._firing
-            svc.notify_turn_complete("chat-9-7")   # queues a deferred re-arm
-            svc.notify_user_input("chat-9-7")      # user takes priority
+            svc.notify_turn_complete("chat-9-7")  # queues a deferred re-arm
+            svc.notify_user_input("chat-9-7")  # user takes priority
             assert not timer.cancelled(), "user input cancelled the firing task"
             gate.set()
             await asyncio.wait_for(asyncio.shield(timer), timeout=5)
@@ -1657,9 +1850,7 @@ class TestAutonudgeUpdateConcurrency:
         svc = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
         await svc.start()
         try:
-            loop_obj = await svc.add(
-                slot_key="slack:1700000000.1", message="go", idle_secs=15
-            )
+            loop_obj = await svc.add(slot_key="slack:1700000000.1", message="go", idle_secs=15)
             # Re-arm with a zero delay so exactly ONE fire starts promptly; the
             # channel self-re-arm afterwards uses the real 15s idle gap, so the
             # test observes a single, deterministic fire window.
@@ -1895,10 +2086,18 @@ class TestSentinelPathRepair:
                 {
                     "version": 1,
                     "loops": [
-                        {"id": "bad", "slot_key": "chat-1-1", "message": "m",
-                         "stop_sentinel_path": 12345},
-                        {"id": "good", "slot_key": "chat-2-2", "message": "m",
-                         "stop_sentinel_path": str(current / "workspace" / ".stop-ok")},
+                        {
+                            "id": "bad",
+                            "slot_key": "chat-1-1",
+                            "message": "m",
+                            "stop_sentinel_path": 12345,
+                        },
+                        {
+                            "id": "good",
+                            "slot_key": "chat-2-2",
+                            "message": "m",
+                            "stop_sentinel_path": str(current / "workspace" / ".stop-ok"),
+                        },
                     ],
                 }
             ),
@@ -2084,9 +2283,7 @@ class TestPersistenceIsOffLoopAndOrdered:
     @pytest.mark.asyncio
     async def test_remove_persists_off_the_loop(self, tmp_path):
         svc = AutoNudgeService(base_dir=tmp_path)
-        loop = await svc.add(
-            slot_key="dashboard:x", message="go", idle_secs=60, max_cycles=1
-        )
+        loop = await svc.add(slot_key="dashboard:x", message="go", idle_secs=60, max_cycles=1)
 
         writes: list[str] = []
         real_write = svc._write_state
@@ -2109,9 +2306,7 @@ class TestPersistenceIsOffLoopAndOrdered:
     @pytest.mark.asyncio
     async def test_cancelled_removal_holds_the_lock_until_the_write_settles(self, tmp_path):
         svc = AutoNudgeService(base_dir=tmp_path)
-        doomed = await svc.add(
-            slot_key="dashboard:a", message="a", idle_secs=60, max_cycles=1
-        )
+        doomed = await svc.add(slot_key="dashboard:a", message="a", idle_secs=60, max_cycles=1)
 
         order: list[str] = []
         release = threading.Event()

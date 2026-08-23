@@ -5,32 +5,13 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.webex.client import WEBEX_MAX_TEXT
-from kiro_crew.webex.renderer import _TOOL_EDIT_BUDGET, WebexRenderer, _strip_options
+from kiro_crew.webex.renderer import _TOOL_EDIT_BUDGET, WebexRenderer
 from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
-
-class TestStripOptionsRedos:
-    def test_unterminated_options_tag_is_not_redos(self) -> None:
-        # Regression (py/polynomial-redos): the old lazy ``\s*(.*?)`` body could
-        # consume a "[" that ALSO starts the outer "[OPTIONS:" literal, so over
-        # text with many "[OPTIONS:" prefixes search() re-explored the body from
-        # each position — polynomial. Webex now shares the tempered
-        # OPTIONS_RE_TRAILER (forbids only a re-occurring "[OPTIONS:"), so the
-        # body is unambiguous (linear). A whitespace-padded unterminated tag and
-        # many repeated "[OPTIONS:" prefixes (the real pump) must both return
-        # promptly.
-        import time
-
-        evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
-        start = time.perf_counter()
-        result = _strip_options(evil)
-        assert time.perf_counter() - start < 1.0, "possible ReDoS"
-        assert result == ""
-
-        evil = "[OPTIONS:" * 100_000 + "x"
-        start = time.perf_counter()
-        _strip_options(evil)
-        assert time.perf_counter() - start < 1.0, "possible ReDoS"
+# The trailer grammar, its ReDoS hardening and the numbered-text fallback are
+# shared by every zero-widget channel and pinned once in
+# test_options_cap_contract.py (TestRenderOptionsAsText +
+# TestZeroWidgetChannelEnforcement::test_webex).
 
 
 class FakeClient:
@@ -128,13 +109,13 @@ class TestFinalAnswer:
         assert delivered == text  # nothing lost
 
     @pytest.mark.asyncio
-    async def test_options_trailer_stripped(self) -> None:
+    async def test_options_trailer_becomes_numbered_text(self) -> None:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
         await r.on_text_chunk("Pick one\n\n[OPTIONS: A | B | C]")
         await r.on_done()
-        assert c.edits[-1][2] == "Pick one"
+        assert c.edits[-1][2] == "Pick one\n\n1. A\n2. B\n3. C"
 
     @pytest.mark.asyncio
     async def test_error_done_shows_error_text(self) -> None:

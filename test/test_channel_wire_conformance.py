@@ -87,3 +87,31 @@ class TestWeixinConformance:
             "qrcode_img_content is no longer a URL -- the QR render path "
             "(server-side encode to PNG data URI) assumes it is"
         )
+
+
+# WeCom has NO live probe, and that is a decision rather than a gap.
+#
+# Every WeCom frame worth probing requires SUBSCRIBING with the bot's credentials,
+# and WeCom allows one subscription per bot: a second one replaces the incumbent, so
+# the running gateway is disconnected and its reconnect loop stops on
+# `disconnected_event`. Env-gating that is not a defence -- `no-test-side-effects` is
+# about the side effect existing at all, not how hard it is to reach -- and the
+# blast radius lands on a production channel, not on the test.
+#
+# Nothing is lost by omitting it, because none of the assertions needed the wire:
+#
+# * Frame SHAPES are asserted against the recorded fixtures on a fake socket in
+#   `test_wecom_wire.py`, which is where a shape assertion belongs.
+# * The cmd-less ACK's req_id echo -- the only thing that tells a pong from a
+#   stream-reply receipt -- is pinned by
+#   `test_the_same_shape_clears_a_pending_pong_when_the_req_id_was_a_ping`.
+# * The unverified vendor semantics that a probe WOULD settle are recorded as such
+#   in each fixture's `_provenance`, including the load-bearing one: whether a
+#   non-empty `body.chatid` really means "group", which `wecom/transport.py::receive`
+#   and `wecom/transport_dispatch.py::_route` both assume. Naming an assumption in
+#   the fixture that carries it is what keeps it from being forgotten; a probe nobody
+#   may safely run would not have settled it either.
+#
+# If a throwaway bot with its own credentials ever exists, the honest place for a
+# WeCom probe is against THAT, with the incumbent-subscription hazard stated in the
+# opt-in instructions.

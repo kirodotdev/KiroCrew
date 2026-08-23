@@ -121,8 +121,9 @@ Anything else is a prompt.
 
 Feishu v1 is deliberately single-shot: the agent's answer is buffered and sent
 as **one reply** when the turn completes, rather than streamed. There are no
-interactive buttons, so an `[OPTIONS: …]` trailer is stripped and the choices
-arrive as plain text.
+interactive buttons, so when the agent offers a choice, the `[OPTIONS: …]`
+trailer arrives as a numbered list and you answer by typing one — which is an
+ordinary message, so nothing extra has to be configured.
 
 Known gaps, all follow-up work rather than defects:
 

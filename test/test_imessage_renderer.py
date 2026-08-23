@@ -233,20 +233,26 @@ class TestDelivery:
         assert all(len(text) <= IMESSAGE_CAPABILITIES.max_message_chars for text in client.sent)
 
     @pytest.mark.asyncio
-    async def test_an_options_trailer_is_stripped(self) -> None:
+    async def test_an_options_trailer_becomes_numbered_text(self) -> None:
+        # iMessage has no tappable choices, but the choices are the answers to the
+        # question the body just asked -- dropping them left the user with no way
+        # to see what was offered.
         client = FakeClient()
         renderer = _renderer(client)
         await renderer.on_text_chunk("Pick one.\n\n[OPTIONS: a | b | c]")
         await renderer.on_done()
-        assert client.sent == ["Pick one."]
+        assert client.sent == ["Pick one.\n\n1. a\n2. b\n3. c"]
 
     @pytest.mark.asyncio
-    async def test_a_truncated_options_fragment_never_lands_as_raw_text(self) -> None:
+    async def test_an_incomplete_options_fragment_is_not_cut_off_the_answer(self) -> None:
+        # iMessage never streams, so an incomplete marker at finalization is not a
+        # marker still arriving -- it is the assistant's text, and deleting it to
+        # tidy up protocol would lose authored content.
         client = FakeClient()
         renderer = _renderer(client)
         await renderer.on_text_chunk("Pick one.\n\n[OPTIONS: a | b")
         await renderer.on_done()
-        assert client.sent == ["Pick one."]
+        assert client.sent == ["Pick one.\n\n[OPTIONS: a | b"]
 
     @pytest.mark.asyncio
     async def test_an_empty_answer_still_sends_something(self) -> None:

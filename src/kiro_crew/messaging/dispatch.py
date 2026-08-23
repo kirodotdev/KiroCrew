@@ -35,7 +35,10 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
-from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
+from kiro_crew.messaging.link import (
+    channel_namespace_of,
+    is_channel_session_key,
+)
 from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel

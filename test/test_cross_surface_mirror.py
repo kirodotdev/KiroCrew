@@ -16,6 +16,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 
+# Both legs gate on the SHIPPED capability objects, so the refusal cases below
+# read them instead of a matching fake. Same roster the mirror-link suite uses.
+from test_chat_mirror import (
+    NON_PROACTIVE_CHANNELS,
+    _channels_declaring_proactive,
+    _real_caps_transport,
+)
+
 from kiro_crew.dashboard.chat_runner import (
     _deliver_cross_surface_reply,
     _deliver_cross_surface_user_message,
@@ -27,6 +35,11 @@ from kiro_crew.security import (
     redact_exfiltration_urls,
 )
 
+#: A channel whose REAL capabilities permit a proactive send, so both legs must
+#: DELIVER to it. Named rather than derived: if Weixin's declaration is ever
+#: locked down, this fails loudly here instead of quietly moving suites.
+PROACTIVE_CHANNEL = "weixin"
+
 
 def _fake_transport(channel_type: str = "telegram", proactive: bool = True):
     return SimpleNamespace(
@@ -34,6 +47,17 @@ def _fake_transport(channel_type: str = "telegram", proactive: bool = True):
         capabilities=SimpleNamespace(supports_proactive_send=proactive, max_message_chars=4096),
         send_message=AsyncMock(return_value="mid-1"),
     )
+
+
+def test_the_pinned_proactive_channel_still_declares_proactive_send() -> None:
+    """Guards the two delivery assertions below from becoming vacuous.
+
+    They prove the legs deliver where the capability allows it. Pointing them at
+    a channel that had since been locked would turn both into tests of the skip
+    path wearing a delivery test's name.
+    """
+    assert PROACTIVE_CHANNEL in _channels_declaring_proactive(True)
+    assert PROACTIVE_CHANNEL not in NON_PROACTIVE_CHANNELS
 
 
 class TestGovernanceDegradationFailsClosed:
@@ -185,14 +209,35 @@ class TestDeliverCrossSurfaceReply:
 
     @pytest.mark.asyncio
     async def test_skips_when_not_proactive(self, tmp_path):
+        """The leg must honour a False ``supports_proactive_send``.
+
+        SYNTHETIC capability, so this branch is covered whatever
+        ``NON_PROACTIVE_CHANNELS`` holds this week: it has been empty, and a suite
+        parametrized over an empty set drives NOTHING while still reporting green.
+        Real-capability coverage is the accepting counterpart below; this keeps the
+        refusing branch alive.
+        """
+        channel = "synthetic"
         state = _make_state(tmp_path)
-        tp = _fake_transport("wecom", proactive=False)
+        tp = _fake_transport(channel, proactive=False)
         state.register_channel_transport(tp)
         state.sessions.get_mirror_link = MagicMock(
-            return_value=ChannelLink("wecom", channel_id="u1")
+            return_value=ChannelLink(channel, channel_id="u1")
         )
         await _deliver_cross_surface_reply(state, "k", "hi")
         tp.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path):
+        """The positive counterpart, on real capabilities rather than a fake."""
+        state = _make_state(tmp_path)
+        tp = _real_caps_transport(PROACTIVE_CHANNEL)
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink(PROACTIVE_CHANNEL, channel_id="u1")
+        )
+        await _deliver_cross_surface_reply(state, "k", "hi")
+        tp.send_message.assert_awaited_once_with("u1", "hi", thread_id=None)
 
     @pytest.mark.asyncio
     async def test_skips_empty_text(self, tmp_path):
@@ -300,14 +345,27 @@ class TestDeliverCrossSurfaceUserMessage:
 
     @pytest.mark.asyncio
     async def test_skips_when_not_proactive(self, tmp_path):
+        """Synthetic capability, for the same reason as the reply leg's twin."""
+        channel = "synthetic"
         state = _make_state(tmp_path)
-        tp = _fake_transport("wecom", proactive=False)
+        tp = _fake_transport(channel, proactive=False)
         state.register_channel_transport(tp)
         state.sessions.get_mirror_link = MagicMock(
-            return_value=ChannelLink("wecom", channel_id="u1")
+            return_value=ChannelLink(channel, channel_id="u1")
         )
         await _deliver_cross_surface_user_message(state, "k", "hi")
         tp.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_delivers_when_real_capabilities_allow_it(self, tmp_path):
+        state = _make_state(tmp_path)
+        tp = _real_caps_transport(PROACTIVE_CHANNEL)
+        state.register_channel_transport(tp)
+        state.sessions.get_mirror_link = MagicMock(
+            return_value=ChannelLink(PROACTIVE_CHANNEL, channel_id="u1")
+        )
+        await _deliver_cross_surface_user_message(state, "k", "hi")
+        tp.send_message.assert_awaited_once_with("u1", "💬 hi", thread_id=None)
 
     @pytest.mark.asyncio
     async def test_skips_empty_message(self, tmp_path):

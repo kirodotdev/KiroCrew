@@ -177,7 +177,6 @@ src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/artifacts.py
 src/kiro_crew/atomic_write.py
-src/kiro_crew/autonudge.py
 src/kiro_crew/autonudge_authz.py
 src/kiro_crew/beacon.py
 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
@@ -448,8 +447,6 @@ src/kiro_crew/vector_memory.py
 src/kiro_crew/voice_reply.py
 src/kiro_crew/webhooks.py
 src/kiro_crew/weixin/client.py
-src/kiro_crew/weixin/transport_dispatch.py
-src/kiro_crew/weixin/turn_renderer.py
 src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
 src/kiro_crew/workflows/runner.py
@@ -552,7 +549,6 @@ test/test_auto_approve.py
 test/test_auto_research.py
 test/test_auto_research_handlers_coverage.py
 test/test_auto_research_onloop_db.py
-test/test_autonudge.py
 test/test_autonudge_dashboard_fire.py
 test/test_autonudge_stop_auth.py
 test/test_background_approval_routing.py
@@ -617,7 +613,6 @@ test/test_channel_transcript_migration.py
 test/test_chat_backfill.py
 test/test_chat_folder_app_isolation.py
 test/test_chat_folder_suggest.py
-test/test_chat_mirror.py
 test/test_chat_nav.py
 test/test_chat_regenerate_cov80.py
 test/test_chat_runner_coverage.py
@@ -650,7 +645,6 @@ test/test_computer_use_apps.py
 test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
-test/test_config_loader.py
 test/test_config_meta_stamp.py
 test/test_config_patch.py
 test/test_config_rmw_preserves_settings.py
@@ -1085,7 +1079,6 @@ test/test_pptx_maker_library.py
 test/test_pptx_maker_paths.py
 test/test_pptx_maker_provision.py
 test/test_pptx_maker_routes.py
-test/test_pr_quality_gates.py
 test/test_pr_readiness_evaluate.py
 test/test_pr_readiness_publish.py
 test/test_pr_readiness_sweep.py
@@ -1130,7 +1123,6 @@ test/test_restart_command.py
 test/test_reveal_in_file_manager.py
 test/test_reveal_path.py
 test/test_review_driver_loopback.py
-test/test_review_fixes.py
 test/test_role_models.py
 test/test_route_registry.py
 test/test_run_config_write.py
@@ -1338,7 +1330,6 @@ test/test_webhooks_store.py
 test/test_website_build_heap.py
 test/test_wecom_config_handlers.py
 test/test_wecom_wire.py
-test/test_weixin_dispatch.py
 test/test_weixin_media.py
 test/test_weixin_qr.py
 test/test_weixin_wire.py

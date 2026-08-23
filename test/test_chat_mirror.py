@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,8 +12,47 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
-from kiro_crew.messaging.link import ChannelLink
+# The shipped capability objects, imported from the file that already owns the
+# eight-channel roster so there is one place a new channel has to be added.
+from test_options_cap_contract import _all_channel_capabilities
+
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
 from kiro_crew.messaging.transport import ConfiguredChannelTarget
+
+#: Channels whose REAL capabilities refuse a proactive send, so the mirror-link
+#: gate must reject them. Pinned as a set as well as derived below, so unlocking
+#: one is a NAMED failure in ``test_the_proactive_split_matches_the_shipped_caps``
+#: rather than a parametrized suite that quietly stops driving anything.
+#:
+#: Membership tracks a capability declaration, not a policy: WeCom left when it
+#: gained a proactive path over its long connection, and Feishu arrived declaring
+#: ``supports_proactive_send=False`` because its v1 renderer only ever replies to
+#: an inbound ``message_id``. The rejection branch below is nonetheless driven by a
+#: SYNTHETIC capability rather than by whoever happens to be in this set: the set
+#: has been empty before and will be again, and a branch whose only coverage is a
+#: roster entry stops being covered the moment that entry graduates.
+NON_PROACTIVE_CHANNELS: set[str] = {"feishu"}
+
+
+def _mirror_gate_capabilities() -> dict[str, Any]:
+    """Real capabilities per channel, minus Slack.
+
+    Slack is refused on channel TYPE before any capability is read — its
+    dedicated ``slack-link`` endpoint owns the rich thread plus streaming mirror
+    — so its proactive flag never reaches the gate under test here.
+    """
+    caps = dict(_all_channel_capabilities())
+    caps.pop(SLACK_NAMESPACE, None)
+    return caps
+
+
+def _channels_declaring_proactive(supported: bool) -> list[str]:
+    """Channel types whose shipped capabilities declare (or refuse) proactive send."""
+    return sorted(
+        name
+        for name, caps in _mirror_gate_capabilities().items()
+        if caps.supports_proactive_send is supported
+    )
 
 
 def _make_mirror_app(state):
@@ -30,11 +71,16 @@ def _make_mirror_app(state):
 
 
 def _fake_transport(
-    channel_type="telegram", proactive=True, max_message_chars=4096, session_resume=False
+    channel_type="telegram",
+    proactive=True,
+    max_message_chars=4096,
+    session_resume=False,
+    capabilities=None,
 ):
     return SimpleNamespace(
         channel_type=channel_type,
-        capabilities=SimpleNamespace(
+        capabilities=capabilities
+        or SimpleNamespace(
             supports_proactive_send=proactive,
             # The real TransportCapabilities always carries this; the mirror
             # backfill chunks to it instead of truncating, so the fake needs it
@@ -48,6 +94,39 @@ def _fake_transport(
         ),
         resolve_configured_target=AsyncMock(return_value=("123", None)),
     )
+
+
+def _real_caps_transport(channel_type: str):
+    """A fake transport carrying the channel's SHIPPED ``TransportCapabilities``.
+
+    The proactive gate is a capability read, so a test that hands it a
+    hand-built ``SimpleNamespace`` pins the fake and not the declaration:
+    flipping ``WECOM_CAPABILITIES.supports_proactive_send`` left the refusal
+    green while the endpoint began accepting a channel that cannot send. Only
+    the network methods stay faked.
+
+    Copied rather than aliased: ``TransportCapabilities`` is a MUTABLE dataclass
+    and the module-level object is shared process-wide, so a test that tweaked a
+    field in place would silently rewrite every later test's idea of the channel.
+    """
+    return _fake_transport(
+        channel_type, capabilities=dataclasses.replace(_mirror_gate_capabilities()[channel_type])
+    )
+
+
+def _caps_transport(channel_type: str, **overrides):
+    """A fake transport whose capabilities are SYNTHETIC, for a branch no shipped
+    channel exercises any more.
+
+    Deliberately separate from :func:`_real_caps_transport`: that one exists so the
+    gate is pinned against the real declaration and an unlock is observable, and
+    this one must not be reachable from it. Every shipped channel now declares
+    ``supports_proactive_send=True``, so the refusing branch has no real subject —
+    but the gate still has to refuse, and this is the only honest way to say so.
+    """
+    from kiro_crew.messaging.transport import TransportCapabilities
+
+    return _fake_transport(channel_type, capabilities=TransportCapabilities(**overrides))
 
 
 def _prep(tmp_path, monkeypatch):
@@ -184,10 +263,14 @@ class TestMirrorLink:
 
     @pytest.mark.asyncio
     async def test_missing_channel_type(self, tmp_path, monkeypatch):
+        # An empty JSON object is reminder mode with nothing to remind, so this
+        # lands on the reminder path's own required-field refusal — the twin of
+        # the explicit-body one, and it must answer with the same code.
         state = _prep(tmp_path, monkeypatch)
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post("/api/chat/slots/s1/mirror-link", json={})
             assert resp.status == 400
+            assert (await resp.json())["code"] == "channel_type_required"
 
     @pytest.mark.asyncio
     async def test_slack_rejected(self, tmp_path, monkeypatch):
@@ -198,7 +281,11 @@ class TestMirrorLink:
                 json={"channel_type": "slack", "conversation_id": "C1"},
             )
             assert resp.status == 400
-            assert "slack-link" in (await resp.json())["error"]
+            body = await resp.json()
+            assert "slack-link" in body["error"]
+            # Slack is not unsupported, it is handled elsewhere; the code has to
+            # say which, because that is the only part a localized client reads.
+            assert body["code"] == "use_slack_link"
 
     @pytest.mark.asyncio
     async def test_missing_target_id(self, tmp_path, monkeypatch):
@@ -220,17 +307,79 @@ class TestMirrorLink:
             )
             assert resp.status == 503
 
+    def test_the_proactive_split_matches_the_shipped_caps(self):
+        """The two suites below are only as honest as this roster.
+
+        Derived from the shipped objects, so a channel that starts or stops
+        declaring ``supports_proactive_send`` fails HERE, named, instead of
+        migrating between the suites without a word. The acceptance half is
+        checked for non-vacuity too: an empty parametrize list is a green test
+        that drives nothing.
+        """
+        assert _channels_declaring_proactive(False) == sorted(NON_PROACTIVE_CHANNELS), (
+            "A channel's supports_proactive_send declaration changed. The mirror-link "
+            "gate rejects exactly the non-proactive channels, so update "
+            "NON_PROACTIVE_CHANNELS — and check the endpoint's docstring, which names "
+            "the channels it can and cannot mirror. "
+            f"newly_locked={set(_channels_declaring_proactive(False)) - NON_PROACTIVE_CHANNELS} "
+            f"newly_unlocked={NON_PROACTIVE_CHANNELS - set(_channels_declaring_proactive(False))}"
+        )
+        assert _channels_declaring_proactive(True), (
+            "no shipped channel declares supports_proactive_send=True, so the "
+            "acceptance suite drives nothing"
+        )
+
     @pytest.mark.asyncio
     async def test_non_proactive_channel_rejected(self, tmp_path, monkeypatch):
+        """The gate must refuse a transport that declares no proactive send.
+
+        Driven by a SYNTHETIC capability rather than by a shipped channel that
+        declares ``False``, so this branch keeps its coverage across a roster that
+        churns: ``NON_PROACTIVE_CHANNELS`` has been empty before, and a test
+        parametrized over it would have gone vacuously green instead of red. The
+        real-capability version is `test_proactive_channel_accepted`, which covers
+        every shipped channel; this one keeps the refusing branch alive, because a
+        mirror binding on a transport that cannot send unattended promises a
+        delivery it will never make.
+        """
+        channel = "synthetic"
         state = _prep(tmp_path, monkeypatch)
-        state.register_channel_transport(_fake_transport("wecom", proactive=False))
+        state.register_channel_transport(_caps_transport(channel, supports_proactive_send=False))
         async with TestClient(TestServer(_make_mirror_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots/s1/mirror-link",
-                json={"channel_type": "wecom", "target_id": "user:u1"},
+                json={"channel_type": channel, "target_id": "user:u1"},
             )
             assert resp.status == 400
-            assert "proactive" in (await resp.json())["error"]
+            body = await resp.json()
+            assert "proactive" in body["error"]
+            # The dashboard renders `error` verbatim into a localized UI, so the
+            # machine contract is the code, and the code is what a client that
+            # cannot read English has to switch on.
+            assert body["code"] == "channel_not_proactive"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("channel", _channels_declaring_proactive(True))
+    async def test_proactive_channel_accepted(self, tmp_path, monkeypatch, channel):
+        """The positive counterpart, and what makes a future unlock observable.
+
+        Weixin ships ``supports_proactive_send=True``, so it must LINK. Without
+        this half the suite only ever proved the gate says no, and a gate that
+        refuses everything would pass it — including the day WeCom's declaration
+        flips and the endpoint is supposed to start accepting it.
+        """
+        state = _prep(tmp_path, monkeypatch)
+        state.register_channel_transport(_real_caps_transport(channel))
+        state.sessions.set_mirror_link = MagicMock()
+        async with TestClient(TestServer(_make_mirror_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/s1/mirror-link",
+                json={"channel_type": channel, "target_id": "user:123"},
+            )
+            assert resp.status == 200
+            assert (await resp.json())["ok"] is True
+        link = state.sessions.set_mirror_link.call_args.args[1]
+        assert link == ChannelLink(channel, channel_id="123", thread_id=None)
 
     @pytest.mark.asyncio
     async def test_link_success(self, tmp_path, monkeypatch):
@@ -417,7 +566,9 @@ class TestMirrorReminder:
                 "/api/chat/slots/s1/mirror-link", json={"thread_id": "unexpected"}
             )
             assert resp.status == 400
-            assert (await resp.json())["error"] == "channel_type required"
+            body = await resp.json()
+            assert body["error"] == "channel_type required"
+            assert body["code"] == "channel_type_required"
 
         transport.send_message.assert_not_awaited()
 
@@ -510,9 +661,7 @@ class TestMirrorPause:
         def _build(state):
             app = web.Application()
             app["state"] = state
-            app.router.add_post(
-                "/api/chat/slots/{name}/mirror-pause", api_chat_slot_mirror_pause
-            )
+            app.router.add_post("/api/chat/slots/{name}/mirror-pause", api_chat_slot_mirror_pause)
             return app
 
         return _build
@@ -534,9 +683,7 @@ class TestMirrorPause:
         )
         state.sessions.set_mirror_paused = MagicMock(return_value=False)
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
@@ -552,9 +699,7 @@ class TestMirrorPause:
         )
         state.sessions.set_mirror_paused = MagicMock(return_value=True)
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": False}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": False})
             assert resp.status == 200
             data = await resp.json()
             assert data["paused"] is False
@@ -567,9 +712,7 @@ class TestMirrorPause:
         # get_mirror_link returns None → no explicit mirror, and session key is
         # not a channel key → not origin-connected either.
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 409
             assert (await resp.json())["code"] == "mirror_not_linked"
 
@@ -590,9 +733,7 @@ class TestMirrorPause:
         state.sessions.set_mirror_paused = MagicMock(return_value=False)
 
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 200
 
         # The disconnect note was delivered to the mirror channel.
@@ -619,9 +760,7 @@ class TestMirrorPause:
         state.sessions.set_mirror_paused = MagicMock(return_value=False)
 
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 200
 
         transport.send_message.assert_not_awaited()
@@ -654,9 +793,7 @@ class TestMirrorPause:
         transport.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_pause_noop_when_already_paused(
-        self, tmp_path, monkeypatch, mirror_pause_app
-    ):
+    async def test_pause_noop_when_already_paused(self, tmp_path, monkeypatch, mirror_pause_app):
         """No disconnect note when already paused (not a transition)."""
         monkeypatch.setattr(
             "kiro_crew.platform.governance_profiles.governance_permits",
@@ -671,9 +808,7 @@ class TestMirrorPause:
         state.sessions.set_mirror_paused = MagicMock(return_value=True)
 
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 200
             data = await resp.json()
             assert data["was_paused"] is True
@@ -700,15 +835,11 @@ class TestMirrorPause:
         state.sessions.set_mirror_paused = MagicMock(return_value=False)
 
         async with TestClient(TestServer(mirror_pause_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/s1/mirror-pause", json={"paused": True}
-            )
+            resp = await client.post("/api/chat/slots/s1/mirror-pause", json={"paused": True})
             assert resp.status == 200
 
     @pytest.mark.asyncio
-    async def test_invalid_body_defaults_to_pause(
-        self, tmp_path, monkeypatch, mirror_pause_app
-    ):
+    async def test_invalid_body_defaults_to_pause(self, tmp_path, monkeypatch, mirror_pause_app):
         """Non-JSON or non-dict body defaults to paused=True."""
         state = _prep(tmp_path, monkeypatch)
         state.sessions.get_mirror_link = MagicMock(
@@ -1154,9 +1285,9 @@ class TestMirrorBackfillFidelity:
 
         await self._link(state)
         sent = self._sent(transport)
-        assert len(sent) <= self._BOUND_CEILING, (
-            f"inline delivery sent {len(sent)} units, over the budget"
-        )
+        assert (
+            len(sent) <= self._BOUND_CEILING
+        ), f"inline delivery sent {len(sent)} units, over the budget"
         # Priority order: the newest turn is irreducible, then the marker, then
         # the opening turn, then older turns. Here each turn costs ~6 units, so
         # the opening turn cannot be afforded and is folded into the count.
@@ -1165,9 +1296,7 @@ class TestMirrorBackfillFidelity:
         assert any("earlier turn" in t for t in sent), "trim happened with no marker"
 
     @pytest.mark.asyncio
-    async def test_delivery_scales_with_the_budget_not_with_history(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_delivery_scales_with_the_budget_not_with_history(self, tmp_path, monkeypatch):
         """Ten times the history must not mean ten times the request duration."""
 
         counts = []
@@ -1182,9 +1311,9 @@ class TestMirrorBackfillFidelity:
             counts.append(len(self._sent(transport)))
 
         assert all(c <= self._BOUND_CEILING for c in counts), counts
-        assert counts[0] == counts[1], (
-            f"unit count tracked history length ({counts}) instead of the budget"
-        )
+        assert (
+            counts[0] == counts[1]
+        ), f"unit count tracked history length ({counts}) instead of the budget"
 
     @pytest.mark.asyncio
     async def test_no_slack_mrkdwn_conversion_on_a_non_slack_channel(self, tmp_path, monkeypatch):
@@ -1250,13 +1379,15 @@ class TestMirrorBackfillFidelity:
             return await original_send(*args, **kwargs)
 
         transport.send_message = _tracked_send
-        state.sessions.set_mirror_link = MagicMock(side_effect=lambda *a, **k: order.append("persist"))
+        state.sessions.set_mirror_link = MagicMock(
+            side_effect=lambda *a, **k: order.append("persist")
+        )
 
         await self._link(state)
         assert "persist" in order, "link was never persisted"
-        assert order.index("persist") == len(order) - 1, (
-            "the link was persisted before delivery finished"
-        )
+        assert (
+            order.index("persist") == len(order) - 1
+        ), "the link was persisted before delivery finished"
         assert order.count("send") >= 3, "announcement + both messages should have been sent"
 
 
@@ -1269,9 +1400,7 @@ class TestInboundClaimFollowsTheCapability:
     """
 
     @pytest.mark.asyncio
-    async def test_a_resume_capable_transport_gets_an_inbound_binding(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_resume_capable_transport_gets_an_inbound_binding(self, tmp_path, monkeypatch):
         state = _prep(tmp_path, monkeypatch)
         state.register_channel_transport(_fake_transport("discord", session_resume=True))
         state.sessions.set_mirror_link = MagicMock()
@@ -1284,9 +1413,7 @@ class TestInboundClaimFollowsTheCapability:
         assert state.sessions.set_mirror_link.call_args.kwargs["accepts_inbound"] is True
 
     @pytest.mark.asyncio
-    async def test_a_transport_that_cannot_resume_stays_outbound_only(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_transport_that_cannot_resume_stays_outbound_only(self, tmp_path, monkeypatch):
         """Degrade, never over-promise.
 
         Telegram builds its session key from the route and never consults the
@@ -1337,15 +1464,13 @@ class TestInboundClaimFollowsTheCapability:
             assert resp.status == 409
             assert (await resp.json())["code"] == "conversation_occupied"
 
-        assert transport.send_message.await_count == 0, (
-            "the transcript was delivered into a conversation another session owns"
-        )
+        assert (
+            transport.send_message.await_count == 0
+        ), "the transcript was delivered into a conversation another session owns"
         state.sessions.set_mirror_link.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_stubbed_session_manager_does_not_read_as_occupied(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_stubbed_session_manager_does_not_read_as_occupied(self, tmp_path, monkeypatch):
         """A Mock is truthy, and truthy must not mean "taken".
 
         Read as a rival list, a stubbed accessor's Mock would refuse every connect

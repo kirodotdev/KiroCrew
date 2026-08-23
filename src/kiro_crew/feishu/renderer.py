@@ -4,7 +4,8 @@ Maps the channel-neutral ``OutputEvent`` stream onto a single Feishu REST
 reply anchored to the inbound message_id:
 
 * ``on_turn_start``   -- no-op (no streaming placeholder in v1).
-* ``on_text_chunk``   -- buffers text; trailing ``[OPTIONS:]`` stripped.
+* ``on_text_chunk``   -- buffers text; a trailing ``[OPTIONS:]`` trailer
+  becomes a numbered text list (Feishu renders no tappable chips).
 * ``on_tool_call``    -- updates a transient tool-footer in the buffer.
 * ``on_prompt_choice``-- no-op: Feishu has no interactive buttons in v1
   (the driver only dispatches this for INTERACTIVE + a decider, and
@@ -21,32 +22,13 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, render_options_as_text
 from kiro_crew.messaging.transport import TransportCapabilities
 
 if TYPE_CHECKING:
     from kiro_crew.feishu.client import LarkClient
 
 logger = logging.getLogger(__name__)
-
-# Trailing "[OPTIONS: a | b | c]" chip trailer -- Feishu can't render tappable
-# chips, so we strip it entirely.  Shared with every other surface via
-# constants.py so the ReDoS-hardened grammar never drifts.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
-
-def _strip_options(text: str) -> str:
-    """Remove a trailing ``[OPTIONS: …]`` chip trailer."""
-    m = _OPTIONS_RE.search(text)
-    if m:
-        return text[: m.start()].rstrip()
-    # Also strip a still-streaming partial ``[OPTIONS…`` fragment so raw
-    # markup never flashes to the user.
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip()
-    return text
 
 
 class FeishuRenderer(Renderer):
@@ -148,9 +130,11 @@ class FeishuRenderer(Renderer):
     # -- Helpers ------------------------------------------------------------
 
     def text(self) -> str:
-        """The complete visible answer so far (OPTIONS stripped).
+        """The complete answer so far, with ``[OPTIONS:]`` as numbered text.
 
-        Used both by ``on_done`` (final send) and by the dispatcher to persist
-        the reply to history.
+        This is what ``on_done`` sends. History is persisted separately by
+        ``messaging.dispatch`` from the driver's own accumulated text, so the two
+        are not guaranteed to agree — a difference that only shows up in what the
+        transcript records, never in what the user is shown.
         """
-        return _strip_options("".join(self._buf).strip())
+        return render_options_as_text("".join(self._buf).strip(), self.capabilities)

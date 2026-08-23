@@ -115,13 +115,25 @@ class TestScreenshotEvidenceBodyLogic:
         gh.chmod(0o755)
         summary = tmp_path / "summary.md"
         summary.touch()
+        # HERMETIC env, not `**os.environ`. The step's outcome is decided entirely
+        # by environment variables, and inheriting the ambient one made that
+        # outcome depend on whatever else the process had been doing: `BASH_ENV`
+        # would make `bash -c` source a file before the script runs, and a stray
+        # `PATH`, `EXEMPT`, `LC_*` or `GH_*` value reaches the same branches the
+        # assertions read. Enumerating what the script needs is also self-documenting
+        # -- anything absent here is something the step must not depend on.
         env = {
-            **os.environ,
-            "PATH": f"{tmp_path}{os.pathsep}{os.environ.get('PATH', '')}",
+            # tmp_path first so the `gh` stub wins; the system dirs follow because
+            # the script needs printf/grep/cat and the stub's shell.
+            "PATH": f"{tmp_path}{os.pathsep}/usr/local/bin{os.pathsep}/usr/bin{os.pathsep}/bin",
             # Starve any real gh of credentials so a stub-resolution failure
             # can never turn into a live API call.
             "GH_TOKEN": "",
             "GITHUB_TOKEN": "",
+            # The patterns are ASCII and every fixture body is ASCII, so pin the
+            # collation rather than inheriting a locale that changes what `grep -i`
+            # and the `[[:space:]]` class match.
+            "LC_ALL": "C",
             "EXEMPT": exempt,
             "REPO": "example/repo",
             "PR": "1",
@@ -217,10 +229,7 @@ class TestCrossPlatform:
         wf = _read("cross-platform.yml")
         assert "deliberately NO" in wf, "the absence must stay documented"
         # No rule may actually grep for the encoding kwarg.
-        rule_lines = [
-            ln for ln in wf.splitlines()
-            if ln.lstrip().startswith("hits=")
-        ]
+        rule_lines = [ln for ln in wf.splitlines() if ln.lstrip().startswith("hits=")]
         assert rule_lines, "expected at least one scan rule"
         for ln in rule_lines:
             assert "encoding" not in ln, f"encoding rule reintroduced: {ln.strip()[:80]}"
@@ -246,7 +255,7 @@ class TestPrScope:
         # combination reviews badly.
         wf = _read("pr-scope.yml")
         assert '-gt "$MAX_AREAS" ] && [' in wf
-        assert 'MAX_LINES' in wf
+        assert "MAX_LINES" in wf
 
     def test_excludes_vendor_and_screenshots(self):
         wf = _read("pr-scope.yml")
@@ -267,9 +276,9 @@ class TestDesignReviewBlocks:
         # force-pass UX and First Principles (and once Design too) is gone, so
         # a red opinion lane now produces a red PR Readiness.
         wf = _read("pr-readiness.yml")
-        assert 'passed+=("$label (advisory)")' not in wf, (
-            "no opinion lane may be force-passed; a BLOCK must reach readiness"
-        )
+        assert (
+            'passed+=("$label (advisory)")' not in wf
+        ), "no opinion lane may be force-passed; a BLOCK must reach readiness"
         assert 'failed+=("$label (BLOCK)")' in wf
 
     def test_all_three_lanes_share_the_one_blocking_branch(self):

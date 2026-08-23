@@ -9,8 +9,8 @@ Maps the channel-neutral ``OutputEvent`` stream (routed by the base
   updates spend at most ``_TOOL_EDIT_BUDGET`` edits and the final answer
   always has one left.
 * ``on_text_chunk`` -- buffered only (no typewriter streaming; see the
-  edit cap), with any trailing ``[OPTIONS:]`` markup stripped (Webex has
-  no tappable chips here).
+  edit cap); a trailing ``[OPTIONS:]`` trailer becomes a numbered text list
+  (Webex renders no tappable chips).
 * ``on_prompt_choice`` -- no-op: the driver only dispatches this for
   INTERACTIVE + a decider; Webex runs decider-less (deny-by-default).
 * ``on_compaction`` -- logged only; the dispatcher surfaces threshold
@@ -28,8 +28,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, render_options_as_text
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.webex.client import WEBEX_MAX_TEXT, chunk_utf8
@@ -50,30 +49,6 @@ _STATUS_THROTTLE_S = 2.0
 _THINKING = "🤔 Thinking…"
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
-
-# Trailing "[OPTIONS: a | b | c]" chip trailer (a dashboard convention Webex
-# can't render as tappable chips). Matched only at the very END of the message,
-# so use the DOTALL/trailer canonical parser. Defined once in constants.py
-# (shared with the Slack/dashboard/Discord/Telegram/WeCom surfaces) so the
-# ReDoS-hardened grammar can never drift; see OPTIONS_RE_TRAILER for the full
-# rationale. Per-choice whitespace is stripped by the caller.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
-
-def _strip_options(text: str) -> str:
-    """Remove a trailing ``[OPTIONS: a | b | c]`` chip trailer.
-
-    Webex has no tappable chips, so we drop the trailer entirely -- the user
-    just replies naturally. Also hides a partial ``[OPTIONS…`` fragment (no
-    closing ``]``) so it never lands as raw text.
-    """
-    m = _OPTIONS_RE.search(text)
-    if m:
-        return text[: m.start()].rstrip()
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip()
-    return text
 
 
 class WebexRenderer(Renderer):
@@ -179,7 +154,7 @@ class WebexRenderer(Renderer):
         # Byte-aware, lossless split: Webex caps messages in UTF-8 BYTES, so
         # the neutral character-based chunk_text could hand the client an
         # oversized chunk that gets tail-truncated (silent data loss).
-        chunks = chunk_utf8(content) or ["…"]
+        chunks = chunk_utf8(content, WEBEX_MAX_TEXT) or ["…"]
         first, rest = chunks[0], chunks[1:]
         delivered = False
         if self._placeholder_id is not None:
@@ -217,8 +192,8 @@ class WebexRenderer(Renderer):
 
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:
-        """The turn's visible answer so far (OPTIONS stripped).
+        """The turn's answer so far, with ``[OPTIONS:]`` as numbered text.
 
         Used both for the final message and to persist the reply to history.
         """
-        return _strip_options("".join(self._buf).strip())
+        return render_options_as_text("".join(self._buf).strip(), self.capabilities)

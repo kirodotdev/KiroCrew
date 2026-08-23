@@ -7163,13 +7163,17 @@ class KiroCrewConfig:
             ),
             wecom=WeComConfig(
                 session_folder=_coerce_session_folder(wecom_data.get("session_folder")),
-                enabled=bool(wecom_data.get("enabled", False)),
+                # _safe_bool, not bool(): `bool("false")` is True, so a JSON string
+                # would read the operator's "off" as "on" -- enabling a channel,
+                # or opening it to every org member, from a config value that says the
+                # opposite. A non-bool must read as the default, not as truthy.
+                enabled=_safe_bool(wecom_data.get("enabled"), False),
                 allowed_users=[
                     u
-                    for u in wecom_data.get("allowed_users", [])
+                    for u in _safe_list(wecom_data.get("allowed_users"))
                     if isinstance(u, dict) and u.get("userid")
                 ],
-                allow_all_users=bool(wecom_data.get("allow_all_users", False)),
+                allow_all_users=_safe_bool(wecom_data.get("allow_all_users"), False),
                 ws_url=str(wecom_data.get("ws_url", "wss://openws.work.weixin.qq.com")),
                 soft_threshold_pct=_threshold_pct(wecom_data.get("soft_threshold_pct"), 80),
                 hard_threshold_pct=_threshold_pct(wecom_data.get("hard_threshold_pct"), 95),

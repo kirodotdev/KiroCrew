@@ -746,6 +746,26 @@ Wraps `SlackClientOps` in the Layer-1 contract; declares Slack's real (rich-end)
 
 Full new-path dispatch: fires the ack reaction + working status immediately (constructing the `SlackRenderer` before the potentially slow session acquisition), acquires/creates the session, builds the message with context, then drives `TurnDriver.run()`. Agent resolution: thread override (`!agent`) → per-channel `agent_override` → configured default → the canonical `_DEFAULT_KIROCREW_AGENT = "kirocrew"` fallback (so the session loads kirocrew-core / `spawn_run` rather than kiro-cli's bare built-in default). It injects `auto_approve_tool=lambda title: _should_auto_approve_spawn(context_builder, title)` and `auto_approve_session=lambda: is_slack_session_trusted(session_key)`. Post-turn bookkeeping (context-usage accounting, conversation logging, success SEL audit) is each isolated in its own `try/except` so a bookkeeping failure never re-records a successful turn as a failure; `sessions.release()` runs in `finally`.
 
+### Two Slack features are deliberately NOT the reference
+
+Slack is the reference for the LAYERS — transport contract, renderer, turn
+dispatch — not for its feature list. Two of its features are decisions against
+replication rather than parity gaps, so an audit that finds another channel
+lacking them should close the finding, not file it:
+
+- **A channel-local auto-approve switch** (`is_slack_session_trusted`, the
+  `mc_tool_trust_` button). Approval posture is a property of the agent, not of
+  the surface a message arrived on: a second place to turn approvals off is a
+  second place to forget one is off, and it makes a session's ceiling depend on
+  which app the user typed into. Every other channel routes `/yolo` through the
+  one `safety_override` grant — see "There is ONE auto-approve grant" under
+  [Invariants](#invariants).
+- **A channel-local reply redirect.** Reply routing is owned by the session's
+  origin binding that every channel already shares through `drive_turn`. A
+  second router for the same question disagrees with the first the moment either
+  changes, and the disagreement surfaces as a reply delivered to the wrong
+  conversation.
+
 ## Cron output delivery: one run, one surface
 
 An unattended cron run has no inbound message to answer, so its output is
@@ -1252,7 +1272,8 @@ start, tool-progress status edits are throttled and budgeted to 6 of the 10
 edits (an edit failure burns the remaining budget so the final-answer edit
 can never race the cap), and the final answer lands as one placeholder edit
 with a fresh-message fallback plus chunked follow-ups past the 7000-char cap.
-Trailing `[OPTIONS:]` markup is stripped (`max_buttons=0`); interactive tool
+A trailing `[OPTIONS:]` trailer becomes a numbered text list (`max_buttons=0`,
+via the shared `render_options_as_text`); interactive tool
 approvals run decider-less, so under INTERACTIVE mode the only rung that can
 approve a tool here is `ChannelTurn.auto_approve_session`, wired to the
 process-global safety-override grant (see [Approval ladder](#approval-ladder)).
@@ -2894,8 +2915,11 @@ current key — with the session key re-derived afterwards. The turn carries a
 marker the driver leaves inert while still reporting success to the model;
 dashboard-only directives stay refused for a channel turn (`slot=None`,
 fail-closed). The dispatcher runs decider-less (no interactive buttons); an
-`[OPTIONS:]` trailer is stripped. The renderer buffers the complete turn and sends it as one reply on
-`on_done` — no streaming, no edit-in-place.
+`[OPTIONS:]` trailer degrades to a numbered text list through the shared
+`render_options_as_text`. The renderer buffers the complete turn and sends it as
+one reply on `on_done` — no streaming, no edit-in-place. Because nothing is shown
+before `on_done`, an UNFINISHED `[OPTIONS` tail is kept rather than cut: there is
+no partial frame for it to flash in, so it can only be the assistant's own prose.
 
 **Session identity.** A p2p turn keys on `open_id` under the `DIRECT` chat
 type; a group turn keys on the group's `chat_id` under the non-direct

@@ -53,6 +53,8 @@ the id from the gateway log.
 |---|---|
 | `/new`, `新对话`, `清空` | Start a fresh session |
 | `/compact` | Compact the session context in place |
+| `/stop`, `/cancel`, `停止` | Stop the reply that is currently generating |
+| `/help`, `帮助` | List the commands |
 
 Context length is managed automatically: at `weixin.soft_threshold_pct` (80%) the
 bot suggests `/compact` or `/new`; at `weixin.hard_threshold_pct` (95%) it
@@ -97,7 +99,7 @@ credential store) and overrides `weixin.token`.
 | `errcode -2` | iLink rate limit; the poller backs off automatically |
 | Bot ignores DMs | Check `dm_policy` — under `allowlist` the sender must be listed |
 | Group messages ignored | Expected: iLink bot identities do not receive group events |
-| Images / voice / files ignored | Expected: media is not supported yet (text only) |
+| An image, voice note or file isn't read | The message arrived but the file was skipped — the gateway log shows `attachment_skip` with the reason. Video is never read; send a screenshot instead |
 | Startup error about `aiohttp` | Install the messaging extra |
 
 ## Attribution

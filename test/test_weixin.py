@@ -502,13 +502,7 @@ def test_allowed_sender_still_gets_context_persisted(tmp_path):
     assert t._ctx.get("acct1", "friend") == "ctx-keep"
 
 
-def test_options_trailer_is_stripped_from_the_end():
-    from kiro_crew.weixin.turn_renderer import _strip_options
-
-    assert _strip_options("Here you go.\n\n[OPTIONS: Yes | No]") == "Here you go."
-
-
-def test_options_stripping_never_deletes_mid_response_content():
+def test_a_mid_response_options_mention_never_deletes_the_body():
     """Regression: a non-trailing "[OPTIONS:" must not swallow the body.
 
     The hand-rolled MULTILINE|DOTALL pattern let ``.*?`` span newlines, so an
@@ -516,23 +510,20 @@ def test_options_stripping_never_deletes_mid_response_content():
     between was silently deleted from the user's reply. The shared
     OPTIONS_RE_TRAILER anchors to end-of-string instead.
     """
-    from kiro_crew.weixin.turn_renderer import _strip_options
-
     body = (
         "The dashboard renders `[OPTIONS: a | b]` as tappable chips.\n"
         "Important paragraph that must survive.\n"
         "A list: [1] first [2] second\n"
     )
-    out = _strip_options(body + "\n[OPTIONS: Keep | Discard]")
+    from kiro_crew.messaging.renderer import render_options_as_text
+    from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
+
+    out = render_options_as_text(body + "\n[OPTIONS: Keep | Discard]", WEIXIN_CAPABILITIES)
     assert "Important paragraph that must survive." in out
     assert "[1] first [2] second" in out
     assert "Keep | Discard" not in out
-
-
-def test_text_without_a_trailer_is_untouched():
-    from kiro_crew.weixin.turn_renderer import _strip_options
-
-    assert _strip_options("just an answer") == "just an answer"
+    # The trailer's own choices still reach the user, now as numbered lines.
+    assert out.endswith("1. Keep\n2. Discard")
 
 
 def test_poll_loop_backs_off_on_ret_keyed_session_expiry(tmp_path, monkeypatch):

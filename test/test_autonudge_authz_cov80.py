@@ -273,13 +273,32 @@ async def test_add_denies_discord_when_the_current_session_lookup_raises(
     assert svc.added == []
 
 
-async def test_add_rejects_a_channel_transport_it_cannot_authorize(audits: list[dict]) -> None:
-    """``is_channel_key`` accepts telegram/whatsapp/unified prefixes too, but only
+@pytest.mark.parametrize(
+    "slot_key",
+    [
+        "telegram:9001",
+        "whatsapp:kirocrew:direct:15550100",
+        "unified:kirocrew",
+        "webex:kirocrew:direct:user@example.com",
+        "teams:kirocrew:direct:29:1abcdef",
+        "weixin:kirocrew:direct:oUserOpenId",
+        "imessage:kirocrew:direct:+15550100",
+    ],
+)
+async def test_add_rejects_a_channel_transport_it_cannot_authorize(
+    audits: list[dict], slot_key: str
+) -> None:
+    """``is_channel_key`` classifies every proactive-capable namespace, but only
     Slack and Discord have ownership checks here — anything else must be refused
-    rather than falling through to an unvalidated arm."""
+    rather than falling through to an unvalidated arm.
+
+    Widening the classifier deliberately does NOT widen this chokepoint: a
+    namespace becomes armable only together with an ownership check here and a
+    fire route in the gateway's ``_fire`` dispatcher.
+    """
     svc = RecordingSvc()
     loop, error, status = await authorize_and_add_nudge(
-        svc=svc, state=_state(), slot_key="telegram:9001", message="watch", source="dashboard"
+        svc=svc, state=_state(), slot_key=slot_key, message="watch", source="dashboard"
     )
     assert loop is None and status == 400 and "unsupported channel session" in error
     assert svc.added == []

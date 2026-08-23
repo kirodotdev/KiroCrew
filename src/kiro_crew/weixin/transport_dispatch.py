@@ -47,7 +47,7 @@ from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.safety_override import safety_override
 from kiro_crew.weixin.attachments import process_weixin_attachments
-from kiro_crew.weixin.commands import ConversationState, parse_command
+from kiro_crew.weixin.commands import ConversationState, build_help, parse_command
 from kiro_crew.weixin.transport import WEIXIN_CAPABILITIES
 from kiro_crew.weixin.turn_renderer import WeixinRenderer
 
@@ -64,6 +64,31 @@ logger = logging.getLogger(__name__)
 # (spawn_run etc.) instead of kiro-cli's bare built-in default. Mirrors the
 # Slack / Telegram / WeCom paths.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
+
+# ── Bot-facing strings, owned here rather than inline at each send ──
+# One block so the channel's whole voice is visible at once and a wording change
+# is one edit. These are CHINESE because iLink addresses WeChat users in it;
+# backend-owned strings have no catalog path yet (AGENTS.md), so the owning module
+# is the unit of ownership.
+_ATTACHMENT_WITH_COMMAND = "📎 附件未读取：这条是命令消息，请把附件单独发送。"
+_NEW_SESSION = "✅ 已开始新对话"
+# Three states, not two. The cancel is COOPERATIVE: the ack goes out after only
+# writing session/cancel, so the turn stops at its next safe point and the bubble
+# may still move for a moment -- "正在停止" is what the user will actually observe.
+# And a busy session whose cancel FAILED must not be told nothing was running: that
+# is the case /stop exists for, and cancel failures cluster on exactly those turns.
+_STOPPING = "⏹ 正在停止当前回复…"
+_STOP_FAILED = "⚠️ 停止失败，请重试。"
+_NOTHING_RUNNING = "ℹ️ 当前没有正在生成的回复。"
+_RESEND_AFTER_TURN = "⏳ 上一条消息还在处理中，附件无法在这轮读取，请等回复结束后重新发送。"
+_STEER_MERGED = "⏳ 已合并到当前回复"
+_STEER_UNAVAILABLE = "⏳ 正在处理上一条，请稍后重发"
+_AUTO_COMPACTED = "🗜️ 上下文接近上限，已自动压缩。"
+_SOFT_THRESHOLD = "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。"
+_COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
+_COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
+_COMPACT_DONE = "🗜️ 已压缩上下文。"
+_COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
 
 
 class WeixinDispatcher:
@@ -124,10 +149,18 @@ class WeixinDispatcher:
         cmd = parse_command(text)
         if cmd is not None:
             if inbound.attachments:
-                await self._say(user_id, "📎 附件未读取：这条是命令消息，请把附件单独发送。")
+                await self._say(user_id, _ATTACHMENT_WITH_COMMAND)
             if cmd == "new":
                 self._conv.bump_gen(user_id)
-                await self._say(user_id, "✅ 已开始新对话")
+                await self._say(user_id, _NEW_SESSION)
+                return
+            if cmd == "help":
+                await self._say(user_id, build_help())
+                return
+            if cmd == "stop":
+                # Before any turn dispatch: /stop is the one message that must not
+                # be folded into the running turn it exists to abort.
+                await self._handle_stop(user_id)
                 return
             self._conv.clear_awaiting(user_id)
             await self._handle_compact(user_id)
@@ -144,9 +177,7 @@ class WeixinDispatcher:
         # still reaches the turn via steer.
         attachment_temp_paths: list[str] = []
         if inbound.attachments:
-            ingested, attachment_temp_paths = await self._ingest_or_refuse(
-                inbound, user_id, text
-            )
+            ingested, attachment_temp_paths = await self._ingest_or_refuse(inbound, user_id, text)
             if ingested is None:
                 return
             text = ingested
@@ -206,10 +237,7 @@ class WeixinDispatcher:
 
     async def _say_resend_after_turn(self, user_id: str) -> None:
         """Tell a mid-turn sender their attachment needs resending."""
-        await self._say(
-            user_id,
-            "⏳ 上一条消息还在处理中，附件无法在这轮读取，请等回复结束后重新发送。",
-        )
+        await self._say(user_id, _RESEND_AFTER_TURN)
 
     async def _drive(self, inbound: InboundMessage, user_id: str, text: str) -> None:
         """Session acquisition + turn dispatch for one already-ingested message."""
@@ -310,11 +338,60 @@ class WeixinDispatcher:
             and await steer(inbound.text)
         )
         if steered:
-            await self._say(inbound.user_id, "⏳ 已合并到当前回复")
+            await self._say(inbound.user_id, _STEER_MERGED)
         else:
-            await self._say(inbound.user_id, "⏳ 正在处理上一条，请稍后重发")
+            await self._say(inbound.user_id, _STEER_UNAVAILABLE)
 
     # ── Helpers ────────────────────────────────────────────────────────────
+
+    async def _handle_stop(self, user_id: str) -> None:
+        """Hard cancel: abort the in-flight turn for this conversation.
+
+        Cooperative before it is fatal -- ``cancel(wait_ack_timeout=0)`` writes
+        the ACP ``session/cancel`` notification and returns, so the ack to the
+        user is immediate and the turn stops at its next safe point. Waiting here
+        would hold the reply behind the very turn being stopped.
+
+        The semaphore is deliberately NOT touched: ``drive_turn``'s ``finally``
+        owns the release, and releasing one this method never acquired would free
+        the session while its turn is still unwinding.
+        """
+        session_key = self._session_key(user_id)
+        # Three states. A busy session whose cancel could not run must NOT be told
+        # nothing was running -- that is the wedged turn /stop exists for, and the
+        # is_busy check one line up already proved otherwise.
+        ack = _NOTHING_RUNNING
+        if self.sessions.is_busy(session_key):
+            # Branch on the RETURNED outcome, not on whether the call raised.
+            # ``cancel`` is typed ``CancelOutcome`` and swallows its own failures --
+            # ``AcpRuntimeDead`` and any other exception come back as ``"error"``
+            # rather than propagating -- so a try/except alone reports "stopping"
+            # for a cancel that never happened, which is the same lie as telling
+            # someone watching a live reply that nothing is running.
+            ack = _STOP_FAILED
+            provider = self.sessions.get_provider(session_key)
+            cancel = getattr(provider, "cancel", None)
+            if cancel is not None:
+                try:
+                    outcome = await cancel(wait_ack_timeout=0)
+                except Exception:
+                    # A provider that raises instead of returning an outcome (the
+                    # contract allows either shape to reach here) stays a failure.
+                    logger.warning("weixin /stop: cancel failed for %s", session_key, exc_info=True)
+                else:
+                    if outcome in ("acked", "timeout"):
+                        # timeout means the cancel WAS written and the ack has not
+                        # landed yet, which is what "正在停止" already describes.
+                        ack = _STOPPING
+                    elif outcome == "no_turn":
+                        # The provider disagrees with is_busy: the turn finished in
+                        # between. Nothing is running, and saying so is accurate.
+                        ack = _NOTHING_RUNNING
+                    else:
+                        logger.warning(
+                            "weixin /stop: cancel returned %r for %s", outcome, session_key
+                        )
+        await self._say(user_id, ack)
 
     async def _say(self, user_id: str, text: str) -> None:
         """One-shot out-of-band message (command ack / notice)."""
@@ -390,12 +467,12 @@ class WeixinDispatcher:
             try:
                 await provider.compact()
                 await provider.wait_for_compaction()
-                await self._say(user_id, "🗜️ 上下文接近上限，已自动压缩。")
+                await self._say(user_id, _AUTO_COMPACTED)
             except Exception:
                 logger.debug("weixin hard-threshold compaction failed", exc_info=True)
         elif pct >= soft and not self._conv.is_awaiting(user_id):
             self._conv.set_awaiting(user_id)
-            await self._say(user_id, "⚠️ 对话上下文已较长，回复 /compact 压缩，或 /new 开始新对话。")
+            await self._say(user_id, _SOFT_THRESHOLD)
 
     async def _handle_compact(self, user_id: str) -> None:
         """In-place ACP ``/compact`` on the user's current session."""
@@ -404,20 +481,20 @@ class WeixinDispatcher:
         # turn is mutating the same session races the transcript.
         if not await self.sessions.try_acquire(session_key):
             if self.sessions.has_session(session_key):
-                await self._say(user_id, "⏳ 正在处理上一条消息，请稍后再试 /compact。")
+                await self._say(user_id, _COMPACT_BUSY)
             else:
-                await self._say(user_id, "ℹ️ 当前没有可压缩的对话。")
+                await self._say(user_id, _COMPACT_NOTHING)
             return
         try:
             provider = self.sessions.get_provider(session_key)
             if provider is None:
-                await self._say(user_id, "ℹ️ 当前没有可压缩的对话。")
+                await self._say(user_id, _COMPACT_NOTHING)
                 return
             await provider.compact()
             await provider.wait_for_compaction()
-            await self._say(user_id, "🗜️ 已压缩上下文。")
+            await self._say(user_id, _COMPACT_DONE)
         except Exception:
             logger.exception("weixin /compact failed for %s", session_key)
-            await self._say(user_id, "⚠️ 压缩失败，请重试。")
+            await self._say(user_id, _COMPACT_FAILED)
         finally:
             self.sessions.release(session_key)

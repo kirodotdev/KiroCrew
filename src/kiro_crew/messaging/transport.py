@@ -69,8 +69,10 @@ class TransportCapabilities:
       stays channel-internal). Widget-capable renderers route the parsed
       list through ``messaging.renderer.apply_options_cap``, which keeps the
       first N for the widget and degrades the remainder to a numbered text
-      list in the body. Channels declaring 0 render no widget (trailer
-      stripped; text fallback arrives with the approval-ladder work).
+      list in the body. Channels declaring 0 render no widget and route the
+      WHOLE list through ``messaging.renderer.render_options_as_text``, which is
+      the same helper with zero widget slots, so every choice arrives as a
+      numbered line rather than being deleted with the trailer.
 
     * ``files_outbound`` — gates whether a renderer pulls local image
       references out of a sealed segment and uploads them. Discord's renderer

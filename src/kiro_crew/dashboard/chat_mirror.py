@@ -124,7 +124,9 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     conversation id is never accepted as a send target, so a session's transcript
     can only be anchored into a channel the user has actually configured. The
     target channel's transport must be registered at boot AND
-    ``supports_proactive_send`` — Telegram and WeCom both qualify. WeCom's
+    ``supports_proactive_send``, which every shipped channel declares except
+    Feishu, whose v1 renderer can only reply to an inbound ``message_id``. WeCom
+    shows why that flag is necessary but not sufficient — its
     availability is per-TARGET rather than blanket: ``aibot_send_msg`` needs no
     token, but the platform only delivers into a conversation the user has already
     written to, so ``configured_targets`` lists an allow-listed userid that has
@@ -180,7 +182,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         if target is None:
             existing = state.sessions.get_mirror_link(session_key)
             if existing is None:
-                return web.json_response({"error": "channel_type required"}, status=400)
+                # Same condition, and so the same code, as the explicit-body
+                # check below: nothing names a channel. Two sites emitting one
+                # sentence must not carry two different machine contracts.
+                return web.json_response(
+                    {"error": "channel_type required", "code": "channel_type_required"},
+                    status=400,
+                )
             return web.json_response({"error": "mirror channel is not live"}, status=503)
         link, transport = target
         try:
@@ -204,9 +212,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         )
 
     if not channel_type:
-        return web.json_response({"error": "channel_type required"}, status=400)
+        return web.json_response(
+            {"error": "channel_type required", "code": "channel_type_required"}, status=400
+        )
     if channel_type == SLACK_NAMESPACE:
-        return web.json_response({"error": "use /slack-link for Slack"}, status=400)
+        return web.json_response(
+            {"error": "use /slack-link for Slack", "code": "use_slack_link"}, status=400
+        )
     if not target_id:
         return web.json_response(
             {"error": "target_id required", "code": "target_id_required"}, status=400
@@ -218,8 +230,14 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             status=503,
         )
     if not transport.capabilities.supports_proactive_send:
+        # The channel type stays in the advisory prose only. ``code`` is the
+        # stable contract, so it names the CONDITION and never interpolates a
+        # request value a client would have to parse back out.
         return web.json_response(
-            {"error": f"channel '{channel_type}' cannot mirror (no proactive send)"},
+            {
+                "error": f"channel '{channel_type}' cannot mirror (no proactive send)",
+                "code": "channel_not_proactive",
+            },
             status=400,
         )
     session_key = effective_session_key(slot)

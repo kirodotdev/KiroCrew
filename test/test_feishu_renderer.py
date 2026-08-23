@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.feishu.renderer import FeishuRenderer, _strip_options
+from kiro_crew.feishu.renderer import FeishuRenderer
 from kiro_crew.messaging.transport import TransportCapabilities
 
 
@@ -54,22 +54,6 @@ class TestTextAccumulation:
         assert c.replies[0] == ("msg1", "Hello world")
 
     @pytest.mark.asyncio
-    async def test_options_trailer_stripped(self) -> None:
-        c = FakeClient()
-        r = _renderer(c)
-        await r.on_text_chunk("Pick one\n\n[OPTIONS: A | B | C]")
-        await r.on_done()
-        assert c.replies[0][1] == "Pick one"
-
-    @pytest.mark.asyncio
-    async def test_unterminated_options_stripped(self) -> None:
-        c = FakeClient()
-        r = _renderer(c)
-        await r.on_text_chunk("Answer text\n\n[OPTIONS: A | B")
-        await r.on_done()
-        assert c.replies[0][1] == "Answer text"
-
-    @pytest.mark.asyncio
     async def test_empty_buffer_sends_ellipsis(self) -> None:
         c = FakeClient()
         r = _renderer(c)
@@ -78,15 +62,44 @@ class TestTextAccumulation:
         assert c.replies[0] == ("msg1", "…")
 
 
-class TestStripOptions:
-    def test_complete_options_tag(self) -> None:
-        assert _strip_options("Hi\n[OPTIONS: a | b]") == "Hi"
+class TestOptionsTrailer:
+    """Feishu renders no tappable chip, so the trailer degrades to numbered text.
 
-    def test_unterminated_options_tag(self) -> None:
-        assert _strip_options("Hi\n[OPTIONS: a | b") == "Hi"
+    Deleting it left the user unable to learn the choices existed at all. The
+    grammar itself is pinned once in ``test_options_cap_contract.py`` against the
+    shared helper; what these drive is that ``text()`` — the string that both
+    reaches the user and is persisted to history — actually goes through it.
+    """
 
-    def test_no_options_passthrough(self) -> None:
-        assert _strip_options("plain text") == "plain text"
+    @pytest.mark.asyncio
+    async def test_a_complete_trailer_becomes_a_numbered_list(self) -> None:
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("Hi\n\n[OPTIONS: a | b]")
+        await r.on_done()
+        assert c.replies[0][1] == "Hi\n\n1. a\n2. b"
+
+    @pytest.mark.asyncio
+    async def test_an_unfinished_marker_is_kept(self) -> None:
+        """Feishu buffers the whole turn and replies once, so it never streams.
+
+        There is no partial frame for a half-arrived marker to flash in: text
+        reaches the user only from ``on_done``. So a dangling ``[OPTIONS`` is the
+        assistant's own prose, and cutting it is silent, permanent data loss.
+        """
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("see the [OPTIONS section")
+        await r.on_done()
+        assert c.replies[0][1] == "see the [OPTIONS section"
+
+    @pytest.mark.asyncio
+    async def test_plain_text_passes_through(self) -> None:
+        c = FakeClient()
+        r = _renderer(c)
+        await r.on_text_chunk("plain text")
+        await r.on_done()
+        assert c.replies[0][1] == "plain text"
 
 
 class TestErrorDone:

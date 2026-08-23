@@ -13,9 +13,10 @@ authorizes nobody.
 SCAFFOLD NOTES / TODO:
   * Inbound media (image/voice/file) IS decrypted and ingested -- see
     ``weixin/media.py`` (CDN + AES-128-ECB) and ``weixin/attachments.py``
-    (shared ingest adapter). Inbound VIDEO is downloaded-then-rejected by the
-    shared pipeline with a visible note; outbound media is still unimplemented
-    (``getuploadurl`` + encrypted CDN PUT).
+    (shared ingest adapter). Inbound VIDEO is rejected with a visible note
+    BEFORE any download (``messaging/attachments.py`` classifies and refuses it
+    ahead of the fetch), so it costs no CDN round trip; outbound media is still
+    unimplemented (``getuploadurl`` + encrypted CDN PUT).
   * Outbound chunking uses a naive splitter; swap for ``renderer`` once the
     Markdown block splitter lands.
   * Group delivery is intentionally unsupported for now (iLink bot identities

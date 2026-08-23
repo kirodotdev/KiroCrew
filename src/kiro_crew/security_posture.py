@@ -766,6 +766,22 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "approval prompt) that `whatsapp/turn_renderer.py` puts on the wire.",
     ),
     (
+        "Weixin steer receipts",
+        "weixin/turn_renderer.py",
+        "The in-answer steer chip (`> \u21aa\ufe0f {summary}`). A steer arrives "
+        "separately from the provider stream, so it never passes `TurnDriver`'s "
+        "rolling redactor, and it is interpolated into the message BODY -- which "
+        "the platform markdown-parses, so a credential split by a code span or "
+        "emphasis is whole on screen while a byte-level scan saw it broken. The "
+        "summary therefore goes through the shared DISPLAY-form redactor at the "
+        "point of interpolation: `Renderer.redact_for_target`, which is only the "
+        "`redact_for_display` pass -- it re-scans the markdown-rendered form with "
+        "the credential + exfiltration-URL chain, and deliberately does not repeat "
+        "the driver's rolling stream scan, which a one-shot summary has no split "
+        "chunks to need. The ANSWER text needs no pass here at all: it reaches this "
+        "renderer already redacted by the driver.",
+    ),
+    (
         "Slack render pipeline",
         "slack/format.py",
         "The Slack RENDERING boundary: text that is converted to mrkdwn goes "

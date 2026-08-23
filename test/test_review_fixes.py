@@ -65,6 +65,7 @@ class TestYoloExpiry:
     def _reset_yolo(self):
         from kiro_crew.safety_override import reset_singleton
         from kiro_crew.slack.handler import disable_yolo
+
         disable_yolo()
         yield
         reset_singleton()
@@ -163,6 +164,13 @@ class TestEnvPermissions:
         # module-global warned-keys set, a residue no fixture resets.
         env_file.write_text("SLACK_BOT_TOKEN=xoxb-test\n")
         env_file.chmod(0o644)
+        # Read the FILE, not a leftover environ value. `load_credentials` ends by
+        # propagating credentials into os.environ so spawned children inherit them,
+        # and its own override loop prefers os.environ over the file — so ANY earlier
+        # test in this worker that triggered a credential read leaves a value here
+        # that monkeypatch cannot revert (the production code set it, not the test).
+        # Without this the assertion below reads that leak and fails on test ORDER.
+        monkeypatch.delenv("SLACK_BOT_TOKEN", raising=False)
 
         monkeypatch.setattr(loader_mod.platform_compat, "IS_POSIX", False)
         chmods: list[int] = []
@@ -331,9 +339,7 @@ class TestLoadCredentialsEnvPropagation:
         tmp = Path(str(tmp_path))
         env_file = tmp / ".env"
         env_file.write_text(
-            "SLACK_BOT_TOKEN=xoxb-test\n"
-            "SLACK_APP_TOKEN=xapp-test\n"
-            "KIROCREW_OWNER_ID=U123\n"
+            "SLACK_BOT_TOKEN=xoxb-test\n" "SLACK_APP_TOKEN=xapp-test\n" "KIROCREW_OWNER_ID=U123\n"
         )
         env_file.chmod(0o600)
 
@@ -345,9 +351,7 @@ class TestLoadCredentialsEnvPropagation:
         assert os.environ.get("SLACK_APP_TOKEN") == "xapp-test"
         assert os.environ.get("KIROCREW_OWNER_ID") == "U123"
 
-    def test_existing_env_value_preserved(
-        self, tmp_path: object, monkeypatch
-    ) -> None:
+    def test_existing_env_value_preserved(self, tmp_path: object, monkeypatch) -> None:
         """setdefault() must not clobber a value the caller set explicitly
         (e.g. systemd Environment= block, wrapper script export)."""
         import os
@@ -371,9 +375,7 @@ class TestLoadCredentialsEnvPropagation:
         # …and the env var is unchanged (setdefault is a no-op when set).
         assert os.environ["SLACK_BOT_TOKEN"] == "xoxb-from-systemd"
 
-    def test_empty_env_file_does_not_clobber_environ(
-        self, tmp_path: object, monkeypatch
-    ) -> None:
+    def test_empty_env_file_does_not_clobber_environ(self, tmp_path: object, monkeypatch) -> None:
         """When ~/.kirocrew/.env is bind-mounted empty inside a sandbox child,
         load_credentials() must not overwrite an env var the caller already
         propagated via os.environ.setdefault() in the parent."""
@@ -473,9 +475,7 @@ class TestLoadCredentialsEnvPropagation:
 
         tmp = Path(str(tmp_path))
         env_file = tmp / ".env"
-        env_file.write_text(
-            "".join(f"{key}=placeholder-value\n" for key in fixture_keys)
-        )
+        env_file.write_text("".join(f"{key}=placeholder-value\n" for key in fixture_keys))
         env_file.chmod(0o600)
 
         with patch("kiro_crew.config.loader.env_path", return_value=env_file):
@@ -496,6 +496,7 @@ class TestYoloFromConfigGuard:
     @pytest.fixture(autouse=True)
     def _reset_yolo(self):
         from kiro_crew.safety_override import reset_singleton
+
         reset_singleton()
         yield
         reset_singleton()
@@ -562,6 +563,7 @@ class TestYoloFromConfigSlackGuards:
     @pytest.fixture(autouse=True)
     def _reset_yolo(self):
         from kiro_crew.safety_override import reset_singleton
+
         reset_singleton()
         yield
         reset_singleton()
@@ -580,7 +582,10 @@ class TestYoloFromConfigSlackGuards:
 
         from kiro_crew.slack.events import _handle_yolo
 
-        with patch("kiro_crew.slack.events.sel") as mock_sel, patch("kiro_crew.slack.events.is_owner", return_value=True):
+        with (
+            patch("kiro_crew.slack.events.sel") as mock_sel,
+            patch("kiro_crew.slack.events.is_owner", return_value=True),
+        ):
             await _handle_yolo(orch, "UOWNER", "on", respond)
 
         respond.assert_awaited_once()
@@ -600,13 +605,22 @@ class TestYoloFromConfigSlackGuards:
         slack = AsyncMock()
         sessions = MagicMock()
 
-        with patch("kiro_crew.slack.handler.sel") as mock_sel, patch("kiro_crew.slack.handler.is_owner", return_value=True):
-            result = await _handle_slash_command("!yolo on", slack, sessions, "C123", "ts1", "ts2", "key1", "UOWNER")
+        with (
+            patch("kiro_crew.slack.handler.sel") as mock_sel,
+            patch("kiro_crew.slack.handler.is_owner", return_value=True),
+        ):
+            result = await _handle_slash_command(
+                "!yolo on", slack, sessions, "C123", "ts1", "ts2", "key1", "UOWNER"
+            )
 
         assert result is not None
         slack.post_message.assert_awaited()
         msg = slack.post_message.call_args[0][1]
         assert "already" in msg.lower()
         # No noop_config_permanent log; the already-on path logs nothing in this case
-        noop_calls = [c for c in mock_sel.return_value.log_api_access.call_args_list if c.kwargs.get("outcome") == "noop_config_permanent"]
+        noop_calls = [
+            c
+            for c in mock_sel.return_value.log_api_access.call_args_list
+            if c.kwargs.get("outcome") == "noop_config_permanent"
+        ]
         assert len(noop_calls) == 0

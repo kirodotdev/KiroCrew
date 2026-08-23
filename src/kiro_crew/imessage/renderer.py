@@ -23,12 +23,11 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.imessage.client import redact_handle
 from kiro_crew.imessage.plaintext import chunk_plaintext, to_plaintext
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
 from kiro_crew.messaging.display_safety import redact_for_display
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, render_options_as_text
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -44,13 +43,6 @@ _TYPING_THROTTLE_S = 4.0
 
 _ERROR_TEXT = "⚠️ Something went wrong — please try again."
 
-#: Trailing "[OPTIONS: a | b | c]" chip trailer (a dashboard convention with no
-#: iMessage equivalent -- there are no tappable choices). Matched only at the
-#: very END of the message, so use the DOTALL/trailer canonical parser defined
-#: once in constants.py; see OPTIONS_RE_TRAILER for the ReDoS-hardening
-#: rationale.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
 
 def _default_redactor(text: str) -> str:
     """The same pair ``TurnDriver`` streams provider text through.
@@ -63,22 +55,6 @@ def _default_redactor(text: str) -> str:
     out, _ = redact_exfiltration_urls(text or "")
     out, _ = redact_credentials(out)
     return out
-
-
-def _strip_options(text: str) -> str:
-    """Remove a trailing ``[OPTIONS: a | b | c]`` chip trailer.
-
-    iMessage has no tappable chips, so the trailer is dropped entirely -- the
-    user just replies naturally. Also hides a partial ``[OPTIONS...`` fragment
-    (no closing ``]``) so it never lands as raw text.
-    """
-    m = _OPTIONS_RE.search(text)
-    if m:
-        return text[: m.start()].rstrip()
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip()
-    return text
 
 
 class IMessageRenderer(Renderer):
@@ -201,8 +177,8 @@ class IMessageRenderer(Renderer):
 
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:
-        """The turn's visible answer so far, as markdown with OPTIONS stripped."""
-        return _strip_options("".join(self._buf).strip())
+        """The turn's answer as markdown, with ``[OPTIONS:]`` as numbered text."""
+        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
 
     def delivery_text(self) -> str:
         """The answer flattened for a surface that renders no markup.
