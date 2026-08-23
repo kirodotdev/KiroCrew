@@ -509,9 +509,11 @@ def test_create_server_pipe_closes_the_handle_when_the_read_mode_flip_fails(
 
     real_close = _winapi.CloseHandle
     closed: list[int] = []
+    orphaned: list[int] = []
     address = transport.resolve_address(tmp_path / "gateway.sock")
 
-    def _boom(*_args: object) -> None:
+    def _boom(handle: object, *_rest: object) -> None:
+        orphaned.append(int(handle))  # type: ignore[call-overload]
         raise OSError("read-mode flip failed")
 
     def _spy_close(handle: int) -> None:
@@ -524,7 +526,14 @@ def test_create_server_pipe_closes_the_handle_when_the_read_mode_flip_fails(
         with pytest.raises(OSError, match="read-mode flip"):
             transport._create_server_pipe(address, first=True)
 
-    assert len(closed) == 1, "the orphaned pipe handle was not closed"
+    # Identity, not volume: ``CloseHandle`` is process-wide, so anything else on
+    # this worker that releases an unrelated Windows handle while the patch is
+    # active (a proactor pipe tearing down, GC finalizing a handle from an
+    # earlier test) also lands in ``closed`` -- that is real but irrelevant
+    # traffic, not a second leak of ours. Assert our specific handle is among
+    # the closed ones instead of requiring the list to have exactly one entry.
+    assert orphaned, "read-mode flip stub was never called with a handle"
+    assert orphaned[0] in closed, "the orphaned pipe handle was not closed"
     # Proof the instance is really gone: FILE_FLAG_FIRST_PIPE_INSTANCE refuses a
     # second first-instance while any handle to the name is still open, so this
     # only succeeds if the failed attempt released it.
