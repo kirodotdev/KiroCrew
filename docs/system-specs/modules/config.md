@@ -46,8 +46,9 @@ interpreter.
 repository preserves the KiroCrew data home by default. `kirocrew service
 uninstall` removes only its service definition; the Python/npm packages define
 no uninstall lifecycle hook; and the desktop shell's generated NSIS uninstaller
-removes only its install directory and shortcuts (`deleteAppDataOnUninstall`
-stays false), without
+removes only installed program state: its install directory, shortcuts,
+channel-scoped updater cache, and optional “start with Windows” registry entry
+(`deleteAppDataOnUninstall` stays false), without
 resolving or removing the KiroCrew home. App Kit uninstall also preserves the
 app's `data/` subtree unless the dedicated `purge_data=true` API action (CLI
 `--purge-data`, or an explicit dashboard choice) is supplied. The API checks
