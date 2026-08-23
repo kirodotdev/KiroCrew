@@ -61,7 +61,9 @@ import { useVisualViewport } from '../hooks/useVisualViewport'
  * shared hook, this component registers a *window*-phase capture listener:
  * window-capture fires before document-capture, so it can
  * `stopImmediatePropagation()` those two keys before the hook's document-level
- * listener sees them.
+ * listener sees them. Because that ordering also bypasses the hook's IME
+ * guard, both intercepted branches consult the hook's shared latch (its
+ * returned `claimKey`) before acting, declining keys the IME owns.
  *
  * Highlighting renders matched indices as React `<strong>` nodes split out of
  * the title — never `dangerouslySetInnerHTML` (`frontend-security` lint rule).
@@ -398,7 +400,7 @@ export default function CommandPalette({
     [dispatchEnter],
   )
 
-  const { selected, setSelected, selectedRef, itemRefs } = useListKeyboardNav({
+  const { selected, setSelected, selectedRef, itemRefs, claimKey } = useListKeyboardNav({
     open,
     count: results.length,
     wrap: true,
@@ -423,10 +425,21 @@ export default function CommandPalette({
   // way the palette needs: Tab (cycle category) and ⌥/Alt+Enter (preview).
   // window-capture runs before the hook's document-capture listener, so
   // stopImmediatePropagation here keeps the hook from also acting on them.
+  // Outranking the hook also outranks its IME guard, so each choose-class
+  // branch consults the hook's own latch first via `claimKey`: a Tab the IME
+  // owns (candidate-list navigation, or the committing keydown inside the
+  // post-composition window) must not adopt the scope hint and wipe the
+  // half-composed query. A declined key is already consumed per `claimKey`'s
+  // contract — stopPropagation keeps it from the hook's document listener,
+  // and preventDefault fires only where the browser would otherwise act.
+  // Backspace is not a choose-class key (the IME consumes its own Backspace
+  // mid-composition, and the composing text keeps `queryRef` non-empty, so
+  // the branch stays inert), and needs no guard.
   useEffect(() => {
     if (!open) return
     const onWinKey = (e: KeyboardEvent) => {
       if (e.key === 'Tab') {
+        if (!claimKey(e)) return
         e.preventDefault()
         e.stopImmediatePropagation()
         // Prefix + Tab adopts the hinted scope (clearing the query); Shift+Tab
@@ -443,6 +456,7 @@ export default function CommandPalette({
         e.stopImmediatePropagation()
         setScope(null)
       } else if (e.key === 'Enter' && e.altKey && !e.metaKey && !e.ctrlKey) {
+        if (!claimKey(e)) return
         e.preventDefault()
         e.stopImmediatePropagation()
         const r = resultsRef.current
@@ -453,7 +467,7 @@ export default function CommandPalette({
     }
     window.addEventListener('keydown', onWinKey, true)
     return () => window.removeEventListener('keydown', onWinKey, true)
-  }, [open, selectedRef])
+  }, [open, selectedRef, claimKey])
 
   if (!open) return null
 

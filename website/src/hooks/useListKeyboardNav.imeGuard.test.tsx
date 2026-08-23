@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, fireEvent, cleanup } from '@testing-library/react'
+import { useEffect } from 'react'
 import { useListKeyboardNav, type UseListKeyboardNavOptions } from './useListKeyboardNav'
 
 /**
@@ -172,5 +173,118 @@ describe('useListKeyboardNav IME guard', () => {
     enter({ altKey: true })
     expect(onAltEnter).toHaveBeenCalledWith(0)
     expect(onChoose).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * A host-level WINDOW-capture interceptor (the palette's Tab / Alt+Enter
+ * takeover) deliberately outranks the hook's document-capture listener, so it
+ * bypasses the guard above along with the dispatch. The hook returns its
+ * instance `claimKey` so such an interceptor declines through the SAME
+ * tracked latch; this harness mirrors the palette's shape (claim first,
+ * consume-and-act on true, bail on false).
+ */
+function InterceptorHarness(props: Partial<UseListKeyboardNavOptions> & {
+  onTabAction: () => void
+  onAltAction?: () => void
+}) {
+  const { onTabAction, onAltAction, ...opts } = props
+  const { claimKey } = useListKeyboardNav({
+    open: true,
+    count: 3,
+    onChoose: () => {},
+    onClose: () => {},
+    ...opts,
+  })
+  useEffect(() => {
+    const onWinKey = (e: KeyboardEvent) => {
+      if (e.key === 'Tab') {
+        if (!claimKey(e)) return
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        onTabAction()
+      } else if (e.key === 'Enter' && e.altKey) {
+        if (!claimKey(e)) return
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        onAltAction?.()
+      }
+    }
+    window.addEventListener('keydown', onWinKey, true)
+    return () => window.removeEventListener('keydown', onWinKey, true)
+  }, [claimKey, onTabAction, onAltAction])
+  return <input data-testid="host-input" aria-label="host input" />
+}
+
+describe('claimKey for a window-capture interceptor', () => {
+  it('a plain Tab reaches the interceptor and never the hook (positive control)', () => {
+    const onTabAction = vi.fn()
+    const onChoose = vi.fn()
+    render(<InterceptorHarness onTabAction={onTabAction} onChoose={onChoose} />)
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(onTabAction).toHaveBeenCalledTimes(1)
+    // stopImmediatePropagation: the hook's document listener never chooses.
+    expect(onChoose).not.toHaveBeenCalled()
+  })
+
+  it('declines the committing Tab in the post-composition window AND consumes it', () => {
+    const onTabAction = vi.fn()
+    const onChoose = vi.fn()
+    const { getByTestId } = render(
+      <InterceptorHarness onTabAction={onTabAction} onChoose={onChoose} />,
+    )
+    const input = getByTestId('host-input')
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    // WebKit reports the committing keydown as non-composing; only the shared
+    // latch identifies it. The decline is fully consumed: preventDefault
+    // (nothing live to cancel) and stopPropagation (the hook's own document
+    // listener must not see a key the host already claimed).
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab' })
+    expect(onTabAction).not.toHaveBeenCalled()
+    expect(onChoose).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(false)
+  })
+
+  it('declines a mid-composition Tab without cancelling the IME candidate navigation', () => {
+    const onTabAction = vi.fn()
+    const { getByTestId } = render(<InterceptorHarness onTabAction={onTabAction} />)
+    fireEvent.compositionStart(getByTestId('host-input'))
+    const notPrevented = fireEvent.keyDown(document, { key: 'Tab', isComposing: true })
+    expect(onTabAction).not.toHaveBeenCalled()
+    // The browser is consuming Tab for the candidate list itself.
+    expect(notPrevented).toBe(true)
+  })
+
+  it('intercepts again once the post-composition window has elapsed', () => {
+    vi.useFakeTimers()
+    const onTabAction = vi.fn()
+    const { getByTestId } = render(<InterceptorHarness onTabAction={onTabAction} />)
+    const input = getByTestId('host-input')
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    vi.advanceTimersByTime(60)
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(onTabAction).toHaveBeenCalledTimes(1)
+  })
+
+  it('declines a latched Alt+Enter preview through the same latch, then intercepts once it clears', () => {
+    vi.useFakeTimers()
+    const onTabAction = vi.fn()
+    const onAltAction = vi.fn()
+    const { getByTestId } = render(
+      <InterceptorHarness onTabAction={onTabAction} onAltAction={onAltAction} />,
+    )
+    const input = getByTestId('host-input')
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    enter({ altKey: true })
+    expect(onAltAction).not.toHaveBeenCalled()
+    // Positive control: past the post-composition window the same chord
+    // reaches the interceptor, so the decline above pins the latch and not
+    // an interceptor that declines everything.
+    vi.advanceTimersByTime(60)
+    enter({ altKey: true })
+    expect(onAltAction).toHaveBeenCalledTimes(1)
   })
 })

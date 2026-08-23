@@ -69,6 +69,8 @@ const H = vi.hoisted(() => {
     indices: [] as number[],
     groupLabel: 'Current',
     onActivate: onActivateRecent,
+    // Optional preview hook; the Alt+Enter IME-guard test installs a spy here.
+    onAltActivate: undefined as (() => void) | undefined,
   }
   const allProvider = { id: 'all', label: 'All', icon: null, search: vi.fn(async () => [allResult]) }
   const sessionsProvider = {
@@ -93,12 +95,15 @@ const H = vi.hoisted(() => {
   const settingsProvider = { id: 'settings', label: 'Settings', icon: null, search: vi.fn(() => []) }
   const appsProvider = { id: 'apps', label: 'Apps', icon: null, search: vi.fn(async () => []) }
   // Stable return for the mocked keyboard-nav hook (constant identities avoid
-  // re-render loops in the palette's effects).
+  // re-render loops in the palette's effects). `claimKey` defaults to "not
+  // composing" so the keyboard tests exercise the palette's own branches; the
+  // IME-guard test flips it per call.
   const navReturn = {
     selected: 0,
     setSelected: vi.fn(),
     selectedRef: { current: 0 },
     itemRefs: { current: [] as (HTMLElement | null)[] },
+    claimKey: vi.fn(() => true),
   }
   const nav = {
     current: null as null | {
@@ -512,6 +517,56 @@ describe('CommandPalette — keyboard & activation', () => {
     // Scope chip adopted: placeholder narrows and the sessions provider serves.
     expect(await screen.findByPlaceholderText('Search sessions…')).toBeInTheDocument()
     expect(await screen.findByText('Session Result')).toBeInTheDocument()
+  })
+
+  it('a Tab the IME guard declines does not adopt the scope or clear the query', async () => {
+    render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+    await screen.findByText('Recent Session')
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: 'sess' } })
+    expect(await screen.findByText('Sessions')).toBeInTheDocument() // the hint label
+
+    // The shared hook's latch declines the key (composition live, or the
+    // committing keydown inside the post-composition window): the palette's
+    // window-capture branch must bail out before adopting the scope hint and
+    // wiping the half-composed query.
+    H.navReturn.claimKey.mockClear()
+    H.navReturn.claimKey.mockReturnValueOnce(false)
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+    expect(H.navReturn.claimKey).toHaveBeenCalledTimes(1)
+    expect(screen.queryByPlaceholderText('Search sessions…')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Search everywhere' })).toHaveValue('sess')
+
+    // Once the latch clears, the same Tab adopts the scope as before.
+    act(() => {
+      fireEvent.keyDown(window, { key: 'Tab' })
+    })
+    expect(await screen.findByPlaceholderText('Search sessions…')).toBeInTheDocument()
+  })
+
+  it('an Alt+Enter the IME guard declines does not fire the preview', async () => {
+    const onAltActivate = vi.fn()
+    H.recentResult.onAltActivate = onAltActivate
+    try {
+      render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+      await screen.findByText('Recent Session')
+
+      H.navReturn.claimKey.mockReturnValueOnce(false)
+      act(() => {
+        fireEvent.keyDown(window, { key: 'Enter', altKey: true })
+      })
+      expect(onAltActivate).not.toHaveBeenCalled()
+
+      // Guard clear: the same chord previews the selected row.
+      act(() => {
+        fireEvent.keyDown(window, { key: 'Enter', altKey: true })
+      })
+      expect(onAltActivate).toHaveBeenCalledTimes(1)
+    } finally {
+      H.recentResult.onAltActivate = undefined
+    }
   })
 
   it('a leading sigil ($) instantly scopes to Skills and strips the sigil', async () => {

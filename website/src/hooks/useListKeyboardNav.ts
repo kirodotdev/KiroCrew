@@ -20,7 +20,10 @@ import { createImeLatch } from './useImeGuard'
  *    Both choose keys are IME-guarded: while a composition is live or inside
  *    the post-composition latch window (shared with `useImeGuard` via
  *    `createImeLatch`), the key declines the choose and is consumed per
- *    `claimKey`'s contract instead.
+ *    `claimKey`'s contract instead. A host interceptor that outranks this
+ *    listener bypasses that guard along with the dispatch, so it must consult
+ *    the same latch through the returned {@link ListKeyboardNav.claimKey}
+ *    before acting on a choose-class key.
  *  - `Alt`/`Option`+`Enter`  — `onAltEnter(selected)` when provided; if it
  *    returns `true` the event is treated as handled.
  *  - `Escape`                — `onClose()`.
@@ -78,6 +81,19 @@ export interface ListKeyboardNav {
   selectedRef: MutableRefObject<number>
   /** Per-row element refs; assign with `ref={el => { itemRefs.current[i] = el }}`. */
   itemRefs: MutableRefObject<(HTMLElement | null)[]>
+  /**
+   * The hook's IME-guard claim, for a HOST-LEVEL interceptor that outranks the
+   * hook's own document-capture listener (the window-capture Tab takeover the
+   * `onChoose` doc describes). Such an interceptor acts on choose-class keys
+   * BEFORE the hook's guarded dispatch can decline them, so it must consult
+   * the SAME tracked latch: call this first in each intercepted choose branch
+   * and bail out on `false` — the claim has already consumed the decline per
+   * `claimKey`'s contract in useImeGuard.ts (stopPropagation always,
+   * preventDefault only where the browser would otherwise act). A private
+   * latch in the host is the drift the `ImeEnterClaimRatchet` pins; this is
+   * the sanctioned spelling.
+   */
+  claimKey: (e: globalThis.KeyboardEvent) => boolean
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
@@ -254,5 +270,13 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     move(next)
   }, [move])
 
-  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs }
+  // Stable delegate onto the instance latch, so a host's window-capture
+  // interceptor consults the same composition tracking as the hook's own
+  // choose dispatch (see the ListKeyboardNav.claimKey contract).
+  const claimKey = useCallback(
+    (e: globalThis.KeyboardEvent) => imeLatchRef.current!.claimKey(e),
+    [],
+  )
+
+  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs, claimKey }
 }
