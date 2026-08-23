@@ -26,7 +26,6 @@ its own and is a pure, side-effect-light helper library.
 
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -38,6 +37,7 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.mcp_apps_render import MAX_SPOOL_BYTES, SPOOL_SCHEMA_VERSION
 
 logger = logging.getLogger(__name__)
@@ -165,28 +165,19 @@ def write_spool(payload: dict) -> str:
             f"mcp-apps spool record {len(data)} bytes exceeds cap {MAX_SPOOL_BYTES}"
         )
     path = directory / f"{spool_id}.json"
-    # O_CREAT|O_EXCL would be ideal, but uuid4 collision is negligible and
-    # O_TRUNC keeps this idempotent on the (impossible) reuse. Mode honours
-    # umask so chmod after to guarantee 0600.
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as fh:
-        fh.write(data)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:  # pragma: no cover
-        logger.debug("could not chmod spool file %s to 0600", path, exc_info=True)
-    if not platform_compat.IS_POSIX:  # pragma: no cover — exercised on Windows CI
-        # POSIX mode bits above are meaningless on Windows — apply the
-        # owner-only DACL (repo rule for secret-bearing files). Fail closed:
-        # if the lockdown cannot be established, remove the record rather
-        # than leave a readable capability token behind, then propagate so
-        # the interception failure-safe path delivers the original result.
-        try:
-            platform_compat.restrict_to_owner(path)
-        except OSError:
-            with contextlib.suppress(OSError):
-                path.unlink()
-            raise
+    # Temp file + rename, with the owner-only lockdown applied to the TEMP
+    # before any content reaches it. The record carries a callback capability
+    # token, so it must never exist readable: writing straight to the final path
+    # and tightening afterwards left the token on disk under the directory's
+    # inherited ACL for the length of the write on Windows, where POSIX mode
+    # bits are not enforced.
+    #
+    # `restrict_to_owner` implies 0o600 on POSIX, so it also replaces the
+    # creation mode and the follow-up chmod. Fail-closed is unchanged and needs
+    # no cleanup: `restrict_on_error` defaults to "raise", and the failure
+    # happens before the rename, so nothing is ever published for the
+    # interception failure-safe path to have to unlink.
+    atomic_write(path, data, restrict_to_owner=True)
     return spool_id
 
 

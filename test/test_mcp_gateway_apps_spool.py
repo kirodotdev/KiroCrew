@@ -25,6 +25,7 @@ import os
 import stat
 import sys
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -1186,3 +1187,79 @@ class TestInterceptDecision:
             },
         }
         assert await backend._maybe_intercept_ui_result(pending, msg) is False
+
+
+class TestSpoolRecordIsLockedDownBeforeItsContent:
+    """The record carries a ``callback_secret``, so it must never be readable.
+
+    The write created the file DIRECTLY at its final path and applied the
+    owner-only DACL afterwards, so on Windows the capability token existed on
+    disk under the directory's inherited ACL for the length of the write. POSIX
+    was covered by the creation mode, which is exactly why the gap was easy to
+    miss: it is invisible on the platform most of this is developed on.
+
+    Asserted as an ordering property rather than as a platform behaviour, so the
+    same assertions hold wherever the suite runs.
+    """
+
+    def test_the_lockdown_runs_before_the_record_exists(self, spool_tmp, monkeypatch):
+        from kiro_crew import platform_compat
+
+        real = platform_compat.restrict_to_owner
+        locked: list[Path] = []
+
+        def _recording(path):
+            locked.append(Path(path))
+            return real(path)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _recording)
+
+        sid = write_spool({"html": "x"})
+        published = spool_tmp / f"{sid}.json"
+
+        record_locks = [p for p in locked if p.parent == spool_tmp]
+        assert record_locks, (
+            "no owner-only lockdown was applied to the spool record on this "
+            "platform; the record carries a callback capability token and must "
+            "not rely on POSIX creation mode alone"
+        )
+        assert published not in record_locks, (
+            "the lockdown was applied to the record AFTER it was written at its "
+            f"final path, leaving the callback secret readable first: {record_locks}"
+        )
+
+    def test_the_record_is_still_written_and_readable(self, spool_tmp):
+        sid = write_spool({"html": "only"})
+        record = json.loads((spool_tmp / f"{sid}.json").read_text(encoding="utf-8"))
+        assert record["html"] == "only"
+        # Minted by write_spool, not carried in from the payload -- its presence
+        # is why the record is secret-bearing in the first place.
+        assert isinstance(record["callback_secret"], str) and record["callback_secret"]
+
+    def test_a_failed_lockdown_leaves_no_readable_record(self, spool_tmp, monkeypatch):
+        """Fail-closed is preserved: nothing readable survives, and it raises."""
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+
+        with pytest.raises(OSError):
+            write_spool({"html": "x"})
+
+        leaked = [
+            p
+            for p in spool_tmp.glob("*")
+            if p.is_file() and "callback_secret" in p.read_text(encoding="utf-8", errors="replace")
+        ]
+        assert not leaked, (
+            f"a spool record whose lockdown failed was left on disk: {leaked}"
+        )
+
+    def test_an_oversize_record_is_still_refused_before_any_write(self, spool_tmp):
+        """Preservation: the shared read cap still rejects before touching disk."""
+        with pytest.raises(ValueError):
+            write_spool({"html": "x" * (apps.MAX_SPOOL_BYTES + 1)})
+
+        assert not list(spool_tmp.glob("*.json")), (
+            "an over-cap record reached disk; the reject must happen before the write"
+        )
