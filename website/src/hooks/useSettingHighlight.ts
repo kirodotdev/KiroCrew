@@ -27,6 +27,9 @@ const LEGACY_ID_EXACT: Record<string, string> = {
   // derive from the label — without this, links saved or bookmarked against
   // the old id silently lose their highlight.
   'chat.default-model': 'chat.fallback-model',
+  // The pin toggle's label moved from "prompt" to "turn" vocabulary, shifting
+  // the derived id with it.
+  'chat.pin-the-latest-prompt': 'chat.pin-the-latest-turn',
 }
 
 /** Rewrite a legacy highlight id to its current form (identity for current ids). */

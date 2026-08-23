@@ -34,12 +34,19 @@ describe('resolveLegacyHighlightId', () => {
     expect(resolveLegacyHighlightId('display.zoom-level')).toBe('display.zoom-level')
   })
 
+  // The pin toggle's label moved from "prompt" to "turn" vocabulary, and the
+  // derived id moved with it.
+  it('maps the pin toggle id to its turn-vocabulary form', () => {
+    expect(resolveLegacyHighlightId('chat.pin-the-latest-prompt')).toBe('chat.pin-the-latest-turn')
+  })
+
   it('every migrated target exists in the generated registry', () => {
     const ids = new Set(SETTINGS_REGISTRY.map(e => e.id))
     for (const legacy of [
       'slack.slash-command', 'slack.owner-slack-member-id', 'slack.phase-reactions', 'slack.show-thinking',
       'voice.aws-profile', 'voice.aws-profile-2', 'voice.aws-region', 'voice.aws-region-2',
       'voice.aws-profile-polly', 'voice.aws-region-polly',
+      'chat.pin-the-latest-prompt',
     ]) {
       const target = resolveLegacyHighlightId(legacy)
       expect(ids.has(target), `${legacy} -> ${target} missing from registry`).toBe(true)

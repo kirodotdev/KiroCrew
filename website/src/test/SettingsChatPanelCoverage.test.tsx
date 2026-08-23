@@ -322,7 +322,7 @@ describe('ChatPanel — Messages', () => {
 
   it.each([
     ['Show Timestamps', 'showTimestamps', false],
-    ['Pin the latest prompt', 'pinLastPrompt', false],
+    ['Pin the latest turn', 'pinLastPrompt', false],
     ['Simplified Tool Call Names', 'simplifiedToolNames', false],
     ['Show Context Percentage', 'showContextPct', true],
   ])('stores %s locally when flipped', async (label, key, expected) => {
