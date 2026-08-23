@@ -1310,6 +1310,26 @@ class TestWriteDiagnostic:
         lines = path.read_text(encoding="utf-8").strip().splitlines()
         assert [json.loads(line)["n"] for line in lines] == [1, 2]
 
+    def test_multiple_records_share_a_single_open(self, monkeypatch, tmp_path):
+        # Records passed in one call MUST go through one open-append-close
+        # cycle: a second append that lands while the first writer's handle is
+        # still closing fails with a sharing violation on Windows, and the
+        # never-raises contract would silently drop the record.
+        path = tmp_path / "diag.jsonl"
+        opens: list[str] = []
+        real_open = Path.open
+
+        def counting_open(self, *args, **kwargs):
+            if self == path:
+                opens.append(str(args))
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", counting_open)
+        gw._write_diagnostic(path, {"tag": "probe", "n": 1}, {"tag": "zombie_detected", "n": 2})
+        assert len(opens) == 1
+        lines = path.read_text(encoding="utf-8").strip().splitlines()
+        assert [json.loads(line)["tag"] for line in lines] == ["probe", "zombie_detected"]
+
 
 class TestZombieDiagnostic:
     @pytest.mark.asyncio
@@ -1353,6 +1373,49 @@ class TestZombieDiagnostic:
         assert isinstance(records[-1]["tasks"], list)
         assert isinstance(records[-1]["traceback"], list)
         # Setting stop_event is what lets the watchdog respawn a clean daemon.
+        assert stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_zombie_dump_survives_a_windows_sharing_violation(self, monkeypatch, tmp_path):
+        # Regression for the Windows write race: the probe baseline and the
+        # zombie dump used to be two back-to-back open-append-close cycles,
+        # and on Windows the second open can land while the first writer's
+        # handle is still closing, failing with a sharing violation
+        # (a PermissionError) that the never-raises writer swallows — losing
+        # the zombie_detected record. Simulate that deterministically by
+        # failing every open of the diagnostic file after the first: with the
+        # records batched through a single open, the dump still lands; with
+        # the old unserialized double-write, it is dropped and this test reds.
+        diag = tmp_path / "diag.jsonl"
+        monkeypatch.setattr(gw, "_zombie_diagnostic_path", lambda: diag)
+        monkeypatch.setattr(gw, "_ZOMBIE_PROBE_INTERVAL_SECS", 0.01)
+        server = MagicMock()
+        server.is_serving.return_value = False
+        stop = asyncio.Event()
+
+        opened = []
+        real_open = Path.open
+
+        def sharing_violation_open(self, *args, **kwargs):
+            mode = args[0] if args else kwargs.get("mode", "r")
+            if self == diag and "a" in mode:
+                opened.append(mode)
+                if len(opened) > 1:
+                    raise PermissionError(
+                        13, "The process cannot access the file because it is "
+                        "being used by another process"
+                    )
+            return real_open(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", sharing_violation_open)
+        await asyncio.wait_for(
+            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop),
+            timeout=5,
+        )
+
+        records = [json.loads(line) for line in diag.read_text().strip().splitlines()]
+        tags = [record["tag"] for record in records]
+        assert tags == ["probe", "zombie_detected"]
         assert stop.is_set()
 
     @pytest.mark.asyncio

@@ -3313,8 +3313,15 @@ def _snapshot_state(
     }
 
 
-def _write_diagnostic(path: Path, record: dict[str, Any]) -> None:
-    """Append one JSONL line to the diagnostic side-channel.
+def _write_diagnostic(path: Path, *records: dict[str, Any]) -> None:
+    """Append one JSONL line per record to the diagnostic side-channel.
+
+    Records that belong to the same event MUST be passed in a single call:
+    they share one open-append-close cycle. Back-to-back appends from
+    separate calls can collide on Windows — an open that lands while the
+    previous writer's handle is still closing fails with a sharing
+    violation — and the never-raises contract below turns that transient
+    collision into a silently dropped record.
 
     Never raises — the diagnostic task is defensive enough that a missing
     directory or EROFS on the log volume must not crash gatewayd itself.
@@ -3322,7 +3329,8 @@ def _write_diagnostic(path: Path, record: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            for record in records:
+                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
     except OSError as exc:  # pragma: no cover — defensive
         logger.warning("zombie diagnostic write failed: %s", exc)
 
@@ -3337,13 +3345,14 @@ async def _zombie_diagnostic(
 
     Every :data:`_ZOMBIE_PROBE_INTERVAL_SECS` seconds:
 
-    1. Collect a health snapshot via :func:`_snapshot_state`.
-    2. Append the snapshot to the diagnostic JSONL under the ``probe`` tag
-       so there is a continuous baseline to correlate against.
-    3. If ``server.is_serving()`` is ``False`` while ``stop_event`` is
-       still unset, the accept loop has died silently — dump every live
-       task stack, log at error level, and set ``stop_event`` so the
-       process exits cleanly and the watchdog respawns us.
+    1. Collect a health snapshot via :func:`_snapshot_state`, tagged
+       ``probe`` — the continuous baseline to correlate against.
+    2. If ``server.is_serving()`` is ``False`` while ``stop_event`` is
+       still unset, the accept loop has died silently — append the probe
+       baseline and a ``zombie_detected`` dump of every live task stack
+       through a single write, log at error level, and set ``stop_event``
+       so the process exits cleanly and the watchdog respawns us.
+    3. Otherwise append just the probe baseline.
     """
     diag_path = _zombie_diagnostic_path()
     try:
@@ -3367,23 +3376,31 @@ async def _zombie_diagnostic(
                 task_count=task_count,
             )
             snap["tag"] = "probe"
-            await asyncio.to_thread(_write_diagnostic, diag_path, snap)
 
             if snap["is_serving"] is False and not stop_event.is_set():
-                snap["tag"] = "zombie_detected"
-                snap["tasks"] = _collect_task_stacks()
-                snap["traceback"] = traceback.format_stack()
-                await asyncio.to_thread(_write_diagnostic, diag_path, snap)
+                # The accept loop died silently. The probe baseline and the
+                # zombie dump go through ONE _write_diagnostic call (a single
+                # open) — two back-to-back appends race on Windows, where the
+                # second open can hit a sharing violation while the first
+                # writer's handle is still closing, silently dropping the
+                # zombie_detected record.
+                dump = dict(snap)
+                dump["tag"] = "zombie_detected"
+                dump["tasks"] = _collect_task_stacks()
+                dump["traceback"] = traceback.format_stack()
+                await asyncio.to_thread(_write_diagnostic, diag_path, snap, dump)
                 logger.error(
                     "zombie gatewayd detected: is_serving=False while stop_event unset; "
                     "tasks=%d fd=%d rss_kb=%d — diagnostic dumped to %s; setting stop_event",
-                    snap["task_count"],
-                    snap["fd_count"],
-                    snap["rss_kb"],
+                    dump["task_count"],
+                    dump["fd_count"],
+                    dump["rss_kb"],
                     diag_path,
                 )
                 stop_event.set()
                 return
+
+            await asyncio.to_thread(_write_diagnostic, diag_path, snap)
     except asyncio.CancelledError:
         pass
 
