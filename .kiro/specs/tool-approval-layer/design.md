@@ -63,8 +63,35 @@ Tool executes (approved) or is skipped (rejected); agent turn continues
 | `website/src/components/ToolInputPreview.tsx` | The fallback preview and the "show raw input" surface. |
 | `website/src/components/ChatInput.tsx` (`approveChatSlot`) | **Unchanged** resume transport the layer reuses. |
 | `website/src/hooks/useWebSocket.ts` | Delivers the pending-decision + resume events (existing). |
-| `website/src/kit/tool-views/` (App Builder Kit) | Supplies `ToolPreviewFrame` / schema-matched typed previews. |
+| `website/src/kit/tool-views/` (App Builder Kit spec — **prerequisite, not built by this spec**) | Supplies `ToolPreviewFrame` / schema-matched typed previews. This spec **consumes** it and is sequenced after it (see "Dependency and sequencing" below, and Req 8). |
 | `website/src/types/index.ts` (`tool_input: string`) | The opaque input string a preview parses; no new wire field. |
+
+### Dependency and sequencing (Req 8)
+
+`ToolPreviewFrame` is **not defined or built by this spec.** It is owned by the separate
+App Builder Kit spec (`.kiro/specs/app-builder-kit/`), whose `kit/tool-views` module
+supplies `defineToolView` + `ToolPreviewFrame`. This spec is a **consumer** and is
+sequenced **after** that module ships (a hard prerequisite — Req 8.1). Task 0 verifies the
+module exists before Task 1 begins and fails closed if it does not (Req 8.3), rather than
+stubbing a local `ToolPreviewFrame` that would fork the App Builder Kit's contract.
+
+The **exact contract this spec depends on** (owned by App Builder Kit, restated here only
+so the boundary is legible — not redefined):
+
+```ts
+// from website/src/kit/tool-views/ (App Builder Kit spec)
+function ToolPreviewFrame(props: {
+  input: unknown                                  // the pending call's tool_input, parsed
+  onApprove: (decision: 'approve' | 'reject', pattern?: string) => void
+}): JSX.Element
+// (a) registered ToolViewDef schema matches input → typed preview
+// (b) no match → falls back to <ToolInputPreview> <pre>
+// (c) verbatim raw input is always one interaction away (Req 2.4)
+```
+
+If only the approval loop is wanted before `tool-views` ships, the Req 2.3 fallback (the
+existing `ToolInputPreview` `<pre>`) alone delivers Requirements 1, 3, 4, 5, 6 — the typed
+rich preview (Req 2.2) is the single capability gated on this dependency (Req 8.4).
 
 ## Components and Interfaces
 
@@ -122,9 +149,15 @@ onApprove(decision: 'approve' | 'reject', pattern?: string)
 
 Batch is a **UI affordance over the per-call resume**, not a new transport (Req 4.2).
 When N calls are pending in a slot, `ApprovalCard` renders a multi-select; submitting a
-batch iterates `approveChatSlot` per included call. A call the gate would deny is visibly
-excluded and never included in the batch set (Req 4.3–4.4) — the frontend cannot approve
-what the backend denies.
+batch iterates `approveChatSlot` per included call. **Exclusion is backend-driven, not
+predicted (Req 4.3–4.4, Req 6.1):** the frontend does not compute or forecast a gate
+verdict — it submits each selected call's resume, and if the `on_tool_call` gate rejects
+one at resume time, that call comes back rejected and the UI marks it excluded *after the
+fact*. Because Req 1.2 already keeps a `TOOL_DENY` call from ever becoming a pending
+decision, everything in a batch was `TOOL_ALLOW` when surfaced; an exclusion reflects a
+verdict that changed between surfacing and resume (e.g. governance state shifted), reported
+by the backend. The frontend never re-implements the gate — that would be exactly the
+parallel policy Req 6.1 forbids.
 
 ## Portable AI-SDK mapping (Requirement 5)
 
@@ -157,8 +190,9 @@ schema; a parse failure downgrades to `<pre>` (no throw).
   via the existing logger — it never blocks the operator from deciding.
 - A resume that references a stale/closed `toolCallId` is a no-op with a surfaced notice,
   never a re-issued call (Req 3.4).
-- A batch that includes a now-denied call excludes it and reports the exclusion; the
-  remaining approvals proceed.
+- A batch resume where the gate rejects one included call surfaces that call as excluded
+  *after the fact* (the backend reports the per-call rejection); the remaining approvals
+  proceed. The frontend does not pre-filter by predicting the verdict.
 - Enforcement errors (governance deny, sensitive-path) are owned by `on_tool_call` and its
   SEL audit — the layer surfaces the deny, it does not handle or suppress it.
 

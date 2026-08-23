@@ -74,8 +74,8 @@ several pending calls at once, so that supervision scales past one-click-per-cal
 #### Acceptance Criteria
 1. WHERE more than one call is pending in a slot THE layer SHALL present them such that the operator can act on multiple pending decisions in one interaction.
 2. WHEN a batch decision is submitted THEN each included pending call SHALL resolve through the same per-call `approveChatSlot` path (batch is a UI affordance over the existing per-call resume, not a new transport).
-3. WHEN a batch approval includes a call the gate would deny THEN that call SHALL still be denied — batch approval SHALL NOT override the security gate.
-4. IF a batch spans calls of differing risk THEN a denied or ineligible call SHALL be visibly excluded from the batch rather than silently approved.
+3. WHEN a batch approval includes a call the gate rejects THEN that call SHALL still be denied — batch approval SHALL NOT override the security gate. The frontend does NOT predict the gate verdict (that would be the parallel policy Req 6.1 forbids); exclusion is **backend-driven** — each included call resolves through the same per-call `approveChatSlot` resume, and a call the `on_tool_call` gate rejects at that resume is reported back as excluded.
+4. WHERE a batch resume produces a per-call rejection from the gate THE rejected call SHALL be **surfaced as excluded after the fact** (marked rejected in the batch result), never silently approved. Because Req 1.2 already guarantees a `TOOL_DENY` call never becomes a pending decision, the only calls reaching a batch are `TOOL_ALLOW` at surfacing time; an exclusion here reflects a verdict that changed between surfacing and resume (e.g. governance state shifted), reported by the backend, not computed by the frontend.
 
 ### Requirement 5 — Portable AI-SDK lifecycle mapping
 
@@ -109,3 +109,22 @@ adopting it does not create review or build friction.
 2. WHEN layer code adds user-facing strings THEN the corresponding keys SHALL exist in all locale files (catalogParity).
 3. WHEN layer code is added THEN it SHALL NOT introduce copy/paste clones that fail the jscpd 0% threshold, and SHALL reuse `ApprovalCard`/`ToolInputPreview`/`ChatInput` rather than forking them.
 4. WHEN the existing approval flow is exercised THEN it SHALL show no regression versus its pre-change behavior (the auto-approve, deny, and single-approve paths keep working).
+
+### Requirement 8 — Dependency on the App Builder Kit tool-views, and sequencing
+
+**User Story:** As an implementer, I need the typed-preview dependency named and the build
+order stated, so that I do not start the core render task against a module that does not
+yet exist and end up inventing its contract ad hoc.
+
+**Context (verified against the codebase):** The rich preview (Req 2.2) is rendered by
+`ToolPreviewFrame`, which lives in `website/src/kit/tool-views/` — a module **defined by
+the separate App Builder Kit spec** (`.kiro/specs/app-builder-kit/`), NOT by this spec and
+NOT yet built. This spec consumes that module; it does not create it. Without stating the
+dependency and the minimal contract, Task 1 (the core render deliverable) blocks on an
+unbuilt module and an implementer would invent the preview contract.
+
+#### Acceptance Criteria
+1. WHEN this spec is scheduled THEN it SHALL be sequenced **after** the App Builder Kit spec's `tool-views` module (specifically `ToolPreviewFrame` + `defineToolView`) has shipped — this is a hard prerequisite, and Task 0 SHALL verify the module exists before Task 1 begins.
+2. WHERE `ToolPreviewFrame` is consumed THE contract THIS spec depends on SHALL be exactly: a component `ToolPreviewFrame({ input, onApprove })` that (a) renders a typed preview when a registered `ToolViewDef` schema matches `input`, (b) falls back to `ToolInputPreview` `<pre>` when none matches, and (c) exposes the verbatim raw input one interaction away (Req 2.4). This spec SHALL NOT redefine or extend that contract — the App Builder Kit spec owns it.
+3. IF the App Builder Kit `tool-views` module is NOT available when this spec is implemented THEN Task 0 SHALL fail closed and the work SHALL stop with that dependency named, rather than stubbing a local `ToolPreviewFrame` (which would fork the contract the jscpd/AGENTS conventions forbid).
+4. WHERE only the approval-loop portion is wanted before `tool-views` ships THE fallback path (Req 2.3, the existing `ToolInputPreview` `<pre>`) SHALL be sufficient to deliver Requirements 1, 3, 4, 5, 6 with no rich preview — the typed preview (Req 2.2) is the one capability gated on the dependency.

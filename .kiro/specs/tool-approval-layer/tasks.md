@@ -2,17 +2,24 @@
 
 This plan enriches the render + resume steps of Kiro Crew's existing approval loop and
 documents the portable AI-SDK mapping. The backend enforcement gate (`on_tool_call`) is
-NOT modified. Depends on the App Builder Kit's `kit/tool-views` module for the typed
-preview components.
+NOT modified. **Prerequisite:** the App Builder Kit's `kit/tool-views` module
+(`ToolPreviewFrame` + `defineToolView`) must ship first — this spec is sequenced after it
+and Task 0 verifies it fail-closed (Req 8). The Req 2.3 `<pre>` fallback path can deliver
+Reqs 1/3/4/5/6 without the module; only the typed rich preview (Req 2.2) is gated on it.
 
-- [ ] 0. Establish the `PendingDecision` frontend model and confirm the resume seam
+- [ ] 0. Verify the tool-views prerequisite, then establish the `PendingDecision` frontend model
+  - **Prerequisite check (fail-closed, Req 8.1/8.3):** confirm the App Builder Kit
+    `website/src/kit/tool-views/` module exists and exports `ToolPreviewFrame` +
+    `defineToolView`. If it does not, STOP and report the dependency — do NOT stub a local
+    `ToolPreviewFrame` (that forks the App Builder Kit contract). The Req 2.3 `<pre>`
+    fallback path may proceed for Reqs 1/3/4/5/6 without it (Req 8.4).
   - Define `PendingDecision` (`slot`, `toolCallId`, `title`, `rawInput`, `invocation`) and
     the `ToolInvocationState` union in a shared types module, mirroring AI-SDK
     `UIToolInvocation` as a state model only.
   - Confirm (via reading `useWebSocket.ts` + `ChatInput.tsx`) that a `PendingDecision` can
     be assembled from the existing PreToolUse event with NO new backend wire field, and that
     `approveChatSlot(slot, action, extra)` already pins resume to the slot.
-  - _Requirements: 3.3, 3.4, 5.1, 6.4_
+  - _Requirements: 3.3, 3.4, 5.1, 6.4, 8.1, 8.3_
 
 - [ ] 1. Rich preview inside `ApprovalCard` (default view, with raw-input fallback)
   - Host `ToolPreviewFrame` (from `kit/tool-views`) inside `ApprovalCard`/`ToolInputPreview`.
@@ -36,7 +43,9 @@ preview components.
 - [ ] 4. Batch approval affordance
   - Render a multi-select when N calls are pending in a slot; submitting a batch iterates
     the per-call `approveChatSlot` resume (no new transport).
-  - Visibly exclude any call the gate would deny; never include it in the batch set.
+  - Surface any per-call rejection the gate returns at resume as excluded **after the fact**
+    (backend-driven, not predicted); never pre-filter by forecasting the verdict, and never
+    silently approve an excluded call.
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
 - [ ] 5. Enforce the single-authority boundary
@@ -57,7 +66,7 @@ preview components.
   - Unit (vitest): each `PendingDecision` state; schema-match vs `<pre>` fallback;
     raw-input reveal; keyboard/ARIA.
   - Resume: approve/reject route with correct `slot`/`toolCallId`/`pattern`; stale id no-op.
-  - Batch: per-call resolution; denied call excluded.
+  - Batch: per-call resolution; a gate-rejected call surfaced as excluded after the fact.
   - Non-bypass: a `TOOL_DENY` never yields an approvable card.
   - Backend (pytest): reuse `test_dashboard_approval.py` / `test_auto_approve.py` /
     `test_approval_threading.py` to assert gate verdicts + SEL audit unchanged.
