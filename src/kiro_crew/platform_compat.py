@@ -27,7 +27,7 @@ import time
 import zlib
 from ctypes import wintypes  # type aliases only; imports cleanly on every platform
 from pathlib import Path
-from typing import Any, Callable, Iterator, Mapping, Optional
+from typing import Any, Callable, Iterator, Mapping, NamedTuple, Optional
 
 from kiro_crew.executors import subprocess_executor
 
@@ -1853,15 +1853,96 @@ def listening_pid_tool_available() -> bool:
     return trusted_system_bin(listening_pid_tool()) is not None
 
 
-def find_listening_pids(port: int) -> list[int]:
-    """Return PIDs with a LISTEN socket on TCP *port* (best-effort, deduped).
+class PortListener(NamedTuple):
+    """One LISTEN socket on a TCP port: the owning PID plus the local address
+    it bound, so callers can scope port ownership to the address they actually
+    probed instead of claiming every listener on the port."""
 
-    POSIX: ``lsof -ti TCP:<port> -sTCP:LISTEN``.
-    Windows: parse ``netstat -ano`` (no lsof; netstat ships in-box). Matches
-    rows whose local address ends in ``:<port>`` and whose state is LISTENING,
-    taking the PID from the last column. Returns ``[]`` on any failure (caller
-    treats "no PID found" as "nothing to stop"; use listening_pid_tool_available()
-    to tell a genuine empty result apart from the tool being absent).
+    pid: int
+    #: Normalized local host part, brackets stripped: ``"127.0.0.1"``,
+    #: ``"0.0.0.0"``, ``"::"``, ``"::1"``, a specific interface address, or
+    #: ``"*"`` (lsof prints the wildcard bind of either family as ``*``).
+    address: str
+    #: Address family: ``"4"``, ``"6"``, or ``""`` when the source did not say.
+    #: Load-bearing for wildcards — lsof spells both families ``*``, and only
+    #: the family tells a v4 wildcard apart from a possibly-v6-only one.
+    family: str = ""
+
+
+# Local addresses whose listener can receive a connect to ``127.0.0.1``: the v4
+# loopback itself, the v4 wildcard, lsof's family-agnostic wildcard ``*``, and
+# the v6 wildcard ``::`` (dual-stack sockets accept v4-mapped loopback; treating
+# it as non-covering would refuse adoption of a legitimately ``[::]``-bound
+# backend, which is the breaking direction). ``::1`` is deliberately absent: a
+# v6-loopback-only listener can never answer a probe addressed to 127.0.0.1.
+_LOOPBACK_COVERING_ADDRESSES = frozenset({"127.0.0.1", "0.0.0.0", "*", "::"})
+
+# Bound so a wedged lsof (stale mount, jammed process table) degrades to "no
+# listener found" instead of hanging every caller of the port->PID lookup; the
+# Windows netstat branch carries its own inline bound.
+_LSOF_TIMEOUT_SECS = 5
+
+
+def _normalize_local_address(address: str) -> str:
+    """Bare lowercase host part: brackets stripped, v4-mapped prefix removed."""
+    addr = address.strip().strip("[]").lower()
+    if addr.startswith("::ffff:"):
+        # v4-mapped form of a v4 address; compare the embedded v4 part.
+        addr = addr[len("::ffff:"):]
+    return addr
+
+
+def address_covers_loopback(address: str) -> bool:
+    """Whether a listener bound to *address* can receive a ``127.0.0.1`` connect.
+
+    Used to scope port ownership to the address a health probe actually talked
+    to: a listener on some other specific local address shares the port number
+    but was never the thing that answered the probe.
+    """
+    return _normalize_local_address(address) in _LOOPBACK_COVERING_ADDRESSES
+
+
+def loopback_owner_pids(listeners: list[PortListener]) -> list[int]:
+    """PIDs of the listener(s) a successful ``127.0.0.1:<port>`` connect reached.
+
+    Mirrors the kernel's most-specific-bind dispatch — the first non-empty
+    tier wins, and every PID within it is returned (pre-fork / multi-worker
+    backends legitimately share one listening socket):
+
+    1. Exact v4-loopback binds (``127.0.0.1``, incl. the v4-mapped spelling):
+       when one exists the kernel routes a loopback connect to it, so wildcard
+       listeners on the same port never saw the probe.
+    2. IPv4 wildcard binds: a v4 connect reaches the v4 wildcard socket in
+       preference to a dual-stack v6 one.
+    3. Remaining loopback-covering binds (the v6 wildcard, or one whose family
+       the source did not report): callers only ask after a successful
+       127.0.0.1 probe, so when nothing more specific exists, what is left
+       must have been the responder (a dual-stack socket).
+
+    Tier 2 is what keeps an unrelated ``IPV6_V6ONLY`` wildcard process from
+    being claimed alongside the real v4 owner sharing its port.
+    """
+    exact = [e for e in listeners if _normalize_local_address(e.address) == "127.0.0.1"]
+    if exact:
+        return list(dict.fromkeys(e.pid for e in exact))
+    covering = [e for e in listeners if address_covers_loopback(e.address)]
+    v4 = [e for e in covering if e.family == "4"]
+    if v4:
+        return list(dict.fromkeys(e.pid for e in v4))
+    return list(dict.fromkeys(e.pid for e in covering))
+
+
+def find_port_listeners(port: int) -> list[PortListener]:
+    """Return (pid, local address) for each LISTEN socket on TCP *port*.
+
+    Best-effort, deduped on (pid, address, family), never raises. POSIX asks
+    ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn`` (field output per socket:
+    ``p<pid>``, ``t<IPv4|IPv6>``, ``n<addr>:<port>``); Windows parses
+    ``netstat -ano`` (no lsof; netstat ships in-box), matching rows whose
+    local address ends in ``:<port>`` and whose state is LISTENING. Returns
+    ``[]`` on any failure (callers treat "no listener found" as "nothing to
+    stop"; use listening_pid_tool_available() to tell a genuine empty result
+    apart from the tool being absent).
     """
     if IS_POSIX:
         lsof_bin = trusted_system_bin("lsof")
@@ -1869,13 +1950,43 @@ def find_listening_pids(port: int) -> list[int]:
             return []
         try:
             out = subprocess.check_output(
-                [lsof_bin, "-ti", f"TCP:{port}", "-sTCP:LISTEN"],
+                # -n/-P keep addresses and ports numeric so the field parse
+                # below never sees a resolved host or service name; the t
+                # (type) field carries the family, without which the two
+                # wildcard binds are indistinguishable (both print ``*``).
+                [lsof_bin, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"],
                 text=True,
                 stderr=subprocess.DEVNULL,
+                timeout=_LSOF_TIMEOUT_SECS,
             )
-        except (FileNotFoundError, subprocess.CalledProcessError, OSError):
+        except (FileNotFoundError, subprocess.SubprocessError, OSError):
+            # CalledProcessError included: lsof exits non-zero when nothing
+            # matches the filter, which is the ordinary "port is free" answer.
             return []
-        return list(dict.fromkeys(int(p) for p in out.split() if p.strip().isdigit()))
+        suffix = f":{port}"
+        listeners: list[PortListener] = []
+        seen: set[PortListener] = set()
+        cur_pid: int | None = None
+        cur_family = ""
+        for line in out.splitlines():
+            if not line:
+                continue
+            tag, value = line[0], line[1:]
+            if tag == "p":
+                cur_pid = int(value) if value.isdigit() else None
+                cur_family = ""
+            elif tag == "t":
+                cur_family = {"IPv4": "4", "IPv6": "6"}.get(value, "")
+            elif tag == "n" and cur_pid is not None and value.endswith(suffix):
+                # ``n127.0.0.1:8080`` / ``n*:8080`` / ``n[::1]:8080`` — strip
+                # the port suffix and the v6 brackets to the bare host part.
+                entry = PortListener(
+                    cur_pid, value[: -len(suffix)].strip("[]"), cur_family
+                )
+                if entry not in seen:
+                    seen.add(entry)
+                    listeners.append(entry)
+        return listeners
     # Windows: netstat -ano. Lines look like:
     #   TCP    127.0.0.1:7777         0.0.0.0:0    LISTENING    17152   (IPv4)
     #   TCP    [::1]:7777             [::]:0       LISTENING    17152   (IPv6)
@@ -1907,7 +2018,8 @@ def find_listening_pids(port: int) -> list[int]:
     except (FileNotFoundError, subprocess.SubprocessError, OSError, ValueError):
         return []
     suffix = f":{port}"
-    pids: list[int] = []
+    listeners = []
+    seen = set()
     for line in out.splitlines():
         parts = line.split()
         # Expect: proto local foreign state pid.
@@ -1938,10 +2050,29 @@ def find_listening_pids(port: int) -> list[int]:
             continue
         pid_str = parts[-1]
         if pid_str.isdigit():
-            pids.append(int(pid_str))
-    # Dedup: a dual-stack listener appears in BOTH a TCP4 row (0.0.0.0:port)
-    # and a TCP6 row ([::]:port) under the same PID — collapse to one entry.
-    return list(dict.fromkeys(pids))
+            # The bracketed address form is what distinguishes v4 vs v6 on
+            # Windows netstat output (the proto column says "TCP" for both).
+            entry = PortListener(
+                int(pid_str),
+                local[: -len(suffix)].strip("[]"),
+                "6" if local.startswith("[") else "4",
+            )
+            if entry not in seen:
+                seen.add(entry)
+                listeners.append(entry)
+    return listeners
+
+
+def find_listening_pids(port: int) -> list[int]:
+    """Return PIDs with a LISTEN socket on TCP *port* (best-effort, deduped).
+
+    Address-agnostic accessor over :func:`find_port_listeners` for callers that
+    only care whether/which processes hold the port. A dual-stack listener
+    appears once per bound address (``0.0.0.0`` and ``::``) under the same PID —
+    collapsed to one entry here, first-seen order preserved. Same failure
+    contract: ``[]`` on any failure, never raises.
+    """
+    return list(dict.fromkeys(entry.pid for entry in find_port_listeners(port)))
 
 
 def process_command_line(pid: int) -> str:
@@ -2556,6 +2687,41 @@ def kill_process_tree_pinned(
         # while this process object is still referenced, so the PID cannot have
         # been recycled onto a different process in between.
         return kill_process_tree(pid, sig)
+    finally:
+        _close_process_handle(handle)
+
+
+def kill_pid_pinned(pid: int, expected_start_time: str, sig: int = SIGTERM) -> bool:
+    """Kill *pid* only while its verified identity is PINNED OPEN.
+
+    Single-process variant of :func:`kill_process_tree_pinned` — same Windows
+    guarantee (the query handle that verified the creation time stays open
+    across the terminate, so the PID ``taskkill`` resolves cannot have been
+    recycled between the check and the signal), delegating to :func:`kill_pid`
+    instead of tearing down the tree. Returns ``False`` — without signalling —
+    when the handle cannot be opened or the identity does not match; callers
+    treat that as "identity unconfirmed, do not kill". On a match it delegates
+    to :func:`kill_pid` and propagates its exceptions unchanged.
+
+    POSIX delegates straight through: ``os.kill`` is issued in-process by the
+    same interpreter that did the check and there is no handle to hold; the
+    residual probe-to-signal window there is the pre-existing one callers
+    mitigate by re-confirming identity before destructive escalation.
+    """
+    if not IS_WINDOWS:
+        return kill_pid(pid, sig)
+    handle = _open_process_query_handle(pid)
+    if handle is None:
+        return False
+    try:
+        identity = _windows_process_handle_identity(handle)
+        # (pid, creation_time, exit_time) -- the creation half is the identity.
+        if identity is None or str(identity[1]) != expected_start_time:
+            return False
+        # The handle stays open for the whole call: taskkill resolves the PID
+        # while this process object is still referenced, so the PID cannot have
+        # been recycled onto a different process in between.
+        return kill_pid(pid, sig)
     finally:
         _close_process_handle(handle)
 

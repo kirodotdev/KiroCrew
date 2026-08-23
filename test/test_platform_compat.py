@@ -2129,12 +2129,62 @@ class TestFindListeningPidsErrors:
         assert pc.find_listening_pids(59998) == []
 
     def test_dedupes_pids_from_lsof_output(self, monkeypatch):
-        # lsof can emit the same PID multiple times (one row per fd); the helper
-        # must dedupe while preserving first-seen order.
+        # lsof can emit the same (pid, address) socket multiple times (one row
+        # per fd) and one PID can hold several addresses on the port; the PID
+        # accessor must dedupe while preserving first-seen order.
         if not pc.IS_POSIX:
             pytest.skip("POSIX lsof branch")
-        monkeypatch.setattr(pc.subprocess, "check_output", lambda *a, **k: "111\n111\n222\n")
+        blob = "p111\nn127.0.0.1:7777\nn127.0.0.1:7777\nn*:7777\np222\nn[::1]:7777\n"
+        monkeypatch.setattr(pc.subprocess, "check_output", lambda *a, **k: blob)
         assert pc.find_listening_pids(7777) == [111, 222]
+
+    def test_posix_listeners_carry_their_local_address(self, monkeypatch):
+        # The lsof -Fptn field output attributes each LISTEN socket's local
+        # address AND family to its owning PID, so callers can scope ownership
+        # to the address they actually probed (family is what tells the two
+        # wildcard binds apart — lsof prints both as ``*``). v6 brackets are
+        # stripped; rows for a different port (defensive — the -i filter
+        # already scopes) and malformed p-lines are ignored.
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX lsof branch")
+        blob = (
+            "p111\n"
+            "tIPv4\n"
+            "n127.0.0.1:7777\n"
+            "p222\n"
+            "tIPv6\n"
+            "n[::1]:7777\n"
+            "tIPv4\n"
+            "n192.168.1.5:7777\n"
+            "pbogus\n"
+            "n10.0.0.1:7777\n"
+            "p333\n"
+            "tIPv4\n"
+            "n*:7778\n"
+        )
+        monkeypatch.setattr(pc.subprocess, "check_output", lambda *a, **k: blob)
+        assert pc.find_port_listeners(7777) == [
+            pc.PortListener(111, "127.0.0.1", "4"),
+            pc.PortListener(222, "::1", "6"),
+            pc.PortListener(222, "192.168.1.5", "4"),
+        ]
+
+    def test_posix_lookup_is_bounded_by_a_timeout(self, monkeypatch):
+        # A wedged lsof (stale mount, jammed process table) must degrade to
+        # "no listener found" instead of hanging every port->PID caller: the
+        # spawn carries a timeout, and its expiry folds into [].
+        if not pc.IS_POSIX:
+            pytest.skip("POSIX lsof branch")
+        captured: dict = {}
+
+        def _capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["kwargs"] = kwargs
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+
+        monkeypatch.setattr(pc.subprocess, "check_output", _capture)
+        assert pc.find_port_listeners(7777) == []
+        assert captured["kwargs"].get("timeout") == pc._LSOF_TIMEOUT_SECS
 
     def _fake_netstat(self, blob: str):
         """Return a fake subprocess.check_output that returns *blob*."""
@@ -2223,6 +2273,25 @@ class TestFindListeningPidsErrors:
         monkeypatch.setattr(pc.subprocess, "check_output", self._fake_netstat(blob))
         assert pc.find_listening_pids(7777) == [44]
 
+    def test_windows_listeners_carry_their_local_address(self, monkeypatch):
+        # The netstat parse attributes each row's local address to its PID so
+        # callers can scope ownership to the address they probed; a dual-stack
+        # listener keeps one entry per bound address, v6 brackets stripped.
+        blob = (
+            "  TCP    0.0.0.0:7777           0.0.0.0:0              LISTENING       99\n"
+            "  TCP    [::]:7777              [::]:0                 LISTENING       99\n"
+            "  TCP    192.168.1.5:7777       0.0.0.0:0              LISTENING       55\n"
+        )
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        _fake_windows_bins(monkeypatch)
+        monkeypatch.setattr(pc.subprocess, "check_output", self._fake_netstat(blob))
+        assert pc.find_port_listeners(7777) == [
+            pc.PortListener(99, "0.0.0.0", "4"),
+            pc.PortListener(99, "::", "6"),
+            pc.PortListener(55, "192.168.1.5", "4"),
+        ]
+
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows netstat branch")
     def test_windows_finds_real_ipv6_loopback_listener(self):
         # End-to-end guard on a live host: bind AF_INET6 to ::1 at an ephemeral
@@ -2240,6 +2309,79 @@ class TestFindListeningPidsErrors:
             assert os.getpid() in pids, f"expected pid {os.getpid()} in {pids}"
         finally:
             s.close()
+
+
+class TestAddressCoversLoopback:
+    @pytest.mark.parametrize(
+        "address",
+        ["127.0.0.1", "0.0.0.0", "*", "::", "[::]", "::ffff:127.0.0.1", " 0.0.0.0 "],
+    )
+    def test_loopback_covering_addresses(self, address):
+        assert pc.address_covers_loopback(address) is True
+
+    @pytest.mark.parametrize(
+        "address",
+        # ::1 cannot receive a connect addressed to 127.0.0.1, so a
+        # v6-loopback-only listener is deliberately NOT loopback-covering.
+        ["::1", "[::1]", "192.168.1.5", "10.0.0.1", "fe80::1", "127.0.0.2", ""],
+    )
+    def test_other_addresses_do_not_cover_loopback(self, address):
+        assert pc.address_covers_loopback(address) is False
+
+
+class TestLoopbackOwnerPids:
+    """The most-specific-bind dispatch tiers of :func:`loopback_owner_pids`."""
+
+    def test_an_exact_loopback_bind_beats_wildcards(self):
+        # The kernel routes a 127.0.0.1 connect to the exact bind, so wildcard
+        # listeners on the same port never saw the probe and are not owners.
+        listeners = [
+            pc.PortListener(111, "127.0.0.1", "4"),
+            pc.PortListener(999, "*", "4"),
+            pc.PortListener(888, "::", "6"),
+        ]
+        assert pc.loopback_owner_pids(listeners) == [111]
+
+    def test_a_v4_wildcard_beats_a_possibly_v6only_wildcard(self):
+        # An unrelated IPV6_V6ONLY wildcard next to the real v4 owner must not
+        # be claimed: a v4 connect reaches the v4 wildcard socket, never the
+        # v6-only one. lsof spells both ``*`` — the family is the separator.
+        listeners = [
+            pc.PortListener(111, "*", "4"),
+            pc.PortListener(999, "*", "6"),
+        ]
+        assert pc.loopback_owner_pids(listeners) == [111]
+
+    def test_a_lone_v6_wildcard_is_the_responder(self):
+        # Callers only ask after a successful 127.0.0.1 probe; with nothing
+        # more specific on the port, the v6 wildcard must be dual-stack and is
+        # the adopted owner (refusing it would break [::]-bound externally
+        # managed backends).
+        listeners = [pc.PortListener(77, "::", "6")]
+        assert pc.loopback_owner_pids(listeners) == [77]
+
+    def test_multi_worker_backends_share_ownership(self):
+        # Pre-fork / multi-worker backends legitimately share one listening
+        # socket: every PID in the winning tier is recorded.
+        listeners = [
+            pc.PortListener(11, "127.0.0.1", "4"),
+            pc.PortListener(12, "127.0.0.1", "4"),
+            pc.PortListener(999, "*", "4"),
+        ]
+        assert pc.loopback_owner_pids(listeners) == [11, 12]
+
+    def test_unknown_family_wildcards_fall_to_the_covering_tier(self):
+        # A source that reported no family (old lsof output) still resolves:
+        # the covering tier keeps adoption working rather than refusing it.
+        listeners = [
+            pc.PortListener(11, "*"),
+            pc.PortListener(22, "192.168.1.5"),
+        ]
+        assert pc.loopback_owner_pids(listeners) == [11]
+
+    def test_no_covering_listener_yields_no_owner(self):
+        listeners = [pc.PortListener(999, "192.168.1.5", "4")]
+        assert pc.loopback_owner_pids(listeners) == []
 
 
 class TestKillAsyncVariants:
@@ -3439,3 +3581,81 @@ class TestKillProcessTreePinned:
         assert pc.kill_process_tree_pinned(4321, recorded) is True
         # The exit half moves as the process dies and must never be the identity.
         assert pc.kill_process_tree_pinned(4321, "888") is False
+
+
+class TestKillPidPinned:
+    """Single-process variant of the pinned kill: same handle-lifetime
+    invariant as :class:`TestKillProcessTreePinned`, delegating to ``kill_pid``
+    instead of the tree teardown. Driven through the module seams with
+    ``IS_WINDOWS`` patched so every case runs on every platform."""
+
+    HANDLE = 4242
+
+    def _wire(self, monkeypatch, *, handle=HANDLE, identity=(4321, 777, None)):
+        opened: list[int] = []
+        closed: list[int] = []
+        killed: list[tuple[int, int]] = []
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _open(pid):
+            opened.append(pid)
+            return handle
+
+        def _identity(h):
+            assert h == handle, "the identity must be read from the handle just opened"
+            return identity
+
+        def _close(h):
+            closed.append(h)
+
+        def _kill(pid, sig):
+            killed.append((pid, sig))
+            return True
+
+        monkeypatch.setattr(pc, "_open_process_query_handle", _open)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", _identity)
+        monkeypatch.setattr(pc, "_close_process_handle", _close)
+        monkeypatch.setattr(pc, "kill_pid", _kill)
+        return opened, closed, killed
+
+    def test_a_matching_identity_kills_and_then_releases_the_handle(self, monkeypatch):
+        opened, closed, killed = self._wire(monkeypatch)
+
+        assert pc.kill_pid_pinned(4321, "777", pc.SIGTERM) is True
+
+        assert opened == [4321]
+        assert killed == [(4321, pc.SIGTERM)]
+        assert closed == [self.HANDLE]
+
+    def test_a_mismatched_identity_never_invokes_the_kill(self, monkeypatch):
+        _, closed, killed = self._wire(monkeypatch, identity=(4321, 999, None))
+
+        assert pc.kill_pid_pinned(4321, "777", pc.SIGKILL) is False
+
+        assert killed == []
+        assert closed == [self.HANDLE], "the handle must still be released"
+
+    def test_an_unopenable_process_never_invokes_the_kill(self, monkeypatch):
+        _, closed, killed = self._wire(monkeypatch, handle=None)
+
+        assert pc.kill_pid_pinned(4321, "777", pc.SIGTERM) is False
+
+        assert killed == []
+        assert closed == [], "nothing was opened, so nothing may be closed"
+
+    def test_an_unreadable_identity_never_invokes_the_kill(self, monkeypatch):
+        _, closed, killed = self._wire(monkeypatch, identity=None)
+
+        assert pc.kill_pid_pinned(4321, "777", pc.SIGTERM) is False
+
+        assert killed == []
+        assert closed == [self.HANDLE]
+
+    def test_posix_delegates_straight_through(self, monkeypatch):
+        killed: list[tuple[int, int]] = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc, "kill_pid", lambda pid, sig: killed.append((pid, sig)) or True)
+
+        assert pc.kill_pid_pinned(4321, "777", pc.SIGTERM) is True
+        assert killed == [(4321, pc.SIGTERM)]
