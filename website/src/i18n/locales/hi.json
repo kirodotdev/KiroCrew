@@ -10574,7 +10574,8 @@
         "file_sessions_in_folder": "सेशन एक फ़ोल्डर में रखें",
         "file_sessions_in_folder_desc": "{{channel}} की नई सेशन साइडबार के एक फ़ोल्डर में जाती है, बिना फ़ोल्डर नहीं रहती।",
         "session_folder_name": "फ़ोल्डर का नाम",
-        "session_folder_name_desc": "इन सेटिंग्स को सेव करने पर यह बन जाता है, अगर पहले से मौजूद न हो।"
+        "session_folder_name_desc": "इन सेटिंग्स को सेव करने पर यह बन जाता है, अगर पहले से मौजूद न हो।",
+        "shared_channels": "साझा चैनल"
       },
       "browserPanel": {
         "use_builtin_label": "बिल्ट-इन ब्राउज़र का उपयोग करें",
@@ -10854,12 +10855,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "इस मशीन पर गेटवे शुरू करता है। इसे बंद करने पर Kiro Crew केवल क्लाइंट के रूप में काम करेगा और यहाँ गेटवे चलाने के बजाय कॉन्फ़िगर किए गए गेटवे से जुड़ेगा। अगली बार ऐप खोलने पर लागू होगा।"
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "अनुमत सर्वर चैनल ID",
         "allowed_server_thread_ids": "अनुमत सर्वर थ्रेड ID",
-        "allowlist_description": "DM या मंज़ूर थ्रेड में एजेंट चलाने की अनुमति प्राप्त Discord यूज़र ID। ख़ाली = सभी को अस्वीकार (डिफ़ॉल्ट रूप से अस्वीकार)।",
-        "description": "Gateway WebSocket के ज़रिए Discord DM या साफ़ तौर पर मंज़ूर सर्वर थ्रेड से अपने एजेंट से बात करें। सामान्य सर्वर चैनल हमेशा नज़रअंदाज़ किए जाते हैं।",
+        "allowlist_description": "DM, मंज़ूर थ्रेड या अनुमत चैनल में एजेंट चलाने की अनुमति प्राप्त Discord यूज़र ID। ख़ाली = सभी को अस्वीकार (डिफ़ॉल्ट रूप से अस्वीकार)।",
+        "auto_thread_description": "अनुमत चैनल में भेजा गया मैसेज एक नया सार्वजनिक थ्रेड खोलता है, और बातचीत साझा चैनल के बजाय वहीं चलती है।",
+        "auto_thread_label": "नए थ्रेड में जवाब दें",
+        "auto_thread_off_hint": "ऑटो-थ्रेड बंद है, इसलिए ऊपर दिए चैनलों के मैसेज नज़रअंदाज़ किए जाते हैं। {{productName}} साझा चैनल में ख़ुद कभी जवाब नहीं देता।",
+        "channel_allowlist_description": "वैकल्पिक। मंज़ूर यूज़र इन साझा सर्वर चैनलों से भी एजेंट चला सकते हैं। ख़ाली = कोई साझा चैनल नहीं।",
+        "channel_help": "Developer Mode चालू होने पर चैनल पर राइट-क्लिक करें → <mono>Copy Channel ID</mono>। चैनल की ख़ुद की ID इस्तेमाल करें, उसके अंदर किसी थ्रेड की ID नहीं।",
+        "channel_warning": "साझा चैनल थ्रेड से भी चौड़ी ख़ुलासा सीमा है: जो कोई उस चैनल को देख सकता है, और जो कोई बातचीत वाले सार्वजनिक थ्रेड को खोल सकता है, वह पढ़ सकता है कि एजेंट क्या लिखता है और उसके टूल क्या छापते हैं। कोई चैनल तभी जोड़ें जब उसके सभी सदस्य यह देख सकते हों।",
+        "description": "Gateway WebSocket के ज़रिए Discord DM, मंज़ूर सर्वर थ्रेड या अनुमत सर्वर चैनल से अपने एजेंट से बात करें। बाक़ी हर सर्वर चैनल नज़रअंदाज़ किया जाता है।",
         "empty_allowlist_hint": "कोई अनुमत यूज़र ID नहीं: बॉट हर मैसेज ठुकरा देता है (डिफ़ॉल्ट रूप से अस्वीकार)। नीचे अपनी Discord यूज़र ID जोड़ें।",
-        "guide_body": "Discord Developer Portal में एक ऐप बनाएँ, फिर <mono>Bot</mono> पेज से टोकन कॉपी करें। सिर्फ़ DM के लिए privileged intents बंद ही रहने दें। सर्वर थ्रेड के लिए <mono>Message Content Intent</mono> चालू करें, और <mono>bot</mono> स्कोप के साथ View Channel, Read Message History और Send Messages in Threads चुनकर इंस्टॉल करें। Discord Developer Mode चालू करें, फिर अपने नाम पर राइट-क्लिक करके अपनी अंकों वाली यूज़र ID कॉपी करें।",
+        "guide_body": "Discord Developer Portal में एक ऐप बनाएँ, फिर <mono>Bot</mono> पेज से टोकन कॉपी करें। सिर्फ़ DM के लिए privileged intents बंद ही रहने दें। सर्वर थ्रेड के लिए <mono>Message Content Intent</mono> चालू करें, और <mono>bot</mono> और <mono>applications.commands</mono> स्कोप के साथ View Channel, Read Message History और Send Messages in Threads चुनकर इंस्टॉल करें। Discord Developer Mode चालू करें, फिर अपने नाम पर राइट-क्लिक करके अपनी अंकों वाली यूज़र ID कॉपी करें।",
         "open_developer_portal": "Developer Portal खोलें",
+        "reactions_description": "एजेंट जिस फ़ेज़ में है, उसे तुम्हारे मैसेज पर इमोजी से चिह्नित करता है (क़तार में → सोच रहा है → कोडिंग → पूर्ण)। बंद रहने पर तुम्हारे मैसेज पर कोई चिह्न नहीं लगता।",
+        "reactions_label": "फ़ेज़ प्रतिक्रियाएँ",
+        "thinking_description": "मॉडल के तर्क (reasoning) की झलक जवाब के ऊपर एक अलग सबटेक्स्ट नोट के रूप में पोस्ट करता है। बंद रहने पर चैनल में सिर्फ़ जवाब रहता है।",
+        "thinking_label": "थिंकिंग दिखाएँ",
         "thread_allowlist_description": "वैकल्पिक। मंज़ूर यूज़र एजेंट को सिर्फ़ इन्हीं Discord थ्रेड में चला सकते हैं। ख़ाली = केवल DM।",
         "thread_help": "Developer Mode चालू होने पर थ्रेड पर राइट-क्लिक करें → <mono>Copy Channel ID</mono>। थ्रेड की ID इस्तेमाल करें, उसके पैरेंट चैनल की ID नहीं।",
         "thread_warning": "थ्रेड मोड Discord का ग्लोबल Message Content intent चालू कर देता है। Discord उन सभी सर्वर चैनलों का कंटेंट भेजता है जो बॉट को दिखते हैं; Kiro Crew मंज़ूर थ्रेड के बाहर का ट्रैफ़िक फेंक देता है। जो कोई मंज़ूर थ्रेड देख सकता है, वह एजेंट के जवाब और टूल आउटपुट पढ़ सकता है।",

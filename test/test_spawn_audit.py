@@ -756,6 +756,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # created; the sole input is the operator-typed app name.
         "cli_commands.py::_register_app_crons_to_scheduler",
         "cli_doctor.py::_doctor",
+        # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr
+        # ``run`` on base ``asyncio``), used to drive the async Discord
+        # privileged-intent probe from the loop-less doctor path. No child
+        # process is created: the probe is one HTTPS GET to Discord's own
+        # ``/oauth2/applications/@me`` with a bot token read from the operator's
+        # own credential store, and every failure is folded into its result. Same
+        # classification as ``cli_doctor.py::_doctor`` above.
+        "cli_doctor.py::_discord_intent_grants",
         "cli_doctor.py::_doctor_mcp_tools",
         # Read-only diagnostic for the KAS backend section: ``<kiro-cli> acp
         # --help`` with a fully constant argv tail — the binary comes from

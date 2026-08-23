@@ -2387,8 +2387,16 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         FieldSpec("unfurl_media", bool),
         FieldSpec("thread_ts", str, max_len=30, pattern=re.compile(r"^\d+\.\d+$")),
         FieldSpec("reply_broadcast", bool),
+        # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
+        # advertises: this pattern runs BEFORE the handler, so a value missing
+        # here is rejected as malformed even though the tool's own enum offers
+        # it. Spelled out rather than imported because ``mcp_tools`` imports this
+        # module; ``test_mcp_messaging_discord`` pins the two together.
         FieldSpec(
-            "session", str, max_len=MAX_SHORT_STRING, pattern=re.compile(r"^(origin|slack)$")
+            "session",
+            str,
+            max_len=MAX_SHORT_STRING,
+            pattern=re.compile(r"^(origin|slack|discord)$"),
         ),
         FieldSpec("caller_session", str, max_len=MAX_SHORT_STRING, pattern=CRON_SESSION_RE),
     ],

@@ -43,7 +43,14 @@ SLACK_CAPABILITIES = TransportCapabilities(
     edit=True,
     reactions=True,
     files_inbound=True,  # slack/files.py -> messaging/attachments.py ingestion
-    files_outbound=True,  # /api/slack/upload-file external-upload flow
+    # Read by SlackRenderer._uploads_enabled before it extracts local image
+    # references out of a sealed reply and uploads them (slack/files.py ->
+    # files_upload_v2). It is the flag the capability ledger defines, not the
+    # dashboard's /api/slack/upload-file route, which is a human upload flow no
+    # renderer consults: declaring the flag for that route is what made this a
+    # mislabel. Flipping it to False makes the renderer keep printing the
+    # markdown path, which is the honest degradation, never a silent drop.
+    files_outbound=True,
     rich_blocks=True,
     threads=True,
     # Slack's established format pipeline already flattens tables byte-for-byte.

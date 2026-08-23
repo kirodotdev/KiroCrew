@@ -10445,7 +10445,8 @@
         "file_sessions_in_folder": "将会话归入文件夹",
         "file_sessions_in_folder_desc": "新的 {{channel}} 会话会进入侧边栏的一个文件夹，而不是散落在外。",
         "session_folder_name": "文件夹名称",
-        "session_folder_name_desc": "保存这些设置时若不存在会自动创建。"
+        "session_folder_name_desc": "保存这些设置时若不存在会自动创建。",
+        "shared_channels": "共享频道"
       },
       "browserPanel": {
         "use_builtin_label": "使用内置浏览器",
@@ -10725,12 +10726,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "在这台机器上启动网关。关闭后，Kiro Crew 仅作为客户端使用，连接到你已配置的网关，而不在本机运行网关。将在下次打开应用时生效。"
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "允许的服务器频道 ID",
         "allowed_server_thread_ids": "允许的服务器话题 ID",
-        "allowlist_description": "允许在私聊或已批准话题中运行代理的 Discord 用户 ID。留空 = 全部拒绝（失败关闭）。",
-        "description": "通过网关 WebSocket，从 Discord 私聊或明确批准的服务器话题与你的代理对话。普通服务器频道一律忽略。",
+        "allowlist_description": "允许在私聊、已批准话题或允许的频道中运行代理的 Discord 用户 ID。留空 = 全部拒绝（失败关闭）。",
+        "auto_thread_description": "在允许的频道中发消息会新建一个公开话题，对话在那里进行，而不是在共享频道里。",
+        "auto_thread_label": "在新话题中回复",
+        "auto_thread_off_hint": "自动开话题已关闭，因此上面这些频道中的消息会被忽略。{{productName}} 绝不会直接在共享频道里回复。",
+        "channel_allowlist_description": "可选。已批准的用户还可以从这些共享服务器频道运行代理。留空 = 不使用共享频道。",
+        "channel_help": "开启 Developer Mode 后，右键点击频道 → <mono>Copy Channel ID</mono>。用频道本身的 ID，而不是频道内某个话题的 ID。",
+        "channel_warning": "共享频道比话题的公开范围更广。能看到该频道的人都可以读到代理的回复和工具输出；能打开对话所在公开话题的人也一样。只有当整个频道成员都可以看到这些内容时，才把它加进来。",
+        "description": "通过网关 WebSocket 与你的代理对话。可用范围是 Discord 私聊、已批准的服务器话题或允许的服务器频道，其他所有服务器频道一律忽略。",
         "empty_allowlist_hint": "没有允许的用户 ID：机器人会拒绝所有消息（失败关闭）。在下方添加你的 Discord 用户 ID。",
-        "guide_body": "在 Discord Developer Portal 中创建一个应用，然后从 <mono>Bot</mono> 页面复制令牌。仅用于私聊时，特权 intent 保持关闭。要用服务器话题，需启用 <mono>Message Content Intent</mono>，并在安装时选择 <mono>bot</mono> scope，同时勾选 View Channel、Read Message History 和 Send Messages in Threads。启用 Discord Developer Mode，然后右键点击自己的用户名，复制数字用户 ID。",
+        "guide_body": "在 Discord Developer Portal 中创建一个应用，然后从 <mono>Bot</mono> 页面复制令牌。仅用于私聊时，特权 intent 保持关闭。要用服务器话题，需启用 <mono>Message Content Intent</mono>，并在安装时选择 <mono>bot</mono> 和 <mono>applications.commands</mono> scope，同时勾选 View Channel、Read Message History 和 Send Messages in Threads。启用 Discord Developer Mode，然后右键点击自己的用户名，复制数字用户 ID。",
         "open_developer_portal": "打开开发者门户",
+        "reactions_description": "用表情反应在你的消息上标注代理当前所处的阶段（排队 → 思考 → 编码 → 完成）。关闭后你的消息不会被标注。",
+        "reactions_label": "阶段表情反应",
+        "thinking_description": "把模型推理过程的预览作为单独的小字备注发布在回复上方。关闭后频道里只保留回复本身。",
+        "thinking_label": "显示思考过程",
         "thread_allowlist_description": "可选。已批准的用户只能在这些指定的 Discord 话题中运行代理。留空 = 仅私聊。",
         "thread_help": "开启 Developer Mode 后，右键点击话题 → <mono>Copy Channel ID</mono>。用话题本身的 ID，而不是父频道的 ID。",
         "thread_warning": "话题模式会启用 Discord 的全局 Message Content intent。Discord 会投递机器人可见的每个服务器频道的内容；Kiro Crew 会丢弃已批准话题之外的流量。任何能查看已批准话题的人都能读到代理回复和工具输出。",

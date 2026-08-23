@@ -223,6 +223,21 @@ async def run_yolo_command(
 #: How long a presigned dashboard link lives when the user names no duration.
 DEFAULT_DASHBOARD_TTL_SECS = 3600
 
+#: Floor on a requested lifetime, in seconds. ``parse_duration`` accepts ``0h`` /
+#: ``0m`` and answers 0 -- a real int, not ``None`` -- so without a floor it passes
+#: every "did it parse" check and mints a bearer credential that is ALREADY
+#: EXPIRED: a link the user cannot use, with no explanation of why. One minute is
+#: the floor because it is the shortest lifetime the ``<N>h`` / ``<N>m`` grammar
+#: can express, so clamping rejects exactly one input -- an explicit zero -- and
+#: leaves every duration a user can type untouched.
+#:
+#: Clamping rather than falling back to the default is what keeps the reply
+#: honest: the caller renders the GRANTED value with :func:`format_ttl`, which can
+#: then never print ``0m``. Enforced HERE, in the shared parser, so it holds for
+#: every channel that mints a link rather than for whichever one last had it
+#: audited.
+MIN_DASHBOARD_TTL_SECS = 60
+
 #: ``"<N>h"`` / ``"<N>m"`` -> seconds, or None. Injected, see below.
 DurationParser = Callable[[str], "int | None"]
 
@@ -247,13 +262,15 @@ def parse_dashboard_ttl(arg: str, *, parse_duration: DurationParser) -> int:
 
     Returns :data:`DEFAULT_DASHBOARD_TTL_SECS` when *arg* names no duration or the
     duration does not parse: a mistyped TTL should still hand the user a working
-    link rather than refuse the command.
+    link rather than refuse the command. A duration that parses is clamped up to
+    :data:`MIN_DASHBOARD_TTL_SECS` -- see there for why an explicit zero must not
+    reach the token minter.
     """
     words = arg.strip().split()
     if words:
         parsed = parse_duration(words[0].lower())
         if parsed is not None:
-            return parsed
+            return max(parsed, MIN_DASHBOARD_TTL_SECS)
     return DEFAULT_DASHBOARD_TTL_SECS
 
 

@@ -49,10 +49,14 @@ from kiro_crew.dashboard.state import (
     DashboardState,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
+from kiro_crew.messaging.renderer import chunk_text, format_overflow
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
@@ -220,14 +224,10 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     task = str(body.get("task", "") or "").strip()
     if not task:
-        return web.json_response(
-            {"error": "task is required", "code": "task_required"}, status=400
-        )
+        return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
@@ -260,19 +260,11 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         )
     if info.done and info.error:
         if info.error.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_busy"}, status=409
-            )
+            return web.json_response({"error": info.error, "code": "conversation_busy"}, status=409)
         if info.error.startswith("conversation_gone"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_gone"}, status=404
-            )
-        return web.json_response(
-            {"error": info.error, "code": "spawn_rejected"}, status=400
-        )
-    return web.json_response(
-        {"id": info.id, "conversation": conv_id, "status": "spawned"}
-    )
+            return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
+        return web.json_response({"error": info.error, "code": "spawn_rejected"}, status=400)
+    return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
@@ -292,9 +284,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     message = str(body.get("message", "") or "").strip()
     if not message:
         return web.json_response(
@@ -312,13 +302,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         ok, detail = await state.subagents.steer_run(agent_id, message)
     if not ok:
         if detail == "not_found":
-            return web.json_response(
-                {"error": detail, "code": "not_found"}, status=404
-            )
+            return web.json_response({"error": detail, "code": "not_found"}, status=404)
         if detail.startswith("not_running"):
-            return web.json_response(
-                {"error": detail, "code": "not_running"}, status=409
-            )
+            return web.json_response({"error": detail, "code": "not_running"}, status=409)
         if detail.startswith("session_starting"):
             # Transient: the run is alive but its session has not registered
             # yet (#1113). 503 + Retry-After tells clients to retry, unlike
@@ -328,9 +314,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 status=503,
                 headers={"Retry-After": "5"},
             )
-        return web.json_response(
-            {"error": detail, "code": "steer_failed"}, status=502
-        )
+        return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
     return web.json_response(
         {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
     )
@@ -352,12 +336,8 @@ async def api_spawn_release(request: web.Request) -> web.Response:
     ok, detail = state.subagents.release_conversation(conv_id)
     if not ok:
         if detail.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": detail, "code": "conversation_busy"}, status=409
-            )
-        return web.json_response(
-            {"error": detail, "code": "conversation_gone"}, status=404
-        )
+            return web.json_response({"error": detail, "code": "conversation_busy"}, status=409)
+        return web.json_response({"error": detail, "code": "conversation_gone"}, status=404)
     return web.json_response({"conversation": conv_id, "status": "released"})
 
 
@@ -415,7 +395,9 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     ids = body.get("ids")
     if not ids or not isinstance(ids, list):
-        return web.json_response({"error": "'ids' array required", "code": "ids_required"}, status=400)
+        return web.json_response(
+            {"error": "'ids' array required", "code": "ids_required"}, status=400
+        )
     parent_session = str(body.get("parent_session", "") or "")
     slot_name = dashboard_slot_key(parent_session)
     if not slot_name:
@@ -1065,6 +1047,17 @@ _MAX_BLOCKS = 50  # Slack Block Kit limit
 _MAX_WALK_DEPTH = 10  # defense-in-depth against deeply nested LLM output
 
 
+def _redact_all(value: str) -> str:
+    """Both outbound redactors as one callable, in the canonical order.
+
+    ``redact_for_display`` re-runs its redactor over each normalised form, so it
+    needs the pair behind a single call rather than two sequential passes.
+    """
+    value, _ = redact_exfiltration_urls(value)
+    value, _ = redact_credentials(value)
+    return value
+
+
 def _sanitize_blocks(
     blocks: list[dict],
     *redactors: Any,
@@ -1130,8 +1123,189 @@ def _resolve_session_target(
     return slot_key, job.name
 
 
+#: ``session`` values on ``/api/send-message`` that name a delivery MODE rather
+#: than a chat channel. Any other value is looked up in the registered channel
+#: transports, so a channel becomes reachable here by registering its transport
+#: instead of by editing this module. Slack is reserved because it is delivered
+#: by its own client, which is not in ``channel_transports``.
+_RESERVED_SESSION_TARGETS = frozenset({"origin", SLACK_NAMESPACE})
+
+#: The shape every registered ``channel_type`` has. A ``session`` value that does
+#: not match is not looked up as a channel at all: the value is agent-authored and
+#: reaches an error body and the SEL ``resources`` field, so bounding its length
+#: and alphabet here keeps an unrecognized value from carrying newlines or
+#: kilobytes into the audit trail. It still degrades to the dashboard
+#: notification, which is what an unknown ``session`` has always done.
+_CHANNEL_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+
+#: The ``configured_targets()`` prefix every transport gives a DIRECT
+#: conversation (``user:<identity>``). A ``thread:`` or room target is a
+#: different audience and is never the owner's DM.
+_DM_TARGET_PREFIX = "user:"
+
+#: Request fields that only exist in Slack's protocol. Combined with a channel
+#: ``session`` they are refused rather than dropped: a caller that asked for a
+#: threaded reply or a named Slack channel cannot observe the drop, and would
+#: read a private DM as a successful post to a shared channel.
+_SLACK_ONLY_BODY_FIELDS = (
+    "channel",
+    "user",
+    "blocks",
+    "thread_ts",
+    "reply_broadcast",
+    "unfurl_links",
+    "unfurl_media",
+)
+
+
+def _owner_dm_target(transport: Any) -> str:
+    """The configured owner-DM target id on *transport*, or ``""``.
+
+    ``configured_targets()`` is the channel-neutral allowlist the dashboard's own
+    target picker reads, so a proactive DM can only be addressed at something the
+    user configured for that channel. Two entries are skipped: a target the
+    transport marks unavailable (WeCom may only reply to an inbound message), and
+    a thread or room target, which is a wider audience than a DM.
+
+    No channel carries a separate "owner" field the way Slack's ``owner_id`` does,
+    so an owner can only be inferred, and this REFUSES to infer one from an
+    ambiguous list: a target is returned only when the channel advertises exactly
+    ONE available direct target. Picking the first of several would send private
+    agent output to whichever allow-listed person happened to sort first, which is
+    the wrong human rather than a smaller audience, and fanning out to all of them
+    would deliver a message the agent decided to send once N times. With no single
+    answer the caller degrades to the dashboard notification, which reaches the
+    operator without guessing who they are.
+    """
+    try:
+        targets = list(transport.configured_targets())
+    except Exception:
+        logger.warning("send_message: could not enumerate channel targets", exc_info=True)
+        return ""
+    direct = [
+        str(getattr(target, "target_id", "") or "")
+        for target in targets
+        if str(getattr(target, "target_id", "") or "").startswith(_DM_TARGET_PREFIX)
+        and getattr(target, "available", False)
+    ]
+    if len(direct) == 1:
+        return direct[0]
+    if direct:
+        logger.info(
+            "send_message: %d configured DM targets and no owner field, so no single "
+            "recipient can be inferred; degrading to the dashboard notification",
+            len(direct),
+        )
+    return ""
+
+
+async def _deliver_channel_dm(
+    state: DashboardState, channel_type: str, text: str, *, caller_session: str
+) -> tuple[bool, str, str]:
+    """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
+
+    Channel-neutral by construction: the transport is looked up by name, the
+    destination comes from its own configured-target allowlist, and delivery runs
+    through the shared cross-surface send ladder
+    (``chat_runner._resolve_channel_target``), the same fail-closed, SEL-audited
+    ``channels`` governance gate the mirror-link endpoint passes. A channel added
+    later needs no code here.
+
+    An empty *code* with ``sent=False`` is the SOFT miss: the channel is not
+    connected, or the user configured no reachable DM target. It degrades to the
+    dashboard notification the caller already got, exactly as an absent Slack
+    client does. A non-empty *code* is a refusal or a failed delivery, and the
+    caller must answer non-2xx: reporting success for a message the user will
+    never see is the failure this contract exists to prevent.
+    """
+    transport = state.get_channel_transport(channel_type)
+    if transport is None:
+        logger.info("send_message: channel %s is not connected", channel_type)
+        return False, "", ""
+    target_id = _owner_dm_target(transport)
+    if not target_id:
+        logger.info("send_message: channel %s advertises no DM target", channel_type)
+        return False, "", ""
+    # Imported here, not at module scope: chat_runner imports from
+    # kiro_crew.dashboard.handlers, so a top-level import closes that cycle. Only
+    # this one is deferred -- `HOST_SESSION_KEY` is a constant and is imported at
+    # module scope, where the top-level-imports rule wants it.
+    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+
+    # A cron carries its own validated session key; an out-of-band send owns no
+    # session, and the host sentinel is what operators bind host-side governance
+    # to (an empty key classifies as unknown and matches no profile at all).
+    session_key = caller_session or HOST_SESSION_KEY
+    # Vet BEFORE resolving the target: resolution is itself a visible side effect
+    # on some channels (Discord opens a DM channel over REST), so a denied
+    # channel must never reach it. Offloaded because the governance evaluation
+    # reads profile files.
+    governed = await asyncio.to_thread(
+        _resolve_channel_target,
+        state,
+        session_key,
+        ChannelLink(channel_type=channel_type, channel_id=target_id),
+    )
+    if governed is None:
+        return False, "channel_not_permitted", f"{channel_type} is not permitted"
+    _, live_transport = governed
+    try:
+        resolved = await live_transport.resolve_configured_target(target_id)
+    except Exception as exc:
+        logger.exception("send_message: %s target resolution failed", channel_type)
+        return False, "channel_delivery_failed", str(exc)
+    if resolved is None:
+        # The advertised target stopped resolving between enumeration and use
+        # (revoked from the allow-list, or no longer a private thread). Refuse
+        # rather than fall back to a wider audience.
+        return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
+    conversation_id, thread_id = resolved
+    # Chunked at the transport's own declared ceiling, as a mirrored turn is:
+    # Discord rejects a message over its cap outright, so an unchunked long
+    # report would arrive as a delivery failure instead of a message. At least one
+    # unit always comes back, because the route rejects an empty body. One
+    # governance decision covers the whole send -- this is a single message the
+    # transport happens to split, not the sequence of independent egress actions
+    # the mirror backfill re-vets per unit.
+    # The display-form floor again, at the egress rather than only at the caller
+    # that happens to exist today. `api_send_message` already applies it, so this
+    # is a second application on that path and costs nothing (the redactors are
+    # idempotent); what it buys is that a future caller of this helper cannot
+    # reach a channel without it. This egress passes no renderer, and a renderer
+    # is where a turn gets that floor.
+    text, _ = redact_for_display(text, _redact_all)
+    units = chunk_text(text, live_transport.capabilities.max_message_chars)
+    try:
+        for unit in units:
+            # A transport reports a refused or exhausted send by returning an
+            # EMPTY message id, not by raising: `send_message` ends in
+            # `str(mid or "")`. So "no exception" is not delivery, and treating it
+            # as such is a silent loss with consequences downstream, because cron
+            # stands its Slack fallback down and advances its dedup hash on a
+            # confirmed delivery. Fail on the first empty id rather than pressing
+            # on: the remaining chunks of a message whose head never landed would
+            # arrive as an orphaned fragment.
+            if not await live_transport.send_message(conversation_id, unit, thread_id=thread_id):
+                logger.warning(
+                    "send_message: %s returned no message id; treating as undelivered",
+                    channel_type,
+                )
+                return False, "channel_delivery_failed", "the channel returned no message id"
+    except Exception as exc:
+        logger.exception("send_message: %s delivery failed", channel_type)
+        return False, "channel_delivery_failed", str(exc)
+    return True, "", ""
+
+
 async def api_send_message(request: web.Request) -> web.Response:
-    """POST /api/send-message — send a message to Slack and/or dashboard."""
+    """POST /api/send-message — send a message to a chat surface and/or dashboard.
+
+    ``session`` picks the surface: ``"origin"`` injects into the dashboard session
+    that spawned the calling cron, ``"slack"`` adds a Slack DM, and any other
+    value names a registered channel transport (``"discord"``) and delivers a DM
+    to that channel's configured owner. The Slack-only options are refused, not
+    ignored, when combined with a channel session (see ``_SLACK_ONLY_BODY_FIELDS``).
+    """
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
     from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel  # noqa: F811
     from kiro_crew.validation import USER_ID_RE  # noqa: F811
@@ -1177,6 +1351,31 @@ async def api_send_message(request: web.Request) -> web.Response:
     if target_channel and target_user:
         return web.json_response({"error": "specify channel or user, not both"}, status=400)
 
+    # A ``session`` naming a channel transport takes the routing over, so a
+    # Slack-only option travelling with it has no destination. Refuse here,
+    # before any delivery, rather than posting a message whose thread/layout/
+    # audience request was silently discarded.
+    raw_session = body.get("session")
+    session_name = raw_session if isinstance(raw_session, str) else ""
+    channel_target = (
+        session_name
+        if session_name not in _RESERVED_SESSION_TARGETS and _CHANNEL_TYPE_RE.match(session_name)
+        else ""
+    )
+    if channel_target:
+        slack_only = [f for f in _SLACK_ONLY_BODY_FIELDS if body.get(f) is not None]
+        if slack_only:
+            return web.json_response(
+                {
+                    "error": (
+                        f"session '{channel_target}' does not accept the Slack-only "
+                        f"field(s): {', '.join(slack_only)}"
+                    ),
+                    "code": "slack_only_field_with_channel_session",
+                },
+                status=400,
+            )
+
     # Validate format first, then redact (#2)
     if target_channel and not CHANNEL_ID_RE.match(target_channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
@@ -1192,11 +1391,15 @@ async def api_send_message(request: web.Request) -> web.Response:
         target_user, _ = redact_credentials(target_user)
 
     # Sanitize LLM-generated content before any external surface.
-    # This covers all downstream paths (session injection, fallback, Slack).
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    title, _ = redact_exfiltration_urls(title)
-    title, _ = redact_credentials(title)
+    # This covers all downstream paths (session injection, fallback, Slack,
+    # and every channel transport), which is why the DISPLAY-form floor belongs
+    # here rather than at each delivery site: a proactive body is posted as-is by
+    # the channel legs below, so the literal-form scan alone let a
+    # markdown-collapse credential (`AKIA**IOSFODNN7EXAMPLE**`, which the client
+    # renders whole) through on a path that never passes a renderer -- the one
+    # place every turn egress applies this floor.
+    text, _ = redact_for_display(text, _redact_all)
+    title, _ = redact_for_display(title, _redact_all)
     if blocks:
         blocks = _sanitize_blocks(blocks, redact_exfiltration_urls, redact_credentials)
 
@@ -1247,10 +1450,15 @@ async def api_send_message(request: web.Request) -> web.Response:
     sent_slack = False
     slack_ts: str | None = None
     sent_session = False
-    target_session = body.get("session")
+    # A channel target is not a session-injection target: _resolve_session_target
+    # accepts only "origin", and the delivery below keys off channel_target.
+    target_session = "" if channel_target else session_name
     job_name = None
     slack_attempted = False
     slack_error = ""
+    sent_channel = False
+    channel_code = ""
+    channel_detail = ""
     try:
         # ───────────────────────────────────────────────────────────────────
         # send_message delivery contract
@@ -1297,11 +1505,13 @@ async def api_send_message(request: web.Request) -> web.Response:
         # routing from notification-only to owner Slack DM — a malformed or
         # injected value must not abuse that upgrade.
         is_cron_caller = bool(CRON_SESSION_RE.match(caller_session))
-        send_to_slack = (
+        # A channel session takes the routing over, INCLUDING the cron default:
+        # a cron asking for a Discord DM did not ask for a Slack one as well.
+        send_to_slack = not channel_target and (
             target_session == "slack" or bool(target_channel) or bool(target_user) or is_cron_caller
         )
         if target_session == "slack":
-            target_session = None
+            target_session = ""
         if target_session:
             slot_key, job_name = _resolve_session_target(state, target_session, caller_session)
             if slot_key:
@@ -1378,6 +1588,23 @@ async def api_send_message(request: web.Request) -> web.Response:
                 title = f"⏰ {safe_name}"
                 text += "\n\n_(session closed — delivered as notification)_"
             state.notify("agent", title, text)
+            if channel_target:
+                # No widget on this path, so a parsed [OPTIONS:] trailer is
+                # re-attached as a numbered list rather than dropped: the user
+                # still learns the choices exist and can answer by typing one.
+                channel_text = f"{text}\n\n{format_overflow(options, 0)}" if options else text
+                sent_channel, channel_code, channel_detail = await _deliver_channel_dm(
+                    state,
+                    channel_target,
+                    channel_text,
+                    # Only a well-formed cron key is trusted as a governance
+                    # identity; anything else is an out-of-band host action.
+                    caller_session=caller_session if is_cron_caller else "",
+                )
+            # A separate ``if``, not an ``elif``: ``send_to_slack`` is the single
+            # predicate that decides Slack delivery, so it must be false when a
+            # channel session took the routing over rather than merely
+            # unreachable behind another branch.
             if send_to_slack and state.slack_client:
                 try:
                     if target_channel:
@@ -1478,25 +1705,49 @@ async def api_send_message(request: web.Request) -> web.Response:
                 base_res = f"target_channel={target_channel} target_user={target_user}"
             elif sent_session:
                 base_res = "session=origin"
+            elif channel_target:
+                base_res = f"channel_type={channel_target}"
             else:
                 base_res = "fallback=owner_dm"
             if sent_session:
                 downstream_service = "session"
             elif sent_slack:
                 downstream_service = "slack"
+            elif sent_channel:
+                downstream_service = channel_target
             else:
                 downstream_service = "dashboard"
+            # A refused or failed channel delivery is an error for the same
+            # reason a failed Slack post is: the caller asked for that surface.
+            # channel_code is empty when the channel was merely absent, which is
+            # the documented degradation to a notification, not a failure.
+            failed = (slack_attempted and not sent_slack) or bool(channel_code)
             _sel().log_tool_invocation(
                 session_key="dashboard",
                 tool_name="send_message",
-                outcome=(
-                    "completed" if sent_slack or sent_session or not slack_attempted else "error"
-                ),
+                outcome="error" if failed else "completed",
                 downstream_service=downstream_service,
                 resources=base_res + thread_hint,
+                error=channel_code,
             )
         except Exception:
             logger.warning("SEL logging failed for send_message", exc_info=True)
+    if channel_code:
+        safe_detail, _ = redact_credentials(channel_detail)
+        safe_detail, _ = redact_exfiltration_urls(safe_detail)
+        detail = f"{channel_target} delivery failed: {safe_detail}"
+        # Both responses are spelled out inline, with a literal status and a
+        # literal body, rather than sharing a hoisted dict or computing the
+        # status. `test_error_code_contract` ratchets BOTH of those shapes for the
+        # same reason: a computed status and a body a static scan cannot read are
+        # each a way to slip an uncoded error response past the gate, so the one
+        # form that stays checkable is the verbose one. A governance refusal is
+        # the caller's own permission problem; anything else is downstream.
+        if channel_code == "channel_not_permitted":
+            return web.json_response(
+                {"ok": False, "error": detail, "code": channel_code}, status=403
+            )
+        return web.json_response({"ok": False, "error": detail, "code": channel_code}, status=502)
     if slack_attempted and not sent_slack:
         safe_error, _ = redact_credentials(slack_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
@@ -1511,6 +1762,10 @@ async def api_send_message(request: web.Request) -> web.Response:
         delivered_to = "session"
     elif sent_slack:
         delivered_to = "slack"
+    elif sent_channel:
+        # The channel type itself, so a caller reads WHICH surface took the
+        # message and a channel added later needs no new vocabulary here.
+        delivered_to = channel_target
     else:
         delivered_to = "notification"
     resp_body: dict[str, Any] = {
@@ -1868,9 +2123,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     return web.json_response({"profile": profile})
 
 
-def _deny_non_owner_browser_request(
-    request: web.Request, operation: str
-) -> web.Response | None:
+def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web.Response | None:
     """Require the dashboard owner on browser MUTATION endpoints. 403 or None.
 
     The caller must be the configured owner (``is_owner_dashboard_request``):
@@ -1939,8 +2192,7 @@ def _deny_non_owner_browser_request(
     if stale is not None:
         return stale
     return web.json_response(
-        {"error": "dashboard user required",
-         "code": "dashboard_user_required"},
+        {"error": "dashboard user required", "code": "dashboard_user_required"},
         status=403,
     )
 
@@ -2046,7 +2298,9 @@ async def api_browser_command(request: web.Request) -> web.Response:
     if not isinstance(session_key, str) or not session_key:
         # No addressable panel -> answer like the no-panel case (503) so the tool
         # falls back to playwright-cli rather than surfacing a hard error.
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+        return web.json_response(
+            {"error": "no-native-panel", "code": "no_native_panel"}, status=503
+        )
     bus = get_command_bus()
     logger.debug("browser-cmdbus: submit op=%s session=%s", op, session_key)
     try:
@@ -2056,7 +2310,9 @@ async def api_browser_command(request: web.Request) -> web.Response:
             "browser-cmdbus: no native panel registered for session=%s -> 503 (client falls back to playwright-cli)",
             session_key,
         )
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+        return web.json_response(
+            {"error": "no-native-panel", "code": "no_native_panel"}, status=503
+        )
     except QueueFullError:
         return web.json_response({"error": "queue-full", "code": "queue_full"}, status=429)
     except asyncio.TimeoutError:
@@ -2156,7 +2412,9 @@ async def api_browser_command_result(request: web.Request) -> web.Response:
     bus = get_command_bus()
     matched = await bus.complete(command_id, ok, result=result, error=error)
     if not matched:
-        return web.json_response({"error": "unknown-command", "code": "unknown_command"}, status=404)
+        return web.json_response(
+            {"error": "unknown-command", "code": "unknown_command"}, status=404
+        )
     return web.json_response({"ok": True})
 
 
@@ -2269,9 +2527,7 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
     # keeps an unknown value out of the background task entirely, so the operator
     # gets a 400 instead of an error they have to go re-read the status to find.
     if engine not in browser_cli_install.BROWSER_ENGINES:
-        return web.json_response(
-            {"error": "unknown engine", "code": "unknown_engine"}, status=400
-        )
+        return web.json_response({"error": "unknown engine", "code": "unknown_engine"}, status=400)
     task = getattr(state, "_browser_install_task", None)
     if task and not task.done():
         # 409, NOT a folded success. Folding is right for the CLI install, which
@@ -2708,9 +2964,11 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "slack", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "slack",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
 
     _sel().log_api_access(
         caller=caller,
@@ -2763,6 +3021,10 @@ def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] 
 # in config.json under
 # the "discord" key. GET returns a masked preview + presence boolean; raw
 # token values are write-only (reset at the Developer Portal if ever needed).
+
+#: Discord fields the dispatcher re-reads per turn, so changing one takes
+#: effect on the next message rather than at the next restart.
+_DISCORD_LIVE_FIELDS = frozenset({"reactions_enabled", "show_thinking"})
 
 #: Loose shape check for Discord bot tokens: three dot-separated base64url
 #: segments (e.g. "MTA5...aBc.GhIjKl.MnOpQrStUvWxYz0123456789_-").
@@ -2829,6 +3091,8 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "allowed_thread_ids": [str(t) for t in dc.allowed_thread_ids],
             "allowed_channel_ids": [str(c) for c in dc.allowed_channel_ids],
             "auto_thread": bool(dc.auto_thread),
+            "reactions_enabled": bool(dc.reactions_enabled),
+            "show_thinking": bool(dc.show_thinking),
             "soft_threshold_pct": int(dc.soft_threshold_pct),
             "session_folder": dc.session_folder,
         }
@@ -3012,6 +3276,19 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
 
+    # Both render toggles are read per turn by the dispatcher, not at boot, so a
+    # change takes effect on the next message. `_DISCORD_LIVE_FIELDS` below keeps
+    # `restart_required` honest about that; promising a restart the user does not
+    # need is how a settings page trains people to restart for everything.
+    for toggle in ("reactions_enabled", "show_thinking"):
+        if toggle in body:
+            val = body.get(toggle)
+            if not isinstance(val, bool):
+                return _deny(f"{toggle} must be a boolean")
+            if val != bool(dc_cfg.get(toggle, toggle == "reactions_enabled")):
+                staged[toggle] = val
+                applied.append(toggle)
+
     if "session_folder" in body:
         try:
             new_folder = clean_session_folder(body.get("session_folder"))
@@ -3020,6 +3297,20 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         if new_folder != str(dc_cfg.get("session_folder", "") or ""):
             staged["session_folder"] = new_folder
             applied.append("session_folder")
+
+    # Whenever the .env token is set or cleared, also drop the legacy
+    # config.json ``discord.bot_token`` fallback. The gateway (and GET above)
+    # fall back to that field when .env is empty, so leaving it behind would
+    # resurrect a removed credential on the next restart — an explicit clear
+    # must actually revoke access, and a replacement must not shadow-keep the
+    # old token. It also sits in agent-readable ``config.json``, so the copy is
+    # worth strictly less than the .env one it shadows. Staged here (write
+    # happens only in Phase 2), matching the Telegram and Webex saves.
+    legacy_token_removed = False
+    if CRED_DISCORD_BOT_TOKEN in env_updates and dc_cfg.get("bot_token"):
+        dc_cfg.pop("bot_token", None)
+        legacy_token_removed = True
+        applied.append("legacy_bot_token_removed")
 
     # ── Phase 1.5: verify a newly pasted token against Discord before storing.
     # A token Discord rejects fails the save right here, where the user can
@@ -3036,7 +3327,33 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             if dc_err:
                 return _deny(f"bot_token rejected by Discord ({dc_err})")
 
-    # ── Phase 2: commit. All validation passed, so writes are safe. ──
+    # ── Phase 2: commit. All validation passed, so writes are safe. Order
+    # matters for crash safety: config.json — which carries the legacy
+    # ``bot_token`` fallback removal — is persisted FIRST, so there is no
+    # failure window in which .env was already cleared but the legacy fallback
+    # survives to silently resurrect the revoked credential on restart. The
+    # inverse failure mode (config written, then a crash before the .env
+    # update) is benign and visible: the .env token remains exactly as GET
+    # reports it, and re-running the save completes the operation. ──
+    if staged or legacy_token_removed:
+        dc_cfg.update(staged)
+        # Off-loop: the atomic write (temp file + fsync + replace) must not
+        # block the gateway event loop.
+        await asyncio.to_thread(_atomic_json_write, path, data)
+
+    # Create the configured session folder now, on this user-initiated save,
+    # so the reconcile path never has to write the folder store. Best-effort:
+    # a failure leaves conversations unfiled until the next save.
+    _folder_name = stored_folder_name(dc_cfg.get("session_folder"))
+    if _folder_name:
+        _state = request.app.get("state")
+        if _state is not None:
+            await ensure_channel_folder(
+                _state,
+                "discord",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3049,21 +3366,6 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
                 os.environ.pop(key, None)
             else:
                 os.environ[key] = new_val
-    if staged:
-        dc_cfg.update(staged)
-        _atomic_json_write(path, data)
-
-    # Create the configured session folder now, on this user-initiated save,
-    # so the reconcile path never has to write the folder store. Best-effort:
-    # a failure leaves conversations unfiled until the next save.
-    _folder_name = stored_folder_name(dc_cfg.get("session_folder"))
-    if _folder_name:
-        _state = request.app.get("state")
-        if _state is not None:
-            await ensure_channel_folder(
-                    _state, "discord", _folder_name,
-                    relabel="session_folder" in staged,
-                )
 
     _sel().log_api_access(
         caller=caller,
@@ -3072,13 +3374,14 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # All Discord fields are boot-read: token/enabled/allowlist are consumed
-    # in the orchestrator's constructor and the dispatcher is built at boot.
+    # Token, enabled and the allow-lists are boot-read: they are consumed in the
+    # orchestrator's constructor and the dispatcher is built at boot. The two
+    # render toggles are not, because the dispatcher re-reads them per turn.
     return web.json_response(
         {
             "ok": True,
             "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS - _DISCORD_LIVE_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3386,9 +3689,11 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "telegram", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "telegram",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3414,8 +3719,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3982,7 +4286,9 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "teams", _folder_name,
+                    _state,
+                    "teams",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
         if env_updates:
@@ -4193,7 +4499,9 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "webex", _folder_name,
+                    _state,
+                    "webex",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
         if env_updates:
@@ -4218,8 +4526,7 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -4346,9 +4653,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
     if not is_direct_local_request(request):
         message = "read-only from remote sessions (local machine only)"
         _audit_denial(message)
-        return web.json_response(
-            {"error": message, "code": "remote_read_only"}, status=403
-        )
+        return web.json_response({"error": message, "code": "remote_read_only"}, status=403)
 
     try:
         body = await request.json()
@@ -4409,9 +4714,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
         except Exception:
             message = "config.json is corrupt"
             _audit_denial(message)
-            return web.json_response(
-                {"error": message, "code": "config_corrupt"}, status=500
-            )
+            return web.json_response({"error": message, "code": "config_corrupt"}, status=500)
         if not isinstance(data.get("imessage"), dict):
             data["imessage"] = {}
         imessage_cfg = data["imessage"]
@@ -4446,7 +4749,9 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "imessage", _folder_name,
+                    _state,
+                    "imessage",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
 
@@ -4738,9 +5043,11 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "wecom", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "wecom",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -4765,8 +5072,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )

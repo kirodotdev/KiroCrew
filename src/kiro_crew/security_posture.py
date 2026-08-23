@@ -527,6 +527,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "channel inherits redaction from this one egress.",
     ),
     (
+        "Hook auto-replies (shared channel pipeline)",
+        "messaging/dispatch.py",
+        "A user-defined `on_message` hook can answer a turn instead of the model, "
+        "which SHORT-CIRCUITS the turn and so never reaches the redactor in "
+        "messaging/driver.py that every other reply on this pipeline inherits. "
+        "The hook's text is arbitrary (it is user code, and it may quote the "
+        "inbound message or a command's output back), so it goes through the "
+        "shared credential + exfiltration-URL chain here, at the one point the "
+        "reply leaves for a channel. This module also carries a NON-egress site, "
+        "the session-directive consumer's confirmation log line, which scrubs the "
+        "same LLM-derived text before it reaches the gateway log; it is named here "
+        "rather than allowlisted separately because a module gets one "
+        "classification and the egress one is the load-bearing half.",
+    ),
+    (
         "Outbound raster payloads",
         "messaging/outbound_files.py",
         "Exact raster bytes pass both credential and exfiltration-URL scanners " "before upload.",
@@ -688,6 +703,16 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the send boundary, which is the only form that ships and also covers a "
         "credential that was never split. The ANSWER text needs no pass here: it "
         "reaches this renderer already through the driver's rolling redactor.",
+    ),
+    (
+        "Slack attachment titles and filenames",
+        "slack/files.py",
+        "The two upload sinks that are NOT the message body: an attachment's "
+        "title comes from LLM-authored alt text, and its filename from a local "
+        "path the model chose. Both reach Slack as their own fields, so neither "
+        "is covered by the body's render pipeline, and a filename is re-scanned "
+        "AFTER sanitizing because collapsing the unsafe characters can rejoin a "
+        "credential the original had broken up.",
     ),
     (
         "Slack render pipeline",
@@ -932,13 +957,6 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
-        # Gate-side log hygiene: the session-directive consumer redacts the
-        # applier's confirmation string (which interpolates LLM-derived text —
-        # a stop reason, a rejected path, exception args) before writing it to
-        # the gateway log. The channel surface never renders tool results, so
-        # this line is an operational record, not an output boundary bound for
-        # a human; the applier itself SEL-audits every outcome.
-        "messaging/dispatch.py",
         "autonudge_authz.py",
         # Gate-side log hygiene for a channel whose user identity IS a phone
         # number or an Apple Account email. ``redact_handle`` shortens a handle

@@ -10445,7 +10445,8 @@
         "file_sessions_in_folder": "セッションをフォルダーに整理する",
         "file_sessions_in_folder_desc": "新しい{{channel}}のセッションを未整理のままにせず、サイドバーのフォルダーに入れます。",
         "session_folder_name": "フォルダー名",
-        "session_folder_name_desc": "この設定を保存したときに、まだ存在しなければ作成されます。"
+        "session_folder_name_desc": "この設定を保存したときに、まだ存在しなければ作成されます。",
+        "shared_channels": "共有チャネル"
       },
       "browserPanel": {
         "use_builtin_label": "内蔵ブラウザーを使用する",
@@ -10725,12 +10726,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "このマシンでゲートウェイを起動します。オフにすると Kiro Crew をクライアントとしてのみ使用し、ここで起動する代わりに設定済みのゲートウェイに接続します。次回アプリを開いたときに反映されます。"
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "許可されたサーバーチャネル ID",
         "allowed_server_thread_ids": "許可されたサーバースレッド ID",
-        "allowlist_description": "DM またはそれぞれのスレッドでエージェントを実行できる Discord ユーザー ID。空の場合 = すべて拒否（クローズドフェイル）。",
-        "description": "Gateway WebSocket 経由で Discord DM またはそれぞれのサーバースレッドからエージェントと会話してください。通常のサーバーチャネルは常に無視されます。",
+        "allowlist_description": "DM、承認されたスレッド、または許可されたチャネルでエージェントを実行できる Discord ユーザー ID。空の場合 = すべて拒否（クローズドフェイル）。",
+        "auto_thread_description": "許可されたチャネルにメッセージを送ると新しい公開スレッドが開き、共有チャネルではなくそこでターンが実行されます。",
+        "auto_thread_label": "新しいスレッドで応答する",
+        "auto_thread_off_hint": "自動スレッドがオフのため、上のチャネルのメッセージは無視されます。{{productName}} が共有チャネル内で直接応答することはありません。",
+        "channel_allowlist_description": "オプション。許可されたユーザーは、これらの共有サーバーチャネルからエージェントを実行することもできます。空の場合 = 共有チャネルなし。",
+        "channel_help": "デベロッパーモードをオンにして、チャネルを右クリック → <mono>Copy Channel ID</mono>。チャネル内のスレッドの ID ではなく、チャネル自身の ID を使用してください。",
+        "channel_warning": "共有チャネルはスレッドよりも広い開示境界です。そのチャネルを見られる人、そしてターンが実行される公開スレッドを開ける人は誰でも、エージェントが書いた内容とツールが出力した内容を読めます。チャネルを追加するのは、そのメンバー全員に見せてよい場合だけにしてください。",
+        "description": "Gateway WebSocket 経由で、Discord DM、承認されたサーバースレッド、または許可されたサーバーチャネルからエージェントと会話してください。それ以外のサーバーチャネルはすべて無視されます。",
         "empty_allowlist_hint": "許可されたユーザー ID がありません。ボットはすべてのメッセージを拒否します（クローズドフェイル）。下に Discord ユーザー ID を追加してください。",
-        "guide_body": "Discord Developer Portal でアプリを作成し、<mono>Bot</mono> ページからトークンをコピーしてください。DM のみの場合は、特権インテントをオフのままにしてください。サーバースレッドの場合は、<mono>Message Content Intent</mono> を有効にして <mono>bot</mono> スコープと Channel の表示、メッセージ履歴の読み取り、スレッドでのメッセージ送信権限で インストールしてください。Discord デベロッパーモードを有効にしてから、名前を右クリックして数値ユーザー ID をコピーしてください。",
+        "guide_body": "Discord Developer Portal でアプリを作成し、<mono>Bot</mono> ページからトークンをコピーしてください。DM のみの場合は、特権インテントをオフのままにしてください。サーバースレッドの場合は、<mono>Message Content Intent</mono> を有効にして <mono>bot</mono> と <mono>applications.commands</mono> スコープ、Channel の表示、メッセージ履歴の読み取り、スレッドでのメッセージ送信権限で インストールしてください。Discord デベロッパーモードを有効にしてから、名前を右クリックして数値ユーザー ID をコピーしてください。",
         "open_developer_portal": "Developer Portal を開く",
+        "reactions_description": "エージェントが今どのフェーズにいるかを、あなたのメッセージへの絵文字リアクションで示します（キュー中→考え中→コーディング中→完了）。オフにするとメッセージには何も付きません。",
+        "reactions_label": "フェーズリアクション",
+        "thinking_description": "モデルの推論のプレビューを、回答の上に独立した小さな注記として投稿します。オフにするとチャネルには回答だけが残ります。",
+        "thinking_label": "思考を表示",
         "thread_allowlist_description": "オプション。許可されたユーザーは、これらの特定の Discord スレッドでのみエージェントを実行できます。空の場合 = DM のみ。",
         "thread_help": "デベロッパーモードをオンにして、スレッドを右クリック → <mono>チャネル ID をコピー</mono>。親チャネル ID ではなく、スレッドの ID を使用してください。",
         "thread_warning": "スレッドモードは Discord のグローバル Message Content インテントを有効にします。Discord はボットが表示できるあらゆるサーバーチャネルからコンテンツを配信します。Kiro Crew は許可されたスレッド外のトラフィックを破棄します。許可されたスレッドを表示できるユーザーは誰でも、エージェント応答とツール出力を読むことができます。",

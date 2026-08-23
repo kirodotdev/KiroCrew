@@ -10573,7 +10573,8 @@
         "file_sessions_in_folder": "Sitzungen in einem Ordner ablegen",
         "file_sessions_in_folder_desc": "Neue {{channel}}-Sitzungen landen in einem Ordner in der Seitenleiste, statt ohne Ordner zu bleiben.",
         "session_folder_name": "Ordnername",
-        "session_folder_name_desc": "Wird beim Speichern dieser Einstellungen angelegt, falls er noch nicht existiert."
+        "session_folder_name_desc": "Wird beim Speichern dieser Einstellungen angelegt, falls er noch nicht existiert.",
+        "shared_channels": "Gemeinsame Kanäle"
       },
       "browserPanel": {
         "use_builtin_label": "Integrierten Browser verwenden",
@@ -10853,12 +10854,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "Startet ein Gateway auf diesem Rechner. Deaktivieren, um Kiro Crew nur als Client zu verwenden: die Verbindung geht dann an das konfigurierte Gateway, anstatt hier eines zu starten. Wird beim nächsten Start der App wirksam."
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "Erlaubte Server-Kanal-IDs",
         "allowed_server_thread_ids": "Erlaubte Server-Thread-IDs",
-        "allowlist_description": "Discord-Benutzer-IDs, die den Agenten in Direktnachrichten oder genehmigten Threads ausführen dürfen. Leer = alle ablehnen (fail closed).",
-        "description": "Sprich mit deinem Agenten aus Discord-Direktnachrichten oder ausdrücklich genehmigten Server-Threads über das Gateway-WebSocket. Normale Server-Kanäle werden immer ignoriert.",
+        "allowlist_description": "Discord-Benutzer-IDs, die den Agenten in Direktnachrichten, genehmigten Threads oder erlaubten Kanälen ausführen dürfen. Leer = alle ablehnen (fail closed).",
+        "auto_thread_description": "Eine Nachricht in einem erlaubten Kanal öffnet einen neuen öffentlichen Thread, und der Durchlauf läuft dort statt im gemeinsamen Kanal.",
+        "auto_thread_label": "In einem neuen Thread antworten",
+        "auto_thread_off_hint": "Der automatische Thread ist aus, daher werden Nachrichten in den Kanälen oben ignoriert. {{productName}} antwortet nie im gemeinsamen Kanal selbst.",
+        "channel_allowlist_description": "Optional. Genehmigte Benutzer dürfen den Agenten auch aus diesen gemeinsamen Server-Kanälen ausführen. Leer = keine gemeinsamen Kanäle.",
+        "channel_help": "Wenn der Developer Mode aktiviert ist, klicke mit der rechten Maustaste auf den Kanal → <mono>Copy Channel ID</mono>. Verwende die ID des Kanals, nicht die eines Threads darin.",
+        "channel_warning": "Ein gemeinsamer Kanal ist eine breitere Offenlegungsgrenze als ein Thread: Alle, die den Kanal sehen, und alle, die den öffentlichen Thread öffnen können, in dem ein Durchlauf läuft, können lesen, was der Agent schreibt und was seine Werkzeuge ausgeben. Füge einen Kanal nur hinzu, wenn seine gesamte Mitgliedschaft das sehen darf.",
+        "description": "Sprich mit deinem Agenten aus Discord-Direktnachrichten, genehmigten Server-Threads oder erlaubten Server-Kanälen über das Gateway-WebSocket. Alle anderen Server-Kanäle werden ignoriert.",
         "empty_allowlist_hint": "Keine erlaubten Benutzer-IDs: Der Bot weist jede Nachricht ab (fail closed). Füge unten deine Discord-Benutzer-ID hinzu.",
-        "guide_body": "Erstelle im Discord Developer Portal eine App und kopiere dann das Token von der Seite <mono>Bot</mono>. Wenn du nur Direktnachrichten nutzt, lass die privilegierten Intents aus. Für Server-Threads aktiviere <mono>Message Content Intent</mono> und installiere die App mit dem Scope <mono>bot</mono> sowie View Channel, Read Message History und Send Messages in Threads. Aktiviere Discord Developer Mode und klicke dann mit der rechten Maustaste auf deinen Namen, um deine numerische Benutzer-ID zu kopieren.",
+        "guide_body": "Erstelle im Discord Developer Portal eine App und kopiere dann das Token von der Seite <mono>Bot</mono>. Wenn du nur Direktnachrichten nutzt, lass die privilegierten Intents aus. Für Server-Threads aktiviere <mono>Message Content Intent</mono> und installiere die App mit den Scopes <mono>bot</mono> und <mono>applications.commands</mono> sowie View Channel, Read Message History und Send Messages in Threads. Aktiviere Discord Developer Mode und klicke dann mit der rechten Maustaste auf deinen Namen, um deine numerische Benutzer-ID zu kopieren.",
         "open_developer_portal": "Developer Portal öffnen",
+        "reactions_description": "Markiert deine Nachricht mit einem Emoji für die Phase, in der der Agent gerade ist (in Warteschlange → denkt → programmiert → fertig). Deaktiviert bleibt deine Nachricht unmarkiert.",
+        "reactions_label": "Phasenreaktionen",
+        "thinking_description": "Postet eine Vorschau der Überlegungen des Modells als eigene Kleintext-Notiz über der Antwort. Deaktiviert bleibt im Kanal nur die Antwort.",
+        "thinking_label": "Denkprozess anzeigen",
         "thread_allowlist_description": "Optional. Genehmigte Benutzer dürfen den Agenten nur in genau diesen Discord-Threads ausführen. Leer = nur Direktnachrichten.",
         "thread_help": "Wenn der Developer Mode aktiviert ist, klicke mit der rechten Maustaste auf den Thread → <mono>Copy Channel ID</mono>. Verwende die ID des Threads, nicht die des übergeordneten Kanals.",
         "thread_warning": "Der Thread-Modus aktiviert Discords globalen Message Content Intent. Discord liefert Inhalte aus jedem Server-Kanal, den der Bot sehen kann; Kiro Crew verwirft Verkehr außerhalb genehmigter Threads. Alle, die einen genehmigten Thread sehen können, können Agentenantworten und Werkzeugausgaben lesen.",

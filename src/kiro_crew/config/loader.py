@@ -5606,7 +5606,8 @@ class DiscordConfig:
         metadata=_meta(
             "Allowed Thread IDs",
             "Discord server thread IDs where approved users may run the agent. "
-            "Empty = DMs only. Normal server channels are always denied.",
+            "Empty = DMs only. A server channel is denied unless it is listed in "
+            "allowed_channel_ids, and a turn there still runs in a thread.",
             tags=["discord"],
         ),
     )
@@ -5631,6 +5632,23 @@ class DiscordConfig:
         metadata=_meta(
             "Soft Context Threshold %",
             "Prompt the user to !compact or !new when context passes this percentage.",
+            tags=["discord"],
+        ),
+    )
+    reactions_enabled: bool = field(
+        default=True,
+        metadata=_meta(
+            "Reactions Enabled",
+            "Show phase-aware emoji reactions on Discord messages during processing.",
+            tags=["discord"],
+        ),
+    )
+    show_thinking: bool = field(
+        default=False,
+        metadata=_meta(
+            "Show Thinking",
+            "Post the model's thinking/reasoning as a subtext note in Discord. "
+            "Off by default to keep responses concise.",
             tags=["discord"],
         ),
     )
@@ -6769,6 +6787,8 @@ class KiroCrewConfig:
                 allowed_channel_ids=_coerce_str_ids(discord_data.get("allowed_channel_ids")),
                 auto_thread=bool(discord_data.get("auto_thread", True)),
                 soft_threshold_pct=_threshold_pct(discord_data.get("soft_threshold_pct"), 80),
+                reactions_enabled=bool(discord_data.get("reactions_enabled", True)),
+                show_thinking=bool(discord_data.get("show_thinking", False)),
             ),
             webex=WebexConfig(
                 session_folder=_coerce_session_folder(webex_data.get("session_folder")),

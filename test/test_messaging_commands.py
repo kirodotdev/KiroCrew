@@ -22,6 +22,7 @@ import kiro_crew.messaging.commands as commands
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging.commands import (
     DEFAULT_DASHBOARD_TTL_SECS,
+    MIN_DASHBOARD_TTL_SECS,
     STOP_REPLY_CANCELLED,
     STOP_REPLY_IDLE,
     YOLO_PHRASING_MARKDOWN,
@@ -333,6 +334,27 @@ class TestParseDashboardTtl:
 
     def test_an_unparseable_duration_still_yields_a_working_link(self) -> None:
         assert parse_dashboard_ttl("xyz", parse_duration=parse_duration) == 3600
+
+    def test_an_explicit_zero_is_clamped_to_the_floor(self) -> None:
+        """A zero PARSES, so every "did it parse" check passes it through.
+
+        `parse_duration("0h")` answers 0 -- a real int, not None -- so an unclamped
+        parser hands the token minter a lifetime of zero and the user gets a link
+        that is already expired, with nothing in the reply saying why. The floor is
+        also what keeps that reply honest: the granted value is rendered with
+        `format_ttl`, which would otherwise print `0m`.
+        """
+        for arg in ("0h", "0m", "0H", "0M"):
+            assert parse_dashboard_ttl(arg, parse_duration=parse_duration) == (
+                MIN_DASHBOARD_TTL_SECS
+            ), arg
+        assert MIN_DASHBOARD_TTL_SECS > 0
+        assert format_ttl(MIN_DASHBOARD_TTL_SECS) == "1m"
+
+    def test_a_duration_above_the_floor_is_untouched(self) -> None:
+        """The clamp must reject exactly one input, not raise every short link."""
+        assert parse_dashboard_ttl("1m", parse_duration=parse_duration) == 60
+        assert parse_dashboard_ttl("2m", parse_duration=parse_duration) == 120
 
     def test_only_the_first_word_is_read(self) -> None:
         # Trailing words are ignored rather than making the argument unparseable,

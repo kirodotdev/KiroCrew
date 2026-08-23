@@ -33,7 +33,9 @@ from kiro_crew.agents_janitor import sweep_agents_dir
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
+    CRED_DISCORD_BOT_TOKEN,
     config_dir,
+    env_path,
     normalize_agent_model,
     resolve_agent_bindings,
     resolve_effective_model,
@@ -57,6 +59,7 @@ from kiro_crew.dashboard.origin import (
     machine_hostname,
     parse_dashboard_url,
 )
+from kiro_crew.discord import install_url, intent_probe
 from kiro_crew.doctor_deadpath import doctor_dead_paths
 from kiro_crew.embeddings import (
     _LIB_PATH_ENV,
@@ -909,14 +912,8 @@ def _doctor_trust_root() -> None:
         print(f"  trust root:  ⏹ {key_path} not created yet (the gateway writes it on first start)")
         return
     print(f"  ⚠ trust root: {key_path} is unreadable or shorter than 32 bytes.")
-    print(
-        "               Session identities go out unsigned, so sub-agent "
-        "dispatch and memory"
-    )
-    print(
-        "               writes are refused in sandboxed sessions. Restore the "
-        "key file, or"
-    )
+    print("               Session identities go out unsigned, so sub-agent " "dispatch and memory")
+    print("               writes are refused in sandboxed sessions. Restore the " "key file, or")
     print("               restart the gateway if another process relocated it.")
 
 
@@ -1242,7 +1239,9 @@ def _doctor_source_checkout(repo: Path) -> None:
             print(f"  branch:      ⚠️  {default_branch} (could not count commits behind origin)")
             return
         if int(behind) > 0:
-            print(f"  branch:      ⚠️  {default_branch}, {behind} commit(s) behind origin (as of last fetch)")
+            print(
+                f"  branch:      ⚠️  {default_branch}, {behind} commit(s) behind origin (as of last fetch)"
+            )
             print("               The running gateway predates those commits until an")
             print("               update + restart.")
         else:
@@ -1769,6 +1768,196 @@ def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:
         print("  janitor:     ✅ no stale temp/backup files to reclaim")
 
 
+def _discord_intent_grants(token: str) -> intent_probe.IntentGrants:
+    """Read Discord's privileged-intent grants on a throwaway event loop.
+
+    ``asyncio.run`` gives the probe its own loop: the doctor is a separate
+    process from the gateway, so the probe never shares a loop with live
+    message traffic. Every failure is already folded into the result by
+    :func:`~kiro_crew.discord.intent_probe.probe_intent_grants`; the guard here
+    covers the loop itself failing to start, because a diagnostic that raises
+    prints no report at all.
+    """
+    try:
+        return asyncio.run(intent_probe.probe_intent_grants(token))
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must always answer
+        return intent_probe.IntentGrants(error=type(exc).__name__)
+
+
+def _discord_live_state(port: int | None) -> dict[str, object] | None:
+    """Read the gateway's live Discord state, or ``None`` when unreachable.
+
+    Loopback only, and only the two liveness fields are ever consumed: the same
+    endpoint also returns a masked token preview, which has no business in a
+    report an operator pastes into an issue. Unreachable covers every reason
+    (gateway down, token auth on this interface, a stale port) because none of
+    them is a Discord fault, so all of them read the same to the reader.
+    """
+    if not port:
+        return None
+    try:
+        req = urllib.request.Request(f"http://127.0.0.1:{port}/api/discord/config")
+        # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _discord_msg_content_line(
+    grants: intent_probe.IntentGrants, *, needs_content: bool, issues: list[str]
+) -> None:
+    """Report the Message Content intent against what this install needs.
+
+    Severity is decided by the allow-lists, not by the grant alone: Discord
+    delivers DM content without the privileged intent, so a DM-only install
+    with the intent off is correct, while a thread or channel allow-list with
+    the intent off is a channel that silently reads nothing.
+    """
+    state = grants.message_content
+    if not needs_content:
+        detail = (
+            "on, and unused by a DM-only install"
+            if state in intent_probe.GRANTED_STATES
+            else "not needed (DMs deliver content without it)"
+        )
+        print(f"  msg content: ⏭  {detail}")
+    elif state in intent_probe.GRANTED_STATES:
+        limited = state == intent_probe.INTENT_LIMITED
+        extra = " (capped at 100 servers until the app is verified)" if limited else ""
+        print(f"  msg content: ✅ granted{extra}")
+    elif state == intent_probe.INTENT_DISABLED:
+        print("  msg content: ❌ OFF, so thread and channel messages arrive empty")
+        print(f"{_INDENT}and Discord can close the connection with code 4014.")
+        print(f"{_INDENT}Fix: Developer Portal → Bot → Message Content Intent,")
+        print(f"{_INDENT}then `kirocrew restart`.")
+        issues.append("discord: Message Content Intent off with threads allow-listed")
+    else:
+        print(f"  msg content: ⚠️  cannot verify ({grants.error or 'no answer'})")
+        print(f"{_INDENT}If thread messages arrive empty, enable Message Content")
+        print(f"{_INDENT}Intent in the Developer Portal → Bot.")
+
+
+def _discord_unused_intent_line(label: str, name: str, state: str) -> None:
+    """Flag a privileged intent nothing in Kiro Crew reads, if it is granted.
+
+    Silent when the intent is off (the wanted state) or unknown (the probe
+    already reported that once), so this line only ever appears when there is
+    something to turn off.
+    """
+    if state in intent_probe.GRANTED_STATES:
+        print(f"  {label + ':':<13}⚠️  {name} Intent is on but unused")
+        print(f"{_INDENT}Turn it off in the Developer Portal → Bot: nothing in Kiro")
+        print(f"{_INDENT}Crew reads it, and it widens what Discord sends this bot.")
+
+
+def _discord_install_line(application_id: str, *, dm_only: bool) -> None:
+    """Print the install URL matching this configuration, when it can be built.
+
+    Discord has no app manifest to publish, so the authorize URL IS the install
+    surface. The app id comes from the live probe; without it (no token, or
+    offline) the doc keeps the fallback, since a URL with a placeholder id is
+    not something an operator can click.
+    """
+    shape = "DM-only" if dm_only else "thread-capable"
+    try:
+        url = install_url.build_install_url(application_id, dm_only=dm_only)
+    except ValueError:
+        print(f"  install URL: ⏭  needs the app id: the {shape} template is")
+        print(f"{_INDENT}in the Discord Integration doc")
+        return
+    print(f"  install URL: {url}")
+    print(f"{_INDENT}({shape}: re-run it to update scopes or permissions)")
+
+
+def _doctor_discord(
+    cfg: KiroCrewConfig, creds: dict[str, str], port: int | None, issues: list[str]
+) -> None:
+    """Report the Discord channel: config, grants, and the live connection.
+
+    Ordered the way a Discord install fails: the channel must be enabled, then
+    hold a token, then allow SOMEONE (an empty user allow-list is a fail-closed
+    transport that denies every message, and is the most common way a
+    fully-configured install stays mute), then hold the privileged intent its
+    allow-lists imply, and only then be connected. Every branch names the
+    action that fixes it, because the reader of this section is someone whose
+    bot is not answering.
+    """
+    print("\nDiscord Integration")
+    dc = cfg.discord
+    if not dc.enabled:
+        print("  status:      ⏭  not enabled (optional)")
+        print("  setup:       enable it in the dashboard → Settings → Discord, or set")
+        print(f"{_INDENT}discord.enabled in config.json and DISCORD_BOT_TOKEN in")
+        print(f"{_INDENT}{env_path()}, then `kirocrew restart`")
+        return
+
+    print("  status:      ✅ enabled")
+    # Same resolution order the gateway uses, so doctor and the running channel
+    # can never disagree about whether a token exists. The value itself is
+    # never printed, in whole or in part.
+    token = creds.get(CRED_DISCORD_BOT_TOKEN, "") or dc.bot_token
+    if token:
+        print("  token:       ✅ present")
+    else:
+        print("  token:       ❌ missing, so the channel never starts")
+        print(f"{_INDENT}Fix: paste the bot token in Settings → Discord, or add")
+        print(f"{_INDENT}DISCORD_BOT_TOKEN=<token> to {env_path()}, then `kirocrew restart`")
+        issues.append("discord: enabled without a bot token")
+
+    users = [str(u) for u in dc.allowed_user_ids]
+    threads = [str(t) for t in dc.allowed_thread_ids]
+    channels = [str(c) for c in dc.allowed_channel_ids]
+    if users:
+        print(f"  users:       ✅ {len(users)} allow-listed")
+    else:
+        print("  users:       ❌ allow-list empty, so EVERY message is denied")
+        print(f"{_INDENT}Fix: add your numeric user ID under Settings → Discord")
+        print(f"{_INDENT}(Discord → Settings → Advanced → Developer Mode, then")
+        print(f"{_INDENT}right-click your name → Copy User ID), then `kirocrew restart`")
+        issues.append("discord: empty user allow-list denies every message")
+
+    # A server allow-list of either kind is what makes the privileged intent
+    # mandatory, so the line that reports the allow-lists names that link: the
+    # operator who just added a thread ID is the one who has to go and grant it.
+    needs_content = bool(threads or channels)
+    if needs_content:
+        print(
+            f"  servers:     ✅ {len(threads)} thread(s), {len(channels)} channel(s)"
+            " (Message Content required)"
+        )
+    else:
+        print("  servers:     ⏹ none, DMs only (add thread or channel IDs to use one)")
+
+    grants = _discord_intent_grants(token)
+    _discord_msg_content_line(grants, needs_content=needs_content, issues=issues)
+    _discord_unused_intent_line("members", "Server Members", grants.server_members)
+    _discord_unused_intent_line("presence", "Presence", grants.presence)
+
+    live = _discord_live_state(port)
+    if live is None:
+        print("  connection:  ⏹ live state unavailable (gateway not running, or it")
+        print(f"{_INDENT}requires a dashboard token on this interface)")
+    elif live.get("connected"):
+        print("  connection:  ✅ connected to Discord's Gateway")
+    elif str(live.get("connect_error", "")):
+        # Foreign text on the way to a terminal: shown escaped, so a control
+        # sequence in a close reason cannot rewrite the lines around it.
+        reason = _safe_display(str(live.get("connect_error", ""))[:120])
+        print(f"  connection:  ❌ not connected: {reason}")
+        print(f"{_INDENT}Fix: 4014 = enable Message Content Intent (or clear the")
+        print(f"{_INDENT}thread and channel allow-lists); 4004 = reset the bot")
+        print(f"{_INDENT}token. Then `kirocrew restart`.")
+        issues.append("discord: channel not connected")
+    else:
+        print("  connection:  ⚠️  not connected, and no reason was recorded")
+        print(f"{_INDENT}Discord settings are read at startup: run `kirocrew")
+        print(f"{_INDENT}restart` after changing them.")
+
+    _discord_install_line(grants.application_id, dm_only=not needs_content)
+
+
 def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False) -> None:
     """Verify KiroCrew setup — check dependencies, config, credentials, connectivity.
 
@@ -2182,9 +2371,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         # tree would send them to reinstall a package they are deliberately not
         # loading from, while saying nothing about the dir that actually failed.
         _plat_dir = _platform_libs_dirname()
-        _absent = (
-            [] if _lib_path_override else verify_vendored_libs().get(_plat_dir or "", [])
-        )
+        _absent = [] if _lib_path_override else verify_vendored_libs().get(_plat_dir or "", [])
         if _absent:
             print(f"               Missing native libs for {_plat_dir}: {', '.join(_absent)}")
             print("               This install's vendored llama.cpp is incomplete (packaging")
@@ -2355,6 +2542,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
         print("  setup:       run 'kirocrew setup --slack', or connect any channel")
         print("               (Slack, Discord, Telegram, …) from the dashboard")
 
+    # ── Discord (optional) ──
+    _doctor_discord(cfg, creds, _port, issues)
+
     # ── Loop-stall crash dumps ──
     print("\nLoop-stall Crash Dumps")
     try:
@@ -2406,6 +2596,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if _port:
         try:
             req = urllib.request.Request(f"http://127.0.0.1:{_port}/api/status")
+            # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- loopback host literal plus a fixed internal path; the only interpolated value is the gateway port from config/env, so no scheme or host is reachable from input  # noqa: E501
             with urllib.request.urlopen(req, timeout=2) as resp:
                 data = json.loads(resp.read())
             print(f"  gateway:     ✅ running (uptime {data.get('uptime', '?')})")
@@ -2435,6 +2626,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
             try:
                 ext_req = urllib.request.Request(f"http://{_host}:{_port}/api/status")
                 try:
+                    # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- reaching the operator's OWN configured dashboard host is the test: this asserts token auth is enforced off loopback. The scheme is a literal and the host comes from dashboard.url, not from input  # noqa: E501
                     with urllib.request.urlopen(ext_req, timeout=2) as resp:
                         # 200 without token = auth is NOT enforced
                         print("  auth check:  ❌ external access allowed without token!")

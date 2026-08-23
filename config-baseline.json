@@ -4371,6 +4371,8 @@
         "allowed_channel_ids": [],
         "auto_thread": true,
         "soft_threshold_pct": 80,
+        "reactions_enabled": true,
+        "show_thinking": false,
         "session_folder": ""
       }
     },
@@ -4447,7 +4449,7 @@
         "discord"
       ],
       "label": "Allowed Thread IDs",
-      "help": "Discord server thread IDs where approved users may run the agent. Empty = DMs only. Normal server channels are always denied.",
+      "help": "Discord server thread IDs where approved users may run the agent. Empty = DMs only. A server channel is denied unless it is listed in allowed_channel_ids, and a turn there still runs in a thread.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -4527,6 +4529,38 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 80
+    },
+    {
+      "path": "discord.reactions_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Reactions Enabled",
+      "help": "Show phase-aware emoji reactions on Discord messages during processing.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "discord.show_thinking",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Show Thinking",
+      "help": "Post the model's thinking/reasoning as a subtext note in Discord. Off by default to keep responses concise.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "discord.session_folder",

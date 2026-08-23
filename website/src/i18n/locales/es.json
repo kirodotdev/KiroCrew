@@ -10702,7 +10702,8 @@
         "file_sessions_in_folder": "Archivar las sesiones en una carpeta",
         "file_sessions_in_folder_desc": "Las sesiones nuevas de {{channel}} van a una carpeta de la barra lateral en vez de quedar sin archivar.",
         "session_folder_name": "Nombre de la carpeta",
-        "session_folder_name_desc": "Se crea al guardar esta configuración, si todavía no existe."
+        "session_folder_name_desc": "Se crea al guardar esta configuración, si todavía no existe.",
+        "shared_channels": "Canales compartidos"
       },
       "browserPanel": {
         "use_builtin_label": "Usar el navegador integrado",
@@ -10982,12 +10983,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "Inicia un gateway en este equipo. Desactívalo para usar Kiro Crew solo como cliente, conectándose al gateway que hayas configurado en lugar de ejecutar uno aquí. Se aplica la próxima vez que abras la aplicación."
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "IDs de canales de servidor permitidos",
         "allowed_server_thread_ids": "IDs de hilos de servidor permitidos",
-        "allowlist_description": "IDs de usuario de Discord con permiso para ejecutar el agente en mensajes directos o en hilos aprobados. Vacío = denegar todo (falla cerrado).",
-        "description": "Habla con tu agente desde los mensajes directos de Discord o desde hilos de servidor aprobados explícitamente, a través del WebSocket del gateway. Los canales de servidor normales siempre se ignoran.",
+        "allowlist_description": "IDs de usuario de Discord con permiso para ejecutar el agente en mensajes directos, hilos aprobados o canales permitidos. Vacío = denegar todo (falla cerrado).",
+        "auto_thread_description": "Un mensaje en un canal permitido abre un hilo público nuevo, y el turno se ejecuta ahí en lugar de en el canal compartido.",
+        "auto_thread_label": "Responder en un hilo nuevo",
+        "auto_thread_off_hint": "El hilo automático está desactivado, así que los mensajes de los canales de arriba se ignoran. {{productName}} nunca responde en el canal compartido en sí.",
+        "channel_allowlist_description": "Opcional. Los usuarios aprobados también pueden ejecutar el agente desde estos canales de servidor compartidos. Vacío = sin canales compartidos.",
+        "channel_help": "Con Developer Mode activado, haz clic derecho en el canal → <mono>Copy Channel ID</mono>. Usa el ID del canal, no el de un hilo que esté dentro.",
+        "channel_warning": "Un canal compartido es un límite de divulgación más amplio que un hilo: todos los que pueden ver el canal, y todos los que pueden abrir el hilo público en el que se ejecuta un turno, pueden leer lo que escribe el agente y lo que imprimen sus herramientas. Añade un canal solo si todos sus miembros pueden ver eso.",
+        "description": "Habla con tu agente desde los mensajes directos de Discord, los hilos de servidor aprobados o los canales de servidor permitidos, a través del WebSocket del gateway. Todos los demás canales de servidor se ignoran.",
         "empty_allowlist_hint": "No hay IDs de usuario permitidos: el bot rechaza todos los mensajes (falla cerrado). Añade tu ID de usuario de Discord más abajo.",
-        "guide_body": "Crea una aplicación en el Discord Developer Portal y luego copia el token desde la página <mono>Bot</mono>. Si solo vas a usar mensajes directos, deja desactivados los intents privilegiados. Para los hilos de servidor, activa <mono>Message Content Intent</mono> e instala con el ámbito <mono>bot</mono> más los permisos View Channel, Read Message History y Send Messages in Threads. Activa Discord Developer Mode y luego haz clic derecho en tu nombre para copiar tu ID de usuario numérico.",
+        "guide_body": "Crea una aplicación en el Discord Developer Portal y luego copia el token desde la página <mono>Bot</mono>. Si solo vas a usar mensajes directos, deja desactivados los intents privilegiados. Para los hilos de servidor, activa <mono>Message Content Intent</mono> e instala con los ámbitos <mono>bot</mono> y <mono>applications.commands</mono> más los permisos View Channel, Read Message History y Send Messages in Threads. Activa Discord Developer Mode y luego haz clic derecho en tu nombre para copiar tu ID de usuario numérico.",
         "open_developer_portal": "Abrir el Developer Portal",
+        "reactions_description": "Marca tu mensaje con un emoji de la fase en la que está el agente (en cola → pensando → programando → listo). Desactivado, tu mensaje queda sin marcar.",
+        "reactions_label": "Reacciones por fase",
+        "thinking_description": "Publica una vista previa del razonamiento del modelo como una nota de subtexto propia encima de la respuesta. Desactivado, en el canal solo queda la respuesta.",
+        "thinking_label": "Mostrar el razonamiento",
         "thread_allowlist_description": "Opcional. Los usuarios aprobados solo pueden ejecutar el agente en estos hilos exactos de Discord. Vacío = solo mensajes directos.",
         "thread_help": "Con Developer Mode activado, haz clic derecho en el hilo → <mono>Copy Channel ID</mono>. Usa el ID del hilo, no el del canal que lo contiene.",
         "thread_warning": "El modo de hilos activa el intent global Message Content de Discord. Discord entrega el contenido de todos los canales de servidor que el bot pueda ver; Kiro Crew descarta el tráfico ajeno a los hilos aprobados. Cualquiera que pueda ver un hilo aprobado puede leer las respuestas del agente y la salida de las herramientas.",

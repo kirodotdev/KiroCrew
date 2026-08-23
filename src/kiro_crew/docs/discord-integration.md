@@ -10,8 +10,9 @@ behind NAT and firewalls with no webhook, public address, or inbound port.
 |---------|----------|
 | **DMs** | Responds to messages from an allow-listed user. No `@mention` needed. |
 | **Approved server threads** | Responds when both the sender's user ID and the exact thread ID are allow-listed. Everyone who can view the thread can read replies and tool output. |
-| **Normal server channels** | Always ignored, even if someone accidentally enters the channel ID in the thread allow-list. Kiro Crew verifies the Discord channel type before running a turn. |
-| **Unknown users or threads** | Denied. Security-relevant attempts are audited; unrelated guild chatter is discarded silently. Empty user allow-list denies everything; empty thread allow-list means DMs only. |
+| **Allowed server channels** | Opt-in. An allow-listed user's message in an allow-listed channel opens a fresh public thread and the turn runs there, never in the shared channel itself. Off unless you add channel IDs. |
+| **Every other server channel** | Ignored, including a channel ID entered in the *thread* allow-list by mistake: Kiro Crew verifies the Discord channel type before running a turn. |
+| **Unknown users, threads or channels** | Denied. Security-relevant attempts are audited; unrelated guild chatter is discarded silently. Empty user allow-list denies everything; empty thread and channel allow-lists mean DMs only. |
 
 Discord represents threads as specialized guild channels with their own channel
 IDs. Forum posts are threads too. Group DMs are different and are not supported
@@ -41,22 +42,35 @@ narrower intent set.
 
 ### 3. Install the bot
 
-On **Installation**, enable **Guild Install** and select the **`bot`** OAuth
-scope. `applications.commands` is not needed because Kiro Crew uses text
-commands such as `!help`, not Discord slash commands.
+On **Installation**, enable **Guild Install** and select the **`bot`** and
+**`applications.commands`** OAuth scopes.
+
+`applications.commands` is what makes the `/` command menu appear inside a
+server. Kiro Crew publishes its command set to Discord at startup, so the menu
+is populated for you. The scope is **not** required to use Kiro Crew: every
+command is also a `!`-prefixed text command (`!help`), and those are the floor:
+they work in a DM and in an approved thread whether or not the slash menu is
+installed. If you installed the bot before slash commands existed, re-run the
+install URL below to pick the scope up; nothing breaks if you do not.
 
 For DMs only, no guild permissions are required. For server threads, grant:
 
 - **View Channel**
 - **Read Message History**
 - **Send Messages in Threads**
-- **Add Reactions** (used for mid-turn steer receipts)
+- **Add Reactions** (mid-turn steer receipts and the phase markers)
+- **Create Public Threads** (only if you use `allowed_channel_ids`, which answers
+  in a thread opened from your message)
 
 A manual thread-capable install URL is:
 
 ```text
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot&permissions=274877973568
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309237711936
 ```
+
+`permissions=309237711936` is the bitwise OR of exactly the permissions listed
+above: View Channel (`1<<10`), Send Messages in Threads (`1<<38`), Read Message
+History (`1<<16`), Add Reactions (`1<<6`), and Create Public Threads (`1<<35`).
 
 This permission set does not grant **Send Messages** in normal server channels.
 For a private thread, explicitly add the bot to that thread if Discord does not
@@ -90,14 +104,19 @@ DISCORD_BOT_TOKEN=<your bot token>
   "discord": {
     "enabled": true,
     "allowed_user_ids": ["123456789012345678"],
-    "allowed_thread_ids": ["234567890123456789"]
+    "allowed_thread_ids": ["234567890123456789"],
+    "allowed_channel_ids": ["345678901234567890"],
+    "auto_thread": true
   }
 }
 ```
 
-Omit `allowed_thread_ids` or leave it empty for DMs only. An optional
-`soft_threshold_pct` (default `80`, clamped to 1–100) sets the context % at
-which the bot suggests `!compact`.
+Omit `allowed_thread_ids` and `allowed_channel_ids`, or leave them empty, for
+DMs only. `allowed_channel_ids` lets an approved user start a turn from a shared
+server channel; the turn itself always runs in a public thread opened from that
+message, so `auto_thread` (default `true`) must stay on for those channels to
+work at all. An optional `soft_threshold_pct` (default `80`, clamped to 1-100)
+sets the context % at which the bot suggests `!compact`.
 
 ### 6. Restart the gateway
 
@@ -144,7 +163,20 @@ Portal or clear the thread allow-list and restart in DM-only mode.
   approved threads and does not audit routine background chatter.
 - **Shared output warning.** Every member who can view an approved thread can
   read agent replies, tool output, and interactive approvals. Approve only
-  threads whose membership and history are appropriate for that disclosure.
+  threads whose membership and history are appropriate for that disclosure. An
+  allowed *channel* is wider still: anyone who can see the channel can open the
+  public thread a turn runs in, so only add a channel whose whole membership may
+  read what the agent writes. Each thread the bot opens that way is recorded in
+  the audit log.
+- **Slash commands answer privately.** A `/` command reply is ephemeral, so only
+  the person who ran it sees it, which is what keeps a refusal or a status line
+  out of a shared thread.
+- **No credential-minting or approval-granting command.** Discord's command set
+  is deliberately narrower than Slack's: nothing here mints a dashboard login
+  link or changes the gateway's auto-approve grant. Those act on the OPERATOR's
+  authority rather than the caller's, and the machine running the gateway (or the
+  dashboard itself) is where they belong -- an allow-listed chat participant is
+  authorized to drive the agent, which is a different claim.
 - **Conversation scope.** Approved participants in one thread share that
   thread's agent session and context. DMs remain isolated per user.
 - **Token handling.** The token lives in `~/.kiro/crew/.env` (mode 0600), is
@@ -156,14 +188,25 @@ Portal or clear the thread allow-list and restart in DM-only mode.
 Send a DM or message an approved thread. Replies stream in place and long
 answers split across messages.
 
+Every command works in two forms. The `/` form is Discord's own command menu,
+which autocompletes as you type and answers **only to you**, so nobody else in a
+shared thread sees the reply. The `!` form is plain message text and always
+works, including before the `applications.commands` scope is installed.
+
 | Command | Effect |
 |---------|--------|
 | `!new` | Start a fresh conversation (shared for the current thread) |
 | `!compact` | Compress the current conversation context |
+| `!model` | Pick the model from a button list of what your account can use |
+| `!status` | Show runtime stats, the active agent, and whether auto-approve is on |
 | `!sessions` | Pick a recent dashboard session and continue it here (owner only) |
 | `!link` / `!unlink` | Resume or stop mirroring dashboard replies here (on by default) |
 | `!stop` | Stop the current reply and clear its queue |
 | `!help` | Show commands |
+
+`!queue <msg>` and `!steer <msg>` control a reply that is already running. They
+are message prefixes rather than commands, so they are deliberately absent from
+the `/` menu: a menu tap sends the bare word, which has no message to act on.
 
 ### Continuing a Discord conversation from the dashboard
 

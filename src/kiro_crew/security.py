@@ -8382,6 +8382,22 @@ _CREDENTIAL_PATTERNS = re.compile(
     # adjacent fields; over-redacting a rare ``digits:token`` lookalike is the
     # safe direction.
     r"|[0-9]{6,}:[A-Za-z0-9_-]{30,}"  # Telegram bot token
+    # Discord bot token: three base64url segments — ``base64(application_id)``,
+    # a 6-char timestamp, and an HMAC. The first segment is base64 of a decimal
+    # snowflake, so its leading character is fixed by the id's first digit
+    # (``M``/``N``/``O`` for the 1-9 range every live snowflake starts with), and
+    # the timestamp segment is always EXACTLY 6 characters. Both anchors matter:
+    # the same rule written as three open-ended runs matches an ordinary dotted
+    # identifier or a base64 blob with periods in it, and a redactor that eats
+    # arbitrary text is a different bug. Length floors sit below the real ones so
+    # a shortened/rotated test token is still caught. Same reasoning as Telegram
+    # above — ``discord.bot_token`` can live in ``config.json``, which the agent
+    # can read, so an echoed config would otherwise leak bot control verbatim.
+    # The boundary guards keep the leading ``[MNO]`` from landing mid-run inside
+    # a longer base64 blob and redacting an arbitrary tail of it, the same way
+    # the link-token branch below guards its own ``eyJ`` anchor.
+    r"|(?<![A-Za-z0-9_-])[MNO][A-Za-z0-9_-]{22,30}"
+    r"\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{25,}(?![A-Za-z0-9_-])"  # Discord bot token
     # ── Third-party developer credentials (AWS-345 / AWS-59) ──
     # Distinctive, fixed-case prefixes → very low false-positive risk.  Minimum
     # lengths are kept slightly below the real token lengths so shortened test /

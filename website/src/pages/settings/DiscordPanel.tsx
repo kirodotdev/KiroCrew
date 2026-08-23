@@ -72,6 +72,31 @@ function discordSpec(): BotChannelSpec {
       ),
       warning: <>{i18nT('pages.settings.discordPanel.thread_warning')}</>,
     },
+    sharedChannels: {
+      label: i18nT('pages.settings.discordPanel.allowed_server_channel_ids'),
+      description: i18nT('pages.settings.discordPanel.channel_allowlist_description'),
+      placeholder: '123456789012345678',
+      // One key, for the same reason as `thread_help` above.
+      help: (
+        <Trans
+          i18nKey="pages.settings.discordPanel.channel_help"
+          components={{ mono: <span className="font-mono" /> }}
+        />
+      ),
+      warning: <>{i18nT('pages.settings.discordPanel.channel_warning')}</>,
+      autoThreadLabel: i18nT('pages.settings.discordPanel.auto_thread_label'),
+      autoThreadDescription: i18nT('pages.settings.discordPanel.auto_thread_description'),
+      autoThreadConfigKey: 'discord.auto_thread',
+      autoThreadOffHint: i18nT('pages.settings.discordPanel.auto_thread_off_hint'),
+    },
+    progressDisplay: {
+      reactionsLabel: i18nT('pages.settings.discordPanel.reactions_label'),
+      reactionsDescription: i18nT('pages.settings.discordPanel.reactions_description'),
+      reactionsConfigKey: 'discord.reactions_enabled',
+      thinkingLabel: i18nT('pages.settings.discordPanel.thinking_label'),
+      thinkingDescription: i18nT('pages.settings.discordPanel.thinking_description'),
+      thinkingConfigKey: 'discord.show_thinking',
+    },
     getConfig: api.getDiscordConfig,
     saveConfig: api.saveDiscordConfig,
   }

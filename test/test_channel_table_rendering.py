@@ -8,6 +8,7 @@ converts, that the turn's canonical text does not, and that a target declaring
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -86,6 +87,16 @@ def _ends_inside_fence(body: str) -> bool:
     return any(start <= offset < end for start, end in iter_fence_spans(probe))
 
 
+#: The renderer appends a subtext timing line to the LAST delivered chunk. It is a
+#: per-turn trailer, not part of any rendering, so it is removed before a byte
+#: comparison rather than written into every expectation.
+_TURN_FOOTER_RE = re.compile(r"\n\n-# [^\n]*$")
+
+
+def _without_turn_footer(body: str) -> str:
+    return _TURN_FOOTER_RE.sub("", body)
+
+
 class _Provider:
     """Scripted event stream. Never spawns a real kiro-cli."""
 
@@ -146,11 +157,19 @@ class FakeDiscordClient:
         return [f for batch in self.uploads for f in batch]
 
     def delivered(self) -> list[str]:
-        """Every distinct body Discord was asked to display, newest edit last."""
-        return self.sent + self.edits
+        """Every distinct body Discord was asked to display, newest edit last.
+
+        The renderer's one-line turn footer (``-# Finished in …``) is stripped
+        here, once, because these tests are about TABLE bytes and every one of
+        them would otherwise carry a trailing line that has nothing to do with the
+        rendering under test. The footer has its own coverage in
+        ``test_discord_render_config.py::TestTurnFooter``, which asserts it lands
+        exactly once and only on the last chunk.
+        """
+        return [_without_turn_footer(body) for body in self.sent + self.edits]
 
     def final(self) -> str:
-        return (self.edits or self.sent or [""])[-1]
+        return _without_turn_footer((self.edits or self.sent or [""])[-1])
 
     def button_labels(self) -> list[str]:
         rows = [c for c in self.components if c]

@@ -4,6 +4,7 @@ This module owns the sequence every non-Slack channel dispatcher runs around
 :class:`TurnDriver`:
 
     governance gate
+    -> hook auto-reply                   (HOOK_REPLY short-circuits, no session)
     -> renderer.on_turn_start()          (typing indicator before cold start)
     -> sessions.get_or_create + set_channel
     -> publish_turn_identity
@@ -31,12 +32,12 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.renderer import SilentRenderer
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -279,6 +280,41 @@ def conversation_is_muted(sessions: Any, turn: ChannelTurn) -> bool:
     return delivery_is_muted(sessions, turn.session_key, turn.channel_type)
 
 
+def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
+    """The canned answer a user-defined ``on_message`` hook gives *text*, else None.
+
+    ``None`` means no hook claimed the message (passthrough, modify, context
+    injection, or no hooks at all), so the caller runs a normal turn. A string --
+    including an empty one -- means a hook ANSWERED it and the turn must not run:
+    that is the whole point of an auto-reply, and running the model anyway would
+    both contradict the operator's rule and bill them for it.
+
+    The text is redacted here because this path skips :class:`TurnDriver`, which
+    is what redacts everything else on its way to a channel. The pair applied is
+    the driver's own (exfiltration URLs, then credentials); mention syntax is
+    deliberately NOT defanged, because a hook reply is operator-authored config
+    rather than model or remote output, so an ``@name`` in it is intended.
+
+    Every lookup is defensive: the hook manager is optional on this seam, and a
+    channel that supplies a context builder without one must fall through to a
+    normal turn rather than fail the message.
+
+    Asking the hooks here means ``build_message`` asks them again on the turn
+    path, which is what Slack does too and is safe because ``on_message`` is a
+    pure pattern match over the text. The alternative -- reading the hook result
+    ``build_message`` already returns -- is too late: by then the session has been
+    cold-started, which is the cost an auto-reply exists to avoid.
+    """
+    hooks = getattr(ctx_builder, "hooks", None)
+    on_message = getattr(hooks, "on_message", None)
+    if not callable(on_message):
+        return None
+    result = on_message(text)
+    if getattr(result, "action", "") != HOOK_REPLY:
+        return None
+    return redact(str(getattr(result, "text", "") or ""))
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -309,6 +345,35 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             getattr(renderer, "channel_type", "") or turn.channel_type,
         )
     try:
+        # ── Hook auto-reply: answer and stop, without acquiring a session ──
+        # A ``HOOK_REPLY`` from the context builder's user-defined hooks
+        # short-circuits the turn exactly as it does on Slack: the canned reply
+        # goes out, the exchange is recorded, and no ACP session is started, so a
+        # message a hook already answers costs neither a cold start nor a
+        # billable turn. Enforced HERE rather than per channel for the same
+        # reason the governance gate is: a channel cannot honour a hook it never
+        # calls, and every adopter would otherwise have to re-derive this.
+        #
+        # Placed after the mute substitution so a disconnected conversation drops
+        # the write like any other output, and BEFORE ``on_turn_start`` so no
+        # typing indicator is opened for a turn that never runs. Inside the try
+        # so the ``finally`` still finalizes the renderer; ``_acquired`` is still
+        # False, so nothing is released.
+        hook_reply = hook_auto_reply(ctx_builder, turn.user_text)
+        if hook_reply is not None:
+            if hook_reply:
+                await renderer.on_text_chunk(hook_reply)
+            # ``on_done`` is what actually delivers on the buffered renderers, so
+            # it runs even for an empty reply: the renderer then finalizes a
+            # blank answer the same way it does one from the model.
+            await renderer.on_done()
+            if turn.persist is not None:
+                # ``is_new`` is False: no session was created, so there is no
+                # new-session bookkeeping (title, dashboard surfacing) owed. What
+                # is recorded is the redacted text the user actually saw, so the
+                # transcript matches the conversation.
+                await asyncio.to_thread(turn.persist, turn.user_text, hook_reply, False)
+            return
         # Typing indicator first (before the potentially slow cold start);
         # on_turn_start is idempotent so the driver's later call no-ops.
         await renderer.on_turn_start()

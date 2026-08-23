@@ -10445,7 +10445,8 @@
         "file_sessions_in_folder": "세션을 폴더에 정리",
         "file_sessions_in_folder_desc": "새 {{channel}} 세션를 정리되지 않은 상태로 두지 않고 사이드바 폴더에 넣습니다.",
         "session_folder_name": "폴더 이름",
-        "session_folder_name_desc": "이 설정을 저장할 때 폴더가 아직 없으면 새로 만들어집니다."
+        "session_folder_name_desc": "이 설정을 저장할 때 폴더가 아직 없으면 새로 만들어집니다.",
+        "shared_channels": "공용 채널"
       },
       "browserPanel": {
         "use_builtin_label": "내장 브라우저 사용",
@@ -10725,12 +10726,23 @@
         "start_a_gateway_on_this_machine_turn_it_off_to_u": "이 컴퓨터에서 게이트웨이를 시작합니다. 끄면 Kiro Crew를 클라이언트로만 사용하며, 여기서 실행하는 대신 설정한 게이트웨이에 연결합니다. 다음에 앱을 열 때 적용됩니다."
       },
       "discordPanel": {
+        "allowed_server_channel_ids": "허용된 서버 채널 ID",
         "allowed_server_thread_ids": "허용된 서버 스레드 ID",
-        "allowlist_description": "DM 또는 승인된 스레드에서 에이전트를 실행할 수 있는 Discord 사용자 ID입니다. 비어 있으면 전부 거부합니다(차단 우선).",
-        "description": "Gateway WebSocket을 통해 Discord DM 또는 명시적으로 승인된 서버 스레드에서 에이전트와 대화하세요. 일반 서버 채널은 항상 무시됩니다.",
+        "allowlist_description": "DM, 승인된 스레드 또는 허용된 채널에서 에이전트를 실행할 수 있는 Discord 사용자 ID입니다. 비어 있으면 전부 거부합니다(차단 우선).",
+        "auto_thread_description": "허용된 채널에 보낸 메시지는 새 공개 스레드를 열고, 턴은 공용 채널이 아니라 그 스레드에서 실행됩니다.",
+        "auto_thread_label": "새 스레드에서 답장",
+        "auto_thread_off_hint": "자동 스레드가 꺼져 있어 위 채널의 메시지는 무시됩니다. {{productName}}은(는) 공용 채널에서 직접 답하지 않습니다.",
+        "channel_allowlist_description": "선택 사항입니다. 승인된 사용자는 이 공용 서버 채널에서도 에이전트를 실행할 수 있습니다. 비어 있으면 공용 채널을 사용하지 않습니다.",
+        "channel_help": "개발자 모드를 켠 상태에서 채널을 오른쪽 클릭 → <mono>Copy Channel ID</mono>. 채널 안의 스레드 ID가 아니라 채널 자체의 ID를 사용하세요.",
+        "channel_warning": "공용 채널은 스레드보다 더 넓은 공개 경계입니다. 채널을 볼 수 있는 사람과 턴이 실행되는 공개 스레드를 열 수 있는 사람은 누구나 에이전트가 쓴 내용과 도구가 출력한 내용을 읽을 수 있습니다. 채널의 모든 구성원에게 보여도 괜찮을 때만 추가하세요.",
+        "description": "Gateway WebSocket을 통해 Discord DM, 승인된 서버 스레드 또는 허용된 서버 채널에서 에이전트와 대화하세요. 그 외 모든 서버 채널은 무시됩니다.",
         "empty_allowlist_hint": "허용된 사용자 ID가 없습니다. 봇이 모든 메시지를 거부합니다(차단 우선). 아래에 Discord 사용자 ID를 추가하세요.",
-        "guide_body": "Discord Developer Portal에서 앱을 만든 다음 <mono>Bot</mono> 페이지에서 토큰을 복사하세요. DM만 사용한다면 특별 인텐트는 꺼 두세요. 서버 스레드를 사용하려면 <mono>Message Content Intent</mono>를 켜고 <mono>bot</mono> 스코프와 View Channel, Read Message History, Send Messages in Threads 권한으로 설치하세요. Discord 개발자 모드를 켠 다음 이름을 오른쪽 클릭해 숫자 사용자 ID를 복사하세요.",
+        "guide_body": "Discord Developer Portal에서 앱을 만든 다음 <mono>Bot</mono> 페이지에서 토큰을 복사하세요. DM만 사용한다면 특별 인텐트는 꺼 두세요. 서버 스레드를 사용하려면 <mono>Message Content Intent</mono>를 켜고 <mono>bot</mono> 및 <mono>applications.commands</mono> 스코프와 View Channel, Read Message History, Send Messages in Threads 권한으로 설치하세요. Discord 개발자 모드를 켠 다음 이름을 오른쪽 클릭해 숫자 사용자 ID를 복사하세요.",
         "open_developer_portal": "Developer Portal 열기",
+        "reactions_description": "에이전트가 어느 단계에 있는지 내 메시지에 이모지 리액션으로 표시합니다(대기 → 사고 → 코딩 → 완료). 끄면 메시지에 아무 표시도 남지 않습니다.",
+        "reactions_label": "단계 리액션",
+        "thinking_description": "모델 추론의 미리 보기를 답변 위에 별도의 작은 글씨 메모로 게시합니다. 끄면 채널에는 답변만 남습니다.",
+        "thinking_label": "사고 과정 표시",
         "thread_allowlist_description": "선택 사항입니다. 승인된 사용자는 지정한 Discord 스레드에서만 에이전트를 실행할 수 있습니다. 비어 있으면 DM만 사용합니다.",
         "thread_help": "개발자 모드를 켠 상태에서 스레드를 오른쪽 클릭 → <mono>Copy Channel ID</mono>. 상위 채널 ID가 아니라 스레드의 ID를 사용하세요.",
         "thread_warning": "스레드 모드는 Discord의 전역 Message Content 인텐트를 켭니다. Discord는 봇이 볼 수 있는 모든 서버 채널의 콘텐츠를 전달하며, Kiro Crew는 승인된 스레드 밖의 트래픽을 버립니다. 승인된 스레드를 볼 수 있는 사람은 누구나 에이전트 응답과 도구 출력을 읽을 수 있습니다.",

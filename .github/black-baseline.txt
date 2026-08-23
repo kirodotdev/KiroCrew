@@ -194,7 +194,6 @@ src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
-src/kiro_crew/cli_doctor.py
 src/kiro_crew/cli_server.py
 src/kiro_crew/cli_setup.py
 src/kiro_crew/cloud/connect.py
@@ -304,8 +303,6 @@ src/kiro_crew/deploy/skills/artifact-deploy/templates/handler-example.py
 src/kiro_crew/deploy/webapp_types.py
 src/kiro_crew/diagnostics.py
 src/kiro_crew/discord/attachments.py
-src/kiro_crew/discord/client.py
-src/kiro_crew/discord/gateway.py
 src/kiro_crew/doc_parser.py
 src/kiro_crew/embeddings.py
 src/kiro_crew/emoji_list.py
@@ -433,7 +430,6 @@ src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/gateway.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/renderer.py
@@ -1225,7 +1221,6 @@ test/test_slack_events_coverage.py
 test/test_slack_gateway.py
 test/test_slack_gateway_coverage.py
 test/test_slack_gateway_cron_exec_coverage.py
-test/test_slack_golden_transcript.py
 test/test_slack_handler_coverage.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_handler_more_coverage.py
@@ -1259,7 +1254,6 @@ test/test_spawn_list_redaction.py
 test/test_spec_builder_routes_coverage.py
 test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py
-test/test_status_reactions.py
 test/test_steering_api.py
 test/test_stop_handler_idempotent.py
 test/test_stop_kill_cancel.py

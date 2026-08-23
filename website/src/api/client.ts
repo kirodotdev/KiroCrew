@@ -358,7 +358,15 @@ export interface DiscordConfigData {
   enabled: boolean
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
+  /** Shared server channels an approved user may start a turn in. */
+  allowed_channel_ids: string[]
+  /** Promote an allowed-channel message into a fresh public thread. Default on. */
+  auto_thread: boolean
   soft_threshold_pct: number
+  /** Phase-reaction ladder on the user's own message. Default on. */
+  reactions_enabled: boolean
+  /** Surface the model's reasoning as a Discord subtext note. Default off. */
+  show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
 }
@@ -388,7 +396,11 @@ export interface DiscordConfigSave {
   enabled: boolean
   allowed_user_ids: string[]
   allowed_thread_ids: string[]
+  allowed_channel_ids: string[]
+  auto_thread: boolean
   soft_threshold_pct: number
+  reactions_enabled: boolean
+  show_thinking: boolean
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
 }

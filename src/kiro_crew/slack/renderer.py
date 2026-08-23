@@ -12,18 +12,52 @@ in the ``slack`` package and consumes the neutral ``messaging`` contracts.
 approve/deny buttons. The interactive decision is awaited via
 :class:`SlackApprovalDecider`, whose future is resolved by the Slack
 interaction handler when the user clicks a button.
+
+Two channel-neutral halves do the work this module used to do badly or not at
+all:
+
+* **Length splitting** belongs to
+  :func:`kiro_crew.messaging.split.split_markdown_safe`, the shared fence-safe
+  splitter, so this renderer owns no fence grammar. ``slack/format.py``'s
+  ``split_message`` counts backticks and cuts anywhere a newline sits, which
+  inverts its own open/closed state on a fence whose content contains one; it
+  stays for the native handler's call sites. The splitter's streaming contract is
+  consumed as written: every chunk but the last is sealed, the final one is left
+  open, and the one documented over-``limit`` case (a whole line placed with its
+  fence scaffolding) is bounded again against the limit Slack's own update path
+  truncates at.
+* **Outbound local-image extraction** belongs to
+  :mod:`kiro_crew.messaging.outbound_files`, with Slack's per-file ceiling, count
+  cap and ``files_upload_v2`` call in :mod:`kiro_crew.slack.files`. Extraction
+  runs once, at the SEMANTIC seal (``on_done``), never on a length cut, so a
+  reference is always seen whole and in its original fence context. Slack's
+  stream is append-only, so markup is withheld from live frames rather than
+  hidden and later edited away, and the withheld tail lands at the seal.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import time
 from typing import Any, Awaitable, Callable
 
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.outbound_files import (
+    OutboundFile,
+    Rejection,
+    extract_local_refs_off_loop,
+    hide_local_refs,
+    protected_ref_spans,
+)
+from kiro_crew.messaging.renderer import Renderer, chunk_text
+from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
-from kiro_crew.slack.format import extract_options, strip_thinking_tags
+from kiro_crew.sel import sel
+from kiro_crew.slack.files import UPLOAD_LIMITS, upload_outbound_files
+from kiro_crew.slack.format import SLACK_MSG_LIMIT, extract_options, strip_thinking_tags
 from kiro_crew.slack.handler import (
     _APPROVAL_TIMEOUT,
     _CURSOR,
@@ -39,6 +73,8 @@ from kiro_crew.slack.handler import (
 from kiro_crew.slack.outbound import PostedOptions
 from kiro_crew.slack.transport import SLACK_CAPABILITIES
 
+logger = logging.getLogger(__name__)
+
 #: Block Kit action_id prefixes for tool approve/deny buttons.
 TOOL_APPROVE_ACTION_PREFIX = "mc_tool_approve_"
 TOOL_DENY_ACTION_PREFIX = "mc_tool_deny_"
@@ -48,6 +84,38 @@ TOOL_TRUST_ACTION_PREFIX = "mc_tool_trust_"
 
 #: Thread-status text shown while the turn is in flight (mirrors handler).
 _STATUS_WORKING = "is working on your request"
+
+#: Characters held back below ``max_message_chars`` when splitting. The shared
+#: splitter may exceed its limit by the fence scaffolding of a whole-line
+#: placement; this absorbs the ordinary case so no chunk reaches
+#: :data:`SLACK_MSG_LIMIT`, where ``_safe_update`` would truncate it.
+_SPLIT_HEADROOM = 100
+
+#: Refusal lines appended to a reply before they are summarized as a count. Three
+#: lines explain a reply; twelve bury it.
+_MAX_REJECTION_LINES = 3
+
+
+def _redact_all(text: str) -> str:
+    """Both outbound redactors as one callable, in the canonical order."""
+    text, _ = redact_exfiltration_urls(text)
+    return redact_credentials(text)[0]
+
+
+def _display_safe(text: str) -> str:
+    """Redact against what Slack RENDERS, not only the bytes sent.
+
+    The twin of the Discord renderer's ``_redact_transformed``, and applied at
+    EVERY model-authored egress in this file rather than at whichever one a
+    reviewer last looked at. Neither ``AKIA**<rest>**`` nor
+    ``[AKIA](https://x)<rest>`` matches a credential pattern as written, and Slack
+    renders the markup away and shows the reader an intact key -- so a literal-only
+    scan is not a floor, it is a scan of one of the two forms that leave here.
+
+    Idempotent, so applying it twice on a path (a released tail, then its append)
+    costs nothing and keeps the guarantee at the sink instead of at the caller.
+    """
+    return redact_for_display(text, _redact_all)[0]
 
 #: Slack channel capabilities live in ``slack/transport.py`` (imported above).
 #: This module used to carry a second literal copy of the declaration; two
@@ -213,6 +281,8 @@ class SlackRenderer(Renderer):
         decider: SlackApprovalDecider | None = None,
         now: Callable[[], float] | None = None,
         user_id: str = "",
+        uploads_allowed: bool = True,
+        upload_root: str = "",
     ) -> None:
         super().__init__(capabilities or SLACK_CAPABILITIES)
         self.slack = slack
@@ -274,6 +344,15 @@ class SlackRenderer(Renderer):
         self._finalized = False  # guards close() from double-finalizing
         self._t0 = 0.0
         self._started = False  # guards on_turn_start against double-fire
+        # Outbound-upload gates. The root is the provider's resolved cwd, so it
+        # is UNSET until the dispatcher authorizes one (``authorize_upload_root``)
+        # and uploads stay off until then: extraction reads files the model named,
+        # and "anywhere" is not an approved root.
+        self._upload_root = upload_root if os.path.isabs(upload_root) else ""
+        self._uploads_allowed = uploads_allowed
+        # Visible text withheld from the append-only stream because a local image
+        # reference is in play; released (markup removed) at the seal.
+        self._ref_hold = ""
 
     async def on_turn_start(self) -> None:
         # Native sets the working thread-status before streaming and arms the
@@ -342,6 +421,10 @@ class SlackRenderer(Renderer):
         """Append to the stream, rotating once on failure (native ``_append_stream``)."""
         if not text or not self._stream_ts:
             return True
+        # The last sink an appended string passes, so the floor lands here too:
+        # appended text on this path is FINAL (chat.stopStream does not replace
+        # it), which makes an unscanned append unrecoverable.
+        text = _display_safe(text)
         ok = await self.slack.append_stream(self.channel, self._stream_ts, text)
         if not ok and self._use_slack_stream:
             if await self._rotate_stream():
@@ -355,7 +438,224 @@ class SlackRenderer(Renderer):
             return
         flush, _ = strip_thinking_tags(self._stream_buffer, strip_whitespace=False)
         self._stream_buffer = ""
+        if self._uploads_enabled():
+            flush = await self._withhold_refs(flush)
+            if not flush:
+                return
         await self._append_stream(flush)
+
+    # -- outbound local-image uploads ---------------------------------------
+    def authorize_upload_root(self, root: str) -> None:
+        """Authorize the provider's resolved cwd; an invalid root disables uploads."""
+        self._upload_root = root if os.path.isabs(root) else ""
+
+    def _uploads_enabled(self) -> bool:
+        """Require the transport capability, an unrestricted session, and a root."""
+        return (
+            bool(self.capabilities.files_outbound)
+            and self._uploads_allowed
+            and bool(self._upload_root)
+        )
+
+    #: How much text immediately BEFORE an image span is held back with it.
+    #:
+    #: Slack streams by appending, and appended text is final, so two appends are
+    #: rendered as one run of characters. Cutting exactly at the span start
+    #: therefore sends the text before it in one append and the markup-stripped
+    #: tail in another, and a credential straddling the span is spelled by the
+    #: RENDERED concatenation while neither append contains it -- invisible to a
+    #: scan of either string, and to the driver's rolling redactor, whose window
+    #: never sees the two halves adjacent because the hold reordered them.
+    #:
+    #: Holding a lookbehind margin puts both halves in the same released string,
+    #: which is what makes ``_release_refs``'s scan able to see the join at all.
+    #: 256 characters comfortably exceeds the longest credential shape the
+    #: redactors match, and over-holding costs only that the stream shows
+    #: slightly less until the seal -- a delay, where under-holding is a leak.
+    _REF_HOLD_LOOKBEHIND_CHARS = 256
+
+    async def _withhold_refs(self, text: str) -> str:
+        """The part of *text* that may go to the stream now, holding back the rest.
+
+        Slack streams by APPENDING: text that lands cannot be edited away, so an
+        ``![alt](/tmp/chart.png)`` reaching the stream stays in the transcript
+        beside the picture the seal uploads. Everything from the earliest
+        reference onward is therefore held until the seal, which releases it with
+        the markup removed. Holding rather than cutting each frame is what keeps
+        the seal's view whole: extraction reads the accumulated source, and the
+        stream only ever shows text no later pass will contradict.
+
+        The scan runs off-loop. It is pure CPU over model-authored text on the
+        gateway's single loop, and an adversarial run of ``![`` is exactly the
+        input that makes it worth the thread.
+        """
+        self._ref_hold += text
+        spans = await asyncio.to_thread(protected_ref_spans, self._ref_hold)
+        # The lookbehind margin is what lets the release scan see a credential the
+        # rendered concatenation would spell; see _REF_HOLD_LOOKBEHIND_CHARS.
+        cut = (
+            max(0, spans[0][0] - self._REF_HOLD_LOOKBEHIND_CHARS)
+            if spans
+            else len(self._ref_hold)
+        )
+        ready, self._ref_hold = self._ref_hold[:cut], self._ref_hold[cut:]
+        return ready
+
+    async def _release_refs(self) -> str:
+        """The held tail with every image reference cut out, ready to append.
+
+        REDACTS after the cut, and the order is the whole point: removing
+        ``![alt](path)`` rejoins the text around it, and that join can spell a
+        credential neither half did, so a scan upstream of the cut cannot have
+        seen it. The seal applies the same reasoning to ``clean_text`` after
+        extraction -- but this tail is a SEPARATE egress via ``_append_stream``,
+        and on the streaming path it is the text the user ends up reading
+        (``stop_stream`` does not replace appended text). Redacting here rather
+        than at the call site keeps the guarantee with the join that creates the
+        hazard, so a later caller cannot append a tail nothing has scanned.
+        """
+        if not self._ref_hold:
+            return ""
+        held, self._ref_hold = self._ref_hold, ""
+        tail = await asyncio.to_thread(hide_local_refs, held)
+        if not tail:
+            return ""
+        return _display_safe(tail)
+
+    async def _extract_uploads(self, text: str) -> tuple[str, list[OutboundFile], str]:
+        """Pull local images out of the sealed reply; returns (body, files, notes).
+
+        ``notes`` is the refusal text, already folded into ``body``, and returned
+        separately because the streaming path cannot re-render ``body``: Slack's
+        ``chat.stopStream`` does not replace what was appended, so the notes have
+        to be appended there instead. Fail-soft: a reply must go out even when
+        extraction cannot decide anything about the files it mentions.
+        """
+        try:
+            result = await extract_local_refs_off_loop(
+                text, within_root=self._upload_root, limits=UPLOAD_LIMITS
+            )
+        except Exception:
+            logger.warning("slack: outbound file extraction failed", exc_info=True)
+            return text, [], ""
+        body = result.rewritten_text.strip()
+        if not body and not result.files:
+            body = text
+        notes = ""
+        if result.rejections:
+            sel().log_api_access(
+                caller=self._audit_caller(),
+                operation="slack_renderer.upload_files",
+                outcome="denied",
+                source="slack",
+                resources=f"{len(result.rejections)} rejection(s)",
+                # Reason codes only: the destination is LLM-authored text.
+                error=",".join(sorted({item.reason for item in result.rejections})),
+            )
+            notes = self._rejection_notes(result.rejections)
+            body = f"{body}\n\n{notes}" if body else notes
+        if result.files:
+            sel().log_api_access(
+                caller=self._audit_caller(),
+                operation="slack_renderer.upload_files",
+                outcome="allowed",
+                source="slack",
+                resources=f"{len(result.files)} file(s)",
+            )
+        return body, result.files, notes
+
+    def _rejection_notes(self, rejections: list[Rejection]) -> str:
+        """Refusal lines for the thread. Never conditional on the answer's length.
+
+        The reason names the destination, so the user reads which picture is
+        missing and why rather than a reply that talks about one that never
+        arrived. A budget check belongs to no caller here: the text is split after
+        this, so an answer near the cap costs the reader a chunk boundary, where
+        dropping the note would cost them the explanation.
+        """
+        for rejection in rejections:
+            logger.info("slack: local image not uploaded (%s)", rejection.reason)
+        lines = [f"⚠️ _{rejection}_" for rejection in rejections[:_MAX_REJECTION_LINES]]
+        if len(rejections) > _MAX_REJECTION_LINES:
+            lines.append(f"⚠️ _…and {len(rejections) - _MAX_REJECTION_LINES} more_")
+        note = "\n".join(lines)
+        # The destination came from the model, so the line it appears in is
+        # scanned like any other outbound text before it can be posted -- in the
+        # DISPLAY form too, since a rejected path is echoed inside `_..._` italics
+        # that Slack renders away.
+        return _display_safe(note)
+
+    async def _upload_files(self, files: list[OutboundFile]) -> None:
+        """Upload the extracted files, reporting any Slack would not take."""
+        try:
+            failures = await upload_outbound_files(
+                self.slack, self.channel, self.thread_ts or "", files
+            )
+        except Exception:
+            logger.warning("slack: uploading extracted images failed", exc_info=True)
+            return
+        if not failures:
+            return
+        try:
+            await self.slack.post_message(
+                self.channel, self._rejection_notes(failures), self.thread_ts
+            )
+        except Exception:
+            logger.warning("slack: reporting a failed image upload failed", exc_info=True)
+
+    def _audit_caller(self) -> str:
+        """Identity for the SEL audit line: the session, else the conversation."""
+        session_key = self.decider.session_key if self.decider else ""
+        return session_key or self.channel or "slack"
+
+    # -- length splitting ---------------------------------------------------
+    def _limit(self) -> int:
+        """Split budget: the declared cap less headroom for fence scaffolding.
+
+        Capped at what the send path actually accepts. A declaration above
+        :data:`SLACK_MSG_LIMIT` cannot buy longer messages, because ``_safe_update``
+        truncates there regardless. It would only move every cut past the point
+        where the fence-safe boundary is still honoured.
+        """
+        cap = min(self.capabilities.max_message_chars or SLACK_MSG_LIMIT, SLACK_MSG_LIMIT)
+        return max(500, cap - _SPLIT_HEADROOM)
+
+    async def _split_for_slack(self, text: str, *, reserve: int = 0) -> list[str]:
+        """Fence-safe chunks Slack will accept whole.
+
+        The shared splitter budgets each chunk against :meth:`_limit`, except for
+        a logical line placed whole, which carries its fence scaffolding on top.
+        :func:`chunk_text` bounds that residue at Slack's own message limit,
+        because the alternative there is ``_safe_update``'s tail truncation, which
+        drops the synthetic closer with the content and leaves an unterminated
+        code block. Blind slicing costs a boundary Markdown may render badly and
+        keeps every authored character.
+        """
+        limit = self._limit()
+        if len(text) + reserve <= limit:
+            return [text]
+        chunks = await asyncio.to_thread(split_markdown_safe, text, limit, reserve=reserve)
+        bounded: list[str] = []
+        for chunk in chunks:
+            bounded.extend(chunk_text(chunk, SLACK_MSG_LIMIT - reserve) or [chunk])
+        return bounded or [text]
+
+    async def _render_fallback(self, text: str) -> None:
+        """Final no-stream render: the whole answer, not a truncated prefix.
+
+        ``_safe_update`` truncates at Slack's message limit, so an over-limit
+        answer used to lose its tail with only a notice where the native handler
+        splits. Consumes the splitter's contract by sealing chunk 0 into the live
+        message and posting the rest as thread replies, in order.
+        """
+        chunks = await self._split_for_slack(text)
+        if self._stream_ts is not None:
+            await _safe_update(self.slack, self.channel, self._stream_ts, chunks[0])
+        for part in chunks[1:]:
+            try:
+                await self.slack.post_message(self.channel, part, self.thread_ts)
+            except Exception:
+                logger.debug("slack: posting a continuation chunk failed", exc_info=True)
 
     async def _append_task(
         self, task_id: str, title: str, status: str, details: str = ""
@@ -460,7 +760,15 @@ class SlackRenderer(Renderer):
                 filtered, _ = strip_thinking_tags(
                     self._stream_buffer, strip_whitespace=False
                 )
-                await _safe_update(self.slack, self.channel, ts, filtered + _CURSOR)
+                if self._uploads_enabled():
+                    # This path REPLACES the message on every frame, so markup
+                    # can simply be hidden: the seal's rewritten text is what the
+                    # message ends up holding.
+                    filtered = await asyncio.to_thread(hide_local_refs, filtered)
+                # A frame shows a fence-safe prefix rather than a truncated one;
+                # the final render lands the whole answer.
+                frame = await self._split_for_slack(filtered, reserve=len(_CURSOR))
+                await _safe_update(self.slack, self.channel, ts, frame[0] + _CURSOR)
             self._last_edit = now
 
     async def on_thinking(self, text: str) -> None:
@@ -486,9 +794,12 @@ class SlackRenderer(Renderer):
         reasoning = self._thinking_accumulated.strip()
         if not reasoning:
             return
-        reasoning, _ = redact_exfiltration_urls(reasoning)
-        reasoning, _ = redact_credentials(reasoning)
-        await self.slack.post_message(self.channel, f"💭 {reasoning}", self.thread_ts)
+        reasoning = _display_safe(reasoning)
+        # Reasoning is unbounded, and Slack rejects an over-limit message outright
+        # the whole 💭 reply, not its tail. Split it fence-safely so a long
+        # chain of thought arrives as ordered replies instead of vanishing.
+        for chunk in await self._split_for_slack(f"💭 {reasoning}"):
+            await self.slack.post_message(self.channel, chunk, self.thread_ts)
 
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
@@ -532,6 +843,12 @@ class SlackRenderer(Renderer):
                 )
                 await self._append_task(self._active_task_id, ct, "complete")
                 self._active_task_id = ""
+            # This message ends here and its accumulated source is discarded, so
+            # no seal will ever extract the withheld markup. Append it as written:
+            # a visible path is the honest degradation, a dropped picture is not.
+            if self._ref_hold:
+                await self._append_stream(self._ref_hold)
+                self._ref_hold = ""
             await self.slack.stop_stream(self.channel, self._stream_ts)
             self._stream_ts = None
             self._accumulated = ""
@@ -575,13 +892,22 @@ class SlackRenderer(Renderer):
         if self._use_slack_stream:
             await self._flush_stream_buffer()
         clean_text, options = extract_options(self._accumulated)
+        # THE semantic seal, and the only place local images are extracted: the
+        # whole reply is in hand, in its original fence context, so each reference
+        # is seen once and whole. A length cut never extracts, because that is how a cut
+        # ends up bisecting `![alt](path)` and losing the attachment.
+        files: list[OutboundFile] = []
+        upload_notes = ""
+        if clean_text and self._uploads_enabled():
+            clean_text, files, upload_notes = await self._extract_uploads(clean_text)
         # Defensive final full-text redaction before posting — belt-and-braces
         # with the driver's StreamRedactor (mirrors native's final redact pass),
         # so nothing unredacted reaches the channel even if a chunk slipped
-        # through the rolling buffer.
+        # through the rolling buffer. It runs AFTER extraction because removing
+        # markup rejoins the text around it, and the join can spell a credential
+        # neither half did.
         if clean_text:
-            clean_text, _ = redact_exfiltration_urls(clean_text)
-            clean_text, _ = redact_credentials(clean_text)
+            clean_text = _display_safe(clean_text)
             # Outbound-reply decorator seam (Default: identity, OSS-identical) —
             # the transport-path twin of the native handle_message wiring, so the
             # DEFAULT non-review Slack path also refreshes a composed edition's auth
@@ -604,16 +930,27 @@ class SlackRenderer(Renderer):
                 # decoration). No module logger here — the redaction itself is the
                 # security property; the native path logs counts, this path stays
                 # silent to avoid adding a logger to the renderer.
-                clean_text, _ = redact_exfiltration_urls(clean_text)
-                clean_text, _ = redact_credentials(clean_text)
+                clean_text = _display_safe(clean_text)
         if self._stream_ts is not None:
             if self._use_slack_stream:
+                # Appended text is final on this path (chat.stopStream does not
+                # replace it), so the withheld tail and the refusal notes are
+                # APPENDED rather than folded into the final text.
+                tail = await self._release_refs()
+                if tail:
+                    await self._append_stream(tail)
+                if upload_notes:
+                    await self._append_stream(f"\n\n{upload_notes}")
                 await self.slack.stop_stream(self.channel, self._stream_ts, clean_text or None)
             else:
                 # No-stream fallback: _stream_ts is a regular message ts (the
                 # _THINKING placeholder), not a stream handle — finalize it via
                 # chat.update, mirroring the on_tool_call gating.
-                await _safe_update(self.slack, self.channel, self._stream_ts, clean_text or "")
+                await self._render_fallback(clean_text or "")
+        if files:
+            # After the text, so the answer reads first and each picture lands
+            # under the sentence that introduced it.
+            await self._upload_files(files)
         # Clear thread status now that the turn is complete.
         await self.slack.set_thread_status(self.channel, self.thread_ts or "", "")
         # Timing footer (always posted at turn end), mirroring native.

@@ -26,19 +26,28 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.discord.attachments import (
     append_attachment_context,
     process_discord_attachments,
 )
 from kiro_crew.discord.commands import (
     ConversationState,
+    build_help_text,
+    is_bare_mid_turn_override,
     parse_command,
     parse_command_argument,
     parse_mid_turn_override,
+    unknown_command_usage,
 )
-from kiro_crew.discord.renderer import DiscordApprovalDecider, DiscordRenderer
+from kiro_crew.discord.renderer import (
+    DiscordApprovalDecider,
+    DiscordRenderer,
+    build_model_components,
+)
 from kiro_crew.discord.session_resume import (
     DiscordSessionResume,
     ResumeReleaseError,
@@ -64,19 +73,25 @@ from kiro_crew.messaging.link import (
 )
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
-from kiro_crew.safety_override import safety_override
+from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_map import ConversationOwnershipConflict
+from kiro_crew.stats import Stats
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
-    from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.context import ContextBuilder
     from kiro_crew.discord.client import DiscordClient, DiscordInteraction
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
+
+    #: Where a command handler's single reply goes. A ``!`` text command binds
+    #: this to a channel message; a registered slash command binds it to the
+    #: interaction's own (ephemeral) callback. Handlers reply exactly once, so
+    #: neither binding needs a followup route.
+    ReplyFn = Callable[[str], Awaitable[None]]
 
 from kiro_crew.messaging.queue_receipt import (
     ATTACHMENT_PLACEHOLDER,
@@ -141,29 +156,40 @@ _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 #: Commands that still run while this conversation owes the user a detach notice.
 #: Everything else targets a session or is a plain turn and must be refused until
 #: the user has been told — including a bare message, whose ``cmd`` is ``None``.
-_DETACH_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help"})
+_DETACH_EXEMPT_COMMANDS = frozenset({"new", "unlink", "sessions", "help", "status"})
+
+# How long a !model picker stays pressable, and how many pickers are retained.
+# Both bound unbounded growth (one entry per press-less !model), they are not UX
+# knobs: an expired or evicted picker answers "reopen !model" rather than acting
+# on a stale list. Mirrors the Telegram dispatcher.
+_MODEL_PICKER_TTL_SECS = 300.0
+_MODEL_PICKER_MAX = 50
+#: Buttons a picker shows. Discord allows 5 buttons per action row and 5 rows,
+#: so 25 is the platform ceiling; 24 leaves the Auto row inside it.
+_MODEL_PICKER_LIMIT = 24
+
+#: Commands whose whole effect is one reply, so the text and slash surfaces can
+#: share a handler and differ only in where that reply goes. Session-scoped
+#: commands are deliberately absent: they need the resume-binding refusal and the
+#: mid-turn ladder that ``handle_message`` owns.
+_REPLY_COMMANDS = frozenset({"status"})
+
 _RELEASE_FAILURE = (
     "⚠️ Couldn't save the session release, so the command was NOT completed. "
     "Fix the gateway's storage problem, then retry."
 )
-_HELP_TEXT = """\
-🦞 **Kiro Crew — Discord**
 
-Commands:
-`!new` — Start a fresh conversation
-`!compact` — Compress context (when it gets long)
-`!sessions [query]` — Continue a recent or matching dashboard session here (owner only)
-`!link` — Resume mirroring dashboard replies here (on by default)
-`!unlink` — Stop mirroring dashboard replies here
-`!stop` — Stop the current reply and clear the queue
-`!help` — Show this message
 
-While a reply is running, prefix a message to control it:
-`!queue <msg>` — answer it after the current turn
-`!steer <msg>` — fold it into the running turn now
+@dataclass
+class _ModelPicker:
+    """A posted !model button set, resolving a button index back to a model id."""
 
-Just send a message to chat. Replies stream in real-time.
-"""
+    scope_id: str
+    channel_id: str
+    message_id: str
+    created_at: float
+    #: ``(model_id, label)`` in button order. ``model_id`` "" is the Auto row.
+    choices: tuple[tuple[str, str], ...]
 
 
 class DiscordDispatcher:
@@ -214,6 +240,12 @@ class DiscordDispatcher:
         )
         # Kept as a direct alias for diagnostics/tests; the controller owns it.
         self._session_pickers = self._session_resume.pickers
+        # scope_id -> the model id the user picked ("" == Auto). Held in memory
+        # only: it is a per-run preference, and persisting it would outlive the
+        # advertised set it was chosen from.
+        self._model_pref: dict[str, str] = {}
+        # "<channel_id>:<message_id>" -> the picker posted on that message.
+        self._model_pickers: dict[str, _ModelPicker] = {}
 
     def register_allowed_thread(self, thread_id: str) -> None:
         """Authorize interactions in a thread created by the inbound transport."""
@@ -327,11 +359,47 @@ class DiscordDispatcher:
             await self._handle_unlink(user_id, channel_id, thread_id)
             return
         if cmd == "help":
-            await self.client.send_message(channel_id, _HELP_TEXT)
+            await self.client.send_message(channel_id, build_help_text())
             return
         if cmd == "stop":
             await self._handle_stop(user_id, channel_id, thread_id, route.resumed_key)
             return
+        if cmd in _REPLY_COMMANDS:
+            await self._run_reply_command(
+                cmd,
+                self._channel_reply(channel_id),
+                user_id=user_id,
+                thread_id=thread_id,
+                text=text,
+            )
+            return
+        if cmd == "model":
+            await self._handle_model(
+                channel_id,
+                scope_id,
+                route.resumed_key or self._session_key(user_id, thread_id),
+                parse_command_argument(text),
+            )
+            return
+        # A lone `!queue` / `!steer` is a directive missing its message body, and
+        # an unrecognized `!token` is a mistyped command. Both would otherwise be
+        # forwarded verbatim, and the model answers the literal string — which
+        # reads as a broken feature rather than a typo. Gated on
+        # ``interpret_as_command`` so a caption on an attachment is never read as
+        # either: that would answer with usage and silently drop the file. Gated
+        # on ``override_mode is None`` because a directive WITH a body has already
+        # been stripped off `text`, so what is left is the user's real message.
+        if interpret_as_command and override_mode is None:
+            if is_bare_mid_turn_override(text):
+                await self.client.send_message(
+                    channel_id,
+                    "Those take a message: `!queue <msg>` or `!steer <msg>`.",
+                )
+                return
+            usage = unknown_command_usage(text)
+            if usage:
+                await self.client.send_message(channel_id, usage)
+                return
 
         # ── Mid-turn concurrency: check the CURRENT-generation key BEFORE any
         # idle/daily rotation (see the Telegram dispatcher's rationale). ──
@@ -384,12 +452,33 @@ class DiscordDispatcher:
             if self.approval_mode == APPROVAL_INTERACTIVE
             else None
         )
+        # Both render toggles are read PER TURN rather than off the boot-time
+        # config, so changing one in the dashboard takes effect on the next
+        # message instead of at the next restart. That matches Slack, which reads
+        # the same two fields per message, and it is why the settings API reports
+        # them as needing no restart.
+        # Off-loop: the per-turn read is a real config.json read plus schema
+        # validation, so on the gateway's single loop it stalls every other chat
+        # and heartbeat task on a slow disk. Reading fresh is the point of the
+        # helper, so it cannot be cached away; it can only be moved off the loop.
+        render_cfg = await asyncio.to_thread(self._render_config)
         renderer = DiscordRenderer(
             self.client,
             channel_id,
             DISCORD_CAPABILITIES,
             session_key=session_key,
             uploads_allowed=not await self._uploads_restricted(session_key),
+            reactions_enabled=render_cfg[0],
+            show_thinking=render_cfg[1],
+            # The phase emoji goes on the USER'S OWN message, the way Slack's
+            # controller keys on the inbound `ts`: it is a progress marker on the
+            # thing that started the turn, so it costs no extra bubble. Without
+            # this id the ladder cannot arm at all, which is exactly what an
+            # unpassed constructor argument looks like from the outside: a feature
+            # that appears wired and silently does nothing. A synthetic turn (an
+            # option-button re-dispatch, an AutoNudge fire) carries no inbound
+            # message, so it has nothing to react to and the ladder stays down.
+            react_message_id=getattr(msg, "message_id", ""),
         )
         # Discord runs its OWN copy of the turn loop instead of going through
         # ``messaging.dispatch.drive_turn``, so the disconnect gate there does not
@@ -439,11 +528,23 @@ class DiscordDispatcher:
             # Acquire before attachment I/O. A large download yields repeatedly;
             # leaving the session idle in that window lets a later message run
             # first and persist the conversation in reverse order.
+            # ``model`` applies only when this call COLD-STARTS the session: the
+            # fast path returns a reused session before it consults the argument.
+            # That is exactly what ``!model``'s reply promises ("applies to your
+            # next conversation") when one is already live, so the two agree.
             provider, is_new, resumed = await self.sessions.get_or_create(
-                session_key, agent=agent, channel_id=chan_id
+                session_key,
+                agent=agent,
+                channel_id=chan_id,
+                model=self._model_pref.get(scope_id) or None,
             )
             _acquired = True
             renderer.authorize_upload_root(provider.cwd)
+            # The turn footer's context chip reads usage off the session provider,
+            # which only exists once the session is acquired. Unbound, the chip
+            # cannot render at all and the footer silently ships without the one
+            # number that tells a user when to run `!compact`.
+            renderer.bind_context_source(provider)
             if msg.attachments:
                 attachment_result = await process_discord_attachments(self.client, msg.attachments)
                 attachment_temp_paths = list(attachment_result.temp_paths)
@@ -556,7 +657,25 @@ class DiscordDispatcher:
             accumulated = await driver.run(full_message)
 
             # ── Post-turn bookkeeping (each guarded — see Telegram). ──
-            self.sessions.record_success(session_key)
+            # A turn that produced text but delivered NONE of it is not a
+            # success: the provider answered, the user did not hear it. Recording
+            # it as one hides the outage behind a healthy success rate and leaves
+            # the transcript claiming a reply the channel never carried. The
+            # renderer owns the observable because it owns the sends; a muted
+            # conversation runs a SilentRenderer, which never attempts a send and
+            # therefore never reports a failure here.
+            undelivered = bool(accumulated.strip()) and getattr(
+                out_renderer, "delivery_failed", False
+            )
+            if undelivered:
+                logger.warning(
+                    "discord: the turn for %s produced output but no message reached "
+                    "Discord; recording it as a failure",
+                    session_key,
+                )
+                await self.sessions.record_failure(session_key)
+            else:
+                self.sessions.record_success(session_key)
             try:
                 # Loop-side: put the turn in the live dashboard window FIRST so
                 # the dashboard's own save serializes it in chronological
@@ -793,6 +912,12 @@ class DiscordDispatcher:
             session_key, self._receipt_surface(channel_id), answered, deferred
         )
 
+    async def _receipt_finish_cancelled_locked(self, session_key: str, channel_id: str) -> None:
+        """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
+        MUST hold ``self._queue.lock``."""
+        assert self.client is not None
+        await self._queue.finish_cancelled_locked(session_key, self._receipt_surface(channel_id))
+
     def _receipt_surface(self, channel_id: str) -> ReceiptSurface:
         """A receipt surface with this channel's address already bound."""
         # cast, not assert: mypy does not carry an assert-narrowed local
@@ -854,19 +979,60 @@ class DiscordDispatcher:
     # ── Button handler (client's on_interaction) ───────────────────────────
 
     async def on_interaction(self, itx: "DiscordInteraction") -> None:
-        """Route a button press: approval decisions or [OPTIONS:] choices."""
+        """Route an interaction: a slash command, an approval, or a choice."""
         assert self.client is not None
         # Auth first (deny-by-default short-circuit).
         if not self._authorized(itx.user_id):
             return
-        # Guild buttons are accepted only in an allow-listed channel that
+        # Guild interactions are accepted only in an allow-listed channel that
         # Discord confirms is a thread. This mirrors transport.receive().
         thread_id = itx.channel_id if itx.guild_id else ""
-        if itx.guild_id and (
-            thread_id not in self._allowed_threads
-            or not await self.client.is_thread_channel(thread_id)
-        ):
+        in_allowed_thread = bool(thread_id) and (
+            thread_id in self._allowed_threads and await self.client.is_thread_channel(thread_id)
+        )
+        if itx.guild_id and not in_allowed_thread:
+            # A COMMAND gets an ephemeral explanation rather than silence. A
+            # dropped interaction is not invisible to the user: Discord shows its
+            # own red "did not respond" with no reason, which reads as the bot
+            # being broken. The reply is ephemeral, so naming the rule discloses
+            # nothing to the rest of the channel. Stateless commands are still
+            # refused HERE rather than answered, because a shared channel is a
+            # wider disclosure boundary than the thread allow-list grants and
+            # turns are deliberately never run in one.
+            if itx.is_command:
+                await self.client.respond_interaction(
+                    itx.interaction_id,
+                    itx.interaction_token,
+                    "🔒 Commands run in a direct message or an approved thread. "
+                    "Post here and I will open a thread, or DM me.",
+                    ephemeral=True,
+                )
             return
+        # A slash command is answered by its OWN callback, so it must not be
+        # pre-acked: DEFERRED_UPDATE_MESSAGE is a component-only callback type,
+        # and spending the one permitted first response on it would leave the
+        # command's actual reply with no route. It also runs the governance gate
+        # BEFORE responding rather than after, unlike the button path below.
+        # The order matters and the trade-off is deliberate: a governance check
+        # slower than Discord's ~3s callback window makes the command visibly
+        # fail, where acking first would have let a policy-denied command run.
+        # Failing visibly is the correct direction for a fail-closed gate.
+        if itx.is_command:
+            if not await channel_inbound_permitted("discord"):
+                logger.info("discord command dropped: denied by channels governance policy")
+                # Named, not silent, for the same reason as the guild refusal
+                # above. The wording stays generic: the governance profile is the
+                # operator's ceiling and its contents are not the user's to read.
+                await self.client.respond_interaction(
+                    itx.interaction_id,
+                    itx.interaction_token,
+                    "🔒 The Discord channel is currently disabled by policy.",
+                    ephemeral=True,
+                )
+                return
+            await self._on_command_interaction(itx)
+            return
+
         # Ack FIRST (after auth) to dismiss Discord's "interaction failed" state —
         # the governance check below does off-loop profile-store I/O that can, on a
         # slow FS, exceed Discord's ~3s interaction-ack deadline. Acking is a no-op
@@ -923,6 +1089,53 @@ class DiscordDispatcher:
             await self.client.edit_message(itx.channel_id, itx.message_id, verdict, components=[])
             return
 
+        # Model pick: "m:<index>" into the picker posted on this message. The
+        # index resolves against the exact choice list that picker recorded, so a
+        # button Discord replays after the advertised set changed cannot apply a
+        # model from a stale list.
+        if data.startswith("m:"):
+            token = f"{itx.channel_id}:{itx.message_id}"
+            picker = self._model_pickers.get(token)
+            expired = picker is not None and (
+                time.time() - picker.created_at > _MODEL_PICKER_TTL_SECS
+            )
+            try:
+                index = int(data[2:])
+            except ValueError:
+                index = -1
+            if picker is None or expired or not (0 <= index < len(picker.choices)):
+                # Covers expired, evicted and already-consumed alike — the
+                # wording must not claim "expired" for a picker that was simply
+                # used, which is what a double-press hits.
+                self._model_pickers.pop(token, None)
+                await self.client.edit_message(
+                    itx.channel_id,
+                    itx.message_id,
+                    "⌛ This model list is no longer active — send `!model` again.",
+                    components=[],
+                )
+                return
+            # Consume the picker BEFORE applying: the switch takes a round-trip,
+            # and a second press in that window would otherwise apply twice.
+            self._model_pickers.pop(token, None)
+            model_id, label = picker.choices[index]
+            outcome = await self._apply_model(
+                picker.scope_id,
+                self._inbound_session_key(itx.user_id, itx.channel_id, thread_id),
+                model_id,
+            )
+            sel().log_api_access(
+                caller=itx.user_id or "unknown",
+                operation="discord.set_model",
+                outcome="allowed",
+                source="discord",
+                resources=f"model={label}",
+            )
+            # One edit carries both the result text and the retired buttons, so
+            # they never outlive the choice they represent.
+            await self.client.edit_message(itx.channel_id, itx.message_id, outcome, components=[])
+            return
+
         # [OPTIONS:] choice: "opt:<i>" — label recovered from the button text.
         if data.startswith("opt:"):
             choice_text = itx.label
@@ -945,7 +1158,15 @@ class DiscordDispatcher:
                 text=choice_text,
                 thread_id=thread_id or None,
             )
-            await self.handle_message(synthetic)
+            # An option label is MODEL-AUTHORED: the agent chose the text of the
+            # button, and the press only says which one the user picked. So the
+            # payload is turn content, never a command. Interpreting it would let
+            # a prompt-injected agent offer `!new` as a choice and have one click
+            # discard the conversation, or `!stop` and have it cancel the reply the
+            # user was waiting on. Same rule and same reason as the queue drain, which
+            # replays with commands off so a queued `!new` reaches the model as
+            # literal text instead of executing.
+            await self.handle_message(synthetic, interpret_commands=False)
 
     # ── Public injection surface ────────────────────────────────────────────
     # Contract for out-of-band callers (AutoNudge fire path, the REST create
@@ -967,6 +1188,27 @@ class DiscordDispatcher:
     def _authorized(self, user_id: str) -> bool:
         # Deny-by-default (interactions bypass transport.receive, so re-check).
         return bool(user_id) and bool(self._allowed) and user_id in self._allowed
+
+    def _render_config(self) -> tuple[bool, bool]:
+        """``(reactions_enabled, show_thinking)`` for the turn about to start.
+
+        Blocking (a config.json read plus schema validation), so callers run it
+        off the event loop.
+
+        Loaded fresh rather than taken from ``self.cfg``, which is the boot-time
+        snapshot: an operator who turns the phase reactions off in the dashboard
+        expects the next message to be quiet, not the next restart. A failed load
+        keeps the shipped defaults rather than failing the turn, because neither
+        toggle is a security control: the loud default is the safe one to fall
+        back to for reactions, and the quiet default is the safe one for
+        reasoning.
+        """
+        try:
+            discord_cfg = KiroCrewConfig.load().discord
+            return bool(discord_cfg.reactions_enabled), bool(discord_cfg.show_thinking)
+        except Exception:
+            logger.warning("discord: could not read the render toggles", exc_info=True)
+            return True, False
 
     def _resolve_agent(self) -> str:
         return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
@@ -1403,3 +1645,309 @@ class DiscordDispatcher:
                 await self.client.send_message(channel_id, final)
         finally:
             self.sessions.release(session_key)
+
+    # ── /status, /model ────────────────────────────────────────────────────
+    #
+    # Each handler takes a ``reply`` sink instead of a channel id, because the
+    # same body serves two delivery shapes: a ``!`` text command answers with a
+    # normal channel message, while a registered slash command must answer its
+    # own interaction (ephemerally, inside Discord's ~3s callback deadline).
+    # Sharing the body is the point: a second copy per surface is how the two
+    # drift, and the slash form is the one an operator will actually discover.
+    # Each handler replies EXACTLY ONCE — an interaction callback may only be
+    # used for the first response, and a second would need a followup route.
+
+    async def _handle_status(self, reply: "ReplyFn") -> None:
+        """Report runtime stats, from the same source Slack's ``/kirocrew status`` uses.
+
+        ``Stats()`` is the process-wide counter set, so the two channels cannot
+        report different numbers for the same gateway. The auto-approve line is
+        appended because it is the one piece of runtime state that changes what a
+        tool call will DO, and a user deciding whether to send a request needs it.
+
+        READ-ONLY, and the only mention of the grant this channel makes: Discord
+        can report auto-approve but cannot take, renew, or drop it. Granting is
+        the operator's, from the dashboard or the machine running the gateway.
+
+        Nothing here names a path, a token, or a config value: a slash command is
+        invocable from an allow-listed guild thread that every member can read.
+        """
+        so = safety_override()
+        yolo = f"ON ({describe_grant_lifetime()})" if so.is_active() else "OFF"
+        await reply(
+            f"📊 {Stats().summary()}\n"
+            f"agent `{self._resolve_agent()}` · approval `{self.approval_mode}` · "
+            f"YOLO {yolo}"
+        )
+
+    def _model_choices(self, session_key: str) -> tuple[tuple[str, str], ...]:
+        """``(model_id, label)`` rows to offer for this session.
+
+        The ONLY source is what this session's backend advertised at
+        ``session/new`` — the set THIS account may actually use, carrying the
+        backend's own ids. That is deliberate on both counts: a static catalogue
+        would offer models the account cannot reach (a refusal mid-conversation),
+        and its display keys would need per-backend translation before the wire,
+        whereas an advertised id is what ``set_model`` accepts verbatim.
+
+        Returns just the Auto row when nothing is advertised (no live session
+        yet), which the caller reads as "there is nothing to pick".
+        """
+        rows: list[tuple[str, str]] = [("", "Auto (let the backend choose)")]
+        provider = self.sessions.get_provider(session_key)
+        advertised = getattr(provider, "available_models", None)
+        if not callable(advertised):
+            return tuple(rows)
+        try:
+            entries = [m for m in advertised() if isinstance(m, dict)]
+        except Exception:
+            logger.warning("discord !model: available_models failed", exc_info=True)
+            return tuple(rows)
+        for entry in entries:
+            model_id = str(entry.get("modelId") or "").strip()
+            # "auto" is already the first row; listing it twice would give the
+            # same choice two buttons.
+            if not model_id or model_id == "auto":
+                continue
+            rows.append((model_id, str(entry.get("name") or model_id)))
+        return tuple(rows[:_MODEL_PICKER_LIMIT])
+
+    def _prune_model_pickers(self, now: float) -> None:
+        """Drop expired pickers, then the oldest ones past the retention cap."""
+        for token, picker in list(self._model_pickers.items()):
+            if now - picker.created_at > _MODEL_PICKER_TTL_SECS:
+                self._model_pickers.pop(token, None)
+        while len(self._model_pickers) > _MODEL_PICKER_MAX:
+            oldest = min(self._model_pickers, key=lambda t: self._model_pickers[t].created_at)
+            self._model_pickers.pop(oldest, None)
+
+    async def _handle_model(
+        self, channel_id: str, scope_id: str, session_key: str, arg: str
+    ) -> None:
+        """Post the model buttons (or say there is nothing to pick yet).
+
+        Deliberately button-only: a free-text model id means guessing at names
+        the user has no way to enumerate, and a typo lands as a rejected
+        ``set_model`` mid-conversation. Any argument is treated as "show me the
+        list" rather than parsed.
+
+        Unlike the other command handlers this one does not take a ``reply``
+        sink: the buttons must live on a real channel message whose id the picker
+        registry keys on, and an ephemeral interaction response is not editable
+        by ``edit_message``. A slash invocation therefore acknowledges the
+        interaction separately and the picker itself is posted to the channel.
+        """
+        assert self.client is not None
+        choices = self._model_choices(session_key)
+        if len(choices) <= 1:
+            await self.client.send_message(
+                channel_id,
+                "No model list available yet — send a message first, then `!model`.",
+            )
+            return
+
+        current = self._model_pref.get(scope_id, "")
+        current_label = next(
+            (label for mid, label in choices if mid == current),
+            current or "Auto",
+        )
+        header = f"Current model: **{current_label}**\nPick one:"
+        if arg.strip():
+            # An argument is not an id to apply — say so once, then show the list
+            # anyway so the message is still a step forward.
+            header = f"`!model` takes no argument — pick from the list.\n\n{header}"
+        message_id = await self.client.send_message(
+            channel_id, header, components=build_model_components(choices, current)
+        )
+        if message_id is None:
+            return
+        now = time.time()
+        self._prune_model_pickers(now)
+        self._model_pickers[f"{channel_id}:{message_id}"] = _ModelPicker(
+            scope_id=scope_id,
+            channel_id=channel_id,
+            message_id=message_id,
+            created_at=now,
+            choices=choices,
+        )
+
+    async def _apply_model(self, scope_id: str, session_key: str, model_id: str) -> str:
+        """Record *model_id* for this conversation and push it to the live session.
+
+        *model_id* comes verbatim from the session's advertised list, so it is
+        already the id this backend accepts — no canonical translation, which
+        would differ per backend and could mangle an id that was correct.
+
+        The preference is stored unconditionally so it reaches the NEXT session
+        even when there is nothing live to switch (the common case right after
+        ``!new``). When a session does exist the switch is attempted in place —
+        ``session/set_model`` carries the conversation across — and the semaphore
+        is taken atomically so the switch cannot interleave JSON-RPC with a turn
+        on the same stdio channel.
+
+        Returns the user-facing outcome line.
+        """
+        label = model_id or "Auto"
+        self._model_pref[scope_id] = model_id
+        live = self.sessions.has_session(session_key)
+        # Two different promises, because the preference reaches a session only
+        # at creation: ``get_or_create`` returns a reused session from its fast
+        # path before it consults ``model=``. With nothing live the next message
+        # starts the session, so it genuinely lands then; with a session already
+        # up, only a fresh conversation picks it up.
+        deferred = f"✅ Model set to {label} — it applies to your next message."
+        next_new = (
+            f"✅ Model set to {label} — this conversation keeps its current "
+            f"model; the switch applies to your next one (`!new`)."
+        )
+        # Auto has no ACP id meaning "let the backend choose", so it can only be
+        # recorded; the next session start resolves it from config. Claiming a
+        # live switch here would be a lie.
+        if not model_id:
+            return next_new if live else deferred
+        if not live:
+            return deferred
+        if not await self.sessions.try_acquire(session_key):
+            return (
+                f"✅ Model set to {label}, but a reply is still running — this "
+                f"conversation keeps its current model; the switch applies to "
+                f"your next one (`!new`)."
+            )
+        try:
+            provider = self.sessions.get_provider(session_key)
+            set_model = getattr(getattr(provider, "client", None), "set_model", None)
+            if set_model is None:
+                return next_new
+            await set_model(model_id)
+        except Exception as exc:
+            logger.warning(
+                "discord !model: live set_model failed for %s: %s",
+                session_key,
+                type(exc).__name__,
+                exc_info=True,
+            )
+            # The stored preference still stands, so the next session gets it,
+            # but do not claim the running conversation switched when it did not.
+            return (
+                f"⚠️ Couldn't switch this conversation to {label} "
+                f"({type(exc).__name__}) — it applies to your next "
+                f"conversation (`!new`)."
+            )
+        finally:
+            self.sessions.release(session_key)
+        return f"✅ Now using {label}."
+
+    # ── Shared command routing (text ``!x`` and registered slash ``/x``) ────
+
+    def _channel_reply(self, channel_id: str) -> "ReplyFn":
+        """A reply sink that posts a normal channel message."""
+
+        async def _send(text: str) -> None:
+            assert self.client is not None
+            await self.client.send_message(channel_id, text)
+
+        return _send
+
+    def _interaction_reply(self, itx: "DiscordInteraction") -> "ReplyFn":
+        """A reply sink that answers the interaction itself, ephemerally.
+
+        Ephemeral because a slash command is invocable from an allow-listed guild
+        thread that every member can read, and these replies carry runtime state
+        or a login link. Only the FIRST response may use the callback route, which
+        is why every handler behind this replies exactly once.
+        """
+
+        async def _respond(text: str) -> None:
+            assert self.client is not None
+            await self.client.respond_interaction(
+                itx.interaction_id, itx.interaction_token, text, ephemeral=True
+            )
+
+        return _respond
+
+    async def _run_reply_command(
+        self,
+        cmd: str,
+        reply: "ReplyFn",
+        *,
+        user_id: str,
+        thread_id: str,
+        text: str,
+    ) -> None:
+        """Dispatch one single-reply command through the given sink.
+
+        The two surfaces share this so a command cannot exist on one and not the
+        other: the text path and the slash path differ only in the sink they bind.
+        """
+        if cmd == "status":
+            await self._handle_status(reply)
+
+    async def _on_command_interaction(self, itx: "DiscordInteraction") -> None:
+        """Run a registered slash command.
+
+        Reconstructs the ``!``-form text from the command name and its options so
+        the SAME parsers and handlers serve both surfaces; the alternative is a
+        second argument grammar per command, which is how the two drift.
+
+        Commands whose reply is not a single message are handled separately:
+        ``model`` posts a real channel message because its buttons must be
+        editable (an ephemeral response is not), and the session-scoped commands
+        route through ``handle_message`` so they keep the resume-binding refusal
+        and mid-turn checks that path owns.
+        """
+        assert self.client is not None
+        name = itx.command_name
+        thread_id = itx.channel_id if itx.guild_id else ""
+        if name in _REPLY_COMMANDS:
+            await self._run_reply_command(
+                name,
+                self._interaction_reply(itx),
+                user_id=itx.user_id,
+                thread_id=thread_id,
+                # Rebuild the text form so the shared argument parsers apply
+                # unchanged. Option order does not matter: every command here
+                # takes at most one.
+                text=" ".join([f"!{name}", *itx.options.values()]).strip(),
+            )
+            return
+        if name == "help":
+            await self.client.respond_interaction(
+                itx.interaction_id, itx.interaction_token, build_help_text(), ephemeral=True
+            )
+            return
+        if name == "model" and thread_id:
+            # `model` is the one command whose output CANNOT be ephemeral: its
+            # buttons have to live on an editable channel message, and an
+            # ephemeral response is not editable. In a guild thread that would
+            # publish the account's advertised model list to every member, after
+            # the slash surface promised a private reply. Refusing is the honest
+            # resolution: `!model` in the thread still works for anyone who
+            # accepts that it posts, and a DM has no such tension.
+            await self.client.respond_interaction(
+                itx.interaction_id,
+                itx.interaction_token,
+                "🔒 `/model` needs a message it can edit, so its reply cannot be "
+                "private here. DM me `/model`, or send `!model` if you are happy "
+                "for the list to be visible in this thread.",
+                ephemeral=True,
+            )
+            return
+        # Everything else is session-scoped. Acknowledge the interaction first so
+        # Discord does not show "interaction failed" while the turn or command
+        # runs, then replay it through the text path, which owns the resume
+        # refusal, the governance recheck and the mid-turn ladder.
+        await self.client.respond_interaction(
+            itx.interaction_id,
+            itx.interaction_token,
+            f"Running `/{name}`…",
+            ephemeral=True,
+        )
+        argument = " ".join(itx.options.values()).strip()
+        synthetic = InboundMessage(
+            channel_type="discord",
+            user_id=itx.user_id,
+            conversation_id=itx.channel_id,
+            text=f"!{name} {argument}".strip(),
+            thread_id=thread_id or None,
+        )
+        await self.handle_message(synthetic)
