@@ -5,7 +5,7 @@ import type { ChatMessage } from '../types'
 
 const PREFIX = '[Tool blocked — reason sent to the agent]'
 const BODY =
-  '[Kiro Crew policy notice] The tool call you just made was blocked by a Kiro Crew ' +
+  '[Kiro Crew host notice] The tool call you just made was blocked by a Kiro Crew ' +
   'safety policy.\n\nBlocked: Running: bash -c x: Blocked by security policy: deny-rule\n'
 
 const msg = (role: string, content: string, meta?: Record<string, unknown>): ChatMessage =>
@@ -89,5 +89,44 @@ describe('turnHadPolicyBlock', () => {
       msg('assistant', 'x'),
     ]
     expect(turnHadPolicyBlock(rows, 2)).toBe(false)
+  })
+})
+
+
+describe('the card names the real cause, not always "policy"', () => {
+  // The detail is what the reader sees WITHOUT expanding. Before the cause was
+  // carried, every cause rendered "safety policy blocked the call" — so an
+  // invalid tool name or a faulted hook sent them to audit a security rule that
+  // does not exist, while the true cause sat in the collapsed body.
+  const row = (cause: string) => `${PREFIX} ${cause}\n${BODY}`
+
+  it('keys the detail on the cause the marker line carries', () => {
+    const invalid = parseRecoveryMessage(row('invalid_name'))
+    const hook = parseRecoveryMessage(row('hook_error'))
+    const policy = parseRecoveryMessage(row('policy'))
+    expect(invalid?.kind).toBe('tool_blocked')
+    expect(invalid?.detail).not.toBe(policy?.detail)
+    expect(hook?.detail).not.toBe(policy?.detail)
+    expect(invalid?.detail).not.toBe(hook?.detail)
+    // Neither new cause may claim a policy verdict — that is the whole finding.
+    expect(invalid?.detail?.toLowerCase()).not.toContain('policy')
+    expect(hook?.detail?.toLowerCase()).not.toContain('policy')
+  })
+
+  it('falls back to the policy wording when the cause is absent or unknown', () => {
+    // Matches the backend's own cause default: a wrong noun is recoverable,
+    // rendering a raw key or an empty summary is not.
+    const policy = parseRecoveryMessage(row('policy'))
+    for (const c of ['', 'not-a-cause']) {
+      expect(parseRecoveryMessage(row(c))?.detail).toBe(policy?.detail)
+    }
+  })
+
+  it('always resolves through i18n, never leaks a raw key', () => {
+    for (const c of ['policy', 'invalid_name', 'hook_error']) {
+      const d = parseRecoveryMessage(row(c))?.detail ?? ''
+      expect(d).not.toContain('recoveryCard.')
+      expect(d.length).toBeGreaterThan(0)
+    }
   })
 })

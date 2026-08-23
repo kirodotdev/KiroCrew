@@ -14,14 +14,23 @@ fires only when the notice could not be delivered.
 
 from __future__ import annotations
 
+import pathlib
+import re
+
 import pytest
 
 from kiro_crew.dashboard.chat_runner import (
     _refined_tool_row_content,
     _reject_hook_blocked,
+    _reject_hook_error,
+    _reject_invalid_tool,
     _steer_policy_notice,
 )
 from kiro_crew.dashboard.state import (
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_INVALID_NAME,
+    DENY_CAUSE_POLICY,
+    REFUSAL_INBAND_RECOVERY_PREFIX,
     build_refusal_steer_notice,
     should_queue_refusal_recovery,
 )
@@ -200,6 +209,7 @@ class TestRejectHookBlockedOrdering:
             session_key="s",
             pre_hook_results=["BLOCKED: unsafe shell pattern"],
             refusal_reasons=reasons,
+            refusal_notices=None,
         )
         assert client.calls == ["reject"]
         assert reasons and reasons[0][0] == "bash"
@@ -364,4 +374,288 @@ class TestRecoveryIsNowAFallback:
     def test_no_refusals_never_queues_even_with_notices(self):
         assert not should_queue_refusal_recovery(
             [], stopping=False, needs_reset=False, stop_reason="end_turn", notices_sent=3
+        )
+
+
+class TestCauseSpecificWording:
+    """A deny the model can fix must not be worded as one it must route around."""
+
+    def test_invalid_name_says_reissue_not_find_an_alternative(self):
+        out = build_refusal_steer_notice("bash", "name too long", cause=DENY_CAUSE_INVALID_NAME)
+        assert "failed validation" in out
+        assert "reissue" in out.lower()
+        # The policy guidance sends the model looking for a different approach.
+        # Here the action was never judged, so that advice would abandon a call
+        # nobody objected to.
+        assert "allowed alternative" not in out
+        assert "safety policy" not in out
+
+    def test_hook_error_says_host_fault_not_a_verdict(self):
+        out = build_refusal_steer_notice("bash", "hook exploded", cause=DENY_CAUSE_HOOK_ERROR)
+        assert "host fault" in out
+        assert "nothing judged the call" in out
+        assert "safety policy" not in out
+
+    def test_policy_wording_is_unchanged_by_default(self):
+        # Every pre-existing caller passes no cause; the policy text must be
+        # byte-identical to what shipped, or the model's correction changes
+        # meaning on a path this change was not meant to touch.
+        assert build_refusal_steer_notice("bash", "denied") == build_refusal_steer_notice(
+            "bash", "denied", cause=DENY_CAUSE_POLICY
+        )
+        assert "was blocked by a Kiro Crew safety policy" in build_refusal_steer_notice(
+            "bash", "denied"
+        )
+
+    def test_every_cause_keeps_the_invariant_half(self):
+        # The half that does the actual work -- naming the string being corrected
+        # and forbidding a hand-back -- must not vary with the cause.
+        for cause in (DENY_CAUSE_POLICY, DENY_CAUSE_INVALID_NAME, DENY_CAUSE_HOOK_ERROR):
+            out = build_refusal_steer_notice("bash", "why", cause=cause)
+            assert "User denied tool execution" in out, cause
+            assert "NOT a user action" in out, cause
+            assert "same turn" in out, cause
+            assert "do not ask the user" in out.lower(), cause
+
+    def test_the_bracket_tag_is_cause_neutral(self):
+        # The tag has to be true for all three causes. Saying "policy notice" above
+        # a sentence that explains the call was NOT a policy matter contradicts the
+        # body one line later, and the body is the part doing the correcting.
+        for cause in (DENY_CAUSE_POLICY, DENY_CAUSE_INVALID_NAME, DENY_CAUSE_HOOK_ERROR):
+            out = build_refusal_steer_notice("bash", "why", cause=cause)
+            assert out.startswith("[Kiro Crew host notice]"), cause
+            # "policy" may still appear in the POLICY cause's own clause; what must
+            # not survive is the tag claiming every cause is one.
+            assert "policy notice" not in out, cause
+
+    def test_unknown_cause_degrades_to_policy_rather_than_raising(self):
+        # Losing the notice would hand the model back kiro-cli's "user denied"
+        # with nothing to correct it; a wrong noun is the cheaper failure.
+        out = build_refusal_steer_notice("bash", "why", cause="not-a-cause")
+        assert "NOT a user action" in out
+        assert "safety policy" in out
+
+
+class TestInvalidNameExplainsItself:
+    """The one deny the model can fix, so the notice is worth the most here."""
+
+    @pytest.mark.asyncio
+    async def test_steer_precedes_reject_and_names_the_validation_failure(self):
+        client = _SteerClient()
+        notices: list[str] = []
+        await _reject_invalid_tool(
+            client,
+            _Slot(),
+            _Event(),
+            session_key="s",
+            error=ValueError("name too long"),
+            refusal_notices=notices,
+            refusal_reasons=[],
+        )
+        assert client.calls == ["steer", "reject"]
+        assert "name too long" in client.steered[0]
+        assert "reissue" in client.steered[0].lower()
+        assert notices
+
+    @pytest.mark.asyncio
+    async def test_the_display_row_carries_the_cause_for_the_card(self):
+        # The card's always-visible summary is keyed on this token. Without it the
+        # card reads "safety policy blocked the call" for a deny no policy judged,
+        # sending the reader to audit a rule that does not exist -- the same
+        # cause-blind wording this change removes for the model, left for the human.
+        slot = _Slot()
+        await _reject_invalid_tool(
+            _SteerClient(),
+            slot,
+            _Event(),
+            session_key="s",
+            error=ValueError("name too long"),
+            refusal_notices=[],
+            refusal_reasons=[],
+        )
+        rows = [c for _r, c in slot.rows if c.startswith(REFUSAL_INBAND_RECOVERY_PREFIX)]
+        assert rows, "no display row was appended"
+        assert rows[0].splitlines()[0].endswith(DENY_CAUSE_INVALID_NAME)
+
+    @pytest.mark.asyncio
+    async def test_reject_still_happens_without_a_notice_list(self):
+        # In-band delivery is additive; a fallback-only caller must still deny.
+        client = _SteerClient()
+        slot = _Slot()
+        await _reject_invalid_tool(
+            client,
+            slot,
+            _Event(),
+            session_key="s",
+            error=ValueError("bad"),
+            refusal_reasons=[],
+            refusal_notices=None,
+        )
+        assert client.calls == ["reject"]
+        assert any("invalid: bad" in row[1] for row in slot.rows)
+
+    @pytest.mark.asyncio
+    async def test_invalid_name_records_a_fallback_entry(self):
+        # The notice is the primary path, never the only one: on a harness with
+        # no steer, or a steer that was never folded in, this entry is what the
+        # recovery continuation carries. Without it the deny reaches the model
+        # through NO channel while the policy path still gets its continuation.
+        reasons: list[tuple[str, str]] = []
+        await _reject_invalid_tool(
+            _SteerClient(),
+            _Slot(),
+            _Event(),
+            session_key="s",
+            error=ValueError("name too long"),
+            refusal_reasons=reasons,
+            refusal_notices=None,
+        )
+        assert reasons and reasons[0][1] == "name too long"
+
+
+class TestHookErrorExplainsItself:
+    """A hook that faulted judged nothing -- the model must not read a verdict."""
+
+    @pytest.mark.asyncio
+    async def test_steer_precedes_reject_and_frames_it_as_a_fault(self):
+        client = _SteerClient()
+        notices: list[str] = []
+        await _reject_hook_error(
+            client,
+            _Slot(),
+            _Event(),
+            session_key="s",
+            error="hook exploded",
+            refusal_notices=notices,
+            refusal_reasons=[],
+        )
+        assert client.calls == ["steer", "reject"]
+        assert "host fault" in client.steered[0]
+        assert notices
+
+    @pytest.mark.asyncio
+    async def test_hook_error_text_is_redacted_before_it_reaches_the_model(self):
+        # Hooks are fired with the tool name and parsed input, so an exception
+        # that wraps its inputs can carry credential material. The audit already
+        # redacted it; the model-facing copy must not be the one exception.
+        client = _SteerClient()
+        notices: list[str] = []
+        await _reject_hook_error(
+            client,
+            _Slot(),
+            _Event(),
+            session_key="s",
+            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            refusal_notices=notices,
+            refusal_reasons=[],
+        )
+        assert "AKIAIOSFODNN7EXAMPLE" not in client.steered[0]
+
+    @pytest.mark.asyncio
+    async def test_hook_error_records_a_fallback_entry(self):
+        # Same reason as the invalid-name path, and the redacted form must be the
+        # one that survives into the fallback too -- the continuation is sent to
+        # the model, so an unredacted entry would leak past the audit boundary.
+        reasons: list[tuple[str, str]] = []
+        await _reject_hook_error(
+            _SteerClient(),
+            _Slot(),
+            _Event(),
+            session_key="s",
+            error="hook saw AKIAIOSFODNN7EXAMPLE",
+            refusal_reasons=reasons,
+            refusal_notices=None,
+        )
+        assert reasons
+        assert "AKIAIOSFODNN7EXAMPLE" not in reasons[0][1]
+
+
+class TestEveryHostDenyCallSiteIsWired:
+    """Source-level guard: the coverage claim must be checkable, not asserted.
+
+    Both review bots caught the same miss on the first revision of this change --
+    the helpers steered only when handed a notice list, and four production call
+    sites passed nothing, so those host denies still handed the model kiro-cli's
+    "User denied tool execution". Making the parameters REQUIRED turns a future
+    omission into a mypy error, and this test is the second half: it fails if a
+    call site is added that threads neither list, which type-checking alone cannot
+    catch once someone passes an explicit ``None`` to silence it.
+    """
+
+    RUNNER = pathlib.Path(__file__).resolve().parents[1] / "src/kiro_crew/dashboard/chat_runner.py"
+    HELPERS = ("_reject_invalid_tool", "_reject_hook_error", "_reject_hook_blocked")
+    #: A call OPENING in either shape black may produce: arguments on the following
+    #: lines, or the whole call on one line. Anchoring to a line that ENDS in "("
+    #: is how this guard would rot silently -- a reformat onto one line drops the
+    #: site out of the scan while a floor assertion stays green, which is the same
+    #: vacuity the interactive-branch pin below rejects.
+    CALL = re.compile(r"^\s*await (?:%s)\(" % "|".join(HELPERS))
+
+    def _src(self) -> str:
+        return self.RUNNER.read_text(encoding="utf-8")
+
+    def _call_blocks(self) -> list[tuple[int, str]]:
+        lines = self._src().splitlines(keepends=True)
+        blocks: list[tuple[int, str]] = []
+        for i, line in enumerate(lines):
+            if not self.CALL.match(line):
+                continue
+            depth = 0
+            for j in range(i, min(i + 30, len(lines))):
+                depth += lines[j].count("(") - lines[j].count(")")
+                if depth == 0 and j > i:
+                    blocks.append((i + 1, "".join(lines[i : j + 1])))
+                    break
+            else:
+                # Never silently skip: an unbalanced walk means the scan cannot
+                # speak for this site, and a guard that drops what it cannot parse
+                # is the failure mode this class exists to prevent.
+                blocks.append((i + 1, lines[i]))
+        return blocks
+
+    def test_the_scan_finds_every_call_site_the_source_contains(self):
+        # Cross-checked against an INDEPENDENT locator, not a threshold: a bare
+        # ">= N" floor stays green when one site drops out of the scan, and a site
+        # the walker never sees is invisible to every assertion built on it.
+        # Counting "await <helper>(" textually cannot miss a call shape the
+        # walker's regex misses, so a divergence means the walker has rotted.
+        src = self._src()
+        textual = sum(src.count(f"await {name}(") for name in self.HELPERS)
+        assert textual >= 10, f"expected the known call sites, textual count {textual}"
+        found = len(self._call_blocks())
+        assert found == textual, (
+            f"the block scan found {found} of {textual} call sites -- its regex no "
+            "longer matches every call shape, so the coverage assertion below is "
+            "vacuous for the ones it missed"
+        )
+
+    def test_every_call_site_threads_both_lists(self):
+        missing = [
+            line
+            for line, block in self._call_blocks()
+            if "refusal_notices" not in block or "refusal_reasons" not in block
+        ]
+        assert not missing, (
+            "these host-deny call sites reach the model through no channel -- "
+            f"pass refusal_notices= and refusal_reasons=: lines {missing}"
+        )
+
+    def test_interactive_approved_path_is_wired(self):
+        # The sharpest case: the person clicked APPROVE and the host denied
+        # anyway, so "user denied tool execution" is not merely unhelpful but
+        # false. Pinned separately because it is the one a reader most needs to
+        # trust, and both its deny calls were among the four originally missed.
+        src = self.RUNNER.read_text(encoding="utf-8")
+        approved = src.split('if outcome == "approved":', 1)
+        assert len(approved) == 2, "the interactive approved branch moved -- guard is stale"
+        window = approved[1][:4000]
+        # Count-matched, not ">= 1": this branch makes TWO host denies (invalid
+        # name, hook fault) and a threshold assertion stays green when one of
+        # them loses its notice, which is exactly the shape of the original miss.
+        calls = len(re.findall(r"await _reject_(?:invalid_tool|hook_error|hook_blocked)\(", window))
+        assert calls >= 3, f"expected the branch's three deny calls, saw {calls}"
+        wired = window.count("refusal_notices=_refusal_notices")
+        assert wired == calls, (
+            f"{calls - wired} deny call(s) in the interactive approved branch do not "
+            "steer -- the user approved, so 'user denied tool execution' is false there"
         )

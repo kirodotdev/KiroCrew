@@ -7840,6 +7840,8 @@
         "resuming_the_interrupted_turn": "正在从中断处继续",
         "safety_policy_continuing": "安全策略阻止了调用 · 已自动发送续接指令",
         "safety_policy_told_in_turn": "安全策略阻止了调用 · 已在本轮次内告知代理原因",
+        "invalid_name_told_in_turn": "工具名未通过校验 · 已在本轮次内告知代理原因",
+        "hook_fault_told_in_turn": "调用前有钩子出错 · 已在本轮次内告知代理原因",
         "session_busy_continuing": "会话正忙 · 已自动发送续接指令",
         "subagents_finished": "子代理已完成",
         "system_notice": "系统通知",

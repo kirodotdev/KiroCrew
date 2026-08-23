@@ -7944,6 +7944,8 @@
         "resuming_the_interrupted_turn": "unterbrochener Zug wird fortgesetzt",
         "safety_policy_continuing": "Sicherheitsrichtlinie hat den Aufruf blockiert · Fortsetzung automatisch gesendet",
         "safety_policy_told_in_turn": "Sicherheitsrichtlinie hat den Aufruf blockiert · dem Agenten wurde der Grund noch in diesem Zug mitgeteilt",
+        "invalid_name_told_in_turn": "der Werkzeugname hat die Validierung nicht bestanden · dem Agenten wurde der Grund noch in diesem Zug mitgeteilt",
+        "hook_fault_told_in_turn": "ein Hook ist vor dem Aufruf fehlgeschlagen · dem Agenten wurde der Grund noch in diesem Zug mitgeteilt",
         "session_busy_continuing": "Sitzung beschäftigt · Fortsetzung automatisch gesendet",
         "subagents_finished": "Subagenten abgeschlossen",
         "system_notice": "Systemhinweis",

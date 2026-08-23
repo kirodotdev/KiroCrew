@@ -1252,8 +1252,42 @@ def build_refusal_recovery_prompt(refusals: list[tuple[str, str]]) -> str:
     return "\n".join(lines)
 
 
-def build_refusal_steer_notice(title: str, reason: str) -> str:
-    """Body of the in-band policy notice steered into the RUNNING turn on a deny.
+#: Why a tool call was denied, for the in-band notice's cause-specific wording.
+#: The notice's INVARIANT half — that this was not a user action, the generic
+#: string it is correcting, and the instruction to decide inside this turn — is
+#: identical for every cause; only the clause naming the cause and the guidance
+#: about what to do next differ. Kept as data rather than three near-copies of
+#: the notice so the invariant half cannot drift between them, which is the half
+#: doing the actual work of overwriting the model's wrong conclusion.
+DENY_CAUSE_POLICY = "policy"
+DENY_CAUSE_INVALID_NAME = "invalid_name"
+DENY_CAUSE_HOOK_ERROR = "hook_error"
+
+#: cause → (clause completing "The tool call you just made …", what to do next).
+_DENY_CAUSE_TEXT: dict[str, tuple[str, str]] = {
+    DENY_CAUSE_POLICY: (
+        "was blocked by a Kiro Crew safety policy",
+        "use an allowed alternative (for a shell command, a read-only variant), use "
+        "a different tool, or — if the block is correct and you genuinely cannot "
+        "proceed — say so and stop with the reason.",
+    ),
+    DENY_CAUSE_INVALID_NAME: (
+        "was refused because its tool name failed validation",
+        "reissue the call with a name that passes validation. The action itself was "
+        "never judged, so do not abandon it or look for a different approach on this "
+        "evidence — and do not repeat the same malformed name.",
+    ),
+    DENY_CAUSE_HOOK_ERROR: (
+        "could not be authorized because a PreToolUse hook raised while deciding it",
+        "treat this as a host fault, not a verdict on the action: nothing judged the "
+        "call itself. Retrying the identical call is reasonable once; if it faults "
+        "again, say what happened rather than working around it silently.",
+    ),
+}
+
+
+def build_refusal_steer_notice(title: str, reason: str, *, cause: str = DENY_CAUSE_POLICY) -> str:
+    """Body of the in-band deny notice steered into the RUNNING turn.
 
     Sent BEFORE the permission rejection goes back on the wire, which is what
     makes it race-free: while the ``session/request_permission`` is still
@@ -1271,24 +1305,35 @@ def build_refusal_steer_notice(title: str, reason: str) -> str:
     true on another steer-capable harness whose wording has not been measured.
     ``title``/``reason`` must already be redacted by the caller.
 
+    *cause* selects the wording. The distinction is not cosmetic: a policy block
+    is a verdict the model must route around, an invalid tool name is the model's
+    own malformed output and is the one case it can simply fix, and a hook fault
+    judged nothing at all. Telling the model "safety policy" for the latter two
+    would send it looking for an allowed alternative to an action nobody refused.
+    An unknown cause degrades to the policy wording rather than raising: a wrong
+    noun is recoverable, and losing the notice would hand the model back
+    kiro-cli's "user denied" with nothing to correct it.
+
     Returns "" when there is nothing to say, so a caller can treat the empty
     string as "no notice was sent" and fall back to the recovery continuation.
     """
     if not (title or "").strip() and not (reason or "").strip():
         return ""
+    clause, guidance = _DENY_CAUSE_TEXT.get(cause, _DENY_CAUSE_TEXT[DENY_CAUSE_POLICY])
     what = f"{title}: {reason}" if reason else title
+    # "host notice", not "policy notice": the tag has to be true for all three
+    # causes, and only one of them IS a policy. Naming the ACTOR is also what the
+    # notice exists to do — the model has just been told the user denied this, and
+    # every sentence after this one is spent correcting that.
     return (
-        "[Kiro Crew policy notice] The tool call you just made was blocked by a "
-        "Kiro Crew safety policy. This was NOT a user action — the user did not "
+        f"[Kiro Crew host notice] The tool call you just made {clause}. "
+        "This was NOT a user action — the user did not "
         "cancel, reject, or interrupt anything. The tool result you were handed for "
         "it is generic and wrong about who denied it — on kiro-cli it reads "
         '"User denied tool execution".\n\n'
         f"Blocked: {what}\n\n"
         "Do not apologise for a cancellation and do not ask the user whether to "
-        "retry. Decide and continue in this same turn: use an allowed "
-        "alternative (for a shell command, a read-only variant), use a different "
-        "tool, or — if the block is correct and you genuinely cannot proceed — "
-        "say so and stop with the reason."
+        f"retry. Decide and continue in this same turn: {guidance}"
     )
 
 

@@ -8048,6 +8048,8 @@
         "resuming_the_interrupted_turn": "ripresa del turno interrotto",
         "safety_policy_continuing": "la policy di sicurezza ha bloccato la chiamata · continuazione inviata automaticamente",
         "safety_policy_told_in_turn": "la policy di sicurezza ha bloccato la chiamata · l’agente è stato informato del motivo in questo turno",
+        "invalid_name_told_in_turn": "il nome dello strumento non ha superato la convalida · l’agente è stato informato del motivo in questo turno",
+        "hook_fault_told_in_turn": "un hook è andato in errore prima della chiamata · l’agente è stato informato del motivo in questo turno",
         "session_busy_continuing": "sessione occupata · continuazione inviata automaticamente",
         "subagents_finished": "Subagenti completati",
         "system_notice": "Avviso di sistema",

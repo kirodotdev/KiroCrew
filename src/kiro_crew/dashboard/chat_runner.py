@@ -117,6 +117,9 @@ from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
+    DENY_CAUSE_HOOK_ERROR,
+    DENY_CAUSE_INVALID_NAME,
+    DENY_CAUSE_POLICY,
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
     NATIVE_SUBAGENT_DONE_RESULT_CAP,
@@ -509,6 +512,8 @@ async def _steer_policy_notice(
     notices: list[str],
     slot: Any = None,
     state: Any = None,
+    *,
+    cause: str = DENY_CAUSE_POLICY,
 ) -> bool:
     """Hand a deny reason to the model IN-BAND, before the rejection is answered.
 
@@ -530,10 +535,14 @@ async def _steer_policy_notice(
     ``steering_consumed`` echo) and returns whether it was written. Best-effort:
     steering is an optimisation on top of a fallback that still works, so a
     failure here must never turn a clean policy block into a turn error.
+
+    *cause* picks the notice's cause-specific wording; see
+    :func:`build_refusal_steer_notice`. Every deny path that reaches a model runs
+    through here, so a new one states its cause rather than inheriting "policy".
     """
     if not getattr(client, "supports_steer", False):
         return False
-    notice = build_refusal_steer_notice(title, reason)
+    notice = build_refusal_steer_notice(title, reason, cause=cause)
     if not notice:
         return False
     try:
@@ -553,9 +562,16 @@ async def _steer_policy_notice(
     # received. Best-effort for the same reason as the steer itself.
     if slot is not None:
         try:
+            # The cause rides the MARKER line, following the
+            # HOOK_HALTED_RECOVERY_PREFIX precedent (`… #<depth>`): the card's
+            # always-visible summary has to name the right cause. Rendering one
+            # "safety policy blocked the call" line for all three would tell the
+            # person to go audit a security rule that does not exist — the same
+            # cause-blind wording this change removes for the model, left in place
+            # for the human.
             slot.append(
                 "inject",
-                f"{REFUSAL_INBAND_RECOVERY_PREFIX}\n{notice}",
+                f"{REFUSAL_INBAND_RECOVERY_PREFIX} {cause}\n{notice}",
                 "msg msg-inject",
             )
             if state is not None:
@@ -573,7 +589,7 @@ async def _reject_hook_blocked(
     session_key: str,
     pre_hook_results: Any,
     refusal_reasons: list[tuple[str, str]],
-    refusal_notices: list[str] | None = None,
+    refusal_notices: list[str] | None,
     metadata: dict | None = None,
 ) -> None:
     """Deny a tool a PreToolUse hook blocked, and record WHY for the model.
@@ -623,19 +639,47 @@ async def _reject_invalid_tool(
     *,
     session_key: str,
     error: Exception,
+    refusal_reasons: list[tuple[str, str]],
+    refusal_notices: list[str] | None,
+    state: Any = None,
     metadata: dict | None = None,
 ) -> None:
     """Deny a tool whose display name failed validation, on redacted surfaces.
 
-    Reject, blocked row, and audit live together so a permission path added
-    later cannot publish the raw model-authored title by omission: the title
-    is redacted once here and used for both the transcript row (broadcast to
-    the dashboard AND persisted to the ConversationLog) and the audit
-    ``tool_name``. The validation *error* needs no redaction —
+    Reject, blocked row, audit, the in-band notice, and the fallback entry live
+    together so a permission path added later cannot deny by omission: the title
+    is redacted once here and used for the transcript row (broadcast to the
+    dashboard AND persisted to the ConversationLog), the audit ``tool_name``, and
+    the notice. The validation *error* needs no redaction —
     ``_validate_tool_name`` raises only fixed messages that never echo the
     offending name.
+
+    This is the deny the model can actually FIX: the rejected name is its own
+    output, so being told which validation failed lets it reissue the call inside
+    the same turn. Without that it reads kiro-cli's "User denied tool execution",
+    concludes the person refused the action, and abandons a call nobody objected
+    to.
+
+    ``refusal_notices`` is REQUIRED and may be ``None`` for fallback-only callers.
+    Required rather than defaulted because an omitted notice list is invisible at
+    the call site and silently restores the pre-notice behaviour — which is
+    exactly the by-omission gap this change set out to close, and which a default
+    would let a future call site re-open while compiling and passing tests.
     """
     title = _redact_display_text(event.title)
+    _reason = str(error)
+    # BEFORE reject_tool: the unanswered permission request is what proves the
+    # turn is still in flight, so the steer is queued rather than dropped.
+    if refusal_notices is not None:
+        await _steer_policy_notice(
+            client,
+            title,
+            _reason,
+            refusal_notices,
+            slot,
+            state,
+            cause=DENY_CAUSE_INVALID_NAME,
+        )
     await client.reject_tool(event.request_id)
     slot.append("tool", f"🚫 {title} (invalid: {error})", "msg msg-tool")
     sel().log_tool_invocation(
@@ -649,6 +693,11 @@ async def _reject_invalid_tool(
         error=f"validation_failed: {error}",
         metadata=metadata,
     )
+    # The fallback's input. Without this entry a harness with no steer — or a
+    # steer that was never folded in — leaves this deny with NO channel to the
+    # model at all, while the policy path still gets its continuation. The
+    # in-band notice is the primary path, never the only one.
+    refusal_reasons.append((title, _reason))
 
 
 async def _reject_hook_error(
@@ -658,17 +707,39 @@ async def _reject_hook_error(
     *,
     session_key: str,
     error: str,
+    refusal_reasons: list[tuple[str, str]],
+    refusal_notices: list[str] | None,
+    state: Any = None,
     metadata: dict | None = None,
 ) -> None:
     """Deny a tool whose PreToolUse hook fire raised, on redacted surfaces.
 
-    Same chokepoint shape as :func:`_reject_invalid_tool`: the model-authored
-    title is redacted once and reaches the blocked row and the audit only in
-    that form. *error* is the hook exception text; hooks are fired with the
-    tool name and parsed input, so an exception that wraps its inputs can
-    carry model-authored text — redact it before the audit too.
+    Same chokepoint shape as :func:`_reject_invalid_tool`, including the same
+    REQUIRED ``refusal_notices`` for the same reason: the model-authored title is
+    redacted once and reaches the blocked row, the audit, the in-band notice and
+    the fallback entry only in that form. *error* is the hook exception text;
+    hooks are fired with the tool name and parsed input, so an exception that
+    wraps its inputs can carry model-authored text — redact it before the audit
+    AND before it reaches the model.
+
+    The notice matters most here because nothing judged the call: a hook faulted
+    while deciding it. Left with kiro-cli's "User denied tool execution" the model
+    infers a refusal that never happened and routes around an action that was
+    never actually denied.
     """
     title = _redact_display_text(event.title)
+    _safe_error = _redact_display_text(error)
+    # BEFORE reject_tool, for the same in-flight-turn reason as the sibling paths.
+    if refusal_notices is not None:
+        await _steer_policy_notice(
+            client,
+            title,
+            _safe_error,
+            refusal_notices,
+            slot,
+            state,
+            cause=DENY_CAUSE_HOOK_ERROR,
+        )
     await client.reject_tool(event.request_id)
     slot.append("tool", f"🚫 {title} (hook error)", "msg msg-tool")
     sel().log_tool_invocation(
@@ -679,9 +750,12 @@ async def _reject_hook_error(
         tool_kind=event.tool_kind,
         outcome="hook_error",
         request_id=event.request_id,
-        error=_redact_display_text(error),
+        error=_safe_error,
         metadata=metadata,
     )
+    # See _reject_invalid_tool: the fallback needs an entry or this deny reaches
+    # the model through no channel at all when the steer could not be delivered.
+    refusal_reasons.append((title, _safe_error))
 
 
 def _is_bedrock_profile_id(model: str) -> bool:
@@ -6505,7 +6579,14 @@ async def _run_chat(
                             )
                         except ValueError as e:
                             await _reject_invalid_tool(
-                                client, slot, event, session_key=session_key, error=e
+                                client,
+                                slot,
+                                event,
+                                session_key=session_key,
+                                error=e,
+                                refusal_notices=_refusal_notices,
+                                state=state,
+                                refusal_reasons=_refusal_reasons,
                             )
                         else:
                             # Declarative auto-approve must NOT bypass scripted
@@ -6530,6 +6611,9 @@ async def _run_chat(
                                     event,
                                     session_key=session_key,
                                     error=str(hook_exc),
+                                    refusal_reasons=_refusal_reasons,
+                                    refusal_notices=_refusal_notices,
+                                    state=state,
                                 )
                                 continue
                             if _pre_tool_hooks_should_block(pre_hook_results):
@@ -6574,7 +6658,14 @@ async def _run_chat(
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
                         await _reject_invalid_tool(
-                            client, slot, event, session_key=session_key, error=e
+                            client,
+                            slot,
+                            event,
+                            session_key=session_key,
+                            error=e,
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                            refusal_reasons=_refusal_reasons,
                         )
                         continue
                     try:
@@ -6589,7 +6680,14 @@ async def _run_chat(
                         )
                     except Exception as hook_exc:
                         await _reject_hook_error(
-                            client, slot, event, session_key=session_key, error=str(hook_exc)
+                            client,
+                            slot,
+                            event,
+                            session_key=session_key,
+                            error=str(hook_exc),
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                            refusal_reasons=_refusal_reasons,
                         )
                         continue
                     if _pre_tool_hooks_should_block(pre_hook_results):
@@ -6673,22 +6771,19 @@ async def _run_chat(
                                 event.title, is_shell=event.is_shell
                             )
                         except ValueError as e:
-                            await client.reject_tool(event.request_id)
-                            _safe = _redact_display_text(event.title)
-                            slot.append(
-                                "tool",
-                                f"🚫 {_safe} (invalid: {e})",
-                                "msg msg-tool",
-                            )
-                            sel().log_tool_invocation(
+                            await _reject_invalid_tool(
+                                client,
+                                slot,
+                                event,
                                 session_key=session_key,
-                                agent=slot.agent or "kirocrew",
-                                source="dashboard",
-                                tool_name=_safe,
-                                tool_kind=event.tool_kind,
-                                outcome="rejected",
-                                request_id=event.request_id,
-                                metadata={"reason": "invalid_tool_name", "pattern": matched},
+                                error=e,
+                                refusal_notices=_refusal_notices,
+                                state=state,
+                                metadata={
+                                    "reason": "invalid_tool_name",
+                                    "pattern": matched,
+                                },
+                                refusal_reasons=_refusal_reasons,
                             )
                             continue
                         await client.approve_tool(event.request_id)
@@ -6762,18 +6857,19 @@ async def _run_chat(
                     try:
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
-                        await client.reject_tool(event.request_id)
-                        _safe = _redact_display_text(event.title)
-                        slot.append("tool", f"🚫 {_safe} (invalid: {e})", "msg msg-tool")
-                        sel().log_tool_invocation(
+                        await _reject_invalid_tool(
+                            client,
+                            slot,
+                            event,
                             session_key=session_key,
-                            agent=slot.agent or "kirocrew",
-                            source="dashboard",
-                            tool_name=_safe,
-                            tool_kind=event.tool_kind,
-                            outcome="rejected",
-                            request_id=event.request_id,
-                            metadata={"reason": "invalid_tool_name", "pattern": "browser_cli"},
+                            error=e,
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                            metadata={
+                                "reason": "invalid_tool_name",
+                                "pattern": "browser_cli",
+                            },
+                            refusal_reasons=_refusal_reasons,
                         )
                         continue
                     await client.approve_tool(event.request_id)
@@ -6821,6 +6917,9 @@ async def _run_chat(
                                 session_key=session_key,
                                 error=e,
                                 metadata={"reason": "trust_reads"},
+                                refusal_reasons=_refusal_reasons,
+                                refusal_notices=_refusal_notices,
+                                state=state,
                             )
                             continue
                         await client.approve_tool(event.request_id)
@@ -6853,7 +6952,14 @@ async def _run_chat(
                         validated_tool = _validate_tool_name(event.title, is_shell=event.is_shell)
                     except ValueError as e:
                         await _reject_invalid_tool(
-                            client, slot, event, session_key=session_key, error=e
+                            client,
+                            slot,
+                            event,
+                            session_key=session_key,
+                            error=e,
+                            refusal_notices=_refusal_notices,
+                            state=state,
+                            refusal_reasons=_refusal_reasons,
                         )
                         continue
                     if not _pre_tool_hooks_fired:
@@ -6871,7 +6977,14 @@ async def _run_chat(
                             )
                         except Exception as hook_exc:
                             await _reject_hook_error(
-                                client, slot, event, session_key=session_key, error=str(hook_exc)
+                                client,
+                                slot,
+                                event,
+                                session_key=session_key,
+                                error=str(hook_exc),
+                                refusal_notices=_refusal_notices,
+                                state=state,
+                                refusal_reasons=_refusal_reasons,
                             )
                             continue
                         if _pre_tool_hooks_should_block(pre_hook_results):
@@ -7189,6 +7302,9 @@ async def _run_chat(
                             session_key=session_key,
                             error=e,
                             metadata={"reason": "interactive"},
+                            refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
+                            state=state,
                         )
                         break
                     try:
@@ -7209,6 +7325,9 @@ async def _run_chat(
                             session_key=session_key,
                             error=str(hook_exc),
                             metadata={"reason": "interactive"},
+                            refusal_reasons=_refusal_reasons,
+                            refusal_notices=_refusal_notices,
+                            state=state,
                         )
                         break
                     if _pre_tool_hooks_should_block(pre_hook_results):
