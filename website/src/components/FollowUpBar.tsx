@@ -22,11 +22,24 @@ interface FollowUpBarProps {
  * layout (chips are `shrink-0`) one long option consumed the whole strip and
  * the tail of its text sat outside the visible box, so it read as a single
  * clipped pill with no other option in view. `followup-chip` (index.css) caps
- * the width at roughly half the default composer, and the label wraps onto two
- * clamped lines — the truncation is then explicit (ellipsis) instead of an
- * invisible overflow.
+ * the width at half the row minus half the gap — bounded to 18rem..26rem — so
+ * two chips fit side by side at ANY composer width, and the label wraps onto
+ * two clamped lines so the truncation is explicit (ellipsis) instead of an
+ * invisible overflow. The cap is deliberately relative: the original absolute
+ * 26rem was sized against a 900px composer that no default user gets (compact
+ * content width is 816px), so it silently forbade the two columns it existed to
+ * create — see `CHIP_ROW_GAP` below, which the CSS half-gap is pinned to.
  */
 const CHIP_MAX_WIDTH = 'followup-chip'
+
+/**
+ * Gap between chips, shared by both layouts. Load-bearing beyond spacing: the
+ * width cap in `.followup-chip` subtracts HALF this gap from its 50% preferred
+ * width, because two chips plus one gap have to fit the row. Changing this
+ * class without changing that CSS breaks the two-column wrap, so
+ * `FollowUpBar.test.tsx` pins the two together.
+ */
+const CHIP_ROW_GAP = 'gap-1.5'
 
 /**
  * Gap between consecutive chips' entrance animations. The whole option set is
@@ -378,7 +391,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating 
           every single-line chip into the middle of that taller row. The shared
           edge is the BOTTOM one because the strip sits directly above the
           composer, so that is the edge the row is read against. */}
-      <div ref={setScroller} className="flex gap-1.5 overflow-x-auto items-end" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      <div ref={setScroller} className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map((o, i) => {
           const isPicked = picked.has(o)
           return (
@@ -407,7 +420,7 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
     // Bottom-aligned for the same reason as the scroll layout: a two-line
     // clamped chip must not float its single-line neighbours onto its own
     // centre line, and the edge shared with the composer below is the bottom.
-    <div className="flex gap-1.5 flex-wrap pt-1 items-end">
+    <div className={`flex ${CHIP_ROW_GAP} flex-wrap pt-1 items-end`}>
       {options.map((o, i) => {
         const isPicked = picked.has(o)
         return (

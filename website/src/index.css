@@ -1942,7 +1942,15 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    two options stay side by side and no single chip owns the whole strip; the
    label itself clamps to two lines. Lives here because the same value is
    applied to both the chip button and its split-button wrapper. */
-.followup-chip{max-width:min(100%,26rem)}
+/* Chip width cap. Relative to the row, not an absolute number: a fixed cap
+   cannot know how wide the composer is, and a cap wider than half the row makes
+   the two-column wrap arithmetically impossible (flex breaks the line on the
+   hypothetical main size, before any shrinking). `calc(50% - 0.1875rem)` is half
+   the row minus half of the layouts' `gap-1.5`, so exactly two chips fit; the
+   18rem floor keeps a full-sentence label readable on a narrow window (a bare
+   50% would give ~174px chips on a phone), and the 26rem ceiling preserves the
+   pre-existing rendering on wide screens. */
+.followup-chip{max-width:min(100%,clamp(18rem,calc(50% - 0.1875rem),26rem))}
 
 /* ── Skeleton shimmer placeholder ── */
 .skeleton{

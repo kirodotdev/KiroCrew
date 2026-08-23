@@ -302,7 +302,55 @@ describe('FollowUpBar', () => {
       // jsdom does not load index.css, so the class assertions above would pass
       // with the rule deleted. Read the stylesheet directly.
       const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
-      expect(css).toMatch(/\.followup-chip\s*\{[^}]*max-width:\s*min\(100%,\s*26rem\)/)
+      expect(css).toMatch(
+        /\.followup-chip\s*\{[^}]*max-width:\s*min\(100%,\s*clamp\(18rem,\s*calc\(50% - 0\.1875rem\),\s*26rem\)\)/,
+      )
+    })
+
+    // Regression (#5397): the cap used to be an absolute `min(100%, 26rem)`,
+    // sized against the 900px fallback in ChatInput's `--mc-input-width`. The
+    // real compact width is 816px, so the inner row was 784px and two 416px
+    // chips (+6px gap = 838px) could never share a line — the multiline layout
+    // stacked every option one per row and ate the vertical space above the
+    // composer. Nothing tied the CSS number to the composer width, so the two
+    // drifted silently. These two tests are that tie.
+    //
+    // Reads the relative part of the cap. Kept as one helper so a deleted or
+    // reshaped rule fails both tests below with this message instead of a
+    // TypeError on a null match.
+    const chipCapPreferred = (): { pct: number, halfGapRem: number } => {
+      const css = readFileSync(resolve(process.cwd(), 'src/index.css'), 'utf-8')
+      const m = css.match(/\.followup-chip\s*\{[^}]*calc\((\d+)% - ([\d.]+)rem\)/)
+      expect(m, '.followup-chip must cap width relative to the row (calc(<pct>% - <half-gap>rem))').not.toBeNull()
+      return { pct: Number(m![1]), halfGapRem: Number(m![2]) }
+    }
+
+    it('caps a chip at half the row so two chips always fit a line', () => {
+      const { pct, halfGapRem } = chipCapPreferred()
+      // Two chips + one gap must fit the row: 2 × (pct% − halfGap) + gap ≤ 100%
+      // for any row width, which holds iff pct ≤ 50 and the subtracted amount is
+      // at least half the gap (pinned to the rendered gap class below).
+      expect(pct).toBeLessThanOrEqual(50)
+      expect(halfGapRem).toBeGreaterThan(0)
+    })
+
+    it('pins the CSS half-gap to the gap class both layouts actually render', () => {
+      // The cap subtracts HALF the row gap from its 50%. If someone widens the
+      // gap class without widening that subtraction, two chips stop fitting and
+      // the multiline layout silently regresses to one per row.
+      const { halfGapRem } = chipCapPreferred()
+
+      for (const layout of ['multiline', 'scroll'] as const) {
+        const { container, unmount } = render(
+          <FollowUpBar options={['Alpha', 'Beta']} picked={new Set()} onSelect={() => {}} layout={layout} />,
+        )
+        const gapClass = container.querySelector('[class*="gap-"]')?.className.match(/gap-([\d.]+)/)
+        expect(gapClass, `${layout} layout renders no gap-* class`).not.toBeNull()
+        // Tailwind's spacing scale: gap-N === N × 0.25rem.
+        const gapRem = Number(gapClass![1]) * 0.25
+        expect(halfGapRem, `${layout} gap is ${gapRem}rem, so the CSS must subtract ${gapRem / 2}rem`).toBeCloseTo(gapRem / 2, 5)
+        unmount()
+      }
     })
 
     it('caps chip width and clamps the label in the multiline layout', () => {
