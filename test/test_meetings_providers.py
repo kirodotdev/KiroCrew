@@ -39,6 +39,16 @@ from kiro_crew.apps.builtins.meetings.backend.providers import calendar as cal
 from kiro_crew.apps.builtins.meetings.backend.providers import tasks as taskprov
 
 
+class _AnyPort:
+    """Stands in for ``link_unfurl.ALLOWED_PORTS`` when a test server binds an
+    ephemeral port. Only ``in`` is used against that frozenset, so accepting
+    everything is the whole contract — and it beats materializing 65k ints.
+    """
+
+    def __contains__(self, _port: object) -> bool:
+        return True
+
+
 def _ics(*events: str, prodid: str = "-//test//EN") -> str:
     body = "\n".join(events)
     return f"BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:{prodid}\n{body}\nEND:VCALENDAR\n"
@@ -619,8 +629,29 @@ class TestUrlValidation:
         assert target.host == "example.test"
         assert target.port == 443
 
-    def test_port_is_taken_from_the_url(self, public_dns: None):
-        assert cal._normalize_url("https://example.test:8443/cal.ics").port == 8443
+    def test_a_non_standard_port_is_refused(self, public_dns: None):
+        """Ports narrow to 443, which is stricter than "whatever the URL names".
+
+        The shared vet allows 80 and 443 only, and https-only leaves 443. A
+        calendar on some other port is nearly always an internal service, and the
+        port is the cheapest place to stop this endpoint being used to probe for
+        one. No working configuration is broken by starting strict: `ics` only
+        ever documented a published `https://` URL, and relaxing later is a
+        one-line change to that allow-list.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url("https://example.test:8443/cal.ics")
+
+    def test_port_80_is_refused_even_though_the_shared_vet_allows_it(
+        self, public_dns: None
+    ):
+        """The shared vet's allow-list is {80, 443} because it also serves
+        plain-http link unfurling; THIS caller is https-only, so the stated scope
+        is 443 alone. ``https://host:80`` would pass the vet and then fail the TLS
+        handshake with a message that does not name the cause — refuse it up front.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url("https://example.test:80/cal.ics")
 
     def test_host_is_keyed_as_the_connector_will_see_it(self, public_dns: None):
         """The pin is looked up by yarl's ``raw_host``, so it must be stored that way.
@@ -688,6 +719,22 @@ class TestUrlValidation:
         source = inspect.getsource(cal.IcsCalendarProvider)
         assert "calendar redirect URL is malformed" in source
 
+    @pytest.mark.parametrize(
+        "url", ["https://\ud800.example/cal.ics", "https://ex\udcffample.test/c.ics"]
+    )
+    def test_a_host_the_resolver_cannot_encode_is_a_calendar_error_not_a_500(
+        self, url: str, public_dns: None
+    ):
+        """A lone surrogate in the host must not escape as ``UnicodeError``.
+
+        `calendar.source` arrives as a JSON string, which can carry an unpaired
+        surrogate, and ``UnicodeError`` is a ``ValueError`` rather than an
+        ``OSError`` — so it slipped past both the resolver's fail-closed catch and
+        the ``URL(...)`` guard, and reached the settings handler as an HTTP 500.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url(url)
+
     def test_missing_host_refused(self):
         with pytest.raises(cal.CalendarError):
             cal._normalize_url("https:///cal.ics")
@@ -699,6 +746,64 @@ class TestUrlValidation:
     def test_private_and_loopback_addresses_refused(self, host):
         # The request-forgery gate: the gateway performs this fetch, so an
         # internal-only address must never be reachable through a config value.
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url(f"https://{host}/cal.ics")
+
+    @pytest.mark.parametrize(
+        "host",
+        [
+            # RFC 6598 shared space, what a tailnet and most carrier NAT hand out.
+            # `is_private` does not cover it; only `is_global` does. On a machine on
+            # a tailnet, this range IS the private network.
+            "100.64.0.1",
+            # Deprecated IPv6 site-local: reports `is_global=True`, so an
+            # `is_private`-only check reads it as a public address.
+            "[fec0::1]",
+        ],
+    )
+    def test_addresses_the_local_vet_approved_are_now_refused(self, host: str):
+        """The gap that motivated delegating the address vet.
+
+        Both of these were APPROVED while this module carried its own
+        `is_private`-based check — verified by running the pre-change code — and are
+        refused now that :func:`link_unfurl.vet_unfurl_url` owns the decision. They
+        are asserted at THIS call site rather than left to that module's own suite,
+        because what is under test is that the calendar gate reaches it at all;
+        re-introducing a local check is the regression these names catch.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url(f"https://{host}/cal.ics")
+
+    @pytest.mark.parametrize(
+        "host",
+        ["0177.0.0.1", "0x7f000001", "2130706433", "127.1", "[::ffff:127.0.0.1]"],
+    )
+    def test_alternate_ip_encodings_are_refused_by_the_vet_not_the_resolver(
+        self, host: str
+    ):
+        """Encodings `ipaddress` rejects but the OS resolver accepts.
+
+        These were NOT reachable before this change: `ipaddress` declined to parse
+        them, they fell through to DNS, getaddrinfo folded them back to loopback,
+        and the private-address rule caught them there. The defect was that the
+        refusal depended on the resolver's reading of a string the vet had given up
+        on — agreement, not a decision. `canonicalize_ip` makes them literals, so
+        the vet judges the address itself.
+
+        Pinned as behavior rather than as a fix: a future change that stops
+        canonicalizing would move the decision back onto getaddrinfo silently.
+        """
+        with pytest.raises(cal.CalendarError):
+            cal._normalize_url(f"https://{host}/cal.ics")
+
+    @pytest.mark.parametrize("host", ["printer.local", "abcdefgh.onion"])
+    def test_hosts_that_cannot_name_a_public_service_are_refused(
+        self, host: str, public_dns: None
+    ):
+        """``.local`` resolves through mDNS, a side channel; ``.onion`` does not
+        resolve at all. Neither can name a public calendar, and the local vet had
+        no suffix rule — with DNS stubbed public, both were approved.
+        """
         with pytest.raises(cal.CalendarError):
             cal._normalize_url(f"https://{host}/cal.ics")
 
@@ -996,14 +1101,19 @@ class TestDnsRebindingIsRefused:
 
         * the https-only scheme allow-list (a local TLS server would need a CA and
           a trusted cert, which buys no coverage of the address decision), and
-        * the private/loopback address refusal (127.0.0.1 IS the test server).
+        * the private/loopback address refusal (127.0.0.1 IS the test server), and
+          the 80/443 port rule (the server binds an ephemeral port).
 
-        Both have their own dedicated tests above, and neither is what these tests
+        All have their own dedicated tests above, and none is what these tests
         exercise. Everything else — resolution, the all-or-nothing address check,
         the pin, the connector, the hop loop — runs for real.
         """
         monkeypatch.setattr(cal, "_ALLOWED_SCHEMES", ("https", "http"))
-        monkeypatch.setattr(cal, "_refuse_private_address", lambda _addr: None)
+        # The address vet is `link_unfurl`'s now, so the refusals to lift are its.
+        # Neutralized on THAT module, which is where the real code reads them from
+        # — patching a local name here would pass while testing nothing.
+        monkeypatch.setattr(cal.link_unfurl, "_reject_if_internal_ip", lambda _c: None)
+        monkeypatch.setattr(cal.link_unfurl, "ALLOWED_PORTS", _AnyPort())
 
     @pytest.mark.asyncio
     async def test_the_fetch_lands_on_the_vetted_address_not_the_rebound_one(
