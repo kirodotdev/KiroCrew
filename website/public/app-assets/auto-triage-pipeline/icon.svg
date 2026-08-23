@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- One row per work item, each row a run of DISCRETE stage blocks: a phase is a
+       column you are in or are not, never a percentage. Discreteness is what keeps
+       the mark from reading as a slider - a continuous track with a filled left
+       portion is exactly the slider/equaliser idiom, which is what an earlier cut
+       of this icon looked like. Reached blocks take the accent, unreached ones stay
+       faint, and the row lengths step 3/2/1 so the glyph says "several items, each
+       at a different phase" at a glance. -->
+  <rect x="3"  y="4.2"  width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+  <rect x="10" y="4.2"  width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+  <rect x="17" y="4.2"  width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+
+  <rect x="3"  y="10.7" width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+  <rect x="10" y="10.7" width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+  <rect x="17" y="10.7" width="4" height="2.6" rx="1.3" fill="var(--ico-a, currentColor)" fill-opacity="0.3"/>
+
+  <rect x="3"  y="17.2" width="4" height="2.6" rx="1.3" fill="var(--ico-b, currentColor)"/>
+  <rect x="10" y="17.2" width="4" height="2.6" rx="1.3" fill="var(--ico-a, currentColor)" fill-opacity="0.3"/>
+  <rect x="17" y="17.2" width="4" height="2.6" rx="1.3" fill="var(--ico-a, currentColor)" fill-opacity="0.3"/>
+</svg>

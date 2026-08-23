@@ -1006,6 +1006,8 @@ def append_event(
     kind: str,
     text: str,
     root: Path | None = None,
+    *,
+    phase: str | None = None,
 ) -> dict[str, Any]:
     """Append one progress line.
 
@@ -1017,11 +1019,23 @@ def append_event(
     ``<details>`` block of the claim comment on the forge. Callers must keep
     absolute paths, host names and anything else environment-specific out of it;
     worktree paths belong in the work item's own fields.
+
+    ``phase`` is the work item's phase AFTER this write, and it is the sole datum
+    that makes a per-phase dwell fold possible (:func:`crew_routes` folds it).
+    Recorded because ``kind`` is NOT it: :data:`EVENT_KINDS` is not 1:1 with
+    :data:`PHASES` (a ``ci`` line can leave an item in ``awaiting-ci`` or move it to
+    ``addressing-review``), so the phase cannot be recovered from the kind. It is
+    keyword-only and defaults to ``None`` — ``None`` is OMITTED from the stored line
+    rather than written as a null, because a write that carried no phase (the id is
+    content-addressed and does not depend on it) should leave a line indistinguishable
+    from the pre-feature lines the fold already has to tolerate. Not part of the
+    event id: two lines that differ only in the phase they record are still the same
+    logged reason, and folding one in twice must still merge.
     """
     if kind not in EVENT_KINDS:
         raise CrewStoreError(f"unknown event kind {kind!r}")
     ts = store._now_iso()
-    entry = {
+    entry: dict[str, Any] = {
         "id": _event_id(ts, crew_id, int(number), kind, text),
         "ts": ts,
         "crew_id": crew_id,
@@ -1029,6 +1043,8 @@ def append_event(
         "kind": kind,
         "text": text,
     }
+    if phase is not None:
+        entry["phase"] = phase
     path = events_path(owner, repo, root)
     lock_path = crews_dir(owner, repo, root) / "events.lock"
     with open(lock_path, "w") as fd:
@@ -1045,10 +1061,19 @@ def read_events(
     *,
     crew_id: str = "",
     limit: int = 200,
+    require_phase: bool = False,
 ) -> list[dict[str, Any]]:
     """Newest first, duplicate ids collapsed. A malformed line is skipped rather
     than failing the whole read — the ledger is append-only and a torn tail must
-    not hide the history in front of it."""
+    not hide the history in front of it.
+
+    ``require_phase`` keeps only lines that carry a ``phase``. It exists for the
+    fabric fold, whose ``limit`` would otherwise be spent on lines it discards:
+    the cap drops the OLDEST events, so a lane parked in one phase for a long
+    time is exactly the one whose entry line falls outside the window — and the
+    longer it stalls, the more certain that is. Filtering to the phase-bearing
+    subset makes the cap bound real transitions instead of write volume.
+    """
     path = events_path(owner, repo, root)
     if not path.is_file():
         return []
@@ -1072,6 +1097,8 @@ def read_events(
         if rid and rid in seen:
             continue
         if crew_id and rec.get("crew_id") != crew_id:
+            continue
+        if require_phase and not rec.get("phase"):
             continue
         seen.add(rid)
         out.append(rec)
@@ -1396,8 +1423,42 @@ def commit_work_progress(
                         )
                         if created:
                             own_skip = skip
+                    # The event line carries `phase` ONLY when this transaction
+                    # created the item or actually moved it, because a reader can
+                    # only treat "an event line carrying a phase" as "an ENTRY into
+                    # that phase" if a no-move write stays silent about it.
+                    #
+                    # Stamping it on every write looks harmless and is not. Most
+                    # writes here do not move the item -- a CI round lands
+                    # `ci_state`/`ci_passed` while the phase stays `awaiting-ci` --
+                    # so the ledger would gain a fresh phase-bearing line every few
+                    # minutes, and the fabric's open dwell (the MOST RECENT entry
+                    # into the current phase, which is what a round-trip legitimately
+                    # restarts) would reset to each of them. An item parked in
+                    # `awaiting-ci` for nine hours would read as minutes old, and
+                    # `longestWait` with it: the item being polled most often is
+                    # exactly the one whose stall gets hidden, which inverts the one
+                    # question the pipeline view exists to answer.
+                    prev_phase = None
+                    if before:
+                        with contextlib.suppress(ValueError, TypeError):
+                            snapshot = json.loads(before)
+                            # isinstance, not a truthiness test: a corrupted or
+                            # hand-edited item file can hold any JSON shape, and a
+                            # non-empty list or a bare string is TRUTHY, so `or {}`
+                            # would let `.get` raise AttributeError -- which this
+                            # suppress does not catch, so the write would 500. The
+                            # rollback then restores the same bad file, making every
+                            # retry fail the same way. Treating an unreadable snapshot
+                            # as "no previous phase" degrades to recording the phase,
+                            # which is the safe direction: an extra entry is a visible
+                            # dwell reset, a missing one loses the entry entirely.
+                            if isinstance(snapshot, dict):
+                                prev_phase = snapshot.get("phase")
+                    moved = before is None or prev_phase != item.get("phase")
                     event = append_event(
-                        owner, repo, crew_id, number, event_kind, event_text, root
+                        owner, repo, crew_id, number, event_kind, event_text, root,
+                        phase=item.get("phase") if moved else None,
                     )
                 except BaseException:
                     _rollback_work_progress(
@@ -1510,3 +1571,262 @@ def _rollback_work_progress(
             "its phase may have moved with no event explaining it",
             crew_id, number, exc_info=True,
         )
+
+
+# ── crew fabric fold ─────────────────────────────────────────────────────────
+#
+# The "pipeline" dashboard view draws every crew work item as a lane across the
+# phase enum. The fold that turns a crew's ledger into that drawing is SERVER-SIDE
+# and unit-testable in Python precisely so the three mistakes a naive version makes
+# (below) are pinned by tests rather than re-made in TypeScript.
+
+#: Bump on any incompatible change to :func:`fold_fabric`'s item shape. Its own
+#: field, not :data:`CREW_SCHEMA`: the fabric payload is derived, not stored, so it
+#: versions on its own cadence.
+FABRIC_SCHEMA = 1
+
+#: The phases that form the drawn SPINE, in topological order. It is
+#: :data:`PHASES` minus the off-spine ones, and ``resolved`` is the ONLY terminal
+#: left on it — the other terminals are alternate endings, not later stages, so
+#: giving them a column would imply a skipped item got further than a claimed one
+#: (PLAN design decision #2). ``awaiting-reply`` is off-spine for the same reason:
+#: the crew is not the actor, it has handed the issue back to a human.
+SPINE_PHASES = (
+    "selected",
+    "claimed",
+    "investigating",
+    "implementing",
+    "awaiting-ci",
+    "addressing-review",
+    "awaiting-merge",
+    "resolved",
+)
+
+#: Phases that render as a stub OFF the lane, not as a column. Every phase not on
+#: the spine, computed from :data:`PHASES` so a phase added to one set can never be
+#: silently absent from the other.
+OFF_SPINE_PHASES = frozenset(PHASES) - frozenset(SPINE_PHASES)
+
+
+def _fold_one_item(
+    record: dict[str, Any],
+    events: list[dict[str, Any]],
+    title_hints: dict[int, str] | None = None,
+) -> dict[str, Any]:
+    """Fold ONE work item and its phase-bearing ledger lines into a fabric item.
+
+    *events* are this item's lines in TIME order (oldest first). Each contributes a
+    ``phase`` only if it carries one — a pre-feature line, or a write that carried
+    no phase, simply has no key and is skipped here, which degrades the drawing to
+    L0/L1 for that item rather than failing the fold.
+
+    *title_hints* maps issue/PR ``number`` to the issue's REAL title, seeded from
+    the issues and pulls list caches (:func:`_fabric_title_hints`). The crew ledger
+    stores NO title — a work item carries ``number`` and ``phase``, not what the
+    issue is called — so the title has to come from the same list caches Issue
+    Radar already keeps, at zero extra API cost. A number with no cached title
+    (never fetched, or aged out) folds to ``""`` and the lane shows its id only,
+    rather than mislabelling the lane with the crew's resumable ``next`` intent.
+
+    Three things a naive fold gets wrong, each pinned by a test:
+
+    * **The live phase is the record's, authoritative — never the max timeline
+      index.** A review round-trip (``awaiting-ci -> addressing-review ->
+      awaiting-ci``) ends LEFT of where it has been, so keying the head off the
+      furthest column reached puts the item in a phase it already left. This
+      function reads ``phase`` straight off the record and returns it as its own
+      field; ``timeline`` is only the history.
+
+    * **Off-spine phases are an ``exit``, not a timeline entry.** ``skipped`` /
+      ``yielded`` / ``handed-back`` / ``preempted`` / ``awaiting-reply`` leave the
+      spine's topology intact. ``exit`` is the LAST off-spine line seen — but it is
+      cleared the moment a later on-spine line reopens the item, so it stands only
+      when the item's live phase is itself off-spine. (The record's live phase is
+      the tie-breaker: a torn ledger that ends off-spine while the record is on-spine
+      still clears the exit.)
+
+    * **Re-entering a phase after an exit is a reopen, and each restarts the dwell
+      clock.** ``reopens`` counts an on-spine line landing on an already-visited
+      phase while an exit was standing — the store clears ``outcome``/``finished_at``
+      on exactly that transition, so it is a real second life, not churn.
+    """
+    timeline: list[dict[str, Any]] = []
+    seen_spine: set[str] = set()
+    exit_entry: dict[str, str] | None = None
+    reopens = 0
+
+    for ev in events:
+        ph = ev.get("phase")
+        if not isinstance(ph, str) or ph not in PHASES:
+            continue
+        at = str(ev.get("ts") or "")
+        if ph in OFF_SPINE_PHASES:
+            exit_entry = {"phase": ph, "at": at}
+            continue
+        # An on-spine line.
+        if ph in seen_spine and exit_entry is not None:
+            # Came back to a phase already visited, AND an exit was standing — this
+            # is a genuine reopen (the store cleared the terminal fields to make it
+            # one), not a review round-trip within the spine.
+            reopens += 1
+        if exit_entry is not None:
+            # Reopened: the exit no longer holds, whatever it was.
+            exit_entry = None
+        seen_spine.add(ph)
+        timeline.append({"phase": ph, "at": at})
+
+    live_phase = record.get("phase")
+    if not isinstance(live_phase, str) or live_phase not in PHASES:
+        live_phase = "selected"
+    # The record is authoritative. If it says the item is on-spine, no stale exit
+    # from a torn tail may stand; if it says off-spine, that is the exit even when
+    # the fold's own last line disagreed.
+    if live_phase in OFF_SPINE_PHASES:
+        if exit_entry is None or exit_entry.get("phase") != live_phase:
+            exit_entry = {
+                "phase": live_phase,
+                "at": str(record.get("finished_at") or record.get("last_progress_at") or ""),
+            }
+    else:
+        exit_entry = None
+
+    number = record.get("number")
+    hint_number = number if isinstance(number, int) and not isinstance(number, bool) else None
+    title = ""
+    if title_hints is not None and hint_number is not None:
+        title = str(title_hints.get(hint_number) or "")
+    # ``next`` is the crew's RESUMABLE INTENT ("add the Windows branch to
+    # _safe_chmod"), not what the issue is called — it stays available under its
+    # own name for a view that wants to show what the crew is about to do, but it
+    # is NEVER the title. The title is the issue's real title from the list caches.
+    return {
+        "number": number,
+        "crew_id": record.get("crew_id"),
+        "title": title,
+        "next": str(record.get("next") or ""),
+        "pr_number": _finite_int(record.get("pr_number")),
+        "phase": live_phase,
+        # No `ci_state` here. It had no reader -- the app declared a type for it and
+        # never touched the value -- and it was the one field in this payload carrying
+        # an arbitrary nested dict straight from the record. `json.dumps` writes a
+        # non-finite float as bare `NaN`, which is not JSON, so one hand-edited or
+        # restored record could make `GET /crew/fabric` unparseable and the browser
+        # would drop EVERY lane, not just that item. `pr_number` above already goes
+        # through `_finite_int` for exactly this reason; an unread field does not earn
+        # a sanitiser, it earns deletion.
+        "timeline": timeline,
+        "exit": exit_entry,
+        "reopens": reopens,
+    }
+
+
+#: Ceiling on the ledger read the fabric fold joins against. The fold reads the
+#: WHOLE repo's ledger (every crew, every item) in one pass, unlike the per-crew
+#: ``GET /crew`` read, so its bound is larger — but still bounded, because the
+#: ledger is append-only and a repo that has run crews for months has thousands of
+#: lines that would otherwise all land in RAM on a page open.
+_FABRIC_PHASE_EVENT_LIMIT = 200_000
+
+
+def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict[int, str]:
+    """``number -> issue/PR title``, seeded from the issues and pulls list caches.
+
+    The crew ledger records no title — a work item is ``number`` + ``phase`` — so
+    the lane's real title comes from the SAME list caches Issue Radar already
+    keeps, at ZERO extra API cost: this reads whatever is cached and never fetches.
+    A number that was never cached (or whose cache aged out) simply has no hint,
+    and its lane degrades to showing the id alone rather than being mislabelled.
+
+    Both open AND closed states are read, because a crew work item outlives the
+    issue's open state — an item can be ``resolved``/``skipped`` while its issue is
+    closed, so the open cache alone would drop exactly the finished lanes. Issues
+    are read first and pulls layered on top: a work item that has become a PR is
+    keyed by the ISSUE number it was claimed under, and the PR title is the more
+    specific label for that lane once one exists, so it wins on a collision.
+
+    Never raises: each cache read already tolerates an absent/torn/stale-schema
+    file by returning ``None`` (treated as empty here), so a repo with no caches
+    yields ``{}`` and every lane falls back to its id.
+    """
+    hints: dict[int, str] = {}
+
+    def _absorb(rows: list[dict[str, Any]] | None) -> None:
+        if not rows:
+            return
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            num = row.get("number")
+            if not isinstance(num, int) or isinstance(num, bool):
+                continue
+            title = row.get("title")
+            if isinstance(title, str) and title.strip():
+                hints[num] = title.strip()
+
+    # A cache read that fails must cost the TITLES, not the endpoint. These files are
+    # Issue Radar's, written by its own refresh, so a refresh landing between the
+    # reader's existence check and its read raises rather than returning empty -- and
+    # a 500 for a failed title lookup contradicts the degradation this join already
+    # promises everywhere else, where a number with no cached title simply renders as
+    # its id. Broad on purpose: any unreadable cache means "no hints from that cache".
+    for reader in (store.read_issues_cache, store.read_pulls_cache):
+        for state in ("open", "closed"):
+            try:
+                _absorb(reader(owner, repo, root, state=state))
+            except Exception:
+                logger.debug(
+                    "fabric title hints: %s cache unreadable for %s/%s (%s)",
+                    reader.__name__, owner, repo, state, exc_info=True,
+                )
+    return hints
+
+
+def fold_fabric(owner: str, repo: str, root: Path | None = None) -> list[dict[str, Any]]:
+    """Every crew work item in this repo, folded into a fabric lane, newest first.
+
+    ONE pass over the repo's crews and their work items, joined to the phase-bearing
+    slice of the append-only ledger. The join is per ``(crew_id, number)``: a work
+    item's lane is drawn from its own lines only, and a line with no ``phase`` (a
+    pre-feature line) contributes nothing, so an old ledger degrades the drawing
+    rather than breaking the fold.
+
+    Ordered newest-progress-first — the same order the crew page lists items in — so
+    an operator scanning the pipeline sees the freshly-moved lanes at the top.
+    """
+    # Group phase-bearing events by (crew_id, number), oldest first. read_events
+    # returns newest-first with duplicate ids already collapsed; reverse once here
+    # so each item's slice is in TIME order for the fold. The read is filtered to
+    # phase-bearing lines because the cap discards the OLDEST events: spending it
+    # on writes this fold ignores is what would truncate a long-stalled lane's
+    # entry line, and the lane that has sat in one phase longest is the one the
+    # board exists to show.
+    by_key: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for ev in reversed(
+        read_events(owner, repo, root, limit=_FABRIC_PHASE_EVENT_LIMIT, require_phase=True)
+    ):
+        cid = ev.get("crew_id")
+        num = ev.get("number")
+        if not isinstance(cid, str) or not isinstance(num, int) or isinstance(num, bool):
+            continue
+        by_key.setdefault((cid, num), []).append(ev)
+
+    # Real issue/PR titles from the list caches Issue Radar already keeps — one
+    # read per cache for the WHOLE fold, not per lane.
+    title_hints = _fabric_title_hints(owner, repo, root)
+
+    items: list[dict[str, Any]] = []
+    for crew in list_crews(owner, repo, root, include_retired=True):
+        cid = str(crew.get("id") or "")
+        if not cid:
+            continue
+        for rec in list_work_items(owner, repo, cid, root):
+            num = rec.get("number")
+            if not isinstance(num, int) or isinstance(num, bool):
+                continue
+            events = by_key.get((cid, num), [])
+            item = _fold_one_item(rec, events, title_hints)
+            item["_sort"] = str(rec.get("last_progress_at") or "")
+            items.append(item)
+
+    items.sort(key=lambda it: it.pop("_sort"), reverse=True)
+    return items

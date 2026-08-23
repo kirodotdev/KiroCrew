@@ -69,6 +69,7 @@ CREW_ROUTES: tuple[tuple[str, str], ...] = (
     ("GET", "/crews/settings"),
     ("PUT", "/crews/settings"),
     ("GET", "/crew"),
+    ("GET", "/crew/fabric"),
     ("PUT", "/crew"),
     ("DELETE", "/crew"),
     ("PUT", "/crew/work"),
@@ -97,6 +98,7 @@ _MINIMAL: dict[tuple[str, str], dict] = {
         "body": {"owner": OWNER, "repo": REPO, "settings": {"claim_ttl_hours": 12}}
     },
     ("GET", "/crew"): {"query": {"owner": OWNER, "repo": REPO, "id": "c_dead"}},
+    ("GET", "/crew/fabric"): {"query": {"owner": OWNER, "repo": REPO}},
     ("PUT", "/crew"): {"body": {"owner": OWNER, "repo": REPO, "id": "c_dead"}},
     ("DELETE", "/crew"): {"body": {"owner": OWNER, "repo": REPO, "id": "c_dead"}},
     ("PUT", "/crew/work"): {

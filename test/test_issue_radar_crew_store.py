@@ -930,9 +930,11 @@ def test_a_rollback_cannot_erase_a_pass_another_crew_committed_on_the_same_issue
     indexed = threading.Event()
     other_committed = threading.Event()
 
-    def _fail_only_the_authors_ledger_line(owner, repo, crew_id, number, kind, text, root=None):
+    def _fail_only_the_authors_ledger_line(
+        owner, repo, crew_id, number, kind, text, root=None, **kwargs
+    ):
         if crew_id != author["id"]:
-            return real_append(owner, repo, crew_id, number, kind, text, root)
+            return real_append(owner, repo, crew_id, number, kind, text, root, **kwargs)
         indexed.set()
         # Bounded: with the hold in place the other crew CANNOT commit here, so this
         # times out and the transaction goes on to fail either way.
@@ -1018,12 +1020,14 @@ def test_the_skip_hold_spans_the_ledger_write_and_is_scoped_to_the_one_issue(
     inside = threading.Event()
     release = threading.Event()
 
-    def _park_at_the_ledger_write(owner, repo, crew_id, number, kind, text, root=None):
+    def _park_at_the_ledger_write(
+        owner, repo, crew_id, number, kind, text, root=None, **kwargs
+    ):
         if crew_id != author["id"]:
-            return real_append(owner, repo, crew_id, number, kind, text, root)
+            return real_append(owner, repo, crew_id, number, kind, text, root, **kwargs)
         inside.set()
         release.wait(timeout=_PARK_FOR)
-        return real_append(owner, repo, crew_id, number, kind, text, root)
+        return real_append(owner, repo, crew_id, number, kind, text, root, **kwargs)
 
     monkeypatch.setattr(cs, "append_event", _park_at_the_ledger_write)
 
@@ -1327,3 +1331,89 @@ def _assert_strict_json(path) -> None:
     file no strict parser — including the dashboard's ``JSON.parse`` — can read.
     """
     json.loads(path.read_text(), parse_constant=_reject_constant)
+
+
+def test_a_write_that_does_not_move_the_item_leaves_phase_off_the_event_line(tmp_path):
+    """`phase` on an event line means an ENTRY into that phase, so a no-move write
+    must not carry one.
+
+    The fabric measures an open dwell from the MOST RECENT entry into the current
+    phase, which is what a review round-trip legitimately restarts. Stamping the
+    phase on every write makes each CI round -- which lands `ci_state` while the
+    item sits still in `awaiting-ci` -- look like a fresh entry, so an item parked
+    for hours reads as minutes old and never surfaces as stalled. The item polled
+    most often is the one whose stall would be hidden best, which is the exact
+    inversion of what the view is for.
+    """
+    crew = _crew(tmp_path)
+    cid = crew["id"]
+
+    entered = cs.commit_work_progress(
+        OWNER, REPO, cid, 7301, {"phase": "awaiting-ci"}, "ci", "round 1", root=tmp_path
+    )
+    assert entered["event"].get("phase") == "awaiting-ci", "an entry must be recorded"
+
+    for round_no in (2, 3):
+        polled = cs.commit_work_progress(
+            OWNER, REPO, cid, 7301,
+            {"ci_state": "pending", "ci_round": round_no},
+            "ci", f"round {round_no}", root=tmp_path,
+        )
+        assert "phase" not in polled["event"], (
+            "a write that did not move the item must not claim a phase entry "
+            f"(round {round_no} did)"
+        )
+
+    moved = cs.commit_work_progress(
+        OWNER, REPO, cid, 7301, {"phase": "implementing"}, "implement", "fix", root=tmp_path
+    )
+    assert moved["event"].get("phase") == "implementing", "a real move must be recorded"
+
+    # And a genuine RE-entry still records, so a round-trip keeps restarting the clock.
+    back = cs.commit_work_progress(
+        OWNER, REPO, cid, 7301, {"phase": "awaiting-ci"}, "ci", "round 4", root=tmp_path
+    )
+    assert back["event"].get("phase") == "awaiting-ci", "a re-entry must be recorded"
+
+    phases = [
+        ev.get("phase")
+        for ev in cs.read_events(OWNER, REPO, tmp_path, crew_id=cid)
+        if ev.get("number") == 7301
+    ]
+    assert [p for p in phases if p] == [
+        "awaiting-ci",
+        "implementing",
+        "awaiting-ci",
+    ], f"only entries should carry a phase, got {phases}"
+
+
+def test_a_wrong_shaped_item_file_does_not_break_the_next_write(tmp_path):
+    """A corrupted item file must not turn every later write into a 500.
+
+    The phase-entry check reads the pre-write snapshot to decide whether the item
+    moved. That file can hold any JSON shape once something has hand-edited or
+    truncated it, and a non-empty list or a bare string is TRUTHY -- so a truthiness
+    guard would hand `.get` a list and raise AttributeError, which is not a JSON
+    error and so escapes the decode suppression. The write would 500, the rollback
+    would restore the same bad bytes, and every retry would fail identically: the
+    item becomes permanently unwritable.
+    """
+    crew = _crew(tmp_path)
+    cid = crew["id"]
+    cs.commit_work_progress(
+        OWNER, REPO, cid, 7422, {"phase": "claimed"}, "claim", "mine", root=tmp_path
+    )
+
+    path = cs.work_item_path(OWNER, REPO, cid, 7422, tmp_path)
+    for corrupt in ('[1, 2]', '"just a string"', '17', '[]'):
+        path.write_text(corrupt, encoding="utf-8")
+        out = cs.commit_work_progress(
+            OWNER, REPO, cid, 7422,
+            {"phase": "implementing"}, "implement", "still writable", root=tmp_path,
+        )
+        assert out["item"]["phase"] == "implementing", f"write failed after {corrupt}"
+        # An unreadable snapshot is treated as "no previous phase", so the entry IS
+        # recorded -- the safe direction, since a missing entry loses the phase change.
+        assert out["event"].get("phase") == "implementing", (
+            f"a phase entry must still be recorded when the snapshot is {corrupt}"
+        )

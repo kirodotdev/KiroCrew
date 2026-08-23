@@ -1,0 +1,32 @@
+{
+  "name": "auto-triage-pipeline",
+  "version": "0.1.0",
+  "displayName": "Kiro Crew Auto Triage Pipeline",
+  "description": "A full-page view of Kiro Crew's own auto-triage pipeline: one horizontal lane per crew work item across the phase enum, so an operator sees at a glance which phase each item is in, where items are piling up, and which have stalled. Reads the crew ledger through Issue Radar's crew-fabric seam — the lane drawing answers 'where is this item', a queue summary answers 'how is the queue doing'.",
+  "author": "kirocrew",
+  "iconUrl": "/app-assets/auto-triage-pipeline/icon.svg",
+  "tags": [
+    "pipeline",
+    "crews",
+    "triage",
+    "developer-tools"
+  ],
+  "highlights": [],
+  "defaultEnabled": false,
+  "permissions": {
+    "api": [
+      "/api/apps/issue-radar/crew/fabric"
+    ],
+    "network": false,
+    "storage": false
+  },
+  "ui": {
+    "pages": [
+      {
+        "route": "/auto-triage-pipeline",
+        "label": "Auto Triage Pipeline",
+        "icon": "Activity"
+      }
+    ]
+  }
+}

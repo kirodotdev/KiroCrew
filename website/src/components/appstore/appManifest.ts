@@ -103,6 +103,12 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
       'apps.autoResearch.manifest.highlight_7',
     ],
   },
+  'auto-triage-pipeline': {
+    displayName: 'apps.autoTriagePipeline.manifest.display_name',
+    description: 'apps.autoTriagePipeline.manifest.description',
+    pageLabel: 'apps.autoTriagePipeline.manifest.page_label',
+    highlights: [],
+  },
   'channels': {
     displayName: 'apps.channels.manifest.display_name',
     description: 'apps.channels.manifest.description',
