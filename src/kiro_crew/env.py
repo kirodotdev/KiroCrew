@@ -17,6 +17,7 @@ from pathlib import Path
 
 from kiro_crew import platform_compat
 from kiro_crew.config.paths import data_home
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -610,8 +611,8 @@ def git_build_info() -> tuple[str, str]:
                 ["git", *args],
                 cwd=proj,
                 capture_output=True,
-                text=True,
                 timeout=5,
+                **UTF8_TEXT,
             )
         except (OSError, subprocess.SubprocessError):
             return ""

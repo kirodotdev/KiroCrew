@@ -77,6 +77,7 @@ from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.validation import MAX_FOLLOWUP_BRANCH, is_valid_followup_branch
 
 logger = logging.getLogger(__name__)
@@ -228,9 +229,9 @@ def _run_git(args: list[str], cwd: str) -> subprocess.CompletedProcess[str]:
             cwd=cwd,
             env=env,
             capture_output=True,
-            text=True,
             timeout=_GIT_TIMEOUT,
             check=False,
+            **UTF8_TEXT,
         )
     finally:
         if cleanup:

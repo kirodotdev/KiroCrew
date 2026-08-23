@@ -417,6 +417,8 @@ def _git_show(ref: str, path: str) -> str | None:
             capture_output=True,
             check=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return None

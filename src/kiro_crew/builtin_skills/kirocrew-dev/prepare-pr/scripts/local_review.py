@@ -92,7 +92,10 @@ def err(msg: str) -> None:
 def run(args: list[str], cwd: Optional[str] = None) -> tuple[int, str, str]:
     """Run a command; return (rc, stdout, stderr). Never raises."""
     try:
-        p = subprocess.run(args, cwd=cwd, capture_output=True, text=True, errors="replace")
+        p = subprocess.run(
+            args, cwd=cwd, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)

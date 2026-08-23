@@ -67,6 +67,7 @@ from kiro_crew.security import (
     redact_credentials,
     redact_exfiltration_urls,
 )
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Theme install/serve traverses the O_NOFOLLOW + fd-real-path chokepoint in
 # hooks (safe_read_file_bytes_nolink), which has no Windows implementation
@@ -247,9 +248,9 @@ def _clone_github(url: str, dest: Path) -> str | None:
         proc = run_limited(
             argv,
             capture_output=True,
-            text=True,
             timeout=_THEME_CLONE_TIMEOUT_SEC,
             env=env,
+            **UTF8_TEXT,
         )
     except FileNotFoundError:
         return "git is not available on the server"

@@ -69,7 +69,7 @@ def run(args):
                 resolved = shutil.which("git")
                 if resolved:
                     args = [resolved] + list(args[1:])
-        p = subprocess.run(args, capture_output=True, text=True, errors="replace")
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -326,6 +326,7 @@ def _check_pre_squash(base, max_ahead):
                 input=diff_out,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
             )
             if pid_proc.returncode != 0:
@@ -388,6 +389,7 @@ def _check_pre_squash(base, max_ahead):
                 input=diff_out,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
                 errors="replace",
             )
             if pid_proc.returncode != 0:

@@ -33,6 +33,7 @@ silently ignored (so the profile is never quietly wrong).
 Usage:  python3 resolve_profile.py [repo_root]   (default: git toplevel or CWD)
 Exit:   0 resolved (JSON on stdout) - 2 env / parse error
 """
+
 import glob
 import importlib
 import json
@@ -58,7 +59,7 @@ def err(msg):
 
 def run(args):
     try:
-        p = subprocess.run(args, capture_output=True, text=True)
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError:
         return 127, "", ""

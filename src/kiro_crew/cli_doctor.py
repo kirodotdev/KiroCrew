@@ -88,6 +88,7 @@ from kiro_crew.service import common as common_service
 from kiro_crew.service import controller as service_controller
 from kiro_crew.service import linux as service_linux
 from kiro_crew.session_pid_sig import signing_health
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import _find_parakeet_mlx, _find_whisper, ensure_ffmpeg_in_path
 from kiro_crew.validation import _AGENT_NAME_RE
 
@@ -1177,6 +1178,7 @@ def _git_line(repo: Path, *args: str) -> str | None:
             [git, "-C", str(repo), *args],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             errors="replace",
             timeout=10,
         )
@@ -2091,7 +2093,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     if is_venv_install:
         try:
             py_result = subprocess.run(
-                [str(venv_py), "--version"], capture_output=True, text=True, timeout=5
+                [str(venv_py), "--version"],
+                capture_output=True,
+                timeout=5,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                **UTF8_TEXT,
             )
             py_result.check_returncode()
             ver = py_result.stdout.strip()

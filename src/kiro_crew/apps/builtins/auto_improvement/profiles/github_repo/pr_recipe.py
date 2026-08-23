@@ -43,6 +43,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 from ...spine.git_safety import GIT_SAFE_CONFIG, require_pinned
 
 logger = logging.getLogger(__name__)
@@ -152,7 +154,7 @@ def _gh_prefers_ssh() -> bool:
         ["gh", "config", "get", "git_protocol"],
     ):
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            proc = subprocess.run(args, capture_output=True, timeout=15, **UTF8_TEXT)
         except (OSError, subprocess.SubprocessError):
             return False
         value = (proc.stdout or "").strip().lower()
@@ -222,8 +224,8 @@ class GitHubPRRecipe:
             ["git", *self._GIT_SAFE_CONFIG, *args],
             cwd=str(self.clone_path),
             capture_output=True,
-            text=True,
             timeout=timeout,
+            **UTF8_TEXT,
         )
 
     def _resolve_fetch_url(self) -> str | None:
@@ -473,8 +475,8 @@ class GitHubPRRecipe:
                 cmd,
                 cwd=str(self.clone_path),
                 capture_output=True,
-                text=True,
                 timeout=_GH_TIMEOUT_S,
+                **UTF8_TEXT,
             )
         except (FileNotFoundError, subprocess.SubprocessError) as exc:
             logger.warning("gh pr create failed to launch for %s: %s", fingerprint, exc)

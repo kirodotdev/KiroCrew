@@ -93,17 +93,20 @@ def changed_files(base: str) -> list[str] | None:
     try:
         merge_base = subprocess.run(
             ["git", "merge-base", "HEAD", base],
-            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=30,
+            cwd=_REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
         )
         if merge_base.returncode != 0:
             return None
         committed = subprocess.run(
             ["git", "diff", "--name-only", merge_base.stdout.strip(), "HEAD"],
-            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=30,
+            cwd=_REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
         )
         working = subprocess.run(
             ["git", "status", "--porcelain"],
-            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=30,
+            cwd=_REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=30,
         )
         if committed.returncode != 0 or working.returncode != 0:
             return None
@@ -123,7 +126,8 @@ def selector_must_run(surface: str) -> list[str] | None:
     try:
         proc = subprocess.run(
             [sys.executable, str(_SELECTOR), "--surface", surface],
-            cwd=_REPO_ROOT, capture_output=True, text=True, timeout=120,
+            cwd=_REPO_ROOT, capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=120,
         )
     except (OSError, subprocess.SubprocessError):
         return None

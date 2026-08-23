@@ -36,6 +36,7 @@ from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Pod names become systemd instance names and path segments; keep them strict.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
@@ -168,8 +169,8 @@ def _git_worktrees(ref: Path) -> dict[str, Path]:
         cp = subprocess.run(
             ["git", "-C", str(ref), "worktree", "list", "--porcelain"],
             capture_output=True,
-            text=True,
             timeout=10,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return {}

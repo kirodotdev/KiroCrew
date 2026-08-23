@@ -38,6 +38,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 from . import ledger as L
 from . import pr_description as D
 from . import preflight as PF
@@ -125,6 +127,7 @@ def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
         ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG, *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
     )
 
@@ -755,9 +758,17 @@ class Driver:
         """
         require_pinned(self.clone)
         push = subprocess.run(
-            ["git", "-C", str(self.clone), *_GIT_SAFE_CONFIG, "push", fetch_url, f"HEAD:refs/heads/{dest}"],
+            [
+                "git",
+                "-C",
+                str(self.clone),
+                *_GIT_SAFE_CONFIG,
+                "push",
+                fetch_url,
+                f"HEAD:refs/heads/{dest}",
+            ],
             capture_output=True,
-            text=True,
+            **UTF8_TEXT,
         )
         for _ in range(self._PUSH_ATTEMPTS - 1):
             if push.returncode == 0:
@@ -777,9 +788,17 @@ class Driver:
                 return push  # rebased tree is unverified — return the original rejection
             require_pinned(self.clone)
             push = subprocess.run(
-                ["git", "-C", str(self.clone), *_GIT_SAFE_CONFIG, "push", fetch_url, f"HEAD:refs/heads/{dest}"],
+                [
+                    "git",
+                    "-C",
+                    str(self.clone),
+                    *_GIT_SAFE_CONFIG,
+                    "push",
+                    fetch_url,
+                    f"HEAD:refs/heads/{dest}",
+                ],
                 capture_output=True,
-                text=True,
+                **UTF8_TEXT,
             )
         return push
 
@@ -1394,7 +1413,11 @@ class Driver:
             ["git", "-C", str(self.clone), "apply"],
             input=winner.diff,
             capture_output=True,
+            # surrogateescape re-encodes the captured payload back to the exact
+            # bytes git produced.
             text=True,
+            encoding="utf-8",
+            errors="surrogateescape",
         )
         if ap.returncode != 0:
             self.log.error("winner diff did not apply: %s", ap.stderr[:200])
@@ -1684,7 +1707,10 @@ class Driver:
                 ["git", "-C", str(self.clone), "apply", *extra],
                 input=winner.diff,
                 capture_output=True,
+                # Same byte-exact payload round-trip as the plain apply above.
                 text=True,
+                encoding="utf-8",
+                errors="surrogateescape",
             )
 
         ap = _apply([])

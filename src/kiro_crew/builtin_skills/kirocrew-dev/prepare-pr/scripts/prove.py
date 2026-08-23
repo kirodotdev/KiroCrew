@@ -52,7 +52,7 @@ from typing import Optional
 # external entities, and this script must stay dependency-free), and `when`
 # distinguishes a failed ASSERTION from a collection or setup fault directly
 # rather than inferring it from element names.
-_REPORTER_PLUGIN = '''
+_REPORTER_PLUGIN = """
 import json
 import os
 
@@ -106,7 +106,7 @@ def pytest_collectreport(report):
 def pytest_sessionfinish(session):
     with open(os.environ["PROVE_REPORT"], "w", encoding="utf-8") as fh:
         json.dump(_counts, fh)
-'''
+"""
 
 EXIT_PROVEN = 0
 EXIT_NOTHING_TO_PROVE = 10
@@ -133,7 +133,15 @@ _HUNK_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     """Run git with a fixed argv, capturing both streams as text."""
     return subprocess.run(
-        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=False
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        # surrogateescape, not replace: this helper CAPTURES the diffs that
+        # feed git apply below, and a payload must round-trip byte-exactly.
+        errors="surrogateescape",
+        check=False,
     )
 
 
@@ -276,6 +284,8 @@ def run_pytest(worktree: Path, test_files: list[str], report: Path) -> Optional[
             cwd=str(worktree),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=PYTEST_TIMEOUT_SECS,
             env=env,
         )
@@ -327,11 +337,17 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
     prod, tests = classify(changed)
 
     if not tests:
-        return {"verdict": "NOTHING_TO_PROVE", "exit": EXIT_NOTHING_TO_PROVE,
-                "reason": "the change adds or edits no test file"}
+        return {
+            "verdict": "NOTHING_TO_PROVE",
+            "exit": EXIT_NOTHING_TO_PROVE,
+            "reason": "the change adds or edits no test file",
+        }
     if not prod:
-        return {"verdict": "NOTHING_TO_PROVE", "exit": EXIT_NOTHING_TO_PROVE,
-                "reason": "test-only change: no production hunk to revert"}
+        return {
+            "verdict": "NOTHING_TO_PROVE",
+            "exit": EXIT_NOTHING_TO_PROVE,
+            "reason": "test-only change: no production hunk to revert",
+        }
 
     stale = dirty_among(prod + tests, repo)
     if stale:
@@ -342,8 +358,11 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
 
     patch = _git_ok(["diff", merge_base, "HEAD", "--", *prod], repo)
     if not patch.strip():
-        return {"verdict": "NOTHING_TO_PROVE", "exit": EXIT_NOTHING_TO_PROVE,
-                "reason": "production diff is empty"}
+        return {
+            "verdict": "NOTHING_TO_PROVE",
+            "exit": EXIT_NOTHING_TO_PROVE,
+            "reason": "production diff is empty",
+        }
 
     mutations = split_hunks(patch) if per_hunk else [("all production hunks", patch)]
     if per_hunk and not mutations:
@@ -360,10 +379,13 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
         if baseline is None:
             raise EnvironmentError(f"baseline run exceeded {PYTEST_TIMEOUT_SECS}s")
         if baseline != 0:
-            return {"verdict": "BASELINE_RED", "exit": EXIT_BASELINE_RED,
-                    "reason": "the changed tests do not pass before mutation, "
-                              "so a red mutated run cannot be attributed",
-                    "tests": tests}
+            return {
+                "verdict": "BASELINE_RED",
+                "exit": EXIT_BASELINE_RED,
+                "reason": "the changed tests do not pass before mutation, "
+                "so a red mutated run cannot be attributed",
+                "tests": tests,
+            }
 
         results = []
         for idx, (label, mutation) in enumerate(mutations):
@@ -371,17 +393,27 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
             # it would always read "uncaught". Bucket it separately instead of
             # letting prose drive a NOT_PROVEN verdict.
             if per_hunk and is_doc_path(label.rsplit(":", 1)[0]):
-                results.append({"hunk": label, "outcome": "unprovable",
-                                "failures": 0, "errors": 0, "tests_run": 0})
+                results.append(
+                    {
+                        "hunk": label,
+                        "outcome": "unprovable",
+                        "failures": 0,
+                        "errors": 0,
+                        "tests_run": 0,
+                    }
+                )
                 continue
             applied = subprocess.run(
                 ["git", "apply", "-R", "-"],
-                cwd=str(worktree), input=mutation, capture_output=True, text=True,
+                cwd=str(worktree),
+                input=mutation,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="surrogateescape",
             )
             if applied.returncode != 0:
-                raise EnvironmentError(
-                    f"could not revert {label}: {applied.stderr.strip()}"
-                )
+                raise EnvironmentError(f"could not revert {label}: {applied.stderr.strip()}")
 
             report = tmp / f"mutated-{idx}.json"
             code = run_pytest(worktree, tests, report)
@@ -395,13 +427,25 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
                 outcome = "inconclusive"
             else:
                 outcome = "uncaught"
-            results.append({"hunk": label, "outcome": outcome,
-                            "failures": failures, "errors": errors, "tests_run": total})
+            results.append(
+                {
+                    "hunk": label,
+                    "outcome": outcome,
+                    "failures": failures,
+                    "errors": errors,
+                    "tests_run": total,
+                }
+            )
 
             # Re-apply so each hunk is measured against the unmutated tree.
             forward = subprocess.run(
                 ["git", "apply", "-"],
-                cwd=str(worktree), input=mutation, capture_output=True, text=True,
+                cwd=str(worktree),
+                input=mutation,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="surrogateescape",
             )
             if forward.returncode != 0:
                 raise EnvironmentError(
@@ -415,13 +459,19 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
             reason = "the tests still pass with the bug reintroduced"
         elif inconclusive:
             verdict, code = "INCONCLUSIVE", EXIT_INCONCLUSIVE
-            reason = ("the mutated run only errored at collection, so no assertion "
-                      "observed the bug")
+            reason = (
+                "the mutated run only errored at collection, so no assertion " "observed the bug"
+            )
         else:
             verdict, code = "PROVEN", EXIT_PROVEN
             reason = "an assertion failed with the bug reintroduced"
-        return {"verdict": verdict, "exit": code, "reason": reason,
-                "tests": tests, "results": results}
+        return {
+            "verdict": verdict,
+            "exit": code,
+            "reason": reason,
+            "tests": tests,
+            "results": results,
+        }
     finally:
         _git(["worktree", "remove", "--force", str(worktree)], repo)
         shutil.rmtree(tmp, ignore_errors=True)
@@ -429,10 +479,14 @@ def prove(repo: Path, base: str, per_hunk: bool) -> dict:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--base", default=DEFAULT_BASE,
-                    help=f"base ref to diff against (default: {DEFAULT_BASE})")
-    ap.add_argument("--per-hunk", action="store_true",
-                    help="revert one production hunk at a time and name the uncaught ones")
+    ap.add_argument(
+        "--base", default=DEFAULT_BASE, help=f"base ref to diff against (default: {DEFAULT_BASE})"
+    )
+    ap.add_argument(
+        "--per-hunk",
+        action="store_true",
+        help="revert one production hunk at a time and name the uncaught ones",
+    )
     args = ap.parse_args()
 
     if not shutil.which("git"):

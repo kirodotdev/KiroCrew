@@ -148,7 +148,9 @@ def redact(text):
 
 def run(args):
     try:
-        p = subprocess.run(args, capture_output=True, text=True)
+        p = subprocess.run(
+            args, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        )
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)

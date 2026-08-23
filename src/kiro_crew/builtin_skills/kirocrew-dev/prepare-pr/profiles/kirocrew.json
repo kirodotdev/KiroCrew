@@ -6,6 +6,8 @@
     "python3 scripts/run_scoped_tests.py --test",
     "BASE=\"$(git merge-base HEAD origin/main)\" && SCOPED_TESTS_BASE_REF=\"$BASE\" python3 scripts/run_scoped_tests.py --surface backend",
     "python3 scripts/check_black_formatting.py",
+    "python3 scripts/check_subprocess_encoding.py --test",
+    "python3 scripts/check_subprocess_encoding.py",
     "isort --check-only src/kiro_crew test",
     "flake8 src/kiro_crew test",
     "mypy src/kiro_crew/",

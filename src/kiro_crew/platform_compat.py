@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Optional
 
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -3465,8 +3466,9 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
             out = subprocess.check_output(
                 [p, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
                 timeout=5,
-                text=True,
                 stderr=subprocess.DEVNULL,
+                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+                **UTF8_TEXT,
             ).strip()
             major, _, minor = out.partition(".")
             if not (int(major) == 3 and int(minor) >= 10):

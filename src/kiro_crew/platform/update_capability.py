@@ -142,6 +142,7 @@ def _git_toplevel(root: str) -> str | None:
             [git_bin, "-c", "core.quotePath=false", "-C", root, "rev-parse", "--show-toplevel"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
             # A path on Linux is BYTES, so a checkout can live somewhere that is not
             # valid UTF-8. Strict decoding raises there — caught below as a
             # ValueError, so it never escapes, but the answer would be thrown away

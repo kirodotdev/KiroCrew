@@ -46,6 +46,7 @@ from kiro_crew.effort import EFFORT_LEVELS
 from kiro_crew.executors import discovery_executor
 from kiro_crew.metrics import provider as _metrics_provider
 from kiro_crew.security_posture import build_posture_snapshot_async, posture_counts_async
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from kiro_crew.transcribe import BREW_PATH_DIRS, ensure_ffmpeg_in_path, find_brew, is_available
 
 logger = logging.getLogger(__name__)
@@ -870,16 +871,24 @@ def _find_suitable_python() -> str | None:
         # True => skip this interpreter and keep searching. A probe failure
         # (can't even run it) also counts as unusable.
         try:
+            # PYTHONIOENCODING pins the CHILD's emit side: piped stdout on
+            # Windows otherwise re-encodes with the ANSI code page, which the
+            # UTF-8 decode below cannot undo.
+            child_env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
             ver = subprocess.check_output(
-                [p, "-c", "import sys; print(sys.version)"], timeout=5, text=True
+                [p, "-c", "import sys; print(sys.version)"],
+                timeout=5,
+                env=child_env,
+                **UTF8_TEXT,
             )
             if "free-threading" in ver:
                 return True
             subprocess.check_output(
                 [p, "-m", "pip", "--version"],
                 timeout=5,
-                text=True,
                 stderr=subprocess.DEVNULL,
+                env=child_env,
+                **UTF8_TEXT,
             )
             return False
         except Exception:

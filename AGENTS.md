@@ -327,7 +327,7 @@ Format, which the `[0.2.0]` section is the reference for:
 ## The gate before you commit
 
 ```bash
-python3 scripts/check_black_formatting.py && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```

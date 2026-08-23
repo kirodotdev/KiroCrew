@@ -22,6 +22,7 @@ from typing import Optional
 
 from kiro_crew.cloud import aws
 from kiro_crew.sel import sel
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +154,8 @@ def _use_git_archive(root: Path) -> Optional[Path]:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "archive", "--format=tar.gz", "-o", out.name, "HEAD"],
             capture_output=True,
-            text=True,
             timeout=120,
+            **UTF8_TEXT,
         )
         if rc.returncode == 0 and Path(out.name).stat().st_size > 0:
             return _refilter_archive(Path(out.name))
@@ -254,8 +255,8 @@ def _tracked_tree_is_dirty(root: Path) -> bool:
         rc = subprocess.run(  # noqa: S603 — fixed argv, no shell
             ["git", "-C", str(root), "status", "--porcelain", "--untracked-files=no"],
             capture_output=True,
-            text=True,
             timeout=60,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return False

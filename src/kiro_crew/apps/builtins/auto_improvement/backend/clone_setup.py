@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlparse
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
 
 #: Alias the ONE shared safe-config so this helper cannot drift from the others (the
@@ -70,7 +72,7 @@ def _gh_prefers_ssh() -> bool:
         ["gh", "config", "get", "git_protocol"],
     ):
         try:
-            proc = subprocess.run(args, capture_output=True, text=True, timeout=15)
+            proc = subprocess.run(args, capture_output=True, timeout=15, **UTF8_TEXT)
         except (OSError, subprocess.SubprocessError):
             return False
         value = (proc.stdout or "").strip().lower()
@@ -172,9 +174,9 @@ def setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> t
         actual_origin = subprocess.run(
             ["git", "-C", str(dest), "remote", "get-url", "origin"],
             capture_output=True,
-            text=True,
             timeout=30,
             shell=False,
+            **UTF8_TEXT,
         ).stdout.strip()
         if actual_origin and actual_origin != spec.clone_url:
             return {}, (
@@ -192,9 +194,9 @@ def setup_safe_clone(url: str, scratch_root: Path, *, timeout_s: int = 300) -> t
         proc = subprocess.run(
             ["git", "clone", "--origin", "origin", spec.clone_url, str(dest)],
             capture_output=True,
-            text=True,
             timeout=timeout_s,
             shell=False,
+            **UTF8_TEXT,
         )
     except subprocess.TimeoutExpired:
         return {}, f"git clone timed out after {timeout_s}s."
@@ -243,9 +245,9 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
             "refs/heads",
         ],
         capture_output=True,
-        text=True,
         timeout=timeout_s,
         shell=False,
+        **UTF8_TEXT,
     )
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-1:] or [""]
@@ -268,9 +270,9 @@ def list_clone_branches(clone: Path, *, timeout_s: int = 30) -> tuple[list[str],
     head = subprocess.run(
         ["git", "-C", str(clone), "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"],
         capture_output=True,
-        text=True,
         timeout=timeout_s,
         shell=False,
+        **UTF8_TEXT,
     )
     default = (head.stdout or "").strip()
     ordered = ([default] if default in names else []) + sorted(n for n in names if n != default)
@@ -438,9 +440,9 @@ def _disable_push(repo: Path) -> None:
         subprocess.run(
             ["git", "-C", str(repo), "remote", "set-url", *extra, "origin", DISABLED_NO_PUSH],
             capture_output=True,
-            text=True,
             timeout=30,
             shell=False,
+            **UTF8_TEXT,
         )
 
 
@@ -482,9 +484,9 @@ def checkout_branch(clone: Path, branch: str, *, timeout_s: int = 120) -> tuple[
         return subprocess.run(
             ["git", "-C", str(clone), *_GIT_SAFE_CONFIG, *args],
             capture_output=True,
-            text=True,
             timeout=tmo,
             shell=False,
+            **UTF8_TEXT,
         )
 
     # Already there? Nothing to do — avoids a needless network fetch every run.
@@ -535,16 +537,16 @@ def _ok(spec: CloneSpec, dest: Path, *, reused: bool) -> dict:
     push = subprocess.run(
         ["git", "-C", str(dest), "remote", "get-url", "--push", "origin"],
         capture_output=True,
-        text=True,
         timeout=30,
         shell=False,
+        **UTF8_TEXT,
     )
     fetch = subprocess.run(
         ["git", "-C", str(dest), "remote", "get-url", "origin"],
         capture_output=True,
-        text=True,
         timeout=30,
         shell=False,
+        **UTF8_TEXT,
     )
 
     def _neutral(proc: subprocess.CompletedProcess) -> bool:

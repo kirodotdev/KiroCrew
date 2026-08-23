@@ -404,6 +404,15 @@ jobs:
       - name: Check formatting (black, baselined)
         run: python3 scripts/check_black_formatting.py
 
+      # Text-mode subprocess calls must pin their decode encoding: without one
+      # the child's output decodes with the Windows ANSI code page (#5249).
+      # Self-test first: it plants one probe per rule family, so a typo that
+      # silently disables a rule fails here instead of shipping green.
+      - name: Check subprocess text-mode encoding (gate, baselined)
+        run: |
+          python3 scripts/check_subprocess_encoding.py --test
+          python3 scripts/check_subprocess_encoding.py
+
       # isort/flake8/mypy below are BLOCKING (config in pyproject.toml + setup.cfg).
       #
       # The two repo-root modules are named explicitly: `src/kiro_crew test` misses

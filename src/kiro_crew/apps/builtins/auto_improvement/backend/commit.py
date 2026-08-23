@@ -85,6 +85,7 @@ def _git(
         ["git", "-C", str(clone), *_GIT_SAFE_CONFIG, *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=timeout,
     )
@@ -160,8 +161,12 @@ def materialize_queued_diff(
         ["git", "-C", str(clone), "apply", "--index", "-"],
         input=diff_text,
         capture_output=True,
-        text=True,
         timeout=_GIT_TIMEOUT_S,
+        # The queued diff is a byte-exact payload; surrogateescape re-encodes
+        # any non-UTF-8 byte back exactly as captured.
+        text=True,
+        encoding="utf-8",
+        errors="surrogateescape",
     )
     if apply_proc.returncode != 0:
         # Leave the tree clean so a retry or the draft-PR path still works.

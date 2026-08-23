@@ -20,6 +20,8 @@ import subprocess
 import sys
 from typing import Any
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_S = 15.0
@@ -41,8 +43,8 @@ def _gh_authenticated() -> tuple[bool, str]:
         proc = subprocess.run(
             ["gh", "auth", "status"],
             capture_output=True,
-            text=True,
             timeout=_PROBE_TIMEOUT_S,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         return False, f"could not run gh auth status: {exc}"
