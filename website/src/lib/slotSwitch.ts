@@ -58,7 +58,38 @@
 
 import { i18nT } from '../i18n/t'
 
-export type SlotSwitchField = 'model' | 'project'
+/** What the agent-switch response names, nothing more: the switch also
+ *  re-resolves the workspace binding, so the two must ride one adjudicated
+ *  write — recovering an older agent with a fresher call's workspace would
+ *  tear the pair. The backend may additionally reset `slot.project`, but the
+ *  response does not carry it, so the optimistic write leaves project to the
+ *  slots rebroadcast rather than guess. Accepted cost: with the socket down
+ *  that rebroadcast never arrives, so the store then holds a fresh
+ *  agent+workspace beside a stale project until the next fetch. Guessing the
+ *  project client-side would be worse — the reset rule (project-scope agents
+ *  keep it, aliases reset it) is server-owned; carrying `project` in the
+ *  response is the follow-up that closes this. */
+export interface AgentSwitchValue {
+  agent: string
+  /** Absent when the response omitted it; the write must then leave the
+   *  slot's workspace untouched rather than clobber it. */
+  workspace?: string
+}
+
+/** Each field's adjudicated VALUE type. Every call site of one field MUST use
+ *  the field's declared type: the registry stores values opaquely, and a held
+ *  success recovered on ANOTHER call's failure path is handed to that call's
+ *  `write` — two call sites of one field exchanging different shapes would
+ *  hand `write` a value it cannot read. This map makes that a compile error
+ *  instead of a convention. */
+export interface SlotSwitchValueMap {
+  model: string
+  project: string
+  agent: AgentSwitchValue
+  reasoning_effort: string
+}
+
+export type SlotSwitchField = keyof SlotSwitchValueMap
 
 interface Entry {
   /** Ticket of the newest request begun for this slot+field. */
@@ -70,17 +101,35 @@ interface Entry {
   /** Highest ticket whose value has been written to the store. */
   bestWrittenSeq: number
   /** Newest superseded success HELD while the newest request is in flight:
-   *  the backend applied it, but a newer request may still supersede it. */
-  heldSuccess: { seq: number; value: string } | null
+   *  the backend applied it, but a newer request may still supersede it.
+   *  Stored opaquely — the SlotSwitchValueMap pins what it really is. */
+  heldSuccess: { seq: number; value: unknown } | null
 }
 
 const entries = new Map<string, Entry>()
 
 const keyOf = (field: SlotSwitchField, slot: string): string => field + ':' + slot
 
+/** Targets STAGED but not yet on the wire (a debounced control's pending
+ *  intent). A slider drag debounces its persist ~150ms; without staging, a
+ *  cycle shortcut pressed inside that window reads a base that ignores the
+ *  user's newest pick and mis-steps (picks it again instead of advancing).
+ *  Staging makes the intent visible to burst-stepping consumers immediately
+ *  while keeping the debounce's one-write-per-drag contract. */
+const staged = new Map<string, string>()
+
+/** Publish a debounced control's picked target BEFORE its wire call fires.
+ *  Cleared automatically when any request for this slot+field begins (the
+ *  wire call it was staged for, or a newer competing request — either way
+ *  the registry's in-flight target takes over as the newest intent). */
+export function stageSlotSwitchTarget(field: SlotSwitchField, slot: string, target: string): void {
+  staged.set(keyOf(field, slot), target)
+}
+
 /** Register a new in-flight switch and return its ticket for the settle calls. */
 function beginSlotSwitch(field: SlotSwitchField, slot: string, target: string): number {
   const key = keyOf(field, slot)
+  staged.delete(key)
   const entry = entries.get(key)
     ?? { seq: 0, pending: '', newestOutcome: 'inflight' as const, bestWrittenSeq: 0, heldSuccess: null }
   entry.seq += 1
@@ -90,9 +139,23 @@ function beginSlotSwitch(field: SlotSwitchField, slot: string, target: string): 
   return entry.seq
 }
 
+/** The newest declared target for this slot+field — a STAGED (not yet on the
+ *  wire) pick wins over an in-flight request, in-flight over none — or null
+ *  when neither exists. Distinct from `pendingSlotSwitch` because `''` is a
+ *  REAL target for the reasoning_effort field (clear the override → provider
+ *  default): a burst-stepping consumer that read `''` as "nothing pending"
+ *  would recompute its base from an unsettled store and mis-step. */
+export function pendingSlotSwitchTarget(field: SlotSwitchField, slot: string): string | null {
+  const key = keyOf(field, slot)
+  const stagedTarget = staged.get(key)
+  if (stagedTarget !== undefined) return stagedTarget
+  const entry = entries.get(key)
+  return entry && entry.newestOutcome === 'inflight' ? entry.pending : null
+}
+
 /** The newest in-flight target for this slot+field, `''` when none. */
 export function pendingSlotSwitch(field: SlotSwitchField, slot: string): string {
-  return entries.get(keyOf(field, slot))?.pending || ''
+  return pendingSlotSwitchTarget(field, slot) || ''
 }
 
 /** Settle a ticket whose API call SUCCEEDED, with the server's stored value.
@@ -100,7 +163,7 @@ export function pendingSlotSwitch(field: SlotSwitchField, slot: string): string 
  *  discard per the adjudication model above — do not write.
  */
 function settleSlotSwitchSuccess(
-  field: SlotSwitchField, slot: string, seq: number, value: string,
+  field: SlotSwitchField, slot: string, seq: number, value: unknown,
 ): boolean {
   const entry = entries.get(keyOf(field, slot))
   if (!entry) return false
@@ -132,25 +195,28 @@ function settleSlotSwitchSuccess(
 
 /** Settle a ticket whose API call FAILED.
  *
- *  Returns the value the caller should write to the store anyway, or `''`
- *  for none. Non-empty exactly when this failure was the NEWEST request and
- *  an older request's success was held in its favour: that held value is
- *  what the backend is actually running, so the store must adopt it or the
- *  chip keeps the pre-switch value forever (offline). A superseded failure
- *  is a pure no-op — a failed call changed nothing server-side.
+ *  Returns the value the caller should write to the store anyway (boxed, so
+ *  any value type — including one that is itself falsy — survives), or
+ *  `null` for none. Non-null exactly when this failure was the NEWEST
+ *  request and an older request's success was held in its favour: that held
+ *  value is what the backend is actually running, so the store must adopt it
+ *  or the chip keeps the pre-switch value forever (offline). A superseded
+ *  failure is a pure no-op — a failed call changed nothing server-side.
  */
-function settleSlotSwitchFailure(field: SlotSwitchField, slot: string, seq: number): string {
+function settleSlotSwitchFailure(
+  field: SlotSwitchField, slot: string, seq: number,
+): { value: unknown } | null {
   const entry = entries.get(keyOf(field, slot))
-  if (!entry || seq !== entry.seq) return ''
+  if (!entry || seq !== entry.seq) return null
   entry.pending = ''
   entry.newestOutcome = 'failure'
   const held = entry.heldSuccess
   entry.heldSuccess = null
   if (held && held.seq > entry.bestWrittenSeq) {
     entry.bestWrittenSeq = held.seq
-    return held.value
+    return { value: held.value }
   }
-  return ''
+  return null
 }
 
 const chains = new Map<string, Promise<unknown>>()
@@ -192,10 +258,20 @@ const CONFIRM_TIMEOUT = Symbol('slot-switch-confirm-timeout')
  *  most one `write`.
  *
  *  `request` resolves to the server's STORED value for the switch (the call
- *  site maps the endpoint's response before handing it over). `write`
- *  receives the adjudicated value to put in the store — the request's own on
- *  the authoritative path, or a recovered older success when this (newest)
- *  request failed after an older one landed.
+ *  site maps the endpoint's response before handing it over), typed per
+ *  field by SlotSwitchValueMap. `write` receives the adjudicated value to
+ *  put in the store — the request's own on the authoritative path, or a
+ *  recovered older success when this (newest) request failed after an older
+ *  one landed. The recovered value's cast below is sound because every call
+ *  site of one field is pinned to that field's mapped type.
+ *
+ *  `target` is the IDENTITY of the requested value, for burst stepping: it
+ *  is what `pendingSlotSwitchTarget` reports so a cycle handler can step
+ *  from the newest in-flight pick. For string-valued fields it equals the
+ *  value; for `agent` it is the agent name (the object's identity — the
+ *  workspace half is derived server-side, never part of the pick). A future
+ *  field whose target is not its value's identity must extend this contract
+ *  first, or burst stepping silently drifts.
  *
  *  Rejects when the pick did not confirm: the request failed, or it did not
  *  settle within SWITCH_CONFIRM_TIMEOUT_MS. The timeout releases only the
@@ -205,12 +281,12 @@ const CONFIRM_TIMEOUT = Symbol('slot-switch-confirm-timeout')
  *  the caller were still waiting — a late success is written when it is what
  *  the backend was left running.
  */
-export async function performSlotSwitch(
-  field: SlotSwitchField,
+export async function performSlotSwitch<F extends SlotSwitchField>(
+  field: F,
   slot: string,
   target: string,
-  request: () => Promise<string>,
-  write: (value: string) => void,
+  request: () => Promise<SlotSwitchValueMap[F]>,
+  write: (value: SlotSwitchValueMap[F]) => void,
 ): Promise<void> {
   const seq = beginSlotSwitch(field, slot, target)
   // The wire outcome ALWAYS adjudicates, whether or not the caller is still
@@ -223,7 +299,7 @@ export async function performSlotSwitch(
     },
     (error) => {
       const recovered = settleSlotSwitchFailure(field, slot, seq)
-      if (recovered) write(recovered)
+      if (recovered) write(recovered.value as SlotSwitchValueMap[F])
       return { ok: false as const, error }
     },
   )

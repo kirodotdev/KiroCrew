@@ -4,7 +4,8 @@ import { Routes, Route, Navigate, useLocation, useNavigate, useParams } from 're
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppSelector, useAppDispatch, useAppStore, store } from './store'
 import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds, changeApprovalMode, updateSlot } from './store/dashboardSlice'
-import { pendingSlotSwitch, performSlotSwitch } from './lib/slotSwitch'
+import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from './lib/slotSwitch'
+import { performAgentSlotSwitch } from './lib/agentSwitch'
 // Side-effect: registers every built-in surface in the registry. MUST run
 // before `getBuiltinSurfaces()` is invoked below to compute `NAV_ITEMS`.
 import './surfaces/builtins'
@@ -1631,10 +1632,18 @@ export default function App() {
     const timer = window.setTimeout(() => dispatch(setAgentSwitchNotice(null)), 6000)
     return () => window.clearTimeout(timer)
   }, [agentSwitchNotice, dispatch])
-  const switchActiveSlotAgent = useCallback((slot: string, agent: string) => {
+  const switchActiveSlotAgent = useCallback(async (slot: string, agent: string) => {
     dispatch(setAgentSwitchNotice(null))
-    void api.chatSlotAgent(slot, agent)
-      .catch(error => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error))))
+    try {
+      // Same protocol as onCycleModel below (#4523): without the store write
+      // the acting tab depends on the coalesced slots rebroadcast to see its
+      // own pick. performAgentSlotSwitch mirrors exactly what the response
+      // names ({agent, workspace} as one adjudicated pair; project is left
+      // to the rebroadcast).
+      await performAgentSlotSwitch(slot, agent, store.dispatch)
+    } catch (error) {
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+    }
   }, [dispatch])
   useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => newChatMutation.mutate(), disabled: shortcutsOpen,
     onToggleFocusMode: toggleFocusMode,
@@ -1643,40 +1652,73 @@ export default function App() {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot || installedAgents.length === 0) return
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const currentAgent = currentSlot?.agent || defaultAgent
+      // Step from the newest in-flight target when one exists — see
+      // onCycleModel below. Agent names are never '', so the ''-falsy
+      // accessor is safe here.
+      const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const nextIdx = (idx + 1) % installedAgents.length
-      switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
+      void switchActiveSlotAgent(activeSlot, installedAgents[nextIdx].name)
     },
     onCyclePrevAgent: () => {
       const slots = store.getState().dashboard.slots
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot || installedAgents.length === 0) return
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const currentAgent = currentSlot?.agent || defaultAgent
+      // See onCycleAgent above.
+      const currentAgent = pendingSlotSwitch('agent', activeSlot) || currentSlot?.agent || defaultAgent
       const idx = installedAgents.findIndex((a: { name: string }) => a.name === currentAgent)
       const prevIdx = (idx - 1 + installedAgents.length) % installedAgents.length
-      switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
+      void switchActiveSlotAgent(activeSlot, installedAgents[prevIdx].name)
     },
-    onCycleReasoningEffort: () => {
+    onCycleReasoningEffort: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const current = currentSlot?.reasoning_effort || ''
-      const idx = REASONING_EFFORT_LEVELS.indexOf(current)
+      // Step from the newest in-flight target (see onCycleModel below). ''
+      // is a REAL effort target (provider default), so this base uses the
+      // null-aware accessor — the ''-falsy one would misread an in-flight
+      // "back to default" as "nothing pending" and mis-step the burst.
+      const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
+        ?? (currentSlot?.reasoning_effort || '')
+      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
       const nextIdx = (idx + 1) % REASONING_EFFORT_LEVELS.length
-      api.chatSlotReasoningEffort(activeSlot, REASONING_EFFORT_LEVELS[nextIdx])
+      const level = REASONING_EFFORT_LEVELS[nextIdx]
+      try {
+        await performSlotSwitch('reasoning_effort', activeSlot, level,
+          async () => {
+            const r = await api.chatSlotReasoningEffort(activeSlot, level)
+            return r?.reasoning_effort ?? level
+          },
+          (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
+      } catch (e) {
+        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        console.error('onCycleReasoningEffort failed', e)
+      }
     },
-    onCyclePrevReasoningEffort: () => {
+    onCyclePrevReasoningEffort: async () => {
       const activeSlot = store.getState().chat.activeSlot
       if (!activeSlot) return
       const slots = store.getState().dashboard.slots
       const currentSlot = slots.find((s: { key: string }) => s.key === activeSlot)
-      const current = currentSlot?.reasoning_effort || ''
-      const idx = REASONING_EFFORT_LEVELS.indexOf(current)
+      // See onCycleReasoningEffort above.
+      const base = pendingSlotSwitchTarget('reasoning_effort', activeSlot)
+        ?? (currentSlot?.reasoning_effort || '')
+      const idx = REASONING_EFFORT_LEVELS.indexOf(base)
       const prevIdx = (idx - 1 + REASONING_EFFORT_LEVELS.length) % REASONING_EFFORT_LEVELS.length
-      api.chatSlotReasoningEffort(activeSlot, REASONING_EFFORT_LEVELS[prevIdx])
+      const level = REASONING_EFFORT_LEVELS[prevIdx]
+      try {
+        await performSlotSwitch('reasoning_effort', activeSlot, level,
+          async () => {
+            const r = await api.chatSlotReasoningEffort(activeSlot, level)
+            return r?.reasoning_effort ?? level
+          },
+          (value) => store.dispatch(updateSlot({ key: activeSlot, reasoning_effort: value })))
+      } catch (e) {
+        store.dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+        console.error('onCyclePrevReasoningEffort failed', e)
+      }
     },
     onCycleApprovalMode: () => {
       const state = store.getState()

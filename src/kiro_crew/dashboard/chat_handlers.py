@@ -3583,70 +3583,151 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
     if agent_name and not _AGENT_NAME_RE.match(agent_name):
         return web.json_response({"error": "invalid agent name"}, status=400)
 
-    # Stored verbatim — never rewritten to whatever currently answers. See the
-    # same reasoning in api_chat_slot_create.
-    slot.agent = agent_name
+    # The whole resolve -> reset -> commit section runs under the slot's
+    # lock: the awaits yield the event loop, and an interleaved second switch
+    # could otherwise observe (or write) intermediate state. TRANSACTIONAL
+    # ordering: the new values are computed into locals, the session reset
+    # runs FIRST, and the slot is mutated only after the reset succeeds — a
+    # failed request provably changed nothing, the invariant the frontend's
+    # slotSwitch failure-recovery relies on, with no rollback machinery to
+    # race against concurrent writers (e.g. the project endpoint, which does
+    # not take this lock).
+    async with slot._lock:
+        # Stored verbatim — never rewritten to whatever currently answers. See
+        # the same reasoning in api_chat_slot_create.
+        new_workspace = slot.workspace
+        new_project = slot.project
+        # Compare-and-set baseline, captured BEFORE the first await in this
+        # section: the resolution warm-up and the session reset both yield
+        # the event loop, and the project/workspace endpoints do not take
+        # this lock — a user's explicit pick landing anywhere in that window
+        # must win over this switch's DERIVED values (the reverse would
+        # silently erase an action that happened after the agent pick).
+        pre_await_workspace = slot.workspace
+        pre_await_project = slot.project
 
-    # Resolve workspace from agent bindings
-    workspace = "default"
-    try:
-        cfg = KiroCrewConfig.load()
-        if agent_name:
-            # Resolve by the name being STORED, which is exactly the name dispatch
-            # will resolve later (`chat_runner` -> resolve_agent_bindings(
-            # slot.agent)). Looking it up as an alias first and taking THAT
-            # alias's workspace disagreed with dispatch whenever the two differ:
-            # a name that is merely some alias's `kiro_agent` target, or a
-            # materialized app agent, dispatches with the DEFAULT bindings while
-            # the slot had recorded the alias's workspace. A materialized agent
-            # previously matched nothing here at all, so the slot kept the
-            # PREVIOUS agent's project — latent until app agents could dispatch.
-            # Resolve WITH the slot's project scope (warmed off-loop first) so a
-            # project agent counts as resolved rather than falling back.
-            await warm_project_agent_names(slot.project or None)
-            bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
-            ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
-            slot.workspace = ws_name
-            workspace = ws_name
-            # A project-scope agent exists only inside slot.project: kiro-cli
-            # resolves --agent against $PWD/.kiro/agents, so resetting the
-            # project here would make the very agent just selected unresolvable
-            # on the next turn (slot advertises it, default answers — the
-            # silent-substitution bug #1684 exists to remove). Aliases keep the
-            # reset: their project comes from their own workspace bindings.
-            is_project_agent = agent_name not in cfg.agents and agent_name in (
-                cached_project_agent_names(slot.project or None) or frozenset()
+        # Commit the agent BEFORE any await in this section: a message send
+        # landing while the resolution warm-up or the reset await is in
+        # flight creates a fresh session from the slot's CURRENT bindings,
+        # so the new agent must already be visible or that session
+        # cold-starts on the old binding and stays stale after the switch
+        # reports success. Deliberately NO rollback on a failing reset: the
+        # reset pops the session from the map before shutting the process
+        # down, so by the time shutdown can fail the old binding's session
+        # no longer exists — every future send cold-starts on the NEW
+        # binding, and a replacement session created by a concurrent send
+        # mid-reset already runs it. Restoring the old label would advertise
+        # a binding nothing runs (and tear against that replacement).
+        slot.agent = agent_name
+
+        # Resolve workspace from agent bindings. The response value is seeded
+        # from the slot's CURRENT workspace, not a "default" literal: if
+        # resolution below fails, the response still names this value, and
+        # since #5120 the acting tab writes it into its store — a fabricated
+        # "default" would pin the chip to a workspace the slot does not hold
+        # (the websocket rebroadcast corrects it only when the socket is up,
+        # which is exactly when the optimistic write is load-bearing).
+        workspace = slot.workspace or "default"
+        try:
+            cfg = KiroCrewConfig.load()
+            if agent_name:
+                # Resolve by the name being STORED, which is exactly the name dispatch
+                # will resolve later (`chat_runner` -> resolve_agent_bindings(
+                # slot.agent)). Looking it up as an alias first and taking THAT
+                # alias's workspace disagreed with dispatch whenever the two differ:
+                # a name that is merely some alias's `kiro_agent` target, or a
+                # materialized app agent, dispatches with the DEFAULT bindings while
+                # the slot had recorded the alias's workspace. A materialized agent
+                # previously matched nothing here at all, so the slot kept the
+                # PREVIOUS agent's project — latent until app agents could dispatch.
+                # Resolve WITH the slot's project scope (warmed off-loop first) so a
+                # project agent counts as resolved rather than falling back.
+                await warm_project_agent_names(slot.project or None)
+                bindings = resolve_agent_bindings(cfg, agent_name, slot.project or None)
+                ws_name = _workspace_name_for_dir(cfg, bindings.workspace_dir)
+                new_workspace = ws_name
+                workspace = ws_name
+                # A project-scope agent exists only inside slot.project: kiro-cli
+                # resolves --agent against $PWD/.kiro/agents, so resetting the
+                # project here would make the very agent just selected unresolvable
+                # on the next turn (slot advertises it, default answers — the
+                # silent-substitution bug #1684 exists to remove). Aliases keep the
+                # reset: their project comes from their own workspace bindings.
+                is_project_agent = agent_name not in cfg.agents and agent_name in (
+                    cached_project_agent_names(slot.project or None) or frozenset()
+                )
+                if not is_project_agent:
+                    new_project = default_project_dir(workspace)
+        except Exception:
+            logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
+
+        # Derived fields commit BEFORE the reset too, compare-and-set against
+        # the pre-await baseline: a send landing during the reset teardown
+        # cold-starts the replacement session from the slot's CURRENT
+        # bindings, so the full new binding TRIPLE must already be visible or
+        # the new agent's session starts in the OLD project and its tools run
+        # in the wrong repository. The CAS still protects a concurrent
+        # explicit pick that landed during the resolution awaits above.
+        if slot.workspace == pre_await_workspace:
+            slot.workspace = new_workspace
+        if slot.project == pre_await_project:
+            slot.project = new_project
+
+        # Reset session so the next message uses the new agent.
+        logger.info(
+            "Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew"
+        )
+        teardown_incomplete = False
+        try:
+            await _reset_slot_session(state, slot, _history_key_for(name))
+        except Exception:
+            # The switch is COMMITTED regardless: the reset pops the session
+            # before its shutdown can fail, so the new binding is what every
+            # replacement or future session runs. This is a success with a
+            # degraded teardown, and it must be reported as one — a 500 here
+            # would make the acting tab's performSlotSwitch keep the OLD
+            # store value, corrupting the cycle base and the displayed state
+            # for a switch that actually happened.
+            teardown_incomplete = True
+            logger.exception(
+                "Slot %s agent switch: old session teardown incomplete", name
             )
-            if not is_project_agent:
-                slot.project = default_project_dir(workspace)
-    except Exception:
-        logger.warning("Failed to resolve agent bindings for %r", agent_name, exc_info=True)
 
-    # Reset session so next message uses the new agent
-    logger.info("Slot %s agent switched to %r, resetting session", name, agent_name or "kirocrew")
-    await _reset_slot_session(state, slot, _history_key_for(name))
+        # Persist the new agent so the session resumes under the correct
+        # agent after a gateway restart. INSIDE the lock: two racing switches
+        # otherwise interleave their metadata writes, and a stalled earlier
+        # write finishing last would restore the older agent on restart.
+        if state.conversation_log:
+            try:
+                # update_metadata enters _locked (flock + os.close); those are
+                # blocking-on-loop-prohibited, so offload to a worker thread rather
+                # than run them on the event loop (a wedged peer must never freeze
+                # chat/WS/heartbeat).
+                await asyncio.to_thread(
+                    state.conversation_log.update_metadata,
+                    _history_key_for(name),
+                    {"agent": agent_name},
+                )
+            except Exception:
+                logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
+
+        # Snapshot the response's workspace LAST, immediately before leaving
+        # the lock: the metadata await above yields the event loop, so a
+        # concurrent /workspace pick can land after the commit — the response
+        # (which the acting tab writes into its store) must name the slot's
+        # newest reality, not a pre-await snapshot.
+        workspace = slot.workspace or "default"
     # The reset destroyed any eagerly created session; picking an agent is
     # itself a strong first-message intent signal (it also resets the
     # project), so re-arm the speculative spawn for the new bindings.
     schedule_eager_spawn(state, slot)
-    # Persist the new agent so the session resumes under the correct agent
-    # after a gateway restart.  Written after reset succeeds so we never
-    # advertise an agent we couldn't actually switch to.
-    if state.conversation_log:
-        try:
-            # update_metadata enters _locked (flock + os.close); those are
-            # blocking-on-loop-prohibited, so offload to a worker thread rather
-            # than run them on the event loop (a wedged peer must never freeze
-            # chat/WS/heartbeat).
-            await asyncio.to_thread(
-                state.conversation_log.update_metadata,
-                _history_key_for(name),
-                {"agent": agent_name},
-            )
-        except Exception:
-            logger.warning("Failed to persist agent for slot %s", name, exc_info=True)
     state.push_slots_update()
-    return web.json_response({"ok": True, "agent": agent_name, "workspace": workspace})
+    resp_body: dict = {"ok": True, "agent": agent_name, "workspace": workspace}
+    if teardown_incomplete:
+        # Advisory only — the switch itself succeeded and the response
+        # carries the committed state the acting tab writes optimistically.
+        resp_body["warning"] = "old session teardown incomplete"
+    return web.json_response(resp_body)
 
 
 def _model_rejected_reason(model_name: str, provider: str | None = None) -> str | None:
@@ -4009,51 +4090,86 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
             },
             status=400,
         )
-    if slot.reasoning_effort == effort:
-        return web.json_response({"ok": True, "reasoning_effort": effort})
-    slot.reasoning_effort = effort
-    logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
+    # Same serialization + transactional ordering as the agent switch: the
+    # awaits below yield the event loop, so the section runs under the slot's
+    # lock, and the slot is mutated only AFTER the switch actually took
+    # effect (live update, deferral, or reset) — a failed request provably
+    # changed nothing.
+    async with slot._lock:
+        if slot.reasoning_effort == effort:
+            return web.json_response({"ok": True, "reasoning_effort": effort})
+        logger.info("Slot %s reasoning_effort switched to %r", name, effort or "default")
 
-    session_key = _history_key_for(name)
-    provider = state.sessions.get_provider(session_key)
-    _updated_live = False
-    if isinstance(provider, AcpProvider) and provider.supports_effort():
-        # Guard against racing the in-flight prompt read loop: a live
-        # change_effort issues session/set_config_option and its response wait
-        # would call stdout.readline() concurrently with the streaming
-        # _prompt_loop → dropped/misrouted frame or a stuck turn. The override
-        # is already persisted on the slot, so defer the live push to the next
-        # turn instead of pushing now or resetting (effort is a cheap knob).
-        if provider.has_active_turn():
-            logger.info("Slot %s deferred live effort push: turn active", name)
-            state.push_slots_update()
-            return web.json_response({"ok": True, "reasoning_effort": effort, "deferred": True})
-        # change_effort handles both backends and persists the per-model
-        # override + overlay. "" clears the override → fall back to model
-        # default (kiro: /effort with model default; claude: leave as-is).
-        try:
-            if effort:
-                _updated_live = await provider.change_effort(effort)
-            else:
-                _updated_live = await provider.clear_effort()
-        except Exception as exc:
-            logger.warning(
-                "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
-                effort,
-                name,
-                type(exc).__name__,
-                exc,
-            )
-    elif isinstance(provider, AcpProvider):
-        # Model does not support effort — persist the slot value for when the
-        # user switches to a capable model, but do not touch the live session.
-        _updated_live = True
-        logger.info("Slot %s effort persisted (model not effort-capable)", name)
+        session_key = _history_key_for(name)
+        provider = state.sessions.get_provider(session_key)
+        _updated_live = False
+        if isinstance(provider, AcpProvider) and provider.supports_effort():
+            # Guard against racing the in-flight prompt read loop: a live
+            # change_effort issues session/set_config_option and its response wait
+            # would call stdout.readline() concurrently with the streaming
+            # _prompt_loop → dropped/misrouted frame or a stuck turn. The override
+            # is already persisted on the slot, so defer the live push to the next
+            # turn instead of pushing now or resetting (effort is a cheap knob).
+            if provider.has_active_turn():
+                logger.info("Slot %s deferred live effort push: turn active", name)
+                # This path's success point: the override is recorded on the
+                # slot now and pushed to the live session next turn.
+                slot.reasoning_effort = effort
+                state.push_slots_update()
+                return web.json_response(
+                    {"ok": True, "reasoning_effort": effort, "deferred": True}
+                )
+            # change_effort handles both backends and persists the per-model
+            # override + overlay. "" clears the override → fall back to model
+            # default (kiro: /effort with model default; claude: leave as-is).
+            try:
+                if effort:
+                    _updated_live = await provider.change_effort(effort)
+                else:
+                    _updated_live = await provider.clear_effort()
+            except Exception as exc:
+                logger.warning(
+                    "change_effort(%s) failed for slot %s: %s: %s — falling back to reset",
+                    effort,
+                    name,
+                    type(exc).__name__,
+                    exc,
+                )
+        elif isinstance(provider, AcpProvider):
+            # Model does not support effort — persist the slot value for when the
+            # user switches to a capable model, but do not touch the live session.
+            _updated_live = True
+            logger.info("Slot %s effort persisted (model not effort-capable)", name)
 
-    if not _updated_live:
-        # No live session (or live update failed): reset so the next cold
-        # start picks up the new effort via the provider factory/overlay.
-        await _reset_slot_session(state, slot, session_key)
+        if not _updated_live:
+            # No live session (or live update failed): reset so the next cold
+            # start picks up the new effort via the provider factory/overlay.
+            # The effort is committed BEFORE the reset: a message send landing
+            # while the reset await is in flight cold-starts a session from
+            # the slot's CURRENT value, so the new effort must already be
+            # visible. A failing teardown does NOT undo the switch (the reset
+            # pops the session first, so every replacement runs the new
+            # value) and is reported as a success with a warning — a 500
+            # would make the acting tab keep the OLD store value for a
+            # switch that actually happened.
+            slot.reasoning_effort = effort
+            try:
+                await _reset_slot_session(state, slot, session_key)
+            except Exception:
+                logger.exception(
+                    "Slot %s reasoning_effort switch: old session teardown incomplete", name
+                )
+                state.push_slots_update()
+                return web.json_response(
+                    {
+                        "ok": True,
+                        "reasoning_effort": effort,
+                        "warning": "old session teardown incomplete",
+                    }
+                )
+        # Live-update and deferral paths commit here (the reset path already
+        # committed before its reset, and assigning again is a no-op).
+        slot.reasoning_effort = effort
     state.push_slots_update()
     return web.json_response({"ok": True, "reasoning_effort": effort})
 

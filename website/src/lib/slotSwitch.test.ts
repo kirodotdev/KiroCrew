@@ -14,9 +14,12 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import {
   pendingSlotSwitch,
+  pendingSlotSwitchTarget,
   performSlotSwitch,
+  stageSlotSwitchTarget,
   SWITCH_CONFIRM_TIMEOUT_MS,
 } from './slotSwitch'
+import type { AgentSwitchValue } from './slotSwitch'
 
 // Unique slot keys per test: the registry is deliberately module-global
 // (every control sharing a slot+field must share one sequence), so tests
@@ -200,5 +203,124 @@ describe('performSlotSwitch (#4523)', () => {
     // First's late success wrote first (it was newest at settle time until
     // superseded)… the end state must be the newest pick's value.
     expect(writes[writes.length - 1]).toBe('w2:model-b')
+  })
+})
+
+/** The agent/effort siblings (#5120) grow the field union: `agent` carries an
+ *  OBJECT value (the response names agent + workspace, and the pair must ride
+ *  one adjudication — recovering an older agent with a fresher workspace
+ *  would tear it), and `reasoning_effort` has `''` as a REAL target (clear
+ *  the override), which is what `pendingSlotSwitchTarget` exists to keep
+ *  distinguishable from "nothing in flight". */
+describe('performSlotSwitch — agent/effort field growth (#5120)', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('agent field writes the adjudicated object on success', async () => {
+    const writes: AgentSwitchValue[] = []
+    await performSlotSwitch('agent', 'slot-ag-ok', 'researcher',
+      async () => ({ agent: 'researcher', workspace: 'research-ws' }),
+      (v) => writes.push(v))
+    expect(writes).toEqual([{ agent: 'researcher', workspace: 'research-ws' }])
+  })
+
+  it('agent field: newest failure adopts the older held OBJECT success intact', async () => {
+    // Serialized: first switch succeeds, second fails — the backend is left
+    // on the FIRST agent with the FIRST workspace, and the recovery write
+    // must hand back that exact pair (a torn agent/workspace mix is the bug
+    // the object value exists to prevent).
+    const writes: Array<[string, AgentSwitchValue]> = []
+    const first = performSlotSwitch('agent', 'slot-ag-adopt', 'researcher',
+      async () => ({ agent: 'researcher', workspace: 'research-ws' }),
+      (v) => writes.push(['w1', v]))
+    const second = performSlotSwitch('agent', 'slot-ag-adopt', 'writer',
+      () => Promise.reject(new Error('boom')), (v) => writes.push(['w2', v]))
+    await first
+    await expect(second).rejects.toThrow('boom')
+    expect(writes).toEqual([['w2', { agent: 'researcher', workspace: 'research-ws' }]])
+  })
+
+  it('reasoning_effort field adjudicates: two rapid picks end on the latest', async () => {
+    const writes: string[] = []
+    let releaseFirst: (v: string) => void = () => {}
+    const first = performSlotSwitch('reasoning_effort', 'slot-eff-race', 'high',
+      () => new Promise<string>(res => { releaseFirst = res }), (v) => writes.push(v))
+    const second = performSlotSwitch('reasoning_effort', 'slot-eff-race', 'max',
+      async () => 'max', (v) => writes.push(v))
+    await new Promise(res => setTimeout(res, 0))
+    releaseFirst('high')
+    await first
+    await second
+    expect(writes).toEqual(['max'])
+  })
+
+  it('a STAGED target is the newest intent until its wire call begins', async () => {
+    // A debounced control (the effort slider) publishes its pick BEFORE the
+    // debounced persist fires; a cycle shortcut pressed inside that window
+    // must step from the pick, not from the pre-pick store. Any beginning
+    // request clears the stage — the in-flight target takes over.
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBeNull()
+    stageSlotSwitchTarget('reasoning_effort', 'slot-eff-stage', 'xhigh')
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBe('xhigh')
+    // '' stages too — it is a REAL target (clear the override).
+    stageSlotSwitchTarget('reasoning_effort', 'slot-eff-stage', '')
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBe('')
+    const p = performSlotSwitch('reasoning_effort', 'slot-eff-stage', 'max',
+      async () => 'max', () => {})
+    // The wire call superseded the stage synchronously at begin time.
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBe('max')
+    await p
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-stage')).toBeNull()
+  })
+
+  it("newest failure adopts a held '' success — the falsy value the boxed recovery exists for", async () => {
+    // Serialized: a "clear the override" pick ('') succeeds, then a newer
+    // pick fails — the backend is left running the provider default, so the
+    // recovery write MUST fire with ''. This is the case that forced
+    // settleSlotSwitchFailure's return from `string`/'' to a boxed
+    // `{ value } | null`: with the sentinel form, a held '' is
+    // indistinguishable from "nothing to recover", write never fires, and
+    // the effort chip keeps the pre-switch level forever while the backend
+    // runs the default. Unbox the recovery and this test goes red.
+    const writes: string[] = []
+    const first = performSlotSwitch('reasoning_effort', 'slot-eff-heldempty', '',
+      async () => '', (v) => writes.push(v))
+    const second = performSlotSwitch('reasoning_effort', 'slot-eff-heldempty', 'high',
+      () => Promise.reject(new Error('boom')), (v) => writes.push(v))
+    await first
+    await expect(second).rejects.toThrow('boom')
+    expect(writes).toEqual([''])
+  })
+
+  it("pendingSlotSwitchTarget distinguishes an in-flight '' target from none", async () => {
+    // '' is the reasoning_effort "clear the override" target: the ''-falsy
+    // accessor reads it as "nothing pending", which is exactly the misread
+    // the cycle shortcuts must not make when stepping a burst.
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-pend')).toBeNull()
+    let release: (v: string) => void = () => {}
+    const p = performSlotSwitch('reasoning_effort', 'slot-eff-pend', '',
+      () => new Promise<string>(res => { release = res }), () => {})
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-pend')).toBe('')
+    // The legacy accessor cannot tell the two states apart — documented here
+    // so nobody "simplifies" the cycle handlers back onto it.
+    expect(pendingSlotSwitch('reasoning_effort', 'slot-eff-pend')).toBe('')
+    await new Promise(res => setTimeout(res, 0))
+    release('')
+    await p
+    expect(pendingSlotSwitchTarget('reasoning_effort', 'slot-eff-pend')).toBeNull()
+  })
+
+  it('pendingSlotSwitchTarget stays null-consistent with pendingSlotSwitch for named targets', async () => {
+    let release: (v: string) => void = () => {}
+    const p = performSlotSwitch('agent', 'slot-ag-pend', 'researcher',
+      () => new Promise<AgentSwitchValue>(res => {
+        release = (v) => res({ agent: v })
+      }), () => {})
+    expect(pendingSlotSwitchTarget('agent', 'slot-ag-pend')).toBe('researcher')
+    expect(pendingSlotSwitch('agent', 'slot-ag-pend')).toBe('researcher')
+    await new Promise(res => setTimeout(res, 0))
+    release('researcher')
+    await p
+    expect(pendingSlotSwitchTarget('agent', 'slot-ag-pend')).toBeNull()
+    expect(pendingSlotSwitch('agent', 'slot-ag-pend')).toBe('')
   })
 })

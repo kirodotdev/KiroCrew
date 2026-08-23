@@ -1,10 +1,21 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { configureStore } from '@reduxjs/toolkit'
 import React from 'react'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
+import chatReducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
+import notificationsReducer from '../store/notificationsSlice'
+import { api } from '../api/client'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+
+// The nested ReasoningEffortDropdown persists slider picks over the wire
+// (#5120); none of these tests touch the slider, but the stub keeps an
+// accidental future interaction from hitting a real fetch.
+vi.spyOn(api, 'chatSlotReasoningEffort').mockResolvedValue({ ok: true } as never)
 
 /**
  * The in-session model picker carries two footer rows: an in-place "set as
@@ -34,7 +45,14 @@ const baseProps = {
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  // The nested ReasoningEffortDropdown persists picks into the slot store
+  // (#5120), so the tree needs the redux context even where a test never
+  // touches the effort footer. A per-render store (not the app singleton)
+  // keeps one test's persist from leaking into the next.
+  const store = configureStore({
+    reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+  })
+  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 describe('ModelEffortDropdown — global fallback link', () => {

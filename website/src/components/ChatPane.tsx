@@ -26,6 +26,7 @@ import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capt
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
@@ -211,10 +212,16 @@ export default function ChatPane({
   }, [msgHash, running])
 
 
-  const switchAgent = useCallback((name: string) => {
+  const switchAgent = useCallback(async (name: string) => {
     dispatch(setAgentSwitchNotice(null))
-    api.chatSlotAgent(slotKey, name)
-      .catch((e) => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e))))
+    try {
+      // Same protocol as switchModel below (#4523): the pane must not depend
+      // on the coalesced slots rebroadcast to see its own pick.
+      // performAgentSlotSwitch mirrors exactly what the response names.
+      await performAgentSlotSwitch(slotKey, name, dispatch)
+    } catch (e) {
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+    }
   }, [dispatch, slotKey])
   const switchModel = useCallback(async (name: string) => {
     try {

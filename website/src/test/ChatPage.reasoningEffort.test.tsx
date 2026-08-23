@@ -16,6 +16,7 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 
 import ChatInput, { REASONING_EFFORT_PROVIDERS, EFFORT_LABEL_KEY, modelSupportsEffort } from '../components/ChatInput'
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
+import { pendingSlotSwitchTarget, performSlotSwitch } from '../lib/slotSwitch'
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -104,7 +105,15 @@ vi.mock('../api/client', () => ({ api: mockApi, SEARCH_MIN_CHARS: 2 }))
 function renderDropdown(props: Partial<Parameters<typeof ReasoningEffortDropdown>[0]> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const defaults = { slot: 's1', currentEffort: 'high', onClose: vi.fn() }
-  return render(<QueryClientProvider client={qc}><ReasoningEffortDropdown {...defaults} {...props} /></QueryClientProvider>)
+  // The dropdown writes the slot's effort into the store on persist success
+  // (#5120), so the harness carries a real store seeded with the slot row.
+  const store = configureStore({
+    reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+    preloadedState: {
+      dashboard: { slots: [{ key: defaults.slot, messages: 0, running: false, reasoning_effort: defaults.currentEffort }], unreadSlots: [], refreshTrigger: 0, subagentRunning: {}, subagentDetails: {}, subagentText: {} } as unknown as RootState['dashboard'],
+    } as Partial<RootState>,
+  })
+  return Object.assign(render(<QueryClientProvider client={qc}><Provider store={store}><ReasoningEffortDropdown {...defaults} {...props} /></Provider></QueryClientProvider>), { store })
 }
 
 describe('ReasoningEffortDropdown', () => {
@@ -127,6 +136,79 @@ describe('ReasoningEffortDropdown', () => {
     // high (index 2) -> ArrowRight -> xhigh (index 3)
     fireEvent.keyDown(slider, { key: 'ArrowRight' })
     await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+  })
+
+  it('writes the persisted level into the slot row on API success (#5120)', async () => {
+    // The local optimistic state masks staleness in THIS popover, but the
+    // STORE is what the Alt+Shift effort cycle steps from — the persist must
+    // write it. No websocket exists in this harness, so the row can only
+    // move if the persist path writes it. The response echoes the STORED
+    // value; the mock answers {ok} with no reasoning_effort, exercising the
+    // requested-level fallback.
+    const { store } = renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+    await vi.waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('xhigh'))
+  })
+
+  it('stages the pick synchronously so a cycle press inside the debounce window sees it (#5120)', async () => {
+    // The persist is debounced 150ms (one write per drag). Without staging,
+    // an Alt+Shift+D press right after a dropdown pick reads a base that
+    // ignores the pick and re-selects it instead of advancing past it. The
+    // staged target must be visible IMMEDIATELY after the pick, before any
+    // wire call fires.
+    renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    // Synchronous: no debounce flush, no API call yet — the cycle shortcuts'
+    // base accessor already reports the pick as the newest intent.
+    expect(pendingSlotSwitchTarget('reasoning_effort', 's1')).toBe('xhigh')
+    expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalled()
+    // The debounced persist then goes to the wire as usual.
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+  })
+
+  it('discards the debounced persist when a newer request supersedes the pick (#5120)', async () => {
+    // GPT round-5 scenario: dropdown picks 'xhigh', a cycle shortcut fires
+    // its own request within the 150ms debounce. The shortcut's request
+    // begins immediately (clearing the stage), so when the timer fires the
+    // pick is no longer the newest intent — persisting it then would make
+    // the STALE pick the newest request and win the adjudication, reverting
+    // the user's newer choice. The timer must discard it.
+    vi.useFakeTimers()
+    try {
+      renderDropdown()
+      await vi.waitFor(() => expect(screen.getByRole('slider', { name: 'Reasoning effort' }).getAttribute('aria-valuemax')).toBe('4'))
+      const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+      fireEvent.keyDown(slider, { key: 'ArrowRight' })
+      expect(pendingSlotSwitchTarget('reasoning_effort', 's1')).toBe('xhigh')
+      // A competing request (the cycle shortcut's) begins inside the window.
+      const race = performSlotSwitch('reasoning_effort', 's1', 'max',
+        async () => 'max', () => {})
+      // The pick is no longer the newest intent...
+      expect(pendingSlotSwitchTarget('reasoning_effort', 's1')).toBe('max')
+      // ...so the debounce firing must NOT put 'xhigh' on the wire.
+      await vi.advanceTimersByTimeAsync(200)
+      expect(mockApi.chatSlotReasoningEffort).not.toHaveBeenCalledWith('s1', 'xhigh')
+      await race
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('leaves the slot row untouched when the persist call fails (#5120)', async () => {
+    mockApi.chatSlotReasoningEffort.mockRejectedValueOnce(new Error('boom'))
+    const { store } = renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalled())
+    // The failed pick changed nothing server-side; the store keeps the
+    // pre-pick value (the popover's own optimistic label is local-only).
+    expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('high')
   })
 
   it('reflects the active level as the slider value', async () => {

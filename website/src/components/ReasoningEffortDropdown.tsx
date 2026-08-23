@@ -1,9 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { effortLabel } from './ChatInput'
 import { EFFORT_LEVELS } from '../lib/effort'
 import { api } from '../api/client'
+import { pendingSlotSwitchTarget, performSlotSwitch, stageSlotSwitchTarget } from '../lib/slotSwitch'
+import { useAppDispatch } from '../store'
+import { updateSlot } from '../store/dashboardSlice'
 import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
@@ -66,26 +69,56 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   const [idx, setIdx] = useState(() => currentIdx >= 0 ? currentIdx : Math.min(2, maxIdx))
   useEffect(() => { if (currentIdx >= 0) setIdx(currentIdx) }, [currentIdx])
 
+  // Persist one level pick through the shared switch protocol (#4523): the
+  // local optimistic state above masks staleness in THIS popover, but the
+  // STORE is the base the Alt+Shift effort cycle steps from — without the
+  // write, a dropdown pick followed by a cycle press steps from the
+  // pre-pick value. performSlotSwitch serializes per slot+field and writes
+  // exactly the adjudicated survivor of a burst of picks.
+  const dispatch = useAppDispatch()
+  const persistEffort = useCallback((level: string) =>
+    performSlotSwitch('reasoning_effort', slot, level,
+      async () => {
+        const r = await api.chatSlotReasoningEffort(slot, level)
+        return r?.reasoning_effort ?? level
+      },
+      (value) => dispatch(updateSlot({ key: slot, reasoning_effort: value }))),
+  [slot, dispatch])
+
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLevel = useRef<string | null>(null)
   useEffect(() => () => {
     if (commitTimer.current) {
       clearTimeout(commitTimer.current)
       // Flush a pending write so closing the dropdown within the 150ms debounce
-      // window doesn't silently drop the user's last effort change.
-      if (pendingLevel.current !== null) {
-        api.chatSlotReasoningEffort(slot, pendingLevel.current).catch(() => {})
+      // window doesn't silently drop the user's last effort change — but only
+      // while the pick is still the newest intent (same staleness gate as the
+      // timer below).
+      const level = pendingLevel.current
+      if (level !== null && pendingSlotSwitchTarget('reasoning_effort', slot) === level) {
+        persistEffort(level).catch(() => {})
       }
     }
-  }, [slot])
+  }, [persistEffort, slot])
 
   // Persist debounced so a drag across several notches doesn't spam the backend.
+  // The pick is STAGED synchronously so the Alt+Shift effort-cycle shortcuts
+  // see it as the newest intent inside the debounce window — without this, a
+  // dropdown pick followed by a cycle press within 150ms steps from the
+  // pre-pick base and re-selects the pick instead of advancing past it.
   const commit = (level: string) => {
+    stageSlotSwitchTarget('reasoning_effort', slot, level)
     pendingLevel.current = level
     if (commitTimer.current) clearTimeout(commitTimer.current)
     commitTimer.current = setTimeout(async () => {
       pendingLevel.current = null
-      try { await api.chatSlotReasoningEffort(slot, level) }
+      // A cycle shortcut may have superseded this pick inside the debounce
+      // window (its request begins immediately and clears the stage). Firing
+      // the stale pick now would make it the NEWEST request and win the
+      // adjudication — reverting the user's newer choice. Persist only while
+      // this pick is still the newest declared intent.
+      if (pendingSlotSwitchTarget('reasoning_effort', slot) !== level) return
+      try { await persistEffort(level) }
       // eslint-disable-next-line no-console -- intentional failure diagnostic
       catch (err) { console.warn('Failed to set reasoning effort', err) }
     }, 150)
