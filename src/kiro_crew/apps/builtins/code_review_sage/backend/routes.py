@@ -43,6 +43,7 @@ from aiohttp import web
 from kiro_crew import hooks, model_registry
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger("kirocrew.app.code-review-sage")
 
@@ -75,19 +76,21 @@ from sage_lib import (  # noqa: E402,E501
 # per-change detail.
 _RUNS: list[dict[str, Any]] = []
 _RUNS_MAX = 25
-_LOCK = asyncio.Lock()
+_LOCK = LoopBoundLock()
 # Guards the claim/dedup step below. Runs themselves are NOT serialized: each run
 # owns a private ``data/runs/<run_id>/`` subtree (results + report), so several
 # reviews can be in flight at once. What still needs mutual exclusion is the
 # moment a run decides WHICH changes it owns.
 # Serializes whole runs. Workers hand results back through a directory shared
 # ACROSS runs, so overlapping runs would mean two writers to one path.
-_RUN_LOCK = asyncio.Lock()
+# LoopBoundLock excludes within one loop only; all run starters are route
+# handlers on the app's single gateway loop, so every contender shares it.
+_RUN_LOCK = LoopBoundLock()
 
 # Serialises "start a consolidation" against "delete this namespace". Both are
 # short critical sections; holding one lock across each removes the interleaving
 # rather than trying to place checks around the awaits.
-_NS_OPS_LOCK = asyncio.Lock()
+_NS_OPS_LOCK = LoopBoundLock()
 # reviewed-key -> run_id for every change a LIVE run has claimed. Two runs must
 # never review and post to the same PR concurrently: the old whole-run lock
 # prevented that by refusing to overlap at all; this claim registry gets the same

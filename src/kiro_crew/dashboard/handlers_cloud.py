@@ -37,6 +37,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
     stale_owner_session_response,
 )
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -151,16 +152,18 @@ def _engine(state: "DashboardState") -> lj.LaunchEngine:
     return getattr(state, "cloud_launch_engine", None) or RealLaunchEngine()
 
 
-def _launch_lock(state: "DashboardState") -> asyncio.Lock:
+def _launch_lock(state: "DashboardState") -> LoopBoundLock:
     """Serializes the check-active → create → start-worker sequence.
 
     Without it the guard is check-then-act across an ``await``: two POSTs
     arriving together both see no active job, and each provisions its own
     CloudFormation stack — two billed instances the caller cannot undo.
+    LoopBoundLock, not asyncio.Lock (#4800): the lock is cached on the
+    long-lived DashboardState, which outlives any single event loop.
     """
     lock = getattr(state, "cloud_launch_lock", None)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = LoopBoundLock()
         state.cloud_launch_lock = lock
     return lock
 

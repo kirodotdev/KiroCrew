@@ -41,6 +41,7 @@ from kiro_crew.apps.builtins.md_notebook import notes as notes_mod
 from kiro_crew.apps.proxy_auth import raw_request_target, verify_proxy_request
 from kiro_crew.atomic_write import atomic_write, replace_with_retry
 from kiro_crew.config.paths import config_dir
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.sel import sel
 
@@ -188,13 +189,13 @@ MAX_AUTO_SYNC_MINS = 1440
 # file, and the second write would silently destroy the first. Serializing the
 # check-and-write per canonical path makes the second save observe the first's
 # new mtime and surface an ESTALE conflict instead.
-_save_locks: dict[str, asyncio.Lock] = {}
+_save_locks: dict[str, LoopBoundLock] = {}
 
 
-def _save_lock(path: str) -> asyncio.Lock:
+def _save_lock(path: str) -> LoopBoundLock:
     lock = _save_locks.get(path)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = LoopBoundLock()
         _save_locks[path] = lock
     return lock
 
@@ -215,7 +216,7 @@ async def _save_locks_for(*paths: str) -> "AsyncIterator[None]":
 # each read the vault list, mutate it, and write it back; without this lock two
 # concurrent mutations from separate tabs would both read the old list and the
 # last writer would discard the other's change (lost update).
-_vaults_lock = asyncio.Lock()
+_vaults_lock = LoopBoundLock()
 
 # Serializes every settings.json read-modify-write, for the same lost-update
 # reason as _vaults_lock — but with three writers rather than two: the settings
@@ -223,7 +224,7 @@ _vaults_lock = asyncio.Lock()
 # stamping `lastSync`. Without it a sync landing during a settings save would
 # have its timestamp discarded by the save's atomic write, so the UI would report
 # notes as never synced when they had just been pushed.
-_settings_lock = asyncio.Lock()
+_settings_lock = LoopBoundLock()
 
 
 # Upper bound on the Untitled-N search when creating a note.

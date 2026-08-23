@@ -26,6 +26,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.paths import data_home, kiro_agents_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.env import emit_env
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import (
     managed_server_is_session_bound,
     probe_metadata,
@@ -196,19 +197,13 @@ def _get_mcp_lock_sync() -> _McpFileLockSync:
 # config, B then re-adds the same server from a preserved spec — leaving config
 # pointing at a removed package. This coarse async mutex spans BOTH phases so
 # apply calls are fully serialized; the narrower file lock is retained inside for
-# cross-process coordination with bridges.py. Bound to the running loop
-# (Python 3.10 compat), mirroring agents.py::_get_config_lock.
-_apply_lock: asyncio.Lock | None = None
-_apply_lock_loop: asyncio.AbstractEventLoop | None = None
+# cross-process coordination with bridges.py. Loop-bound via the shared
+# LoopBoundLock (#4800).
+_apply_lock = LoopBoundLock()
 
 
-def _get_apply_lock() -> asyncio.Lock:
-    """Return the /api/mcp/apply mutex bound to the current event loop."""
-    global _apply_lock, _apply_lock_loop
-    loop = asyncio.get_running_loop()
-    if _apply_lock is None or _apply_lock_loop is not loop:
-        _apply_lock = asyncio.Lock()
-        _apply_lock_loop = loop
+def _get_apply_lock() -> LoopBoundLock:
+    """Return the /api/mcp/apply mutex (loop-bound; rebinds per running loop)."""
     return _apply_lock
 
 
@@ -2197,7 +2192,7 @@ async def api_mcp_gateway_metrics(request: web.Request) -> web.Response:
 # so two concurrent dashboard requests cannot interleave broker start/stop and
 # orphan a gatewayd process. The config write is guarded by _get_config_lock();
 # this lock guards the apply() side effect that runs AFTER that lock is released.
-_MCP_GATEWAY_APPLY_LOCK = asyncio.Lock()
+_MCP_GATEWAY_APPLY_LOCK = LoopBoundLock()
 
 
 def _local_overlay_section() -> dict:
@@ -2289,7 +2284,7 @@ def _freeze_stub_servers(section: dict, overlay: dict | None = None) -> None:
 #: slow, so two overlapping presses would double the network work and race each
 #: other's atomic commits. Deliberately NOT the gateway apply lock: a refresh
 #: must not block an operator toggling sharing while it runs.
-_MCP_RESOLVE_REFRESH_LOCK = asyncio.Lock()
+_MCP_RESOLVE_REFRESH_LOCK = LoopBoundLock()
 
 
 async def api_mcp_resolve_refresh(request: web.Request) -> web.Response:

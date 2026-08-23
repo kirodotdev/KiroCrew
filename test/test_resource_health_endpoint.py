@@ -15,11 +15,11 @@ def _clear_caches():
     """Reset the metrics cache so each test gets a fresh collection."""
     hs._metrics_cache = {}
     hs._metrics_cache_ts = 0.0
-    hs._metrics_lock = None
+    hs._metrics_lock = hs.LoopBoundLock()
     yield
     hs._metrics_cache = {}
     hs._metrics_cache_ts = 0.0
-    hs._metrics_lock = None
+    hs._metrics_lock = hs.LoopBoundLock()
 
 
 class _Req(dict):

@@ -80,6 +80,7 @@ from kiro_crew.llm_helpers import (
     record_interaction_event,
     save_conversation_turn_off_loop,
 )
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.platform import current_context
@@ -4173,22 +4174,16 @@ async def handle_message(
 
 # ── Slack thread auto-title ─────────────────────────────────────────────
 
-_auto_title_lock: asyncio.Lock | None = None
-_auto_title_lock_loop: asyncio.AbstractEventLoop | None = None
+_auto_title_lock = LoopBoundLock()
 
 
-def _get_auto_title_lock() -> asyncio.Lock:
-    """Return an auto-title lock bound to the current event loop (Python 3.10 compat).
+def _get_auto_title_lock() -> LoopBoundLock:
+    """Return the auto-title lock (loop-bound; rebinds when the running loop changes).
 
-    Lazily created inside a running loop, and rebound when the running loop
-    changes: a cached ``asyncio.Lock`` raises ``RuntimeError`` when acquired
-    from a different loop than the one it was first used on.
+    A cached ``asyncio.Lock`` raises ``RuntimeError`` when acquired from a
+    different loop than the one it was first used on; ``LoopBoundLock`` is the
+    shared fix for that class (issue #4800).
     """
-    global _auto_title_lock, _auto_title_lock_loop
-    loop = asyncio.get_running_loop()
-    if _auto_title_lock is None or _auto_title_lock_loop is not loop:
-        _auto_title_lock = asyncio.Lock()
-        _auto_title_lock_loop = loop
     return _auto_title_lock
 
 
@@ -4271,9 +4266,24 @@ async def _maybe_auto_title_slack(
             resources=f"{channel}:{session_key}",
         )
         logger.info("Slack thread auto-titled: %s → %r", session_key, title)
-    except Exception:
+    except asyncio.TimeoutError:
+        # Routine transient: the 30s cap on the title stream. Not the masking
+        # concern below — a slow model is expected operational noise, and the
+        # popped claim already schedules a retry on the next exchange.
+        _titled_threads.pop(session_key, None)
+        logger.debug("Slack thread auto-title timed out for %s", session_key)
+    except Exception as exc:
         _titled_threads.pop(session_key, None)  # allow retry on transient failure
-        logger.debug("Slack thread auto-title failed for %s", session_key, exc_info=True)
+        # WARNING, not debug: this blanket handler runs on a fire-and-forget
+        # task, so it is the only place a real defect surfaces. Logged at debug
+        # it masked a deterministic cross-loop RuntimeError into three separate
+        # order-dependent CI flake classes (#4177, #4789 — see #4800).
+        logger.warning(
+            "Slack thread auto-title failed for %s (%s)",
+            session_key,
+            type(exc).__name__,
+            exc_info=True,
+        )
 
 
 async def _reject_orphaned_tool(provider: LLMProvider, request_id: "str | int") -> None:

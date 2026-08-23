@@ -41,6 +41,7 @@ from kiro_crew.embeddings import (
 )
 from kiro_crew.executors import embed_executor, run_in_embed_pool
 from kiro_crew.history import is_incognito_transcript
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -60,9 +61,9 @@ logger = logging.getLogger(__name__)
 # could commit the older content last. The event loop used to serialize these
 # accidentally (inline writes); these locks restore that ordering explicitly
 # while keeping the blocking I/O off the loop.
-_prefs_write_lock = asyncio.Lock()
-_projects_write_lock = asyncio.Lock()
-_history_write_lock = asyncio.Lock()
+_prefs_write_lock = LoopBoundLock()
+_projects_write_lock = LoopBoundLock()
+_history_write_lock = LoopBoundLock()
 
 # Bounded because a wedged native load has no cancellation: without a deadline
 # the progress tracker would sit at `applying` forever and every later apply
@@ -355,8 +356,8 @@ async def api_memory_events(request: web.Request) -> web.Response:
 
 
 _embedding_setup_status: dict[str, object] = {"step": "idle", "error": ""}
-_faiss_install_lock = asyncio.Lock()
-_migrate_lock: asyncio.Lock | None = None
+_faiss_install_lock = LoopBoundLock()
+_migrate_lock = LoopBoundLock()
 
 
 async def _set_migrated(value: bool) -> None:
@@ -1165,9 +1166,6 @@ async def api_memory_migrate(request: web.Request) -> web.Response:
     """POST /api/memory/migrate — migrate legacy markdown memory to vector store."""
     store = _get_vector_store(request.app["state"])
 
-    global _migrate_lock
-    if _migrate_lock is None:
-        _migrate_lock = asyncio.Lock()
     async with _migrate_lock:
         prev_embed_fn = store.embed_fn
         # Embeddings are always-on — wire the embed_fn for migration vectors.

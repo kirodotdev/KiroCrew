@@ -68,6 +68,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor, maintenance_executor, subprocess_executor
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
     cgroup_scope_argv,
@@ -1586,17 +1587,11 @@ async def api_kirocrew_agents(request: web.Request) -> web.Response:
     )
 
 
-_config_lock: asyncio.Lock | None = None
-_config_lock_loop: asyncio.AbstractEventLoop | None = None
+_config_lock = LoopBoundLock()
 
 
-def _get_config_lock() -> asyncio.Lock:
-    """Return a config lock bound to the current event loop (Python 3.10 compat)."""
-    global _config_lock, _config_lock_loop
-    loop = asyncio.get_running_loop()
-    if _config_lock is None or _config_lock_loop is not loop:
-        _config_lock = asyncio.Lock()
-        _config_lock_loop = loop
+def _get_config_lock() -> LoopBoundLock:
+    """Return the config lock (loop-bound; rebinds when the running loop changes)."""
     return _config_lock
 
 

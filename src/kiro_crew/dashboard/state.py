@@ -37,6 +37,7 @@ from kiro_crew.dashboard.side_state import SideState
 from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import (
     SLACK_NAMESPACE,
     UNBIND_REASON_DASHBOARD_UNLINK,
@@ -3571,13 +3572,16 @@ class DashboardState:
         self._chat_pins: list[dict[str, Any]] = []  # pinned chat messages
         # Serializes pin mutation + persistence so concurrent requests cannot
         # interleave snapshots and replace chat_pins.json out of order.
-        self._chat_pins_lock = asyncio.Lock()
+        # LoopBoundLock, not asyncio.Lock (#4800): DashboardState outlives any
+        # single event loop (in-process gateway restart, test loops).
+        self._chat_pins_lock = LoopBoundLock()
         # Serializes read-modify-write of the folder store; see
         # mutate_folders(). Constructed here rather than lazily so two
         # concurrent first-callers cannot each make their own lock and
-        # serialize against nothing. asyncio.Lock binds no loop at
-        # construction (3.10+), so building it off-loop is safe.
-        self._folders_lock = asyncio.Lock()
+        # serialize against nothing. LoopBoundLock binds no loop at
+        # construction, so building it off-loop is safe — and it stays valid
+        # across the loop changes this long-lived state survives (#4800).
+        self._folders_lock = LoopBoundLock()
         # Tag vocabulary: list of {id, name, color, order}. User-managed.
         self._tags: list[dict[str, Any]] = []
         # True once load_tags() parsed tags.json successfully (or seeded a

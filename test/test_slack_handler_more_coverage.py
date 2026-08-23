@@ -607,8 +607,9 @@ class TestAutoTitleToolRejection:
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
     def test_lock_is_rebound_when_the_event_loop_changes(self):
-        """Regression for #4789: the module-global auto-title lock must be
-        rebound when the running event loop changes.
+        """Regression for #4789 (mechanism now shared via #4800's LoopBoundLock):
+        the module-global auto-title lock must keep working when the running
+        event loop changes.
 
         ``pytest-asyncio`` gives every async test a fresh loop, and on
         Python 3.10+ acquiring an ``asyncio.Lock`` from a loop other than the
@@ -632,18 +633,25 @@ class TestAutoTitleToolRejection:
             async def _go():
                 # Touch the lock on this loop first, then run the real path.
                 lock = h._get_auto_title_lock()
+                await lock.acquire()
+                lock.release()
+                inner = lock._bound()  # this loop's underlying asyncio.Lock
                 await h._maybe_auto_title_slack(
                     slack, _TitleSessions(provider), "C1", session_key, None, "u", "a"
                 )
-                return lock
+                return lock, inner
 
-            return asyncio.run(_go()), provider, slack
+            lock, inner = asyncio.run(_go())
+            return lock, inner, provider, slack
 
-        lock1, provider1, _ = _run_once("slack:loop1")
-        lock2, provider2, slack2 = _run_once("slack:loop2")
+        lock1, inner1, provider1, _ = _run_once("slack:loop1")
+        lock2, inner2, provider2, slack2 = _run_once("slack:loop2")
 
-        # The second, distinct loop must get a fresh lock object…
-        assert lock2 is not lock1
+        # One shared chokepoint object, but each loop must get its OWN inner
+        # lock — this is the rebinding invariant that #4789's fix introduced
+        # and #4800's LoopBoundLock now carries.
+        assert lock2 is lock1
+        assert inner2 is not inner1
         # …and the real path must still work there: the rejection is recorded
         # (this was the exact assertion the flake broke) and the title lands.
         assert provider1.rejected == ["rq1"]

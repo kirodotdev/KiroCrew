@@ -12,6 +12,8 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.loop_lock import LoopBoundLock
+
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider  # noqa: F811
 
@@ -89,15 +91,13 @@ async def api_sessions_memory(request: web.Request) -> web.Response:
 
 _health_cache: dict[str, dict] = {}
 _health_cache_ts: float = 0.0
-_health_lock: asyncio.Lock | None = None
+_health_lock = LoopBoundLock()
 _HEALTH_REFRESH_SECS = 15
 
 
 async def api_sessions_health(request: web.Request) -> web.Response:
     """GET /api/sessions/health — slots flagged as stalled from log scan."""
-    global _health_cache, _health_cache_ts, _health_lock
-    if _health_lock is None:
-        _health_lock = asyncio.Lock()
+    global _health_cache, _health_cache_ts
     now = time.monotonic()
     if now - _health_cache_ts > _HEALTH_REFRESH_SECS:
         async with _health_lock:

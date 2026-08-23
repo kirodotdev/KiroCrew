@@ -74,6 +74,7 @@ import subprocess
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_handlers import deny_non_dashboard_caller
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import run_limited, sandboxed_spawn_argv
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
@@ -171,11 +172,11 @@ class SandboxUnavailable(RuntimeError):
 # but it removes the same-destination window between the "does dest exist" probe
 # and `worktree add`, which is what lets `_cleanup_partial` treat an unregistered
 # leftover directory as its own.
-_REPO_LOCKS: dict[str, asyncio.Lock] = {}
+_REPO_LOCKS: dict[str, LoopBoundLock] = {}
 _MAX_REPO_LOCKS = 64
 
 
-def _repo_lock(root: str) -> asyncio.Lock:
+def _repo_lock(root: str) -> LoopBoundLock:
     """Return (creating if needed) the serialization lock for ``root``."""
     lock = _REPO_LOCKS.get(root)
     if lock is None:
@@ -184,7 +185,7 @@ def _repo_lock(root: str) -> asyncio.Lock:
             # does not accumulate locks forever. Held locks are kept.
             for key in [k for k, v in _REPO_LOCKS.items() if not v.locked()]:
                 del _REPO_LOCKS[key]
-        lock = _REPO_LOCKS[root] = asyncio.Lock()
+        lock = _REPO_LOCKS[root] = LoopBoundLock()
     return lock
 
 

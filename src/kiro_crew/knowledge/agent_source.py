@@ -30,6 +30,7 @@ import os
 import tempfile
 from datetime import datetime
 
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -65,7 +66,7 @@ _MAX_URI_LEN = 1024
 #: is only correct while nothing else writes that source concurrently -- two
 #: parallel adds would steal each other's chunks. The artifact path relies on the
 #: same invariant, enforced by its own lock.
-_ADD_LOCK = asyncio.Lock()
+_ADD_LOCK = LoopBoundLock()
 
 
 def _redact_for_ingest(text: str) -> str:

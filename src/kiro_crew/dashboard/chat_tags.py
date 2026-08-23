@@ -23,6 +23,7 @@ from aiohttp import web
 
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -51,14 +52,14 @@ _T = TypeVar("_T")
 # persistence so concurrent creates/updates/deletes cannot race the atomic
 # fsync/os.replace sequence. Keyed weakly so a discarded state's lock is
 # collectable (mirrors _RECONCILE_LOCKS in channel_slots.py).
-_TAGS_WRITE_LOCKS: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+_TAGS_WRITE_LOCKS: weakref.WeakKeyDictionary[Any, LoopBoundLock] = weakref.WeakKeyDictionary()
 
 
-def _tags_write_lock(state: Any) -> asyncio.Lock:
-    """Return (lazily create) the per-state asyncio.Lock for tag writes."""
+def _tags_write_lock(state: Any) -> LoopBoundLock:
+    """Return (lazily create) the per-state lock for tag writes (loop-bound, #4800)."""
     lock = _TAGS_WRITE_LOCKS.get(state)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = LoopBoundLock()
         _TAGS_WRITE_LOCKS[state] = lock
     return lock
 

@@ -48,6 +48,7 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -146,7 +147,7 @@ _PROVIDER_AUTH_ENV_KEYS = {
 }
 # url -> (stored_at, serialized_size_bytes, normalized_payload)
 _CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
-_CACHE_LOCK = asyncio.Lock()
+_CACHE_LOCK = LoopBoundLock()
 _FULL_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _FULL_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _FULL_FETCH_GENERATIONS: dict[str, int] = {}
@@ -158,7 +159,7 @@ _CHECKS_FETCH_INFLIGHT: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
 # nothing about. No generation map is needed -- this phase never mutates an
 # issue, so there is no post-mutation write to order against.
 _ISSUE_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
-_ISSUE_CACHE_LOCK = asyncio.Lock()
+_ISSUE_CACHE_LOCK = LoopBoundLock()
 _ISSUE_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _ISSUE_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _DIRECT_FETCH_RESERVATIONS: dict[asyncio.Task[Any], int] = {}
@@ -320,7 +321,7 @@ _gitlab_hosts_loaded_at = 0.0
 # parse result (per-slot sidebar source links) fold this into their cache key so
 # a later allowlist load invalidates decisions made against the cold snapshot.
 _gitlab_hosts_generation = 0
-_gitlab_hosts_lock = asyncio.Lock()
+_gitlab_hosts_lock = LoopBoundLock()
 
 
 def gitlab_hosts_generation() -> int:

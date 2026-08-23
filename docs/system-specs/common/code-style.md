@@ -50,6 +50,7 @@ Other style rules:
 | Python version | >= 3.10; `from __future__ import annotations` for type hints |
 | Imports | `import logging` plus `logger = logging.getLogger(__name__)` |
 | Async | `asyncio` throughout; `async def` for all I/O |
+| Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |
 | Dataclasses | `@dataclass` for data containers |
 | Errors | Custom exceptions in `acp/client.py`; return error strings at tool boundaries. See [error-handling](error-handling.md). |
 

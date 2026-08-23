@@ -30,6 +30,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.embeddings import get_shared_embedder, model_file_present
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context
 from kiro_crew.safety_override import safety_override, until_shutdown_permitted
 from kiro_crew.stats import Stats
@@ -716,7 +717,7 @@ _METRICS_CACHE_TTL = 2.0  # seconds
 #: because the dashboard polls this endpoint at exactly the TTL. Coalescing makes
 #: concurrent pollers await the SAME collection, so N tabs and a slow host cost
 #: one collection, not N.
-_metrics_lock: asyncio.Lock | None = None
+_metrics_lock = LoopBoundLock()
 
 
 async def api_system(request: web.Request) -> web.Response:
@@ -725,12 +726,10 @@ async def api_system(request: web.Request) -> web.Response:
     Caches results briefly and coalesces concurrent collections, so several
     dashboard tabs polling at once cost one collection rather than one each.
     """
-    global _metrics_cache, _metrics_cache_ts, _metrics_lock
+    global _metrics_cache, _metrics_cache_ts
     now = time.monotonic()
     if now - _metrics_cache_ts < _METRICS_CACHE_TTL and _metrics_cache:
         return web.json_response(_metrics_cache)
-    if _metrics_lock is None:
-        _metrics_lock = asyncio.Lock()
     async with _metrics_lock:
         # Re-check under the lock: whoever held it may have just refreshed, and
         # this waiter wants that result rather than a second collection of its own.

@@ -21,6 +21,7 @@ from kiro_crew.acp.types import TurnUsage
 from kiro_crew.config.paths import data_home, kiro_sessions_dir
 from kiro_crew.context_blocks import USER_LABEL
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import telemetry_channel_of
 
 logger = logging.getLogger(__name__)
@@ -50,7 +51,7 @@ def _sessions_dir() -> Path:
 _CACHE: dict[str, Any] = {}
 _CACHE_TS: float = 0.0
 _CACHE_TTL = 120  # 2 min
-_CACHE_LOCK = asyncio.Lock()
+_CACHE_LOCK = LoopBoundLock()
 
 # Cache for the raw _parse_sessions() result, used by api_usage's
 # claude_code/bedrock branch (api_kiro_usage has its own _CACHE of the full
@@ -63,7 +64,7 @@ _CACHE_LOCK = asyncio.Lock()
 # re-parsing on every call.
 _SESSIONS_CACHE: dict[str, Any] | None = None
 _SESSIONS_CACHE_TS: float = 0.0
-_SESSIONS_CACHE_LOCK = asyncio.Lock()
+_SESSIONS_CACHE_LOCK = LoopBoundLock()
 
 # Cache for _parse_token_history — shards are append-only so we key the
 # cache on a tuple of (filename, mtime, size) for every shard in the

@@ -298,6 +298,29 @@ jobs:
           python3 scripts/check_changelog_history.py --test
           python3 scripts/check_changelog_history.py
 
+  loop-bound-locks:
+    name: Loop-Bound Locks Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check for bare module-global asyncio primitives
+        # An asyncio.Lock/Event/Queue created at module scope binds to the
+        # import-time (or first-use) event loop and raises RuntimeError when
+        # acquired from another loop (Python 3.10+). #4800 converted every
+        # module-global lock to kiro_crew.loop_lock.LoopBoundLock; this gate
+        # keeps the declaration form of the class extinct (the registry form
+        # — dicts holding lazily-created locks — is a review concern; see the
+        # script docstring). Whole-tree, not diff-scoped: the backlog is zero
+        # after the conversion, so there is nothing to charge to whoever
+        # pushes next.
+        run: |
+          # Self-test first: it plants one probe per rule family, so a rule
+          # that silently stops matching fails here instead of shipping green.
+          python3 scripts/check_loop_bound_locks.py --test
+          python3 scripts/check_loop_bound_locks.py
+
   harness-parity:
     name: Harness Parity Gate
     runs-on: ubuntu-latest

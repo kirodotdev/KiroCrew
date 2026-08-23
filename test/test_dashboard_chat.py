@@ -10328,7 +10328,10 @@ class TestFolderCRUD:
             )
 
             async def _both_queued() -> None:
-                while len(getattr(state._folders_lock, "_waiters", None) or ()) < 2:
+                # _folders_lock is a LoopBoundLock (#4800); the waiter queue
+                # lives on this loop's inner asyncio.Lock.
+                inner = state._folders_lock._bound()
+                while len(getattr(inner, "_waiters", None) or ()) < 2:
                     await asyncio.sleep(0.01)
 
             # Both requests have passed their pre-lock validation against the

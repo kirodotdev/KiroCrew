@@ -27,6 +27,7 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
@@ -1330,19 +1331,13 @@ async def api_crons(request: web.Request) -> web.Response:
 # Serializes all cron-folder mutations (create/rename/delete) so concurrent
 # requests cannot race on the in-memory list + disk persist cycle. The lock is
 # created lazily and re-created if the running event loop changes (Python 3.10
-# binds a Lock to the loop it first waits on) — mirrors _get_config_lock in
-# agents.py.
-_cron_folders_lock: asyncio.Lock | None = None
-_cron_folders_lock_loop: asyncio.AbstractEventLoop | None = None
+# binds a Lock to the loop it first waits on) — loop-bound via the shared
+# LoopBoundLock (#4800).
+_cron_folders_lock = LoopBoundLock()
 
 
-def _get_cron_folders_lock() -> asyncio.Lock:
-    """Return a cron-folders lock bound to the current event loop."""
-    global _cron_folders_lock, _cron_folders_lock_loop
-    loop = asyncio.get_running_loop()
-    if _cron_folders_lock is None or _cron_folders_lock_loop is not loop:
-        _cron_folders_lock = asyncio.Lock()
-        _cron_folders_lock_loop = loop
+def _get_cron_folders_lock() -> LoopBoundLock:
+    """Return the cron-folders lock (loop-bound; rebinds per running loop)."""
     return _cron_folders_lock
 
 

@@ -58,6 +58,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.env import find_node_tool, node_bin_dirs
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.instances import run_marker
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import boot_platform
 from kiro_crew.sandbox import (
     RLIMIT_PROFILE_BUILD,
@@ -497,8 +498,8 @@ except ImportError as exc:
 
 # --- async run tracking ---
 _RUNS: dict[str, dict] = {}
-_RUNS_LOCK = asyncio.Lock()
-_SYNC_LOCK = asyncio.Lock()
+_RUNS_LOCK = LoopBoundLock()
+_SYNC_LOCK = LoopBoundLock()
 
 
 def _find_cli() -> list[str]:
@@ -2864,7 +2865,7 @@ async def _pod_logs(name: str, n: int = 120) -> dict:
 # Per-worktree provisioning single-flight: name -> run id. Repeated POSTs
 # must not concurrently recreate .venv / dist for the same checkout.
 _PROVISION_INFLIGHT: dict[str, str] = {}
-_PROVISION_LOCK = asyncio.Lock()
+_PROVISION_LOCK = LoopBoundLock()
 
 
 async def _pod_provision(name: str) -> dict:
@@ -3891,11 +3892,11 @@ async def _sync_start_locked() -> dict:
 # Per-worktree mutation locks: two concurrent /rebase requests for the same
 # checkout could both pass the clean-state check, then one's failure path
 # would `rebase --abort` the OTHER's in-flight rebase.
-_WT_LOCKS: dict[str, asyncio.Lock] = {}
+_WT_LOCKS: dict[str, LoopBoundLock] = {}
 
 
-def _wt_lock(name: str) -> asyncio.Lock:
-    return _WT_LOCKS.setdefault(name, asyncio.Lock())
+def _wt_lock(name: str) -> LoopBoundLock:
+    return _WT_LOCKS.setdefault(name, LoopBoundLock())
 
 
 async def _rebase(name: str) -> dict:
@@ -3952,7 +3953,7 @@ _PRUNE_STATE: dict = {
     "running": False, "total": 0, "done": 0, "current": None,
     "results": [], "items": {},
 }
-_PRUNE_LOCK = asyncio.Lock()
+_PRUNE_LOCK = LoopBoundLock()
 # Cap on concurrent per-item prune phases (fresh gh verdict + pod shutdown).
 _PRUNE_CONCURRENCY = 4
 # Serializes the destructive git mutations (`git worktree remove` +
@@ -3961,7 +3962,10 @@ _PRUNE_CONCURRENCY = 4
 # mutate the shared MAIN_REPO ``.git`` state (worktree admin dir + packed-refs).
 # Uncontended in the sequential paths; only the parallel prune workers ever
 # queue on it.
-_GIT_MUTATION_LOCK = asyncio.Lock()
+# LoopBoundLock excludes within one loop only. That covers every contender
+# here: all acquirers are aiohttp handlers and tasks on the app's single
+# gateway loop — no worker thread runs its own loop against this .git.
+_GIT_MUTATION_LOCK = LoopBoundLock()
 
 
 async def _prunable(path: str, branch: str | None) -> dict:
@@ -4831,7 +4835,7 @@ _LIVE_GATEWAY_LABEL = "dev.kirocrew.gateway"
 # second concurrent request fails fast with ``busy`` rather than queueing (a
 # queued cutover could apply a stale target after the winner already restarted
 # the gateway out from under us).
-_MAKE_LIVE_LOCK = asyncio.Lock()
+_MAKE_LIVE_LOCK = LoopBoundLock()
 
 # Process-local "cutover committed" latch. ``systemd-run --collect ... restart``
 # only SCHEDULES the restart and returns immediately, so ``_MAKE_LIVE_LOCK`` is

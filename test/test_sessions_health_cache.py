@@ -16,11 +16,11 @@ def _reset_cache():
     """Reset module-level cache between tests."""
     sessions._health_cache = {}
     sessions._health_cache_ts = 0.0
-    sessions._health_lock = None
+    sessions._health_lock = sessions.LoopBoundLock()
     yield
     sessions._health_cache = {}
     sessions._health_cache_ts = 0.0
-    sessions._health_lock = None
+    sessions._health_lock = sessions.LoopBoundLock()
 
 
 def _make_request() -> web.Request:

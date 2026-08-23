@@ -24,6 +24,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
 from kiro_crew.tips_text import truncate_summary
@@ -384,11 +385,13 @@ class TipsCache:
     # directly are unaffected; populated only by get_tips_cache in production.
     curated: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
     state: TipsState = field(default_factory=TipsState)
-    _lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
+    # LoopBoundLock, not asyncio.Lock (#4800): the cache is stored on the
+    # long-lived DashboardState, which outlives any single event loop.
+    _lock: LoopBoundLock = field(default_factory=LoopBoundLock, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]
 
 
-_tips_init_lock = asyncio.Lock()
+_tips_init_lock = LoopBoundLock()
 
 # Path to the bundled pre-generated tips catalog (release-time artifact).
 _BUNDLED_CATALOG_FILE = Path(__file__).resolve().parent / "data" / "tips_catalog.json"

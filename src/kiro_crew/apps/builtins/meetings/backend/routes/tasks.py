@@ -51,6 +51,7 @@ from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     json_body,
 )
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact
 
 logger = logging.getLogger("kirocrew.app.meetings")
@@ -94,10 +95,10 @@ def task_mutation_transaction() -> "threading.Lock":
 #: an await rather than concurrent worker threads. The terminal-`pushed` re-check
 #: inside it is the other half: the lock orders the two filings, and the re-read is
 #: what makes the SECOND one a no-op instead of a duplicate.
-_FILING_LOCK = asyncio.Lock()
+_FILING_LOCK = LoopBoundLock()
 
 
-def task_filing_transaction() -> "asyncio.Lock":
+def task_filing_transaction() -> LoopBoundLock:
     """Return the lock spanning an external filing and its local record."""
     return _FILING_LOCK
 
