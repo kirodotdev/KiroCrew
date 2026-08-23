@@ -88,6 +88,7 @@ from kiro_crew.cron import (
     CronJob,
     CronService,
     CronStoreBusy,
+    CronStoreUnreadable,
     build_cron_session_context,
     effective_wake_budget,
 )
@@ -3111,7 +3112,7 @@ class GatewayOrchestrator:
                         source="cron",
                         one_shot_path="cron_gateway",
                     )
-                except CronStoreBusy:
+                except (CronStoreBusy, CronStoreUnreadable):
                     # No caller to retry this fire-and-forget removal, so hand
                     # it to the service's deferred-removal queue: the job is
                     # disabled in memory immediately (can't re-fire) and the

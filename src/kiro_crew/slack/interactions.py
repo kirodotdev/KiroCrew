@@ -28,7 +28,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.chat_utils import (
     forget_slack_options_for_thread,
     options_control_is_stale,
@@ -2059,10 +2059,14 @@ async def _handle_cron_ack(payload: dict, action: dict, channel: str, msg_ts: st
     msg_text = payload.get("message", {}).get("text", "")[:200]
     try:
         await _orch.cron_svc.ack_job_async(job_id, msg_text)
-    except CronStoreBusy:
-        # Ack is best-effort context bookkeeping; a transiently-contended store
-        # must not fail the Slack interaction. The button already acked visually.
-        logger.warning("cron ack skipped: store busy (job %s)", job_id)
+    except (CronStoreBusy, CronStoreUnreadable) as exc:
+        # Ack is best-effort context bookkeeping; neither a transiently-contended
+        # store nor an unreadable one must fail the Slack interaction. The button
+        # already acked visually. Unreadable degrades here rather than surfacing
+        # to the user because nothing was requested of the store by the person
+        # clicking -- this is the same class as the background writers in
+        # CronService, not a user-initiated mutation.
+        logger.warning("cron ack skipped: %s (job %s)", type(exc).__name__, job_id)
     if _orch.dashboard_state:
         for n in _orch.dashboard_state._notification_log:
             if n.get("job_id") == job_id and not n.get("acked"):

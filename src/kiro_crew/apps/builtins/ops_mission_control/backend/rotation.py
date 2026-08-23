@@ -758,8 +758,9 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     always-tier job even if the tier map somehow said to. The agent's remaining role is to
     POST, which is why the SOP no longer needs it to hold ``cron_pause`` at all.
 
-    ``cron_service`` is duck-typed (``list_jobs_async`` + ``enable_job_async``) so tests pass
-    a fake. Returns a summary of what changed, so a caller can stay silent when nothing did.
+    ``cron_service`` is duck-typed (``list_jobs_async`` + ``raise_if_store_unreadable``
+    + ``enable_job_async``) so tests pass a fake. Returns a summary of what changed, so
+    a caller can stay silent when nothing did.
     """
     if cron_service is None:
         return {"ok": False, "code": "cron_service_unavailable", "changed": []}
@@ -790,6 +791,27 @@ async def apply_tiers(shift: ShiftStatus, cron_service: Any) -> dict[str, Any]:
     # dashboard could still look active here and we would "resume" a job nobody wanted armed.
     # `list_jobs_async` does the locked `_sync()` in a worker: fresh AND off-loop.
     jobs = await cron_service.list_jobs_async(True)
+    # THEN refuse an unreadable store, before deciding there is nothing to do.
+    #
+    # This is not redundant with `enable_job_async`'s own refusal, because on an
+    # unreadable store that call never happens. `_load` degrades a corrupt
+    # `crons.json` to an EMPTY job list WITHOUT raising (its `except (OSError,
+    # ValueError, TypeError, RecursionError)` arm warns, empties, latches
+    # `_load_failed` and returns) and `_synced_snapshot` translates only
+    # `CronStoreBusy` — so `jobs` is `[]`, nothing diverges from `desired`, the loop
+    # body never runs, and this returned `{"ok": True, "changed": []}` over a broken
+    # store. A gated instance that believes it armed was indistinguishable from one
+    # that did, which is the quiet-versus-broken conflation this whole function
+    # exists to prevent. Found in review.
+    #
+    # Ordered AFTER the read on purpose: `list_jobs_async` is what refreshes the
+    # latch under the store lock, so asking first would answer one poll stale. The
+    # probe itself reads only that latch, so it costs no second read.
+    #
+    # Raising rather than returning `ok: False` keeps ONE wording for this refusal
+    # (`CronService._unreadable_error`) and lets `POST /rotation/arm`'s existing
+    # handler turn it into the 503 it already promises.
+    cron_service.raise_if_store_unreadable()
     changed: list[dict[str, Any]] = []
     for job in jobs:
         name = str(getattr(job, "name", ""))

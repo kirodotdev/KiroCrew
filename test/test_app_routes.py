@@ -242,6 +242,59 @@ async def test_uninstall_aborts_409_when_cron_cleanup_busy(tmp_path, monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_uninstall_aborts_non_retryable_when_cron_store_unreadable(tmp_path, monkeypatch):
+    """Same abort as the busy case, but reported NON-retryable and never retried.
+
+    An unreadable store degrades the owned-job set to empty, so cleanup reports
+    zero removed for a reason unrelated to ownership. Continuing deletes the app
+    while its still-ENABLED jobs remain on disk to resume once the store parses.
+
+    Two things differ from `CronStoreBusy` and both come from the code, not from
+    symmetry. `handlers/cron.py` documents unreadable as `retryable: False` --
+    "an unreadable file does not heal on its own, so a client that retries on busy
+    must NOT retry on this" -- so the abort must not tell the caller to retry. And
+    `_deregister_crons_with_retry` catches busy IN ORDER TO retry, so unreadable
+    must pass through it untouched rather than burn every attempt on a store that
+    cannot heal. The call count below is what pins that.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    src = _make_app_source(tmp_path)
+    install_app(src)
+
+    import kiro_crew.apps.routes as routes_mod
+    from kiro_crew.cron import CronStoreUnreadable
+
+    calls = {"n": 0}
+
+    async def _unreadable(name, cron_service):
+        calls["n"] += 1
+        raise CronStoreUnreadable("refusing to write cron store: Move the unreadable file aside.")
+
+    monkeypatch.setattr(routes_mod, "deregister_app_crons_from_service", _unreadable)
+    monkeypatch.setattr(routes_mod, "_CRON_CLEANUP_BACKOFF_SECS", 0)
+
+    app = _make_app()
+    app["state"] = SimpleNamespace(crons=object())
+    async with TestClient(TestServer(app)) as client:
+        resp = await client.post("/api/apps/api-test-app/uninstall")
+        assert resp.status == 409
+        body = await resp.json()
+        # The distinction handlers/cron.py keeps deliberately.
+        assert body["retryable"] is False, body
+        assert "Move the unreadable file aside" in body["error"], body
+
+        # THE HARM: the app must still be installed. A test that only asserted
+        # the log line or the 409 would pass under the defect too, because the
+        # generic catch logs and then deletes the app anyway.
+        resp = await client.get("/api/apps/api-test-app")
+        assert resp.status == 200
+
+    # NOT retried: an unreadable store does not heal, so burning all three
+    # attempts on it would be wrong. This is why the retry wrapper is left alone.
+    assert calls["n"] == 1
+
+
+@pytest.mark.asyncio
 async def test_uninstall_retries_then_succeeds_on_transient_cron_busy(
     tmp_path, monkeypatch
 ):

@@ -71,6 +71,7 @@ from kiro_crew.apps.builtins.ops_mission_control.backend.secrets import (
     redact_tokens,
 )
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.cron import CronStoreUnreadable
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.sel import sel
 
@@ -1906,7 +1907,19 @@ async def _handle_rotation_arm(request: web.Request) -> web.StreamResponse:
             status=503,
         )
     shift = await get_registry().resolve_shift()
-    return web.json_response(await rotation.apply_tiers(shift, cron_service))
+    try:
+        return web.json_response(await rotation.apply_tiers(shift, cron_service))
+    except CronStoreUnreadable as exc:
+        # A store refusing writes fails the arm. Reported, not raised: escaping
+        # here becomes a 500, and reported rather than skipped-per-job because a
+        # partial arm returned as `ok: True` is exactly the quiet-versus-broken
+        # conflation the server-side tier logic exists to prevent -- a gated
+        # instance that believes it armed is indistinguishable from one that did.
+        logger.warning("ops-mission-control: rotation arm refused, cron store unreadable")
+        return web.json_response(
+            {"ok": False, "error": str(exc), "code": "cron_store_unreadable", "changed": []},
+            status=503,
+        )
 
 
 # ---------------------------------------------------------------------------

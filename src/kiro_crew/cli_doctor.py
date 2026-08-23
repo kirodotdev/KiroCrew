@@ -49,6 +49,7 @@ from kiro_crew.config.paths import (
 )
 from kiro_crew.config.superseded_defaults import render_doctor_section
 from kiro_crew.constants import MIN_NODE_MAJOR
+from kiro_crew.cron import unhealthy_jobs_from_disk
 from kiro_crew.dashboard.crash_dump_store import (
     dump_age_seconds,
     dump_first_stack_lines,
@@ -1584,6 +1585,100 @@ def _doctor_cli_installer_residue(issues: list[str]) -> None:
     issues.append("kiro-cli installer residue in temp")
 
 
+# ── cron job health ───────────────────────────────────────────────────────────
+# The dashboard already surfaces a failing job per-row (an `err` badge on
+# `last_status === 'error'`, with `last_error` on hover), and the gateway
+# re-alerts on a still-failing job hourly. Both of those run INSIDE the
+# gateway, so neither can speak when the gateway is the thing that is wedged.
+# Doctor is a separate process the user runs by hand, which is why the scan
+# reads `crons.json` off disk rather than asking the gateway's HTTP API: a check
+# whose purpose is to survive a down gateway must not depend on one.
+#
+# It also covers a gap the dashboard has by construction: the status badge is
+# rendered under an `enabled` guard, so a job that auto-paused shows only
+# "paused" and its error state is not displayed at all.
+#
+# The scan itself lives in `cron.unhealthy_jobs_from_disk` so the pause-state
+# predicates keep the single owner `cron.py` declares for them; this module owns
+# only the presentation.
+#
+# Read-only, like the rest of doctor: an auto-paused job has failed
+# `_AUTO_PAUSE_THRESHOLD` times in a row and is usually paused for a good
+# reason, so silently resuming it during a diagnostic would hide the very
+# problem the user ran doctor to find. The remediation is a `Fix:` hint naming
+# a cron verb that already exists.
+_CRON_REPORT_CAP = 5
+
+
+def _format_job_labels(entries: list[tuple[str, str]]) -> str:
+    """Render ``(id, name)`` *entries* capped at :data:`_CRON_REPORT_CAP`.
+
+    Beyond the cap the remainder is summarised as ``+N more``: a user with dozens
+    of crons must not get a wall of text out of a diagnostic.
+
+    Both fields go through :func:`_safe_display`. A job name is free text that an
+    app or a hand-edit of the store can supply, so a name carrying OSC/ANSI
+    controls must not be able to act on the terminal or spoof the surrounding
+    diagnostic lines — the same reason the effective-model section escapes the
+    values it reads off disk.
+    """
+    labels = [f"{_safe_display(name)} ({_safe_display(job_id)})" for job_id, name in entries]
+    if len(labels) <= _CRON_REPORT_CAP:
+        return ", ".join(labels)
+    shown = ", ".join(labels[:_CRON_REPORT_CAP])
+    return f"{shown}, +{len(labels) - _CRON_REPORT_CAP} more"
+
+
+def _doctor_cron_health(issues: list[str]) -> None:
+    """Report cron jobs that auto-paused or last ran with an error.
+
+    Silent on a healthy store — and on a fresh install with no ``crons.json`` at
+    all — so a normal doctor run gains no noise. Speaks only when there is
+    something the user can act on.
+
+    A store that EXISTS but cannot be read is one of those things, and is
+    reported even though the scan returns nothing: the scheduler can load no
+    jobs from it, so every job has stopped. Staying silent there would hand
+    back a clean bill of health in precisely the state this check exists to
+    surface. The runtime readers keep degrading quietly; only this diagnostic
+    speaks up.
+    """
+    auto_paused, errored, loadable = unhealthy_jobs_from_disk()
+    if not auto_paused and not errored:
+        # The flag rides the scan's own read, so `crons.json` is opened ONCE per
+        # doctor run. False means the store is present and the scheduler can
+        # load nothing from it; a missing store and an honestly empty one both
+        # report True and stay silent.
+        if not loadable:
+            print("\nCron Jobs")
+            print("  store:       ⚠️  `crons.json` exists but could not be read")
+            print("               No jobs can be loaded from it, so every scheduled")
+            print("               job has stopped. The scheduler logs the parse error")
+            print("               on startup.")
+            print("               Fix: restore it from a snapshot (`kirocrew restore`)")
+            print("               or move it aside to start with an empty schedule.")
+            issues.append("cron store unreadable")
+        return
+
+    print("\nCron Jobs")
+    if auto_paused:
+        print(f"  auto-paused: ⚠️  {len(auto_paused)} job(s) paused after repeated failures")
+        print(f"               {_format_job_labels(auto_paused)}")
+        print("               A job auto-pauses after consecutive failures and stays")
+        print("               paused across restarts. Check why it failed before")
+        print("               resuming it — the pause is usually load-bearing.")
+        print("               Fix: `kirocrew cron resume <id>` once the cause is fixed.")
+        issues.append(f"{len(auto_paused)} cron job(s) auto-paused")
+    if errored:
+        print(f"  errored:     ⚠️  {len(errored)} job(s) last ran with an error")
+        print(f"               {_format_job_labels(errored)}")
+        print("               If it has a repeating schedule, the next run may recover")
+        print("               on its own; a one-shot job has no next run.")
+        print("               Fix: `kirocrew cron trigger <id>` to retry now. The recorded")
+        print("               error text is shown on the dashboard's Schedule page.")
+        issues.append(f"{len(errored)} cron job(s) last ran with an error")
+
+
 def _doctor_model_url_reachable(issues: list[str]) -> None:
     """Light HTTPS-reachability probe of the resolved embedding-model URL.
 
@@ -2334,6 +2429,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── kiro-cli installer residue (silent unless residue is on disk) ──
     _doctor_cli_installer_residue(issues)
+
+    # ── Cron job health (silent unless a job auto-paused or errored) ──
+    # Reads crons.json off disk, not the gateway API: the gateway's own
+    # per-job badge and hourly failure re-alert cannot report a wedged gateway.
+    _doctor_cron_health(issues)
 
     # ── Agent Spec Paths (dead command/args/env paths) ──
     # Own module + single call so a sibling sweep wiring into doctor rebases

@@ -20,6 +20,7 @@ from kiro_crew.cron import (
     CronJob,
     CronSchedule,
     CronService,
+    CronStoreUnreadable,
     _job_tz,
     compute_next_run_ts,
     cron_expr_matches,
@@ -210,6 +211,192 @@ class TestCronService:
         svc = CronService(base_dir=tmp_path)
         svc._load()
         assert svc.list_jobs() == []
+
+    def test_load_invalid_utf8_is_reported_not_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Invalid UTF-8 must degrade to an empty store, not abort the caller.
+
+        ``json.loads`` on bytes raises ``UnicodeDecodeError``, which is a
+        SIBLING subclass of ``ValueError`` rather than an ancestor of
+        ``json.JSONDecodeError`` — so a decode-error-only handler lets it
+        escape into ``_sync`` and gateway startup.
+        """
+        (tmp_path / "crons.json").write_bytes(b'{"jobs": [], "note": "\xff\xfe\xfd"}')
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+        assert svc.list_jobs() == []
+        assert "Failed to load cron store" in caplog.text
+
+    def test_load_deeply_nested_is_reported_not_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Deeply nested JSON must degrade to an empty store, not abort the caller.
+
+        ``RecursionError`` subclasses ``RuntimeError``, NOT ``ValueError``, so
+        it escapes a decode-error tuple entirely.
+        """
+        depth = 100_000
+        (tmp_path / "crons.json").write_bytes(b"[" * depth + b"]" * depth)
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+        assert svc.list_jobs() == []
+        assert "Failed to load cron store" in caplog.text
+
+    def test_load_directory_at_store_path_is_reported_not_raised(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A directory where crons.json belongs must degrade, not abort startup.
+
+        ``exists()`` is True for a directory, so the fresh-install early return
+        does not fire and ``read_bytes()`` raises ``IsADirectoryError``. ``_sync``
+        guards its own read, but the constructor's ``_load()`` — and so gateway
+        startup — does not.
+        """
+        (tmp_path / "crons.json").mkdir()
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+        assert svc.list_jobs() == []
+        assert "Failed to load cron store" in caplog.text
+
+    def test_load_absent_store_is_silent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A missing crons.json is the fresh-install case: no fault, no warning."""
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+        assert svc.list_jobs() == []
+        assert "Failed to load cron store" not in caplog.text
+
+    def test_load_honestly_empty_store_is_silent(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An empty-but-valid store is not a fault either."""
+        (tmp_path / "crons.json").write_text('{"jobs": []}')
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+        assert svc.list_jobs() == []
+        assert "Failed to load cron store" not in caplog.text
+
+    # ── an unloadable store must not be OVERWRITTEN by a later mutation ──
+
+    @staticmethod
+    def _keeper_record() -> dict:
+        """One real, loadable job record, used to prove survival on disk."""
+        return {
+            "id": "j-keep",
+            "name": "keep-me",
+            "message": "m",
+            "schedule": {"kind": "every", "every_secs": 3600},
+            "enabled": True,
+        }
+
+    def test_mutation_after_invalid_utf8_load_does_not_overwrite_the_store(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed load must REFUSE to be persisted over.
+
+        ``_load`` degrades an unreadable store to ``self._jobs = []``, which is
+        indistinguishable to every later writer from an honestly empty store.
+        ``_save()`` serialises ``self._jobs`` wholesale, so one mutation after a
+        failed load persists the empty list over a store that still held jobs.
+        """
+        path = tmp_path / "crons.json"
+        body = {"version": 2, "jobs": [self._keeper_record()], "note": "XX"}
+        path.write_bytes(json.dumps(body).encode("utf-8").replace(b"XX", b"\xff\xfe"))
+        before = path.read_bytes()
+
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+            with pytest.raises(CronStoreUnreadable):
+                svc.add_job(name="new-job", message="m", every_secs=300)
+
+        after = path.read_bytes()
+        assert b'"j-keep"' in after, "the pre-existing job was erased from disk"
+        assert after == before, "the unloadable store was overwritten"
+
+    def test_mutation_after_deeply_nested_load_does_not_overwrite_the_store(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Same guarantee for the ``RecursionError`` corruption class."""
+        path = tmp_path / "crons.json"
+        depth = 50_000
+        head = json.dumps({"version": 2, "jobs": [self._keeper_record()]})[:-1]
+        path.write_bytes((head + ',"deep":' + "[" * depth + "]" * depth + "}").encode("utf-8"))
+        before = path.read_bytes()
+
+        with caplog.at_level(logging.WARNING):
+            svc = CronService(base_dir=tmp_path)
+            with pytest.raises(CronStoreUnreadable):
+                svc.add_job(name="new-job", message="m", every_secs=300)
+
+        after = path.read_bytes()
+        assert b'"j-keep"' in after, "the pre-existing job was erased from disk"
+        assert after == before, "the unloadable store was overwritten"
+
+    def test_a_background_writer_degrades_instead_of_crashing(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The raise must reach USER mutations only, never the scheduler loop.
+
+        `_save` raising is what stops a mutation reporting false success, but a
+        corrupt store must not abort the reaper, the due-scan or the job runner.
+        `_merge_job_result` runs after a job has already executed, so it catches
+        and degrades: the run result is lost, which beats clobbering the store.
+        """
+        path = tmp_path / "crons.json"
+        body = {"version": 2, "jobs": [self._keeper_record()], "note": "XX"}
+        path.write_bytes(json.dumps(body).encode("utf-8").replace(b"XX", b"\xff\xfe"))
+        before = path.read_bytes()
+        svc = CronService(base_dir=tmp_path)
+        job = CronJob(id="j-bg", name="bg", message="m")
+
+        with caplog.at_level(logging.WARNING):
+            svc._merge_job_result(job)  # must NOT raise
+
+        assert "not persisted" in caplog.text
+        assert path.read_bytes() == before, "the unloadable store was overwritten"
+
+    def test_mutation_on_a_fresh_install_still_saves(self, tmp_path: Path) -> None:
+        """NC2. A missing store is not a load failure: the write must go through.
+
+        Blocking this would be worse than the defect -- every fresh install
+        would be unable to create its first cron job.
+        """
+        assert not (tmp_path / "crons.json").exists()
+        svc = CronService(base_dir=tmp_path)
+        svc.add_job(name="first", message="m", every_secs=300)
+
+        assert (tmp_path / "crons.json").exists()
+        assert b'"first"' in (tmp_path / "crons.json").read_bytes()
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["first"]
+
+    def test_mutation_on_an_honestly_empty_store_still_saves(self, tmp_path: Path) -> None:
+        """NC2, other half. ``{"jobs": []}`` loads fine, so it stays writable."""
+        (tmp_path / "crons.json").write_text('{"jobs": []}', encoding="utf-8")
+        svc = CronService(base_dir=tmp_path)
+        svc.add_job(name="first", message="m", every_secs=300)
+
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["first"]
+
+    def test_a_repaired_store_becomes_writable_again(self, tmp_path: Path) -> None:
+        """NC2, third half. The refusal must not latch.
+
+        A guard that survives the repair would leave the store permanently
+        unwritable -- the same class of harm as blocking a fresh install.
+        """
+        path = tmp_path / "crons.json"
+        path.write_bytes(b'{"jobs": [], "note": "\xff\xfe"}')
+        svc = CronService(base_dir=tmp_path)
+        with pytest.raises(CronStoreUnreadable):
+            svc.add_job(name="refused", message="m", every_secs=300)
+        assert b'"refused"' not in path.read_bytes(), "the write should have been refused"
+
+        path.write_text('{"jobs": []}', encoding="utf-8")
+        svc._load()
+        svc.add_job(name="accepted", message="m", every_secs=300)
+
+        assert [j.name for j in CronService(base_dir=tmp_path).list_jobs()] == ["accepted"]
 
     def test_add_job_default_not_silent(self, tmp_path: Path) -> None:
         svc = CronService(base_dir=tmp_path)

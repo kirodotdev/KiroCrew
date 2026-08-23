@@ -31,7 +31,7 @@ from kiro_crew.apps.execution import (
 from kiro_crew.apps.lifecycle import LifecycleDispatcher
 from kiro_crew.apps.manager import app_dir, list_apps
 from kiro_crew.apps.route_registry import RouteRegistry
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -361,6 +361,27 @@ async def on_app_disable(
                 removed = await sdk.remove_all_async()
                 if removed:
                     result["cron_cleanup"] = f"removed {removed} job(s)"
+            except CronStoreUnreadable as exc:
+                # Sibling class of CronStoreBusy, so it escaped the arm below
+                # entirely and would CRASH the disable — the outcome the comment
+                # above forbids. Reported rather than retried: an unreadable store
+                # does not heal on its own.
+                logger.warning(
+                    "App %s: cron cleanup could not complete on disable — "
+                    "store unreadable: %s",
+                    app_name,
+                    exc,
+                )
+                result["cron_cleanup"] = (
+                    "failed: cron store unreadable — jobs may still be enabled"
+                )
+                sel().log_api_access(
+                    caller="gateway",
+                    operation="app_crons_deregister",
+                    outcome="failed",
+                    resources=app_name,
+                    error=str(exc),
+                )
             except CronStoreBusy as exc:
                 logger.warning(
                     "App %s: cron cleanup could not complete on disable — " "store busy: %s",

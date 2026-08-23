@@ -33,7 +33,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     config_path,
 )
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.dashboard.channel_folders import (
     LIVE_RELOAD_FIELDS,
     clean_session_folder,
@@ -860,10 +860,16 @@ async def api_notification_unack(request: web.Request) -> web.Response:
         if n.get("ts") == ts and n.get("kind") == "cron" and n.get("job_id"):
             try:
                 await state.crons.unack_job_async(n["job_id"])
-            except CronStoreBusy:
-                # Store transiently contended — the notification-level unack
-                # below still succeeds; the acked-item trim is best-effort.
-                logger.warning("unack_job skipped: cron store busy (job %s)", n["job_id"])
+            except (CronStoreBusy, CronStoreUnreadable) as exc:
+                # Store transiently contended, or refusing writes outright — the
+                # notification-level unack below still succeeds; the acked-item
+                # trim is best-effort. Unreadable degrades here rather than
+                # surfacing a 409: the person unacking a notification asked
+                # nothing of the cron store, so failing their request for a
+                # bookkeeping trim they did not request would be the wrong
+                # trade. Escaping instead becomes a 500 on a request that does
+                # not depend on the store at all.
+                logger.warning("unack_job skipped: %s (job %s)", type(exc).__name__, n["job_id"])
             break
     ok = await state.unack_notification(ts)
     return web.json_response({"ok": ok})

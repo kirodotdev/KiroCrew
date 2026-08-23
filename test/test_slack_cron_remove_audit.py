@@ -25,7 +25,13 @@ import pytest
 import kiro_crew.cron as cron_mod
 import kiro_crew.messaging.commands as mc
 import kiro_crew.slack.handler as h
-from kiro_crew.cron import CronJob, CronSchedule, CronService, CronStoreBusy
+from kiro_crew.cron import (
+    CronJob,
+    CronSchedule,
+    CronService,
+    CronStoreBusy,
+    CronStoreUnreadable,
+)
 
 
 def _job(job_id: str = "j1", *, name: str = "nightly") -> CronJob:
@@ -404,6 +410,21 @@ class TestGatewayDoneRemovalAudit:
         gw = _make_gw()
         job = _make_script_job()
         await _run_done_callback(gw, job, remove_side_effect=CronStoreBusy("busy"))
+        gw.cron_svc.defer_removal.assert_called_once_with("sj1")
+        gw.cron_svc.audit_one_shot_removal.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_store_defers_without_gateway_audit(self):
+        """Same degradation as busy: queue it, never crash the delivery loop.
+
+        This is a fire-and-forget removal after a one-shot fired -- there is no
+        caller to retry it, so an escaping refusal would abort the delivery
+        callback. `defer_removal` is in-memory only (it cannot itself refuse),
+        and the deferred drain lands the delete once the store is readable.
+        """
+        gw = _make_gw()
+        job = _make_script_job()
+        await _run_done_callback(gw, job, remove_side_effect=CronStoreUnreadable("unreadable"))
         gw.cron_svc.defer_removal.assert_called_once_with("sj1")
         gw.cron_svc.audit_one_shot_removal.assert_not_called()
 

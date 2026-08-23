@@ -16,6 +16,15 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
+from unittest import mock
+
+from aiohttp import web
+
+from kiro_crew.apps.builtins.ops_mission_control.backend import rotation, routes
+from kiro_crew.apps.builtins.ops_mission_control.backend.providers.base import ShiftStatus
+from kiro_crew.cron import CronService, CronStoreUnreadable
 
 
 class _HomeIsolated(unittest.TestCase):
@@ -2243,12 +2252,183 @@ class _FakeCronService:
         # Mirrors the real freshness-guaranteed reader `apply_tiers` uses.
         return list(self._jobs)
 
+    def raise_if_store_unreadable(self):
+        # Third member of the duck-type `apply_tiers` requires, alongside
+        # `list_jobs_async` and `enable_job_async`. A readable store is a no-op.
+        return None
+
     async def enable_job_async(self, job_id, enabled=True):
         self.calls.append((job_id, enabled))
         for job in self._jobs:
             if job.id == job_id:
                 job.enabled = enabled
         return True
+
+
+class _RefusingCronService(_FakeCronService):
+    """A store READABLE at list time that has gone unreadable before the write.
+
+    It yields jobs and then refuses the write, and that combination is reachable
+    rather than contrived -- but only for this ordering, which is why the
+    docstring now names it. `_sync`'s ``except OSError`` arm latches
+    ``_load_failed`` for exactly "a store that went unreadable AFTER a good load
+    (EIO, EACCES, a botched restore)" (its own words), so ``_sync_for_write``
+    refuses the mutation that ``list_jobs_async`` had already handed us jobs for.
+
+    What this fake must NOT be read as is a store that was ALREADY unreadable
+    when the arm began -- see `_UnreadableCronService`, where the real service
+    yields NOTHING and so never reaches a write at all.
+    """
+
+    async def enable_job_async(self, job_id, enabled=True):
+        raise CronStoreUnreadable("move the file aside")
+
+
+class _UnreadableCronService(_FakeCronService):
+    """A store ALREADY unreadable when the arm starts: no jobs, and writes refused.
+
+    The empty list is the point. ``_load`` degrades an unreadable ``crons.json``
+    to ``_jobs = []`` WITHOUT raising -- its ``except (OSError, ValueError,
+    TypeError, RecursionError)`` arm warns, empties, latches ``_load_failed`` and
+    returns -- and ``_synced_snapshot`` only translates ``CronStoreBusy``. So
+    ``list_jobs_async`` hands back nothing, no job can diverge from the tier map,
+    and ``enable_job_async`` -- the only member of this duck-type that raises --
+    is never called. A guard keyed on a refused WRITE therefore cannot observe
+    this state, which is the whole reason the probe exists.
+    """
+
+    def __init__(self):
+        super().__init__([])
+
+    def raise_if_store_unreadable(self):
+        raise CronStoreUnreadable("move the file aside")
+
+
+class TestArmingOnARefusingStore(unittest.IsolatedAsyncioTestCase):
+    """`POST /rotation/arm` must report a refused store, never raise into aiohttp.
+
+    `enable_job_async` refuses BEFORE mutating once the store cannot be read.
+    Untranslated that escapes `_handle_rotation_arm` and becomes a 500, which is
+    the one outcome this app forbids everywhere else -- a failure shown as a
+    crash rather than as a failure. It reports `ok: False` rather than skipping
+    the job quietly for the same reason: a partial arm reported as success is the
+    quiet-versus-broken conflation the tier logic exists to prevent.
+    """
+
+    async def test_arm_reports_a_refused_store_instead_of_raising(self):
+        names = [name for names in rotation.TIER_CRONS.values() for name in names]
+        svc = _RefusingCronService([_FakeJob(name, False) for name in names])
+
+        class _App(dict):
+            pass
+
+        app = _App(state=SimpleNamespace(crons=svc))
+
+        class _Req:
+            def __init__(self, application):
+                self.app = application
+
+        registry = mock.MagicMock()
+        registry.resolve_shift = mock.AsyncMock(return_value=ShiftStatus(on_shift=True))
+        with mock.patch.object(routes, "get_registry", return_value=registry):
+            resp = await routes._handle_rotation_arm(cast(web.Request, _Req(app)))
+
+        # Two narrowings, both asserting what this test genuinely relies on. The
+        # handler is annotated `-> StreamResponse` (as its siblings are) and only
+        # the `Response` subclass `json_response` returns carries `body`; that
+        # `body` is in turn `bytes | bytearray | Payload | None`. Asserting keeps
+        # the test honest -- a handler refactored to stream, or to send an empty
+        # body, fails here rather than reading through a private attribute.
+        assert isinstance(resp, web.Response)
+        assert isinstance(resp.body, bytes)
+        body = json.loads(resp.body)
+        self.assertFalse(body["ok"], "a refused store must not be reported as a successful arm")
+        self.assertEqual(body["code"], "cron_store_unreadable")
+
+
+class TestArmingOnAnAlreadyUnreadableStore(unittest.IsolatedAsyncioTestCase):
+    """`POST /rotation/arm` on a store that was unreadable BEFORE the arm began.
+
+    The sibling `TestArmingOnARefusingStore` covers the other ordering (readable
+    at list time, unreadable by the write) and cannot cover this one, because the
+    two states differ in what `list_jobs_async` returns. Here `_load` has already
+    degraded the store to an EMPTY job list without raising, so:
+
+      * no job can diverge from the tier map,
+      * `enable_job_async` -- the only raiser on this path -- is never called,
+      * and the arm would otherwise return 200 `{"ok": True, "changed": []}`.
+
+    That 200 is the quiet-versus-broken conflation this app forbids: a gated
+    instance that believes it armed is indistinguishable from one that did, and
+    the operator learns nothing about the corrupt `crons.json` underneath. So the
+    unreadable state has to be detected independently of finding a write to make.
+    """
+
+    async def test_arm_refuses_when_the_store_was_already_unreadable(self):
+        svc = _UnreadableCronService()
+        self.assertEqual(
+            await svc.list_jobs_async(True),
+            [],
+            "precondition: an already-unreadable store yields NO jobs, which is "
+            "why a write-keyed guard cannot see it",
+        )
+
+        class _App(dict):
+            pass
+
+        app = _App(state=SimpleNamespace(crons=svc))
+
+        class _Req:
+            def __init__(self, application):
+                self.app = application
+
+        registry = mock.MagicMock()
+        registry.resolve_shift = mock.AsyncMock(return_value=ShiftStatus(on_shift=True))
+        with mock.patch.object(routes, "get_registry", return_value=registry):
+            resp = await routes._handle_rotation_arm(cast(web.Request, _Req(app)))
+
+        assert isinstance(resp, web.Response)
+        assert isinstance(resp.body, bytes)
+        body = json.loads(resp.body)
+        self.assertEqual(
+            resp.status,
+            503,
+            "an unreadable store must fail the arm, not return a successful no-op",
+        )
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["code"], "cron_store_unreadable")
+        self.assertEqual(body["changed"], [])
+        self.assertEqual(
+            svc.calls, [], "nothing may be written while the store cannot be read"
+        )
+
+    async def test_the_real_cron_service_reaches_the_state_the_fake_models(self):
+        """The fake above is only worth anything if the real service gets here.
+
+        Asserted against the real `CronService` rather than a duck-type, because the
+        defect this class covers was ORIGINALLY masked by a fake whose state the real
+        service could not reach (it yielded jobs while refusing writes, which only
+        happens when the store goes bad BETWEEN the read and the write). This pins the
+        three facts the fix depends on: a corrupt store yields NO jobs, it does so
+        WITHOUT raising, and the probe still refuses.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "crons.json"
+            store.write_bytes(b"{not json at all")
+            svc = CronService(base_dir=Path(tmp))
+
+            jobs = await svc.list_jobs_async(True)
+            self.assertEqual(jobs, [], "a corrupt store must load as an EMPTY list")
+            with self.assertRaises(CronStoreUnreadable):
+                svc.raise_if_store_unreadable()
+
+            # NEGATIVE CONTROL: the probe must not fire on a store that is merely
+            # empty. Without this the guard could be satisfied by refusing always,
+            # which would break every honestly-empty install.
+            store.write_text(json.dumps({"jobs": []}))
+            healthy = CronService(base_dir=Path(tmp))
+            await healthy.list_jobs_async(True)
+            healthy.raise_if_store_unreadable()
 
 
 class TestServerSideArming(unittest.IsolatedAsyncioTestCase):

@@ -819,6 +819,26 @@ class TestNotificationRoutes:
         state.crons.unack_job_async = AsyncMock(side_effect=CronStoreBusy("busy"))
         assert _payload(_run(mod.api_notification_unack, _Req(state, {"ts": "1"})))["ok"] is True
 
+    def test_unack_survives_an_unreadable_cron_store(self) -> None:
+        """The acked-item trim is best-effort, so a refused write must not 500.
+
+        Twin of the busy test above. `unack_job_async` refuses BEFORE mutating
+        once the store cannot be read, and that refusal is a new exception on
+        this path -- untranslated it escapes the handler and aiohttp turns it
+        into a 500, failing a notification unack that does not depend on the
+        cron store at all.
+        """
+        from kiro_crew.cron import CronStoreUnreadable
+
+        state = _state(
+            _notification_log=[{"ts": "1", "kind": "cron", "job_id": "j1"}],
+            unack_notification=AsyncMock(return_value=True),
+        )
+        state.crons.unack_job_async = AsyncMock(
+            side_effect=CronStoreUnreadable("move the file aside")
+        )
+        assert _payload(_run(mod.api_notification_unack, _Req(state, {"ts": "1"})))["ok"] is True
+
     def test_ack_all_marks_every_entry_and_rewrites(self) -> None:
         log: list[dict[str, Any]] = [{"ts": "1", "acked": False}, {"ts": "2"}]
         state = _state(_notification_log=log, _rewrite_notifications_async=AsyncMock())

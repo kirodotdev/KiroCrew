@@ -110,3 +110,61 @@ def test_count_path_and_load_path_share_one_predicate(tmp_path):
     # Per-record agreement, not just the totals.
     for job, raw in zip(mgr._jobs, jobs):
         assert job.enabled == _record_is_enabled(raw)
+
+
+# The WS status pusher is the only caller, so an exception escaping this reader
+# does not degrade a count -- it kills the pusher. These lock the corruption
+# classes that a `(OSError, json.JSONDecodeError)` guard let through, which is
+# why the read/parse/shape prologue moved into the shared `_read_job_records`.
+
+
+def test_count_enabled_from_disk_non_utf8_store_is_zero(tmp_path):
+    """Invalid UTF-8 must not kill the WS status pusher.
+
+    The store is bytes on disk. A bare `read_text()` decodes with the caller's
+    locale and raises `UnicodeDecodeError`, which is NOT a
+    `json.JSONDecodeError` -- so the old guard missed it entirely.
+    """
+    mgr = CronService(base_dir=tmp_path)
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    mgr._path.write_bytes(b'{"jobs": [{"id": "a", "name": "\xff\xfe"}]}')
+
+    assert mgr.count_enabled_from_disk() == 0
+
+
+def test_count_enabled_from_disk_deeply_nested_json_is_zero(tmp_path):
+    """Deeply nested JSON must not kill the WS status pusher.
+
+    `json.loads` raises `RecursionError`, which subclasses `RuntimeError` --
+    not `ValueError` -- so it escaped the decode-error guard.
+    """
+    depth = 100_000
+    mgr = CronService(base_dir=tmp_path)
+    mgr._path.parent.mkdir(parents=True, exist_ok=True)
+    mgr._path.write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+    assert mgr.count_enabled_from_disk() == 0
+
+
+def test_count_enabled_from_disk_survives_every_corruption_class(tmp_path):
+    """One table over every shape the shared loader collapses to "no records".
+
+    Includes a positive control: the same reader returns 1 for a valid store,
+    so a zero above is the guard doing its job rather than the record being
+    rejected for an unrelated reason.
+    """
+    valid = {"id": "a", "name": "a", "message": "m", "schedule": {"kind": "every"}}
+    mgr = CronService(base_dir=tmp_path)
+    _write_store(mgr._path, [valid])
+    assert mgr.count_enabled_from_disk() == 1, "positive control must count a valid store"
+
+    for payload in (
+        b"not json",  # unparseable
+        b"[]",  # parses, but not an object
+        b'{"jobs": null}',  # object, but jobs is not a list
+        b'{"jobs": ["junk", 3]}',  # list of non-dict entries
+        b'{"jobs": [{"id": "a", "name": "\xff"}]}',  # invalid UTF-8
+        ("[" * 100_000 + "]" * 100_000).encode(),  # RecursionError
+    ):
+        mgr._path.write_bytes(payload)
+        assert mgr.count_enabled_from_disk() == 0, f"failed to degrade on {payload[:24]!r}"

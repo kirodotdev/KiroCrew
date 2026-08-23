@@ -56,7 +56,7 @@ from kiro_crew.config.loader import (
     read_local_secret,
     update_config_locked,
 )
-from kiro_crew.cron import CronSchedule, CronService, format_schedule
+from kiro_crew.cron import CronSchedule, CronService, CronStoreUnreadable, format_schedule
 from kiro_crew.cron_trigger import trigger_cron_job
 from kiro_crew.dashboard import tailnet, tailnet_serve
 from kiro_crew.dashboard.origin import parse_dashboard_url
@@ -877,6 +877,27 @@ def _agent_reset_model(args: argparse.Namespace) -> None:
 
 
 def _cron(args: argparse.Namespace) -> None:
+    """Dispatch cron subcommands, translating a refused write into an error.
+
+    ``CronService._save`` raises ``CronStoreUnreadable`` rather than silently
+    skipping the write when the last load failed, so every mutating verb here can
+    fail that way. Untranslated it reached the user as a stack trace, which names
+    the raise site but not the one action that fixes it. The exception's own
+    message carries that remediation, so it is surfaced verbatim.
+
+    One wrapper rather than a handler per verb: `add`, `update`, `remove`,
+    `pause`, `resume` and `adopt` all persist through the same ``_save``, so
+    catching at the dispatch boundary covers them without eight duplicated
+    blocks, and any verb added later is covered by construction.
+    """
+    try:
+        _cron_dispatch(args)
+    except CronStoreUnreadable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+
+def _cron_dispatch(args: argparse.Namespace) -> None:
     """Dispatch cron subcommands: list, add, remove, pause, resume."""
 
     svc = CronService(base_dir=config_dir())

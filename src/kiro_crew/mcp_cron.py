@@ -29,6 +29,7 @@ from kiro_crew.cron import (
     CronJob,
     CronService,
     CronStoreBusy,
+    CronStoreUnreadable,
     compute_next_run_ts,
     format_schedule,
     get_local_tz,
@@ -1852,6 +1853,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
         except ValueError as e:
             return f"Error: {e}"
         sched_str = format_schedule(job.schedule)
@@ -1938,6 +1941,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             updated = svc.update_job(jid, **kwargs)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
         except ValueError as e:
             return f"Error: {e}"
         if not updated:
@@ -1962,6 +1967,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             removed = svc.remove_job(jid, actor="mcp", source="mcp")
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
         if removed:
             return f"Removed job: {jid}"
         return f"Job not found: {jid}"
@@ -2004,6 +2011,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
+        # main's count, not len(jobs): remove_jobs_sync reports what it actually
+        # removed, so a requested id that was already gone is not counted.
         return f"Removed {len(removed_ids)} job(s)."
 
     if name == "cron_pause":
@@ -2016,6 +2027,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             paused = svc.enable_job(jid, enabled=False)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
         if paused:
             return f"Paused job: {jid}"
         return f"Job not found: {jid}"
@@ -2030,6 +2043,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             resumed = svc.enable_job(jid, enabled=True)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        except CronStoreUnreadable as exc:
+            return f"Error: {exc}"
         if resumed:
             return f"Resumed job: {jid}"
         return f"Job not found: {jid}"

@@ -16,7 +16,7 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.config.loader import config_dir
-from kiro_crew.cron import CronStoreBusy, is_valid_timezone
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable, is_valid_timezone
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.dashboard.cron_inject import (
     hydrate_slot_from_history,
@@ -62,6 +62,29 @@ logger = logging.getLogger(__name__)
 # should retry rather than treat it as a hard failure. See CronService mutators.
 _CRON_BUSY_STATUS = 409
 _CRON_BUSY_BODY = {"error": "cron store busy, please retry", "retryable": True}
+
+# Returned when the store cannot be WRITTEN because the last read of it failed
+# (CronStoreUnreadable). 409 for the same reason as busy above -- the request
+# conflicts with the current state of the resource -- but explicitly
+# `retryable: False`: an unreadable file does not heal on its own, so a client
+# that retries on busy must NOT retry on this. The exception already carries the
+# one action that resolves it (move the file aside), so its message is surfaced
+# verbatim rather than restated.
+#
+# The status and the code are written as LITERALS at the json_response call
+# rather than hoisted into module constants, because `test_error_code_contract`
+# buckets a computed `status=` as `dynamic_status` and caps that bucket
+# deliberately -- a named constant is indistinguishable, to a static scan, from
+# computing the status to evade the gate. Literals make this response decidable:
+# it scores `compliant` instead of consuming cap.
+
+
+def _cron_unreadable_response(exc: CronStoreUnreadable) -> web.Response:
+    """Translate a refused write into a structured, non-retryable 409."""
+    return web.json_response(
+        {"error": str(exc), "code": "cron_store_unreadable", "retryable": False},
+        status=409,
+    )
 
 
 def _sel():
@@ -285,6 +308,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
             job = await state.crons.add_job_async(name, message, every_secs=every, **add_kwargs)
         except CronStoreBusy:
             return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+        except CronStoreUnreadable as exc:
+            return _cron_unreadable_response(exc)
     elif cron_expr:
         try:
             job = await state.crons.add_job_async(
@@ -292,6 +317,8 @@ async def api_crons_create(request: web.Request) -> web.Response:
             )
         except CronStoreBusy:
             return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+        except CronStoreUnreadable as exc:
+            return _cron_unreadable_response(exc)
     else:
         return web.json_response({"error": "schedule, every, or cron required"}, status=400)
     state.push_refresh("crons")
@@ -308,6 +335,8 @@ async def api_cron_delete(request: web.Request) -> web.Response:
         )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     if ok:
         await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
@@ -492,6 +521,8 @@ async def api_cron_update(request: web.Request) -> web.Response:
         job = await state.crons.update_job_async(job_id, **kwargs)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     except ValueError as e:
         return web.json_response({"error": str(e)}, status=400)
     if not job:
@@ -614,6 +645,8 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         ok = await state.crons.enable_job_async(job_id, enabled=enabled)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     if ok:
         state.push_refresh("crons")
     return web.json_response({"ok": ok})
@@ -633,6 +666,8 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         ok = await state.crons.ack_job_async(job_id, summary)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    except CronStoreUnreadable as exc:
+        return _cron_unreadable_response(exc)
     if notification_ts:
         await state.ack_notification(notification_ts)
     return web.json_response({"ok": ok})

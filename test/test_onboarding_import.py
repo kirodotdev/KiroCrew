@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.cron import CronService
+from kiro_crew.cron import CronService, CronStoreUnreadable
 from kiro_crew.platform.bootstrap import build_default_context
 from kiro_crew.platform.context import reset_context, set_context
 from kiro_crew.platform.interfaces import ImportSource
@@ -3278,6 +3278,60 @@ class TestApply:
         assert jobs[0].user_paused is True
         assert first["imported"]["schedules"] == 1
         assert second["imported"]["schedules"] == 0
+
+    def test_an_unreadable_cron_store_rejects_the_item_instead_of_failing_the_apply(
+        self, tmp_path: Path
+    ) -> None:
+        """A refused cron write must land in the per-item handler, not escape.
+
+        ``apply_import``'s per-item arm catches ``(OSError, ValueError, TypeError,
+        sqlite3.Error)``. A refusal raised outside that tuple escapes the whole
+        apply, so one corrupt ``crons.json`` fails the entire onboarding request
+        rather than rejecting the single schedule it actually blocks -- and every
+        later item in the plan is lost with it.
+
+        The vacuous-pass trap: asserting ``schedules == 0`` alone passes in a world
+        where the apply raised, because the assertion is never reached. The
+        assertions that carry the coverage are that the call RETURNS at all and
+        that the item is reported rejected with a reason.
+        """
+        predecessor_root = tmp_path / "home" / ".predecessor"
+        predecessor_root.mkdir(parents=True)
+        (predecessor_root / "crons.json").write_text(
+            json.dumps(
+                {
+                    "jobs": [
+                        {
+                            "name": "morning summary",
+                            "message": "summarize yesterday",
+                            "schedule": {"kind": "cron", "cron_expr": "0 9 * * *"},
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+        data_home = tmp_path / "destination"
+        cron_service = CronService(base_dir=data_home)
+
+        def _refuse(*_args: Any, **_kwargs: Any) -> Any:
+            raise CronStoreUnreadable("move the file aside")
+
+        # Patch the instance so the refusal comes from the real entry point the
+        # importer calls, rather than from a stand-in service object.
+        cron_service.add_job_if_absent = _refuse  # type: ignore[method-assign]
+
+        plan = _select(
+            _api().preview_import(home=tmp_path / "home", env={}),
+            ("predecessor", "schedules"),
+        )
+
+        result = _api().apply_import(plan, data_home=data_home, cron_service=cron_service)
+
+        assert result["imported"]["schedules"] == 0
+        rejected = [o for o in result["item_outcomes"] if o.get("outcome") == "rejected"]
+        assert rejected, "the refused schedule must be reported as a rejected item"
+        assert any(s.get("reason") == "write_failed" for s in result.get("skipped", []))
 
     def test_schedule_timezone_is_passed_in_initial_add_job(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

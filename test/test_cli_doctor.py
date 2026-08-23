@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from conftest import requires_symlinks
-from kiro_crew import cli_doctor
+from kiro_crew import cli_doctor, cron
 
 
 class TestFixHint:
@@ -1740,3 +1740,407 @@ class TestVenvDepsProbe:
 
         source = inspect.getsource(cli_doctor._doctor)
         assert "_venv_deps_ok(venv_py)" in source
+
+
+class TestCronHealth:
+    """`kirocrew doctor` Cron Jobs section — auto-paused / errored jobs.
+
+    Read-only by contract: the check reports and hints, it never resumes or
+    triggers anything. The negative half of this suite (healthy store,
+    user-paused job, missing file) is what stops the check crying wolf.
+    """
+
+    @staticmethod
+    def _job(job_id: str, name: str, **over: object) -> dict:
+        job = {
+            "id": job_id,
+            "name": name,
+            "message": "do a thing",
+            "schedule": {"kind": "every", "every_secs": 3600},
+            "enabled": True,
+            "user_paused": False,
+            "auto_paused": False,
+            "last_status": "ok",
+        }
+        job.update(over)
+        return job
+
+    def _write(self, tmp_path: Path, *jobs: dict) -> Path:
+        path = tmp_path / "crons.json"
+        path.write_text(json.dumps({"version": 2, "jobs": list(jobs)}), encoding="utf-8")
+        return path
+
+    def _run(self, monkeypatch, tmp_path: Path) -> list[str]:
+        # The scan lives in cron.py (single owner of the pause predicates), so
+        # the data home is patched THERE; doctor is only the presentation half.
+        monkeypatch.setattr(cron, "config_dir", lambda: tmp_path)
+        issues: list[str] = []
+        cli_doctor._doctor_cron_health(issues)
+        return issues
+
+    # ── positive: the signals ARE reported ──
+
+    def test_auto_paused_job_is_reported_with_resume_hint(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        self._write(
+            tmp_path,
+            self._job("j1", "nightly-sync", auto_paused=True, enabled=False, last_status="error"),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "Cron Jobs" in out
+        assert "auto-paused" in out
+        assert "'nightly-sync' ('j1')" in out
+        assert "kirocrew cron resume <id>" in out
+        assert issues == ["1 cron job(s) auto-paused"]
+
+    def test_errored_job_is_reported_with_trigger_hint(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        self._write(tmp_path, self._job("j2", "pr-watch", last_status="error"))
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "errored:" in out
+        assert "'pr-watch' ('j2')" in out
+        assert "kirocrew cron trigger <id>" in out
+        assert issues == ["1 cron job(s) last ran with an error"]
+
+    def test_a_user_paused_at_job_with_a_stale_error_is_not_reported(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """An explicitly paused ``at`` job must stay silent even carrying an error.
+
+        The user pause is the later, more specific instruction, so it wins -- the
+        contract this function's own docstring states. A stale ``last_status``
+        from a run before the pause is not a reason to hand back a hint for a job
+        the user switched off.
+
+        Paired with the sibling below, which keeps a NON-paused errored at-job
+        reported: neither test alone pins the distinction, because one mutation
+        can only move one of the two outcomes.
+        """
+        self._write(
+            tmp_path,
+            self._job(
+                "j-at",
+                "one-off-import",
+                schedule={"kind": "at", "at_ts": 1.0},
+                enabled=False,
+                user_paused=True,
+                last_status="error",
+            ),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert issues == []
+        out = capsys.readouterr().out
+        assert "errored:" not in out
+        assert "'one-off-import' ('j-at')" not in out
+
+    def test_a_non_paused_at_job_with_an_error_is_still_reported(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """The other half: silencing paused jobs must not silence live failures.
+
+        Same ``at`` schedule and the same errored status as the sibling above --
+        only the pause flag differs, so this is the assertion that catches a fix
+        that simply stopped reporting at-jobs.
+        """
+        self._write(
+            tmp_path,
+            self._job(
+                "j-at-live",
+                "live-import",
+                schedule={"kind": "at", "at_ts": 1.0},
+                enabled=True,
+                user_paused=False,
+                last_status="error",
+            ),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "errored:" in out
+        assert "'live-import' ('j-at-live')" in out
+        assert issues == ["1 cron job(s) last ran with an error"]
+
+    def test_auto_paused_job_is_not_also_counted_as_errored(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A job only auto-pauses by failing repeatedly, so it carries
+        # last_status="error" too. Reporting both would print contradictory
+        # advice (resume vs. re-trigger) for one job.
+        self._write(
+            tmp_path,
+            self._job("j3", "flaky", auto_paused=True, enabled=False, last_status="error"),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert issues == ["1 cron job(s) auto-paused"]
+        assert "errored:" not in capsys.readouterr().out
+
+    def test_job_list_is_capped_with_a_plus_n_more_tail(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A user with dozens of crons must not get a wall of text.
+        jobs = [self._job(f"j{n}", f"job-{n}", auto_paused=True, enabled=False) for n in range(8)]
+        self._write(tmp_path, *jobs)
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "+3 more" in out
+        assert "'job-0' ('j0')" in out
+        assert "'job-7' ('j7')" not in out, "beyond the cap must be summarised, not listed"
+        assert issues == ["8 cron job(s) auto-paused"]
+
+    # ── negative: healthy / deliberate state is NOT reported ──
+
+    def test_healthy_store_is_silent(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        self._write(tmp_path, self._job("j4", "fine"), self._job("j5", "also-fine"))
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_user_paused_job_is_not_reported(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        # user_paused is deliberately distinct from auto_paused: a job the user
+        # paused on purpose is not a health signal, and neither is a stale
+        # last_status left over from before they paused it.
+        self._write(
+            tmp_path,
+            self._job("j6", "on-purpose", user_paused=True, enabled=False, last_status="error"),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_legacy_record_without_user_paused_key_is_not_reported(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # Records written before `user_paused` existed carry the reason only in
+        # `enabled`; the deserializer derives user_paused from it, and so must this.
+        job = self._job("j7", "legacy", enabled=False, last_status="error")
+        del job["user_paused"]
+        self._write(tmp_path, job)
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    # ── degradation: a broken or absent store must not fail doctor ──
+
+    def test_missing_crons_file_is_silent(self, monkeypatch, tmp_path: Path, capsys) -> None:
+        # Every fresh install: no crons yet.
+        assert not (tmp_path / "crons.json").exists()
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    @pytest.mark.parametrize(
+        "body",
+        ["not json at all", "", "[]", '{"jobs": "not-a-list"}', '{"jobs": [null, 3]}'],
+        ids=["garbage", "empty", "top-level-list", "jobs-not-a-list", "jobs-of-scalars"],
+    )
+    def test_corrupt_crons_file_is_reported_not_silent(
+        self, monkeypatch, tmp_path: Path, capsys, body: str
+    ) -> None:
+        # The run on a host with a corrupt crons.json is exactly the run that
+        # most needs doctor's other checks — it must not get a traceback. But it
+        # must not be SILENT either: the scheduler can load no jobs from an
+        # unreadable store, so every job has stopped, and reporting a clean bill
+        # of health there is the silence this check exists to break.
+        (tmp_path / "crons.json").write_text(body, encoding="utf-8")
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "could not be read" in capsys.readouterr().out
+        assert issues == ["cron store unreadable"]
+
+    def test_one_malformed_record_does_not_discard_the_rest(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        path = tmp_path / "crons.json"
+        good = self._job("j8", "real-job", auto_paused=True, enabled=False)
+        path.write_text(json.dumps({"jobs": ["junk", good]}), encoding="utf-8")
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "'real-job' ('j8')" in capsys.readouterr().out
+        assert issues == ["1 cron job(s) auto-paused"]
+
+    def test_record_with_blank_id_and_name_still_renders(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # The `(unnamed)` / `no-id` label fallback, on a record the scheduler
+        # CAN load: `_job_from_record` needs the keys present, not non-empty, so
+        # blank strings still build a job and must still be nameable. A record
+        # MISSING those keys is a different case -- unloadable, so it is skipped
+        # and reported as a broken store instead (see the unloadable-record
+        # test above); asserting a hint for it would encode that defect.
+        self._write(tmp_path, self._job("", "", auto_paused=True, enabled=False))
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "(unnamed)" in out and "no-id" in out
+        assert issues == ["1 cron job(s) auto-paused"]
+
+    def test_an_auto_paused_job_the_user_also_paused_is_not_reported(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """Both flags can be set at once, and the user pause wins.
+
+        `_enable_job_locked` clears `auto_paused` only when ENABLING, so pausing
+        an already-auto-paused job leaves `auto_paused` true and adds
+        `user_paused`. Telling the user to resume a job they deliberately
+        switched off would contradict the more specific instruction.
+        """
+        self._write(
+            tmp_path,
+            self._job(
+                "j10",
+                "off-on-purpose",
+                auto_paused=True,
+                user_paused=True,
+                enabled=False,
+                last_status="error",
+            ),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_invalid_utf8_in_the_store_is_reported_not_silent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # The store is bytes on disk and can hold invalid UTF-8. A
+        # UnicodeDecodeError here would abort the whole doctor run; swallowing
+        # it silently would instead hide that no job can load at all.
+        (tmp_path / "crons.json").write_bytes(b'{"jobs": [{"id": "a", "name": "\xff\xfe"}]}')
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "could not be read" in capsys.readouterr().out
+        assert issues == ["cron store unreadable"]
+
+    def test_deeply_nested_json_is_reported_not_silent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # json.loads raises RecursionError on deeply nested input, and
+        # RecursionError is a RuntimeError -- NOT a ValueError -- so it escapes
+        # the decode-error tuple and would abort the whole doctor run. Caught, it
+        # is still an unreadable store and must be reported rather than hidden.
+        depth = 100_000
+        (tmp_path / "crons.json").write_text("[" * depth + "]" * depth, encoding="utf-8")
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "could not be read" in capsys.readouterr().out
+        assert issues == ["cron store unreadable"]
+
+    def test_a_store_of_non_job_dicts_is_reported_not_silent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # `{}` is a dict, so an isinstance-only shape check calls this store
+        # readable -- but `_job_from_record` rejects it (KeyError: 'id'), so the
+        # scheduler loads ZERO jobs from it. Entries were present and none is
+        # loadable: that is the "parsed but nothing came out" fault this check
+        # exists to surface, not an honestly empty store.
+        (tmp_path / "crons.json").write_text('{"jobs": [{}]}', encoding="utf-8")
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "could not be read" in capsys.readouterr().out
+        assert issues == ["cron store unreadable"]
+
+    def test_an_unloadable_record_does_not_produce_a_bogus_resume_hint(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # `{"auto_paused": true}` carries no id/name/message, so the scheduler
+        # rejects it and runs nothing -- but classifying it BEFORE checking
+        # loadability puts it in the auto-paused bucket, so doctor advises
+        # `cron resume` for a job that does not exist and the unloadable-store
+        # report never fires. The store is the fault; the phantom job is not.
+        (tmp_path / "crons.json").write_text(
+            '{"jobs": [{"auto_paused": true}]}', encoding="utf-8"
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "could not be read" in out
+        assert "resume" not in out
+        assert issues == ["cron store unreadable"]
+
+    def test_a_crons_json_directory_is_reported_not_silent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # `is_file()` is False for a DIRECTORY just as it is for a missing file,
+        # so exempting on it silently classifies an unloadable store as the
+        # fresh-install case. The scheduler can load nothing from a directory.
+        (tmp_path / "crons.json").mkdir()
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert "could not be read" in capsys.readouterr().out
+        assert issues == ["cron store unreadable"]
+
+    def test_a_readable_but_empty_store_stays_silent(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # The boundary that stops the unreadable-store report crying wolf: a
+        # store that parses fine and simply holds no jobs is NOT a fault, and
+        # must stay silent even though the scan returns nothing — exactly like
+        # the missing-file case.
+        (tmp_path / "crons.json").write_text('{"jobs": []}', encoding="utf-8")
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        assert capsys.readouterr().out == ""
+        assert issues == []
+
+    def test_a_control_bearing_job_name_is_escaped(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        # A job name is free text an app or a hand-edit supplies, so it must not
+        # be able to act on the terminal or spoof the surrounding report lines.
+        self._write(
+            tmp_path,
+            self._job("j11", "evil\x1b[2Jname", auto_paused=True, enabled=False),
+        )
+
+        issues = self._run(monkeypatch, tmp_path)
+
+        out = capsys.readouterr().out
+        assert "\x1b" not in out, "raw escape from a job name reached the terminal"
+        assert "\\x1b" in out, "the name is still shown, just escaped"
+        assert issues == ["1 cron job(s) auto-paused"]
+
+    def test_check_is_read_only(self, monkeypatch, tmp_path: Path) -> None:
+        # The whole point: doctor diagnoses, it never resumes or triggers.
+        path = self._write(
+            tmp_path,
+            self._job("j9", "paused-job", auto_paused=True, enabled=False, last_status="error"),
+        )
+        before = path.read_bytes()
+
+        self._run(monkeypatch, tmp_path)
+
+        assert path.read_bytes() == before, "doctor must not mutate crons.json"

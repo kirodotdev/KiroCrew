@@ -120,7 +120,7 @@ from kiro_crew.config.loader import (
     config_path,
     update_config_locked,
 )
-from kiro_crew.cron import CronStoreBusy
+from kiro_crew.cron import CronStoreBusy, CronStoreUnreadable
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
 from kiro_crew.sandbox import cgroup_scope_argv, create_subprocess_limited, wrap_argv
@@ -1188,6 +1188,39 @@ async def handle_uninstall_app(request: web.Request) -> web.Response:
                                 "still installed; retry the uninstall."
                             ),
                             "retryable": True,
+                            "app": name,
+                            "log": uninstall_log,
+                        },
+                        status=409,
+                    )
+                except CronStoreUnreadable as exc:
+                    # Same abort as CronStoreBusy above, for the same reason: the
+                    # owned-job set came back empty because the store could not be
+                    # READ, not because the app owns nothing, so continuing would
+                    # delete the app and leave its still-ENABLED jobs to resume.
+                    # Reported NON-retryable, matching the contract in
+                    # dashboard/handlers/cron.py: an unreadable file does not heal
+                    # on its own, so a client that retries on busy must not retry
+                    # here. The exception already names the one action that fixes
+                    # it, so its message is surfaced verbatim.
+                    logger.warning(
+                        "Uninstall of %s ABORTED: the cron store could not be read, "
+                        "so cleanup could not prove the app owns no enabled jobs: %s",
+                        name,
+                        exc,
+                    )
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_uninstall",
+                        outcome="denied",
+                        resources=f"app={name}",
+                        error=f"cron store unreadable, uninstall aborted: {exc}",
+                    )
+                    return web.json_response(
+                        {
+                            "error": str(exc),
+                            "code": "cron_store_unreadable",
+                            "retryable": False,
                             "app": name,
                             "log": uninstall_log,
                         },
