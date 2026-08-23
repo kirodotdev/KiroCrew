@@ -14,6 +14,7 @@
 const http = require("http");
 const { app, ipcMain } = require("electron");
 const Store = require("electron-store");
+const { seedRenamedStore } = require("../store-rename");
 const { parseMochiEnabled, enabledOrTrust, hostDisabledMeansTeardown } = require("./instanceGate");
 const {
   SELF_INSTANCE,
@@ -35,7 +36,25 @@ const {
  * and removing the app stays "delete this folder and the two calls in main.js",
  * exactly as this module's header promises.
  */
-const machineStore = new Store({ name: "mochi-machine", defaults: MACHINE_STORE_DEFAULTS });
+const MACHINE_STORE_NAME = "mochi-machine";
+
+// Carry Mochi's per-machine state across the npm `name` rename, exactly as main.js
+// does for the shell's config.json — the rename repoints userData, so this file is
+// orphaned by the same mechanism. Order is load-bearing: the seed only ever runs
+// while the destination does not exist, and `new Store(...)` below creates it.
+//
+// The allowlist is the namespace segments of MACHINE_STORE_DEFAULTS' dotted keys,
+// not the dotted spellings themselves: electron-store resolves dots via
+// dot-notation, so every user-written value in the raw file lives nested under the
+// top-level "mochi" object. Deriving the segments here keeps machineStore.js the
+// single owner of which keys exist.
+seedRenamedStore(app.getPath("userData"), {
+  storeFileName: `${MACHINE_STORE_NAME}.json`,
+  keys: [...new Set(Object.keys(MACHINE_STORE_DEFAULTS).map((k) => k.split(".")[0]))],
+  log: (m) => console.log(`mochi store migration: ${m}`),
+});
+
+const machineStore = new Store({ name: MACHINE_STORE_NAME, defaults: MACHINE_STORE_DEFAULTS });
 
 // Injected by initMochi(); placeholders keep every function definable at load.
 let BACKEND_URL = "";

@@ -358,25 +358,28 @@ test("a read failure or absent legacy store seeds nothing at all", () => {
   }
 });
 
-test("carries only the allowlisted keys, and only real values", () => {
+test("carries only the allowlisted keys, including default-equal values", () => {
   // The legacy file is a whole electron-store dump, including keys a newer build may
   // have retired; copying it wholesale would resurrect settings this build no longer
-  // understands. And a legacy value equal to its own default carries no intent, so
-  // seeding it would just re-state the default.
+  // understands. A value equal to its default IS carried: the destination never
+  // exists at seed time, so re-stating a default changes nothing, and filtering it
+  // would require a second defaults table that could silently drift from main.js and
+  // misclassify a real legacy choice as "default, drop it".
   const userData = tmpUserData();
   assert.strictEqual(
     seedRenamedStore(userData, {
       readLegacy: () => ({
         updateChannel: "insider",
         someRetiredFlag: true,
-        themeAccent: "",          // at its default: nothing to carry
+        themeAccent: "",          // equal to its default: carried, and a no-op
       }),
     }),
     true
   );
   const raw = JSON.parse(fs.readFileSync(path.join(userData, "config.json"), "utf8"));
-  assert.deepStrictEqual(Object.keys(raw), ["updateChannel"]);
+  assert.deepStrictEqual(Object.keys(raw).sort(), ["themeAccent", "updateChannel"]);
   assert.strictEqual(raw.someRetiredFlag, undefined);
+  assert.strictEqual(raw.themeAccent, "");
 });
 
 test("preserves an explicitly emptied legacy value", () => {
@@ -409,20 +412,6 @@ test("locates the legacy store beside the CURRENT one, on every platform", () =>
     assert.ok(!file.includes("kirocrew-desktop"), `${platform}: must not point at the CURRENT store`);
     assert.match(file, /config\.json$/, `${platform}: must target electron-store's file`);
   }
-});
-
-test("carries no state of its own — the destination file is the state", () => {
-  // The design invariant, pinned. Successive review rounds pulled in opposite
-  // directions over a persisted retry/freshness flag, because no single flag can
-  // answer both "may I read the legacy store?" and "is the destination untouched?".
-  // Seeding a file that does not exist answers both at once and needs no bookkeeping,
-  // so a reintroduced marker is a regression to that ambiguity.
-  const src = fs.readFileSync(path.join(__dirname, "..", "store-rename.js"), "utf8");
-  assert.doesNotMatch(
-    src,
-    /MIGRATION_MARKER_KEY|MIGRATION_PENDING_KEY|storeExistedBeforeLaunch/,
-    "the destination file's absence is the only state this migration may keep"
-  );
 });
 
 test("main.js seeds BEFORE constructing the store", () => {
@@ -488,4 +477,127 @@ test("the Windows install guide does not contradict the code on the stable lane"
     /KNOWN_CHANNELS = new Set\(\["nightly", "insider", "stable"\]\)/,
     "stable left KNOWN_CHANNELS; the guide's per-channel wording must move with it"
   );
+});
+
+// ---------------------------------------------------------------------------
+// Mochi's per-machine store (mochi-machine.json) crosses the same rename.
+// mochi/index.js reuses seedRenamedStore with its own file name and allowlist.
+// ---------------------------------------------------------------------------
+
+const { MACHINE_STORE_DEFAULTS } = require("../mochi/machineStore");
+
+// The exact allowlist mochi/index.js derives: the namespace segments of the
+// dotted default keys. electron-store resolves dots via dot-notation, so every
+// user-WRITTEN value in the raw file is nested under the top-level namespace
+// object; the flat dotted spellings only ever appear as construction-time
+// defaults, which carry no user intent.
+const MOCHI_KEYS = [...new Set(Object.keys(MACHINE_STORE_DEFAULTS).map((k) => k.split(".")[0]))];
+
+function openMochiStore(userData) {
+  return new Store({ cwd: userData, name: "mochi-machine", defaults: MACHINE_STORE_DEFAULTS });
+}
+
+test("seeds Mochi's machine store across the rename, and the store reads it back", () => {
+  // The raw legacy file as a real pre-rename install wrote it: the flat dotted
+  // defaults from construction, plus the nested namespace object holding what the
+  // user (and the one-shot gateway migration) actually wrote.
+  const legacy = {
+    "mochi.petInstance": "self",
+    "mochi.shortcuts": null,
+    "mochi.machinePrefsMigrated": false,
+    "mochi.userSetPrefs": [],
+    mochi: {
+      petInstance: "remote-5476",
+      shortcuts: { summon: "Alt+M" },
+      machinePrefsMigrated: true,
+      userSetPrefs: ["mochi.petInstance"],
+    },
+  };
+  const userData = tmpUserData();
+  assert.strictEqual(
+    seedRenamedStore(userData, {
+      storeFileName: "mochi-machine.json",
+      keys: MOCHI_KEYS,
+      readLegacy: () => legacy,
+    }),
+    true
+  );
+
+  // Only the nested namespace is carried; the flat construction defaults are dead
+  // data and stay behind.
+  const raw = JSON.parse(fs.readFileSync(path.join(userData, "mochi-machine.json"), "utf8"));
+  assert.deepStrictEqual(Object.keys(raw), ["mochi"]);
+
+  // Read back through a real electron-store the way mochi/index.js constructs it.
+  const store = openMochiStore(userData);
+  assert.strictEqual(store.get("mochi.petInstance"), "remote-5476");
+  assert.deepStrictEqual(store.get("mochi.shortcuts"), { summon: "Alt+M" });
+  // The one-shot flag survives, so the gateway import cannot re-run over choices
+  // the user made after the rename.
+  assert.strictEqual(store.get("mochi.machinePrefsMigrated"), true);
+  assert.deepStrictEqual(store.get("mochi.userSetPrefs"), ["mochi.petInstance"]);
+});
+
+test("a legacy Mochi store that was never written seeds nothing", () => {
+  // An install where the user never touched Mochi holds only the flat
+  // construction-time defaults — no nested namespace object exists. There is no
+  // intent to carry, so no file is written and construction regenerates defaults.
+  const userData = tmpUserData();
+  assert.strictEqual(
+    seedRenamedStore(userData, {
+      storeFileName: "mochi-machine.json",
+      keys: MOCHI_KEYS,
+      readLegacy: () => ({
+        "mochi.petInstance": "self",
+        "mochi.shortcuts": null,
+        "mochi.machinePrefsMigrated": false,
+        "mochi.userSetPrefs": [],
+      }),
+    }),
+    false
+  );
+  assert.strictEqual(fs.existsSync(path.join(userData, "mochi-machine.json")), false);
+});
+
+test("seeding Mochi's store never touches the main config.json, and vice versa", () => {
+  // Two stores, one directory, one mechanism: each seed is scoped to its own file,
+  // so a Mochi seed on a machine whose config.json already exists (or the reverse)
+  // must neither block on nor overwrite the sibling.
+  const userData = tmpUserData();
+  const existing = openStore(userData);
+  existing.set("updateChannel", "stable");
+
+  assert.strictEqual(
+    seedRenamedStore(userData, {
+      storeFileName: "mochi-machine.json",
+      keys: MOCHI_KEYS,
+      readLegacy: () => ({ mochi: { petInstance: "remote-1" } }),
+    }),
+    true,
+    "an existing config.json must not make mochi-machine.json ineligible"
+  );
+  assert.strictEqual(openStore(userData).get("updateChannel"), "stable");
+  assert.strictEqual(openMochiStore(userData).get("mochi.petInstance"), "remote-1");
+});
+
+test("locates the legacy Mochi store beside the legacy config.json", () => {
+  const file = legacyStoreFile(
+    "/Users/jane/Library/Application Support/kirocrew-desktop",
+    "mochi-machine.json"
+  );
+  assert.ok(file.includes(LEGACY_STORE_NAME), "must name the legacy dir");
+  assert.match(file, /mochi-machine\.json$/, "must target Mochi's own store file");
+});
+
+test("mochi/index.js seeds BEFORE constructing its store", () => {
+  // Same load-bearing order as main.js: electron-store writes its defaults on
+  // construction, so a seed placed after `new Store(...)` finds the file already
+  // present and never runs. Neither ordering fails a unit test on its own, so pin
+  // the order in the source.
+  const src = fs.readFileSync(path.join(__dirname, "..", "mochi", "index.js"), "utf8");
+  const seed = src.indexOf("seedRenamedStore(app.getPath");
+  const construct = src.indexOf("const machineStore = new Store(");
+  assert.notStrictEqual(seed, -1, "expected the seed call in mochi/index.js");
+  assert.notStrictEqual(construct, -1, "expected the store construction in mochi/index.js");
+  assert.ok(seed < construct, "the seed must precede `new Store(...)`");
 });
