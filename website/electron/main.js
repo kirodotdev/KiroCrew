@@ -1472,8 +1472,28 @@ function setupWindowContents(win, backendUrl) {
     if (win.isDestroyed() || view.webContents.isDestroyed()) return;
     view.webContents.send("fullscreen-changed", win.isFullScreen());
   };
-  win.on("enter-full-screen", () => { updateViewBounds(); sendFullScreen(); });
-  win.on("leave-full-screen", () => { updateViewBounds(); sendFullScreen(); });
+  // Fullscreen transitions fire before the window finishes reflowing, so the
+  // synchronous updateViewBounds() in the handlers below can read a pre-reflow
+  // content rect — the same stale-getContentBounds hazard the did-finish-load
+  // settle pass below documents. Observed on Linux, where the in-window menu
+  // bar's ~28px is reclaimed only after `leave-full-screen`, leaving the view
+  // taller than the window and clipping bottom-anchored rows until some other
+  // resize. Keep the synchronous call (already correct where reflow is
+  // immediate) and follow it with bounded deferred recomputes so the settled
+  // bounds win: a quick pass for the common fast reflow and a late backstop
+  // matching the startup settle delay for slow window managers. Re-reading
+  // bounds on an already-correct window is a no-op, so this runs on every
+  // platform rather than behind a process.platform gate. updateViewBounds()
+  // itself no-ops on a destroyed window; the timers are also cleared on
+  // "closed" so nothing fires into a torn-down window.
+  let fullscreenSettleTimers = [];
+  const scheduleFullscreenSettle = () => {
+    for (const t of fullscreenSettleTimers) clearTimeout(t);
+    fullscreenSettleTimers = [250, 1500].map((ms) => setTimeout(updateViewBounds, ms));
+  };
+  win.on("closed", () => { for (const t of fullscreenSettleTimers) clearTimeout(t); });
+  win.on("enter-full-screen", () => { updateViewBounds(); sendFullScreen(); scheduleFullscreenSettle(); });
+  win.on("leave-full-screen", () => { updateViewBounds(); sendFullScreen(); scheduleFullscreenSettle(); });
   // DOM fullscreen (an inline <video>'s fullscreen button, the media viewer) is
   // a SEPARATE pair of events from the two above, raised on the WebContents
   // rather than the window. Without this bridge the element goes :fullscreen
