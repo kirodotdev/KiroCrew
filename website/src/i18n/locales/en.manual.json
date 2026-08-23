@@ -3618,11 +3618,14 @@
       "stub_failed": "Could not apply the change. It may already be saved without being live — the switches below now show the stored state.",
       "stub_not_live": "Saved, but the change is not live yet — the gateway could not start. The switch shows what is stored, not what is running.",
       "stub_restart_required": "Saved. Restart the gateway for this to take effect. Sessions already running keep the servers they started with.",
-      "stubbed_of_total": "{{stubbed}} of {{total}} stubbed",
+      "stubbed_of_total": "{{stubbed}} of {{total}} opted in to stubbing",
       "unsupported_platform": "Backend sharing needs Unix-domain sockets, so it is unavailable on this platform.",
       "view_assessment": "Sharing assessment",
       "view_servers": "Servers",
-      "views_aria": "MCP management views"
+      "views_aria": "MCP management views",
+      "state_direct_env": "direct (env)",
+      "state_direct_env_reason": "Not stubbed, but your opt-in stays saved.",
+      "state_direct_env_legend": "direct (env) — the server declares an environment key a shared backend would withhold, so {{productName}} does not stub it at all: the session launches it directly, with no shared backend and no server-authored UI."
     },
     "migrationPage": {
       "clean_up_old_entry": "Clean up old entry",

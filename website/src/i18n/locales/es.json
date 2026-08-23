@@ -9512,11 +9512,14 @@
       "stub_failed": "No se pudo aplicar el cambio. Puede que ya esté guardado sin estar activo: los interruptores de abajo muestran ahora el estado guardado.",
       "stub_not_live": "Guardado, pero aún no está activo: la puerta de enlace no pudo arrancar. El interruptor muestra lo guardado, no lo que está en marcha.",
       "stub_restart_required": "Guardado. Reinicia la puerta de enlace para que surta efecto. Las sesiones en curso conservan los servidores con los que se iniciaron.",
-      "stubbed_of_total": "{{stubbed}} de {{total}} con stub",
+      "stubbed_of_total": "{{stubbed}} de {{total}} seleccionados para stub",
       "unsupported_platform": "Compartir backends necesita sockets de dominio Unix, por lo que no está disponible en esta plataforma.",
       "view_assessment": "Evaluación de uso compartido",
       "view_servers": "Servidores",
-      "views_aria": "Vistas de gestión de MCP"
+      "views_aria": "Vistas de gestión de MCP",
+      "state_direct_env": "directo (env)",
+      "state_direct_env_reason": "Sin stub, pero tu selección sigue guardada.",
+      "state_direct_env_legend": "directo (env): el servidor declara una clave de entorno que un backend compartido retendría, así que {{productName}} no crea ningún stub: la sesión lo inicia por su cuenta, sin backend compartido y sin interfaz propia del servidor."
     },
     "migrationPage": {
       "app_migration": "Migración de la app",

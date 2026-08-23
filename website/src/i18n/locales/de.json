@@ -9395,11 +9395,14 @@
       "stub_failed": "Die Änderung konnte nicht angewendet werden. Sie ist möglicherweise gespeichert, aber nicht aktiv — die Schalter unten zeigen jetzt den gespeicherten Stand.",
       "stub_not_live": "Gespeichert, aber noch nicht aktiv — das Gateway konnte nicht starten. Der Schalter zeigt den gespeicherten Stand, nicht den laufenden.",
       "stub_restart_required": "Gespeichert. Starte das Gateway neu, damit die Änderung wirksam wird. Bereits laufende Sitzungen behalten die Server, mit denen sie gestartet sind.",
-      "stubbed_of_total": "{{stubbed}} von {{total}} mit Stub",
+      "stubbed_of_total": "{{stubbed}} von {{total}} für Stub ausgewählt",
       "unsupported_platform": "Das Teilen von Backends benötigt Unix-Domain-Sockets und ist auf dieser Plattform nicht verfügbar.",
       "view_assessment": "Freigabebewertung",
       "view_servers": "Server",
-      "views_aria": "MCP-Verwaltungsansichten"
+      "views_aria": "MCP-Verwaltungsansichten",
+      "state_direct_env": "direkt (env)",
+      "state_direct_env_reason": "Kein Stub, aber Ihre Auswahl bleibt gespeichert.",
+      "state_direct_env_legend": "direkt (env) — der Server deklariert einen Umgebungsschlüssel, den ein geteiltes Backend zurückhalten würde, daher erstellt {{productName}} gar keinen Stub: die Sitzung startet ihn selbst, ohne geteiltes Backend und ohne servereigene Oberfläche."
     },
     "migrationPage": {
       "app_migration": "App-Migration",

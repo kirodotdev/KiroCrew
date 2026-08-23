@@ -9278,11 +9278,14 @@
       "stub_failed": "改动没能生效。它可能已经保存但尚未生效 —— 下面的开关现在显示已存状态。",
       "stub_not_live": "已保存，但尚未生效 —— 网关没能启动。开关显示的是存下来的设置，并非当前运行状态。",
       "stub_restart_required": "已保存。需要重启网关才会生效。已经在运行的会话仍使用它们启动时的服务器。",
-      "stubbed_of_total": "{{total}} 台中有 {{stubbed}} 台已插桩",
+      "stubbed_of_total": "{{total}} 台中已选择 {{stubbed}} 台插桩",
       "unsupported_platform": "共享后端需要 Unix 域套接字，因此在当前平台不可用。",
       "view_assessment": "共享评估",
       "view_servers": "服务器",
-      "views_aria": "MCP 管理视图"
+      "views_aria": "MCP 管理视图",
+      "state_direct_env": "直连（环境变量）",
+      "state_direct_env_reason": "未插桩，但你的选择仍然保存。",
+      "state_direct_env_legend": "直连（环境变量） —— 该服务器声明了共享后端不会传递的环境变量密钥，因此 {{productName}} 完全不为它插桩：由会话自行启动，既无共享后端，也无服务器自绘界面。"
     },
     "migrationPage": {
       "app_migration": "应用迁移",

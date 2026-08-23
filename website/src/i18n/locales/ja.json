@@ -9278,11 +9278,14 @@
       "stub_failed": "変更を適用できませんでした。保存済みでまだ有効になっていない可能性があります。下のスイッチは保存された状態を示しています。",
       "stub_not_live": "保存しましたが、まだ有効ではありません。ゲートウェイを起動できませんでした。スイッチは保存内容を示しており、稼働状態ではありません。",
       "stub_restart_required": "保存しました。反映するにはゲートウェイを再起動してください。実行中のセッションは開始時のサーバーを使い続けます。",
-      "stubbed_of_total": "{{total}} 台中 {{stubbed}} 台にスタブ",
+      "stubbed_of_total": "{{total}} 台中 {{stubbed}} 台をスタブ対象に選択",
       "unsupported_platform": "バックエンド共有には Unix ドメインソケットが必要なため、このプラットフォームでは利用できません。",
       "view_assessment": "共有の評価",
       "view_servers": "サーバー",
-      "views_aria": "MCP 管理ビュー"
+      "views_aria": "MCP 管理ビュー",
+      "state_direct_env": "直接 (env)",
+      "state_direct_env_reason": "スタブなし。選択は保存されたままです。",
+      "state_direct_env_legend": "直接 (env) — 共有バックエンドが渡さない環境変数キーをサーバーが宣言しているため、{{productName}} はスタブを作成しません。セッションが自分で起動し、共有バックエンドもサーバー独自の UI もありません。"
     },
     "migrationPage": {
       "app_migration": "アプリ移行",

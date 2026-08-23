@@ -9278,11 +9278,14 @@
       "stub_failed": "변경을 적용할 수 없었습니다. 이미 저장되었지만 아직 적용되지 않았을 수 있습니다. 아래 스위치는 저장된 상태를 보여 줍니다.",
       "stub_not_live": "저장했지만 아직 적용되지 않았습니다. 게이트웨이를 시작할 수 없었습니다. 스위치는 저장된 설정을 보여 주며 실행 상태가 아닙니다.",
       "stub_restart_required": "저장했습니다. 적용하려면 게이트웨이를 다시 시작하세요. 이미 실행 중인 세션은 시작할 때의 서버를 계속 사용합니다.",
-      "stubbed_of_total": "{{total}}개 중 {{stubbed}}개 스텁",
+      "stubbed_of_total": "{{total}}개 중 {{stubbed}}개 스텁 대상으로 선택",
       "unsupported_platform": "백엔드 공유에는 Unix 도메인 소켓이 필요하므로 이 플랫폼에서는 사용할 수 없습니다.",
       "view_assessment": "공유 평가",
       "view_servers": "서버",
-      "views_aria": "MCP 관리 보기"
+      "views_aria": "MCP 관리 보기",
+      "state_direct_env": "직접 (env)",
+      "state_direct_env_reason": "스텁 없지만 선택은 저장된 상태로 유지됩니다.",
+      "state_direct_env_legend": "직접 (env) — 서버가 공유 백엔드가 전달하지 않는 환경 키를 선언하므로 {{productName}}은(는) 스텁을 만들지 않습니다. 세션이 직접 실행하며 공유 백엔드도, 서버 자체 UI도 없습니다."
     },
     "migrationPage": {
       "app_migration": "앱 마이그레이션",

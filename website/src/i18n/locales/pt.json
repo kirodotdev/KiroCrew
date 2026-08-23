@@ -9512,11 +9512,14 @@
       "stub_failed": "Não foi possível aplicar a alteração. Ela pode já estar salva sem estar ativa — os botões abaixo mostram agora o estado salvo.",
       "stub_not_live": "Salvo, mas ainda não está ativo — o gateway não conseguiu iniciar. O botão mostra o que está salvo, não o que está em execução.",
       "stub_restart_required": "Salvo. Reinicie o gateway para que a alteração tenha efeito. As sessões já em execução mantêm os servidores com que foram iniciadas.",
-      "stubbed_of_total": "{{stubbed}} de {{total}} com stub",
+      "stubbed_of_total": "{{stubbed}} de {{total}} selecionados para stub",
       "unsupported_platform": "Compartilhar backends exige sockets de domínio Unix, então não está disponível nesta plataforma.",
       "view_assessment": "Avaliação de compartilhamento",
       "view_servers": "Servidores",
-      "views_aria": "Visualizações de gerenciamento do MCP"
+      "views_aria": "Visualizações de gerenciamento do MCP",
+      "state_direct_env": "direto (env)",
+      "state_direct_env_reason": "Sem stub, mas sua seleção continua salva.",
+      "state_direct_env_legend": "direto (env) — o servidor declara uma chave de ambiente que um backend compartilhado retiraria, portanto o {{productName}} não cria stub algum: a sessão o inicia por conta própria, sem backend compartilhado e sem interface própria do servidor."
     },
     "migrationPage": {
       "app_migration": "Migração de app",
