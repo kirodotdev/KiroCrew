@@ -1655,7 +1655,7 @@ def _read_memory_mode(path: "Path") -> str | None:
     first, _sep, _rest = head.partition(b"\n")
     try:
         d = json.loads(first.decode("utf-8", "replace"))
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
     if not isinstance(d, dict) or d.get("_type") != "metadata":
         return None

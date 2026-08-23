@@ -98,7 +98,7 @@ def _read_cache() -> dict[str, Any] | None:
             return None
         age = time.time() - path.stat().st_mtime
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return None
     if not isinstance(data, dict):
         return None

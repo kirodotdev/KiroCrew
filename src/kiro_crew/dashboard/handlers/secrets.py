@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 
 from aiohttp import web
@@ -33,7 +32,7 @@ async def api_secrets_set(request: web.Request) -> web.Response:
     """
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return web.json_response({"error": "Invalid JSON body", "code": "invalid_json"}, status=400)
 
     # A JSON body can legally be an array, string or number, and `name`/`value`

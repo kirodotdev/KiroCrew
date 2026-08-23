@@ -450,7 +450,7 @@ async def _handle_shortcut_submission(payload: dict) -> None:
 
     try:
         meta = json.loads(view.get("private_metadata", "{}"))
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         meta = {}
 
     orig_channel = meta.get("channel", "")
@@ -2653,7 +2653,7 @@ async def _handle_session_resume(
 
     try:
         val = json.loads(action.get("value", "{}"))
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         val = {"key": action.get("value", "")}
 
     session_key = val.get("key", "")
@@ -2779,7 +2779,7 @@ async def _handle_resume_choice(
 
     try:
         val = json.loads(action.get("value", "{}"))
-    except (ValueError, json.JSONDecodeError):
+    except ValueError:
         return
 
     session_key = val.get("key", "")
@@ -2902,7 +2902,7 @@ async def _handle_resume_choice(
                 for ln in lines:
                     try:
                         d = json.loads(ln.strip())
-                    except (ValueError, json.JSONDecodeError):
+                    except ValueError:
                         continue
                     if d.get("_type"):
                         continue

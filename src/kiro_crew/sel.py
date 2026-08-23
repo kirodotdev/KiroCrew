@@ -1484,7 +1484,7 @@ class SecurityEventLog:
                             continue
                         try:
                             data = json.loads(line)
-                        except (json.JSONDecodeError, ValueError):
+                        except ValueError:
                             # Truncated/corrupt line — skip backward to the last
                             # complete record rather than resetting the chain to
                             # genesis. Flag it so the corruption is not hidden.
@@ -1963,7 +1963,7 @@ class SecurityEventLog:
                 for line in self._iter_lines_backward(path, pin=pin):
                     try:
                         data = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(data, dict):
                         continue
@@ -2035,7 +2035,7 @@ class SecurityEventLog:
         for line in self._iter_lines_backward(path, pin=pin):
             try:
                 data = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 continue
             if isinstance(data, dict) and self._record_signature_matches(data):
                 return True
@@ -2260,7 +2260,7 @@ class SecurityEventLog:
         for line in self._iter_lines_backward(path):
             try:
                 data = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 continue
             if not isinstance(data, dict):
                 continue

@@ -176,7 +176,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
     # so one bad row is skipped instead of aborting the dedup sweep.
     try:
         parsed = json.loads(data)
-    except (json.JSONDecodeError, TypeError, ValueError, UnicodeDecodeError):
+    except (TypeError, ValueError, UnicodeDecodeError):
         parsed = None
     else:
         if isinstance(parsed, list):

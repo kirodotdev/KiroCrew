@@ -196,7 +196,7 @@ def slot_spend(days: int = SPEND_WINDOW_DAYS) -> dict[str, dict[str, float]]:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -402,7 +402,7 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -536,7 +536,7 @@ def context_trace(slot: str, days: int = 14) -> dict[str, Any]:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -652,7 +652,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -1371,7 +1371,7 @@ def _parse_token_history() -> dict[str, Any]:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict) or obj.get("_type") != "tokens":
                         continue
@@ -1572,7 +1572,7 @@ def _parse_sessions() -> dict:
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     if not isinstance(obj, dict):
                         continue

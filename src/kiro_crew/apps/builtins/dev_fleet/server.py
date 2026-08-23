@@ -1525,7 +1525,7 @@ async def _fetch_pr_head_oid(branch: str, repo: str | None = None) -> str | None
         if data.get("state") != "MERGED":
             return None
         return data.get("headRefOid")
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None
 
 
@@ -1687,7 +1687,7 @@ def _load_dev_fleet_cfg() -> dict:
             if not p.is_file():
                 continue
             raw = json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError, ValueError):
+        except (OSError, ValueError):
             continue
         if isinstance(raw, dict) and isinstance(raw.get("dev_fleet"), dict):
             section.update(raw["dev_fleet"])
@@ -2745,7 +2745,7 @@ async def _pod_up(name: str) -> dict:
             }
     try:
         return {"ok": True, **json.loads(stdout)}
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return {"ok": True, "output": stdout}
 
 

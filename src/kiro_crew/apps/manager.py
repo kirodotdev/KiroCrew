@@ -273,7 +273,7 @@ def _validate_source_path(source: Path) -> list[str]:
         return errors
     try:
         manifest = AppManifest.from_json_file(manifest_path)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         errors.append(f"invalid {APP_MANIFEST_FILENAME}: {exc}")
         return errors
     errors.extend(manifest.validate(app_root=source))

@@ -215,7 +215,7 @@ def _run_json_detail(args: list[str]) -> tuple[Any | None, bool]:
         return None, False
     try:
         return json.loads(proc.stdout or ""), False
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         logger.debug("tailscale %s produced non-JSON output: %s", " ".join(args), exc)
         return None, False
 

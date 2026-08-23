@@ -105,7 +105,7 @@ async def _json_object(
     """
     try:
         body = await request.json(loads=_strict_loads)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None, _bad_request("invalid JSON", "invalid_json")
     if not isinstance(body, dict):
         return None, _bad_request("body must be a JSON object", "body_not_object")

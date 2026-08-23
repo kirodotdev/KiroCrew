@@ -485,7 +485,7 @@ async def _json_body(request: web.Request) -> tuple[dict | None, web.Response | 
     """Parse a JSON object body, or return the 400 to send back."""
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError):
         return None, web.json_response(
             {"error": "request body must be JSON", "code": "body_not_json"}, status=400
         )

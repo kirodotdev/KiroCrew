@@ -432,7 +432,7 @@ def _iter_export_cycles(
                 for line in fh:
                     try:
                         obj = json.loads(line)
-                    except (json.JSONDecodeError, ValueError):
+                    except ValueError:
                         continue
                     yield obj, shard_day
         except (OSError, UnicodeDecodeError):

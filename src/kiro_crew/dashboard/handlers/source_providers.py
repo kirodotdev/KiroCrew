@@ -2498,7 +2498,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         raise SourceProviderError(
             f"Could not reach Jira at {ref.host}: {type(exc).__name__}"
         ) from exc
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise SourceProviderError(
             f"Jira returned an unparseable response for {issue_key}."
         ) from exc

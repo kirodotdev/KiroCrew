@@ -982,7 +982,7 @@ def _identity_claims(key: str, value: object) -> list[str]:
 
     try:
         blob = json.loads(value if isinstance(value, (str, bytes)) else str(value))
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (ValueError, TypeError):
         return []
     if not isinstance(blob, dict):
         return []

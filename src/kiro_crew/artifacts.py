@@ -2228,7 +2228,6 @@ class ArtifactStore:
             except (
                 ArtifactError,
                 OSError,
-                json.JSONDecodeError,
                 ValueError,
                 TypeError,
             ) as exc:
@@ -2299,7 +2298,6 @@ class ArtifactStore:
             except (
                 ArtifactError,
                 OSError,
-                json.JSONDecodeError,
                 ValueError,
                 TypeError,
             ) as exc:
@@ -2384,7 +2382,6 @@ class ArtifactStore:
             except (
                 ArtifactError,
                 OSError,
-                json.JSONDecodeError,
                 ValueError,
                 TypeError,
             ):
@@ -2440,7 +2437,6 @@ class ArtifactStore:
             except (
                 ArtifactError,
                 OSError,
-                json.JSONDecodeError,
                 ValueError,
                 TypeError,
             ):
@@ -2485,7 +2481,6 @@ class ArtifactStore:
             except (
                 ArtifactError,
                 OSError,
-                json.JSONDecodeError,
                 ValueError,
                 TypeError,
             ):

@@ -146,7 +146,7 @@ def _registration_source(app_name: str) -> tuple[AppManifest | None, Path]:
                 AppManifest.from_json_file(shipped_root / "app.json"),
                 shipped_root,
             )
-        except (OSError, ValueError, json.JSONDecodeError) as exc:
+        except (OSError, ValueError) as exc:
             logger.warning(
                 "App %s: shipped resource manifest is unreadable: %s",
                 app_name,

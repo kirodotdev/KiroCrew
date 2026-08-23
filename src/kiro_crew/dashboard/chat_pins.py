@@ -117,7 +117,7 @@ async def api_chat_pins_create(request: web.Request) -> web.Response:
         if body_error.status == 400 and body_error.text:
             try:
                 error_body = json.loads(body_error.text)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 error_body = {}
             if error_body.get("code") == "body_not_object":
                 return web.json_response(

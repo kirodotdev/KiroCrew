@@ -210,7 +210,7 @@ def read_entries() -> list[LedgerEntry]:
                     continue
                 try:
                     entry = LedgerEntry.from_dict(json.loads(line))
-                except (json.JSONDecodeError, TypeError, ValueError):
+                except (TypeError, ValueError):
                     logger.warning(
                         "ops-mission-control: skipping malformed ledger line %d", line_no
                     )

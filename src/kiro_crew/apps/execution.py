@@ -284,7 +284,7 @@ def builtin_app_agents() -> dict[str, str]:
                     if not agent_path.is_file() or not agent_path.is_relative_to(root):
                         continue
                     agent_doc = json.loads(agent_path.read_text(encoding="utf-8"))
-                except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+                except (OSError, UnicodeError, ValueError):
                     continue
                 if not isinstance(agent_doc, dict):
                     continue

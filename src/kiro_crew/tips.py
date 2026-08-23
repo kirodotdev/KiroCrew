@@ -1041,7 +1041,7 @@ async def api_tips_feedback(request: web.Request) -> web.Response:
 
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return web.json_response({"error": "invalid JSON"}, status=400)
 
     if not isinstance(body, dict):

@@ -403,7 +403,7 @@ def main(argv: list[str]) -> int:
         try:
             raw = json.load(sys.stdin)
             records = _coerce_records(raw)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             print(f"::error::update_contributors: {exc}", file=sys.stderr)
             return 1
 

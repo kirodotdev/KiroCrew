@@ -2849,7 +2849,7 @@ def _flush_segment(
         try:
             parsed = json.loads(cls_val)
             return isinstance(parsed, dict) and parsed.get("kind") == "stop_event"
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             return False
 
     # Walk backwards to find the start of the trailing chunk/stop_event run.

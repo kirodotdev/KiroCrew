@@ -143,7 +143,7 @@ def _get_config(request: web.Request) -> dict:
     try:
         data = json.loads(config_path().read_text(encoding="utf-8"))
         return data.get("dashboard", {}).get("terminal", {})
-    except (OSError, json.JSONDecodeError, ValueError):
+    except (OSError, ValueError):
         return {}
 
 
@@ -916,7 +916,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             elif msg.type == web.WSMsgType.TEXT:
                 try:
                     ctrl = json.loads(msg.data)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 if ctrl.get("type") == "resize":
                     try:

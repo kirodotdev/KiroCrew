@@ -172,7 +172,7 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
 
     try:
         manifest = _get(PETDEX_MANIFEST_URL, as_json=True)
-    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         logger.warning("crew-companion: PetDex manifest fetch failed: %s", exc)
         return {"ok": False, "error": "Could not reach PetDex"}
 
@@ -210,7 +210,7 @@ def fetch_petdex_pet(raw_input: Any) -> dict[str, Any]:
             if isinstance(detail, dict):
                 display_name = str(detail.get("displayName") or display_name)
                 description = str(detail.get("description") or "")
-        except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError):
+        except (urllib.error.URLError, OSError, ValueError):
             logger.debug("crew-companion: PetDex pet.json unavailable")
 
     return {

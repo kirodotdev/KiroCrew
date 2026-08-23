@@ -251,7 +251,7 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
         return []
     try:
         parsed = json.loads(tool_input)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         # Not JSON — treat the raw string as a path/command candidate
         return [tool_input]
     if isinstance(parsed, str):

@@ -57,7 +57,7 @@ def _state_path() -> Path:
 def _read() -> dict:
     try:
         data = json.loads(_state_path().read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, OSError, ValueError):
+    except (FileNotFoundError, OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
 

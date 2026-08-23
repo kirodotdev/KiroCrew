@@ -391,7 +391,7 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     if _omc_body_raw:
         try:
             _omc_parsed = json.loads(_omc_body_raw)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             return "Error: body_json is not valid JSON."
         if not isinstance(_omc_parsed, dict):
             return "Error: body_json must encode a JSON object."

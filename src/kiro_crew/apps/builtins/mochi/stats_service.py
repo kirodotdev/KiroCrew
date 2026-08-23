@@ -179,7 +179,7 @@ def parse_stats_json(raw: str, now_ms: int) -> CompanionStats:
     """Parse persisted stats; any corruption yields defaults, never a throw."""
     try:
         parsed = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return create_default_stats(now_ms)
     if not isinstance(parsed, dict):
         return create_default_stats(now_ms)

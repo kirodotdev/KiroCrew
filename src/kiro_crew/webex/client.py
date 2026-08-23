@@ -488,7 +488,7 @@ class WebexClient:
                             return {}
                         try:
                             return await resp.json(content_type=None)
-                        except (json.JSONDecodeError, ValueError):
+                        except ValueError:
                             return {}
                     # Response bodies are externally-derived; log status only.
                     logger.warning("Webex API %s %s failed: http=%s", method, path, resp.status)

@@ -652,7 +652,7 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
         if m:
             out_map["_profile_arn"] = m.group(0)[:200]
         return out_map
-    except (asyncio.TimeoutError, json.JSONDecodeError, ValueError, OSError):
+    except (asyncio.TimeoutError, ValueError, OSError):
         logger.debug("whoami identity fetch failed", exc_info=True)
         return {}
     except Exception:

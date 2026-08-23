@@ -328,7 +328,7 @@ def _token_from_json(read_id: str, now: datetime) -> tuple[str, datetime] | None
         return None
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (ValueError, TypeError):
         return None
     if not isinstance(data, dict):
         return None
@@ -376,7 +376,7 @@ def _token_from_sqlite(db: Path, now: datetime) -> tuple[str, datetime] | None:
                 continue
             try:
                 blob = json.loads(row[0])
-            except (json.JSONDecodeError, ValueError, TypeError):
+            except (ValueError, TypeError):
                 continue
             if not isinstance(blob, dict):
                 continue

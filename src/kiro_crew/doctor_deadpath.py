@@ -292,7 +292,7 @@ def _walk_spec(spec_path: Path) -> tuple[list[DeadPath], str | None]:
         return [], f"not valid UTF-8 ({exc})"
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         return [], f"malformed JSON ({exc})"
     if not isinstance(data, dict):
         return [], "top-level JSON is not an object"

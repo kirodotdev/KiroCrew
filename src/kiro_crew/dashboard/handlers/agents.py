@@ -1245,12 +1245,12 @@ async def api_agent_detail(request: web.Request) -> web.Response:
         denied = await _require_owner(request, f"agent_detail.{request.method.lower()}")
         if denied is not None:
             return denied
-    # Parse body early so JSONDecodeError returns 400, not 404 from the file loop.
+    # Parse body early so a malformed body returns 400, not 404 from the file loop.
     patch_body = None
     if request.method == "PATCH":
         try:
             patch_body = await request.json()
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             return web.json_response({"error": "invalid JSON"}, status=400)
         # Valid JSON is not necessarily an object. A top-level array makes
         # ``"skills" in patch_body`` a LIST-membership test (true for

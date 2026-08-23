@@ -703,7 +703,7 @@ def _read_message(stdin) -> dict[str, Any] | None:
                     continue
                 body = b"".join(chunks)
                 return json.loads(body.decode("utf-8"))
-            except (ValueError, json.JSONDecodeError):
+            except ValueError:
                 continue
         # Bare JSON line (backwards compat)
         try:

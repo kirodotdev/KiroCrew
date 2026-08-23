@@ -1101,7 +1101,7 @@ def _diff_dropped_message_lines(old_lines: list[str], new_lines: list[str]) -> l
             continue
         try:
             kept_serialized.add(json.dumps(json.loads(ln), sort_keys=True))
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue
     dropped: list[str] = []
     for ln in old_lines:
@@ -1109,7 +1109,7 @@ def _diff_dropped_message_lines(old_lines: list[str], new_lines: list[str]) -> l
             continue
         try:
             normalized = json.dumps(json.loads(ln), sort_keys=True)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             dropped.append(ln)  # corrupted line → archive it
             continue
         if normalized not in kept_serialized:
@@ -1570,7 +1570,7 @@ def _frozen_prefix_and_foreign_appends(
             continue
         try:
             entry = json.loads(ln)
-        except (json.JSONDecodeError, ValueError):
+        except ValueError:
             continue  # corrupt window-region line — not a preservable message
         if not isinstance(entry, dict) or entry.get("_type") == "metadata":
             continue

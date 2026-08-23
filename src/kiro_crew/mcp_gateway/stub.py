@@ -268,7 +268,7 @@ def _parse_auto_approve(raw: str) -> list[str]:
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return [str(s) for s in parsed if s]
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         pass
     # Back-compat: legacy CSV form.
     return [s for s in raw.split(",") if s]
@@ -723,7 +723,7 @@ async def run_bridge(
                 msg = json.loads(line)
                 if isinstance(msg, dict) and "method" in msg and "id" in msg:
                     _outstanding_ids.add(msg["id"])
-            except (json.JSONDecodeError, ValueError, TypeError):
+            except (ValueError, TypeError):
                 pass
             try:
                 # Serialize with _recaller_loop's _write_frame writes on the
@@ -827,7 +827,7 @@ async def run_bridge(
                             # A response (has id, no method) — clear from
                             # outstanding set.
                             _outstanding_ids.discard(msg["id"])
-                except (json.JSONDecodeError, ValueError, TypeError):
+                except (ValueError, TypeError):
                     pass
                 # Control frames are gateway<->stub only; never forward to
                 # kiro-cli stdout.

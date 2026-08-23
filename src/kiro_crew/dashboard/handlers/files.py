@@ -81,7 +81,7 @@ async def api_reveal_path(request: web.Request) -> web.Response:
     """POST /api/reveal — reveal a file/folder in Finder or open with default app."""
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return web.json_response({"error": "invalid JSON body"}, status=400)
     path = body.get("path", "")
     action = body.get("action", "reveal")  # "reveal" or "open"
@@ -122,7 +122,7 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
 
         _sel().log_tool_invocation(
             session_key="api",
@@ -429,7 +429,7 @@ async def api_slack_upload_file(request: web.Request) -> web.Response:
         return web.json_response({"ok": True, "skipped": "no_slack"})
     try:
         body = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         _sel().log_tool_invocation(
             session_key="api",
             source="api",
@@ -2680,7 +2680,7 @@ def _known_project_dirs(slot_projects: list[str]) -> list[str]:
     fp = config_dir() / "recent_projects.json"
     try:
         recent = json.loads(fp.read_text(encoding="utf-8")) if fp.is_file() else []
-    except (json.JSONDecodeError, OSError, ValueError):
+    except (OSError, ValueError):
         recent = []
     if isinstance(recent, list):
         dirs.extend(d for d in recent if isinstance(d, str) and d)
