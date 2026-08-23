@@ -10,6 +10,7 @@ import { fmtCompact, fmtNumber } from '../../i18n/format'
 import type { Source, SourceSpend, NamespaceInfo, IngestionJob, SourceFilesResponse } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
  * Indexing progress and the Kiro requests a source still owes.
@@ -268,6 +269,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   supportedFormatsDisplay: string
   uploadAccept?: string; acceptsNoExtension?: boolean
 }) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [showAdd, setShowAdd] = useState(false)
   const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
@@ -534,7 +536,7 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
                 {editingId === s.id ? (
                   <div className="flex items-center gap-1">
                     <input autoFocus value={editDraft} onChange={e => setEditDraft(e.target.value)}
-                      onKeyDown={e => { if (e.key === 'Enter' && !renameMutation.isPending) submitRename(); else if (e.key === 'Escape') setEditingId(null) }}
+                      {...ime.bindEnter({ onEnter: () => { if (!renameMutation.isPending) submitRename() }, onEscape: () => setEditingId(null) })}
                       maxLength={200} aria-label={i18nT('pages.knowledge.sourcesList.source_name')}
                       className="bg-bg-elevated border border-border rounded-md px-2 py-1 text-[13px] text-text outline-none w-full max-w-xs focus-ring" />
                     <button aria-label={i18nT('pages.knowledge.sourcesList.save_name')} onClick={submitRename} disabled={renameMutation.isPending}

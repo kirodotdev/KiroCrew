@@ -1467,11 +1467,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
               value={nameDraft}
               aria-label={i18nT('pages.artifactDetailPage.artifact_name')}
               onChange={(e) => setNameDraft(e.target.value)}
-              onBlur={commitRename}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') { e.preventDefault(); void commitRename() }
-                else if (e.key === 'Escape') { e.preventDefault(); setRenaming(false) }
-              }}
+              {...ime.bindEnter({
+                onEnter: () => void commitRename(),
+                onEscape: () => setRenaming(false),
+                onBlur: () => void commitRename(),
+              })}
               className="px-2 py-0.5 text-2xl font-bold tracking-tight text-text-strong w-full max-w-[36rem]"
             />
           ) : (
@@ -1573,9 +1573,9 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
                 if (e.key === ',' || e.key === ' ') {
                   // Space cycles IME candidates mid-composition; committing here
                   // would post the composing buffer and kill candidate selection.
-                  if (ime.isComposing(e)) return
-                  e.preventDefault()
-                  if (newTag.trim()) addTag(newTag)
+                  // The claim is key-agnostic: it consumes the separator only
+                  // when the IME is not itself using the keypress.
+                  if (ime.claimEnter(e) && newTag.trim()) addTag(newTag)
                 }
                 if (e.key === 'Escape') { ime.reset(); setNewTag(''); setAddingTag(false) }
               }}

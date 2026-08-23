@@ -137,6 +137,7 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
   const [confirming, setConfirming] = useState(false)
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
+  const ime = useImeGuard()
 
   const commitRename = () => {
     const trimmed = editName.trim()
@@ -155,11 +156,11 @@ function EmptyFolderChip({ folder, onRename, onDelete, error }: { folder: CronFo
             className="bg-bg rounded px-2 py-0.5 flex-none min-w-[120px]"
             value={editName}
             onChange={e => setEditName(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === 'Enter') commitRename()
-              if (e.key === 'Escape') setEditing(false)
-            }}
-            onBlur={commitRename}
+            {...ime.bindEnter({
+              onEnter: commitRename,
+              onEscape: () => setEditing(false),
+              onBlur: commitRename,
+            })}
           />
         ) : (
           <span className="text-sm font-medium text-text">{folder.name}</span>
@@ -273,6 +274,7 @@ export default function SchedulePage() {
   const [folderModal, setFolderModal] = useState<{ mode: 'create'; resolve?: (id: string | undefined) => void } | null>(null)
   const [folderModalName, setFolderModalName] = useState('')
   const folderNameIme = useImeGuard()
+  const batchConfirmIme = useImeGuard()
   const [folderModalError, setFolderModalError] = useState<string | null>(null)
   const toggleFolderCollapse = useCallback((folderId: string) => {
     setCollapsedFolders(prev => {
@@ -928,7 +930,6 @@ export default function SchedulePage() {
               value={folderModalName}
               onChange={e => setFolderModalName(e.target.value)}
               {...folderNameIme.bindComposition()}
-              onFocus={() => folderNameIme.reset()}
               onKeyDown={e => {
                 if (e.key !== 'Enter') return
                 // Rule 1: single-line input; emptiness stays outside the guard.
@@ -994,7 +995,9 @@ export default function SchedulePage() {
               autoFocus
               value={confirmText}
               onChange={e => setConfirmText(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter' && confirmArmed && !batchDeleting) runBatchDelete() }}
+              {...batchConfirmIme.bindEnter({
+                onEnter: () => { if (confirmArmed && !batchDeleting) runBatchDelete() },
+              })}
               placeholder={BULK_DELETE_TOKEN}
               className="w-full px-3 py-2 rounded-md bg-bg border border-border text-sm text-text outline-none focus-visible:border-accent"
             />

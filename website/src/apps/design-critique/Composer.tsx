@@ -6,6 +6,7 @@ import { S } from './styles'
 import type { Blocked, StagedItem } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 interface Props {
   staged: StagedItem[]
   refText: string
@@ -31,6 +32,7 @@ interface Props {
 }
 
 export default function Composer(p: Props) {
+  const ime = useImeGuard()
   const { staged, refText, dragging, blocked, showAuth, busy, err, inputRef } = p
 
   const canStart = !busy && (staged.length > 0 || !!refText.trim())
@@ -130,7 +132,7 @@ export default function Composer(p: Props) {
           value={refText} disabled={staged.length > 0 || busy}
           placeholder={staged.length ? 'Using your screenshots — clear them to critique a link instead' : 'Figma link · git repo · a folder on this machine · a running URL (localhost or a deployed preview)'}
           onChange={(e) => p.setRefText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') p.start() }}
+          {...ime.bindEnter({ onEnter: () => p.start() })}
         />
         <button
           style={{ ...S.bigStart, ...(canStart ? {} : S.startOff) }} disabled={!canStart} onClick={p.start}

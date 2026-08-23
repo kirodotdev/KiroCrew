@@ -7,6 +7,7 @@ import {
 import type { CronFolder } from '../utils/cronFolders'
 import { TableCell, TableRow } from './ui/table'
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 interface Props {
   folder: CronFolder
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export default function CronFolderHeader({ folder, jobCount, collapsed, onToggleCollapse, onRename, onDelete, colSpan }: Props) {
+  const ime = useImeGuard()
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -43,11 +45,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                   className="bg-bg rounded px-2 py-0.5 flex-none min-w-[120px]"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') commitRename()
-                    if (e.key === 'Escape') setEditing(false)
-                  }}
-                  onBlur={commitRename}
+                  {...ime.bindEnter({ onEnter: commitRename, onEscape: () => setEditing(false), onBlur: commitRename })}
                 />
               </>
             ) : (

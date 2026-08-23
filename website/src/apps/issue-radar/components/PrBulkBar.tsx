@@ -42,6 +42,7 @@ import { providerTerms, isGitlab, repoScopeKey } from '../lib/links'
 import type { BulkPrAction } from '../api'
 
 import { i18nT } from '../../../i18n/t'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 
 // The confirmation TOKENS and the merge pseudo-action are protocol values, not copy:
 // a translated token makes the action impossible to complete. They live in
@@ -64,6 +65,7 @@ const NEEDS_CONFIRM = new Set<BulkPrAction>(['close'])
 
 
 export default function PrBulkBar() {
+  const ime = useImeGuard()
   const {
     active, canWrite, checkedPulls, clearCheckedPulls, toggleAllPullsChecked, sortedPulls,
     togglePullChecked, prBulkMax,
@@ -569,6 +571,7 @@ export default function PrBulkBar() {
               <input
                 value={confirmText}
                 onChange={(e) => setConfirmText(e.target.value)}
+                {...ime.bindComposition()}
                 onKeyDown={(e) => {
                   if (e.key === 'Escape') {
                     e.preventDefault()
@@ -580,7 +583,7 @@ export default function PrBulkBar() {
                   // Enter mid-run started a concurrent loop that merged a row twice and
                   // defeated stop-on-first-failure.
                   if (e.key === 'Enter' && confirmArmed && !seq.busy && !bulk.busy) {
-                    e.preventDefault()
+                    if (!ime.claimEnter(e)) return
                     if (isMergePending) runSequentialMerge()
                     else apply(pending)
                   }

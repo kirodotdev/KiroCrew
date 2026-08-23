@@ -6,6 +6,7 @@ import InfoTip from '../../components/InfoTip'
 import { esc } from '../../api/helpers'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import { fmtDateNumeric, fmtDateTimeNumeric } from '../../i18n/format'
 const extractError = (err: unknown): string => {
   if (err != null && typeof err === 'object' && !(err instanceof Error)) {
@@ -140,6 +141,8 @@ export function embedModelDisclosure(status?: EmbeddingStatus | null): { label: 
 }
 
 export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: { onActiveChange?: (active: boolean) => void; onMigratedChange?: (migrated: boolean) => void }) {
+  // One instance covers every input in this card; the binding's focus/blur reset makes sharing safe.
+  const ime = useImeGuard()
   const [stats, setStats] = useState<VectorStats | null>(null)
   const [embStatus, setEmbStatus] = useState<EmbeddingStatus | null>(null)
   const [semantic, setSemantic] = useState<SemanticEntry[]>([])
@@ -408,7 +411,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
             <datalist id="key-suggestions">{filteredKeys.map(k => <option key={k} value={k}>{k}</option>)}</datalist>
           </div>
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.value')} style={{ flex: 2 }} value={newVal} onChange={e => { setNewVal(e.target.value); setWriteError('') }}
-            onKeyDown={async e => { if (e.key === 'Enter' && newKey && newVal) { try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } }} />
+            {...ime.bindEnter({ onEnter: async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } })} />
           <SendBtn onClick={async () => { if (!newKey || !newVal) return; try { await api.vectorSemanticWrite(newKey, newVal); setNewKey(''); setNewVal(''); setWriteError(''); load() } catch (e: unknown) { setWriteError(extractError(e)) } }}>{i18nT('pages.overview.vectorMemoryCard.set')}</SendBtn>
         </div>
         {writeError && <p className="text-danger text-[13px] mb-2"><AlertTriangle className="lucide-inline" /> {writeError}</p>}
@@ -433,7 +436,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
                     // eslint-disable-next-line jsx-a11y/click-events-have-key-events, jsx-a11y/no-static-element-interactions
                     <div className="flex gap-1 items-center" onClick={ev => ev.stopPropagation()}>
                       <Input value={editVal} onChange={ev => setEditVal(ev.target.value)} className="!py-1 !px-2 !text-sm"
-                        onKeyDown={async ev => { if (ev.key === 'Enter') { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } } if (ev.key === 'Escape') setEditKey(null) }}
+                        {...ime.bindEnter({ onEnter: async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }, onEscape: () => setEditKey(null) })}
                         autoFocus />
                       <Btn onClick={async () => { try { await api.vectorSemanticWrite(e.key, editVal); setEditKey(null); setWriteError(''); load() } catch (err: unknown) { setWriteError(extractError(err)) } }}><Check className="lucide-inline" /></Btn>
                       <Btn onClick={() => setEditKey(null)}><X className="lucide-inline" /></Btn>
@@ -463,7 +466,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.episodic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.conversation_fragments_with_vector_search_import')} /></CardTitle>
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.search_episodic_memories')} style={{ flex: 1 }} value={epQuery} onChange={e => setEpQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') loadEpisodic() }} />
+            {...ime.bindEnter({ onEnter: () => loadEpisodic() })} />
           <SendBtn onClick={() => loadEpisodic()}>{i18nT('pages.overview.vectorMemoryCard.search')}</SendBtn>
           {epQuery && <Btn onClick={() => { setEpQuery(''); setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
           {!epQuery && epTagFilter && <Btn onClick={() => { setEpTagFilter(null); loadEpisodic('', false, null) }}>{i18nT('pages.overview.vectorMemoryCard.clear')}</Btn>}
@@ -539,7 +542,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange }: {
         <CardTitle><Search className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.memory_inspector')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.preview_what_gets_injected_into_prompts_enter_a')} /></CardTitle>
         <div className="flex gap-2 items-center flex-wrap mb-3">
           <Input placeholder={i18nT('pages.overview.vectorMemoryCard.test_query_e_g_what_database_should_i_use')} style={{ flex: 1 }} value={inspectorQuery} onChange={e => setInspectorQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') loadPreview(inspectorQuery) }} />
+            {...ime.bindEnter({ onEnter: () => loadPreview(inspectorQuery) })} />
           <SendBtn onClick={() => loadPreview(inspectorQuery)}>{i18nT('pages.overview.vectorMemoryCard.preview')}</SendBtn>
         </div>
         {preview && (

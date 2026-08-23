@@ -8,6 +8,7 @@ import { SettingsInput, SettingsToggle } from '../../components/settings'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "WeChat"
 const SETUP_GUIDE =
@@ -33,6 +34,7 @@ type Phase = 'idle' | 'starting' | 'waiting' | 'scanned' | 'confirmed' | 'expire
  * the bot credential itself.
  */
 export function WeixinPanel() {
+  const ime = useImeGuard()
   const qc = useQueryClient()
   const { data, isError } = useQuery({
     queryKey: ['weixin-config'],
@@ -471,15 +473,19 @@ export function WeixinPanel() {
               disabled={readOnly}
               placeholder={CHANNEL_NAME}
               onChange={setFolderName}
-              onBlur={() =>
-                save({ session_folder: folderName.trim() || CHANNEL_NAME }, undefined, () => {
-                  clearTimeout(folderSavedTimer.current)
-                  setFolderSaved(true)
-                  folderSavedTimer.current = setTimeout(() => setFolderSaved(false), SAVED_MS)
-                })
-              }
+              {...ime.bindComposition({
+                onBlur: () =>
+                  save({ session_folder: folderName.trim() || CHANNEL_NAME }, undefined, () => {
+                    clearTimeout(folderSavedTimer.current)
+                    setFolderSaved(true)
+                    folderSavedTimer.current = setTimeout(() => setFolderSaved(false), SAVED_MS)
+                  }),
+              })}
               onKeyDown={e => {
-                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key !== 'Enter') return
+                // Early-return BEFORE the blur: a committing IME Enter must not commit.
+                if (ime.isComposing(e)) return
+                e.currentTarget.blur()
               }}
             />
             {folderSaved && (

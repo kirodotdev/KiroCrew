@@ -73,6 +73,7 @@ import {
   type SlackOutStatus,
   type SweepWindows,
 } from './api'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /** Module-level frozen empty so the render-time fallback is referentially stable. */
 const EMPTY_COMPANIONS: readonly CompanionInfo[] = Object.freeze([])
@@ -98,6 +99,7 @@ function ProviderRow({
    */
   fencedIdentity?: { label: string; settingsKey: string; value: string; help: string }
 }) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({})
   const [configDrafts, setConfigDrafts] = useState<Record<string, string>>({})
@@ -206,9 +208,7 @@ function ProviderRow({
               value={identityDraft ?? fencedIdentity.value}
               placeholder="—"
               onChange={(e) => setIdentityDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitIdentity()
-              }}
+              {...ime.bindEnter({ onEnter: commitIdentity })}
             />
             <SendBtn
               disabled={
@@ -631,6 +631,7 @@ function SharedMemoryCard({
   onSave: (updates: Record<string, unknown>) => void
   saving: boolean
 }) {
+  const ime = useImeGuard()
   // Local drafts, seeded from the server and re-seeded while untouched — the same shape
   // as the Slack channel field, so a background /state refresh cannot clobber typing.
   const serverRemote = status?.remote ?? ''
@@ -749,9 +750,7 @@ function SharedMemoryCard({
               setRemoteTouched(true)
               setRemote(e.target.value)
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') saveRemote()
-            }}
+            {...ime.bindEnter({ onEnter: saveRemote })}
           />
           {/* An explicit Save, not a commit on blur. Tabbing out of a half-pasted URL
               would repoint the whole team's repo, and the backend's branch/length
@@ -773,9 +772,7 @@ function SharedMemoryCard({
               setBranchTouched(true)
               setBranch(e.target.value)
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') saveBranch()
-            }}
+            {...ime.bindEnter({ onEnter: saveBranch })}
           />
           <SendBtn disabled={!branchDirty || saving} onClick={saveBranch}>
             {i18nT('apps.opsMissionControl.settingsPanel.save')}
@@ -876,6 +873,7 @@ function OnCallScheduleCard({
   roster?: RotationRoster
   syncReady: boolean
 }) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   // From the ROSTER, not from provider config. The login moved onto the keystone floor
   // (`policy_store.OPERATOR_ONLY_KEYS`) because it is an input to the authorization decision —
@@ -968,9 +966,7 @@ shifts:
                 setTouched(true)
                 setLogin(e.target.value)
               }}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commit()
-              }}
+              {...ime.bindEnter({ onEnter: commit })}
             />
             <SendBtn disabled={!dirty || loginMutation.isPending} onClick={commit}>
               {i18nT('apps.opsMissionControl.settingsPanel.save')}
@@ -1102,6 +1098,7 @@ function HeartbeatCard({
   onSave: (updates: Record<string, unknown>) => void
   saving: boolean
 }) {
+  const ime = useImeGuard()
   // Drafts in MINUTES, because the backend's seconds are a storage unit and nobody tunes a
   // 12-hour window by typing 43200. Re-seeded from the server while untouched, the same
   // shape as every other field here, so a background /state refresh cannot clobber typing.
@@ -1175,11 +1172,7 @@ function HeartbeatCard({
               setStaleTouched(true)
               setStale(e.target.value)
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                save('stale_after_secs', staleSecs, () => setStaleTouched(false))
-              }
-            }}
+            {...ime.bindEnter({ onEnter: () => save('stale_after_secs', staleSecs, () => setStaleTouched(false)) })}
           />
           <span className="text-muted shrink-0">{i18nT('apps.opsMissionControl.settingsPanel.min')}</span>
           <SendBtn
@@ -1201,13 +1194,11 @@ function HeartbeatCard({
               setNeedsHumanTouched(true)
               setNeedsHuman(e.target.value)
             }}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') {
-                save('needs_human_stale_after_secs', needsHumanSecs, () =>
-                  setNeedsHumanTouched(false),
-                )
-              }
-            }}
+            {...ime.bindEnter({
+              onEnter: () => save('needs_human_stale_after_secs', needsHumanSecs, () =>
+                setNeedsHumanTouched(false),
+              ),
+            })}
           />
           <span className="text-muted shrink-0">{i18nT('apps.opsMissionControl.settingsPanel.min')}</span>
           <SendBtn

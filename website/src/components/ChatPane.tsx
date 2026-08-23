@@ -70,6 +70,7 @@ export default function ChatPane({
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
 }) {
+  // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
@@ -632,7 +633,10 @@ export default function ChatPane({
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={agentDD.filter}
                 onChange={(e) => agentDD.setFilter(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') agentDD.setOpen(false); if (e.key === 'Enter' && agentDD.filtered.length === 1) { switchAgent(agentDD.filtered[0].name); agentDD.setOpen(false) } }}
+                /* Enter/Escape live on the portal container's onListKeyDown
+                   (useListboxKeyboard), which claims Enter against IME
+                   composition internally — a second handler here would give
+                   the same keys two dispatch paths. */
                 className={ddInputCls}
               />
             </div>
@@ -661,7 +665,10 @@ export default function ChatPane({
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={modelDD.filter}
                 onChange={(e) => modelDD.setFilter(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') modelDD.setOpen(false); if (e.key === 'Enter' && modelDD.filtered.length === 1) { switchModel(modelDD.filtered[0].name); modelDD.setOpen(false) } }}
+                /* Enter/Escape live on the portal container's onListKeyDown
+                   (useListboxKeyboard), which claims Enter against IME
+                   composition internally — a second handler here would give
+                   the same keys two dispatch paths. */
                 className={ddInputCls}
               />
             </div>

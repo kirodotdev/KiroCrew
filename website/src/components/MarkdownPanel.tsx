@@ -217,6 +217,7 @@ interface Props {
 
 import { PierreFilePair, type PierreEditorHandle, type RevealTarget } from '../pierre'
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 /**
  * File types that render through a dedicated viewer instead of a text editor.
@@ -818,6 +819,7 @@ export interface MarkdownPanelHandle {
 }
 
 export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle }: Props, ref) {
+  const ime = useImeGuard()
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
@@ -1101,8 +1103,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         type="text"
         value={findTerm}
         onChange={(e) => setFindTerm(e.target.value)}
+        {...ime.bindComposition()}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1) }
+          if (e.key === 'Enter') { if (!ime.claimEnter(e)) return; stepFind(e.shiftKey ? -1 : 1) }
           if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFind() }
         }}
         placeholder={i18nT('components.markdownPanel.find_in_document')}

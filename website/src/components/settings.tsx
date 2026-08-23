@@ -176,12 +176,17 @@ interface SettingsInputProps {
   hint?: string
   value: string
   onChange: (value: string) => void
-  onBlur?: () => void
+  onBlur?: React.FocusEventHandler<HTMLInputElement | HTMLTextAreaElement>
   /** Key handler on the control itself. Needed by panels that commit on blur and
    *  have no Save button (WeChat), where Enter must commit the value the way it
    *  would in a form — a `<div>` wrapper cannot carry that without becoming an
    *  interactive static element. */
   onKeyDown?: React.KeyboardEventHandler<HTMLInputElement | HTMLTextAreaElement>
+  /** Composition/focus pass-throughs so callers can spread `ime.bindComposition()`
+   *  from `useImeGuard` onto the control; see the WeChat folder-name field. */
+  onFocus?: React.FocusEventHandler<HTMLInputElement | HTMLTextAreaElement>
+  onCompositionStart?: React.CompositionEventHandler<HTMLInputElement | HTMLTextAreaElement>
+  onCompositionEnd?: React.CompositionEventHandler<HTMLInputElement | HTMLTextAreaElement>
   placeholder?: string
   type?: 'text' | 'number'
   min?: number
@@ -194,7 +199,7 @@ interface SettingsInputProps {
   configKey?: string
 }
 
-export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
+export function SettingsInput({ label, description, hint, value, onChange, onBlur, onKeyDown, onFocus, onCompositionStart, onCompositionEnd, placeholder, type = 'text', min, max, step, disabled, multiline, 'aria-label': ariaLabel, configKey }: SettingsInputProps) {
   // Per-instance id pairing the caption's htmlFor with the control. This is
   // what gives the single-line branch an accessible name by DEFAULT: it used
   // to render aria-label={ariaLabel} with ariaLabel undefined unless a caller
@@ -211,6 +216,9 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
           onKeyDown={onKeyDown}
+          onFocus={onFocus}
+          onCompositionStart={onCompositionStart}
+          onCompositionEnd={onCompositionEnd}
           placeholder={placeholder}
           disabled={disabled}
           rows={3}
@@ -225,6 +233,9 @@ export function SettingsInput({ label, description, hint, value, onChange, onBlu
           onChange={e => onChange(e.target.value)}
           onBlur={onBlur}
           onKeyDown={onKeyDown}
+          onFocus={onFocus}
+          onCompositionStart={onCompositionStart}
+          onCompositionEnd={onCompositionEnd}
           placeholder={placeholder}
           min={min}
           max={max}

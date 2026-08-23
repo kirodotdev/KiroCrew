@@ -113,13 +113,7 @@ export function TagListEditor({ label, description, values, placeholder, onChang
         <div className="flex items-center gap-2">
           <Input value={draft} placeholder={placeholder} className="flex-none font-mono"
             onChange={e => { setDraft(e.target.value); setErr('') }}
-            {...ime.bindComposition()}
-            onKeyDown={e => {
-              if (e.key !== 'Enter') return
-              // Rule 1: single-line input — decline the IME's committing Enter only.
-              if (ime.isComposing(e)) return
-              e.preventDefault(); add()
-            }} />
+            {...ime.bindEnter({ onEnter: add })} />
           <Btn onClick={add} disabled={!draft.trim()}><Plus size={13} /> {i18nT('pages.settings.slackPanel.add')}</Btn>
         </div>
       )}

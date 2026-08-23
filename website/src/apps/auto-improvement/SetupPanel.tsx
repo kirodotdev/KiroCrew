@@ -22,6 +22,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { Badge, Btn, Card, CardTitle, Input } from '../../components/ui'
 import { fmtDateFields } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 const API = '/api/apps/auto-improvement'
 
@@ -110,6 +111,7 @@ async function postJson<T>(path: string, body: unknown): Promise<T> {
 }
 
 export default function SetupPanel({ config }: { config?: Record<string, unknown> }) {
+  const ime = useImeGuard()
   const qc = useQueryClient()
   const configured = Boolean(config?.clone)
   const display = String(config?.target_display || config?.target_url || '')
@@ -194,9 +196,7 @@ export default function SetupPanel({ config }: { config?: Record<string, unknown
             placeholder={i18nT('apps.autoImprovement.setupPanel.https_github_com_owner_repo')}
             className="flex-1"
             aria-label={i18nT('autoImprovement.repoLabel')}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && url.trim()) clone.mutate(url.trim())
-            }}
+            {...ime.bindEnter({ onEnter: () => { if (url.trim()) clone.mutate(url.trim()) } })}
           />
           <Btn
             primary

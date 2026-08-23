@@ -40,6 +40,7 @@ import MarkdownRenderer from '../../../components/MarkdownRenderer'
 import { Btn, Card, CardTitle, Input, SendBtn } from '../../../components/ui'
 import type { AgentDef } from '../api'
 import { buildSketchSrcdoc } from '../lib/sketchSrcdoc'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 
 interface Props {
   agent: AgentDef
@@ -60,6 +61,7 @@ export default function AgentPanel({
   onToggleChatView,
   onSendMessage,
 }: Props) {
+  const ime = useImeGuard()
   const inputRef = useRef<HTMLInputElement>(null)
   const [sent, setSent] = useState<string[]>([])
   const isChatAgent = agent.widget_type === 'chat'
@@ -152,9 +154,7 @@ export default function AgentPanel({
             aria-label={i18nT('apps.meetings.agentPanel.messagePlaceholder', {
               name: agent.name,
             })}
-            onKeyDown={e => {
-              if (e.key === 'Enter') send()
-            }}
+            {...ime.bindEnter({ onEnter: send })}
           />
           <SendBtn onClick={send} aria-label={i18nT('apps.meetings.agentPanel.send')}>
             {i18nT('apps.meetings.agentPanel.send')}

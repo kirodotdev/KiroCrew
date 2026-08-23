@@ -12,6 +12,7 @@ import * as shopApi from './api'
 import { Btn, EmptyState, Input } from '../../components/ui'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 // ── Types ──
 
 interface Site {
@@ -41,6 +42,7 @@ async function saveSites(data: SitesData): Promise<void> {
 // ── Component ──
 
 export function SitesTab() {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [showAddForm, setShowAddForm] = useState(false)
   const [newName, setNewName] = useState('')
@@ -195,7 +197,7 @@ export function SitesTab() {
             value={newUrl}
             onChange={(e) => setNewUrl(e.target.value)}
             placeholder={i18nT('apps.personalShopper.sitesTab.url_e_g_store_example_com')}
-            onKeyDown={(e) => { if (e.key === 'Enter') addSite() }}
+            {...ime.bindEnter({ onEnter: addSite })}
           />
           <div className="flex gap-2">
             <Btn onClick={addSite} disabled={!newName.trim() || !newUrl.trim()}>

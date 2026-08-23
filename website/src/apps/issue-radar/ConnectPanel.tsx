@@ -38,6 +38,7 @@ import GitlabLogo from '../../components/icons/GitlabLogo'
 
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric } from '../../i18n/format'
+import { useImeGuard } from '../../hooks/useImeGuard'
 /** The provider a connect flow is pointed at.
  *
  * An ALIAS of `api.ts`'s `SourceProvider`, not a second union: this used to be its
@@ -474,6 +475,7 @@ function urlPlaceholderFor(provider: SourceProvider): string {
  * would just fail the same way) and the whole right column becomes the setup
  * notice. */
 export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
+  const ime = useImeGuard()
   // Every wired provider expands into the two-column body. Jira/Linear stay
   // collapsed because they are still placeholders.
   const expanded = expandsCard(flow.provider)
@@ -630,7 +632,7 @@ export default function ConnectPanel({ flow }: { flow: ConnectFlow }) {
                   aria-label={i18nT('apps.issueRadar.connectPanel.repository_url')}
                   value={flow.url}
                   onChange={(e) => flow.setUrl(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') flow.submit() }}
+                  {...ime.bindEnter({ onEnter: () => flow.submit() })}
                   disabled={flow.pending}
                   placeholder={urlPlaceholder}
                   className="w-full box-border text-[12.5px] px-3 py-2 rounded-md bg-bg text-text border border-border font-mono disabled:opacity-50"

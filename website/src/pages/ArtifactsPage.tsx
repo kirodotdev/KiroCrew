@@ -663,12 +663,12 @@ function FolderNameInput({ initial = '', placeholder = 'Folder name', onCommit, 
       placeholder={placeholder}
       aria-label={placeholder}
       onChange={(e) => setValue(e.target.value)}
-      onFocus={(e) => e.target.select()}
       onClick={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onPointerDown={(e) => e.stopPropagation()}
       className="w-full bg-transparent border border-accent rounded px-1.5 py-0.5 text-text-strong outline-none text-sm select-text focus-ring"
       {...ime.bindEnter<HTMLInputElement>({
+        onFocus: (e) => (e.target as HTMLInputElement).select(),
         onEnter: () => { (document.activeElement as HTMLInputElement)?.blur() },
         onEscape: () => { cancelledRef.current = true; onCancel() },
         onBlur: () => {

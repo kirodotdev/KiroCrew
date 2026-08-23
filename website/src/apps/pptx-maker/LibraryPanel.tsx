@@ -21,6 +21,7 @@ import { pptxMakerApi, type StyleEntry, type TemplateEntry } from './api'
 import { BoardThumb } from './BoardFrame'
 import BoardFrame from './BoardFrame'
 import { nameFromFilename, templateAccents } from './lib'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
  * Font specimen for the template's theme preview.
@@ -72,6 +73,7 @@ function RenameRow({
   onCancel: () => void
 }) {
   const [value, setValue] = useState(initial)
+  const ime = useImeGuard()
   return (
     <div className="flex items-center gap-2 mb-3 flex-wrap">
       <Input
@@ -79,10 +81,7 @@ function RenameRow({
         value={value}
         aria-label={i18nT('apps.pptxMaker.libraryPanel.new_name')}
         onChange={(event) => setValue(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter') onSubmit(value.trim())
-          if (event.key === 'Escape') onCancel()
-        }}
+        {...ime.bindEnter({ onEnter: () => onSubmit(value.trim()), onEscape: onCancel })}
         className="flex-1 min-w-[160px]"
       />
       <SendBtn onClick={() => onSubmit(value.trim())}>

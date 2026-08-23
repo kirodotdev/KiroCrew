@@ -112,12 +112,21 @@ export function useImeGuard() {
    * `claimEnter` also consumes those keypresses, a latched guard is SILENT: the
    * surface simply stops sending. So the recovery ships with the tracking, and a
    * caller's own blur handler is composed rather than replacing it.
+   *
+   * The focus reset is the other half of the same recovery: when one hook
+   * instance is shared across sibling inputs (or an input remounts), a latch
+   * stranded by the previous element must not decline the first Enter on the
+   * next one. Sites used to spell `onFocus={() => ime.reset()}` by hand; the
+   * binding now carries it so a consumer cannot opt out by omission, and a
+   * caller's own focus handler is composed rather than replacing it.
    */
   const bindComposition = <T extends HTMLElement>(opts: {
+    onFocus?: (e: FocusEvent<T>) => void
     onBlur?: (e: FocusEvent<T>) => void
   } = {}) => ({
     onCompositionStart,
     onCompositionEnd,
+    onFocus: (e: FocusEvent<T>) => { reset(); opts.onFocus?.(e) },
     onBlur: (e: FocusEvent<T>) => { reset(); opts.onBlur?.(e) },
   })
 
@@ -125,13 +134,19 @@ export function useImeGuard() {
    * Spread onto simple Enter-to-submit / Escape-to-cancel inputs. Auto-resets
    * stale composition state on blur & Escape so sharing one hook instance
    * across sibling inputs is safe.
+   *
+   * CONTRACT: single-line inputs only, and modifier keys do not participate —
+   * Shift/Cmd/Ctrl+Enter all submit. A textarea (where Shift+Enter must stay a
+   * soft break) or any handler that branches on modifiers keeps its own
+   * `onKeyDown` with `claimEnter` in the Enter branch instead.
    */
   const bindEnter = <T extends HTMLElement>(opts: {
     onEnter?: () => void
     onEscape?: () => void
+    onFocus?: (e: FocusEvent<T>) => void
     onBlur?: (e: FocusEvent<T>) => void
   }) => ({
-    ...bindComposition<T>({ onBlur: opts.onBlur }),
+    ...bindComposition<T>({ onFocus: opts.onFocus, onBlur: opts.onBlur }),
     onKeyDown: (e: KeyboardEvent<T>) => {
       if (e.key === 'Enter' && claimEnter(e)) opts.onEnter?.()
       if (e.key === 'Escape') { reset(); opts.onEscape?.() }

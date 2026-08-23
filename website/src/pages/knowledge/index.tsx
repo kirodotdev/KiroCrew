@@ -30,6 +30,7 @@ const STATUS_LABEL_KEY = {
 } as const
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 const KnowledgeGraph = lazy(() => import('./KnowledgeGraph'))
 
 const TABS = ['list', 'graph', 'sources', 'settings'] as const
@@ -173,6 +174,7 @@ function BulkActions({ selectedIds, items, onDone }: { selectedIds: Set<string>;
 }
 
 export default function KnowledgePage() {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [tab, setTab] = useState<Tab>('list')
   const [query, setQuery] = useState('')
@@ -463,9 +465,11 @@ export default function KnowledgePage() {
       <div className="relative flex-1 min-w-[200px]">
         <SearchInput placeholder={i18nT('pages.knowledge.index.search_knowledge_press_enter_to_search')} value={searchInput}
           onChange={e => { setSearchInput((e.target as HTMLInputElement).value); setShowAutocomplete(true) }}
-          onKeyDown={e => { if ((e as React.KeyboardEvent).key === 'Enter') { setQuery(searchInput); setPage(1) } }}
-          onFocus={() => setShowAutocomplete(true)}
-          onBlur={() => setTimeout(() => setShowAutocomplete(false), 200)}
+          {...ime.bindEnter({
+            onEnter: () => { setQuery(searchInput); setPage(1) },
+            onFocus: () => setShowAutocomplete(true),
+            onBlur: () => setTimeout(() => setShowAutocomplete(false), 200),
+          })}
         />
         {showAutocomplete && searchInput.length >= 2 && (
           <EntityAutocomplete query={searchInput} onSelect={handleEntitySelect} />

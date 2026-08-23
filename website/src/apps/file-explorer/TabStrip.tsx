@@ -7,6 +7,7 @@ import { extOf, basename } from './utils'
 import type { FolderTab, FileTab } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 interface TabStripProps {
   folderTabs: FolderTab[]
   fileTabs: FileTab[]
@@ -21,6 +22,8 @@ interface TabStripProps {
 }
 
 export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeFileId, onActivateFolder, onActivateFile, onCloseFolder, onCloseFile, onNewFolder, onRenameFolder }: TabStripProps) {
+  // Only one rename input renders at a time, so a single instance is safe.
+  const ime = useImeGuard()
   const [renameId, setRenameId] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [attachScroller, fades, remeasure] = useScrollEdges<HTMLDivElement>()
@@ -55,11 +58,11 @@ export default function TabStrip({ folderTabs, fileTabs, activeFolderId, activeF
                 value={renameDraft}
                 onChange={(e) => setRenameDraft(e.target.value)}
                 onClick={(e) => e.stopPropagation()}
-                onBlur={() => { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) }
-                  if (e.key === 'Escape') setRenameId(null)
-                }}
+                {...ime.bindEnter({
+                  onEnter: () => { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) },
+                  onEscape: () => setRenameId(null),
+                  onBlur: () => { onRenameFolder(t.id, renameDraft.trim()); setRenameId(null) },
+                })}
               />
             ) : (
               <span className="mc-fe-tab-label">{t.label || basename(t.rootPath) || '/'}</span>

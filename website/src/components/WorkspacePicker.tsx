@@ -4,6 +4,7 @@ import { FolderOpen, ChevronRight, ChevronLeft } from 'lucide-react'
 import { api } from '../api/client'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -12,6 +13,8 @@ interface Props {
 }
 
 export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreated }: Props) {
+  // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
+  const ime = useImeGuard()
   const [input, setInput] = useState('')
   const [browsePath, setBrowsePath] = useState('')
   const [browseParent, setBrowseParent] = useState('')
@@ -89,7 +92,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
             <div className="p-3 flex flex-col gap-2">
               <div className="text-[12px] text-muted font-medium uppercase tracking-wider">{i18nT('components.workspacePicker.create_workspace')}</div>
               <div className="text-[13px] font-mono text-text truncate bg-bg-elevated rounded px-2 py-1.5 border border-border">{selectedDir}</div>
-              <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.workspace_name')} placeholder={i18nT('components.workspacePicker.workspace_name_2')} value={wsName} onChange={e => { setWsName(e.target.value); setError('') }} onKeyDown={e => { if (e.key === 'Enter') create(); if (e.key === 'Escape') { setSelectedDir(''); setWsName('') } }} className="bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent" />
+              <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.workspace_name')} placeholder={i18nT('components.workspacePicker.workspace_name_2')} value={wsName} onChange={e => { setWsName(e.target.value); setError('') }} {...ime.bindEnter({ onEnter: create, onEscape: () => { setSelectedDir(''); setWsName('') } })} className="bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent" />
               {error && <div className="text-[11px] text-red-400">{error}</div>}
               <div className="flex gap-2 justify-end">
                 <button onClick={() => { setSelectedDir(''); setWsName('') }} className="px-3 py-1.5 text-[12px] text-muted hover:text-text rounded">{i18nT('components.workspacePicker.back')}</button>
@@ -102,7 +105,7 @@ export default function WorkspacePicker({ open, onOpenChange, anchorRef, onCreat
                 {browseParent && browseParent !== browsePath && (
                   <button onClick={() => browse(browseParent)} className="p-1 text-muted hover:text-text rounded hover:bg-bg-hover shrink-0" title={i18nT('components.workspacePicker.back')} aria-label={i18nT('components.workspacePicker.back')}><ChevronLeft size={16} /></button>
                 )}
-                <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.project_directory_path')} placeholder={i18nT('components.workspacePicker.path_to_project')} value={input} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && input.trim()) selectDir(input.trim()); if (e.key === 'Escape') onOpenChange(false) }} className="flex-1 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent" />
+                <input autoFocus type="text" aria-label={i18nT('components.workspacePicker.project_directory_path')} placeholder={i18nT('components.workspacePicker.path_to_project')} value={input} onChange={e => setInput(e.target.value)} {...ime.bindEnter({ onEnter: () => { if (input.trim()) selectDir(input.trim()) }, onEscape: () => onOpenChange(false) })} className="flex-1 bg-bg-elevated border border-border rounded px-2 py-1.5 text-[13px] font-mono text-text placeholder:text-muted focus:outline-none focus-visible:border-accent" />
                 <button onClick={() => selectDir(input.trim() || browsePath)} className="px-2 py-1 text-[11px] bg-accent/20 text-accent rounded hover:bg-accent/30 shrink-0">{i18nT('components.workspacePicker.select')}</button>
               </div>
               <div className="overflow-y-auto flex-1 min-h-0">

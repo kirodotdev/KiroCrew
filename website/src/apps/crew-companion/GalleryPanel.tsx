@@ -88,6 +88,7 @@ import { errorText } from './errorText'
 import type { SpriteImportResult } from './spriteImportTypes'
 import './gallery.css'
 import { splitOnPlaceholder } from './splitOnPlaceholder'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 
 // ── Styles ─────────────────────────────────────────────────────────────────
@@ -597,6 +598,7 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
   onClose: () => void
   onBrowse: () => void
 }) {
+  const ime = useImeGuard()
   // Esc closes, like any dialog
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
@@ -652,7 +654,7 @@ function ImportPetDialog({ input, onInput, resolving, resolved, importing, error
           <input
             value={input}
             onChange={(e) => onInput(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter' && resolved) onConfirm() }}
+            {...ime.bindEnter({ onEnter: () => { if (resolved) onConfirm() } })}
             placeholder={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             aria-label={i18nT('apps.crewCompanion.gallery.petdexPlaceholder')}
             autoFocus

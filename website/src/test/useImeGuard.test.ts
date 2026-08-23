@@ -69,17 +69,17 @@ describe('useImeGuard', () => {
     expect(result.current.isComposing(key())).toBe(false)
   })
 
-  it('the composition binding carries the latch recovery, and composes a caller onBlur', () => {
+  it('the composition binding carries the latch recovery, and composes caller handlers', () => {
     // There is no recovery-less binding to pick. A composition abandoned without a
     // `compositionend` latches the guard, and since claimEnter consumes what it
     // declines, a surface missing the reset stops sending SILENTLY. Shipping the reset
     // with the tracking is what makes that unreachable rather than merely documented.
-    // A caller's own blur handler is composed, never replaced — the earlier shape,
+    // A caller's own blur/focus handler is composed, never replaced — the earlier shape,
     // where a consumer spread the binding and then declared its own `onBlur`, dropped
     // the reset without a word.
     const { result } = renderHook(() => useImeGuard())
     expect(Object.keys(result.current.bindComposition()).sort())
-      .toEqual(['onBlur', 'onCompositionEnd', 'onCompositionStart'])
+      .toEqual(['onBlur', 'onCompositionEnd', 'onCompositionStart', 'onFocus'])
 
     const onBlur = vi.fn()
     const bound = result.current.bindComposition<HTMLTextAreaElement>({ onBlur })
@@ -88,6 +88,22 @@ describe('useImeGuard', () => {
     act(() => bound.onBlur({} as React.FocusEvent<HTMLTextAreaElement>))
     expect(result.current.isComposing(key())).toBe(false)
     expect(onBlur).toHaveBeenCalledTimes(1)
+  })
+
+  it('the composition binding resets a stale latch on focus, and composes a caller onFocus', () => {
+    // One hook instance is routinely shared across sibling inputs. A latch stranded
+    // by the previous element (composition abandoned mid-flight) must not decline
+    // the first Enter on the next one, so the reset rides in the binding's onFocus
+    // — the site-level `onFocus={() => ime.reset()}` copies this replaces could be
+    // dropped by omission on a new consumer.
+    const { result } = renderHook(() => useImeGuard())
+    const onFocus = vi.fn()
+    const bound = result.current.bindComposition<HTMLInputElement>({ onFocus })
+    act(() => result.current.onCompositionStart())
+    expect(result.current.isComposing(key())).toBe(true)
+    act(() => bound.onFocus({} as React.FocusEvent<HTMLInputElement>))
+    expect(result.current.isComposing(key())).toBe(false)
+    expect(onFocus).toHaveBeenCalledTimes(1)
   })
 
   it('clears pending timer on unmount (no stale timer callbacks after teardown)', () => {
@@ -124,6 +140,19 @@ describe('useImeGuard', () => {
       expect(result.current.isComposing(key())).toBe(false)
       // user callback still invoked
       expect(onBlur).toHaveBeenCalledTimes(1)
+    })
+
+    it('onFocus resets a stale latch AND forwards user callback', () => {
+      const onFocus = vi.fn()
+      const { result } = renderHook(() => useImeGuard())
+      act(() => result.current.onCompositionStart())
+      expect(result.current.isComposing(key())).toBe(true)
+
+      const props = result.current.bindEnter<HTMLInputElement>({ onFocus })
+      act(() => props.onFocus({} as React.FocusEvent<HTMLInputElement>))
+
+      expect(result.current.isComposing(key())).toBe(false)
+      expect(onFocus).toHaveBeenCalledTimes(1)
     })
 
     it('Escape resets composingRef BEFORE invoking onEscape (order matters)', () => {

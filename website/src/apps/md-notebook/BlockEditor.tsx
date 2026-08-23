@@ -12,6 +12,7 @@ import {
   FONT_BODY,
 } from './constants'
 import { carriedMarker, isEmptyListItem, shiftListItem } from './utils'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 export interface BlockEditorProps {
   initial: string
@@ -44,6 +45,7 @@ export function BlockEditor({
   textStyle,
   caret,
 }: BlockEditorProps) {
+  const ime = useImeGuard()
   const [text, setText] = useState(initial)
   const ref = useRef<HTMLTextAreaElement>(null)
   // Set once we hand off to a new block, so the blur that follows unmounting
@@ -97,14 +99,20 @@ export function BlockEditor({
         onDirty?.()
         autoSize()
       }}
-      onBlur={() => {
-        if (!handedOff.current) onCommit(text)
-      }}
+      {...ime.bindComposition<HTMLTextAreaElement>({
+        onBlur: () => {
+          if (!handedOff.current) onCommit(text)
+        },
+      })}
       onKeyDown={e => {
         if (e.key === 'Escape') {
           e.stopPropagation()
           onCancel()
         } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          // Claim BEFORE the blur: a committing IME Enter must not commit the
+          // block, and on a textarea the declined key must ALSO be consumed or
+          // the browser inserts a literal newline into the draft (R3).
+          if (!ime.claimEnter(e)) return
           e.currentTarget.blur()
         } else if (e.key === 'Tab') {
           // Tab nests a list item, Shift+Tab lifts it out. On anything that is
@@ -117,7 +125,7 @@ export function BlockEditor({
           rewrite(ta, next.text, next.pos)
         } else if (e.key === 'Enter' && !e.shiftKey && onSplit) {
           // Shift+Enter falls through to the browser: a soft break in this block.
-          e.preventDefault()
+          if (!ime.claimEnter(e)) return
           const ta = e.currentTarget
           const before = text.slice(0, ta.selectionStart)
           const after = text.slice(ta.selectionEnd)
@@ -173,6 +181,7 @@ export function InlineTitle({
   onRename: (next: string) => void
   mb?: string
 }) {
+  const ime = useImeGuard()
   const name = (path.split('/').pop() ?? path).replace(/\.md$/i, '')
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(name)
@@ -244,17 +253,19 @@ export function InlineTitle({
         setValue(e.target.value.replace(/\n/g, ''))
         autoSize()
       }}
-      onBlur={() => {
-        setEditing(false)
-        if (value.trim() && value.trim() !== name) onRename(value)
-      }}
+      {...ime.bindComposition<HTMLTextAreaElement>({
+        onBlur: () => {
+          setEditing(false)
+          if (value.trim() && value.trim() !== name) onRename(value)
+        },
+      })}
       onKeyDown={e => {
         if (e.key === 'Escape') {
           e.stopPropagation()
           setValue(name)
           setEditing(false)
         } else if (e.key === 'Enter') {
-          e.preventDefault()
+          if (!ime.claimEnter(e)) return
           e.currentTarget.blur()
         }
       }}

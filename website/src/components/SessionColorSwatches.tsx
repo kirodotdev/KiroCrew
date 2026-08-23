@@ -7,6 +7,7 @@ import { useSessionPalette } from '../hooks/useSessionPalette'
 import { colorName } from '../utils/sessionColors'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 /** Mirrors the backend contract in chat_persistence.COLOR_HEX_RE. */
 const HEX_RE = /^#[0-9a-fA-F]{6}$/
@@ -38,6 +39,7 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
   colorHex?: string | null
   onPicked?: () => void
 }) {
+  const ime = useImeGuard()
   const dispatch = useAppDispatch()
   const { paletteColors } = useSessionPalette()
   const [customOpen, setCustomOpen] = useState(false)
@@ -176,9 +178,9 @@ export default function SessionColorSwatches({ slotKey, colorIndex, colorHex, on
             }}
             onKeyDown={e => {
               e.stopPropagation()
-              if (e.key === 'Enter') { e.preventDefault(); commitHex(draft) }
+              if (e.key === 'Enter') { if (ime.claimEnter(e)) commitHex(draft) }
             }}
-            onBlur={() => { if (dirtyRef.current) commitHex(draft) }}
+            {...ime.bindComposition({ onBlur: () => { if (dirtyRef.current) commitHex(draft) } })}
             aria-label={i18nT('components.sessionColorSwatches.hex_color_code')}
             placeholder="#4f8ef7"
             className="w-[76px] bg-bg-accent border border-border rounded px-1.5 py-0.5 text-[11px] font-mono text-text outline-none focus-visible:border-accent"

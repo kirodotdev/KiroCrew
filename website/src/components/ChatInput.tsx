@@ -2537,14 +2537,14 @@ function ChatInput({
           onKeyDown={handleKeyDown}
           {...ime.bindComposition<HTMLTextAreaElement>({
             // The paste-hover preview dismisses on blur; the guard's latch reset rides
-            // in the binding itself, so this handler only carries what is local here.
+            // in the binding itself, so these handlers only carry what is local here.
+            onFocus: prefetchSkills,
             onBlur: () => { if (hoverRef.current) hoverRef.current.handleMouseLeave() },
           })}
           onPaste={handlePaste}
           onCopy={handleCopy}
           onCut={handleCut}
           onClick={handleTextareaClick}
-          onFocus={prefetchSkills}
           onMouseUp={handleSelectSnap}
           onSelect={handleSelectSnap}
           onInput={handleInput}

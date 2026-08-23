@@ -47,6 +47,9 @@ vi.mock('../api/client', async (importOriginal) => {
 import { api } from '../api/client'
 import TagManagerList from '../components/TagManagerList'
 import ProjectPicker from '../components/ProjectPicker'
+import SearchBar from '../components/SearchBar'
+import BroadcastBar from '../apps/meetings/components/BroadcastBar'
+import { BlockEditor } from '../apps/md-notebook/BlockEditor'
 
 /** Arm the hook's post-composition latch: the WebKit commit-Enter window. */
 function armLatch(el: Element) {
@@ -208,5 +211,135 @@ describe('ProjectPicker path input — rule 2: gate the Enter path only', () => 
     fireEvent.keyDown(input, { key: 'Enter' })
     await act(async () => { await vi.advanceTimersByTimeAsync(0) })
     expect(vi.mocked(api.browseDirs)).toHaveBeenCalledWith('/home/u/alpha')
+  })
+})
+
+describe('BroadcastBar input — rule 1 single-line Enter-only site: bindEnter', () => {
+  // Representative of the #4292 sweep's bindEnter migrations: the handler is
+  // Enter-only, so the whole binding (composition tracking + claim + focus/blur
+  // recovery) comes from one spread and no hand-rolled spelling exists to copy.
+  it('does NOT send on the committing Enter in the post-composition window', () => {
+    const onSend = vi.fn()
+    render(<BroadcastBar onSend={onSend} />)
+    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '你好' } })
+    armLatch(input)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).not.toHaveBeenCalled()
+  })
+
+  it('leaves a mid-composition Enter to the IME (native flag set)', () => {
+    const onSend = vi.fn()
+    render(<BroadcastBar onSend={onSend} />)
+    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: '你好' } })
+    fireEvent.compositionStart(input)
+    const defaultNotPrevented = fireEvent.keyDown(input, { key: 'Enter', isComposing: true })
+    expect(onSend).not.toHaveBeenCalled()
+    // The guard must not touch a key the IME is consuming.
+    expect(defaultNotPrevented).toBe(true)
+  })
+
+  it('sends on a plain Enter (positive control)', () => {
+    const onSend = vi.fn()
+    render(<BroadcastBar onSend={onSend} />)
+    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('hello')
+  })
+
+  it('a stale latch from an abandoned composition clears on the next focus', () => {
+    // The C2 recovery: the reset now rides in the binding's onFocus, replacing
+    // the site-level `onFocus={() => ime.reset()}` copies. Abandon a composition
+    // (no compositionend), refocus, and the next Enter must send.
+    const onSend = vi.fn()
+    render(<BroadcastBar onSend={onSend} />)
+    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'hello' } })
+    fireEvent.compositionStart(input)   // abandoned: no compositionEnd follows
+    fireEvent.focus(input)
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(onSend).toHaveBeenCalledWith('hello')
+  })
+})
+
+describe('SearchBar find input — rule 2 mixed handler: claim the Enter branch only', () => {
+  // Representative of the sweep's claim-in-mixed-handler sites: Enter steps the
+  // find while arrows/Home/End navigate, so only the Enter branch is claimed.
+  const renderBar = () => {
+    const next = vi.fn()
+    const prev = vi.fn()
+    render(
+      <SearchBar
+        term="查询" setTerm={vi.fn()} matches={[]} currentIdx={0}
+        next={next} prev={prev} close={vi.fn()}
+        caseSensitive={false} toggleCaseSensitive={vi.fn()}
+      />,
+    )
+    const input = screen.getByLabelText(/./, { selector: 'input' }) as HTMLInputElement
+    return { input, next, prev }
+  }
+
+  it('does NOT step the find on the committing Enter, and consumes it', () => {
+    const { input, next } = renderBar()
+    armLatch(input)
+    const defaultNotPrevented = fireEvent.keyDown(input, { key: 'Enter' })
+    expect(next).not.toHaveBeenCalled()
+    // claimEnter consumed the declined key (both native signals clear).
+    expect(defaultNotPrevented).toBe(false)
+  })
+
+  it('keeps arrow-key navigation working while the latch is armed', () => {
+    const { input, next } = renderBar()
+    armLatch(input)
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    expect(next).toHaveBeenCalledTimes(1)
+  })
+
+  it('steps the find on a plain Enter (positive control)', () => {
+    const { input, next, prev } = renderBar()
+    fireEvent.keyDown(input, { key: 'Enter' })
+    expect(next).toHaveBeenCalledTimes(1)
+    fireEvent.keyDown(input, { key: 'Enter', shiftKey: true })
+    expect(prev).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('md-notebook BlockEditor — rule 3 textarea: claim before the Enter→blur commit', () => {
+  // The sweep's review caught this site declining WITHOUT claiming: inside the
+  // post-composition window the unclaimed Cmd/Ctrl+Enter neither committed nor
+  // stayed inert — the browser answered it with a literal newline into the
+  // note draft. The textarea rule of the source ratchet now pins the shape;
+  // this pins the behaviour.
+  function renderEditor() {
+    const onCommit = vi.fn()
+    render(<BlockEditor initial="草稿" onCommit={onCommit} onCancel={vi.fn()} />)
+    const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+    return { ta, onCommit }
+  }
+
+  it('declines the committing Ctrl+Enter in the post-composition window AND consumes it', () => {
+    const { ta, onCommit } = renderEditor()
+    armLatch(ta)
+    const defaultNotPrevented = fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+    expect(onCommit).not.toHaveBeenCalled()
+    // Consumption is the half the pre-fix decline dropped: unclaimed, the
+    // browser inserts a newline into the draft the user is still composing.
+    expect(defaultNotPrevented).toBe(false)
+  })
+
+  it('leaves a mid-composition Ctrl+Enter to the IME (native flag set)', () => {
+    const { ta, onCommit } = renderEditor()
+    fireEvent.compositionStart(ta)
+    const defaultNotPrevented = fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true, isComposing: true })
+    expect(onCommit).not.toHaveBeenCalled()
+    expect(defaultNotPrevented).toBe(true)
+  })
+
+  it('commits on a plain Ctrl+Enter via the blur it triggers (positive control)', () => {
+    const { ta, onCommit } = renderEditor()
+    fireEvent.keyDown(ta, { key: 'Enter', ctrlKey: true })
+    expect(onCommit).toHaveBeenCalledWith('草稿')
   })
 })

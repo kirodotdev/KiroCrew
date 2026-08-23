@@ -405,13 +405,7 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
         <Input
           value={value}
           onChange={e => { onChange(e.target.value); if (error) setError('') }}
-          {...ime.bindComposition()}
-          onKeyDown={e => {
-            if (e.key !== 'Enter') return
-            // Rule 1: single-line input — decline the IME's committing Enter only.
-            if (ime.isComposing(e)) return
-            e.preventDefault(); submit()
-          }}
+          {...ime.bindEnter({ onEnter: submit })}
           placeholder={i18nT('pages.settings.securityPanel.add_a_custom_deny_pattern_regex_e_g_rm_rf_tmp_mi')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_pattern')}
         />
@@ -428,14 +422,7 @@ function AddDenyInput({ value, onChange, note, onNoteChange, onAdd, busy, submit
         <Input
           value={note}
           onChange={e => onNoteChange(e.target.value)}
-          {...ime.bindComposition()}
-          onKeyDown={e => {
-            if (e.key !== 'Enter') return
-            // Rule 1: single-line input — one shared instance covers both fields;
-            // the binding's blur reset makes that safe.
-            if (ime.isComposing(e)) return
-            e.preventDefault(); submit()
-          }}
+          {...ime.bindEnter({ onEnter: submit })}
           placeholder={i18nT('pages.settings.securityPanel.optional_why_shown_to_the_agent_when_this_rule_fir')}
           aria-label={i18nT('pages.settings.securityPanel.custom_deny_note')}
           maxLength={200}

@@ -22,6 +22,7 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 
 import { loadUsage, recordUse, type UsageMap } from './frecency'
 import { rankRootRows, type RankedRow, type RootGroup, type RootRow, type RootRowKind } from './rootIndex'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -93,6 +94,7 @@ export default function CommandBarOverlay({
   open: boolean
   onClose: () => void
 }) {
+  const ime = useImeGuard()
   const vv = useVisualViewport()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -351,7 +353,8 @@ export default function CommandBarOverlay({
         e.preventDefault()
         setSelected(i => (rowCount === 0 ? 0 : (i - 1 + rowCount) % rowCount))
       } else if (e.key === 'Enter') {
-        e.preventDefault()
+        // Only the Enter branch is claimed — arrow navigation stays untouched.
+        if (!ime.claimEnter(e)) return
         activateIndex(selected)
       } else if (e.key === 'Backspace' && query === '' && scope) {
         // Leaving a scope is Backspace on an empty input — the same gesture that
@@ -437,6 +440,7 @@ export default function CommandBarOverlay({
               setQuery(e.target.value)
               setSelected(0)
             }}
+            {...ime.bindComposition()}
             onKeyDown={onKeyDown}
             placeholder={
               scope

@@ -7,6 +7,7 @@ import { queryClient } from '../../api/queryClient'
 import { parseErrorCode } from '../../utils/errorReport'
 import { isValidLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 /**
  * Inline banner for kiro-cli MCP OAuth flow. `meta.completed` flips it to the
  * authenticated state; `meta.failed` flips it to the error state.
@@ -123,6 +124,7 @@ export default function McpOAuthBanner({
  * never mints one (parked decision #4286, untouched).
  */
 function RelayAffordance({ serverName }: { serverName: string }) {
+  const ime = useImeGuard()
   const [open, setOpen] = useState(false)
   const [returnAddress, setReturnAddress] = useState('')
   const [busy, setBusy] = useState(false)
@@ -221,9 +223,7 @@ function RelayAffordance({ serverName }: { serverName: string }) {
               spellCheck={false}
               value={returnAddress}
               onChange={e => setReturnAddress(e.target.value)}
-              onKeyDown={e => {
-                if (e.key === 'Enter') void runRelay()
-              }}
+              {...ime.bindEnter({ onEnter: () => void runRelay() })}
               placeholder={i18nT('pages.connectionsPage.return_address_placeholder')}
               aria-label={i18nT('pages.connectionsPage.return_address')}
               disabled={busy}

@@ -12,6 +12,7 @@ import { BUILT_IN_CAT_PRESETS } from './builtInCatPresets'
 import { toDataUri } from './animationResolver'
 import { i18nT } from '../../i18n/t'
 import { petBridge } from './petBridge'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
  * The built-in pack's id, canonical in the backend (appearances.py `DEFAULT_PACK`).
@@ -114,6 +115,7 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
 interface Props { idleSvgContent: string; }
 
 export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
+  const ime = useImeGuard()
   const [colorMap, setColorMap] = useState<ColorMap>({})
   const [registry, setRegistry] = useState<PresetRegistry>(() => new PresetRegistry(BUILT_IN_CAT_PRESETS))
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
@@ -215,7 +217,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               type="text"
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSaveAsPreset(); if (e.key === 'Escape') setShowSaveForm(false) }}
+              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: () => setShowSaveForm(false) })}
               placeholder={i18nT('apps.crewCompanion.color.promptName')}
               aria-label={i18nT('apps.crewCompanion.color.promptName')}
               autoFocus

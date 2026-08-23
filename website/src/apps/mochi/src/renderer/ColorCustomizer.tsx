@@ -12,6 +12,7 @@ import { BUILT_IN_CAT_PRESETS, presetDisplayName } from '../shared/builtInCatPre
 import { toDataUri } from './animationResolver'
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
+import { useImeGuard } from '../../../../hooks/useImeGuard'
 
 /** i18n key for each source color's body part label */
 const BODY_PART_KEYS: Record<string, string> = {
@@ -102,6 +103,7 @@ function ColorEditorCard({ sourceColor, targetColor, bodyPart, svgContent, allCo
 interface Props { idleSvgContent: string }
 
 export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
+  const ime = useImeGuard()
   const [colorMap, setColorMap] = useState<ColorMap>({})
   const [registry, setRegistry] = useState<PresetRegistry>(() => new PresetRegistry(BUILT_IN_CAT_PRESETS))
   const [activePresetId, setActivePresetId] = useState<string | null>(null)
@@ -199,7 +201,7 @@ export const ColorCustomizerPanel: React.FC<Props> = ({ idleSvgContent }) => {
               type="text"
               value={saveNameInput}
               onChange={e => setSaveNameInput(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') handleSaveAsPreset(); if (e.key === 'Escape') setShowSaveForm(false) }}
+              {...ime.bindEnter({ onEnter: handleSaveAsPreset, onEscape: () => setShowSaveForm(false) })}
               placeholder={i18nT('apps.mochi.color.prompt_name')}
               autoFocus
               style={{
