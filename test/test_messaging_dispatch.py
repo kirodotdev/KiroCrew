@@ -321,3 +321,52 @@ def test_the_pause_is_read_for_the_role_the_turn_arrived_on(monkeypatch) -> None
         )
     )
     assert mirrored.pause_calls == [("dashboard:chat-1", False)], "a mirror reads the mirror flag"
+
+
+def _capture_driver_kwargs(box: list) -> type:
+    """A driver stand-in recording the kwargs the pipeline constructs it with."""
+
+    class _Capturing(_Driver):
+        def __init__(self, provider, renderer, **kw):
+            super().__init__()
+            box.append(kw)
+
+    return _Capturing
+
+
+def test_auto_approve_session_reaches_the_driver(monkeypatch) -> None:
+    """A channel with no approve/deny buttons needs an out-of-band trust grant.
+
+    Teams renders no widget, so under INTERACTIVE the ladder denies every tool and
+    the agent can only talk. ``ChannelTurn.auto_approve_session`` is how such a
+    channel grants trust; if the pipeline drops it, the grant silently does
+    nothing and the channel looks like the feature does not exist.
+    """
+    box: list = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver_kwargs(box))
+    turn = _turn(_CountingRenderer())
+    turn.auto_approve_session = lambda: True
+
+    asyncio.run(drive_turn(turn, sessions=_Sessions(), ctx_builder=_CtxBuilder()))
+
+    assert box, "the driver was never constructed"
+    predicate = box[0].get("auto_approve_session")
+    assert predicate is not None and predicate() is True
+
+
+def test_omitting_auto_approve_session_keeps_the_deny_default(monkeypatch) -> None:
+    """The field is additive: a channel that does not set it is unaffected.
+
+    Four other channels ride this pipeline, so a None default that leaked through
+    as something truthy would hand them an auto-approve nobody granted.
+    """
+    box: list = []
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _capture_driver_kwargs(box))
+
+    asyncio.run(
+        drive_turn(_turn(_CountingRenderer()), sessions=_Sessions(), ctx_builder=_CtxBuilder())
+    )
+
+    assert box[0].get("auto_approve_session") is None

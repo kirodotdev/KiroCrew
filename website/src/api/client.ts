@@ -499,8 +499,20 @@ export interface IMessageConfigSave {
   app_id_set: boolean
   app_password_set: boolean
   enabled: boolean
+  /** Azure AD tenant id for a single-tenant bot; "" = multi-tenant. Not a secret. */
   tenant_id: string
   allowed_emails: string[]
+  /**
+   * Whether PyJWT is importable in the gateway's environment. The inbound Bot
+   * Framework webhook validates a signed JWT, so the channel refuses to start
+   * without it and the panel has to say so — optional because a gateway that
+   * predates the field sends none, and absent must not read as false.
+   */
+  jwt_available?: boolean
+  /** Context percentage at which the channel nudges the user to compact. */
+  soft_threshold_pct?: number
+  /** Context percentage at which the channel compacts without being asked. */
+  hard_threshold_pct?: number
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
 }
@@ -531,6 +543,14 @@ export interface TeamsConfigSave {
   tenant_id: string
   enabled: boolean
   allowed_emails: string[]
+  /**
+   * Context thresholds, as whole percentages in 1..100 with
+   * `hard_threshold_pct >= soft_threshold_pct`. The backend answers 400 with a
+   * machine-readable `code` when the pair violates that, so the panel checks it
+   * client-side first.
+   */
+  soft_threshold_pct: number
+  hard_threshold_pct: number
   /** Sidebar folder this channel's sessions are filed into ("" = off, the default). */
   session_folder?: string
 }

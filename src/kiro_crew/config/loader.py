@@ -409,14 +409,18 @@ def _safe_nonnegative_int(value: object, default: int) -> int:
     return result if result >= 0 else default
 
 
-def _clamp_pct(value: int) -> int:
-    """Clamp an integer context-threshold percentage to 1..100.
+#: Bounds of a context-threshold percentage, and the single statement of the range.
+#: The floor is 1, not 0, because a 0% threshold means "always over" and would fire the
+#: notice/compaction on every turn. Public because the dashboard's channel-config
+#: handlers validate an inbound percentage against exactly this range, and a validator
+#: that restated the numbers would drift from what the loader will actually accept.
+THRESHOLD_PCT_MIN = 1
+THRESHOLD_PCT_MAX = 100
 
-    The single statement of the range: the floor is 1, not 0, because a 0%
-    threshold means "always over" and would fire the notice/compaction on
-    every turn.
-    """
-    return max(1, min(100, value))
+
+def _clamp_pct(value: int) -> int:
+    """Clamp an integer context-threshold percentage to the shared range."""
+    return max(THRESHOLD_PCT_MIN, min(THRESHOLD_PCT_MAX, value))
 
 
 def _threshold_pct(raw: object, default: int) -> int:

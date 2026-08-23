@@ -10475,6 +10475,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "ボット認証情報を取得",
+        "hard_below_soft_error": "ハードコンテキスト閾値はソフトコンテキスト閾値以上である必要があります",
+        "hard_threshold_description": "このパーセンテージに達したら、返信を待たずに自動でコンパクトし、コンテキストウィンドウがあふれないようにします。",
+        "hard_threshold_label": "ハードコンテキスト閾値 %",
+        "hard_threshold_range_error": "ハードコンテキスト閾値は 1 ～ 100 の数値である必要があります",
         "threshold_description": "セッションコンテキストがこのパーセンテージを超えたときに {{compact}} または {{new}} にプロンプト表示。"
       },
       "channelsPanel": {
@@ -11370,6 +11374,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "上記。Slack とは異なり、Bot Framework には\n              送信専用モードがありません。",
         "access": "アクセス",
+        "active": "アクティブ",
         "add_the": "、追加",
         "allowed_users_email_or_aad_object_id": "許可されたユーザー (メールまたはAADオブジェクトID)",
         "and_save": "、保存。",
@@ -11402,6 +11407,7 @@
         "if_single_tenant": "単一テナント場合)。",
         "in_the_bot_s": "ボットの",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "はアプリID、その後ボットにDM —\n              上のセットアップガイドに完全なマニフェストステップ。",
+        "jwt_required": "<strong>Microsoft Teams には PyJWT の依存関係が必要です。</strong>受信する Bot Framework リクエストには検証が必要な署名付きトークンが含まれるため、これがないとチャネルは起動しません。gateway を実行している環境で <mono>pip install \"kirocrew[teams]\"</mono> を実行し、gateway を再起動してください。",
         "leave_empty_for_a_multi_tenant_bot": "マルチテナントボットの場合は空白のままにする",
         "loading_teams_config": "Teamsの設定を読み込み中…",
         "localhost": "localhost",
@@ -11410,6 +11416,8 @@
         "microsoft_app_id": "Microsoft アプリID",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "マルチテナント",
+        "needs_setup": "セットアップが必要",
+        "not_active": "アクティブではない",
         "optional_only_for_single_tenant_bots": "オプション — 単一テナントボットのみ。",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": "、またはテナント IDを固定する場合は単一テナント。",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "または\n              SSH トンネル経由のアドレスは使用できません。トンネル（ngrok / cloudflared）か\n              リバースプロキシでゲートウェイを公開し、その公開ホストを",
@@ -11419,6 +11427,7 @@
         "required": "必須",
         "requires_a_public_https_url": "パブリックHTTPS URLが必要。",
         "save_failed_is_the_gateway_running": "保存失敗。ゲートウェイは実行中ですか？",
+        "save_rejected": "gateway がこの設定を拒否しました（{{code}}）。",
         "save_teams_settings": "Teamsの設定を保存",
         "saved": "保存済み。",
         "saved_restart_the_gateway_to_apply": "保存済み。適用するにはゲートウェイを再起動。",

@@ -299,8 +299,11 @@ def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
         (status_body, _env) = _client_put(
             mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad}
         )
-        status, _body = status_body
+        status, body = status_body
         assert status == 400
+        # A machine-readable code, not prose only: the dashboard renders `error`
+        # verbatim into a localized UI, so prose alone is untranslatable.
+        assert body["code"] == "soft_threshold_pct_invalid"
 
 
 def test_get_masks_secrets_and_reports_state(tmp_path: Path, monkeypatch) -> None:

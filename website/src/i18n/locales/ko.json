@@ -10475,6 +10475,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "봇 자격 증명 발급받기",
+        "hard_below_soft_error": "하드 컨텍스트 임계값은 소프트 컨텍스트 임계값보다 크거나 같아야 합니다",
+        "hard_threshold_description": "이 비율에 도달하면 응답을 기다리지 않고 자동으로 압축해 컨텍스트 윈도가 넘치지 않도록 합니다.",
+        "hard_threshold_label": "하드 컨텍스트 임계값 %",
+        "hard_threshold_range_error": "하드 컨텍스트 임계값은 1에서 100 사이의 숫자여야 합니다",
         "threshold_description": "세션 컨텍스트가 이 비율을 넘으면 {{compact}} 또는 {{new}}을(를) 안내합니다."
       },
       "channelsPanel": {
@@ -11370,6 +11374,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "위. Slack과 달리 Bot Framework에는\n 발신 전용 모드가 없습니다.",
         "access": "액세스",
+        "active": "활성",
         "add_the": ", 다음을 추가",
         "allowed_users_email_or_aad_object_id": "허용된 사용자(이메일 또는 AAD 개체 ID)",
         "and_save": ", 저장하세요.",
@@ -11402,6 +11407,7 @@
         "if_single_tenant": "단일 테넌트인 경우).",
         "in_the_bot_s": "봇의",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "앱 ID입니다. 그다음 봇에 DM을 보내세요 —\n 전체 매니페스트 단계는 위 설정 가이드에 있습니다.",
+        "jwt_required": "<strong>Microsoft Teams에는 PyJWT 종속성이 필요합니다.</strong> 수신되는 Bot Framework 요청에는 검증해야 하는 서명된 토큰이 포함되므로 이 종속성이 없으면 채널이 시작되지 않습니다. gateway를 실행하는 환경에서 <mono>pip install \"kirocrew[teams]\"</mono>을 실행한 다음 gateway를 다시 시작하세요.",
         "leave_empty_for_a_multi_tenant_bot": "다중 테넌트 봇의 경우 비워 두세요",
         "loading_teams_config": "Teams 설정을 불러오는 중…",
         "localhost": "localhost",
@@ -11410,6 +11416,8 @@
         "microsoft_app_id": "Microsoft 앱 ID",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "다중 테넌트",
+        "needs_setup": "설정 필요",
+        "not_active": "활성 아님",
         "optional_only_for_single_tenant_bots": "선택 사항 — 단일 테넌트 봇에만 해당합니다.",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", 테넌트 ID를 고정하려면 단일 테넌트를 선택하세요.",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "또는\n SSH 터널 주소는 동작하지 않습니다. 터널(ngrok / cloudflared)이나\n 리버스 프록시로 게이트웨이를 공개한 다음, 그 공개 호스트를 다음으로 사용하세요",
@@ -11419,6 +11427,7 @@
         "required": "필수",
         "requires_a_public_https_url": "공개 HTTPS URL이 필요합니다.",
         "save_failed_is_the_gateway_running": "저장하지 못했습니다. 게이트웨이가 실행 중인가요?",
+        "save_rejected": "gateway가 이 설정을 거부했습니다({{code}}).",
         "save_teams_settings": "Teams 설정 저장",
         "saved": "저장되었습니다.",
         "saved_restart_the_gateway_to_apply": "저장되었습니다. 적용하려면 게이트웨이를 재시작하세요.",

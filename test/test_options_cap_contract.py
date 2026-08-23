@@ -22,7 +22,7 @@ from kiro_crew.messaging.renderer import apply_options_cap, cap_choices
 from kiro_crew.messaging.transport import TransportCapabilities
 
 #: channel_type -> the test class below that pins its enforcement.
-PINNED_WIDGET_CHANNELS = {"slack", "discord", "telegram"}
+PINNED_WIDGET_CHANNELS = {"slack", "discord", "telegram", "teams"}
 
 
 def _all_channel_capabilities() -> dict[str, TransportCapabilities]:
@@ -375,3 +375,95 @@ class TestDiscordEnforcement:
 
         asyncio.run(_go())
         assert "IOSFODNN7EXAMPLE" not in cli.final_text()
+
+
+class TestTeamsEnforcement:
+    """Teams renders choices as Adaptive Card ``Action.Submit`` actions.
+
+    The cap matters more here than the widget count suggests: a chip's label is
+    later resolved from what the renderer recorded, so a choice that was capped
+    out of the card must reach the user as text or it is unreachable entirely.
+    """
+
+    def test_chips_cap_at_declared_and_overflow_is_visible(self) -> None:
+        from kiro_crew.teams.renderer import TeamsRenderer
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+
+        n = TEAMS_CAPABILITIES.max_buttons
+        trailer = " | ".join(f"Choice {i}" for i in range(1, n + 4))
+
+        class _Client:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.cards: list[dict] = []
+
+            async def send_message(self, conversation_id, content, service_url):
+                self.sent.append(content)
+                return f"mid-{len(self.sent)}"
+
+            async def send_card(self, conversation_id, card, service_url):
+                self.cards.append(card)
+                return f"card-{len(self.cards)}"
+
+            async def update_message(self, conversation_id, activity_id, content, service_url):
+                return True
+
+            async def send_typing(self, conversation_id, service_url) -> None:
+                return None
+
+        cli = _Client()
+        r = TeamsRenderer(cli, "CONV", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_text_chunk(f"Pick.\n\n[OPTIONS: {trailer}]")
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        labels = [a["title"] for a in cli.cards[-1]["content"]["actions"]]
+        assert len(labels) == n, "the card must carry exactly max_buttons chips"
+        body = "\n".join(cli.sent)
+        # Overflow continues the SAME numbering the widget slots started, so the
+        # user can answer an un-chipped choice by typing it.
+        assert f"{n + 1}. Choice {n + 1}" in body
+        assert f"{n + 3}. Choice {n + 3}" in body
+
+    def test_an_overflow_credential_is_redacted_in_the_body(self) -> None:
+        """Overflow lands in the message body, which Teams markdown-renders."""
+        from kiro_crew.teams.renderer import TeamsRenderer
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+
+        n = TEAMS_CAPABILITIES.max_buttons
+        choices = [f"Choice {i}" for i in range(1, n + 1)] + ["AKIAIOSFODNN7EXAMPLE"]
+        trailer = " | ".join(choices)
+
+        class _Client:
+            def __init__(self) -> None:
+                self.sent: list[str] = []
+                self.cards: list[dict] = []
+
+            async def send_message(self, conversation_id, content, service_url):
+                self.sent.append(content)
+                return f"mid-{len(self.sent)}"
+
+            async def send_card(self, conversation_id, card, service_url):
+                self.cards.append(card)
+                return f"card-{len(self.cards)}"
+
+            async def update_message(self, conversation_id, activity_id, content, service_url):
+                return True
+
+            async def send_typing(self, conversation_id, service_url) -> None:
+                return None
+
+        cli = _Client()
+        r = TeamsRenderer(cli, "CONV", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
+
+        async def _go() -> None:
+            await r.on_text_chunk(f"Pick.\n\n[OPTIONS: {trailer}]")
+            await r.on_done()
+
+        asyncio.run(_go())
+
+        assert "AKIAIOSFODNN7EXAMPLE" not in "\n".join(cli.sent)

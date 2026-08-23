@@ -10857,6 +10857,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "Получи учётные данные бота",
+        "hard_below_soft_error": "Жёсткий порог контекста должен быть не меньше мягкого порога",
+        "hard_threshold_description": "Автоматически сжимать контекст при этом проценте, даже без ответа, чтобы окно контекста никогда не переполнялось.",
+        "hard_threshold_label": "Жёсткий порог контекста, %",
+        "hard_threshold_range_error": "Жёсткий порог контекста должен быть числом от 1 до 100",
         "threshold_description": "Предлагать {{compact}} или {{new}}, когда контекст сессии превысит этот процент."
       },
       "channelsPanel": {
@@ -11752,6 +11756,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "выше. В отличие от Slack, у Bot Framework нет\n              режима только для исходящих сообщений.",
         "access": "Доступ",
+        "active": "Активно",
         "add_the": ", добавьте",
         "allowed_users_email_or_aad_object_id": "Разрешённые пользователи (email или object id в AAD)",
         "and_save": ", затем нажмите «Сохранить».",
@@ -11784,6 +11789,7 @@
         "if_single_tenant": "если однотенантный).",
         "in_the_bot_s": "В разделе бота",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "— это ваш App ID, затем напишите боту\n              в личные сообщения — полные шаги по манифесту в руководстве по настройке выше.",
+        "jwt_required": "<strong>Для Microsoft Teams нужна зависимость PyJWT.</strong> Входящие запросы Bot Framework содержат подписанный токен, который необходимо проверять, поэтому без неё канал не запустится. Выполните <mono>pip install \"kirocrew[teams]\"</mono> в окружении, где работает gateway, и перезапустите его.",
         "leave_empty_for_a_multi_tenant_bot": "Оставьте пустым для мультитенантного бота",
         "loading_teams_config": "Загрузка конфигурации Teams…",
         "localhost": "localhost",
@@ -11792,6 +11798,8 @@
         "microsoft_app_id": "ID приложения Microsoft",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "Мультитенантный",
+        "needs_setup": "Требуется настройка",
+        "not_active": "Не активно",
         "optional_only_for_single_tenant_bots": "Необязательно — только для однотенантных ботов.",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", или однотенантный, если вы закрепите ID тенанта.",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "или\n              адрес через SSH-туннель не подойдёт. Откройте шлюз через туннель\n              (ngrok / cloudflared) или обратный прокси, затем используйте этот публичный хост как",
@@ -11801,6 +11809,7 @@
         "required": "Обязательно",
         "requires_a_public_https_url": "Требуется публичный HTTPS-URL.",
         "save_failed_is_the_gateway_running": "Не удалось сохранить. Шлюз запущен?",
+        "save_rejected": "Gateway отклонил эти настройки ({{code}}).",
         "save_teams_settings": "Сохранить настройки Teams",
         "saved": "Сохранено.",
         "saved_restart_the_gateway_to_apply": "Сохранено. Перезапусти шлюз, чтобы применить.",

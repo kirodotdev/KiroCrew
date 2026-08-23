@@ -10603,6 +10603,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "अपने बॉट के क्रेडेंशियल लें",
+        "hard_below_soft_error": "हार्ड कॉन्टेक्स्ट थ्रेशोल्ड सॉफ़्ट कॉन्टेक्स्ट थ्रेशोल्ड के बराबर या उससे ज़्यादा होना चाहिए",
+        "hard_threshold_description": "इस प्रतिशत पर जवाब का इंतज़ार किए बिना अपने आप कॉम्पैक्ट करें, ताकि कॉन्टेक्स्ट विंडो कभी न भरे।",
+        "hard_threshold_label": "हार्ड कॉन्टेक्स्ट थ्रेशोल्ड %",
+        "hard_threshold_range_error": "हार्ड कॉन्टेक्स्ट थ्रेशोल्ड 1 और 100 के बीच की संख्या होनी चाहिए",
         "threshold_description": "जब सत्र का कॉन्टेक्स्ट इस प्रतिशत से आगे बढ़े, तो {{compact}} या {{new}} करने के लिए पूछें।"
       },
       "channelsPanel": {
@@ -11498,6 +11502,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ऊपर। Slack के विपरीत, Bot Framework में कोई\n              केवल-आउटबाउंड मोड नहीं है।",
         "access": "एक्सेस",
+        "active": "सक्रिय",
         "add_the": ", जोड़ें",
         "allowed_users_email_or_aad_object_id": "अनुमत उपयोगकर्ता (ईमेल या AAD object id)",
         "and_save": ", और सहेजें।",
@@ -11530,6 +11535,7 @@
         "if_single_tenant": "यदि सिंगल-टेनेंट हो)।",
         "in_the_bot_s": "बॉट के",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "आपका App ID हो, फिर बॉट को DM करें —\n              पूरे manifest चरण ऊपर दी गई सेटअप गाइड में हैं।",
+        "jwt_required": "<strong>Microsoft Teams को PyJWT डिपेंडेंसी चाहिए।</strong> इनबाउंड Bot Framework अनुरोध एक साइन किया हुआ टोकन लाते हैं जिसे वेरिफ़ाई करना ज़रूरी है, इसलिए इसके बिना चैनल शुरू नहीं होगा। gateway चलाने वाले एनवायरनमेंट में <mono>pip install \"kirocrew[teams]\"</mono> चलाएँ, फिर gateway रीस्टार्ट करें।",
         "leave_empty_for_a_multi_tenant_bot": "मल्टी-टेनेंट बॉट के लिए खाली छोड़ें",
         "loading_teams_config": "Teams कॉन्फ़िग लोड हो रहा है…",
         "localhost": "localhost",
@@ -11538,6 +11544,8 @@
         "microsoft_app_id": "Microsoft App ID",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "मल्टी-टेनेंट",
+        "needs_setup": "सेटअप चाहिए",
+        "not_active": "सक्रिय नहीं",
         "optional_only_for_single_tenant_bots": "वैकल्पिक — केवल सिंगल-टेनेंट बॉट्स के लिए।",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", या सिंगल-टेनेंट अगर आप कोई टेनेंट ID पिन करेंगे।",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "या\n              SSH-टनल किया गया पता काम नहीं करेगा। गेटवे को किसी टनल\n              (ngrok / cloudflared) या रिवर्स प्रॉक्सी से एक्सपोज़ करें, फिर उस सार्वजनिक होस्ट को इस रूप में उपयोग करें:",
@@ -11547,6 +11555,7 @@
         "required": "आवश्यक",
         "requires_a_public_https_url": "एक सार्वजनिक HTTPS URL आवश्यक है।",
         "save_failed_is_the_gateway_running": "सहेजना विफल। क्या गेटवे चल रहा है?",
+        "save_rejected": "gateway ने ये सेटिंग अस्वीकार कर दीं ({{code}})।",
         "save_teams_settings": "Teams सेटिंग सहेजें",
         "saved": "सहेजा गया।",
         "saved_restart_the_gateway_to_apply": "सहेजा गया। लागू करने के लिए गेटवे रीस्टार्ट करें।",

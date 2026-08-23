@@ -1228,6 +1228,14 @@ class TestTeamsConfigSave:
         monkeypatch.setattr(loader, "config_path", lambda: cfg)
         monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
         monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "")
+
+        async def _accept(app_id: str, app_password: str, tenant_id: str) -> None:
+            """The save verifies a changed credential against Azure AD, which a
+            unit test must never actually reach. The reject / unreachable /
+            accepted branches are covered in test_teams_config_handlers.py."""
+            return None
+
+        monkeypatch.setattr(mod, "_validate_teams_app_credentials", _accept)
         return _run(mod.api_teams_config_save, _Req(_state(), body)), env, cfg
 
     def test_403_from_remote_sessions(self, monkeypatch) -> None:

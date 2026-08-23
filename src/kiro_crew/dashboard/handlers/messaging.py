@@ -41,7 +41,7 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_key,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
@@ -2742,6 +2742,30 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     )
 
 
+def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] | None:
+    """``(code, message)`` when *body[key]* is present and not a valid percentage.
+
+    ``None`` when the key is absent or the value is in range. One home for the check
+    across every channel that exposes context-window nudge thresholds, because
+    ``isinstance(True, int)`` is True in Python: each site has to exclude bool
+    explicitly or a JSON ``true`` reads as 1%, and a per-channel copy of that subtlety
+    is a per-channel chance to omit it. The bounds come from the config loader, so a
+    value this accepts is one the loader will not silently clamp.
+    """
+    if key not in body:
+        return None
+    from kiro_crew.config.loader import THRESHOLD_PCT_MAX, THRESHOLD_PCT_MIN
+
+    pct = body.get(key)
+    if isinstance(pct, int) and not isinstance(pct, bool):
+        if THRESHOLD_PCT_MIN <= pct <= THRESHOLD_PCT_MAX:
+            return None
+    return (
+        f"{key}_invalid",
+        f"{key} must be an integer between {THRESHOLD_PCT_MIN} and {THRESHOLD_PCT_MAX}",
+    )
+
+
 # ── Discord configuration API ──
 # The bot token lives in config_dir/.env as DISCORD_BOT_TOKEN (0600), with
 # config.json's discord.bot_token as a legacy fallback. Non-secret config
@@ -2851,7 +2875,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="discord.config.update",
@@ -2859,7 +2883,14 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -2982,10 +3013,11 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["auto_thread"] = val
             applied.append("auto_thread")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(dc_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
@@ -3166,7 +3198,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="telegram.config.update",
@@ -3174,7 +3206,14 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -3256,10 +3295,11 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_user_ids"] = new_ids
             applied.append("allowed_user_ids")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
@@ -3452,15 +3492,93 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
     are present. Until then (channel disabled/uncredentialed) we return 503.
 
-    This route is exempt from the dashboard cookie gate for POST only (see
-    token_auth ``_BYPASS_EXACT_METHODS``); the delegated handler performs Bot
-    Framework JWT validation itself before doing anything with the payload.
+    This route is exempt from the dashboard cookie gate and from the CSRF Origin
+    check, for POST only (``token_auth._BYPASS_EXACT_METHODS`` /
+    ``CSRF_EXEMPT_EXACT_METHODS``); the delegated handler performs Bot Framework
+    JWT validation itself before doing anything with the payload. Both
+    exemptions make this the one route in the product an unauthenticated caller
+    can reach, so the two hardening steps below run before delegating.
     """
+    # Deferred imports: Teams is an optional, default-off channel, and importing
+    # its client also probes for the optional PyJWT. Neither belongs on the
+    # gateway boot path, which imports this module.
+    from kiro_crew import webhooks  # noqa: F811
+    from kiro_crew.teams.client import (  # noqa: F811
+        TEAMS_ACTIVITY_REQUEST_KEY,
+        TEAMS_MAX_ACTIVITY_BYTES,
+    )
+
     state: DashboardState = request.app["state"]
     handler = getattr(state, "teams_on_activity", None)
     if handler is None:
         return web.Response(status=503, text="Teams channel not enabled")
-    return await handler(request)
+
+    # Failed-auth throttle, the same per-source abuse damper /api/hooks/agent
+    # uses. An anonymous POST here is free to the sender but not to us: an
+    # unknown JWT ``kid`` sends the validator to the Bot Framework JWKS endpoint,
+    # so a flood buys a remote fetch plus an audit write per request. Slowed
+    # rather than answered at line rate; the real boundary remains the JWT.
+    #
+    # 429 rather than the 200 the in-flight shed uses: a rate limit is exactly
+    # what the Connector's retry-with-backoff is for.
+    #
+    # SKIPPED when a proxy terminated the connection, and that is the whole point
+    # of the check rather than a convenience. ``request.remote`` is then the
+    # proxy's address for EVERY caller, so the real Connector and an anonymous
+    # flood share one counter -- and in two of the three topologies
+    # ``docs/teams-integration.md`` documents (a reverse proxy, a dev tunnel) that
+    # is the normal deployment. Throttling there converts ~10 bogus POSTs into a
+    # 300s outage for the channel, renewably, because a 429 is never an accepted
+    # activity and so never clears the count. Trusting a forwarded header instead
+    # would make a spoofable field the identity, which is its own decision;
+    # bounding only the direct-bind topology is the honest half.
+    source = request.remote or "unknown"
+    throttled_source = "" if is_proxied_request(request) else source
+    if throttled_source and webhooks.auth_throttle_blocked(throttled_source):
+        # Off the loop: the first ``sel()`` of a process CONSTRUCTS the log
+        # (trust-dir creation, key validation, an icacls subprocess on Windows),
+        # and this route can be the first request a fresh gateway ever serves.
+        await asyncio.to_thread(
+            lambda: _sel().log_api_access(
+                caller=source,
+                operation="teams.activity",
+                outcome="denied",
+                source="teams",
+                error="auth failures throttled",
+            )
+        )
+        return web.json_response(
+            {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
+        )
+
+    # Bounded body read. It happens HERE, not in the client, for two reasons: the
+    # cap is a property of the exposed route, and ``teams/client.py`` keeps its
+    # no-dashboard-imports property. ``on_activity`` reads the parsed dict from
+    # the request mapping, so the body is parsed exactly once and never past the
+    # cap.
+    body, cap_error = await read_bounded_json(request, max_bytes=TEAMS_MAX_ACTIVITY_BYTES)
+    if cap_error is not None and cap_error.status == 413:
+        return cap_error
+    if body is not None:
+        request[TEAMS_ACTIVITY_REQUEST_KEY] = body
+    # A body that is not a JSON object is deliberately NOT answered here. The
+    # ordering guarantee is that the token check precedes any verdict derived
+    # from body CONTENT, so the stash is left unset and ``on_activity`` answers
+    # 400 after its JWT gate. An over-cap body is different: refusing on SIZE
+    # reveals nothing about the payload and must happen before any buffering.
+
+    response = await handler(request)
+    # 401 is ``on_activity``'s only authentication refusal (invalid or
+    # unverifiable bearer); anything it accepts clears the source, exactly as the
+    # hooks webhook does after a valid token authenticates. Bookkeeping is skipped
+    # for a proxied request for the same reason the check above is: the counter
+    # would be shared across every caller.
+    if throttled_source:
+        if response.status == 401:
+            webhooks.record_auth_failure(throttled_source)
+        elif response.status < 400:
+            webhooks.record_auth_success(throttled_source)
+    return response
 
 
 async def api_teams_config_get(request: web.Request) -> web.Response:
@@ -3468,13 +3586,23 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
+        CRED_MICROSOFT_APP_TENANT_ID,
         KiroCrewConfig,
     )
 
+    # Deferred for the same reason as in api_teams_activity: importing the client
+    # probes for the optional PyJWT, which must not happen on the boot path.
+    from kiro_crew.teams.client import HAS_JWT  # noqa: F811
+
     cfg = KiroCrewConfig.load()
     creds = cfg.load_credentials()
-    app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
-    app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
+    tc = cfg.teams
+    # Credential resolution mirrors the boot path (slack/gateway.py) exactly: the
+    # env credential wins over config.json for all three values, so the panel
+    # reports the identity the channel will actually run as.
+    app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or tc.app_id
+    app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or tc.app_password
+    tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or tc.tenant_id
     state: DashboardState = request.app["state"]
     return web.json_response(
         {
@@ -3483,15 +3611,28 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
             "connected": bool(getattr(state, "teams_connected", False)),
             "connect_error": str(getattr(state, "teams_connect_error", ""))[:120],
             "configured": bool(
-                app_id and app_password and cfg.teams.enabled and cfg.teams.allowed_emails
+                app_id and app_password and tc.enabled and tc.allowed_emails
             ),
             "read_only": not is_direct_local_request(request),
             "app_id_set": bool(app_id),
+            # Presence only, deliberately with no masked preview: an Azure client
+            # secret carries no vendor prefix, so the shared prefix-preserving
+            # mask (_mask_secret keeps everything before the first "-") would
+            # reveal real secret bytes rather than a type marker.
             "app_password_set": bool(app_password),
-            "enabled": cfg.teams.enabled,
-            "tenant_id": cfg.teams.tenant_id,
-            "allowed_emails": list(cfg.teams.allowed_emails),
-            "session_folder": cfg.teams.session_folder,
+            # PyJWT ships in the optional `kirocrew[teams]` extra and the channel
+            # REFUSES to start without it (teams/gateway.py), because inbound JWT
+            # validation is impossible. Reported so an operator sees the reason
+            # instead of a channel that silently never starts.
+            "jwt_available": bool(HAS_JWT),
+            "enabled": tc.enabled,
+            # Non-secret: blank means a multi-tenant bot, a value means
+            # single-tenant. The operator needs it to tell those apart.
+            "tenant_id": tenant_id,
+            "allowed_emails": list(tc.allowed_emails),
+            "soft_threshold_pct": int(tc.soft_threshold_pct),
+            "hard_threshold_pct": int(tc.hard_threshold_pct),
+            "session_folder": tc.session_folder,
         }
     )
 
@@ -3506,24 +3647,89 @@ def _is_valid_teams_principal(v: str) -> bool:
     return not any(ch.isspace() for ch in v)
 
 
+#: Azure AD OAuth error codes that mean "these credentials are wrong" rather than
+#: "Azure is having trouble". Anything else is treated as unverifiable.
+_TEAMS_CREDENTIAL_REJECT_STATUSES = frozenset({400, 401, 403})
+
+
+async def _validate_teams_app_credentials(
+    app_id: str, app_password: str, tenant_id: str
+) -> str | None:
+    """Check Azure Bot app credentials against Azure AD before they are stored.
+
+    The client-credentials token exchange is the same call ``TeamsClient.connect``
+    makes to prime its outbound token, so it is both the cheapest credential check
+    available and exactly the one the channel performs at boot. Returns ``None``
+    when Azure issues a token, or a short error code (``invalid_client``,
+    ``unauthorized_client``, …) when it refuses the credentials. Azure-side
+    trouble (5xx/429) and network failures propagate to the caller, which treats
+    them as "unverifiable" rather than invalid — saves must not be blocked by
+    being offline. Mirrors ``_validate_webex_token`` / ``_validate_discord_token``.
+
+    Only the OAuth ``error`` code is surfaced, never ``error_description``: the
+    description carries tenant ids, app ids, and a correlation id, none of which
+    belong in a dashboard error string.
+    """
+    import aiohttp  # noqa: F811
+
+    from kiro_crew.teams.client import (  # noqa: F811
+        _TOKEN_SCOPE,
+        _TOKEN_URL_TMPL,
+        TEAMS_MULTITENANT_AUTHORITY,
+    )
+
+    # A blank tenant_id means a multi-tenant bot, whose token is issued by the Bot
+    # Framework authority rather than a directory tenant. The default comes from
+    # teams.client so the pre-store check and the running channel cannot disagree
+    # about which authority a blank tenant means.
+    authority = tenant_id.strip() or TEAMS_MULTITENANT_AUTHORITY
+    timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            _TOKEN_URL_TMPL.format(tenant=authority),
+            data={
+                "grant_type": "client_credentials",
+                "client_id": app_id,
+                "client_secret": app_password,
+                "scope": _TOKEN_SCOPE,
+            },
+        ) as resp:
+            if 200 <= resp.status < 300:
+                return None
+            if resp.status in _TEAMS_CREDENTIAL_REJECT_STATUSES:
+                desc = ""
+                try:
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        desc = str(data.get("error", "") or "")
+                except Exception:
+                    pass
+                return (desc or f"HTTP {resp.status}")[:60]
+            raise RuntimeError(f"teams credential verify http {resp.status}")
+
+
 async def api_teams_config_save(request: web.Request) -> web.Response:
     """PUT /api/teams/config — persist the Teams secret (.env) + config (json).
 
     The app password (secret) is written ONLY to config_dir/.env
     (``MICROSOFT_APP_PASSWORD``, 0600); non-secret config (enabled, app_id,
-    tenant_id, allowed_emails) lives in config.json under the "teams" key.
-    Remote sessions are read-only. The whole channel config is read at gateway
-    startup, so every change returns ``restart_required``.
+    tenant_id, allowed_emails, thresholds) lives in config.json under the "teams"
+    key. Remote sessions are read-only. Every field except ``session_folder`` is
+    read at gateway startup, so an actual change returns ``restart_required``.
     """
     from kiro_crew.agent import _atomic_json_write  # noqa: F811
     from kiro_crew.config.loader import (  # noqa: F811
+        CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
+        CRED_MICROSOFT_APP_TENANT_ID,
+        KiroCrewConfig,
+        _threshold_pct,
         config_path,
     )
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _audit_denial(msg: str) -> None:
         _sel().log_api_access(
             caller=caller,
             operation="teams.config.update",
@@ -3531,7 +3737,21 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _audit_denial(msg)
         return web.json_response({"error": msg}, status=status)
+
+    def _reject(code: str, msg: str) -> web.Response:
+        """Reject with a machine-readable ``code``; ``msg`` is advisory prose.
+
+        A sibling of ``_deny`` rather than an extra parameter on it: the status is
+        a literal here so the error-code contract gate can see the response, and
+        the dashboard renders ``error`` verbatim into a localized UI, so prose
+        alone would be untranslatable by construction (RFC 9457 3.1.3).
+        """
+        _audit_denial(msg)
+        return web.json_response({"error": msg, "code": code}, status=400)
 
     # Remote sessions are read-only: a remote/tunneled session cannot alter
     # channel access or plant the Azure Bot secret.
@@ -3588,11 +3808,77 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_ids
 
+    # Context-window nudge thresholds, on the shared validator.
+    for pct_key in ("soft_threshold_pct", "hard_threshold_pct"):
+        bad_pct = _threshold_pct_rejection(body, pct_key)
+        if bad_pct is not None:
+            return _reject(*bad_pct)
+        if pct_key in body:
+            staged[pct_key] = int(body[pct_key])
+
     if "session_folder" in body:
         try:
             staged["session_folder"] = clean_session_folder(body.get("session_folder"))
         except ValueError as exc:
             return _deny(str(exc))
+
+    # ── Phase 1.5: verify the app credentials against Azure AD before storing.
+    # Runs whenever any part of the credential triple changes: a mistyped App ID
+    # or tenant is as fatal as a bad secret, and all three are checked by the one
+    # token exchange. Rejection fails the save here, where the operator can act on
+    # it, and writes nothing. A network failure is NOT a rejection — the save
+    # proceeds with a warning so being offline never blocks config (mirrors the
+    # Webex and Discord saves).
+    #
+    # The fallbacks come from a config snapshot taken OUTSIDE the config lock and
+    # are advisory only: they decide what to verify, never what to write. The
+    # authoritative read-modify-write is still Phase 2 under the lock. Resolution
+    # order mirrors the boot path (slack/gateway.py) — the env credential wins —
+    # so the check exercises the credentials the channel will actually use.
+    verify_warning = ""
+    #: The exact (app_id, password, tenant) Azure accepted, or None when nothing was
+    #: verified. Re-confirmed under the config lock before anything is written.
+    verified_triple: tuple[str, str, str] | None = None
+    credential_touched = (
+        CRED_MICROSOFT_APP_PASSWORD in env_updates
+        or "app_id" in staged
+        or "tenant_id" in staged
+    )
+    if credential_touched:
+        # Both reads touch the filesystem (config.json, then .env), so they go to a
+        # thread rather than stalling the gateway loop on a save.
+        current_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        current_creds = await asyncio.to_thread(current_cfg.load_credentials)
+        eff_password = env_updates.get(
+            CRED_MICROSOFT_APP_PASSWORD,
+            current_creds.get(CRED_MICROSOFT_APP_PASSWORD, "")
+            or current_cfg.teams.app_password,
+        )
+        eff_app_id = current_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
+            staged.get("app_id", current_cfg.teams.app_id)
+        )
+        eff_tenant = current_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
+            staged.get("tenant_id", current_cfg.teams.tenant_id)
+        )
+        # Nothing to verify while half the pair is missing (e.g. the operator is
+        # clearing the secret, or is filling the form in two saves).
+        if eff_app_id and eff_password:
+            try:
+                teams_err = await _validate_teams_app_credentials(
+                    eff_app_id, eff_password, eff_tenant
+                )
+            except Exception:
+                verify_warning = (
+                    "Azure was unreachable, so the credentials were saved "
+                    "without verification."
+                )
+            else:
+                if teams_err:
+                    return _reject(
+                        "credentials_rejected",
+                        f"credentials rejected by Azure ({teams_err})",
+                    )
+                verified_triple = (eff_app_id, eff_password, eff_tenant)
 
     # ── Phase 2: commit under the repo-wide config lock (read fresh, merge only
     # the teams section, write atomic) so a concurrent save is never clobbered.
@@ -3609,12 +3895,74 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             data["teams"] = {}
         teams_cfg = data["teams"]
 
+        if verified_triple is not None:
+            # Re-derive the effective triple under the lock and refuse if what is about
+            # to be STORED is not what Azure accepted. Optimistic, deliberately: the
+            # verification is a network round trip and the config lock serializes EVERY
+            # writer in the process, so holding it across that call would stall unrelated
+            # saves and a hung endpoint would wedge them until the timeout. Verifying
+            # outside and confirming inside costs one extra .env read and keeps the
+            # invariant that nothing unverified is stored.
+            #
+            # The race it closes: two concurrent saves, one changing the app id and one
+            # the secret. Each verifies a triple containing the OTHER's old value and
+            # passes; the serialized commits then merge into a stored triple neither one
+            # checked, and the channel is dead at the next restart with a green "Saved."
+            # ``load_credentials`` reads only ``.env`` plus the environment (it never
+            # touches ``self``), so this is a .env read and not a second config load --
+            # and it goes to a thread because it touches the filesystem.
+            fresh_creds = await asyncio.to_thread(current_cfg.load_credentials)
+            now_password = env_updates.get(
+                CRED_MICROSOFT_APP_PASSWORD,
+                fresh_creds.get(CRED_MICROSOFT_APP_PASSWORD, "")
+                or str(teams_cfg.get("app_password", "")),
+            )
+            now_app_id = fresh_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
+                staged.get("app_id", teams_cfg.get("app_id", ""))
+            )
+            now_tenant = fresh_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
+                staged.get("tenant_id", teams_cfg.get("tenant_id", ""))
+            )
+            if (now_app_id, now_password, now_tenant) != verified_triple:
+                return _reject(
+                    "config_changed",
+                    "the Teams credentials changed while these were being verified; "
+                    "nothing was saved — reload and try again",
+                )
+
+        # Threshold ordering is checked against the EFFECTIVE pair (the staged
+        # value, else what is stored, else the shipped default), because a request
+        # may send only one half. Still commit-last: nothing is written yet.
+        # Stored values go through the loader's own coercion so a hand-edited
+        # config.json is read here exactly as the next load will read it.
+        eff_soft = _threshold_pct(
+            staged.get("soft_threshold_pct", teams_cfg.get("soft_threshold_pct")), 80
+        )
+        eff_hard = _threshold_pct(
+            staged.get("hard_threshold_pct", teams_cfg.get("hard_threshold_pct")), 95
+        )
+        if eff_hard < eff_soft:
+            # The loader would silently pull soft down to hard
+            # (_normalize_threshold_pair), so an inverted pair is not a crash but
+            # is never what the operator meant: the soft nudge would be
+            # unreachable. Refuse it here instead of storing a value that reads
+            # back different.
+            return _reject(
+                "threshold_pct_inverted",
+                "hard_threshold_pct must be >= soft_threshold_pct",
+            )
+
         changes: dict[str, object] = {}
         if "enabled" in staged and staged["enabled"] != bool(teams_cfg.get("enabled", False)):
             changes["enabled"] = staged["enabled"]
         for str_key in ("app_id", "tenant_id"):
             if str_key in staged and staged[str_key] != teams_cfg.get(str_key, ""):
                 changes[str_key] = staged[str_key]
+        for pct_key, pct_default in (("soft_threshold_pct", 80), ("hard_threshold_pct", 95)):
+            if pct_key in staged and staged[pct_key] != _threshold_pct(
+                teams_cfg.get(pct_key), pct_default
+            ):
+                changes[pct_key] = staged[pct_key]
         if "allowed_emails" in staged and staged["allowed_emails"] != teams_cfg.get(
             "allowed_emails", []
         ):
@@ -3667,7 +4015,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             "ok": True,
             "restart_required": bool(env_updates)
             or bool(set(applied) - LIVE_RELOAD_FIELDS),
-            "verify_warning": "",
+            "verify_warning": verify_warning,
         }
     )
 
@@ -4232,7 +4580,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="wecom.config.update",
@@ -4240,7 +4588,14 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -4351,10 +4706,11 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_users"] = new_users
             applied.append("allowed_users")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(wc_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")

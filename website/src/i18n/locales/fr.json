@@ -10730,6 +10730,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "Obtenir les identifiants de ton bot",
+        "hard_below_soft_error": "Le seuil de contexte strict doit être supérieur ou égal au seuil souple",
+        "hard_threshold_description": "Compacte automatiquement à ce pourcentage, même sans réponse, afin que la fenêtre de contexte ne déborde jamais.",
+        "hard_threshold_label": "Seuil de contexte strict %",
+        "hard_threshold_range_error": "Le seuil de contexte strict doit être un nombre entre 1 et 100",
         "threshold_description": "Proposer {{compact}} ou {{new}} lorsque le contexte de la session dépasse ce pourcentage."
       },
       "channelsPanel": {
@@ -11625,6 +11629,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "ci-dessus. Contrairement à Slack, le Bot Framework n'a pas de\n              mode sortant uniquement.",
         "access": "Accès",
+        "active": "Actif",
         "add_the": ", ajoutez le",
         "allowed_users_email_or_aad_object_id": "Utilisateurs autorisés (e-mail ou ID d'objet AAD)",
         "and_save": ", puis enregistrez.",
@@ -11657,6 +11662,7 @@
         "if_single_tenant": "si locataire unique).",
         "in_the_bot_s": "Dans la section du bot",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "est votre ID d'application, puis envoyez un message privé au\n              bot — étapes complètes du manifeste dans le guide de configuration ci-dessus.",
+        "jwt_required": "<strong>Microsoft Teams a besoin de la dépendance PyJWT.</strong> Les requêtes entrantes du Bot Framework portent un jeton signé qui doit être validé, donc le canal refuse de démarrer sans elle. Exécutez <mono>pip install \"kirocrew[teams]\"</mono> dans l'environnement qui exécute le gateway, puis redémarrez-le.",
         "leave_empty_for_a_multi_tenant_bot": "Laisser vide pour un bot multi-locataire",
         "loading_teams_config": "Chargement de la configuration Teams…",
         "localhost": "localhost",
@@ -11665,6 +11671,8 @@
         "microsoft_app_id": "ID d’application Microsoft",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "Multi-locataire",
+        "needs_setup": "Configuration requise",
+        "not_active": "Inactif",
         "optional_only_for_single_tenant_bots": "Optionnel — uniquement pour les bots à locataire unique.",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", ou à locataire unique si vous voulez fixer un ID de locataire.",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "ou\n              tunnelisée par SSH ne fonctionnera pas. Exposez la passerelle avec un tunnel\n              (ngrok / cloudflared) ou un proxy inverse, puis utilisez cet hôte public comme",
@@ -11674,6 +11682,7 @@
         "required": "Requis",
         "requires_a_public_https_url": "Nécessite une URL HTTPS publique.",
         "save_failed_is_the_gateway_running": "Échec de l’enregistrement. La passerelle est-elle en cours d’exécution ?",
+        "save_rejected": "Le gateway a refusé ces paramètres ({{code}}).",
         "save_teams_settings": "Enregistrer les paramètres Teams",
         "saved": "Enregistré.",
         "saved_restart_the_gateway_to_apply": "Enregistré. Redémarre la passerelle pour appliquer.",

@@ -352,7 +352,7 @@ def test_logs_is_refused_and_points_at_the_pod_journal():
 def test_snapshot_is_refused_because_its_destination_is_configurable():
     """`snapshot_dir` is a config field and `--keep N` DELETES older archives, so a
     pod seeded from the live config could prune the user's real backups —
-    `sanitized_seed_config` only forces tunnel/telegram/wecom off."""
+    `sanitized_seed_config` only forces the tunnel and the channel enables off."""
     from kiro_crew.config.loader import KiroCrewConfig
 
     assert hasattr(KiroCrewConfig, "__dataclass_fields__")

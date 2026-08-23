@@ -4455,8 +4455,13 @@
         "voice_input_remote_instance_note": "Voice input on a remote instance requires microphone permission delegation across the iframe boundary. If the mic doesn't respond here, use the local (parent) dashboard instead."
       },
       "teamsPanel": {
+        "active": "Active",
+        "jwt_required": "<strong>Microsoft Teams needs the PyJWT dependency.</strong> Inbound Bot Framework requests carry a signed token that has to be validated, so the channel refuses to start without it. Run <mono>pip install \"kirocrew[teams]\"</mono> in the environment that runs the gateway, then restart it.",
         "microsoft_app_id": "Microsoft App ID",
+        "needs_setup": "Needs setup",
+        "not_active": "Not active",
         "save_failed_is_the_gateway_running": "Save failed. Is the gateway running?",
+        "save_rejected": "The gateway rejected these settings ({{code}}).",
         "save_teams_settings": "Save Teams settings",
         "saved": "Saved.",
         "saved_restart_the_gateway_to_apply": "Saved. Restart the gateway to apply.",
@@ -4538,6 +4543,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "Get your bot credentials",
+        "hard_below_soft_error": "Hard context threshold must be at or above the soft context threshold",
+        "hard_threshold_description": "Compact automatically at this percentage, even without a reply, so the context window never overflows.",
+        "hard_threshold_label": "Hard context threshold %",
+        "hard_threshold_range_error": "Hard context threshold must be a number between 1 and 100",
         "threshold_description": "Prompt to {{compact}} or {{new}} when the session context passes this percentage."
       },
       "discordPanel": {

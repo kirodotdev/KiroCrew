@@ -543,6 +543,40 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "the transformed body is re-scanned before Discord receives it.",
     ),
     (
+        "Teams rendered message text",
+        "teams/renderer.py",
+        "Every LLM-authored string this channel sends, re-scanned in the form Teams "
+        "will RENDER rather than the bytes handed over: the answer body, an "
+        "`[OPTIONS:]` chip label, the tool-progress bubble, and an approval card's "
+        "tool title and purpose. Teams markdown-renders all of them, so markup the "
+        "platform removes can rejoin a credential the TurnDriver's byte-level stream "
+        "scan saw as broken -- `AKIA**...**` is two fragments to the scanner and one "
+        "key on screen. Card text matters as much as message text here, because a "
+        "card's TextBlock is rendered the same way.",
+    ),
+    (
+        "Teams attachment name",
+        "teams/attachments.py",
+        "The display name on an inline image, whose two sources are BOTH "
+        "LLM-authored: the markdown alt text and, when that is empty, the "
+        "basename of the model-written path. Extraction has already cut the path "
+        "out of the answer body, so for an empty caption this name is the only "
+        "surviving sink -- and the sanitizer preserves `[A-Za-z0-9._-]`, every "
+        "character an `AKIA...` key id or a `ghp_...` token needs. Both the source "
+        "and the finished name are scanned, because the length cap can slice a "
+        "token down to a prefix the scanner no longer matches.",
+    ),
+    (
+        "Telegram rendered widget text",
+        "telegram/renderer.py",
+        "The two LLM-authored strings this channel renders outside the answer "
+        "body: an approval prompt's tool title (sent as markdown) and every "
+        "`[OPTIONS:]` inline-keyboard label. Both are rendered, so markup the "
+        "platform removes can rejoin a credential the TurnDriver's byte-level "
+        "stream scan saw as broken. Scanned at the one keyboard builder both "
+        "callers pass through.",
+    ),
+    (
         "Discord attachment description",
         "discord/client.py",
         "The accessible description on an uploaded image, from its markdown alt "

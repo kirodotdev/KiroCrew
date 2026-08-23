@@ -13,9 +13,11 @@ Webex/WeCom transport dispatch:
     -> renderer.close() + session release   # in finally
 
 iMessage has no interactive buttons, so the dispatcher runs the driver
-``decider``-less (deny-by-default for ``INTERACTIVE`` mode; ``auto``/``trust``
-still work). Every message this module sends is plain text, because iMessage
-renders no markup.
+``decider``-less. That alone would leave the ``INTERACTIVE`` ladder denying
+every tool, so ``ChannelTurn.auto_approve_session`` carries the process-global
+safety-override grant (``auto``/``trust`` modes still auto-approve on their
+own). Every message this module sends is plain text, because iMessage renders no
+markup.
 
 Dependency direction is ``imessage -> messaging`` (allowed).
 """
@@ -39,6 +41,7 @@ from kiro_crew.messaging.dispatch import (
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
+from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
     from kiro_crew.config.loader import KiroCrewConfig
@@ -189,6 +192,19 @@ class IMessageDispatcher:
                 renderer=renderer,
                 approval_mode=self.approval_mode,
                 decider=None,  # iMessage can't render approve/deny buttons
+                # No buttons means no way to approve a tool in band, so without
+                # an out-of-band grant the INTERACTIVE ladder denies every tool
+                # and the agent can only talk. This is the SAME process-global
+                # grant the dashboard toggle and Slack's `/kirocrew yolo` drive,
+                # so it needs no iMessage command of its own and it still
+                # expires. Read per request, not captured at boot, so arming it
+                # (or letting it lapse) takes effect on the next tool rather than
+                # after a gateway restart. It does NOT weaken the PreToolUse
+                # gate: TurnDriver runs the sensitive-path keystone, the
+                # governance ceiling and the deny-list ahead of this rung, so a
+                # hard deny still wins. With no grant the predicate is False and
+                # every tool still needs an approval this channel cannot give.
+                auto_approve_session=lambda: safety_override().is_active(),
                 persist=lambda user_text, reply, is_new: self._persist_turn(
                     session_key, user_text, reply, is_new, agent
                 ),

@@ -39,7 +39,7 @@ def _dm(text: str = "hi", email: str = "alice@example.com", aad: str = "aad-1") 
     return TeamsInbound(
         conversation_id="conv-1",
         conversation_type="personal",
-        service_url="https://smba.example.com/",
+        service_url="https://smba.trafficmanager.net/",
         text=text,
         user_email=email,
         aad_object_id=aad,
@@ -49,8 +49,20 @@ def _dm(text: str = "hi", email: str = "alice@example.com", aad: str = "aad-1") 
 
 class TestCapabilities:
     def test_teams_shape(self) -> None:
+        # streaming stays False: Teams' native token streaming is 1:1-only,
+        # throttled to 1 req/s and cut off at two minutes, which an agent turn
+        # exceeds -- a stream that dies mid-answer is worse than one message.
         assert TEAMS_CAPABILITIES.streaming is False
-        assert TEAMS_CAPABILITIES.max_buttons == 0
+        # edit is True because the renderer really does rewrite its own activities
+        # (PUT .../activities/{id}) for the progress message and queue receipt.
+        assert TEAMS_CAPABILITIES.edit is True
+        # Adaptive Cards make interactive choices real, so the cap must be > 0 or
+        # apply_options_cap discards every chip.
+        assert TEAMS_CAPABILITIES.rich_blocks is True
+        assert TEAMS_CAPABILITIES.max_buttons == 5
+        # A bot cannot ADD a reaction in Teams (messageReaction is inbound-only),
+        # so a steer is acknowledged with a message instead.
+        assert TEAMS_CAPABILITIES.reactions is False
         assert TEAMS_CAPABILITIES.supports_proactive_send is True
         assert TEAMS_CAPABILITIES.max_message_chars > 0
 
@@ -114,7 +126,7 @@ class TestReceive:
         await t.receive(_dm())
         assert len(dispatched) == 1
         # serviceUrl learned for the conversation
-        assert t.service_url_for("conv-1") == "https://smba.example.com/"
+        assert t.service_url_for("conv-1") == "https://smba.trafficmanager.net/"
 
     @pytest.mark.asyncio
     async def test_configured_target_becomes_available_after_inbound(self) -> None:

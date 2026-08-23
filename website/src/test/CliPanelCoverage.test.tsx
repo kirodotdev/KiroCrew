@@ -102,7 +102,11 @@ vi.mock('../components/TerminalKeyBar', () => ({ default: () => <div data-testid
 const touch = vi.hoisted(() => ({ value: false }))
 vi.mock('../hooks/useIsTouchDevice', () => ({ useIsTouchDevice: () => touch.value }))
 
-import CliPanel, { disposeTerminalSession, useDeleteTerminalSession } from '../components/CliPanel'
+import CliPanel, {
+  disposeTerminalSession,
+  isThemeSignal,
+  useDeleteTerminalSession,
+} from '../components/CliPanel'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
 
 /* ── harness ──────────────────────────────────────────────────────────────── */
@@ -546,17 +550,32 @@ describe('CliPanel theme and font sync', () => {
     }
   })
 
-  it('repaints when a custom-theme style element resolves into <head>', async () => {
-    const { term } = mount()
-    // Drain records queued by earlier tests so the only mutation the observer
-    // sees here is the <head> insertion (a custom theme's vars arrive that way,
-    // with no data-theme change to notice).
-    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+  it('treats a custom-theme <style> insertion as a theme signal', () => {
+    // A custom theme's vars only resolve once useTheme injects its <style> into
+    // <head>, with no data-theme change to notice -- so the observer has to act on
+    // that insertion or the terminal stays on the boot-default palette.
+    //
+    // Asserted on the CLASSIFIER, not through a live MutationObserver: happy-dom's
+    // record delivery for a <head> childList registration is bistable in this suite
+    // (identical file, `--coverage` passes and without it does not), so the observer
+    // route reports on the environment rather than on this rule. `isThemeSignal` is
+    // the whole decision the callback makes.
     const style = document.createElement('style')
     style.id = 'mc-custom-theme-probe'
-    style.textContent = ':root { --accent: #ff8800; }'
-    act(() => { document.head.appendChild(style) })
-    await waitFor(() => expect(term.options.theme?.cursor).toBe('#ff8800'))
+    expect(isThemeSignal([{ type: 'childList', addedNodes: [style] } as unknown as MutationRecord]))
+      .toBe(true)
+  })
+
+  it('ignores a <style> insertion that is not a custom theme', () => {
+    const style = document.createElement('style')
+    style.id = 'unrelated-style'
+    expect(isThemeSignal([{ type: 'childList', addedNodes: [style] } as unknown as MutationRecord]))
+      .toBe(false)
+  })
+
+  it('treats a data-theme attribute change as a theme signal', () => {
+    expect(isThemeSignal([{ type: 'attributes', addedNodes: [] } as unknown as MutationRecord]))
+      .toBe(true)
   })
 
   it('still repaints after a frame handle whose callback never fires', async () => {
@@ -576,14 +595,19 @@ describe('CliPanel theme and font sync', () => {
     act(() => { document.documentElement.setAttribute('data-theme', 'probe') })
     await act(async () => { await new Promise(r => setTimeout(r, 0)) })
 
-    // Frames work again, and a real theme signal arrives.
+    // Frames work again, and a real theme signal arrives. The signal is a data-theme
+    // flip with an inline var, not a <head> <style> insertion: the SUBJECT here is the
+    // scheduler, and happy-dom's <head> childList delivery is bistable in this suite,
+    // so using it would make a scheduler test fail for an unrelated reason. Which
+    // records count as a signal is covered by the `isThemeSignal` cases above.
     vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { cb(0); return 0 })
-    const style = document.createElement('style')
-    style.id = 'mc-custom-theme-probe'
-    style.textContent = ':root { --accent: #ff8800; }'
-    act(() => { document.head.appendChild(style) })
-
-    await waitFor(() => expect(term.options.theme?.cursor).toBe('#ff8800'))
+    document.documentElement.style.setProperty('--accent', '#ff8800')
+    try {
+      act(() => { document.documentElement.setAttribute('data-theme', 'probe-live') })
+      await waitFor(() => expect(term.options.theme?.cursor).toBe('#ff8800'))
+    } finally {
+      document.documentElement.style.removeProperty('--accent')
+    }
   })
 
   it('ignores an unrelated style element added to <head>', async () => {

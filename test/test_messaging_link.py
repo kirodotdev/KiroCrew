@@ -9,6 +9,9 @@ bind the DM dispatchers share.
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import Any
 
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
@@ -16,9 +19,12 @@ from kiro_crew.messaging.link import (
     DEFAULT_DM_SCOPE,
     DM_SCOPE_PER_CHANNEL_PEER,
     DM_SCOPE_UNIFIED,
+    UNBIND_REASON_ORIGIN_REBIND,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
+    legacy_dashboard_mirror_key,
+    rebind_conversation_location,
     should_rotate_generation,
 )
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -283,6 +289,137 @@ class TestBindOriginMirror:
     def test_no_exception_from_the_claim_escapes(self) -> None:
         sess = _Sessions(raise_on_set=RuntimeError("session map on fire"))
         assert bind_origin_mirror(sess, key="k", location=_HERE) is False
+
+
+class _RebindSessions:
+    """The session-manager surface :func:`rebind_conversation_location` touches."""
+
+    def __init__(self, *, occupied_by: str | None = None) -> None:
+        self.mirror_links: dict[str, ChannelLink] = {}
+        self.opt_outs: set[str] = set()
+        self.cleared: list[tuple[str, str]] = []
+        self.reasons: list[str] = []
+        self.batch_depth = 0
+        #: One entry per mutation, recording whether a batch was open for it.
+        self.batched: list[bool] = []
+        self._occupied_by = occupied_by
+
+    @contextmanager
+    def batched_save(self) -> Iterator[None]:
+        self.batch_depth += 1
+        try:
+            yield
+        finally:
+            self.batch_depth -= 1
+
+    def set_mirror_link(self, key: str, link: Any, *, reason: str = "") -> None:
+        # Interface parity with the real map: an inbound-committed occupant makes
+        # the conversation exclusive, and the claim is refused BEFORE it mutates.
+        if self._occupied_by is not None and self._occupied_by != key:
+            raise ConversationOwnershipConflict("conversation is already held")
+        self.batched.append(self.batch_depth > 0)
+        self.reasons.append(reason)
+        self.mirror_links[key] = link
+
+    def set_mirror_opt_out(self, key: str, opted_out: bool) -> None:
+        self.batched.append(self.batch_depth > 0)
+        if opted_out:
+            self.opt_outs.add(key)
+        else:
+            self.opt_outs.discard(key)
+
+    def clear_mirror_link(self, key: str, *, reason: str = "") -> bool:
+        self.batched.append(self.batch_depth > 0)
+        self.cleared.append((key, reason))
+        return self.mirror_links.pop(key, None) is not None
+
+
+_KEY = "telegram:kirocrew:direct:7"
+
+
+class TestRebindConversationLocation:
+    """The in-channel ``/link``, shared by every DM channel.
+
+    The counterpart of ``release_conversation_location``: that one frees the
+    location and returns the unlink reply, this one claims it and returns the link
+    reply. Three channels carried byte-identical copies of the sequence.
+    """
+
+    def test_the_location_is_claimed_and_the_refusal_withdrawn(self) -> None:
+        # Withdrawing the opt-out is the load-bearing half: a rebind without it is
+        # undone by the next automatic bind check.
+        sess = _RebindSessions()
+        sess.opt_outs.add(_KEY)
+        here = ChannelLink("telegram", channel_id="7")
+        rebind_conversation_location(sess, key=_KEY, location=here, unlink_command="/unlink")
+        assert sess.mirror_links == {_KEY: here}
+        assert sess.opt_outs == set()
+
+    def test_the_legacy_spelling_is_cleared_with_the_audited_reason(self) -> None:
+        # A pre-unification row still answers a clear, so leaving it behind lets a
+        # stale binding outlive the rebind.
+        sess = _RebindSessions()
+        rebind_conversation_location(
+            sess,
+            key=_KEY,
+            location=ChannelLink("telegram", channel_id="7"),
+            unlink_command="/unlink",
+        )
+        assert sess.cleared == [(legacy_dashboard_mirror_key(_KEY), UNBIND_REASON_ORIGIN_REBIND)]
+        assert sess.reasons == [UNBIND_REASON_ORIGIN_REBIND]
+
+    def test_every_mutation_lands_in_one_batched_write(self) -> None:
+        # Three mutations, each of which would otherwise rewrite the entire
+        # session map on the event loop for one user-visible action.
+        sess = _RebindSessions()
+        rebind_conversation_location(
+            sess,
+            key=_KEY,
+            location=ChannelLink("telegram", channel_id="7"),
+            unlink_command="/unlink",
+        )
+        assert sess.batched == [True, True, True]
+        assert sess.batch_depth == 0
+
+    def test_a_refused_claim_persists_nothing(self) -> None:
+        """The ordering guard: the claim goes first inside the batch.
+
+        ``batched_save`` writes on the way out even when the block raises, so a
+        refusal raised after the opt-out withdrawal would persist that withdrawal
+        for a link that never happened — silently turning mirroring back on.
+        """
+        sess = _RebindSessions(occupied_by="dashboard:chat-1")
+        sess.opt_outs.add(_KEY)
+        try:
+            rebind_conversation_location(
+                sess,
+                key=_KEY,
+                location=ChannelLink("telegram", channel_id="7"),
+                unlink_command="/unlink",
+            )
+        except ConversationOwnershipConflict:
+            pass
+        else:  # pragma: no cover - the fake refuses, so this is a broken test
+            raise AssertionError("an occupied location must refuse the claim")
+        assert sess.opt_outs == {_KEY}, "a refused link withdrew the refusal anyway"
+        assert sess.batched == [], "a refused link wrote something"
+
+    def test_the_reply_differs_only_in_the_channels_own_unlink_command(self) -> None:
+        # The sentence is user-facing and identical everywhere; only the command
+        # token is the channel's, which is why it is the one parameter.
+        sess = _RebindSessions()
+        here = ChannelLink("telegram", channel_id="7")
+        plain = rebind_conversation_location(
+            sess, key=_KEY, location=here, unlink_command="/unlink"
+        )
+        coded = rebind_conversation_location(
+            sess, key=_KEY, location=here, unlink_command="`!unlink`"
+        )
+        assert plain == (
+            "✅ Linked. Replies from the dashboard for this conversation will also "
+            "show up here. Send /unlink to stop."
+        )
+        assert coded == plain.replace("/unlink", "`!unlink`")
 
 
 class TestUnbindReasonVocabulary:

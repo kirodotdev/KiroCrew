@@ -50,20 +50,21 @@ from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.commands import stop_running_turn
 from kiro_crew.messaging.dispatch import build_directive_consumer, delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
-    UNBIND_REASON_ORIGIN_REBIND,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
-    legacy_dashboard_mirror_key,
+    rebind_conversation_location,
     release_conversation_location,
     seed_generation,
 )
 from kiro_crew.messaging.renderer import Renderer, SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 from kiro_crew.session_map import ConversationOwnershipConflict
@@ -77,6 +78,10 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
 
+from kiro_crew.messaging.queue_receipt import (
+    ATTACHMENT_PLACEHOLDER,
+)
+from kiro_crew.messaging.queue_receipt import MAX_COLLAPSE as _MAX_COLLAPSE
 from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
 from kiro_crew.messaging.queue_receipt import (
     ReceiptQueue,
@@ -130,8 +135,6 @@ _DEFAULT_KIROCREW_AGENT = "kirocrew"
 #: kiro-cli mode, so neither may reach ACP ``session/set_mode``.
 _AGENT_SENTINELS = frozenset({"default", "auto"})
 
-# Upper bound on how many queued messages collapse into a single combined turn.
-_MAX_COLLAPSE = 50
 # Keep queue collapse within the shared ingestion layer's per-turn file cap.
 _MAX_COLLAPSED_ATTACHMENTS = IngestLimits().max_attachments
 
@@ -263,11 +266,7 @@ class DiscordDispatcher:
             override_mode, text = parse_mid_turn_override(text)
 
         # ── Command intercept (no LLM session needed) ──
-        cmd = (
-            parse_command(text)
-            if interpret_as_command and override_mode is None
-            else None
-        )
+        cmd = parse_command(text) if interpret_as_command and override_mode is None else None
         # `!compact` and `!stop` act on the resolved session, so after a binding was
         # destroyed they would compact or cancel the NATIVE DM session while the user
         # believes they drive the resumed one; deciding here makes that structural.
@@ -280,7 +279,7 @@ class DiscordDispatcher:
                     # is still in governance or queued: otherwise that message could
                     # route into a transcript the user never chose.
                     landed = await self.client.send_message(channel_id, route.refusal)
-                    if (landed and len(queued) == 1 and not self._routing_checks.get(channel_id)):
+                    if landed and len(queued) == 1 and not self._routing_checks.get(channel_id):
                         await self._session_resume.settle(channel_id, route)
                     return
         if cmd == "new":
@@ -446,9 +445,7 @@ class DiscordDispatcher:
             _acquired = True
             renderer.authorize_upload_root(provider.cwd)
             if msg.attachments:
-                attachment_result = await process_discord_attachments(
-                    self.client, msg.attachments
-                )
+                attachment_result = await process_discord_attachments(self.client, msg.attachments)
                 attachment_temp_paths = list(attachment_result.temp_paths)
                 text = append_attachment_context(text, attachment_result)
             if not text:
@@ -540,6 +537,13 @@ class DiscordDispatcher:
                     and self.ctx_builder.hooks.auto_approve_subagent_spawn
                     and title == "spawn_run"
                 ),
+                # The operator's process-wide grant, read per permission request --
+                # the same predicate every other shipped channel passes. Without it
+                # Discord is the one surface where arming YOLO from the dashboard is
+                # INERT, so an unattended run still stops on every tool prompt.
+                # Does not weaken the gate above: `_tool_gate`'s hard deny runs ahead
+                # of this rung in TurnDriver, so a policy refusal still wins.
+                auto_approve_session=lambda: safety_override().is_active(),
                 tool_gate=_tool_gate,
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker the driver decodes; apply it against THIS
@@ -621,9 +625,7 @@ class DiscordDispatcher:
             self._active_renderers.pop(session_key, None)
             if _acquired:
                 self.sessions.release(session_key)
-            await asyncio.to_thread(
-                cleanup_attachments, attachment_temp_paths
-            )
+            await asyncio.to_thread(cleanup_attachments, attachment_temp_paths)
 
         # Drain anything queued during the turn (queue_mode == "queue").
         if drain:
@@ -699,14 +701,9 @@ class DiscordDispatcher:
                     exceeds_attachment_cap = bool(
                         texts
                         and item_attachments
-                        and len(attachments) + len(item_attachments)
-                        > _MAX_COLLAPSED_ATTACHMENTS
+                        and len(attachments) + len(item_attachments) > _MAX_COLLAPSED_ATTACHMENTS
                     )
-                    if (
-                        not defer_rest
-                        and len(texts) < _MAX_COLLAPSE
-                        and not exceeds_attachment_cap
-                    ):
+                    if not defer_rest and len(texts) < _MAX_COLLAPSE and not exceeds_attachment_cap:
                         texts.append(item[1])
                         attachments.extend(item_attachments)
                     else:
@@ -726,7 +723,7 @@ class DiscordDispatcher:
                     await self._receipt_flip_locked(
                         session_key,
                         channel_id,
-                        [text or "[attachment]" for text in texts],
+                        [text or ATTACHMENT_PLACEHOLDER for text in texts],
                         len(remainder),
                     )
             if not texts:
@@ -778,7 +775,7 @@ class DiscordDispatcher:
             # An attachment-only message has no text; show a placeholder rather
             # than a blank entry in the receipt.
             await self._queue.create_or_grow_locked(
-                session_key, self._receipt_surface(channel_id), text or "[attachment]"
+                session_key, self._receipt_surface(channel_id), text or ATTACHMENT_PLACEHOLDER
             )
             return True
 
@@ -794,14 +791,6 @@ class DiscordDispatcher:
         assert self.client is not None
         await self._queue.flip_answering_locked(
             session_key, self._receipt_surface(channel_id), answered, deferred
-        )
-
-    async def _receipt_finish_cancelled_locked(self, session_key: str, channel_id: str) -> None:
-        """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
-        MUST hold ``self._queue.lock``."""
-        assert self.client is not None
-        await self._queue.finish_cancelled_locked(
-            session_key, self._receipt_surface(channel_id)
         )
 
     def _receipt_surface(self, channel_id: str) -> ReceiptSurface:
@@ -844,30 +833,23 @@ class DiscordDispatcher:
         thread_id: str,
         resumed_key: str | None,
     ) -> None:
-        """Hard cancel: abort the in-flight turn and clear everything."""
+        """Hard cancel: abort the in-flight turn and clear everything.
+
+        The cooperative-cancel contract, the lock ordering across ``clear_queue``
+        + the receipt finalize, and both replies live in
+        :func:`~kiro_crew.messaging.commands.stop_running_turn`; this supplies
+        Discord's address and stops the session the turn is actually running
+        under, which for a resumed conversation is its owner rather than this
+        channel's own DM session.
+        """
         assert self.client is not None
-        session_key = resumed_key or self._session_key(user_id, thread_id)
-        cancelled_turn = False
-        if self.sessions.is_busy(session_key):
-            provider = self.sessions.get_provider(session_key)
-            cancel = getattr(provider, "cancel", None)
-            if cancel is not None:
-                try:
-                    await cancel(wait_ack_timeout=0)
-                    cancelled_turn = True
-                except Exception:
-                    logger.warning(
-                        "discord !stop: cancel failed for %s",
-                        session_key,
-                        exc_info=True,
-                    )
-        async with self._queue.lock:
-            self.sessions.clear_queue(session_key)
-            await self._receipt_finish_cancelled_locked(session_key, channel_id)
-        await self.client.send_message(
-            channel_id,
-            "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
+        reply = await stop_running_turn(
+            self.sessions,
+            resumed_key or self._session_key(user_id, thread_id),
+            queue=self._queue,
+            surface=self._receipt_surface(channel_id),
         )
+        await self.client.send_message(channel_id, reply)
 
     # ── Button handler (client's on_interaction) ───────────────────────────
 
@@ -1106,10 +1088,11 @@ class DiscordDispatcher:
     ) -> None:
         """Re-enable mirroring of this conversation's dashboard tab back here.
 
-        Mirroring is automatic (see :meth:`_bind_origin_mirror`), so this is the
-        withdrawal of a previous ``!unlink`` rather than the only way to turn it
-        on. Clearing the opt-out is the load-bearing half: rebinding without it
-        would be undone by the next automatic bind check.
+        The rebind sequence, its batching, its claim-first ordering and its reply
+        live in the shared
+        :func:`~kiro_crew.messaging.link.rebind_conversation_location`; this
+        supplies Discord's spelling of "this conversation" plus the two refusals
+        only a resume-capable channel can hit.
         """
         assert self.client is not None
         # Refuse while a resumed session owns this conversation: linking would
@@ -1123,31 +1106,13 @@ class DiscordDispatcher:
                 "⚠️ A resumed session is active here. Send `!unlink` first.",
             )
             return
-        key = self._session_key(user_id, thread_id)
         try:
-            # One write for the whole sequence: each of these mutations would
-            # otherwise rewrite the entire session map, stalling the loop three
-            # times for what is one user-visible action.
-            #
-            # The claim goes FIRST inside the batch on purpose. ``batched_save``
-            # writes on the way out even when the block raises, so a refusal
-            # raised after the opt-out withdrawal would PERSIST that withdrawal
-            # for a link that never happened. ``set_mirror_link`` refuses before
-            # it mutates anything, so ordering it first leaves the batch clean
-            # and nothing is written.
-            with self.sessions.batched_save():
-                self.sessions.set_mirror_link(
-                    key,
-                    self._origin_mirror_link(channel_id),
-                    reason=UNBIND_REASON_ORIGIN_REBIND,
-                )
-                self.sessions.set_mirror_opt_out(key, False)
-                # Drop any pre-unification row so a stale binding cannot outlive
-                # the rebind (reads prefer the channel key, but a leftover row
-                # would still answer a clear).
-                self.sessions.clear_mirror_link(
-                    legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
-                )
+            reply = rebind_conversation_location(
+                self.sessions,
+                key=self._session_key(user_id, thread_id),
+                location=self._origin_mirror_link(channel_id),
+                unlink_command="`!unlink`",
+            )
         except ConversationOwnershipConflict:
             # Reachable past the resumed-session check above because that check
             # fails CLOSED on duplicate inbound bindings: with two of them at this
@@ -1161,11 +1126,7 @@ class DiscordDispatcher:
                 "⚠️ Another session is already linked here. Send `!unlink` first.",
             )
             return
-        await self.client.send_message(
-            channel_id,
-            "✅ Linked. Replies from the dashboard for this conversation will "
-            "also show up here. Send `!unlink` to stop.",
-        )
+        await self.client.send_message(channel_id, reply)
 
     async def _handle_unlink(self, user_id: str, channel_id: str, thread_id: str = "") -> None:
         assert self.client is not None
@@ -1416,9 +1377,7 @@ class DiscordDispatcher:
                     result_text = "✅ Context compacted."
                 elif cr["type"] == "failed":
                     err = _safe(cr.get("summary", ""))
-                    result_text = (
-                        f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
-                    )
+                    result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
                 else:
                     result_text = "⚠️ Compaction timed out."
             except Exception:

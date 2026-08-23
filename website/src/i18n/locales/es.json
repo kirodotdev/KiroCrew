@@ -10730,6 +10730,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "Obtén las credenciales de tu bot",
+        "hard_below_soft_error": "El umbral de contexto estricto debe ser igual o mayor que el umbral suave",
+        "hard_threshold_description": "Compacta automáticamente en este porcentaje, incluso sin respuesta, para que la ventana de contexto nunca se desborde.",
+        "hard_threshold_label": "Umbral estricto de contexto %",
+        "hard_threshold_range_error": "El umbral de contexto estricto debe ser un número entre 1 y 100",
         "threshold_description": "Propone {{compact}} o {{new}} cuando el contexto de la sesión supera este porcentaje."
       },
       "channelsPanel": {
@@ -11625,6 +11629,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "más arriba. A diferencia de Slack, el Bot Framework no tiene un modo solo de salida.",
         "access": "Acceso",
+        "active": "Activo",
         "add_the": ", añade",
         "allowed_users_email_or_aad_object_id": "Usuarios permitidos (correo u object id de AAD)",
         "and_save": ", y guarda.",
@@ -11657,6 +11662,7 @@
         "if_single_tenant": "si es de inquilino único).",
         "in_the_bot_s": "En la sección",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "sea tu App ID y luego envía un DM al bot: los pasos completos del manifiesto están en la guía de configuración de arriba.",
+        "jwt_required": "<strong>Microsoft Teams necesita la dependencia PyJWT.</strong> Las solicitudes entrantes de Bot Framework llevan un token firmado que hay que validar, así que el canal no se inicia sin ella. Ejecuta <mono>pip install \"kirocrew[teams]\"</mono> en el entorno donde corre el gateway y reinícialo.",
         "leave_empty_for_a_multi_tenant_bot": "Déjalo vacío para un bot multiinquilino",
         "loading_teams_config": "Cargando la configuración de Teams…",
         "localhost": "localhost",
@@ -11665,6 +11671,8 @@
         "microsoft_app_id": "ID de aplicación de Microsoft",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "Multiinquilino",
+        "needs_setup": "Requiere configuración",
+        "not_active": "No activo",
         "optional_only_for_single_tenant_bots": "Opcional: solo para bots de inquilino único.",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", o de inquilino único si vas a fijar un tenant id.",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "o una dirección por túnel SSH no funcionará. Expón el gateway con un túnel (ngrok / cloudflared) o un proxy inverso y luego usa ese host público como",
@@ -11674,6 +11682,7 @@
         "required": "Obligatorio",
         "requires_a_public_https_url": "Requiere una URL HTTPS pública.",
         "save_failed_is_the_gateway_running": "No se pudo guardar. ¿El gateway está en ejecución?",
+        "save_rejected": "El gateway rechazó esta configuración ({{code}}).",
         "save_teams_settings": "Guardar la configuración de Teams",
         "saved": "Guardado.",
         "saved_restart_the_gateway_to_apply": "Guardado. Reinicia el gateway para aplicar los cambios.",

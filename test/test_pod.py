@@ -375,6 +375,97 @@ class TestSeedSanitization:
         monkeypatch.setattr("kiro_crew.security.is_sensitive_path", lambda p, base_dir=None: True)
         assert rt.sanitized_seed_config(seed) is None
 
+    def test_forces_teams_off_and_keeps_its_app_id(self, tmp_path: Path) -> None:
+        """A pod that inherited ``teams.enabled=true`` boots the operator's REAL
+        Azure Bot: the App ID rides along in config.json and the secret arrives
+        from the inherited env, so it would answer real people in their org."""
+        seed = self._write(tmp_path / "s", {"teams": {"enabled": True, "app_id": "azure-live"}})
+        out = rt.sanitized_seed_config(seed)
+        assert out is not None and out["teams"]["enabled"] is False
+        assert out["teams"]["app_id"] == "azure-live"  # preserved, just disabled
+
+    def test_forces_every_disabled_section_off(self, tmp_path: Path) -> None:
+        """Both shapes at once, for every section: an enabled dict, and a non-dict
+        value that would otherwise let the ``enabled=False`` write be skipped."""
+        sections = rt.SEED_DISABLED_SECTIONS
+        seeded = {s: ({"enabled": True} if i % 2 else True) for i, s in enumerate(sections)}
+        out = rt.sanitized_seed_config(self._write(tmp_path / "s", seeded))
+        assert out is not None
+        still_on = [s for s in sections if out[s].get("enabled") is not False]
+        assert not still_on, f"sections a seeded pod could boot live: {still_on}"
+
+    def test_disabled_sections_cover_every_rostered_channel(self) -> None:
+        """The ratchet: a channel added to the roster with a config-level enable
+        must be named here, or a seeded pod boots it against real users. Teams
+        reached the roster without reaching this list, which is the hole.
+
+        A channel with no ``enabled`` field is credential-gated only (Slack), and
+        those credentials are scrubbed by ``build_pod_env`` — but the exempt set is
+        pinned exactly, so a new credential-gated channel is an explicit decision
+        rather than a silent omission.
+        """
+        import dataclasses
+
+        from kiro_crew.channels import builtin_channel_descriptors
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        section_fields = {f.name: f for f in dataclasses.fields(KiroCrewConfig)}
+        exempt: set[str] = set()
+        ungated: list[str] = []
+        for desc in builtin_channel_descriptors():
+            section = desc.channel_type
+            factory = section_fields[section].default_factory
+            if "enabled" not in getattr(factory, "__dataclass_fields__", {}):
+                exempt.add(section)
+            elif section not in rt.SEED_DISABLED_SECTIONS:
+                ungated.append(section)
+        assert not ungated, f"channels a seeded pod could boot live: {ungated}"
+        assert exempt == {"slack"}
+
+
+class TestPodEnvCredentialScrub:
+    """The pod env must carry no credential that can act as a live messaging
+    identity — ``pod_context()`` hands this same env to arbitrary commands."""
+
+    def test_scrubs_the_teams_app_credentials(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """None of the three Teams vars ends in ``_TOKEN`` or starts with a scrubbed
+        channel prefix, so the generic suffix rule that catches every other bot
+        credential lets the Azure Bot secret through to the pod gateway."""
+        monkeypatch.setenv("MICROSOFT_APP_ID", "app-live")
+        monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "secret-live")
+        monkeypatch.setenv("MICROSOFT_APP_TENANT_ID", "tenant-live")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "sts-temp")
+        env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
+        assert "MICROSOFT_APP_ID" not in env
+        assert "MICROSOFT_APP_PASSWORD" not in env
+        assert "MICROSOFT_APP_TENANT_ID" not in env
+        assert env.get("AWS_SESSION_TOKEN") == "sts-temp"  # AWS kept on purpose
+
+    def test_scrubs_every_channel_credential_the_loader_knows(
+        self, cfg: PodConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The ratchet for the scrub itself: it matches on prefix and suffix, so a
+        credential named like neither reaches the pod silently — which is exactly
+        how ``MICROSOFT_APP_*`` survived. Pin it against the loader's roster.
+
+        Two keys are kept deliberately: ``KIRO_API_KEY`` is the agent's own model
+        credential and a pod runs agent turns, and ``KIROCREW_OWNER_ID`` is the pod
+        dashboard's owner identity rather than a bot credential.
+        """
+        from kiro_crew.config.loader import (
+            _CREDENTIAL_KEYS,
+            CRED_KIRO_API_KEY,
+            CRED_OWNER_ID,
+        )
+
+        for key in _CREDENTIAL_KEYS:
+            monkeypatch.setenv(key, f"live-{key}")
+        env = rt.build_pod_env(cfg, tmp_path / "home", 7999, tmp_path / "co")
+        survivors = set(_CREDENTIAL_KEYS) & set(env)
+        assert survivors == {CRED_KIRO_API_KEY, CRED_OWNER_ID}
+
 
 class TestWaitHealthyFailsFast:
     def test_bails_on_failed_unit(self, cfg: PodConfig) -> None:

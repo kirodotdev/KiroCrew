@@ -1812,8 +1812,12 @@ class TestRenderer:
         assert len(ids) == 2
         assert ids[0].startswith("a:req9:") and ids[0].endswith(":1")
         assert ids[1].startswith("a:req9:") and ids[1].endswith(":0")
+        from kiro_crew.messaging.renderer import new_approval_nonce
+
         nonce = ids[0].split(":")[2]
-        assert len(nonce) == 16  # 8 random bytes hex
+        # Length is the shared minter's, not a Discord-local literal: three channels
+        # mint approval nonces and a per-channel copy is how one gets a weaker one.
+        assert len(nonce) == len(new_approval_nonce()) > 10
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req9"), None)
 
     @pytest.mark.asyncio

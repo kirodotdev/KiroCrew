@@ -711,7 +711,14 @@ class TestDeliveryFraming:
         await renderer.on_done()
 
         assert len(client.sent) > 1
-        assert "".join(client.sent) == safe_raw
+        # Teams splits with the fence-safe splitter, which cuts at a paragraph/fence
+        # boundary and strips each chunk -- so the blank line it split ON is consumed and
+        # an exact re-join is not its contract (a chunk is its own message, and leading or
+        # trailing blank lines would render as empty space). Re-joining on a newline puts
+        # the boundary back; what must hold is that no CONTENT is lost, that every chunk
+        # fits, and that no fence marker leaked from the rejected conversion.
+        assert "\n".join(client.sent).split() == safe_raw.split()
+        assert all(len(chunk) <= cap for chunk in client.sent)
         assert all("```" not in chunk for chunk in client.sent)
 
     @pytest.mark.asyncio

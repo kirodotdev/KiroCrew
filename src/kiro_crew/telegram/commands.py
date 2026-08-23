@@ -129,36 +129,18 @@ def parse_command_argument(text: str) -> str:
     return parts[1].strip() if len(parts) == 2 else ""
 
 
-def parse_dashboard_ttl(text: str) -> int:
-    """Parse the optional TTL from a ``/kirocrew dashboard [<N>h|<N>m]`` command.
+def parse_dashboard_argument(text: str) -> str:
+    """Return the argument of ``/kirocrew dashboard [<N>h|<N>m]`` (``""`` if none).
 
-    Returns the session TTL in seconds. Defaults to 3600 (1 hour) when no
-    duration is given or the duration is unparseable.
+    Telegram's dashboard command is TWO tokens, so its argument starts at the
+    third word -- the one piece of this command that is Telegram grammar. The TTL
+    vocabulary and the default live in
+    :func:`kiro_crew.messaging.commands.parse_dashboard_ttl`, which takes this
+    argument: a channel spelling the command with one token (``/dashboard <ttl>``)
+    would otherwise have to depend on Telegram's word count.
     """
-    from kiro_crew.dashboard.token_auth import parse_duration
-
-    parts = text.strip().split()
-    # Expected: ["/kirocrew", "dashboard", "<ttl>"]
-    if len(parts) >= 3:
-        parsed = parse_duration(parts[2].lower())
-        if parsed is not None:
-            return parsed
-    return 3600
-
-
-def format_ttl(ttl_secs: int) -> str:
-    """Render a TTL in seconds as a human duration ("2h", "90m" -> "1h 30m").
-
-    Never truncates: a non-hour-multiple >= 1h renders both components so the
-    reply reports exactly how long the login link stays live.
-    """
-    hours, rem = divmod(ttl_secs, 3600)
-    mins = rem // 60
-    if hours and mins:
-        return f"{hours}h {mins}m"
-    if hours:
-        return f"{hours}h"
-    return f"{mins}m"
+    parts = text.strip().split(None, 2)
+    return parts[2].strip() if len(parts) == 3 else ""
 
 
 _QUEUE_ALIASES = frozenset(("/queue",))

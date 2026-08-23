@@ -4980,6 +4980,31 @@ _CREW_SECRET_LEAVES: list[str] = [
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
+    # Durable channel routing state (currently Teams' conversation -> serviceUrl and
+    # identity -> conversation maps). Same class of control as
+    # ``workspace/md-notebook/vaults.json`` above: it is not a secret, it is
+    # DELIVERY ADDRESSING. ``teams/transport.py`` resolves an explicit
+    # ``user:<upn>`` send target through the identity map, so an agent that could
+    # write it could point one operator's UPN at a different person's conversation
+    # and have the next cron result, subagent notice or ``send_message`` delivered
+    # there instead. The inbound path binds a ``serviceUrl`` to the JWT's own
+    # ``serviceurl`` claim and ``connector_host_allowed`` re-checks it wherever the
+    # Connector token is attached, but neither attestation survives PERSISTENCE,
+    # and no host check can tell one legitimate conversation id from another.
+    # Reading is fenced with writing because the file enumerates the operator's
+    # UPNs and the conversations they use.
+    #
+    # A DIRECTORY entry, not the file leaf, and that is the load-bearing part: a
+    # file leaf matches only its exact name, while ``atomic_write`` publishes
+    # through a ``tempfile.mkstemp`` sibling (``tmpXXXXXXXX.tmp``) in the same
+    # parent. With the store loose in the data-home root an agent watching that
+    # directory could overwrite the temp file in the window before the rename and
+    # have the rename publish its own routing. A directory entry covers every
+    # child, random temp names included. (``trust``, ``profiles`` and
+    # ``cron-history`` above are directories for the same reason among others.)
+    # ``ServiceUrlStore`` opens its path directly, not through this gate, so
+    # proactive routing across a restart is unaffected.
+    "routing",
     # Inbound-webhook credential store directory. It holds the bearer HASHES and
     # the recoverable HMAC signing secrets for /api/hooks/agent, which is on the
     # dashboard-auth bypass list because it authenticates itself. An agent that

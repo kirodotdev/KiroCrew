@@ -40,8 +40,16 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/outbound_files.py` | `extract_local_refs` (+ `extract_local_refs_off_loop`) — pulls local markdown image references out of an outbound reply into `OutboundFile` payloads carrying the validated bytes, with `Rejection` reasons for everything refused. Also `iter_local_refs` / `hide_local_refs`, the text-only scan a streaming channel uses to keep the markup off live frames. Channel-neutral; the upload stays per-transport |
 | `messaging/raster.py` | `sniff_raster_mime` — what counts as a raster, decided by leading bytes. Dependency-free (no `kiro_crew` imports) so both the inbound sniff and the outbound extractor can share it |
 | `messaging/tables.py` | `render_tables` + the `off`/`cards`/`grid`/`native`/`auto` policy contract and `display_width` — outbound Markdown-table rendering for a target that shows a pipe table as literal pipes (stdlib-only, pure) |
-| `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation` |
+| `messaging/link.py` | **Layer 3** — session-key namespacing (`session_key`/`canonical_key`/`legacy_key`/`is_legacy_slack_key`) + `ChannelLink` + DM-scope key derivation / `should_rotate_generation`, plus the in-channel `/link` ⇄ `/unlink` pair (`rebind_conversation_location` / `release_conversation_location`) |
+| `messaging/commands.py` | The channel-neutral half of the shared chat commands — `/stop`'s cancel + lock ordering (`stop_running_turn`), `/yolo`'s grant ladder (`run_yolo_command`), and the dashboard-link TTL vocabulary (`parse_dashboard_ttl` / `format_ttl`). Returns reply TEXT, never sends; takes no address of any kind |
 | `messaging/conversation.py` | `ConversationState` — per-conversation rotating *generation* bookkeeping (advanced by `/new` and idle/daily reset), seeded from the persisted session map |
+| `messaging/session_resume.py` | **Layer 3** — the channel-neutral half of dashboard-session resume: which sessions are offerable (`resolve_session_choices`, reusing the dashboard's own ranker), the nonce/TTL/owner-scoped `PickerRegistry`, and `SessionBinder` — the conflict rules plus the inbound routing + settlement state machine. Shared by Discord and Teams; a channel supplies only a `ResumeSurface` (widget + wording) and a `ResumeCopy` |
+| `messaging/resume_expectation.py` | The durable conversation-keyed shadow of those bindings, ONE file per channel (`store_filename`), because a Discord channel id and a Teams conversation id are unrelated address spaces |
+| `teams/service_urls.py` | `ServiceUrlStore` — durable `conversation_id -> serviceUrl` (plus the authorized identity owning each conversation), because the Bot Framework offers no lookup and a lost reference leaves every proactive path with nowhere to send. `forget` drops a route the Connector permanently refuses |
+| `teams/cards.py` | Adaptive Card construction + `parse_submit` — the strict, total validation of an untrusted card payload. Mints no nonce of its own: every clickable widget's token comes from `messaging.renderer.new_approval_nonce` |
+| `teams/approvals.py` | `TeamsApprovalDecider` — awaits one Approve / Approve+auto-approve / Deny click, deny-by-default on every non-answer. Holds NO grant: the button's press is recorded and the dispatcher arms the shared process-wide grant through `messaging.commands.run_yolo_command` |
+| `teams/session_resume.py` | Teams' half: the Adaptive Card picker, its display redaction, and the owner rule — which is STRICTER than Discord's for a reason (see the Teams section) |
+| `teams/attachments.py` | Teams' file halves — the two inbound shapes with OPPOSITE fetch auth, the inline-image outbound policy, and `quoted_reply_text` (a 1:1 quote-reply's own words, which `activity.text` does not carry cleanly) |
 | `slack/transport.py` | Slack reference `MessagingTransport` (`SlackTransport`) over `SlackClientOps` |
 | `slack/renderer.py` | Slack reference `Renderer` (`SlackRenderer`) + `SlackApprovalDecider` + `build_approval_blocks` |
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
@@ -64,12 +72,14 @@ Declares what a channel can do. Defaults are deliberately conservative (the What
 | `streaming` | `False` | feature flag |
 | `edit` | `False` | feature flag |
 | `reactions` | `False` | feature flag |
-| `files` | `False` | feature flag |
+| `files_inbound` | `False` | feature flag — the two directions land per channel and in different changes, so ONE `files` boolean was undecidable and got the wrong answer for one of them |
+| `files_outbound` | `False` | ENFORCED — gates whether a renderer extracts and uploads a local image reference. Declaring `False` keeps printing the path, which is the honest degradation |
 | `rich_blocks` | `False` | feature flag |
 | `threads` | `False` | feature flag |
 | `table_mode` | `off` | outbound table presentation: `off` / `cards` / `grid` / `native` / `auto`; read only by renderers that use `render_tables_for_target` |
 | `native_tables` | `False` | the target renders a GFM pipe table AS a table; checked before `native` may pass through |
-| `max_message_chars` | `4096` | quantitative — Slack ~40000, Telegram 4096, Discord 2000, WhatsApp 4096 |
+| `supports_session_resume` | `False` | ENFORCED — gates whether a dashboard connect marks the binding as an inbound resume target (`direction: both`). Only a transport whose inbound path resolves the mirror binding may declare it |
+| `max_message_chars` | `4096` | quantitative — Slack 3900, Telegram 4096, Discord 2000, Teams 16000, WhatsApp 4096. A CHARACTER count: a byte-capped platform must declare a value safe at its worst-case bytes-per-char (Webex and Teams are pinned in `test_capability_ledger.py`) |
 | `max_buttons` | `3` | TOTAL interactive choices per prompt (WhatsApp reply buttons = 3); enforced via `apply_options_cap` — overflow degrades to a numbered text list |
 | `supports_proactive_send` | `True` | send-policy (WhatsApp: `False` outside its 24h window) |
 
@@ -116,7 +126,23 @@ Four modes (constants, mirroring the native Slack + dashboard ladder):
 Two injected predicates take precedence over the ladder (both checked per permission request, and both auto-approve immediately — no buttons, no decider wait):
 
 - `auto_approve_tool: (tool_title) -> bool` — hook-driven auto-approve (e.g. `spawn_run` via the context builder's `auto_approve_subagent_spawn` hook). Reason logged as `hook_auto_approve`.
-- `auto_approve_session: () -> bool` — honors per-session Trust / global YOLO without the driver importing any channel module. Reason logged as `session_trust`.
+- `auto_approve_session: () -> bool` — honors the auto-approve grant without the driver importing any channel module. Reason logged as `session_trust`. **Every shipped channel passes it**, and for a decider-less one it is the ONLY rung. All of Webex, WeCom, iLink (weixin), iMessage, Telegram, Discord and Teams pass the same `() -> safety_override().is_active()` — the ONE process-global grant the dashboard toggle drives. Slack is the outlier, passing a narrower channel-local `is_slack_session_trusted`. **A new channel should follow the seven, not Slack.** A channel-local trusted set is a SECOND grant: its own lifetime, its own audit trail, and its own way to disagree with the dashboard about whether auto-approve is on — and "is YOLO on?" has to have one answer. Omitting the keyword entirely is not a neutral default either: it makes arming YOLO from the dashboard INERT on that channel, so an unattended run still stops on every tool prompt with nobody there to answer, which is how Discord shipped until it was enrolled.
+
+**Teams has a decider AND the shared predicate, and that combination is the
+pattern.** It renders Adaptive Card approvals, so it passes a real `decider`; it
+also passes the same `() -> safety_override().is_active()` the buttonless channels
+do, because it keeps NO grant of its own. Its `/yolo` goes through the shared
+`run_yolo_command`, and its card's middle button arms that identical grant through
+the identical helper — so the command and the button cannot diverge, and neither can
+disagree with the dashboard. The button is therefore labelled "Approve +
+auto-approve" rather than "Trust session": the blast radius is every surface until
+the grant expires, and a control has to say what it does. The label alone is not
+enough, so the card body also carries `messaging.commands.YOLO_SCOPE_NOTE` — the one
+sentence naming what the grant covers, shared with the reply `/yolo on` returns so a
+pre-press affordance and the confirmation cannot describe different scopes.
+"Auto-approve" on a button inside one chat otherwise reads as scoped to that chat.
+Expiry, renewal, the duration and the SEL row all belong to the shared helper, which
+is the point — a channel-local store would have had to reimplement every one of them.
 
 `decider: ApprovalDecider` (`Callable[[Any], Awaitable[bool]]`) supplies the interactive click; when omitted, interactive mode denies by default (so buttons are only rendered when a decider exists — otherwise the user would get dead controls). Every permission decision emits an `sel().log_api_access` event (`caller="turn_driver"`, `operation="tool_permission"`, `source="messaging"`, `outcome` one of `auto_approved` / `approved` / `denied`).
 
@@ -207,7 +233,7 @@ Its contract:
 - **Every refusal is returned, never swallowed**, and the refused reference keeps its original markup so the path stays visible in the message. A file dropped in silence leaves a reply that talks about a picture with no picture and no explanation — the defect this module exists to prevent. This holds for a per-file-cap refusal too, so a channel with a low ceiling never has to drop an already-stripped file after the fact.
 - **Caps bound work, not just output.** `max_files` counts references *examined*, so a reply full of unreadable paths cannot drive unbounded filesystem work or an unbounded rejection list. `max_total_bytes` is handed to the read itself, so an oversize file is refused rather than allocated, and `max_file_bytes` narrows that same read when a channel's ceiling is lower.
 
-`test/test_outbound_files.py` pins each contract item above. Discord is the first channel routed onto it (below); the remaining channels follow, and until one does its `files_outbound` stays `False` and it keeps printing paths.
+`test/test_outbound_files.py` pins each contract item above. Discord is the first channel routed onto it (below) and Microsoft Teams the second (see "Teams' file halves"); the remaining channels follow, and until one does its `files_outbound` stays `False` and it keeps printing paths. An adopter may be NARROWER than this module — Teams accepts only the raster subtypes it can render inline — but the one contract item it may not restate is the refusal: a reference this module accepted and the channel then cannot send must still be reported, and the path must still be visible.
 
 `iter_local_refs(text) -> list[LocalRef]` is the scan both consumers share — every complete reference decidable from the text alone (inline-code and fenced ones, malformed markup and remote/`data:` destinations already excluded). `open_ref_start(text)` reports where markup OPENS and never closes, and `protected_ref_spans(text)` is the union of the two: the single answer to "where is image markup", used by the rotation guard and by `hide_local_refs(text) -> str`, the text-only cut a streaming channel uses to keep markup off live frames. An unterminated opener owns the rest of the text, because a buffer chunked while the reply is still arriving legitimately ends mid-markup — protecting only complete references is what lets a cut bisect `![alt](` and lose the attachment. `hide_local_refs` is deliberately more permissive than `extract_local_refs`: a reference it hides but extraction then rejects reappears in the sealed message, which is the safe direction; the reverse would flash a path and vanish.
 
@@ -320,11 +346,11 @@ abstraction Slack uses, so one bot serves many parallel, topic-scoped sessions
 
 A message that arrives while a turn is still generating is not a new turn: the
 session semaphore is held, so running it directly would either block or open a
-second conversation against the same key. Two channels carry the full
-steer/queue/drain machinery, `telegram/transport_dispatch.py` and
-`discord/transport_dispatch.py`; both read the same
-`messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
-else normalized to `steer`) and both implement the same three primitives
+second conversation against the same key. Three channels carry the full
+steer/queue/drain machinery — `telegram/transport_dispatch.py`,
+`discord/transport_dispatch.py` and `teams/transport_dispatch.py`; all read the
+same `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
+else normalized to `steer`) and all implement the same three primitives
 (`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
 
 The **channel-neutral half of the queue receipt is shared**, not duplicated:
@@ -334,14 +360,28 @@ through a `ReceiptSurface` whose address is bound at construction, which is why
 the shared module never sees a `chat_id` / `channel_id` / forum thread and
 Telegram's forum routing stays entirely channel-local. `_handle_busy` and
 `_drain_queue` deliberately stay per-channel: they re-enter their own
-`handle_message` and own the per-channel `_active_renderers`.
+`handle_message` (whose signature differs per channel) and own the per-channel
+`_active_renderers`. `_handle_stop` is NOT in that exclusion — see
+[Where a command handler splits](#where-a-command-handler-splits).
 
-The remaining channels (Webex, WeCom, Teams, Weixin) implement `_handle_busy`
-as **steer-only**: they fold the message into the running turn and reply with a
+The remaining channels (Webex, WeCom, Weixin) implement `_handle_busy` as
+**steer-only**: they fold the message into the running turn and reply with a
 one-shot notice, or ask the user to resend when steer is unavailable. They have
-no receipt and no drain, because their reply is bound to the inbound request
-(WeCom, Weixin) or has no editable-receipt affordance, so a hold-then-deliver
-follow-up turn could not be delivered reliably later.
+no receipt and no drain because their reply is bound to the inbound request
+(WeCom, Weixin) or their edit budget is already spent on the answer itself
+(Webex caps a message at ten edits), so a hold-then-deliver follow-up turn could
+not be acknowledged and delivered reliably later.
+
+**Teams is NOT in that group**, and the distinction is the editable-receipt
+affordance rather than channel maturity: the Bot Framework Connector supports
+`PUT {serviceUrl}/v3/conversations/{id}/activities/{activityId}` for a bot's own
+activities, so `TeamsClient.update_message` can grow one receipt bubble in place
+exactly as Telegram and Discord do. Teams therefore carries the full machinery.
+The one thing it cannot borrow is the delivery receipt: a bot cannot ADD a
+reaction in Teams (`messageReaction` activities are inbound-only), so a
+successful mid-turn steer is acknowledged with a short message where Telegram and
+Discord use an emoji — one extra bubble, which is still strictly better than
+losing the message.
 
 ### `steer` (the default): fold into the running turn
 
@@ -445,8 +485,12 @@ ported.
 `/stop` (alias `/cancel`; `!stop` / `!cancel` on Discord) aborts the running
 turn, drops every queued message, and finalizes the receipt to `🛑 Cancelled`.
 `clear_queue` and the receipt finalize run together under `ReceiptQueue.lock`.
+All of that, including both reply strings, is
+`messaging/commands.py::stop_running_turn(sessions, session_key, *, queue,
+surface)`; a dispatcher supplies the session key and its bound `ReceiptSurface`
+and sends the returned text.
 
-**Cancel is cooperative before it is fatal.** The dispatchers call
+**Cancel is cooperative before it is fatal.** The shared handler calls
 `provider.cancel(wait_ack_timeout=0)`, which writes an ACP `session/cancel`
 notification and returns without waiting, so the acknowledgement to the user is
 immediate; the turn stops at its next safe point. Per the ACP spec the ack is
@@ -461,6 +505,52 @@ and escalates to a hard kill plus eager respawn only on timeout or error. See
 
 On a shared runtime the cooperative cancel cannot force-kill a co-tenant
 process, which is why the soft path exists at all rather than always killing.
+
+### Where a command handler splits
+
+A dispatcher's command handler is two things welded together: a **decision**
+(what the grant becomes, whether a turn was actually cancelled, how long a login
+link lives, which bindings a rebind displaces) and a **send**, which needs a
+`chat_id`, a `channel_id`, or a `(conversation_id, serviceUrl)` pair. The
+decision half is identical across channels and is shared; only the send stays
+behind. Every shared handler therefore **returns the reply text rather than
+sending it** — the shape `release_conversation_location` already used — so a
+user-facing string has exactly one owner.
+
+| Command | Shared half | Per-channel half |
+|---|---|---|
+| `/stop` | `commands.stop_running_turn(sessions, session_key, *, queue, surface) -> str` | the send; which session key a resumed conversation stops |
+| `/yolo` | `commands.run_yolo_command(arg, *, source, caller, phrasing) -> str` | the send; `source` (also the grant's audit source), the trusted `caller`, and a `YoloPhrasing` |
+| `/link` | `link.rebind_conversation_location(sessions, *, key, location, unlink_command) -> str` | the send; `location` (the channel's one spelling of "this conversation"); any refusal only a resume-capable channel can hit |
+| `/unlink` | `link.release_conversation_location(sessions, *, key, location, channel) -> (str, swept)` | the send; the opt-out write ordered before it; any dashboard nudge for a swept binding |
+| dashboard link | `commands.parse_dashboard_ttl(arg, *, parse_duration) -> int`, `commands.format_ttl` | the command GRAMMAR — which word the TTL is (Telegram's `parse_dashboard_argument` reads the third; Teams' `/dashboard <ttl>` the second) |
+
+Four constraints shape those signatures:
+
+- **No address reaches `messaging/commands.py`.** It takes no `chat_id`,
+  `channel_id`, `conversation_id` or thread, and reaches a receipt bubble only
+  through the already-bound `ReceiptSurface`. That is what keeps Telegram's forum
+  routing and Teams' service URLs channel-local, and a parameter named for one
+  channel's address is how the module would acquire its first per-channel branch.
+- **Command spellings are data, not prose.** A channel that renders inline code
+  writes `` `/yolo on` `` where Telegram writes `/yolo on`; the two spellings are
+  `YOLO_PHRASING_PLAIN` / `YOLO_PHRASING_MARKDOWN` and the `unlink_command`
+  argument, so a channel picks a value instead of restating the sentence —
+  restating it is how three copies drifted.
+- **No word count crosses a channel boundary.** `parse_dashboard_ttl` takes the
+  already-extracted ARGUMENT, never the message, because indexing into the split
+  text would read one channel's grammar on another's behalf.
+- **`parse_duration` is injected, not imported.** It lives in
+  `dashboard/token_auth.py`, and `kiro_crew.messaging` imports nothing from
+  `kiro_crew.dashboard` at any nesting depth (`test_messaging_commands.py`
+  scans for it, deferred in-function imports included).
+
+Two things deliberately stay duplicated. `_handle_busy` and `_drain_queue`
+re-enter their own `handle_message`, whose signature differs per channel, and own
+the per-channel `_active_renderers` (see
+[queue receipts](#mid-turn-routing-queue-receipts--cancel)). And `/yolo` has no
+Discord counterpart at all: Discord renders real Approve/Deny buttons, so an
+out-of-band grant is not what makes tools usable there the way it is on Teams.
 
 ### Streaming and steer rotation in the renderers
 
@@ -522,7 +612,8 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 
 ## Invariants
 
-- **One-way dependency**: `kiro_crew.messaging` never imports `kiro_crew.slack` / `kiro_crew.dashboard`; violations reintroduce the cycle the abstraction removed.
+- **One-way dependency**: `kiro_crew.messaging` never imports `kiro_crew.slack` / `kiro_crew.dashboard`; violations reintroduce the cycle the abstraction removed. This holds at **any nesting depth** — a deferred in-function import is still an edge, so a shared helper that needs something from a surface takes it as a parameter (`parse_dashboard_ttl`'s `parse_duration`). `test_messaging_commands.py::TestLayering` scans the package's ASTs for it. There is exactly ONE recorded exception, and it is recorded as a `(file, module)` pair with a reason rather than as a hole in the scan: `dispatch.py`'s `build_directive_consumer` reaches `dashboard.session_directive_apply`, the SHARED applier the dashboard's own consumer uses, so the dashboard-only denial and the monitor-trio authorization chokepoint live in one place. Injecting that applier as a parameter — the pattern the TTL helper uses — would put a security boundary behind a caller-supplied callable, which is the worse trade. A companion test deletes the entry the moment the edge goes away, so the list cannot rot into a standing pre-authorization.
+- **A shared command handler returns reply TEXT, never sends, and takes no address**: the send is the only per-channel half, so `stop_running_turn`, `run_yolo_command`, `rebind_conversation_location` and `release_conversation_location` all hand back a string. Nothing shared accepts a `chat_id` / `channel_id` / `conversation_id` / thread; a receipt bubble is reached only through the already-bound `ReceiptSurface`. Accepting one address would put the first per-channel branch inside the shared module and put Telegram's forum routing and Teams' service URLs back in scope for it.
 - **Deny-by-default authorization**: `MessagingTransport.authorize` implementations authorize nobody when unconfigured; interactive approval denies unless positively approved (or a timeout elapses → deny).
 - **Redaction is unconditional**: all LLM/tool-originated text flowing through `TurnDriver` passes `redact_exfiltration_urls()` + `redact_credentials()` before reaching any renderer.
 - **Protocol metadata is not assistant speech**: streamed steering frames are withheld until complete, removed even when split across chunks, and represented as a structured boundary. Summary-bearing compaction activity is never sent to a channel as assistant speech; only a terse receipt may be rendered. `[OPTIONS: …]` remains user-facing and is never stripped by the shared filter.
@@ -535,11 +626,27 @@ Full new-path dispatch: fires the ack reaction + working status immediately (con
 - **A mid-turn steer requires a genuinely live turn**: gate on `provider.has_active_turn()`, never on `sessions.is_busy()` alone, which stays true through post-turn bookkeeping. Steering an ended prompt is silently swallowed, producing an acknowledgement with no answer.
 - **Cancel is cooperative before it is fatal**: `/stop` sends the ACP `session/cancel` notification and lets the turn stop at its next safe point; escalation to a hard kill happens only after the soft-stop budget elapses without an ack. On a shared runtime the cooperative path is the only one that cannot take a co-tenant down with it.
 - **Transport shutdown is quiescent**: a client that fast-acks inbound work in background tasks cancels and awaits those tasks before closing their shared network session or returning from shutdown. Teams owns this ordering in `TeamsClient.close()`, so a gateway teardown cannot leave a turn unwinding against an already-closed Connector session.
+- **A dropped outbound send is loud, never a return value**: `TeamsClient._post_activity` raises `TeamsSendError`. Every caller treats a return as proof of delivery — the renderer records the answer as sent, a proactive leg reports it delivered — so swallowing the failure is what makes the gateway claim a message the user never saw. Callers that genuinely tolerate failure (typing, an in-place edit, a command acknowledgement) catch it explicitly at their own call site, which is where the tolerance is a decision rather than a default.
+- **A self-authenticating external webhook is exempt from CSRF, method-scoped, and from nothing else**: the Bot Framework Connector sends no `Origin` and no `Referer`, and `check_origin` has no configuration that admits a no-Origin non-loopback POST, so without the exemption the route 403s before its own JWT gate can run. The exemption covers `POST` only, leaves `host_validation_middleware` untouched, and is sound precisely because the handler ignores cookies — the threat CSRF addresses does not exist on it. **The set holds exactly one path.** `/api/hooks/agent` shares the shape and has the separate token-auth bypass, but is NOT Origin-exempt: skipping the cookie gate and skipping the Origin check are two different grants, no reported failure named the second for that route, and a perimeter exemption is far harder to withdraw once a caller depends on it than to add later with its own cause. Adding a path to that set is a security review, not a copied line.
+- **Inbound token validation is never reordered behind body USE**: `on_activity` verifies the bearer token before the activity is acted on, and the replay-dedupe check runs AFTER the `serviceUrl` attestation so an unattested activity cannot consume a dedupe slot. The body IS read and JSON-parsed first, under a byte cap — that is what bounds it — so the guarantee is about dispatch, not about reading. A hardening step added ahead of the token check would make the perimeter the trust boundary instead of the signature.
+- **Channel identity is asserted POSITIVELY**: `activity.channelId` must equal `msteams`, never "not some other channel". An Azure Bot resource serves Web Chat (enabled by default) and can serve Direct Line off the SAME endpoint with the SAME credential, and on Direct Line the client composes the `from` object — so a negative test would hand a sender-chosen identity to `allowed_emails`, and would fail open on the next channel Microsoft adds.
+- **An approval widget carries a per-prompt nonce, minted from one place**: ACP request ids restart at 1 in every provider process, so a control left in a chat from a previous run names an id that is live again for a DIFFERENT tool. Slack, Discord, Telegram and Teams all mint through `messaging.renderer.new_approval_nonce`, compare with `secrets.compare_digest`, retire the nonce with the prompt, and fail CLOSED when none was armed. Three independent copies of that is how one ends up with a weaker token or none at all — which is the state Telegram shipped in. The session picker's nonce (`PickerRegistry.mint`) comes from the same function: a press on a stale list of sessions is the same hazard, so it is not a reason for a second generator.
+- **Session resume has ONE routing machine, not one per channel**: `messaging/session_resume.py` owns the eligibility list, the picker registry, the conflict rules and the routing + settlement state machine; Discord and Teams supply only a `ResumeSurface` (post/settle/say + display redaction) and a `ResumeCopy` (their command spellings). The machine is where a mistake routes somebody's transcript into someone else's chat, and its hazard is timing: between the durable record read and the live session-map read a binding can appear, vanish or move, so ONE call returns ONE `RoutingDecision` — where the message runs, the refusal that stops it, and the settlement owed once that refusal is delivered. Two resolver calls with an await between them let the binding change in the gap and the routing check fall through to the conversation's own session, silently. A second copy of that is not a maintenance cost, it is a second chance to get it wrong.
+- **There is ONE auto-approve grant, and a channel does not get its own**: every surface that can arm it — the dashboard toggle, `/yolo` on seven channels, and Teams' approval card — goes through `safety_override` via `messaging.commands.run_yolo_command`. A channel-local trusted set is a second grant with its own lifetime, its own audit trail and its own answer to "is YOLO on?", and it has to reimplement the expiry, renewal and auditing the shared helper already owns. Slack's `is_slack_session_trusted` predates this and is the one exception; a new channel follows the seven. It also follows that a control which arms the grant must NAME its blast radius: Teams' button says "Approve + auto-approve", not "Trust session", because the effect reaches every surface until the grant expires.
+- **A model-authored label is never interpreted as a command**: an `[OPTIONS:]` chip re-dispatches with `interpret_commands=False`, exactly like a drained queue payload. Display redaction does not strip a leading `/`, so with interpretation on a model that emitted `[OPTIONS: /dashboard | cancel]` renders a chip whose single tap mints a dashboard login credential.
+- **Attachment ingest belongs to the frame that awaits the turn**: download after the busy check, in the dispatcher, and unlink in that frame's `finally`. Ingesting at arrival and unlinking there leaves a QUEUED message's prompt naming files that were deleted minutes before the drained turn read them, and the encoder skips a missing path silently. It follows that an attachment-bearing message is never steered (a steer carries text only) and never read as a command (the caption lives in `text`); the queue entry carries RAW descriptors and the drained turn re-ingests them.
+- **An outbound refusal is never budget-dropped**: when extraction has already CUT a reference's markup, its refusal line is the only surviving trace of the file, so it is appended unconditionally and the caller chunks. Trading the line for staying inside one message is the one outcome that leaves the user with neither the picture nor a reason.
+- **A permanently undeliverable route is dropped, a transient failure is not**: `TeamsSendError` carries the Connector status and only `403`/`404` retire the persisted `serviceUrl`. Keeping a dead route turns every later cron result and mirror leg into a red badge nothing can clear; dropping one on a hiccup makes an outage look permanent.
+- **An SSRF vet checks the RESOLVED address, not only the name**: a name blocklist cannot see that a public name an attacker controls points at `127.0.0.1` or `169.254.169.254`, and a wildcard-DNS host needs no zone control at all. Resolution goes through one seam, refuses if ANY answer is private/loopback/link-local/reserved, refuses on failure, and runs on every redirect hop. The residual gap (rebinding between vet and connect) is stated rather than implied away.
+- **A routing reference is durable, and losing it never blocks delivery**: the Bot Framework exposes no lookup for a conversation's `serviceUrl`, so `teams/service_urls.py` persists it. Loading is lazy and off-loop (never the boot path), every read failure degrades to the in-memory map, a non-`https` row does not survive a reload, and an identity row whose conversation did not survive is dropped rather than advertising a target with no route to it.
 - **Session keys are namespaced**: every key is `channel_type:conversation_id`; only bare legacy Slack `thread_ts` keys are shimmed, via `canonical_key`/`legacy_key`.
 - **Runtime identity follows the current turn**: every channel dispatcher passes its trusted transport name as `runtime_source` to `ContextBuilder.build_message`; the shared `drive_turn` pipeline uses `ChannelTurn.channel_type`. A cross-surface resume keeps its original stable session key for conversation continuity, but `[RUNTIME]` names the interface carrying the current message. Follow-up turns refresh the marker because the one-time session context may describe an earlier surface.
 - **Channel dashboard visibility is immediate**: after the first successful turn of a Discord, Telegram, Webex, Teams, WeCom, or Weixin-owned session is persisted, the dispatcher triggers the channel-slot reconciler immediately when `dashboard.surface_channel_sessions` is enabled. `DashboardState.register_channel_transport` injects the dashboard state into the bound dispatcher; the lifetime 30-second reconciler remains the recovery path, but the normal first-turn path does not wait for it. Turns that resume an existing `dashboard:` session skip this step because that session already owns a slot.
+- **An owner notification is not Slack-only**: `dashboard/server.py::_dm_owner` prefers the owner's Slack DM and falls back to registered channel transports (`_notify_owner_channels`). It used to no-op entirely without Slack, so an expiring unattended grant was invisible on a Teams-only, Discord-only or Telegram-only install — silence about a security grant lapsing is exactly what the notice exists to prevent. Fallback, not addition: an operator with Slack gets one notice, not one per channel. Reachability is the transport's OWN answer, so this can only reach a destination that channel already authorized. **And a channel must be able to NAME the owner: exactly one configured target, or nothing.** The notice carries the operator's own security state, while an allow-list is a list of people permitted to talk to the agent — not a claim that any one of them is the operator. With several configured targets there is no unambiguous owner, and sending to the first reachable one hands one allow-listed human another's auto-approve state; the count is over ALL configured targets, because a three-person allow-list with one learned route is still a guess. Same premise as `/sessions`' owner-only rule. Per-identity authority within an allow-list would let this deliver on a multi-person install; it does not exist yet on any channel.
+- **The proactive PRODUCERS are still Slack-shaped, and the parity claim says so**: `api_send_message` (the LLM-facing `send_message` tool) has exactly two legs — the origin dashboard slot and `state.slack_client` — and `file_send` posts to the Slack upload route. Neither consults `state.channel_transports`. A cron result still reaches a non-Slack channel when its origin slot is MIRRORED there (`/link`), which is the normal path; what is missing is the tool's own explicit channel/user addressing, whose allow-list, threading and unfurl semantics are Slack concepts. This is the largest remaining outbound gap and it hurts Discord and Telegram identically — routing it through the transport ladder is a change to that handler's contract, not to a channel.
 - **Configured outbound targets are transport-owned**: `MessagingTransport.configured_targets()` returns opaque `ConfiguredChannelTarget` records for the user-configured destinations a dashboard session may link to, including an explicit unavailable reason when a protocol needs prior inbound state or cannot send proactively. `resolve_configured_target()` revalidates the selected opaque id at the side-effect boundary and resolves it to `(conversation_id, thread_id)`; the browser never supplies an unchecked platform conversation id. Discord exposes configured users and threads, and fail-closes thread resolution unless Discord still reports the allow-listed id as an actual thread rather than a normal shared guild channel; Telegram and Webex expose configured DMs; Weixin exposes allow-listed DMs plus authorized peers learned under its open policy; Teams destinations become available after an authorized inbound activity supplies a conversation/service URL; and WeCom destinations (including its allow-all policy placeholder) remain visible but unavailable because its reply token is inbound-bound.
 - **Configured-target egress is governed at every yield boundary**: the dashboard mirror-link endpoint enters the shared fail-closed `channels` governance ladder before resolving an opaque target (resolution may itself open a remote DM), rechecks before the initial link message, and rechecks before each historical-context message. A profile that narrows after transport startup therefore stops both target resolution and all subsequent sends.
+- **`/link` and `/unlink` are one pair with one location**: `rebind_conversation_location` claims what `release_conversation_location` frees, and both take the channel's single `_origin_mirror_link()` value — the release matches an occupied location by VALUE, so a second spelling of "this conversation" lets it miss the binding the bind wrote. Inside the rebind the **claim goes first**: `batched_save` writes on the way out even when the block raises, so an opt-out withdrawal ordered ahead of a refused claim would persist for a link that never happened and silently turn mirroring back on.
 - **Own-channel vs. mirror**: `ChannelLink` models a session's own inbound channel only; the dashboard→Slack mirror binding stays in `SessionMap.get/set_slack_link` (guardrail G3). The generalized channel-neutral outbound mirror (`SessionMap.set_mirror_link`) stores a `ChannelLink` under the `mirror` slot for non-Slack channels, still distinct from the session's own inbound link.
 - **Managed-MCP session-key resolution**: every turn-running surface publishes `session_pid_<pid>.txt` (with an HMAC-SHA256 sidecar) through the single shared helper `messaging.identity.publish_turn_identity` (which calls `session_pid_sig.publish_session_pid`), keyed by the session's kiro-cli host PID, so the gateway's ancestor PID-walk resolves the caller's `X-Session-Key`. One writer is called by the dashboard, native Slack, and every shipped channel transport-dispatch surface: Telegram (DM + forum), Discord, Slack, Webex, WeCom, Teams, and Weixin (through the shared `drive_turn`). Any surface that omits it makes every session-keyed managed MCP tool (`learn_add`, cron management, …) fail with HTTP 400 `missing X-Session-Key` from that channel's turns; the identity-topology test guards every dispatcher against regressing.
 
@@ -766,7 +873,11 @@ edits (an edit failure burns the remaining budget so the final-answer edit
 can never race the cap), and the final answer lands as one placeholder edit
 with a fresh-message fallback plus chunked follow-ups past the 7000-char cap.
 Trailing `[OPTIONS:]` markup is stripped (`max_buttons=0`); interactive tool
-approvals run decider-less (deny-by-default under INTERACTIVE mode).
+approvals run decider-less, so under INTERACTIVE mode the only rung that can
+approve a tool here is `ChannelTurn.auto_approve_session`, wired to the
+process-global safety-override grant (see [Approval ladder](#approval-ladder)).
+With no grant armed the channel stays deny-by-default and the agent can only
+talk.
 
 ## Webex settings API
 
@@ -829,6 +940,534 @@ approvals run decider-less (deny-by-default under INTERACTIVE mode).
   (atomic 0600) with `os.environ` synced. Writes are serialized under the
   repo-wide config lock. All fields are boot-read, so `restart_required` is
   true on any actual change.
+
+## Microsoft Teams channel
+
+**Transport (`kiro_crew/teams/`).** A concrete `MessagingTransport` over a
+pure-`aiohttp` Bot Framework client (`client.py`) plus `PyJWT` for inbound token
+validation — no Bot Framework SDK dependency (the optional `kirocrew[teams]`
+extra). Teams is the **only** channel whose inbound is a public HTTPS endpoint:
+every other channel opens an outbound connection, but "Teams sends a JSON object
+to your agent's messaging endpoint, and it allows only one endpoint for
+messaging." There is no Socket Mode equivalent, so this is a permanent
+architectural divergence, not a gap to close.
+
+**Inbound authenticity is the channel's whole trust boundary.** `on_activity`
+extracts the `Authorization: Bearer` token and runs `JwtValidator.verify` off-loop
+(`asyncio.to_thread` — a JWKS fetch and an RS256 verify must never sit on the
+gateway loop) BEFORE the activity is ACTED ON, returning 401 with a SEL
+`denied_invalid_token` row. The route reads and JSON-parses the body first, under
+`TEAMS_MAX_ACTIVITY_BYTES`, because that is what bounds it; the guarantee is
+"nothing is dispatched pre-auth", not "nothing is read pre-auth". `verify` pins `algorithms=["RS256"]`, sets
+`audience` to the bot's App ID, requires `exp`/`iss`/`aud`, allows the
+documented five-minute clock skew, and rejects any issuer outside
+`{"https://api.botframework.com"}`. `_require_https` pins the scheme of both the
+OpenID metadata URL and the resolved `jwks_uri`, closing an arbitrary-file-read
+vector (`PyJWKClient` would honour `file://`). `_dispatch_activity` then binds the
+outbound target to the token's own `serviceurl` claim: the reply carries an
+app-credential bearer token, so a replayed activity pointing `serviceUrl` at an
+attacker-controlled host must not receive it.
+
+`_dispatch_activity` also binds the channel POSITIVELY: `activity.channelId` must
+equal `msteams`. An Azure Bot resource has Web Chat enabled by default and can
+carry Direct Line, and both reach this endpoint with a token that passes every
+check above — same issuer, same audience, matching `serviceurl` claim — while
+defaulting `conversationType` to `personal`. On Direct Line the CLIENT composes the
+`from` object, so `aadObjectId` is not channel-attested and `teams.allowed_emails`
+would be matching an identity the sender chose. A negative test ("not some other
+channel") would fail open on the next channel Microsoft adds.
+
+Five bounds sit around that check, because this is the one route reachable from
+the internet:
+
+- **Route reachability.** `csrf_middleware` applies an Origin check to every
+  non-safe method, and the Connector sends neither `Origin` nor `Referer`, so the
+  request is refused before the JWT handler runs unless the peer happens to be
+  loopback. The route is therefore in the **method-scoped CSRF exemption for
+  self-authenticating external webhooks** — sound because CSRF defends against a
+  browser attaching cookies cross-origin, and this handler ignores cookies and
+  authenticates a JWT a browser cannot forge. Only `POST` is exempt; `PUT`/`DELETE`
+  on the same literal path still match dashboard-authed wildcard routes.
+- **Failed-auth throttle**, reusing `webhooks.py`'s existing counters, so an
+  anonymous flood cannot spend one SEL row per request. Note its SCOPE: the
+  throttle is skipped for a proxied request (`is_proxied_request`) because it would
+  otherwise key every caller onto the proxy, and two of the three documented
+  topologies are proxied. So it is NOT what bounds the JWKS refetch.
+- **JWKS refetch damper.** `PyJWKClient.get_signing_key` answers an unknown `kid`
+  with an unconditional `refresh=True` fetch and has no rate limit of its own, so
+  each bogus-kid POST would buy one outbound HTTPS GET. `JwtValidator._get_signing_key`
+  therefore does the kid lookup itself — cached set first, then at most one
+  refetch per `_JWKS_REFRESH_MIN_INTERVAL_SECS` — so the damper sits next to the
+  fetch it bounds rather than at a route that may not run. A genuinely rotated key
+  is still reachable within one interval.
+- **Bounded body.** The dashboard route reads the activity under
+  `TEAMS_MAX_ACTIVITY_BYTES` and stashes the parsed dict under
+  `TEAMS_ACTIVITY_REQUEST_KEY`, so `on_activity` never re-parses an unbounded
+  body. The cap lives in the route, keeping `client.py` free of dashboard imports.
+- **Replay drop and an in-flight ceiling.** The Connector legitimately redelivers
+  when the bot misses its ack window, so a duplicate `activity.id` is dropped
+  idempotently (audited `denied_replayed_activity`) rather than refused — checked
+  AFTER attestation so an unattested activity cannot consume a dedupe slot. A
+  valid-token burst is shed past `_MAX_INFLIGHT_TURNS`, since each turn holds a
+  session semaphore and a provider process. Two shapes are EXEMPT, and must be,
+  because both are how a saturated gateway gets UNstuck: a card click (Teams
+  delivers `Action.Submit` as an ordinary `message` activity, so shedding it drops
+  the Approve/Deny press that would free a slot and deadlocks every waiting prompt)
+  and `/stop`, whose aliases are DERIVED from `COMMAND_SPEC` rather than copied.
+  Neither starts a turn, so neither costs a semaphore.
+
+The handler fast-acks 200 and runs the turn in a background task: the Connector
+times out the inbound POST at ~15 seconds, far below an agentic turn.
+
+**Outbound.** `POST/PUT {serviceUrl}/v3/conversations/{id}/activities[/{activityId}]`
+with a cached client-credentials token (`login.microsoftonline.com`, scope
+`https://api.botframework.com/.default`; the tenant is templated so single-tenant
+works). Delivery failure **raises** `TeamsSendError` rather than returning `None`:
+every caller treats a return as proof of delivery, so a swallowed error made the
+gateway record an answer the user never received. Callers that legitimately
+tolerate failure — the typing indicator, a cosmetic in-place edit, a command
+acknowledgement — catch it at their own call site. Retries cover Teams' documented
+transient set, which is **wider than the usual 429-only rule**: `412`, `429`, `502`
+and `504`, honouring `Retry-After` and otherwise backing off exponentially. The
+status badge is bidirectional — a delivered activity clears a stale failure, and
+`_notify_state` dedupes on the transition so a healthy channel does not republish
+per send nor overwrite the first failure reason.
+
+**serviceUrl durability (`service_urls.py`).** The Bot Framework offers no way to
+look up where a conversation can be reached: `serviceUrl` arrives on an inbound
+activity and the bot must remember it. An in-memory map lost every proactive
+destination on restart, so a cron result or dashboard mirror leg had nowhere to
+send until the user spoke again. `ServiceUrlStore` persists
+`conversation_id -> serviceUrl` (plus the allow-listed identity that owns each
+conversation, recorded only AFTER authorization) to
+`$KIROCREW_HOME/routing/teams_service_urls.json`. Loading is lazy and off-loop —
+never on the gateway boot path — every failure degrades to the in-memory map because
+a lost routing hint must not stop delivery, a non-Connector row does not survive a
+reload, and the map is bounded by count with least-recently-seen eviction.
+
+It lives in its own `routing/` directory because that directory is a keystone leaf,
+so the agent can neither read nor write it: the identity map is what an explicit
+`user:<upn>` send target resolves through, and a writable copy delivers one person's
+cron result to another. The DIRECTORY is registered rather than the file, so
+`atomic_write`'s `mkstemp` temp sibling is covered too — see
+[security](security.md#crew-data-home-secrets--governance-trust-root) for why that
+distinction is load-bearing. There is no migration from the pre-`routing/` path:
+reading the old, agent-writable location would reopen the hole.
+
+Two paths besides an ordinary message keep that map honest, one per direction:
+
+- **Learning without a prompt.** A personal-scope `conversationUpdate`
+  (membersAdded) or an `installationUpdate` carries the whole routable tuple —
+  conversation id, `serviceUrl`, `aadObjectId` — under exactly the attestation
+  above and no prompt, so `TeamsClient.on_route` hands it to
+  `TeamsTransport.note_route`, which re-applies the SAME personal-scope and
+  allow-list gates `receive` does. A freshly installed app is therefore a proactive
+  target before the user first types, without a Connector conversation-creation
+  round trip; a join from a channel or a stranger records nothing, so "reachable"
+  never comes to mean something other than "authorized".
+- **Forgetting a dead route.** Capacity eviction is not enough: once a user blocks
+  the bot or removes the app the route is permanently undeliverable, and keeping it
+  turns every later cron result and mirror leg into a red badge with nothing able to
+  clear it. `TeamsSendError` carries the Connector's `status`, and
+  `TeamsTransport.send_message` calls `ServiceUrlStore.forget` on a PERMANENT
+  refusal only (`403`/`404` — not `401`, our credential, and not `429`/`5xx`, which
+  are transient), dropping the identity row with the conversation and persisting it
+  so the next process does not re-advertise it.
+
+**Security model.** `authorize` is deny-by-default against
+`teams.allowed_emails` (matching the UPN/email when Teams supplies one, else the
+AAD object id, since activities carry that more reliably); an empty allow-list
+authorizes nobody. **Personal-scope only, fail closed:** any non-`personal`
+conversation type is denied and audited BEFORE authorization, because a reply in a
+channel or group chat would expose tool output to members who are not on the
+allow-list. `MICROSOFT_APP_ID` / `MICROSOFT_APP_PASSWORD` /
+`MICROSOFT_APP_TENANT_ID` are on the sandbox agent env denylist, and
+`pod/runtime.py` forces `teams.enabled = false` in a sanitized seed and scrubs the
+`MICROSOFT_APP_` prefix — a pod that inherited a real config would otherwise drive
+the operator's production bot and answer real people.
+
+**Dispatch + rendering.** Turns ride the shared `TurnDriver` through
+`messaging/dispatch.py::drive_turn`. The command vocabulary lives in ONE table,
+`teams/commands.py::COMMAND_SPEC`, which drives both the parser and the `/help`
+card so the two cannot drift: `/new`, `/compact`, `/stop` (alias `/cancel`),
+`/yolo`, `/link`, `/unlink`, `/sessions`, `/dashboard`, `/help`, plus the `/queue` and `/steer` per-message
+directives. A bare directive answers with usage rather than handing the
+literal `/queue` to the model, which would reply to it as chat text.
+`/dashboard [<N>h|<N>m]` MINTS a presigned dashboard login token for the asking
+identity (default and cap from `commands.parse_dashboard_ttl`) and is SEL-audited,
+so every address on `teams.allowed_emails` can issue itself a dashboard session —
+the same premise that scopes `/yolo` to one conversation.
+
+**`/sessions` continues a dashboard chat here** (`teams/session_resume.py`), on the
+same shared core Discord uses. What Teams supplies is the widget — an Adaptive Card
+whose `Action.Submit` returns as an ordinary message activity, so it needs no `invoke`
+handler — plus its own display redaction and command spellings. Three properties are
+Teams-specific and load-bearing:
+
+- **Owner-only, and STRICTER than Discord's rule.** Discord requires exactly one
+  configured user id. Teams' allow-list routinely holds several people, and a dashboard
+  session is the operator's whole working transcript, so listing is refused unless
+  `teams.allowed_emails` holds exactly one identity. With more than one it refuses
+  everybody rather than picking the first entry — the same premise that scopes nothing
+  else on that list to one person.
+- **The submit carries an INDEX, never a session key.** A key in the payload would be an
+  instruction to bind whatever the sender named; an index is resolved against the list
+  this process actually offered, so a forged or replayed press can only ever miss. The
+  registry additionally scopes on the owner and on the posting the press came from.
+- **Routing runs BEFORE the command intercept.** `/compact` and `/stop` act on the
+  RESOLVED session, so after a binding was destroyed they would compact or cancel the
+  native Teams session while the user believes they drive the resumed one. Deciding once,
+  upstream, makes that structural instead of something each handler must remember; the
+  decision is then threaded into the turn and never re-resolved. `/sessions`, `/new`,
+  `/unlink` and `/help` stay reachable while routing refuses, because a user whose link
+  broke needs the way back in. A resumed turn does NOT rotate its generation — rotation
+  belongs to this conversation, and applying it would move the user off the transcript
+  they just attached to. `/new` and `/unlink` release the binding, and a release that
+  cannot be made durable changes nothing and says so.
+- **A refusal that did not land settles nothing.** Settlement clears (or adopts) the
+  durable record the refusal was owed for, so applying it after an undelivered notice
+  routes the user's NEXT message into a transcript they were never told about. Both
+  channels gate on delivery: Discord on `send_message`'s own boolean, Teams on `_reply`'s
+  (which is why that helper returns one at all — a cosmetic command ack is still logged
+  and swallowed, but a notice that gates durable state is not cosmetic). An unsettled
+  record owes the same refusal again, which is the direction that fails safe.
+- **A card click resolves against BOTH keys of its conversation.** The turn registers
+  its decider and its renderer under the key it ran with, which for a resumed
+  conversation is the bound `dashboard:` one — so `_handle_card_action` keyed only off
+  the native `teams:{email}` session would find neither, tell the user the prompt is
+  stale, and let the tool deny by default at the prompt timeout. It tries
+  `_click_session_keys` (resumed, then native) in order. Both, not just the resolved
+  one, because a card click is a relief activity that bypasses the busy check: a
+  `/sessions` pick can bind the conversation while an earlier turn is still in flight,
+  and that turn's cards stay registered under the key it started with. Both keys belong
+  to the same conversation and identity, so this widens nothing — at most one of them
+  holds a given `(request_id, nonce)` pair, and the per-prompt nonce still decides.
+
+**Which identity the allow-list authorizes.** A Teams activity may carry a UPN, an
+AAD object id, or both, and `teams.allowed_emails` accepts either form. So
+`TeamsTransport._resolve_identity` picks the form the list actually AUTHORIZES rather
+than a fixed preference order: a plain email-first rule denies a user whose OBJECT ID
+is allow-listed whenever Teams also sends an email — the ordinary shape for a guest
+account and for any tenant that lists object ids — with the entry sitting right there
+in the list. When both forms match, the email wins, so an install listing both keeps
+the human-readable session key it already had. An unauthorized sender falls back to
+email-then-object-id so the deny audit names them recognisably.
+
+The decision is then CARRIED, on `TeamsInbound.resolved_identity`, and read in exactly
+ONE place per module: `TeamsTransport._resolve_identity` makes it,
+`TeamsDispatcher._identity` reads it. Every re-derivation is a chance to disagree, and
+each one that existed did: the transport admitted a user on their object id while the
+dispatcher keyed the session on their UPN (a session nobody authorized, which owner-only
+`/sessions` then refuses), and `handle_message` keyed a turn on the UPN while
+`_handle_card_action` keyed the click on the object id (so the approval card resolved
+against a session nothing was awaiting, expired, and the tool denied by default — and
+`/new` rotated a generation the turn was not using). `_identity` falls back to
+email-then-object-id for an inbound built outside `receive` (tests, and the route-only
+activities that never reach a turn), which is the same answer whenever only one form is
+present.
+
+**The credential check verifies outside the config lock and CONFIRMS inside it.** The
+save-time Azure token exchange is a network round trip, and `_get_config_lock()`
+serializes every config writer in the process — holding it across that call would stall
+unrelated saves, and a hung endpoint would wedge them until the timeout. So the check runs
+first, records the exact `(app_id, password, tenant)` Azure accepted, and the commit path
+re-derives that triple under the lock and refuses (`config_changed`) if it moved. Without
+the confirmation, two concurrent saves — one changing the app id, one the secret — each
+verify a triple containing the other's old value, both pass, and the serialized commits
+merge into a stored triple neither one checked: a green "Saved." and a channel that is
+dead at the next restart. Optimistic concurrency, not a longer lock.
+
+**A quote-reply is unwrapped before anything reads the text.** Right-click → Reply
+in a 1:1 chat — the only scope this channel serves — makes Teams PREPEND the quoted
+message to `activity.text`, while the user's own words sit in the `text/html` body
+attachment after a `<blockquote itemtype="http://schema.skype.com/Reply">`.
+`attachments.quoted_reply_text` recovers them, and the client prefers that over
+`activity.text`. Without it a quote-replied `/stop` no longer starts with `/`, so it
+reaches the model as prose and the turn keeps running, and a quote-replied question
+arrives with the previous message jammed onto the front. The helper returns `""` for
+any shape it does not recognise, so an unfamiliar client degrades to `activity.text`
+rather than losing the message, and the body attachment is still never ingested as a
+FILE (that would duplicate the prompt).
+
+**Tool approval is an Adaptive Card** (`teams/cards.py`, `teams/approvals.py`).
+Teams renders no Block Kit and no message components, but an `Action.Submit` on a
+card returns as an ORDINARY `message` activity whose `value` carries the button's
+payload — which is why `Action.Submit` is used and `Action.Execute` is not: a
+universal action arrives as an `invoke` needing a synchronous
+`{statusCode, type, value}` body, incompatible with the fast-ack-then-background
+shape the Connector's inbound timeout forces. The card offers Approve / Trust
+session / Deny, mirroring Slack's three, and `[OPTIONS:]` choices ride the same
+mechanism as chips through the shared `apply_options_cap` (`max_buttons=5` — BELOW
+Slack's 10, because Adaptive Card actions render as full-width buttons on mobile —
+and overflow degrades to a numbered text list rather than vanishing).
+
+**A chip is turn content, never a command.** The chip re-dispatch passes
+`interpret_commands=False`, exactly as the queue drain does, and that is a security
+boundary rather than a nicety: a label comes from the MODEL's own `[OPTIONS:]`
+trailer and display redaction does not strip a leading `/`, so with interpretation
+on a model that emitted `[OPTIONS: /dashboard | cancel]` would render a chip whose
+single tap mints a dashboard login credential.
+
+Two properties make a click safe, and both are the reason this is not a bare dict
+of futures:
+
+- **A stale card cannot answer a live prompt.** ACP request ids restart at 1 in
+  every provider process, so a card still sitting in a chat from a previous run
+  can name an id that is live again for a DIFFERENT tool. Every prompt mints a
+  nonce, compared on resolve; the registry key is namespaced by session because
+  two sessions can await id `1` at once. A timeout, an unknown id, a mismatched
+  nonce and an already-answered prompt all resolve to "not approved".
+- **The payload carries no authority.** A submit is client input, so it is only
+  ever a LOOKUP key into state this process holds. An option chip's label is read
+  from what that turn actually offered, never from the payload, so a forged label
+  cannot be injected as if the user had typed it.
+
+An answered prompt's card is REPLACED with its outcome (`resolved_card`, no
+actions), so a chat never accumulates live buttons that resolve to nothing; a
+click that resolves nothing tells the user, because a button that silently does
+nothing is indistinguishable from a broken bot. Three cases reach that same
+replacement, because "answered" is not the only way a prompt stops being live:
+
+- **Expiry.** The decider calls `on_expired` (wired to the renderer, which is the
+  only thing that knows where the card is) when the click window closes, so the
+  buttons do not keep looking live forever.
+- **A card that never landed.** The nonce is armed BEFORE the post so a fast click
+  is not refused as stale, which means a failed post leaves an armed prompt with no
+  control. `TeamsApprovalDecider.abandon` denies it AT ONCE and the renderer says
+  so, instead of parking the turn for the full window behind a card nobody received.
+  A delivered card whose activity id Teams merely WITHHELD is not this case; both
+  read as an empty string, and `_card_posted` is what separates them.
+- **A chip pick.** `settle_options` replaces the chips card with the choice before
+  the turn runs, so no other chip still looks live and the transcript records which
+  one was picked. If the chips card could not be posted at all the choices degrade
+  to a numbered text list — the trailer was already cut from the body, so silence
+  would lose them — and the nonce is dropped so no later press resolves against a
+  card that does not exist.
+
+**The typing indicator is kept alive.** A Teams typing activity expires after a few
+seconds, so one at turn start leaves a minutes-long turn showing dots briefly and
+then a silent chat, which a user cannot distinguish from a dead bot. The renderer
+refreshes it every `_TYPING_REFRESH_S` until the turn finalizes (~1% of Teams'
+7 requests/second per-thread budget); the progress bubble only covers a turn that
+CALLS a tool, so a long pure generation or a `/compact` has nothing else to show.
+Both `on_done` and `close` cancel the loop, because an orphaned refresh would post
+into a finished conversation for the process lifetime.
+
+`ChannelTurn.auto_approve_session` is the second rung, letting a user stop being
+asked per tool. Teams passes `() -> safety_override().is_active()` — the ONE
+process-wide grant, and nothing else. The field is an **additive** widening of the
+shared pipeline (`None` default, and `TurnDriver` already accepted the parameter),
+so a channel that does not set it keeps deny-by-default byte for byte.
+
+Both ways a Teams user can arm that grant go through the SAME shared helper:
+`/yolo` calls `messaging.commands.run_yolo_command`, and the card's middle button
+calls it with `"on"`. So the duration, the expiry, the renewal grammar and the SEL
+row are identical whichever way the user asked, and neither can disagree with the
+dashboard toggle. Teams deliberately keeps **no grant store of its own** — a
+channel-local trusted set would be a second grant with its own lifetime and its own
+answer to "is YOLO on?", and it would have had to reimplement expiry, renewal and
+auditing that the shared helper already owns. `approvals.TeamsApprovalDecider` only
+RECORDS that the button was pressed (`trusted`), because arming is async and audited
+while the click path is sync; the dispatcher arms it, before settling the card, so
+the label cannot claim a grant that failed to arm. The grant does not weaken the
+PreToolUse gate: the sensitive-path keystone, the governance ceiling and the
+deny-list all run ahead of the auto-approve ladder, so a hard DENY still wins.
+
+The renderer lazily opens ONE progress
+message on the first tool call and edits it in place (throttled — Teams' limit is
+7 requests/second per thread), and at `on_done` reuses that message for the first
+chunk of the answer so no "Working…" bubble is stranded above the reply. Splitting
+goes through the shared fence-safe `split_markdown_safe` off-loop, not blind
+fixed-width slicing, so a long reply cannot be cut through the middle of a code
+fence. The delivered text is re-scanned in its **display** form
+(`messaging/display_safety.py::redact_for_display`) at that single chokepoint,
+because stripping the trailer and letting Teams render markdown can reassemble a
+credential the driver's scan saw as broken. Messages carry
+`textFormat: "markdown"`; note Teams renders only a markdown SUBSET in a plain
+message (bold, italic, preformatted, blockquote, links — **not** headings, lists,
+tables or images), which is the largest remaining content-fidelity gap versus
+Slack mrkdwn.
+
+`on_thinking` is a no-op, matching every non-Slack channel.
+
+### Teams' file halves (`teams/attachments.py`)
+
+Both capability flags are `True`, and both are deliberately narrower than the
+platform. `teams/attachments.py` owns only what is Teams-shaped; classification,
+limits, signature validation, temp-file ownership, reference scanning, the
+security floor and the byte budgets all stay in `messaging/attachments.py` and
+`messaging/outbound_files.py`.
+
+**Outbound: inline images only, and that is a scope decision, not a gap.** An
+`Attachment` whose `contentUrl` is a `data:image/png;base64,…` URI renders with no
+hosting and no round trip, which covers the case this exists for — an
+agent-produced chart. A NON-image file would need the `FileConsentCard` flow:
+a consent card (`application/vnd.microsoft.teams.card.file.consent`), a user
+accept, a `fileConsent/invoke` activity carrying `uploadInfo.uploadUrl`, a `PUT`
+of the bytes with `Content-Range`, then a `…card.file.info` confirmation — plus
+`supportsFiles: true` in the app manifest. Be precise about the blocker: that
+`invoke` needs no synchronous body of its own (unlike `Action.Execute`, which does —
+see the card section), so the fast-ack ingress is not what rules it out. What rules
+it out is SCOPE: five new wire shapes, a per-upload state machine keyed on a consent
+the user may never give, and a chunked `PUT` — for a case an inline raster already
+covers. A non-inlinable reference is refused visibly instead, and this paragraph is
+the record of the decision rather than of an impossibility.
+
+- **The seal is `on_done`, and it is the only one.** Teams does not stream, so
+  there are no live frames that could flash markup before the seal replaces it and
+  no length rotation that could bisect a reference — the two hazards Discord's
+  `hide_local_refs` and upload-eligibility flag exist to handle. Extraction runs
+  once per turn through `extract_local_refs_off_loop`, gated behind a `"!["`
+  substring pre-check so an ordinary answer never touches the filesystem.
+- **Named ceilings fed in as budgets.** `TEAMS_MAX_INLINE_IMAGE_BYTES` (1 MiB,
+  Teams' documented picture limit), `TEAMS_MAX_INLINE_IMAGES` (4 — each image is
+  its own activity against a 7-requests/second-per-thread limit) and
+  `TEAMS_MAX_INLINE_TOTAL_BYTES` become one `ExtractLimits`, so an oversize image
+  is refused *by the read* and keeps its markdown. Base64 inflation costs nothing
+  here: Teams' ~100 KB activity-payload budget explicitly EXCLUDES a base64 image,
+  so the picture limit is the only bound that binds.
+- **One activity per image, sent after the text.** Teams SPLITS an activity
+  carrying both text and an attachment and withholds its id, and its own guidance
+  is to send separate activities rather than depend on that split.
+- **The format allow-list is `{image/png, image/jpeg}`** — narrower than the
+  neutral sniffer. Teams documents PNG/JPEG/GIF but states animated GIF does not
+  render, and whether a GIF is animated is not decidable from leading bytes, so
+  accepting the format would mean sometimes sending the one shape Teams refuses.
+  WebP and BMP are not in its documented set. Pixel dimensions (Teams caps a
+  picture at 1024×1024) are deliberately NOT pre-checked: it would mean decoding a
+  header per format and would refuse an ordinary 1200-pixel-wide chart.
+- **Every refusal is returned and audited, and no picture disappears in silence.**
+  A neutral-module refusal (sensitive path, symlink, not-a-raster, over the per-file
+  ceiling) keeps its original markdown, so the path stays visible. Two Teams-owned
+  refusals cannot: `teams_inline_unsupported` (a real raster Teams will not inline)
+  and `teams_inline_undelivered` (an activity that failed) are only knowable AFTER
+  the read, by which point extraction has cut the markup — so those name the
+  **resolved path** in their refusal line instead, keeping the same property by a
+  different route. This is the one documented deviation from the neutral contract's
+  "keeps its original markup". That line is therefore the ONLY surviving trace of the
+  picture, so it is never budget-dropped: `_append_rejections` does not check
+  `max_message_chars`, because every caller chunks and an over-cap body costs one
+  extra message rather than a lost line. The undelivered-image follow-up is chunked
+  for the same reason — a refusal quotes an LLM-authored path, so it has no bound of
+  its own. Refusal lines are appended BEFORE display redaction, so a destination
+  quoted in one is scanned like the rest of the answer.
+- **The attachment NAME is a display sink too, and both its sources are untrusted.**
+  `inline_image_name` prefers the (already redacted) alt text and falls back to the
+  path's basename — which the model also wrote. `_SAFE_NAME_RE` preserves
+  `[A-Za-z0-9._-]`, every character an `AKIA…` key id or a `ghp_…` token needs, and
+  extraction has already cut the path out of the body, so for an empty caption this
+  name is the only remaining sink. Both the SOURCE and the finished name are scanned
+  and any hit collapses the whole name to `image.<ext>`; scanning the source too is
+  not belt-and-braces, because the 64-char cut can slice a token down to a prefix the
+  scanner no longer matches.
+- **The approved root, and the one gate.** Extraction needs the provider's real
+  `cwd`. `authorize_upload_root(root)` is the public setter a caller holding the
+  live provider uses (same contract as Discord's renderer); absent that, the
+  renderer resolves the SAME value lazily and off-loop from the session map's
+  persisted per-session `cwd`, which is recorded from `provider.cwd` at session
+  creation. It fails closed on every uncertain case — no row, a relative path, an
+  unreadable map — because an unknown root means there is no boundary to check a
+  reference against. Teams needs no analogue of Discord's restricted-session
+  ceiling (a personal chat is already a 1:1 boundary gated by `allowed_emails`),
+  but a `dashboard:`-namespaced key is refused anyway: a dashboard slot can be
+  incognito and the renderer cannot resolve that signal. Audits carry counts and
+  closed reason codes only, never the destination or a file name.
+
+**Inbound needs `supportsFiles: true` in the MANIFEST.** Microsoft states plainly
+that without it the file features do not work, and "receive files in personal chat"
+is one of them — so an operator who skips it gets a bot that never sees a PDF, Word
+document or text file, with no error and no refusal line, while pasted inline images
+keep working (they arrive as an image `contentUrl`, not a
+`file.download.info` attachment). The shipped guide lists it as a REQUIRED step for
+that reason. Microsoft also does not support Teams file send/receive in GCC High,
+DoD or 21Vianet.
+
+**Ingest runs in the DISPATCHER, not the transport**, and the placement is
+load-bearing rather than tidiness. It sits after the governance gate, after the
+command intercept and after the busy check, so: nothing is fetched for a message
+that ends up QUEUED (a mid-turn arrival may wait minutes), and the temp files are
+unlinked by the same frame that awaits the turn reading them. Downloading at arrival
+and unlinking in that frame left the drained turn a prompt naming a file that no
+longer existed — `acp/prompt_blocks.py` skips a path that is not a file, so the model
+received a bare `/tmp` path and answered about nothing, silently. Two rules follow
+from the same place: an attachment-bearing message is never STEERED (a steer carries
+text only, so the files would be dropped while the user is told they were folded in)
+and never read as a COMMAND (Teams puts the caption in `text`, so "/stop here is the
+log" would cancel the turn AND discard the file). The queue entry carries the RAW
+descriptors and the drained turn re-ingests them, bounded by
+`IngestLimits().max_attachments` so a burst is answered across turns instead of
+having its surplus refused. Discord and Telegram draw every one of these lines in
+the same place.
+
+**Inbound: two kinds with OPPOSITE auth.** `TeamsInbound.attachments` carries
+`activity.attachments` raw, and nothing is fetched until the personal-scope gate,
+the identity resolution and the allow-list check have all passed in
+`transport.receive` — the dispatcher, one layer in, is only reached after them, so an
+unauthorized sender or a group conversation can never make the gateway fetch
+anything. A file-only activity (attachments, no text) survives the empty-activity
+guard, or the whole message would be discarded. Temp paths are owned by the frame
+that awaits the turn and unlinked in a worker once it returns.
+
+- **A personal-chat upload** arrives as
+  `application/vnd.microsoft.teams.file.download.info`, whose `content.downloadUrl`
+  Microsoft documents as a URL the reader "can issue an `HTTP GET` directly from"
+  (the underlying Graph `@microsoft.graph.downloadUrl` says "Authentication isn't
+  required with this URL" and is short-lived). It is fetched with **no credential,
+  ever** — the Connector token is credential-equivalent and that host is not
+  guaranteed to be one Microsoft operates.
+- **An inline image** arrives with a `contentUrl`, and here Microsoft contradicts
+  itself: the current page says the SDK handles authentication and its samples send
+  no header, while the previous revision of the same page and the shipped sample
+  attach the bot's Connector token. The host is not documented at all. So the
+  decision fails closed on the host: the token is offered only to a recognized Bot
+  Framework host (`_TOKEN_HOSTS_EXACT` / `_TOKEN_HOST_SUFFIXES`, dot-anchored so a
+  lookalike cannot satisfy the match), and the anonymous fetch is tried as well, in
+  that order. Both orders are documented as correct somewhere; trying both costs
+  one extra request on a 401.
+- **Bounds, in two halves.** `_vet_download_url` is the NAME check: https, no
+  non-443 port, no IP literal, and not the loopback/link-local name space — with the
+  FQDN root dot stripped first, because `localhost.` is the same host to every
+  resolver and a blocklist comparing the raw name refuses one spelling while admitting
+  the other. `_vet_resolved_address` is the second half, and it is the one a name
+  blocklist cannot do: any public name an attacker controls can point at `127.0.0.1`
+  or `169.254.169.254`, and a nip.io-style wildcard needs no control of a zone at all.
+  It resolves through the single `resolve_addresses` seam (off-loop; also the one
+  place a test can supply a record) and refuses if ANY answer is private, loopback,
+  link-local, reserved, multicast or unspecified — stricter than "the one we would
+  connect to", because the ordering aiohttp picks is not ours to predict. Resolution
+  failure refuses too. It matters that this is a READ primitive, not a blind one: the
+  body is written to a temp file and a text/document body is injected into the prompt,
+  so the model would summarize an internal endpoint back into the chat.
+
+  **The socket dials the address that was vetted.** Checking a NAME cannot close DNS
+  rebinding: aiohttp resolves the URL host itself, so a pre-fetch vet and the connect are
+  two lookups, and the second — microseconds before the socket opens — can answer
+  `169.254.169.254`. So the vet RETURNS what it approved and the fetch pins it, and
+  attachment fetches use their own `ClientSession` whose `TCPConnector` resolves through
+  `_VettedResolver`: it serves pinned answers and refuses to resolve anything else, so
+  there is no second lookup to poison and a code path reaching that session without
+  vetting cannot fetch at all. aiohttp still sees the original URL, so TLS SNI and the
+  `Host` header carry the real hostname — connecting by IP instead would break
+  certificate validation. The pin map is bounded (`_PINNED_HOSTS_MAX`); an evicted entry
+  costs a fresh lookup, never a weaker check, because the next fetch vets before it pins.
+  The Connector session deliberately does NOT share this resolver: its hosts are gated by
+  `connector_host_allowed`, a different and stricter rule, and routing them through a pin
+  map would make an outbound activity depend on a download's state.
+
+  Both halves run on EVERY redirect hop — at most three, followed MANUALLY so the
+  credential decision is retaken for the host that actually serves the bytes — and
+  `TEAMS_MAX_DOWNLOAD_BYTES` is enforced on bytes actually READ so a lying
+  `Content-Length` cannot smuggle an unbounded body. Every write goes through a
+  worker thread.
+- **What is not a file.** Teams echoes rich text as a `text/html` attachment on
+  ordinary messages, and a card can ride an activity; both are skipped without a
+  note, because a per-message line would be pure noise. Any other unrecognized
+  content type is reported by TYPE — not by file name — and never fetched.
+
+`test/test_teams_attachments.py` pins the policy half (envelope mapping, the auth
+flag per kind, the budgets, name sanitization, the refusal codes);
+`test/test_teams_files.py` pins the wire half (the credential decision, URL
+vetting, the read ceiling, the seal, and the inbound gate ordering).
 
 ## iMessage channel
 

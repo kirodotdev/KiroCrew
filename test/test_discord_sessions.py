@@ -11,10 +11,12 @@ import pytest
 from test_discord import MultipartFake
 
 from kiro_crew.config.paths import config_dir
-from kiro_crew.discord import resume_expectation, session_resume
+from kiro_crew.discord import session_resume
 from kiro_crew.discord.client import DISCORD_CHUNK_LIMIT, DiscordInteraction
 from kiro_crew.discord.commands import parse_command, parse_command_argument
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
+from kiro_crew.messaging import resume_expectation
+from kiro_crew.messaging import session_resume as session_resume_core
 from kiro_crew.messaging.link import UNBIND_REASON_UNSPECIFIED, ChannelLink
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.session import _opt_out_key
@@ -553,7 +555,7 @@ async def test_sessions_no_match_is_explicit() -> None:
     assert "No dashboard sessions matched `missing topic`" in text
     assert "Try fewer words" in text
     assert "`!sessions`" in text
-    assert dispatcher._session_pickers == {}
+    assert len(dispatcher._session_pickers) == 0
 
 
 @pytest.mark.asyncio
@@ -1075,7 +1077,7 @@ async def test_picker_refuses_outside_a_dm() -> None:
 
     await dispatcher.handle_message(_message("!sessions", thread_id="t9"))
 
-    assert dispatcher._session_pickers == {}
+    assert len(dispatcher._session_pickers) == 0
     assert sessions.mirror_links == {}
     assert any("direct message" in text for text, _ in client.sent)
 
@@ -1159,12 +1161,14 @@ async def test_resumed_session_without_recorded_agent_falls_back() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stale_picker_fails_closed() -> None:
+async def test_stale_picker_fails_closed(monkeypatch) -> None:
     dispatcher, client, sessions = _dispatcher({"u1"}, _log())
     await dispatcher.handle_message(_message("!sessions"))
     custom_id, message_id = _picker_button(client)
-    for picker in dispatcher._session_pickers.values():
-        picker.created_at -= 301
+    # Expire by moving the TTL, not by reaching into a registry entry: the constant is
+    # the contract, and a test that ages private state passes even if the TTL stops
+    # being consulted.
+    monkeypatch.setattr(session_resume_core, "PICKER_TTL_SECS", -1)
 
     await dispatcher.on_interaction(_interaction(custom_id, message_id))
 
@@ -1327,7 +1331,7 @@ async def test_new_leaves_resumed_session_and_advances_native_generation() -> No
 def _store_path() -> Path:
     trust = config_dir() / resume_expectation._TRUST_SUBDIR
     trust.mkdir(parents=True, exist_ok=True)
-    return trust / resume_expectation._FILENAME
+    return trust / resume_expectation.store_filename("discord")
 
 
 def _gate_send(client, marker: str, during) -> list[str]:
@@ -1542,6 +1546,17 @@ class TestBindingLostUnderTheConversation:
 
     @pytest.mark.asyncio
     async def test_releasing_an_unrecorded_binding_leaves_evidence_before_mutation(self) -> None:
+        """A failed release records evidence first, then changes NOTHING -- live map too.
+
+        The in-memory clear happens before the flush, so a flush failure used to leave the
+        binding gone in this process while the command reported failure. Two things were
+        wrong with that pair: the very next message was refused with "Detached: no longer
+        linked" moments after being told the unlink did not happen, and the map on disk
+        still held the binding, so a restart revived it and split one history in two -- the
+        exact harm the sibling test names. The release now rolls the clear back, so the
+        report, the live map and the persisted map all agree and the conversation carries
+        on where the user was told it would.
+        """
         dispatcher, client, sessions = _dispatcher({"u1"}, _log("Launch plan"))
         link = ChannelLink(channel_type="discord", channel_id="c1")
         # A dashboard-created binding that never carried a message: no record exists.
@@ -1552,9 +1567,10 @@ class TestBindingLostUnderTheConversation:
         assert any("NOT completed" in text for text, _ in client.sent)
         expected = await store.get("c1")
         assert expected is not None and not expected.retired, "mutated without durable evidence"
+        assert dispatcher._session_resume.resumed_session("c1") == "dashboard:chat-1"
         await dispatcher.handle_message(_message("where did we land?"))
-        assert sessions.last_key == "", f"the message ran at all: {sessions.last_key}"
-        assert any("Detached" in text for text, _ in client.sent)
+        assert sessions.last_key == "dashboard:chat-1", "the resumed session must carry on"
+        assert not any("Detached" in text for text, _ in client.sent)
 
     @pytest.mark.parametrize("recorded", [False, True], ids=["bare", "recorded"])
     @pytest.mark.asyncio
@@ -1807,7 +1823,7 @@ class TestExpectationStoreInvariants:
         restricted: list[str] = []
         pc = resume_expectation.platform_compat
         monkeypatch.setattr(pc, "restrict_to_owner", restricted.append)
-        store = resume_expectation.ResumeExpectations()
+        store = resume_expectation.ResumeExpectations("discord")
         await store.record("c1", "dashboard:chat-1", "Launch plan")
         assert restricted, "the record was written without restricting it to its owner"
         path = store._loaded_from
@@ -1832,7 +1848,7 @@ class TestExpectationStoreInvariants:
                 return _real(*args, **kwargs)
 
             monkeypatch.setattr(resume_expectation, name, _record)
-        store = resume_expectation.ResumeExpectations()
+        store = resume_expectation.ResumeExpectations("discord")
         loop_thread = threading.get_ident()
         await store.record("c1", "dashboard:chat-1", "Launch plan")
         current = await store.get("c1")
@@ -1851,12 +1867,12 @@ class TestExpectationStoreInvariants:
 
     @pytest.mark.asyncio
     async def test_concurrent_records_do_not_lose_each_other(self) -> None:
-        store = resume_expectation.ResumeExpectations()
+        store = resume_expectation.ResumeExpectations("discord")
         await asyncio.gather(
             store.record("c1", "dashboard:chat-1", "One"),
             store.record("c2", "dashboard:chat-2", "Two"),
         )
-        reloaded = resume_expectation.ResumeExpectations()
+        reloaded = resume_expectation.ResumeExpectations("discord")
         for channel, key in (("c1", "dashboard:chat-1"), ("c2", "dashboard:chat-2")):
             record = await reloaded.get(channel)
             assert record is not None and record.key == key, f"{channel} was lost"
@@ -2002,7 +2018,7 @@ class TestPersistenceFailureIsFailClosed:
 
     @pytest.mark.asyncio
     async def test_the_store_raises_instead_of_reporting_a_lost_write(self, monkeypatch) -> None:
-        store = resume_expectation.ResumeExpectations()
+        store = resume_expectation.ResumeExpectations("discord")
         self._break_writes(monkeypatch)
         with pytest.raises(resume_expectation.ExpectationStoreError):
             await store.record("c1", "dashboard:chat-0", "Launch plan")
@@ -2114,7 +2130,7 @@ class TestPersistenceFailureIsFailClosed:
         natively -- this bug's fail-open form."""
         path = _store_path()
         path.write_bytes(payload) if isinstance(payload, bytes) else path.write_text(payload)
-        store = resume_expectation.ResumeExpectations()
+        store = resume_expectation.ResumeExpectations("discord")
         if loads:
             record = await store.get("c1")
             assert record is not None and record.version == 3

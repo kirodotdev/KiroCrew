@@ -1,4 +1,11 @@
-"""Durable channel-keyed shadow of Discord resume bindings.
+"""Durable conversation-keyed shadow of a channel's resume bindings.
+
+Channel-neutral: the store is keyed by whatever address its channel calls a
+conversation (a Discord channel id, a Teams conversation id) and each channel gets
+its OWN file, because those id spaces are unrelated and one row must never be read
+as the other's. That is the only per-channel thing here -- the durability contract,
+the version CAS and the retire/adopt semantics are identical, and they are the part
+that must not be reimplemented per channel.
 
 All public methods offload filesystem work and serialize mutation with one async lock.
 The state and durability contract lives in ``docs/system-specs/modules/messaging.md``.
@@ -21,7 +28,16 @@ logger = logging.getLogger(__name__)
 #: Agent-blocked ``trust`` keeps binding evidence separate from agent-reachable map rows.
 #: The file is owner-restricted because titles contain conversation text.
 _TRUST_SUBDIR = "trust"
-_FILENAME = "discord_resume_expectations.json"
+
+
+def store_filename(channel_type: str) -> str:
+    """The per-channel store file. One file per channel, never a shared one.
+
+    A Discord channel id and a Teams conversation id are unrelated address spaces, so
+    a shared file would let one channel's row answer for the other's conversation --
+    which is a mis-route of somebody's transcript, not a cosmetic problem.
+    """
+    return f"{channel_type}_resume_expectations.json"
 
 
 @dataclass(frozen=True)
@@ -59,13 +75,16 @@ def _read(path: Path) -> dict[str, ResumeExpectation]:
         if type(retired) is not bool:
             raise ExpectationStoreError(f"{path} holds an unusable retired flag for {channel_id}")
         records[str(channel_id)] = ResumeExpectation(
-            str(value["key"]), str(value.get("title") or ""), version, retired)
+            str(value["key"]), str(value.get("title") or ""), version, retired
+        )
     return records
 
 
-def _resolve(previous: Path | None) -> tuple[Path, dict[str, ResumeExpectation] | None]:
+def _resolve(
+    previous: Path | None, filename: str
+) -> tuple[Path, dict[str, ResumeExpectation] | None]:
     """Resolve the live store and reload only when its data-home path changes."""
-    path = config_dir() / _TRUST_SUBDIR / _FILENAME
+    path = config_dir() / _TRUST_SUBDIR / filename
     return (path, None) if path == previous else (path, _read(path))
 
 
@@ -75,8 +94,15 @@ class ExpectationStoreError(RuntimeError):
 
 def _write(path: Path, records: dict[str, ResumeExpectation]) -> None:
     """Persist the whole store, or raise. Never swallow: see the error above."""
-    payload = {channel_id: {"key": record.key, "title": record.title, "version": record.version,
-                            "retired": record.retired} for channel_id, record in records.items()}
+    payload = {
+        channel_id: {
+            "key": record.key,
+            "title": record.title,
+            "version": record.version,
+            "retired": record.retired,
+        }
+        for channel_id, record in records.items()
+    }
     try:
         # Owner-only dir, re-asserted per write; the FILE needs restrict_to_owner,
         # since a mode is a no-op on Windows and would leave a title readable.
@@ -91,7 +117,8 @@ class ResumeExpectations:
     """Channel id → :class:`ResumeExpectation`, one small owner-only JSON file, written
     only on attach, rebind or detach. Single-writer: a pod resolves a different home."""
 
-    def __init__(self) -> None:
+    def __init__(self, channel_type: str) -> None:
+        self._filename = store_filename(channel_type)
         self._loaded_from: Path | None = None
         self._records: dict[str, ResumeExpectation] = {}
         self._lock = asyncio.Lock()
@@ -122,7 +149,8 @@ class ResumeExpectations:
             if current is None or current.version != version:
                 return False
             retired = ResumeExpectation(
-                current.key, current.title, current.version + 1, retired=True)
+                current.key, current.title, current.version + 1, retired=True
+            )
             await self._publish(path, {**self._records, channel_id: retired})
             return True
 
@@ -143,7 +171,7 @@ class ResumeExpectations:
 
     async def _synced(self) -> Path:
         """The store path, having reloaded if the data home moved under us."""
-        path, records = await asyncio.to_thread(_resolve, self._loaded_from)
+        path, records = await asyncio.to_thread(_resolve, self._loaded_from, self._filename)
         if records is not None:
             self._records = records
             self._loaded_from = path

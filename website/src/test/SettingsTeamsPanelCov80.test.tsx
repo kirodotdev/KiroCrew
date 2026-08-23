@@ -27,6 +27,9 @@ const BASE = {
   enabled: false,
   tenant_id: '',
   allowed_emails: [] as string[],
+  jwt_available: true,
+  soft_threshold_pct: 80,
+  hard_threshold_pct: 95,
   session_folder: '',
 }
 
@@ -93,6 +96,15 @@ describe('TeamsPanel status', () => {
     expect(screen.queryByText(/not running/i)).not.toBeInTheDocument()
   })
 
+  it('masks a stored client secret instead of leaving the read-only box empty', async () => {
+    // The Teams payload carries no server-rendered preview, so without a
+    // stand-in the read-only view of a STORED secret reads as "not set".
+    getTeamsConfig.mockResolvedValue({ ...BASE, app_password_set: true, read_only: true })
+    renderPanel()
+    await heading()
+    expect(screen.getByText('••••••')).toBeInTheDocument()
+  })
+
   it('masks a stored App ID rather than pre-filling it', async () => {
     getTeamsConfig.mockResolvedValue({ ...BASE, app_id_set: true, configured: true })
     renderPanel()
@@ -100,6 +112,34 @@ describe('TeamsPanel status', () => {
     const field = screen.getByLabelText('App (Client) ID') as HTMLInputElement
     expect(field.value).toBe('')
     expect(field.placeholder).toContain('paste to replace')
+  })
+})
+
+describe('TeamsPanel access', () => {
+  it('saves the enable toggle and an added principal', async () => {
+    renderPanel()
+    await heading()
+    fireEvent.click(screen.getByLabelText('Enable Teams channel'))
+    fireEvent.change(screen.getByPlaceholderText(/you@example.com/), {
+      target: { value: ' 00000000-0000-0000-0000-000000000001 ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+    await act(async () => { fireEvent.click(saveBtn()) })
+    await waitFor(() => expect(saveTeamsConfig).toHaveBeenCalled())
+    expect(saveTeamsConfig.mock.calls[0][0]).toMatchObject({
+      enabled: true,
+      allowed_emails: ['00000000-0000-0000-0000-000000000001'],
+    })
+  })
+
+  it('refuses a principal with whitespace in it', async () => {
+    renderPanel()
+    await heading()
+    fireEvent.change(screen.getByPlaceholderText(/you@example.com/), {
+      target: { value: 'not a principal' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+    expect(screen.getByText(/not a valid ID/i)).toBeInTheDocument()
   })
 })
 
@@ -119,6 +159,16 @@ describe('TeamsPanel session folder', () => {
     expect((screen.getByLabelText('Folder name') as HTMLInputElement).value).toBe('zz-folder')
   })
 
+  it('saves a folder name the user typed', async () => {
+    renderPanel()
+    await heading()
+    fireEvent.click(screen.getByLabelText(/File sessions in/i))
+    fireEvent.change(screen.getByLabelText('Folder name'), { target: { value: ' zz-typed ' } })
+    await act(async () => { fireEvent.click(saveBtn()) })
+    await waitFor(() => expect(saveTeamsConfig).toHaveBeenCalled())
+    expect(saveTeamsConfig.mock.calls[0][0].session_folder).toBe('zz-typed')
+  })
+
   it('falls back to the channel name when filing is on but blank', async () => {
     renderPanel()
     await heading()
@@ -136,6 +186,69 @@ describe('TeamsPanel session folder', () => {
     await act(async () => { fireEvent.click(saveBtn()) })
     await waitFor(() => expect(saveTeamsConfig).toHaveBeenCalled())
     expect(saveTeamsConfig.mock.calls[0][0].session_folder).toBe('')
+  })
+})
+
+describe('TeamsPanel context thresholds', () => {
+  it('seeds both fields from the gateway', async () => {
+    getTeamsConfig.mockResolvedValue({ ...BASE, soft_threshold_pct: 60, hard_threshold_pct: 85 })
+    renderPanel()
+    await heading()
+    expect((screen.getByLabelText('Soft context threshold %') as HTMLInputElement).value).toBe('60')
+    expect((screen.getByLabelText('Hard context threshold %') as HTMLInputElement).value).toBe('85')
+  })
+
+  it('leaves a stored percentage alone when the gateway sent none', async () => {
+    // A gateway that predates the fields sends neither, and a save that only
+    // edits the allow-list must not overwrite what it still holds.
+    const { soft_threshold_pct: _s, hard_threshold_pct: _h, ...older } = BASE
+    getTeamsConfig.mockResolvedValue(older)
+    renderPanel()
+    await heading()
+    expect((screen.getByLabelText('Soft context threshold %') as HTMLInputElement).value).toBe('')
+    await act(async () => { fireEvent.click(saveBtn()) })
+    await waitFor(() => expect(saveTeamsConfig).toHaveBeenCalled())
+    const payload = saveTeamsConfig.mock.calls[0][0]
+    expect('soft_threshold_pct' in payload).toBe(false)
+    expect('hard_threshold_pct' in payload).toBe(false)
+  })
+
+  it.each([
+    ['soft_threshold_pct_invalid', /Soft context threshold must be a number between 1 and 100/i],
+    ['hard_threshold_pct_invalid', /Hard context threshold must be a number between 1 and 100/i],
+  ])('localizes the %s rejection instead of echoing the wire prose', async (code, expected) => {
+    saveTeamsConfig.mockRejectedValue(
+      new Error(JSON.stringify({ code, error: `${code} zz-wire-prose` })),
+    )
+    renderPanel()
+    await heading()
+    await act(async () => { fireEvent.click(saveBtn()) })
+    await waitFor(() => expect(screen.getByText(expected)).toBeInTheDocument())
+    expect(screen.queryByText(/zz-wire-prose/)).not.toBeInTheDocument()
+  })
+
+  it('refuses a field the user blanked, rather than dropping it', async () => {
+    // The other direction from the test above: this gateway DID report the value, so it
+    // is on screen, and letting the save drop it means the number the user just cleared
+    // comes back under a "Saved." — the field would be lying about what it holds.
+    renderPanel()
+    await heading()
+    fireEvent.change(screen.getByLabelText('Hard context threshold %'), { target: { value: '' } })
+    expect(saveBtn()).toBeDisabled()
+    await act(async () => { fireEvent.click(saveBtn()) })
+    expect(saveTeamsConfig).not.toHaveBeenCalled()
+  })
+
+  it('still drops a blank the gateway never reported, and only that one', async () => {
+    const { hard_threshold_pct: _h, ...older } = BASE
+    getTeamsConfig.mockResolvedValue(older)
+    renderPanel()
+    await heading()
+    await act(async () => { fireEvent.click(saveBtn()) })
+    await waitFor(() => expect(saveTeamsConfig).toHaveBeenCalled())
+    const payload = saveTeamsConfig.mock.calls[0][0]
+    expect(payload.soft_threshold_pct).toBe(80)
+    expect('hard_threshold_pct' in payload).toBe(false)
   })
 })
 

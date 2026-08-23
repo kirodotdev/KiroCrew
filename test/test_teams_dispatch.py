@@ -4,6 +4,7 @@ sessions/provider/context."""
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -60,6 +61,49 @@ class FakeSessions:
         self.channels: list = []
         self.last_agent = None
         self._busy = False
+        # Mid-turn queue + dashboard-mirror surface the dispatcher now uses.
+        self.queues: dict[str, list] = {}
+        self.cleared: list = []
+        self.mirror_links: dict = {}
+        self.opt_outs: dict = {}
+        self.locked = False
+
+    # -- dashboard mirror -------------------------------------------------
+    def mirror_opt_out(self, key) -> bool:
+        return bool(self.opt_outs.get(key))
+
+    def set_mirror_opt_out(self, key, value) -> None:
+        self.opt_outs[key] = value
+
+    def get_mirror_link(self, key):
+        return self.mirror_links.get(key)
+
+    def set_mirror_link(self, key, link, *, reason="") -> None:
+        self.mirror_links[key] = link
+
+    def clear_mirror_link(self, key, *, reason="") -> bool:
+        return self.mirror_links.pop(key, None) is not None
+
+    def is_mirror_paused(self, key, *, origin=False) -> bool:
+        return False
+
+    def batched_save(self):
+        return contextlib.nullcontext()
+
+    # -- mid-turn queue ---------------------------------------------------
+    def enqueue(self, key, msg_ts, text, *, force=False, **kwargs) -> bool:
+        if not force and not self._busy:
+            return False
+        self.queues.setdefault(key, []).append((msg_ts, text, kwargs))
+        return True
+
+    def dequeue(self, key):
+        queue = self.queues.get(key) or []
+        return queue.pop(0) if queue else None
+
+    def clear_queue(self, key) -> None:
+        self.cleared.append(key)
+        self.queues.pop(key, None)
 
     async def get_or_create(self, key, *, agent, channel_id):
         self.last_agent = agent
@@ -91,6 +135,19 @@ class FakeSessions:
 
     def has_session(self, key) -> bool:
         return self._p is not None
+
+    async def aflush(self) -> None:
+        # The resume release flushes the session map before it reports success; a
+        # double without this correctly surfaces as a release FAILURE.
+        return None
+
+    def clear_mirror_links_at(self, link, *, reason: str = "") -> list:
+        return []
+
+    def find_mirror_sessions(self, link, *, inbound_only: bool = False) -> list:
+        # No resumed dashboard session in these tests, so routing is a no-op. Present
+        # because Teams routes EVERY message through the resume resolver.
+        return []
 
     def is_busy(self, key) -> bool:
         return self._busy
@@ -174,7 +231,7 @@ def _dispatcher(sessions, ctx, client, *, conv_log=None, agent=None, cfg=None):
 
 
 _EMAIL = "kyle@example.com"
-_SVC = "https://smba.example.com/"
+_SVC = "https://smba.trafficmanager.net/"
 
 
 def _inbound(text: str = "hello", email: str = _EMAIL) -> TeamsInbound:
@@ -323,9 +380,7 @@ class TestInboundGovernance:
         # ``inbound_permitted`` wrapper, which resolves
         # ``channel_inbound_permitted`` from dispatch's globals at call time --
         # so this one patch covers both the channel-side and pipeline gates.
-        monkeypatch.setattr(
-            "kiro_crew.messaging.dispatch.channel_inbound_permitted", _deny
-        )
+        monkeypatch.setattr("kiro_crew.messaging.dispatch.channel_inbound_permitted", _deny)
         provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
         sessions = FakeSessions(provider)
         client = FakeClient()

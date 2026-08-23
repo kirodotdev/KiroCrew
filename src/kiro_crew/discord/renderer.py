@@ -60,7 +60,12 @@ from kiro_crew.messaging.outbound_files import (
     hide_local_refs,
     protected_ref_spans,
 )
-from kiro_crew.messaging.renderer import Renderer, apply_options_cap, chunk_text
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    apply_options_cap,
+    chunk_text,
+    new_approval_nonce,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
@@ -255,7 +260,7 @@ class DiscordApprovalDecider:
     @classmethod
     def register_nonce(cls, key: str) -> str:
         """Mint + register the per-prompt nonce for *key* (renderer-side)."""
-        nonce = secrets.token_hex(8)
+        nonce = new_approval_nonce()
         cls._NONCES[key] = nonce
         return nonce
 
@@ -831,7 +836,11 @@ class DiscordRenderer(Renderer):
                 ],
             }
         ]
-        tool = self._last_tool or "this tool"
+        # The tool name is LLM-authored and Discord renders the message as
+        # markdown, so it goes through the same display-form scan as streamed text.
+        # The driver's byte-level pass sees `AKIA**…**` as broken while the rendered
+        # prompt shows it whole -- the reason _redact_transformed exists.
+        tool = await asyncio.to_thread(_redact_transformed, self._last_tool or "this tool")
         await self._client.send_message(
             self._channel_id, f"🔐 Approve `{tool}`?", components=components
         )

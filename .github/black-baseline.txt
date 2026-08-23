@@ -308,7 +308,6 @@ src/kiro_crew/diagnostics.py
 src/kiro_crew/discord/attachments.py
 src/kiro_crew/discord/client.py
 src/kiro_crew/discord/gateway.py
-src/kiro_crew/discord/transport_dispatch.py
 src/kiro_crew/doc_parser.py
 src/kiro_crew/embeddings.py
 src/kiro_crew/emoji_list.py
@@ -392,7 +391,6 @@ src/kiro_crew/mcp_utils.py
 src/kiro_crew/messaging/attachments.py
 src/kiro_crew/messaging/driver.py
 src/kiro_crew/messaging/link.py
-src/kiro_crew/messaging/queue_receipt.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/local_exporter.py
 src/kiro_crew/metrics/provider.py
@@ -450,10 +448,7 @@ src/kiro_crew/suggestions.py
 src/kiro_crew/task_models.py
 src/kiro_crew/task_planner.py
 src/kiro_crew/taskrunner.py
-src/kiro_crew/teams/client.py
-src/kiro_crew/teams/transport_dispatch.py
 src/kiro_crew/telegram/client.py
-src/kiro_crew/telegram/transport_dispatch.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
@@ -1073,7 +1068,6 @@ test/test_orphaned_approval_card.py
 test/test_outbox_binary.py
 test/test_outbox_notify_broadcast.py
 test/test_override_expiry_notice.py
-test/test_override_expiry_notification.py
 test/test_papyrus_gitops.py
 test/test_papyrus_latex.py
 test/test_papyrus_routes.py
@@ -1310,11 +1304,8 @@ test/test_taskrunner_autoapprove.py
 test/test_taskrunner_coverage.py
 test/test_taskrunner_v2_scenarios.py
 test/test_tcc_protected_dirs.py
-test/test_teams_client.py
 test/test_teams_config.py
-test/test_teams_dispatch.py
 test/test_teams_gateway.py
-test/test_teams_wire.py
 test/test_telegram.py
 test/test_telegram_album.py
 test/test_telegram_attachments.py

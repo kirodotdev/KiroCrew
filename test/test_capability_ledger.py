@@ -23,6 +23,8 @@ from __future__ import annotations
 
 from dataclasses import fields
 
+import pytest
+
 from kiro_crew.messaging.transport import TransportCapabilities
 
 #: Something behaves differently when the value changes. Cite the behaviour.
@@ -125,6 +127,38 @@ class TestCorrectedDeclarations:
         from kiro_crew.webex.transport import WEBEX_CAPABILITIES
 
         assert WEBEX_CAPABILITIES.max_message_chars * 4 <= WEBEX_MAX_TEXT
+
+    def test_teams_char_declaration_is_safe_under_its_byte_cap(self) -> None:
+        # A Teams activity is JSON on the wire, so the cap is effectively in BYTES.
+        # The declared CHAR count must survive the worst case (an astral codepoint
+        # is 4 UTF-8 bytes) or the mirror leg silently loses a long non-ASCII reply
+        # and a renderer chunk comes back 413.
+        from kiro_crew.teams.client import (
+            _MAX_UTF8_BYTES_PER_CHAR,
+            TEAMS_MAX_ACTIVITY_TEXT_BYTES,
+        )
+        from kiro_crew.teams.transport import TEAMS_CAPABILITIES
+
+        assert (
+            TEAMS_CAPABILITIES.max_message_chars * _MAX_UTF8_BYTES_PER_CHAR
+            <= TEAMS_MAX_ACTIVITY_TEXT_BYTES
+        )
+
+    @pytest.mark.asyncio
+    async def test_teams_serializes_without_ascii_escaping(self) -> None:
+        # The multiplier above is only true with ensure_ascii=False. aiohttp's
+        # default escapes every non-ASCII codepoint to \\uXXXX -- 6 bytes each, 12
+        # for an astral pair -- which triples the worst case and breaks the pin
+        # above without changing any number it reads. Asserted on the session the
+        # client really builds, not on the literal passed to it.
+        from kiro_crew.teams.client import TeamsClient
+
+        client = TeamsClient(app_id="a", app_password="p")
+        try:
+            session = await client._ensure_session()
+            assert session._json_serialize("✅🙂") == '"✅🙂"'
+        finally:
+            await client.close()
 
     def test_the_file_directions_are_declared_separately(self) -> None:
         # One boolean was undecidable: the two directions land per channel and in

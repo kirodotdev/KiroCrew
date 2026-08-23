@@ -10603,6 +10603,10 @@
       },
       "channels": {
         "get_your_bot_credentials": "তোমার বট ক্রেডেনশিয়াল সংগ্রহ করো",
+        "hard_below_soft_error": "হার্ড কনটেক্সট থ্রেশহোল্ড সফট কনটেক্সট থ্রেশহোল্ডের সমান বা তার বেশি হতে হবে",
+        "hard_threshold_description": "এই শতাংশে পৌঁছালে উত্তরের অপেক্ষা না করেই স্বয়ংক্রিয়ভাবে কমপ্যাক্ট করো, যাতে কনটেক্সট উইন্ডো কখনও উপচে না পড়ে।",
+        "hard_threshold_label": "হার্ড কনটেক্সট থ্রেশহোল্ড %",
+        "hard_threshold_range_error": "হার্ড কনটেক্সট থ্রেশহোল্ড 1 থেকে 100-এর মধ্যে একটি সংখ্যা হতে হবে",
         "threshold_description": "সেশন কনটেক্সট এই শতাংশ ছাড়ালে {{compact}} বা {{new}} করার প্রম্পট দেখাও।"
       },
       "channelsPanel": {
@@ -11498,6 +11502,7 @@
       "teamsPanel": {
         "above_unlike_slack_the_bot_framework_has_no_outb": "উপরে। Slack-এর বিপরীতে, Bot Framework-এ কোনো\n              শুধু-আউটবাউন্ড মোড নেই।",
         "access": "অ্যাক্সেস",
+        "active": "সক্রিয়",
         "add_the": ", যোগ করুন",
         "allowed_users_email_or_aad_object_id": "অনুমোদিত ব্যবহারকারী (ইমেল বা AAD অবজেক্ট id)",
         "and_save": ", এবং সংরক্ষণ করুন।",
@@ -11530,6 +11535,7 @@
         "if_single_tenant": "যদি সিঙ্গল-টেন্যান্ট হয়)।",
         "in_the_bot_s": "বটের ভিতরে",
         "is_your_app_id_then_dm_the_bot_full_manifest_ste": "হলো আপনার App ID, তারপর বটকে DM\n              করুন — সম্পূর্ণ ম্যানিফেস্ট ধাপগুলো উপরের সেটআপ গাইডে আছে।",
+        "jwt_required": "<strong>Microsoft Teams-এর জন্য PyJWT ডিপেনডেন্সি দরকার।</strong> ইনবাউন্ড Bot Framework অনুরোধে সাইন করা টোকেন থাকে যা যাচাই করা বাধ্যতামূলক, তাই এটি ছাড়া চ্যানেল চালু হবে না। gateway যে এনভায়রনমেন্টে চলে সেখানে <mono>pip install \"kirocrew[teams]\"</mono> চালাও, তারপর gateway রিস্টার্ট করো।",
         "leave_empty_for_a_multi_tenant_bot": "মাল্টি-টেন্যান্ট বটের জন্য খালি রাখুন",
         "loading_teams_config": "Teams কনফিগ লোড হচ্ছে…",
         "localhost": "localhost",
@@ -11538,6 +11544,8 @@
         "microsoft_app_id": "Microsoft অ্যাপ ID",
         "microsoft_teams": "Microsoft Teams",
         "multi_tenant": "মাল্টি-টেন্যান্ট",
+        "needs_setup": "সেটআপ দরকার",
+        "not_active": "সক্রিয় নয়",
         "optional_only_for_single_tenant_bots": "ঐচ্ছিক — শুধুমাত্র সিঙ্গল-টেন্যান্ট বটের জন্য।",
         "or_single_tenant_if_you_ll_pin_a_tenant_id": ", অথবা সিঙ্গল-টেন্যান্ট, যদি আপনি একটি টেন্যান্ট id পিন করতে চান।",
         "or_ssh_tunneled_address_won_t_work_expose_the_ga": "বা\n              SSH-টানেল করা অ্যাড্রেস কাজ করবে না। গেটওয়েকে একটি টানেল\n              (ngrok / cloudflared) বা একটি রিভার্স প্রক্সি দিয়ে উন্মুক্ত করুন, তারপর সেই পাবলিক হোস্টকে ব্যবহার করুন এই হিসেবে:",
@@ -11547,6 +11555,7 @@
         "required": "আবশ্যক",
         "requires_a_public_https_url": "একটি পাবলিক HTTPS URL প্রয়োজন।",
         "save_failed_is_the_gateway_running": "সেভ করা যায়নি। গেটওয়ে চলছে কি?",
+        "save_rejected": "gateway এই সেটিং বাতিল করেছে ({{code}})।",
         "save_teams_settings": "Teams সেটিং সেভ করো",
         "saved": "সেভ হয়েছে।",
         "saved_restart_the_gateway_to_apply": "সেভ হয়েছে। কার্যকর করতে গেটওয়ে রিস্টার্ট করো।",

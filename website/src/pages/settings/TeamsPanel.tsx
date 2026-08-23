@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import { ExternalLink, Check, AlertTriangle, Lock } from 'lucide-react'
 import { TeamsIcon } from '../../components/TeamsIcon'
 import { SettingsSection, SettingsCard, SettingsInput, SettingsToggle } from '../../components/settings'
 import { SecretField } from '../../components/SecretField'
 import { Btn } from '../../components/ui'
+import ErrorNotice from '../../components/ErrorNotice'
 import { TagListEditor } from './SlackPanel'
 import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/client'
 
@@ -15,6 +17,15 @@ const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
 const SETUP_GUIDE =
   'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/teams-integration.md'
 const WEBHOOK_PATH = '/api/messaging/teams'
+/** In-chat commands the soft-threshold nudge names. Protocol tokens the channel
+ *  matches by value, so they stay code constants rather than catalog values. */
+const TEAMS_COMMANDS = { compact: '/compact', new: '/new' } as const
+/** Percentage bounds the backend enforces on both context thresholds. */
+const PCT_MIN = 1
+const PCT_MAX = 100
+/** Stand-in for a stored secret on the read-only path: the Teams config payload
+ *  carries no server-rendered preview, and an empty box reads as "not set". */
+const SECRET_MASK = '••••••'
 
 /** Accept an allow-list entry that is an email/UPN OR an AAD object id
  *  (Teams activities carry the object id, not always the email). Shape-only,
@@ -28,10 +39,102 @@ type Draft = {
   app_id: string
   tenant_id: string
   allowed_emails: string[]
+  /** Soft context threshold, as typed. Held as text so a half-typed value is the
+   *  user's own and not silently coerced to a number the backend would store. */
+  soft_threshold_pct: string
+  /** Hard context threshold, as typed. */
+  hard_threshold_pct: string
   /** Whether this channel files its sessions in a folder at all (off = unfiled). */
   session_folder_on: boolean
   /** Folder name, kept while the toggle is off so turning it back on restores it. */
   session_folder: string
+}
+
+/** A server percentage as input text. `String()` and not `fmtNumber()` on
+ *  purpose: this is a machine value that has to round-trip through `parseInt`,
+ *  so a locale-grouped `1 000` would break the field it seeds. */
+function pctText(v: number | undefined): string {
+  return isPct(v) ? String(v) : ''
+}
+
+/** Whether the server actually reported a percentage for a field. */
+function isPct(v: number | undefined): v is number {
+  return typeof v === 'number' && Number.isFinite(v)
+}
+
+/** A threshold field as a whole percentage in range, or null when it is neither. */
+function parsePct(text: string): number | null {
+  const t = text.trim()
+  if (!/^\d+$/.test(t)) return null
+  const n = Number(t)
+  return n >= PCT_MIN && n <= PCT_MAX ? n : null
+}
+
+/**
+ * The one mapping from a threshold rule to its copy, keyed by the SAME
+ * machine-readable code the backend returns on a rejected save.
+ *
+ * Both the client-side check and the server-rejection path read this table, so
+ * the two cannot drift: a renamed catalog key is one edit, and the client
+ * provably recognises exactly the codes the server can send. Two parallel
+ * if-ladders is how the second one silently falls through to English prose.
+ */
+const THRESHOLD_MSG_KEY = {
+  soft_threshold_pct_invalid:
+    'pages.settings.botChannelPanel.soft_context_threshold_must_be_a_number_between',
+  hard_threshold_pct_invalid: 'pages.settings.channels.hard_threshold_range_error',
+  threshold_pct_inverted: 'pages.settings.channels.hard_below_soft_error',
+} as const
+
+type ThresholdCode = keyof typeof THRESHOLD_MSG_KEY
+
+/**
+ * Client-side mirror of the rule the backend enforces on the pair: whole
+ * percentages in 1..100, hard at or above soft. Returns the offending CODE (not
+ * prose) so the message comes from the same table the server path uses.
+ * Checked as the user types so a typo is a message under the field instead of a
+ * round-trip 400.
+ *
+ * **Blank is invalid for a field the server sent a value for.** "Leave the stored value
+ * alone" is a promise a text box cannot make legibly here: the box was showing the live
+ * number a moment ago, so a user who clears it to stop the nudge reads "Saved." and
+ * watches the old value come back, and a placeholder reads as an example rather than as
+ * the setting. Refusing blank says so at the moment they clear it, using the range
+ * message the field already has. (The App ID's "blank = keep" IS legible, because the
+ * server never sends a secret back for the box to contradict.)
+ *
+ * **Blank stays valid for a field the server sent NOTHING for** — a gateway older than
+ * these fields — because then "keep what is stored" is the only honest option: we cannot
+ * display a value we were never told, and sending the client's default would overwrite
+ * whatever that gateway actually holds. Those saves omit the key, exactly as before.
+ */
+function thresholdCode(draft: Draft, stored: TeamsConfigData): ThresholdCode | null {
+  const softKept = !draft.soft_threshold_pct.trim() && !isPct(stored.soft_threshold_pct)
+  const hardKept = !draft.hard_threshold_pct.trim() && !isPct(stored.hard_threshold_pct)
+  const soft = softKept ? null : parsePct(draft.soft_threshold_pct)
+  const hard = hardKept ? null : parsePct(draft.hard_threshold_pct)
+  if (!softKept && soft === null) return 'soft_threshold_pct_invalid'
+  if (!hardKept && hard === null) return 'hard_threshold_pct_invalid'
+  if (soft !== null && hard !== null && hard < soft) return 'threshold_pct_inverted'
+  return null
+}
+
+/** The localized copy for a threshold code, or `''` for an unknown code. */
+function thresholdMessage(code: string): string {
+  const key = THRESHOLD_MSG_KEY[code as ThresholdCode]
+  return key ? i18nT(key) : ''
+}
+
+/**
+ * Client-side error text for the current draft, or `''` when it is valid.
+ *
+ * A rejection from the server carries both a `code` and advisory English prose;
+ * the code is what makes it translatable, since rendering the prose would put
+ * English inside a localized panel.
+ */
+function thresholdError(draft: Draft, stored: TeamsConfigData): string {
+  const code = thresholdCode(draft, stored)
+  return code ? thresholdMessage(code) : ''
 }
 
 function draftFrom(c: TeamsConfigData): Draft {
@@ -40,6 +143,8 @@ function draftFrom(c: TeamsConfigData): Draft {
     app_id: '',
     tenant_id: c.tenant_id,
     allowed_emails: [...c.allowed_emails],
+    soft_threshold_pct: pctText(c.soft_threshold_pct),
+    hard_threshold_pct: pctText(c.hard_threshold_pct),
     // A configured name IS the on-state — the backend has one field, where ""
     // means off, so the toggle is derived rather than separately persisted.
     session_folder_on: !!c.session_folder,
@@ -50,10 +155,10 @@ function draftFrom(c: TeamsConfigData): Draft {
 /** Status pill mirroring the other channel panels. */
 function StatusBadge({ config }: { config: TeamsConfigData }) {
   const [dot, text, cls] = config.connected
-    ? ['var(--ok)', 'Active', 'text-ok']
+    ? ['var(--ok)', i18nT('pages.settings.teamsPanel.active'), 'text-ok']
     : config.configured
-      ? ['var(--warn)', 'Not active', 'text-warn']
-      : ['var(--muted)', 'Needs setup', 'text-muted']
+      ? ['var(--warn)', i18nT('pages.settings.teamsPanel.not_active'), 'text-warn']
+      : ['var(--muted)', i18nT('pages.settings.teamsPanel.needs_setup'), 'text-muted']
   return (
     <span className={`inline-flex items-center gap-1.5 text-[12px] font-medium ${cls}`}>
       <span className="w-1.5 h-1.5 rounded-full" style={{ background: dot }} />
@@ -64,6 +169,10 @@ function StatusBadge({ config }: { config: TeamsConfigData }) {
 
 /** One-line explanation of WHY Teams is not active, with the fix. */
 function connectionHint(config: TeamsConfigData): string {
+  // A missing PyJWT is the one reason the channel cannot start at all, and the
+  // notice below already carries it plus the install command. Blaming a restart
+  // on top of that would send the operator to fix the wrong thing.
+  if (config.jwt_available === false) return ''
   if (config.connected || !config.configured) return ''
   if (config.connect_error) {
     return i18nT('pages.settings.teamsPanel.teams_credential_check_failed', { error: config.connect_error })
@@ -102,10 +211,18 @@ export function TeamsPanel() {
   const saveMut = useMutation({
     mutationFn: (body: Partial<TeamsConfigSave>) => api.saveTeamsConfig(body),
     onError: (e: unknown) => {
+      // The API client throws with the raw response body. A rejected save (a
+      // threshold outside 1..100, hard below soft) answers 400 with a
+      // machine-readable `code`, so a known one is said in the user's language
+      // and anything else degrades to the server's prose, then to the code.
       let msg = i18nT('pages.settings.teamsPanel.save_failed_is_the_gateway_running')
       if (e instanceof Error && e.message) {
         try {
-          msg = JSON.parse(e.message).error ?? e.message
+          const body = JSON.parse(e.message)
+          const code = typeof body.code === 'string' ? body.code : ''
+          msg = thresholdMessage(code)
+            || body.error
+            || (code ? i18nT('pages.settings.teamsPanel.save_rejected', { code }) : e.message)
         } catch {
           msg = e.message
         }
@@ -134,6 +251,14 @@ export function TeamsPanel() {
       // to "Teams", which is what the toggle's description promises.
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
     }
+    // Only a percentage that PARSED is sent, so an out-of-range or half-typed field
+    // cannot reach the wire at all. Save is disabled while one is invalid, so the only
+    // blank that survives to here is the "server sent nothing" case above, where
+    // omitting the key IS the correct save.
+    const soft = parsePct(draft.soft_threshold_pct)
+    const hard = parsePct(draft.hard_threshold_pct)
+    if (soft !== null) payload.soft_threshold_pct = soft
+    if (hard !== null) payload.hard_threshold_pct = hard
     // App ID is masked as "set — paste to replace" once stored, so draft.app_id
     // loads blank. Only send it when the user actually (re)entered a value —
     // otherwise a save that only edits the allow-list or toggle would overwrite
@@ -151,9 +276,7 @@ export function TeamsPanel() {
 
   const upd = (patch: Partial<Draft>) => setDraft(d => (d ? { ...d, ...patch } : d))
   const ro = data.read_only
-  // Matches the shared <Input>/<SecretField> look so all fields render consistently.
-  const inputCls =
-    'w-full bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm font-body font-normal outline-none transition-colors focus-ring disabled:opacity-60'
+  const pctErr = thresholdError(draft, data)
 
   return (
     <>
@@ -178,6 +301,27 @@ export function TeamsPanel() {
           )}
         </div>
       </div>
+
+      {/* ── Missing optional dependency ──
+          The inbound webhook validates a signed Bot Framework JWT, so the
+          channel refuses to start without PyJWT: enabling Teams without the
+          extra installed does nothing and reports nothing. Compared against
+          `false` rather than falsy — a gateway that predates the field sends
+          none, and absence must not be read as a missing dependency. */}
+      {data.jwt_available === false && (
+        <div role="alert" className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 mb-3 mt-2">
+          <AlertTriangle className="lucide-inline text-warning flex-none mt-0.5" aria-hidden />
+          <span className="text-[12px] text-text">
+            {/* One key for the whole notice: the install command has to stay
+                verbatim, and splitting the sentence around it would pin every
+                locale to English word order. */}
+            <Trans
+              i18nKey="pages.settings.teamsPanel.jwt_required"
+              components={{ mono: <code className="font-mono" /> }}
+            />
+          </span>
+        </div>
+      )}
 
       {/* ── Read-only notice (remote session) ── */}
       {ro && (
@@ -259,26 +403,21 @@ export function TeamsPanel() {
       {/* ── Required credentials ── */}
       <SettingsSection title={i18nT('pages.settings.teamsPanel.required')}>
         <SettingsCard index={2}>
-          <label htmlFor="teams-app-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
-            {i18nT('pages.settings.teamsPanel.app_client_id')}
-            <input
-              id="teams-app-id"
-              aria-label={i18nT('pages.settings.teamsPanel.app_client_id')}
-              className={inputCls}
-              type="text"
-              placeholder={data.app_id_set ? i18nT('pages.settings.teamsPanel.set_paste_to_replace') : i18nT('pages.settings.teamsPanel.microsoft_app_id')}
-              value={draft.app_id}
-              disabled={ro}
-              onChange={e => upd({ app_id: e.target.value })}
-            />
-          </label>
+          <SettingsInput
+            label={i18nT('pages.settings.teamsPanel.app_client_id')}
+            placeholder={data.app_id_set ? i18nT('pages.settings.teamsPanel.set_paste_to_replace') : i18nT('pages.settings.teamsPanel.microsoft_app_id')}
+            value={draft.app_id}
+            onChange={v => upd({ app_id: v })}
+            disabled={ro}
+            configKey="teams.app_id"
+          />
           <SecretField
             key={`pw-${formKey}`}
             label={i18nT('pages.settings.teamsPanel.app_password_client_secret')}
             description={i18nT('pages.settings.teamsPanel.azure_bot_client_secret_stored_only_in_env_never')}
             placeholder={i18nT('pages.settings.teamsPanel.paste_azure_bot_client_secret')}
             isSet={data.app_password_set}
-            preview=""
+            preview={SECRET_MASK}
             readOnly={ro}
             value={appPassword}
             onChange={setAppPassword}
@@ -286,20 +425,15 @@ export function TeamsPanel() {
             onClearedChange={setPwClear}
             setupLink={{ href: SETUP_GUIDE, label: i18nT('pages.settings.teamsPanel.where_to_find_the_client_secret') }}
           />
-          <label htmlFor="teams-tenant-id" className="flex flex-col gap-1.5 py-1.5 text-[13px] font-semibold text-text">
-            {i18nT('pages.settings.teamsPanel.tenant_id')}
-            <span className="text-[12px] font-normal text-muted -mt-0.5">{i18nT('pages.settings.teamsPanel.optional_only_for_single_tenant_bots')}</span>
-            <input
-              id="teams-tenant-id"
-              aria-label={i18nT('pages.settings.teamsPanel.tenant_id')}
-              className={inputCls}
-              type="text"
-              placeholder={i18nT('pages.settings.teamsPanel.leave_empty_for_a_multi_tenant_bot')}
-              value={draft.tenant_id}
-              disabled={ro}
-              onChange={e => upd({ tenant_id: e.target.value })}
-            />
-          </label>
+          <SettingsInput
+            label={i18nT('pages.settings.teamsPanel.tenant_id')}
+            description={i18nT('pages.settings.teamsPanel.optional_only_for_single_tenant_bots')}
+            placeholder={i18nT('pages.settings.teamsPanel.leave_empty_for_a_multi_tenant_bot')}
+            value={draft.tenant_id}
+            onChange={v => upd({ tenant_id: v })}
+            disabled={ro}
+            configKey="teams.tenant_id"
+          />
         </SettingsCard>
       </SettingsSection>
 
@@ -348,9 +482,47 @@ export function TeamsPanel() {
         </SettingsCard>
       </SettingsSection>
 
+      {/* ── Behavior ── */}
+      <SettingsSection title={i18nT('pages.settings.botChannelPanel.behavior')}>
+        <SettingsCard index={4}>
+          <SettingsInput
+            label={i18nT('pages.settings.botChannelPanel.soft_context_threshold')}
+            description={i18nT('pages.settings.channels.threshold_description', {
+              compact: TEAMS_COMMANDS.compact,
+              new: TEAMS_COMMANDS.new,
+            })}
+            type="number"
+            min={PCT_MIN}
+            max={PCT_MAX}
+            value={draft.soft_threshold_pct}
+            onChange={v => upd({ soft_threshold_pct: v })}
+            // The stored value, so an emptied box shows what it is refusing to lose
+            // alongside the error that says the field cannot be blank.
+            placeholder={pctText(data.soft_threshold_pct)}
+            disabled={ro}
+            configKey="teams.soft_threshold_pct"
+          />
+          <SettingsInput
+            label={i18nT('pages.settings.channels.hard_threshold_label')}
+            description={i18nT('pages.settings.channels.hard_threshold_description')}
+            type="number"
+            min={PCT_MIN}
+            max={PCT_MAX}
+            value={draft.hard_threshold_pct}
+            onChange={v => upd({ hard_threshold_pct: v })}
+            placeholder={pctText(data.hard_threshold_pct)}
+            disabled={ro}
+            configKey="teams.hard_threshold_pct"
+          />
+          {/* Client-side only, and it names the field rather than the endpoint:
+              there is nothing for the agent to diagnose, so no hand-off. */}
+          <ErrorNotice message={pctErr} variant="inline" />
+        </SettingsCard>
+      </SettingsSection>
+
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">
-        <Btn primary onClick={handleSave} disabled={saveMut.isPending}>
+        <Btn primary onClick={handleSave} disabled={saveMut.isPending || !!pctErr}>
           {saveMut.isPending ? i18nT('pages.settings.teamsPanel.saving') : i18nT('pages.settings.teamsPanel.save_teams_settings')}
         </Btn>
         {saved && (

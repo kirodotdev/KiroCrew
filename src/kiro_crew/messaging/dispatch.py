@@ -87,6 +87,18 @@ class ChannelTurn:
     """``None`` for channels with no interactive buttons (deny-by-default for
     INTERACTIVE mode; ``auto``/``trust`` still work)."""
 
+    auto_approve_session: Optional[Callable[[], bool]] = None
+    """``() -> bool`` honoring a per-session Trust / operator YOLO grant.
+
+    Without it, a channel that renders no approve/deny buttons is stuck: the
+    INTERACTIVE ladder denies by default and there is no decider to say otherwise,
+    so every tool call fails and the agent can only talk. Supplying this lets such
+    a channel grant trust out of band (a ``/yolo``-style command) while the deny
+    default stays intact for every session that has not opted in.
+
+    ``None`` keeps the previous behavior exactly, so channels that do not set it
+    are unaffected."""
+
     persist: Optional[Callable[[str, str, bool], None]] = None
     """``(user_text, reply_text, is_new) -> None``, called off the event loop."""
 
@@ -327,6 +339,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             approval_mode=turn.approval_mode,
             decider=turn.decider,
             auto_approve_tool=build_auto_approve(ctx_builder),
+            auto_approve_session=turn.auto_approve_session,
             tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
             directive_consumer=turn.directive_consumer,
         )

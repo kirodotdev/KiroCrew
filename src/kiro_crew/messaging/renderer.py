@@ -21,6 +21,7 @@ approval-ladder work.
 
 from __future__ import annotations
 
+import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
@@ -102,6 +103,24 @@ def cap_choices(
     if n <= 0:
         return [], choices
     return choices[:n], choices[n:]
+
+
+def new_approval_nonce() -> str:
+    """A per-prompt token that makes a STALE widget's press unusable.
+
+    Shared because the hazard is: ACP request ids restart at 1 in every provider
+    process, so an approve/deny control still sitting in a chat from a previous run
+    names a request id that is live again for a DIFFERENT tool. Every channel with a
+    clickable approval has to mint one, compare it on resolve, and retire it with the
+    prompt -- and three independent copies of that is how one of them ends up with a
+    weaker token or none at all. The session picker (``PickerRegistry.mint``) mints
+    from here too: a press on a stale list of sessions is the same hazard wearing a
+    different label, so it is not a reason for a second generator.
+
+    ``token_urlsafe(8)`` is ~11 chars of 64 bits, which fits inside Telegram's
+    64-BYTE ``callback_data`` cap alongside the request id and the decision.
+    """
+    return secrets.token_urlsafe(8)
 
 
 def _default_redactor(text: str) -> str:
