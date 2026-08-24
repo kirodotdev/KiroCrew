@@ -3293,7 +3293,7 @@ export function Lightbox() {
       {/* Control cluster sits on its own translucent, blurred pill so the
           white icons stay legible even when a light/enlarged image is panned
           up behind the toolbar. */}
-      <div className="fixed top-4 right-4 flex items-center gap-0.5 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-1 py-1">
+      <div className="fixed top-safe-offset-4 right-safe-offset-4 flex items-center gap-0.5 rounded-full bg-black/60 backdrop-blur-md ring-1 ring-white/15 shadow-lg px-1 py-1">
         {/* Zoom segment: − / reset (magnifier) / + always visible as a group. */}
         <button
           aria-label={i18nT('components.markdownRenderer.zoom_out')}

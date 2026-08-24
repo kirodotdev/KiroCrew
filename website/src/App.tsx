@@ -808,8 +808,15 @@ function NotificationsBellButton() {
       {(open || closing) && createPortal(
         <div
           ref={popoverRef}
-          className="fixed z-[60] pointer-events-none"
-          style={isMobile ? { top: 48, bottom: 0, left: 0, right: 0 } : { top: 48, bottom: 0, right: 0, left: 12 }}
+          // Anchored 48px below the viewport top, which the shell has pushed
+          // down by the top inset — top-safe-offset-[48px] adds both.
+          //
+          // Both branches inset horizontally too, because a landscape iPhone is
+          // ~852px wide and so takes the NON-mobile branch (isMobile is
+          // max-width:767px) — that is where the sensor housing sits beside the
+          // sheet's right edge. left-safe-or-3 keeps the desktop 12px gutter
+          // and widens to the inset only when there is one.
+          className={`fixed z-[60] pointer-events-none top-safe-offset-[48px] bottom-safe ${isMobile ? 'left-safe right-safe' : 'right-safe left-safe-or-3'}`}
         >
           <ErrorBoundary
             scope="notifications-bell"
@@ -2241,7 +2248,7 @@ export default function App() {
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
     <div
       data-testid="dashboard-shell"
-      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
+      className={`relative z-[1] h-full grid ${shellEntered ? '' : 'animate-rise'} overflow-hidden bg-bg p-safe ${isMacElectron ? `mac-electron ${macFullscreen ? 'mac-fullscreen' : ''}` : ''} ${isWinElectron ? 'win-electron' : ''} ${isLinuxFramelessElectron ? 'linux-electron' : ''} ${isMobile ? 'grid-cols-[minmax(0,1fr)] grid-rows-[42px_minmax(0,1fr)]' : bottomDock ? 'grid-rows-[42px_minmax(0,1fr)_auto]' : 'grid-rows-[42px_minmax(0,1fr)]'}`}
       // Retire the entrance animation once it has played, so re-showing this
       // pane cannot replay it. Guarded on BOTH the keyframe name and the event
       // target: `animationend` bubbles, and descendants (banners, cards) use
@@ -2716,7 +2723,7 @@ export default function App() {
       </header>
 
       {agentSwitchNotice && (
-        <div role="status" className="fixed z-[70] top-14 left-4 right-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+        <div role="status" className="fixed z-[70] top-safe-offset-14 left-safe-offset-4 right-safe-offset-4 sm:left-auto sm:w-[440px] bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 shadow-xl animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
           <span className="text-sm text-text flex-1">{agentSwitchNotice.message}</span>
           <button onClick={() => dispatch(setAgentSwitchNotice(null))} aria-label={i18nT('app.dismiss')} className="text-muted hover:text-text leading-none p-0.5"><X className="lucide-inline w-4 h-4" /></button>
         </div>
@@ -3255,7 +3262,7 @@ export default function App() {
                 animate={{ width: 220, x: 0 }}
                 exit={{ x: -240 }}
                 transition={{ duration: 0.25, ease: [0.32, 0.72, 0, 1] }}
-                className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-2 mb-2 shadow-sm z-50 overflow-hidden fixed top-0 left-0 bottom-0"
+                className="bg-bg-elevated border border-border rounded-xl flex flex-col mx-2 mt-2 mb-2 shadow-sm z-50 overflow-hidden fixed top-safe left-safe bottom-safe"
                 role="navigation"
                 aria-label={i18nT('app.main_navigation')}
               >

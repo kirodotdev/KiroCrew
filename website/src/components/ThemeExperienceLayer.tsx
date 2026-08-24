@@ -820,7 +820,7 @@ export default function ThemeExperienceLayer() {
           onClick={toggleMute}
           title={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
           aria-label={muted ? i18nT('components.themeExperienceLayer.unmute_theme_sounds') : i18nT('components.themeExperienceLayer.mute_theme_sounds')}
-          className="fixed bottom-4 right-4 z-[50] flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-text shadow-lg hover:bg-bg-hover"
+          className="fixed bottom-safe-offset-4 right-safe-offset-4 z-[50] flex h-9 w-9 items-center justify-center rounded-full border border-border bg-card text-text shadow-lg hover:bg-bg-hover"
         >
           {muted ? <VolumeX size={16} /> : <Volume2 size={16} />}
         </button>

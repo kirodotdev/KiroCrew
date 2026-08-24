@@ -608,7 +608,7 @@ function ToastHost() {
   }, [])
   if (!toasts.length) return null
   return (
-    <div role="status" aria-live="polite" style={{ position: 'fixed', top: 14, left: '50%', transform: 'translateX(-50%)', zIndex: 9997, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', pointerEvents: 'none' } as CSSProperties}>
+    <div role="status" aria-live="polite" className="fixed top-safe-offset-3.5" style={{ left: '50%', transform: 'translateX(-50%)', zIndex: 9997, display: 'flex', flexDirection: 'column', gap: 6, alignItems: 'center', pointerEvents: 'none' } as CSSProperties}>
       {toasts.map((t) => (
         <div key={t.id} style={{ background: 'var(--card)', color: 'var(--card-fg)', border: '1px solid ' + (t.type === 'error' ? 'var(--danger)' : t.type === 'success' ? 'var(--ok)' : 'var(--border)'), borderRadius: 8, padding: '7px 14px', fontSize: 12.5, boxShadow: '0 4px 14px rgba(0,0,0,0.25)', maxWidth: 520 } as CSSProperties}>
           {t.msg}

@@ -6591,7 +6591,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           />
         </div>
       ) : (
-      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-[42px] bottom-0 left-0 z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
+      <OverlayDrawer open={sidebarOpen} width={isMobile ? window.innerWidth : sidebarWidth} dragging={sidebarDragging} morph={!isMobile} morphTarget={TOGGLE_RECT} expandFrom={expandFrom} contentH={Math.max(0, containerH - 8)} className={isMobile ? 'mobile-sessions-overlay fixed top-safe-offset-[42px] bottom-safe left-safe z-50 bg-bg-elevated !py-0 rounded-r-xl shadow-lg max-w-[calc(100vw-2.5rem)] [&>*]:!rounded-none [&>*]:!border-0 [&>*]:!m-0' : ''}>
         <ChatSidebar
           slots={filteredSlots}
           activeSlot={activeSlot}
@@ -6664,7 +6664,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             overlapping tap targets on the app's primary exit. A host that
             embeds one scoped conversation has no sessions list to open. */}
         {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
-          <div className="fixed top-[42px] left-2 z-10">
+          <div className="fixed top-safe-offset-[42px] left-safe ml-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
               {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
             </button>

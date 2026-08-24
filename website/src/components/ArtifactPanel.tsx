@@ -340,7 +340,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
       {!fullscreen && fa.popovers}
     </DetailPanel>
     {fullscreen && createPortal(
-      <div className="fixed inset-0 z-[9999] bg-bg flex flex-col" role="dialog" aria-modal="true" aria-label={i18nT('components.artifactPanel.full_screen_artifact_preview')}
+      <div className="fixed inset-0 z-[9999] bg-bg flex flex-col p-safe" role="dialog" aria-modal="true" aria-label={i18nT('components.artifactPanel.full_screen_artifact_preview')}
         ref={el => { if (el && !el.dataset.focused) { el.dataset.focused = '1'; const first = el.querySelector<HTMLElement>('button:not([disabled]),textarea,input,a[href],select,[tabindex]:not([tabindex="-1"])'); first?.focus() } }}
         onKeyDown={e => {
           if (e.key !== 'Tab') return
