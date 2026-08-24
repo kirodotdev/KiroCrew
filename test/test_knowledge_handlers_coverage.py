@@ -709,14 +709,15 @@ class TestImportBundle:
     @pytest.mark.asyncio
     @pytest.mark.parametrize("payload", [[1, 2, 3], "just a string", 42])
     async def test_non_object_json_is_400_not_500(self, store, payload):
-        # request.json() happily parses a bare array/string/number/null; the
-        # handler's own redaction loop then calls body.get(...) on it, an
-        # AttributeError past every try/except in the function.
+        # request.json() happily parses a bare array/string/number/null. The
+        # shared _json_object_body guard answers the non-object case for all
+        # nine request.json() sites in this module, so it fires before the
+        # bundle-shape validator and owns this code.
         async with _client(_make_app(store)) as client:
             resp = await client.post("/api/knowledge/import", json=payload)
             assert resp.status == 400
             body = await resp.json()
-        assert body["code"] == "malformed_knowledge_bundle"
+        assert body["code"] == "body_not_object"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("bundle", [
@@ -1706,3 +1707,222 @@ class TestSetupKnowledgeRoutes:
         watcher.stop.assert_awaited_once()
         await asyncio.gather(forever, return_exceptions=True)
         assert forever.cancelled()
+
+
+# ------------------------------------------------- JSON object body guard
+
+
+def _guard_app(store, **kwargs):
+    """``_make_app`` plus the mutation routes the body-shape guard tests hit."""
+    app = _make_app(store, **kwargs)
+    r = app.router
+    r.add_post("/api/knowledge/sources", kh.add_source)
+    r.add_patch("/api/knowledge/sources/{id}", kh.rename_source)
+    r.add_post("/api/knowledge/sources/{id}/files/retry", kh.retry_file)
+    r.add_post("/api/knowledge/sources/{id}/files/skip", kh.skip_file)
+    return app
+
+
+# Valid JSON that is not an object: calling ``.get`` on either raised
+# AttributeError and surfaced as a 500 before the shared guard.
+_NON_OBJECT_BODIES = ([1, 2], 7)
+
+
+class TestJsonObjectBodyGuard:
+    """Every ``request.json()`` site answers 400, not 500, on a body that is
+    valid JSON but not an object -- and the two previously-unguarded sites
+    (files/retry, files/skip) now answer 400 on invalid JSON too."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_update_item_non_object_body_is_400(self, store, payload):
+        item_id = store.add_item("a", "body", "note")
+        async with _client(_guard_app(store)) as client:
+            resp = await client.patch(f"/api/knowledge/items/{item_id}", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_add_source_non_object_body_is_400(self, store, payload):
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post("/api/knowledge/sources", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_rename_source_non_object_body_is_400(self, store, payload):
+        sid = store.add_source("s", "web", "https://example.com")
+        async with _client(_guard_app(store)) as client:
+            resp = await client.patch(f"/api/knowledge/sources/{sid}", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", ["retry", "skip"])
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_file_state_non_object_body_is_400(self, store, endpoint, payload):
+        sid = store.add_source("s", "local_folder", "/tmp/x")
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{endpoint}", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("endpoint", ["retry", "skip"])
+    async def test_file_state_invalid_json_is_400_not_500(self, store, endpoint):
+        # These two sites previously had no try/except at all: a malformed
+        # body escaped as a raw JSONDecodeError and surfaced as a 500.
+        sid = store.add_source("s", "local_folder", "/tmp/x")
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/{endpoint}",
+                data="not json", headers={"Content-Type": "application/json"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_ingest_text_non_object_body_is_400(self, store, payload):
+        sid = store.add_source("s", "web", "https://example.com")
+        async with _client(_guard_app(store, pipeline=MagicMock())) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/ingest-text", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_import_bundle_non_object_body_is_400(self, store, payload):
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_agent_document_non_object_body_is_400(
+            self, store, monkeypatch, payload):
+        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
+        async with _client(_guard_app(store, pipeline=MagicMock())) as client:
+            resp = await client.post("/api/knowledge/agent-document", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", _NON_OBJECT_BODIES)
+    async def test_batch_embed_non_object_body_is_400(self, store, payload):
+        async with _client(_guard_app(store, embedder=_FakeEmbedder())) as client:
+            resp = await client.post("/api/knowledge/embedding/generate", json=payload)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "body_not_object"
+
+    @pytest.mark.asyncio
+    async def test_batch_embed_invalid_json_is_400(self, store):
+        async with _client(_guard_app(store, embedder=_FakeEmbedder())) as client:
+            resp = await client.post(
+                "/api/knowledge/embedding/generate",
+                data="{oops", headers={"Content-Type": "application/json"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_batch_embed_absent_body_still_means_defaults(self, store):
+        # No body at all keeps the fill-NULL default path (not a 400): the
+        # guard's allow_absent branch preserves the pre-guard contract.
+        async with _client(_guard_app(store, embedder=_FakeEmbedder())) as client:
+            resp = await client.post("/api/knowledge/embedding/generate")
+            assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_invalid_json_yields_code_at_every_site(self, store, monkeypatch):
+        # At the previously-guarded sites the parse-failure path's entire
+        # change is the machine-readable ``code`` field -- pin it everywhere.
+        monkeypatch.setattr(f"{MODULE}.KiroCrewConfig.load", staticmethod(_cfg))
+        item_id = store.add_item("a", "body", "note")
+        sid = store.add_source("s", "web", "https://example.com")
+        app = _guard_app(store, pipeline=MagicMock(), embedder=_FakeEmbedder())
+        endpoints = [
+            ("patch", f"/api/knowledge/items/{item_id}"),
+            ("post", "/api/knowledge/sources"),
+            ("patch", f"/api/knowledge/sources/{sid}"),
+            ("post", f"/api/knowledge/sources/{sid}/files/retry"),
+            ("post", f"/api/knowledge/sources/{sid}/files/skip"),
+            ("post", f"/api/knowledge/sources/{sid}/ingest-text"),
+            ("post", "/api/knowledge/import"),
+            ("post", "/api/knowledge/embedding/generate"),
+            ("post", "/api/knowledge/agent-document"),
+        ]
+        async with _client(app) as client:
+            for method, path in endpoints:
+                resp = await getattr(client, method)(
+                    path, data="{oops", headers={"Content-Type": "application/json"})
+                assert resp.status == 400, (path, resp.status)
+                assert (await resp.json())["code"] == "invalid_json", path
+
+    @pytest.mark.asyncio
+    async def test_absent_body_is_400_at_non_allow_absent_site(self, store):
+        # Only the embedding-generate site opts into allow_absent; everywhere
+        # else an empty body is a client mistake, not silent defaults.
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post("/api/knowledge/sources")
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_unknown_charset_is_400_not_500(self, store):
+        # charset= names a codec Python does not have: request.json() raises
+        # LookupError (not a ValueError), which must also read as a client
+        # mistake, not a 500.
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post(
+                "/api/knowledge/sources", data=b'{"name": "x"}',
+                headers={"Content-Type": "application/json; charset=not-a-codec"})
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_recursion_error_is_400_not_500(self):
+        # A deeply nested document blows the JSON parser's recursion budget:
+        # request.json() raises RecursionError (not a ValueError), which must
+        # also read as a client mistake. The raise threshold varies by Python
+        # version and platform (~1k on 3.10, ~10k on 3.12, lower on
+        # small-stack Windows), so a real payload either misses the threshold
+        # or gambles with the worker's C stack -- pin the contract at the
+        # helper boundary like the transport-error test below.
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=RecursionError())
+        body, err = await kh._json_object_body(request)
+        assert body is None
+        assert err is not None
+        assert err.status == 400
+        assert json.loads(err.text)["code"] == "invalid_json"
+
+    @pytest.mark.asyncio
+    async def test_transport_errors_propagate_not_400(self):
+        # A disconnect mid-body is not a client JSON mistake: the narrowed
+        # ValueError catch must let transport failures keep their 500 class.
+        request = MagicMock()
+        request.json = AsyncMock(side_effect=ConnectionResetError())
+        with pytest.raises(ConnectionResetError):
+            await kh._json_object_body(request)
+
+    @pytest.mark.asyncio
+    async def test_file_state_object_body_still_works(self, store):
+        # The guard must not break the success path it fronts.
+        sid = store.add_source("s", "local_folder", "/tmp/x")
+        store.db.execute(
+            "INSERT INTO folder_file_state (source_id, file_path, last_seen, status) "
+            "VALUES (?, ?, '2026-01-01', 'failed')", (sid, "/tmp/x/a.md"))
+        store.db.commit()
+        async with _client(_guard_app(store)) as client:
+            resp = await client.post(
+                f"/api/knowledge/sources/{sid}/files/retry",
+                json={"file_path": "/tmp/x/a.md"})
+            assert resp.status == 200
+            row = store.db.execute(
+                "SELECT status FROM folder_file_state WHERE source_id = ?",
+                (sid,)).fetchone()
+            assert row["status"] == "pending"
