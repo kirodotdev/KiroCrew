@@ -18,6 +18,7 @@ from hypothesis import strategies as st
 from kiro_crew import platform_compat
 from kiro_crew.apps.bridges import (
     RegistrationResult,
+    _app_crons_path,
     _deregister_agents,
     _deregister_crons,
     _deregister_mcp_servers,
@@ -615,6 +616,63 @@ class TestCronRegistration:
         defs = load_app_cron_defs("test-app")
         assert len(defs) == 1
         assert defs[0]["enabled"] is False
+
+    @pytest.mark.parametrize("payload", ["{}", '{"name": "x"}', "42", '"str"', "null", "true"])
+    def test_non_list_cron_manifest_is_ignored(self, payload, tmp_path, app_env):
+        """Valid JSON that is not an array yields no definitions, not a crash.
+
+        ``app-crons.json`` sits in the app's install directory, which is
+        ordinary user-writable state. A non-array parses cleanly, so the
+        ``JSONDecodeError`` guard never sees it and the value is returned
+        under a ``list[dict]`` annotation that promised otherwise.
+        """
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        _app_crons_path("test-app").write_text(payload, encoding="utf-8")
+
+        assert load_app_cron_defs("test-app") == []
+
+    def test_non_object_entries_are_skipped_and_the_rest_survive(self, tmp_path, app_env):
+        """One malformed row must not cost the good rows beside it.
+
+        Matches the disposition the registration loop already gives an entry
+        whose ``add_job`` raises: skip that one, keep going.
+        """
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        _app_crons_path("test-app").write_text(
+            json.dumps([{"name": "test-app/good", "every": 60}, "junk", 7, None, []]),
+            encoding="utf-8",
+        )
+
+        defs = load_app_cron_defs("test-app")
+        assert defs == [{"name": "test-app/good", "every": 60}]
+
+    def test_a_non_list_manifest_does_not_break_registration(self, tmp_path, app_env):
+        """The end-to-end shape: enabling the app must not raise.
+
+        ``register_app_crons_with_service`` reads ``d.get("name", "")`` OUTSIDE
+        its per-job ``try``, so before the guard a JSON object here raised
+        ``AttributeError`` (iterating an object yields its string keys) and a
+        scalar raised ``TypeError`` -- out of the app-enable path entirely.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from kiro_crew.apps.bridges import register_app_crons_with_service
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        _app_crons_path("test-app").write_text(
+            json.dumps({"name": "test-app/refresh", "every": 60}), encoding="utf-8"
+        )
+
+        mock_sdk = MagicMock()
+        mock_sdk.list_jobs.return_value = []
+        with patch("kiro_crew.apps.bridges.CronSDK", return_value=mock_sdk):
+            result = _run(register_app_crons_with_service("test-app", MagicMock()))
+
+        assert result == []
+        mock_sdk.add_job_async.assert_not_called()
 
     def test_deregister_crons(self, tmp_path, app_env):
         src = _make_app_source(tmp_path)
