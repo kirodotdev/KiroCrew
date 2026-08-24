@@ -15,7 +15,10 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
   // Passed through to TrustDropdown: a surface whose `trust` decision grants
   // more than the session (e.g. channel-wide, persisted) labels the real grant.
   trustAllLabelKey?: string
-  onApprove: (decision: string, pattern?: string) => void
+  /** MUST return the request's promise: it feeds the optimistic-state rollback
+   *  below (rejection restores the buttons). No `void` arm, so a fire-and-forget
+   *  handler — the shape behind #5524 — cannot compile here. */
+  onApprove: (decision: string, pattern?: string) => Promise<unknown>
 }) {
   const [decided, setDecided] = useState<string | null>(null)
   // null = no failure. `terminal` marks a refusal that retrying can never

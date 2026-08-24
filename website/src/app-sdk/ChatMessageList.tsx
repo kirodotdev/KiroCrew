@@ -27,7 +27,11 @@ export interface ChatMessageListProps {
   messages: ChatMessage[]
   running: boolean
   contentWidth?: string
-  onApprove?: (approvalId: string, decision: string) => void
+  /** Resolve a pending approval. MUST return the request's promise: rejection
+   *  reaches the approval row's rollback and the buttons come back. The type
+   *  deliberately has no `void` arm so a fire-and-forget handler — the exact
+   *  shape behind #5524 — cannot compile against this boundary. */
+  onApprove?: (approvalId: string, decision: string) => Promise<unknown>
   /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
    *  only when `onApprove` routes to an endpoint that RECORDS standing trust
    *  (the slot approve endpoint carries the decision verbatim). Hosts resolving

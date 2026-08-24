@@ -127,7 +127,7 @@ function AgentBadge({ agent, index }: { agent: ChannelAgent; index: number }) {
 
 function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }: {
   msg: ChannelMessage; agents: ChannelAgent[]
-  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string) => void | Promise<unknown>
+  onReply?: () => void; onOpenThread?: () => void; onApprove?: (action: string) => Promise<unknown>
 }) {
   const isHuman = msg.fromId === 'human'
   const approvalMode = useAppSelector((s: RootState) => s.dashboard.approvalMode)

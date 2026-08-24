@@ -17,8 +17,11 @@ interface CollapsibleToolGroupProps {
   permissionMeta?: Record<string, unknown>
   /** Number of pending permission messages in this group (shown as indicator when > 1). */
   pendingPermCount?: number
-  /** Callback for approve/reject (and trust, only when `canTrust`) — same as PermissionMessage.onApprove. */
-  onApprove?: (decision: string) => void | Promise<void>
+  /** Callback for approve/reject (and trust, only when `canTrust`) — same as PermissionMessage.onApprove.
+   *  MUST return the request's promise: it feeds `submitDecision`'s rollback
+   *  (rejection restores the buttons). No `void` arm, so a fire-and-forget
+   *  handler — the shape behind #5524 — cannot compile here. */
+  onApprove?: (decision: string) => Promise<unknown>
   /**
    * Offer the standing-trust tier. FAIL-CLOSED: leave unset unless this mount's
    * `onApprove` routes to an endpoint that actually RECORDS standing trust

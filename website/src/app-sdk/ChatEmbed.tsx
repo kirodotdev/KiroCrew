@@ -160,8 +160,13 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
     onSettled: () => { void refetch() },
   })
 
+  // mutateAsync, not mutate: the returned promise carries a failed POST to the
+  // approval row's rollback (CollapsibleToolGroup.submitDecision catches it and
+  // restores the buttons). mutate() returns void, so a failed POST would leave
+  // the row optimistically resolved while the agent stays parked on the
+  // undelivered decision, with no retry path.
   const approve = useCallback(
-    (approvalId: string, decision: string) => approveMutation.mutate({ id: approvalId, decision }),
+    (approvalId: string, decision: string) => approveMutation.mutateAsync({ id: approvalId, decision }),
     [approveMutation],
   )
 
