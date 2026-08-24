@@ -156,6 +156,28 @@ def test_delete_items_batch_is_never_called_on_the_event_loop():
     )
 
 
+def test_resolve_old_item_ids_is_never_called_on_the_event_loop():
+    """Ratchet: the full-source _old_item_ids read stays on a worker thread.
+
+    ``_resolve_old_item_ids`` materializes one row per item in the source --
+    tens of thousands on a large library, over a second of blocking SQLite --
+    so the ingest paths resolve it inside the off-loop duplicate-gate hop. A
+    call added straight to a coroutine body reintroduces the per-ingest loop
+    stall this helper exists to prevent, so it must fail here rather than in
+    production. Nested closures handed to ``run_to_completion`` (the gate
+    hops) are not coroutine bodies and correctly do not trip this.
+    """
+    offenders = _on_loop_call_sites("_resolve_old_item_ids")
+    assert offenders == [], (
+        "_resolve_old_item_ids is reached from the event loop at:\n  "
+        + "\n  ".join(offenders)
+        + "\nResolve the group inside the off-loop duplicate-gate hop (the "
+          "run_to_completion(_gate) closure) as ingest_file/ingest_text do, or "
+          "wrap the call in asyncio.to_thread. The read is a full-source scan "
+          "and must never run on the loop thread."
+    )
+
+
 @pytest.mark.asyncio
 async def test_handle_deleted_runs_the_delete_off_the_loop_thread(tmp_path, monkeypatch):
     """The offload is real: the delete executes on some other thread."""

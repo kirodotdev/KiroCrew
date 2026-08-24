@@ -262,6 +262,19 @@ class IngestionPipeline:
         self.embedder = embedder
         self._dedup_enabled = dedup_enabled
 
+    def _resolve_old_item_ids(self, source_id: str | None) -> list[str]:
+        """The source's full pre-existing item group: the ids a replace-all
+        ingest supersedes and must delete.
+
+        Materializes one row per item in the source -- tens of thousands on a
+        large library, over a second of blocking SQLite -- so callers MUST run
+        it on a worker thread (``store.db`` is thread-local), never on the
+        event loop. The ingest paths fold it into the duplicate-gate hop, just
+        ahead of the gate's own transaction.
+        """
+        return [row['id'] for row in self.store.db.execute(
+            "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+
     def _skip_as_duplicate(self, content_hash: str, source_id: str | None,
                            old_item_ids: list[str] | None = None,
                            on_duplicate: Callable[[], None] | None = None) -> str | None:
@@ -546,12 +559,15 @@ class IngestionPipeline:
         # 2. Hash check + source resolution
         content_hash = hashlib.sha256(text.encode()).hexdigest()
         _old_item_ids: list[str] = old_item_ids if old_item_ids is not None else []
+        # Replace-all paths defer the full-source _old_item_ids read into the
+        # off-loop gate hop below: it materializes the source's whole item-id
+        # set, which is seconds of blocking SQLite on a large library.
+        resolve_old_group = False
         if source_id:
             # Ingest into existing source (remote sync path)
             if old_item_ids is None:
                 # Single-file/remote source: replace all items for this source
-                _old_item_ids = [row['id'] for row in self.store.db.execute(
-                    "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+                resolve_old_group = True
             props: dict[str, object] = {}
             existing: dict | None = {"id": source_id}  # sentinel — source already exists
             src_row = self.store.db.execute(
@@ -567,8 +583,7 @@ class IngestionPipeline:
                 if props.get('content_hash') == content_hash:
                     return None
                 source_id = existing['id']
-                _old_item_ids = [row['id'] for row in self.store.db.execute(
-                    "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+                resolve_old_group = True
             else:
                 props = {}
                 source_id = self.store.add_source(
@@ -577,12 +592,17 @@ class IngestionPipeline:
                 )
 
         # 3. Job record
-        # One hop for the whole gate: it deletes the superseded items, attaches
-        # the location and writes the terminal job row, and its delete rebuilds
-        # the entity graph — seconds of blocking SQLite on a large library.
-        dupe_job = await run_to_completion(
-            lambda: self._skip_as_duplicate(
-                            content_hash, source_id, _old_item_ids, on_duplicate=on_duplicate))
+        # One hop for the whole gate: it resolves the pre-existing item group
+        # (a full-source read, just ahead of the gate's own transaction),
+        # deletes the superseded items, attaches the location and writes the
+        # terminal job row, and its delete rebuilds the entity graph — seconds
+        # of blocking SQLite on a large library.
+        def _gate() -> tuple[str | None, list[str]]:
+            ids = self._resolve_old_item_ids(source_id) if resolve_old_group else _old_item_ids
+            return self._skip_as_duplicate(
+                content_hash, source_id, ids, on_duplicate=on_duplicate), ids
+
+        dupe_job, _old_item_ids = await run_to_completion(_gate)
         if dupe_job:
             return dupe_job
         job_id = uuid4().hex[:12]
@@ -783,6 +803,10 @@ class IngestionPipeline:
 
         # Resolve the source and the prior item ids this call should replace.
         _old_item_ids: list[str] = old_item_ids if old_item_ids is not None else []
+        # Replace-all paths defer the full-source _old_item_ids read into the
+        # off-loop gate hop below: it materializes the source's whole item-id
+        # set, which is seconds of blocking SQLite on a large library.
+        resolve_old_group = False
         if source_id is None:
             uri = f"{source_type}://{content_hash[:16]}"
             existing = self.store.get_source_by_uri(uri)
@@ -791,8 +815,7 @@ class IngestionPipeline:
                 if props.get('content_hash') == content_hash:
                     return None  # unchanged
                 source_id = existing['id']
-                _old_item_ids = [row['id'] for row in self.store.db.execute(
-                    "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+                resolve_old_group = True
             else:
                 source_id = self.store.add_source(
                     name=title, source_type=source_type, uri=uri,
@@ -800,15 +823,19 @@ class IngestionPipeline:
                 )
         elif old_item_ids is None:
             # Existing source, replace-all (single-text / remote-sync source).
-            _old_item_ids = [row['id'] for row in self.store.db.execute(
-                "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+            resolve_old_group = True
 
-        # One hop for the whole gate: it deletes the superseded items, attaches
-        # the location and writes the terminal job row, and its delete rebuilds
-        # the entity graph — seconds of blocking SQLite on a large library.
-        dupe_job = await run_to_completion(
-            lambda: self._skip_as_duplicate(
-                            content_hash, source_id, _old_item_ids, on_duplicate=on_duplicate))
+        # One hop for the whole gate: it resolves the pre-existing item group
+        # (a full-source read, just ahead of the gate's own transaction),
+        # deletes the superseded items, attaches the location and writes the
+        # terminal job row, and its delete rebuilds the entity graph — seconds
+        # of blocking SQLite on a large library.
+        def _gate() -> tuple[str | None, list[str]]:
+            ids = self._resolve_old_item_ids(source_id) if resolve_old_group else _old_item_ids
+            return self._skip_as_duplicate(
+                content_hash, source_id, ids, on_duplicate=on_duplicate), ids
+
+        dupe_job, _old_item_ids = await run_to_completion(_gate)
         if dupe_job:
             return dupe_job
 
