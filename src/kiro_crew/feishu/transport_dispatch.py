@@ -24,7 +24,6 @@ Dependency direction is ``feishu -> messaging`` (allowed).
 from __future__ import annotations
 
 import logging
-import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.feishu.client import CHAT_GROUP
@@ -44,6 +43,7 @@ from kiro_crew.messaging.link import (
     build_dm_session_key,
     seed_generation,
 )
+from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
 
 if TYPE_CHECKING:
@@ -129,26 +129,19 @@ class FeishuDispatcher:
             await self._handle_compact(inbound)
             return
 
-        # ── Mid-turn concurrency: steer or queue prompt ────────────────────
-        session_key = self._session_key(route)
-        if self.sessions.is_busy(session_key):
-            await self._handle_busy(inbound, session_key)
-            return
-
-        # Idle/daily rotation, AFTER the busy check: rotating first could
-        # mint a new generation and miss the in-flight turn on the current
-        # key. Also records activity, which is what makes idle detection
-        # work at all -- a dispatcher that never calls this leaves
-        # last_active frozen and silently ignores both settings.
-        self._conv.maybe_rotate(
-            route,
-            time.time(),
+        # Busy check, then rotation, then a re-derived key -- the ordering and
+        # the reasons it matters live in messaging.pre_turn.
+        session_key = await resolve_pre_turn(
+            conv=self._conv,
+            sessions=self.sessions,
+            key=route,
+            session_key_for=self._session_key,
             idle_minutes=self.cfg.messaging.idle_reset_minutes,
             daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            on_busy=lambda sk: self._handle_busy(inbound, sk),
         )
-        # Re-derive: rotation advances the generation, so the pre-rotation
-        # key would address the conversation the rotation just retired.
-        session_key = self._session_key(route)
+        if session_key is None:
+            return  # folded into the running turn
 
         conversation_id = f"feishu:{route[1]}"
         agent = self._resolve_agent()

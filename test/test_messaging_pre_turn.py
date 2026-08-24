@@ -195,21 +195,21 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: mid-turn override parsing, attachment handling, media ingestion), and in
 #: several cases the busy path is no longer a plain ``on_busy(session_key)``.
 #: Listing them here would assert a migration that has not happened.
-_PRE_TURN_CHANNELS = ("webex", "imessage")
+_PRE_TURN_CHANNELS = ("webex", "imessage", "feishu")
 
 #: Rostered channels deliberately NOT on the shared helper. telegram, discord,
 #: teams and slack carry extra pre-turn work between the busy check and
 #: rotation; weixin and wecom run the same kind of steps from their
 #: ``handle_message`` with their own busy checks (wecom additionally clears
-#: attachments there and ingests media before rotating); whatsapp and feishu
-#: hand-roll the sequence in their dispatchers, and although whatsapp's busy
+#: attachments there and ingests media before rotating); whatsapp hand-rolls
+#: the sequence in its dispatcher, and although its busy
 #: handling mirrors webex's closely enough that migration looks mechanical,
 #: it is still a behaviour change -- so folding any of them into the helper
 #: is a separate, reviewed change. Both ratchet directions read this one set:
 #: joining it (a rostered channel must be accounted for) and leaving it (a
 #: migrated channel must be pruned) are each an explicit decision.
 _EXEMPT_CHANNELS = frozenset(
-    {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp", "feishu"}
+    {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp"}
 )
 
 
