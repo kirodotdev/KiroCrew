@@ -8277,6 +8277,46 @@ class KiroCrewConfig:
                 pass
         return DEFAULT_MODEL
 
+    def acp_effective_model(
+        self,
+        agent: str | None,
+        model_override: str | None,
+        global_model: str | None = None,
+    ) -> str:
+        """The model id the ACP factory selects — what its effort gate keys on.
+
+        This IS the factory's selection, extracted so the spawn-side effort
+        verdict (``kiro_crew.subagent._spawn_effective_model``) shares the code
+        instead of mirroring it — a mirror that drifts reports a false
+        ``effort_applied``/``effort_dropped`` receipt, worse than silence.
+
+        Precedence: ``model_override`` (an explicit caller model or the value
+        the session layer resolved) > a named agent's own kiro ``model`` pin
+        (``kirocrew`` itself and the no-agent case use the global directly) >
+        the collapsed global. ``global_model`` lets the factory pass its
+        build-time collapsed ``agent.model``; when omitted it is recomputed
+        the same way (``agent.model``, collapsed through
+        :meth:`_resolve_agent_model` when it is the ``auto`` sentinel).
+
+        The result is translated through ``model_registry.to_acp_id`` exactly
+        as the factory does — canonical keys become kiro ids, and ``auto``
+        collapses to ``""`` (``to_acp_id``, NOT ``to_provider_id``: kiro serves
+        the registry aliases as distinct real models — see its docstring).
+        ``""`` means nothing is pinned anywhere: kiro-cli resolves the model
+        itself and the effort overlay cannot be keyed.
+        """
+        if global_model is None:
+            global_model = self.agent.model
+            if global_model == DEFAULT_MODEL:
+                global_model = self._resolve_agent_model()
+        if model_override:
+            m: str = model_override
+        elif not agent or agent == "kirocrew":
+            m = global_model
+        else:
+            m = self._resolve_named_agent_model(agent) or global_model
+        return model_registry.to_acp_id(m) if m else ""
+
     @staticmethod
     def _resolve_named_agent_model(agent: str, agents_dir: Path | None = None) -> str:
         """Return a named agent's own kiro ``model`` field, or ``""`` if none.
@@ -8456,25 +8496,12 @@ class KiroCrewConfig:
             #      silently falling through to the backend's own choice.
             # "" at the end means nothing is pinned anywhere; AcpClient
             # normalizes "" to DEFAULT_MODEL, same as None.
-            if model_override:
-                m = model_override
-            elif not agent or agent == "kirocrew":
-                m = model
-            else:
-                m = self._resolve_named_agent_model(agent) or model
-            # Translation boundary (mirrors the _claude_code factory): the model
-            # may be a canonical registry key (e.g. "opus-4.8-1m" — the wire /
-            # dropdown value after /api/models canonicalization) OR an already-
-            # resolved kiro id. kiro-cli's session/set_model only accepts its own
-            # advertised ids (bare dotted, e.g. "claude-opus-4.8"), so translate
-            # the canonical key to the "acp" id — otherwise it reaches set_model
-            # and kiro rejects it ("The model 'opus-4.8-1m' is not available").
-            # to_acp_id (NOT to_provider_id) resolves ONLY canonical keys: kiro's
-            # native ids and their aliases (claude-haiku-4.5, claude-sonnet-4.5,
-            # …) are DISTINCT real kiro models and must pass through unchanged,
-            # not get folded to Sonnet the way the claude_code path downgrades
-            # them (the claude backend has no Haiku).
-            m = model_registry.to_acp_id(m) if m else m
+            # Selection + to_acp_id translation live in acp_effective_model —
+            # SHARED with the spawn-side effort verdict (subagent.py) so the
+            # reported outcome cannot drift from what this gate actually keys
+            # on. (The translation rationale — why to_acp_id and not
+            # to_provider_id — is documented on that method.)
+            m = self.acp_effective_model(agent, model_override, global_model=model)
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only

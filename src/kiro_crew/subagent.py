@@ -55,6 +55,7 @@ from kiro_crew.context_management import (
     cap_result_file,
     evict_completed_agents,
 )
+from kiro_crew.effort import effort_settings_key, model_supports_effort
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.hooks import (
     HOOK_EVENT_POST_TOOL_USE,
@@ -517,6 +518,87 @@ def _subagent_default_effort() -> str:
         return val if isinstance(val, str) else ""
     except Exception:
         return ""
+
+
+def _spawn_effective_model(model: str, agent: str) -> str:
+    """The model the provider factory's effort gate will actually see, or ``""``.
+
+    Not a re-encoding of the factory's precedence — the selection itself is
+    :meth:`KiroCrewConfig.acp_effective_model`, the same function the factory
+    calls, so this verdict cannot drift from the gate it reports on. What this
+    wrapper reproduces is only the CALLER side of the chain, exactly as the
+    spawn path drives ``get_or_create``: the kwarg the spawn passes (explicit
+    per-spawn *model*, else the subagent role pin — see ``_run_inner``, which
+    forwards raw ``info.model`` including an explicit ``"auto"``), and, when no
+    kwarg is passed, ``session._session_model`` for *agent* (a crew's own pin,
+    else non-sentinel global; ``None`` for a named kiro agent so the factory
+    resolves the agent's own JSON pin — which ``acp_effective_model`` then
+    does, identically). Never raises; ``""`` on any resolution failure.
+    """
+    try:
+        # circular imports (config.loader / session import sibling modules at
+        # load time, matching the lazy-import convention of _subagent_default_*)
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.session import _session_model
+
+        # The kwarg the spawn path actually passes (see _run_inner): raw
+        # info.model — an explicit "auto" flows through VERBATIM and the
+        # factory treats it as a truthy override — else the role pin.
+        override: str | None = model or _subagent_default_model() or None
+        cfg = KiroCrewConfig.load()
+        if override is None:
+            # No kwarg: get_or_create resolves the session chain and passes
+            # its result (possibly None) as model_override.
+            override = _session_model(cfg, agent or None)
+        return cfg.acp_effective_model(agent or None, override) or ""
+    except Exception:
+        return ""
+
+
+def effort_drop_reason(model: str, reasoning_effort: str, agent: str = "") -> str:
+    """Why a requested per-spawn effort will not take effect, or ``""``.
+
+    Mirrors the model resolution the provider factory's effort gate actually
+    sees (explicit per-spawn model, else the subagent role pin, else the
+    session-level chain for *agent*: crew pin, else non-sentinel global) — an
+    unresolved model (the provider picks a served one, or a named kiro agent's
+    own pin resolves downstream) cannot carry an effort level through the
+    overlay. Returns a human-readable reason when *reasoning_effort* is set
+    but the resolved model is not effort-capable; ``""`` means the effort will
+    be delivered (or none was requested). Reporting-only: never raises and
+    never influences whether or how a spawn proceeds.
+    """
+    if not reasoning_effort:
+        return ""
+    resolved = _spawn_effective_model(model, agent)
+    if not resolved:
+        return (
+            "no concrete model is pinned — the model resolves to 'auto', which "
+            "does not support effort configuration; pass an effort-capable "
+            "model= to apply the level"
+        )
+    if not model_supports_effort(resolved):
+        return f"model '{resolved}' does not support effort configuration"
+    return ""
+
+
+def effort_applied_note(model: str, reasoning_effort: str, agent: str = "") -> str:
+    """The delivery mirror of :func:`effort_drop_reason`, or ``""``.
+
+    Names the resolved model and the family-specific cli.json settings key the
+    level is delivered under (``reasoning`` for GPT, ``output_config`` for
+    Claude) when a requested per-spawn effort WILL take effect. The key matters
+    because kiro-cli silently ignores a level written under the wrong family
+    key, so a bare "applied" would leave that failure mode unobservable.
+    Complementary with the drop reason over a non-empty request: exactly one of
+    the two is non-empty. Reporting-only, same totality contract.
+    """
+    if not reasoning_effort:
+        return ""
+    resolved = _spawn_effective_model(model, agent)
+    if not resolved or not model_supports_effort(resolved):
+        return ""
+    return f"{resolved} → {effort_settings_key(resolved)}.effort"
 
 
 _STALL_IDLE_SECS = (
@@ -5446,6 +5528,28 @@ class SubagentManager:
         eff_effort = info.reasoning_effort or _subagent_default_effort()
         if eff_effort:
             extra_kwargs["reasoning_effort_override"] = eff_effort
+        if eff_effort:
+            # Judge the drop warning on the same model the factory's effort
+            # gate will see: the kwarg when pinned, else what the session layer
+            # resolves for this agent (crew pin, else non-sentinel global).
+            # Off the loop — the resolver reads config and ~/.kiro/agents, the
+            # same reason get_or_create runs _session_model in an executor.
+            effective_model = await asyncio.to_thread(
+                _spawn_effective_model, info.model, agent or ""
+            )
+            if not effective_model or not model_supports_effort(effective_model):
+                # The provider factory's effort gate will drop this level: only
+                # a concrete, effort-capable model can carry one. Reporting-only
+                # — the kwarg is still passed and the factory stays the single
+                # dropping authority.
+                logger.warning(
+                    "subagent %s: reasoning effort '%s' (%s) will not be applied — "
+                    "model '%s' does not support effort configuration",
+                    info.id,
+                    eff_effort,
+                    "per-call" if info.reasoning_effort else "role pin",
+                    effective_model or "auto",
+                )
         if info.bare:
             extra_kwargs["bare"] = True
         if info.allowed_tools:

@@ -13,6 +13,8 @@ resolution site. Each hop is a place the value can be silently dropped
 from __future__ import annotations
 
 import asyncio
+import logging
+from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +27,29 @@ from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_too
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
+
+
+@contextmanager
+def _hermetic_cfg(role_models=None, agent_pins=None):
+    """A config the verdict helpers AND the provider factory resolve
+    identically on any box: the global model stays the unresolved ``auto``
+    sentinel (``_resolve_agent_model`` would otherwise read the installed
+    ``~/.kiro/agents/kirocrew.json`` from disk) and named-agent pins come from
+    *agent_pins* instead of the real agents directory."""
+    from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+
+    pins = dict(agent_pins or {})
+    cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
+    with (
+        patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+        patch.object(KiroCrewConfig, "_resolve_agent_model", staticmethod(lambda: "")),
+        patch.object(
+            KiroCrewConfig,
+            "_resolve_named_agent_model",
+            staticmethod(lambda agent, agents_dir=None: pins.get(agent, "")),
+        ),
+    ):
+        yield cfg
 
 
 def _run_tool(args: dict[str, Any]) -> tuple[list[dict], str]:
@@ -93,29 +118,84 @@ class TestSpawnRunToolForwarding:
 
 
 class TestUnsupportedModelReport:
-    """Effort on an incapable model is REPORTED, never a rejection."""
+    """Effort on an incapable model is REPORTED, never a rejection. The
+    verdict comes from the SERVER (which knows the resolved model), carried
+    on the /api/spawn response as ``effort_dropped`` — the tool renders one
+    attributed line per affected subagent."""
 
-    def test_report_line_appears_and_spawn_still_happens(self):
-        bodies, result = _run_tool(
-            {"task": "x", "model": "deepseek-3.2", "reasoning_effort": "high"}
+    def _run_tool_with_server_verdict(
+        self, args: dict[str, Any], responses: list[dict]
+    ) -> tuple[list[dict], str]:
+        """Run spawn_run against a fake gateway answering from *responses*."""
+        from kiro_crew import mcp_core
+
+        bodies: list[dict] = []
+        answers = iter(responses)
+
+        def _fake_post(path: str, body: dict) -> dict:
+            if path == "/api/spawn":
+                bodies.append(body)
+                return next(answers)
+            return {"id": "a1"}
+
+        with (
+            patch.object(mcp_core, "_post", side_effect=_fake_post),
+            patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
+            patch.object(mcp_core, "sel", MagicMock()),
+        ):
+            result = mcp_core._call_tool_inner("spawn_run", args)
+        return bodies, result
+
+    def test_server_verdict_is_rendered_and_spawn_still_happens(self):
+        bodies, result = self._run_tool_with_server_verdict(
+            {"task": "x", "model": "deepseek-3.2", "reasoning_effort": "high"},
+            [
+                {
+                    "id": "a1",
+                    "effort_dropped": "model 'deepseek-3.2' does not support effort configuration",
+                }
+            ],
         )
         assert len(bodies) == 1  # dispatched regardless
         assert "does not support effort" in result
         assert "deepseek-3.2" in result
+        assert "a1" in result
 
     def test_no_report_when_model_supports_effort(self):
-        bodies, result = _run_tool(
-            {"task": "x", "model": "sonnet-test-model", "reasoning_effort": "high"}
+        bodies, result = self._run_tool_with_server_verdict(
+            {"task": "x", "model": "sonnet-test-model", "reasoning_effort": "high"},
+            [{"id": "a1"}],
         )
         assert len(bodies) == 1
         assert "does not support effort" not in result
 
-    def test_no_report_without_a_per_call_model(self):
-        """The effective model resolves server-side — this layer cannot know
-        it, so it stays silent rather than guessing."""
-        bodies, result = _run_tool({"task": "x", "reasoning_effort": "high"})
+    def test_report_appears_without_a_per_call_model(self):
+        """The default case the old client-side guess could not see: no
+        per-call model, the server resolves to 'auto' and reports the drop."""
+        bodies, result = self._run_tool_with_server_verdict(
+            {"task": "x", "reasoning_effort": "high"},
+            [
+                {
+                    "id": "a1",
+                    "effort_dropped": "no concrete model is pinned — the model resolves to 'auto'",
+                }
+            ],
+        )
         assert len(bodies) == 1
-        assert "does not support effort" not in result
+        assert "dropped for a1" in result
+        assert "auto" in result
+
+    def test_batch_reports_are_attributed_per_subagent(self):
+        bodies, result = self._run_tool_with_server_verdict(
+            {"tasks": ["x", "y"], "reasoning_effort": "max"},
+            [
+                {"id": "a1", "effort_dropped": "reason-one"},
+                {"id": "a2", "effort_dropped": "reason-two"},
+            ],
+        )
+        assert len(bodies) == 2
+        assert "dropped for a1: reason-one" in result
+        assert "dropped for a2: reason-two" in result
 
     def test_report_never_shadows_the_error_prefix_on_total_failure(self):
         """SEL and callers test the FIRST line for the 'Error:' prefix
@@ -351,3 +431,605 @@ class TestResolutionPrecedence:
         captured, shared = self._run(info_effort="high")
         shared.assert_not_called()
         assert captured.get("reasoning_effort_override") == "high"
+
+
+class TestEffortDropReason:
+    """The pure server-side verdict: non-empty exactly when a requested effort
+    will be dropped by the factory gate — no false positives, no false
+    negatives (design Property 1)."""
+
+    def _reason(
+        self, model: str, effort: str, *, role_models=None, agent="", agent_pins=None
+    ) -> str:
+        from kiro_crew.subagent import effort_drop_reason
+
+        with _hermetic_cfg(role_models=role_models, agent_pins=agent_pins):
+            return effort_drop_reason(model, effort, agent)
+
+    @pytest.mark.parametrize("model", ["", "auto", "deepseek-3.2", "sonnet-test-model"])
+    def test_no_effort_requested_means_no_reason(self, model):
+        assert self._reason(model, "") == ""
+
+    @pytest.mark.parametrize("level", EFFORT_LEVELS)
+    def test_every_level_reports_on_unpinned_auto(self, level):
+        reason = self._reason("", level)
+        assert "auto" in reason
+        assert "does not support effort" in reason
+
+    def test_explicit_auto_is_treated_as_unpinned(self):
+        assert "auto" in self._reason("auto", "high")
+
+    def test_non_capable_explicit_model_is_named(self):
+        reason = self._reason("deepseek-3.2", "high")
+        assert "deepseek-3.2" in reason
+        assert "does not support effort" in reason
+
+    def test_capable_explicit_model_is_silent(self):
+        assert self._reason("sonnet-test-model", "high") == ""
+
+    def test_capable_role_pin_is_silent(self):
+        assert self._reason("", "high", role_models={"subagent": "sonnet-test-model"}) == ""
+
+    def test_non_capable_role_pin_is_named(self):
+        reason = self._reason("", "high", role_models={"subagent": "deepseek-3.2"})
+        assert "deepseek-3.2" in reason
+
+    def test_explicit_model_beats_role_pin_in_the_verdict(self):
+        """Resolution mirror: the per-spawn model wins over the pin, so a
+        capable explicit model silences a non-capable pin and vice versa."""
+        assert (
+            self._reason("sonnet-test-model", "high", role_models={"subagent": "deepseek-3.2"})
+            == ""
+        )
+        reason = self._reason("deepseek-3.2", "high", role_models={"subagent": "sonnet-test-model"})
+        assert "deepseek-3.2" in reason
+
+    def test_explicit_auto_beats_a_capable_role_pin(self):
+        """Regression (round-4 GPT finding): an explicit ``model="auto"`` is a
+        truthy override — ``_run_inner`` forwards it verbatim and the factory
+        collapses it to unpinned, DROPPING the effort. The old verdict
+        normalized it away and reported the role pin as applied — an inverted
+        receipt."""
+        reason = self._reason("auto", "high", role_models={"subagent": "sonnet-test-model"})
+        assert "auto" in reason
+        assert "does not support effort" in reason
+
+    def test_named_agent_capable_pin_is_silent(self):
+        """Regression (round-4 Opus finding): a named kiro agent whose own
+        agents-JSON pins an effort-capable model DOES get the effort — the
+        factory resolves that pin and keys the overlay on it. The old verdict
+        stopped at the session layer's deliberate ``None`` and reported a
+        drop — the inverse of the truth."""
+        assert (
+            self._reason(
+                "", "high", agent="pinned-agent", agent_pins={"pinned-agent": "sonnet-test-model"}
+            )
+            == ""
+        )
+
+    def test_named_agent_non_capable_pin_is_named(self):
+        reason = self._reason(
+            "", "high", agent="pinned-agent", agent_pins={"pinned-agent": "deepseek-3.2"}
+        )
+        assert "deepseek-3.2" in reason
+
+
+class TestDropWarningLog:
+    """The session-creation gate says out loud what the factory will drop —
+    including the role-pin case the tool result cannot see (the operator who
+    set the pin reads logs, not tool results)."""
+
+    def _run(
+        self,
+        *,
+        info_effort: str = "",
+        info_model: str = "",
+        role_efforts=None,
+        role_models=None,
+    ):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.providers.base import EVENT_COMPLETE, LLMEvent
+        from kiro_crew.subagent import SubagentInfo, SubagentManager
+
+        sessions = MagicMock()
+        sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_approval_policy = MagicMock(return_value="")
+        sessions.get_agent = MagicMock(return_value="")
+        ctx_builder = MagicMock()
+        ctx_builder.build_message = MagicMock(return_value=("msg", None))
+        ctx_builder.hooks.auto_approve_subagent_tools = False
+
+        captured: dict = {}
+        mock_client = MagicMock()
+
+        async def fake_get_or_create(key, agent=None, approval_policy="", **kwargs):
+            captured.update(kwargs)
+            return mock_client, True, False
+
+        sessions.get_or_create = fake_get_or_create
+
+        async def fake_stream(msg):
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        mock_client.stream = fake_stream
+
+        cfg = KiroCrewConfig(
+            agent=AgentConfig(
+                role_efforts=role_efforts or {},
+                role_models=role_models or {},
+            )
+        )
+        runner = SubagentManager(sessions=sessions, ctx_builder=ctx_builder)
+        info = SubagentInfo(
+            id="sub1",
+            task="test",
+            parent_session_key="parent-key",
+            model=info_model,
+            reasoning_effort=info_effort,
+        )
+        with (
+            patch.object(runner, "_should_use_session_sharing", return_value=False),
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+        ):
+            asyncio.run(runner._run_inner(info, "subagent:sub1"))
+        return captured
+
+    def _drop_messages(self, caplog) -> list[str]:
+        return [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "will not be applied" in r.getMessage()
+        ]
+
+    def test_per_call_effort_on_auto_warns_and_names_the_source(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            self._run(info_effort="high")
+        msgs = self._drop_messages(caplog)
+        assert len(msgs) == 1
+        assert "per-call" in msgs[0]
+        assert "'auto'" in msgs[0]
+        assert "'high'" in msgs[0]
+
+    def test_role_pin_drop_warns_with_pin_source(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            self._run(role_efforts={"subagent": "low"})
+        msgs = self._drop_messages(caplog)
+        assert len(msgs) == 1
+        assert "role pin" in msgs[0]
+
+    def test_capable_model_stays_silent(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            self._run(info_effort="high", info_model="sonnet-test-model")
+        assert self._drop_messages(caplog) == []
+
+    def test_no_effort_anywhere_stays_silent(self, caplog):
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            self._run()
+        assert self._drop_messages(caplog) == []
+
+    def test_kwarg_still_passed_when_warning_fires(self, caplog):
+        """Reporting never alters spawning (design Property 2): the factory
+        stays the single dropping authority, so the override kwarg must reach
+        session creation even when the warning says it will be dropped."""
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.subagent"):
+            captured = self._run(info_effort="high")
+        assert self._drop_messages(caplog)
+        assert captured.get("reasoning_effort_override") == "high"
+
+
+class TestApiSpawnEffortDropped:
+    """POST /api/spawn success responses carry the server-side verdict as an
+    additive, optional ``effort_dropped`` key — computed here because only the
+    gateway knows the role pin and session-model chain behind an omitted
+    per-call model."""
+
+    def _spawn(self, body: dict, *, role_models=None, crews=None, parent_agent="") -> dict:
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        mgr = MagicMock()
+        mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
+        state = SimpleNamespace(
+            subagents=mgr,
+            sessions=SimpleNamespace(get_agent=lambda key: parent_agent),
+        )
+        request = MagicMock()
+        request.app = {"state": state}
+        request.json = AsyncMock(return_value=body)
+        cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
+        if crews:
+            cfg.agents.update(crews)
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.warm_project_agents_for_spawn",
+                AsyncMock(),
+            ),
+        ):
+            resp = asyncio.run(api_spawn(request))
+        assert resp.status == 200
+        import json as _json
+
+        return _json.loads(resp.body)
+
+    def test_auto_resolution_carries_the_verdict(self):
+        data = self._spawn({"task": "x", "reasoning_effort": "high", "parent_session": "d:1"})
+        assert "effort_dropped" in data
+        assert "auto" in data["effort_dropped"]
+
+    def test_capable_explicit_model_omits_the_key(self):
+        data = self._spawn(
+            {
+                "task": "x",
+                "model": "sonnet-test-model",
+                "reasoning_effort": "high",
+                "parent_session": "d:1",
+            }
+        )
+        assert "effort_dropped" not in data
+
+    def test_non_capable_role_pin_carries_the_verdict(self):
+        data = self._spawn(
+            {"task": "x", "reasoning_effort": "high", "parent_session": "d:1"},
+            role_models={"subagent": "deepseek-3.2"},
+        )
+        assert "deepseek-3.2" in data.get("effort_dropped", "")
+
+    def test_no_effort_requested_omits_the_key(self):
+        data = self._spawn({"task": "x", "parent_session": "d:1"})
+        assert "effort_dropped" not in data
+        assert data["id"] == "a1"
+
+
+class TestEffortAppliedNote:
+    """The delivery mirror: non-empty exactly when the drop reason is empty
+    for a requested effort, naming the resolved model and family key."""
+
+    def _note(self, model: str, effort: str, *, role_models=None, agent="", agent_pins=None) -> str:
+        from kiro_crew.subagent import effort_applied_note
+
+        with _hermetic_cfg(role_models=role_models, agent_pins=agent_pins):
+            return effort_applied_note(model, effort, agent)
+
+    def _reason(
+        self, model: str, effort: str, *, role_models=None, agent="", agent_pins=None
+    ) -> str:
+        from kiro_crew.subagent import effort_drop_reason
+
+        with _hermetic_cfg(role_models=role_models, agent_pins=agent_pins):
+            return effort_drop_reason(model, effort, agent)
+
+    def test_claude_family_names_output_config(self):
+        note = self._note("sonnet-test-model", "high")
+        assert "sonnet-test-model" in note
+        assert "output_config.effort" in note
+
+    def test_gpt_family_names_reasoning(self):
+        note = self._note("gpt-5.6-sol", "medium")
+        assert "gpt-5.6-sol" in note
+        assert "reasoning.effort" in note
+
+    def test_no_effort_requested_means_no_note(self):
+        assert self._note("sonnet-test-model", "") == ""
+
+    def test_auto_and_non_capable_stay_empty(self):
+        assert self._note("", "high") == ""
+        assert self._note("deepseek-3.2", "high") == ""
+
+    def test_capable_role_pin_resolves_into_the_note(self):
+        note = self._note("", "high", role_models={"subagent": "sonnet-test-model"})
+        assert "sonnet-test-model" in note
+
+    def test_named_agent_pin_resolves_into_the_note(self):
+        """Regression (round-4 Opus finding): the note names the named agent's
+        own pinned model — the model the factory actually keys the overlay
+        on — instead of staying empty on the session layer's ``None``."""
+        note = self._note(
+            "", "high", agent="pinned-agent", agent_pins={"pinned-agent": "sonnet-test-model"}
+        )
+        assert "sonnet-test-model" in note
+        assert "output_config.effort" in note
+
+    @pytest.mark.parametrize(
+        "model", ["", "auto", "deepseek-3.2", "sonnet-test-model", "gpt-5.6-sol"]
+    )
+    @pytest.mark.parametrize("level", EFFORT_LEVELS)
+    def test_exactly_one_of_note_and_reason_for_a_requested_effort(self, model, level):
+        """Complementarity (design Property 1): a requested effort is either
+        reported dropped or reported applied — never both, never neither."""
+        note, reason = self._note(model, level), self._reason(model, level)
+        assert (note == "") != (reason == "")
+
+
+class TestVerdictFactoryParity:
+    """The verdict shares the factory's own selection function
+    (``KiroCrewConfig.acp_effective_model``); this drives the REAL factory
+    across the spawn-side case matrix and pins verdict↔gate agreement, so a
+    change that desynchronizes them fails here instead of shipping a false
+    ``effort_applied``/``effort_dropped`` receipt (round-4 Design finding)."""
+
+    # (per-spawn model, subagent role pin, agent, named-agent pins)
+    CASES = [
+        pytest.param("", "", "", {}, id="nothing-pinned-anywhere"),
+        pytest.param("auto", "sonnet-test-model", "", {}, id="explicit-auto-beats-pin"),
+        pytest.param("sonnet-test-model", "", "", {}, id="capable-per-spawn-model"),
+        pytest.param("deepseek-3.2", "sonnet-test-model", "", {}, id="non-capable-beats-pin"),
+        pytest.param("", "sonnet-test-model", "", {}, id="role-pin-only"),
+        pytest.param(
+            "", "", "pinned-agent", {"pinned-agent": "sonnet-test-model"}, id="named-agent-pin"
+        ),
+        pytest.param(
+            "", "", "pinned-agent", {"pinned-agent": "deepseek-3.2"}, id="non-capable-named-pin"
+        ),
+        pytest.param("", "", "plain-agent", {}, id="named-agent-without-pin"),
+    ]
+
+    @pytest.mark.parametrize("model,role_pin,agent,pins", CASES)
+    def test_factory_gate_and_verdict_agree(self, model, role_pin, agent, pins, tmp_path):
+        from kiro_crew.session import _session_model
+        from kiro_crew.subagent import (
+            _spawn_effective_model,
+            _subagent_default_model,
+            effort_applied_note,
+            effort_drop_reason,
+        )
+
+        role_models = {"subagent": role_pin} if role_pin else {}
+        with _hermetic_cfg(role_models=role_models, agent_pins=pins) as cfg:
+            # The spawn caller side, exactly as ``_run_inner``/``get_or_create``
+            # drive it: an explicit model (or the role pin) is passed verbatim
+            # as the session model kwarg; with neither, ``get_or_create``
+            # resolves the session chain and forwards the result (possibly
+            # ``None``) to the factory as ``model_override``.
+            eff_model = model or _subagent_default_model()
+            override = eff_model or _session_model(cfg, agent or None)
+            with patch("kiro_crew.providers.acp.AcpProvider") as provider_cls:
+                factory = cfg.create_provider_factory()
+                factory(
+                    "parity-key",
+                    agent=agent or None,
+                    model_override=override,
+                    cwd=str(tmp_path),
+                    reasoning_effort_override="high",
+                )
+            kwargs = provider_cls.call_args.kwargs
+            gate_model = kwargs["model"] or ""
+            gate_applies = bool(kwargs["effort_per_model"])
+
+            resolved = _spawn_effective_model(model, agent)
+            drop = effort_drop_reason(model, "high", agent)
+            note = effort_applied_note(model, "high", agent)
+
+        assert resolved == gate_model
+        assert (note != "") == gate_applies
+        assert (drop == "") == gate_applies
+
+
+class TestAppliedLineRendering:
+    """The tool renders the server's effort_applied note per subagent."""
+
+    def _run(self, args: dict[str, Any], responses: list[dict]) -> tuple[list[dict], str]:
+        from kiro_crew import mcp_core
+
+        bodies: list[dict] = []
+        answers = iter(responses)
+
+        def _fake_post(path: str, body: dict) -> dict:
+            if path == "/api/spawn":
+                bodies.append(body)
+                return next(answers)
+            return {"id": "a1"}
+
+        with (
+            patch.object(mcp_core, "_post", side_effect=_fake_post),
+            patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
+            patch.object(mcp_core, "sel", MagicMock()),
+        ):
+            result = mcp_core._call_tool_inner("spawn_run", args)
+        return bodies, result
+
+    def test_applied_line_renders_with_id_and_key(self):
+        bodies, result = self._run(
+            {"task": "x", "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
+            [{"id": "a1", "effort_applied": "gpt-5.6-sol → reasoning.effort"}],
+        )
+        assert len(bodies) == 1
+        assert "applied for a1" in result
+        assert "reasoning.effort" in result
+
+    def test_batch_applied_lines_are_attributed_per_subagent(self):
+        bodies, result = self._run(
+            {"tasks": ["x", "y"], "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
+            [
+                {"id": "a1", "effort_applied": "note-one"},
+                {"id": "a2", "effort_applied": "note-two"},
+            ],
+        )
+        assert len(bodies) == 2
+        assert "applied for a1 (note-one)" in result
+        assert "applied for a2 (note-two)" in result
+
+    def test_no_applied_line_without_the_key(self):
+        bodies, result = self._run({"task": "x", "reasoning_effort": "high"}, [{"id": "a1"}])
+        assert "applied for" not in result
+
+    def test_api_spawn_returns_applied_for_capable_model(self):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        mgr = MagicMock()
+        mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
+        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        request = MagicMock()
+        request.app = {"state": state}
+        request.json = AsyncMock(
+            return_value={
+                "task": "x",
+                "model": "sonnet-test-model",
+                "reasoning_effort": "high",
+                "parent_session": "d:1",
+            }
+        )
+        cfg = KiroCrewConfig(agent=AgentConfig())
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.warm_project_agents_for_spawn",
+                AsyncMock(),
+            ),
+        ):
+            resp = asyncio.run(api_spawn(request))
+        import json as _json
+
+        data = _json.loads(resp.body)
+        assert "output_config.effort" in data.get("effort_applied", "")
+        assert "effort_dropped" not in data
+
+    def test_api_spawn_omits_applied_when_dropped(self):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        mgr = MagicMock()
+        mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
+        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        request = MagicMock()
+        request.app = {"state": state}
+        request.json = AsyncMock(
+            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "d:1"}
+        )
+        cfg = KiroCrewConfig(agent=AgentConfig())
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.warm_project_agents_for_spawn",
+                AsyncMock(),
+            ),
+        ):
+            resp = asyncio.run(api_spawn(request))
+        import json as _json
+
+        data = _json.loads(resp.body)
+        assert "effort_applied" not in data
+        assert "effort_dropped" in data
+
+
+class TestSessionChainResolution:
+    """The verdict mirrors the FULL model chain the factory's effort gate
+    sees — including the session layer (crew pin, else non-sentinel global)
+    behind an omitted per-call model and role pin."""
+
+    def _reason(self, model: str, effort: str, agent: str = "", *, cfg=None) -> str:
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.subagent import effort_drop_reason
+
+        cfg = cfg or KiroCrewConfig(agent=AgentConfig())
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+            return effort_drop_reason(model, effort, agent)
+
+    def _note(self, model: str, effort: str, agent: str = "", *, cfg=None) -> str:
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.subagent import effort_applied_note
+
+        cfg = cfg or KiroCrewConfig(agent=AgentConfig())
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+            return effort_applied_note(model, effort, agent)
+
+    def _cfg_with_crew(self, crew_model: str):
+        from kiro_crew.config.loader import (
+            AgentConfig,
+            KiroCrewAgentConfig,
+            KiroCrewConfig,
+        )
+
+        cfg = KiroCrewConfig(agent=AgentConfig())
+        cfg.agents["mycrew"] = KiroCrewAgentConfig(model=crew_model)
+        return cfg
+
+    def test_crew_pin_carries_the_effort(self):
+        """A crew pinned to a capable model gets the level via the session
+        chain, so the verdict must say applied — not falsely report a drop."""
+        cfg = self._cfg_with_crew("sonnet-test-model")
+        assert self._reason("", "high", "mycrew", cfg=cfg) == ""
+        assert "sonnet-test-model" in self._note("", "high", "mycrew", cfg=cfg)
+
+    def test_non_capable_crew_pin_is_named(self):
+        cfg = self._cfg_with_crew("deepseek-3.2")
+        assert "deepseek-3.2" in self._reason("", "high", "mycrew", cfg=cfg)
+
+    def test_concrete_global_model_carries_the_effort(self):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig(agent=AgentConfig(model="sonnet-test-model"))
+        assert self._reason("", "high", cfg=cfg) == ""
+        assert "sonnet-test-model" in self._note("", "high", cfg=cfg)
+
+    def test_sentinel_global_still_drops(self):
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig(agent=AgentConfig(model="auto"))
+        assert "auto" in self._reason("", "high", cfg=cfg)
+
+    def test_explicit_model_beats_the_crew_pin(self):
+        cfg = self._cfg_with_crew("sonnet-test-model")
+        assert "deepseek-3.2" in self._reason("deepseek-3.2", "high", "mycrew", cfg=cfg)
+
+    def test_api_spawn_uses_the_inherited_parent_agent(self):
+        """No agent in the request: the verdict judges the agent the session
+        will inherit from the parent, mirroring _run_inner."""
+        harness = TestApiSpawnEffortDropped()
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        data = harness._spawn(
+            {"task": "x", "reasoning_effort": "high", "parent_session": "d:1"},
+            crews={"parentcrew": KiroCrewAgentConfig(model="sonnet-test-model")},
+            parent_agent="parentcrew",
+        )
+        assert "sonnet-test-model" in data.get("effort_applied", "")
+        assert "effort_dropped" not in data
+
+
+class TestVerdictOffTheEventLoop:
+    """api_spawn computes the verdict via asyncio.to_thread: the resolvers
+    read config and glob ~/.kiro/agents, which must not block the gateway
+    event loop."""
+
+    def test_verdict_resolvers_run_off_the_loop_thread(self):
+        import threading
+
+        from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
+        from kiro_crew.dashboard.handlers import messaging as messaging_mod
+        from kiro_crew.dashboard.handlers.messaging import api_spawn
+
+        mgr = MagicMock()
+        mgr.spawn.return_value = SimpleNamespace(id="a1", done=False, error="")
+        state = SimpleNamespace(subagents=mgr, sessions=SimpleNamespace(get_agent=lambda key: ""))
+        request = MagicMock()
+        request.app = {"state": state}
+        request.json = AsyncMock(
+            return_value={"task": "x", "reasoning_effort": "high", "parent_session": "d:1"}
+        )
+        cfg = KiroCrewConfig(agent=AgentConfig())
+        seen: list[object] = []
+
+        def _recording_drop(model, effort, agent=""):
+            seen.append(threading.current_thread())
+            return "recorded-drop"
+
+        loop_thread: list[object] = []
+
+        async def _drive():
+            loop_thread.append(threading.current_thread())
+            return await api_spawn(request)
+
+        with (
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+            patch.object(messaging_mod, "effort_drop_reason", _recording_drop),
+            patch(
+                "kiro_crew.dashboard.handlers.messaging.warm_project_agents_for_spawn",
+                AsyncMock(),
+            ),
+        ):
+            resp = asyncio.run(_drive())
+        assert resp.status == 200
+        assert seen, "the verdict resolver was never called"
+        assert seen[0] is not loop_thread[0], "verdict ran ON the event loop thread"
