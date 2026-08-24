@@ -1548,7 +1548,9 @@ async def _run_task(args: argparse.Namespace) -> None:
         embedding_dim=cfg.memory.embedding_dim,
         decay_rates=cfg.memory.decay_rates or None,
     )
-    vector_memory.init()
+    # CALLER CONTRACT (vector_memory.py): async callers offload init() — the
+    # Windows path shells out to icacls and would freeze the loop for seconds.
+    await asyncio.to_thread(vector_memory.init)
     # Embeddings are always-on: wire the factory; bind embed_fn when the model
     # is already present. Deliberately NO download kick here — `kirocrew run`
     # is a one-shot CLI and must not start a 610MB download it will abandon at

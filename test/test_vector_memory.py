@@ -2925,6 +2925,161 @@ class TestDbLockGuard:
         assert "S.good" not in flagged
 
 
+class TestAsyncInitOffloadGuard:
+    """AST guard for the #5206 caller contract: an ``async def`` must never
+    call ``VectorMemoryStore.init()`` inline — the Windows path shells out to
+    icacls, so an inline call freezes the event loop for seconds. Async
+    callers offload via ``asyncio.to_thread`` / ``run_in_executor`` (which
+    take the callable UNCALLED, so they never trip this guard).
+
+    The contract was prose-only and drifted three times before #5389 closed
+    the last inline caller; this test makes the next drift a CI failure
+    instead of a code-review catch. Same shape as ``TestDbLockGuard``,
+    including the seeded-violation self-test that keeps the guard armed.
+    """
+
+    @classmethod
+    def _find_inline_async_inits(cls, tree, where: str = "") -> list[str]:
+        """Return a violation per direct ``<store>.init()`` call whose nearest
+        enclosing function is ``async def``, where ``<store>`` is a name or
+        ``self.<attr>`` assigned from ``VectorMemoryStore(...)`` in the same
+        module. Shared by the real guard and its self-test below."""
+        import ast
+
+        def _is_store_ctor(node: object) -> bool:
+            return isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Name) and node.func.id == "VectorMemoryStore")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "VectorMemoryStore"
+                )
+            )
+
+        # Pass 1: collect module-local bindings created from the constructor.
+        store_names: set = set()
+        store_attrs: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if value is not None and _is_store_ctor(value):
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            store_names.add(target.id)
+                        elif isinstance(target, ast.Attribute) and isinstance(
+                            target.value, ast.Name
+                        ):
+                            store_attrs.add(target.attr)
+
+        # Pass 2: flag direct .init() calls on those bindings inside async defs.
+        violations: list[str] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.name_stack: list = []
+                self.async_stack: list = []
+
+            def visit_ClassDef(self, node) -> None:
+                self.name_stack.append(node.name)
+                self.generic_visit(node)
+                self.name_stack.pop()
+
+            def _visit_func(self, node, is_async: bool) -> None:
+                self.name_stack.append(node.name)
+                self.async_stack.append(is_async)
+                self.generic_visit(node)
+                self.async_stack.pop()
+                self.name_stack.pop()
+
+            def visit_FunctionDef(self, node) -> None:
+                self._visit_func(node, is_async=False)
+
+            def visit_AsyncFunctionDef(self, node) -> None:
+                self._visit_func(node, is_async=True)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "init"
+                    and self.async_stack
+                    and self.async_stack[-1]
+                ):
+                    receiver = func.value
+                    hit = (
+                        isinstance(receiver, ast.Name) and receiver.id in store_names
+                    ) or (
+                        isinstance(receiver, ast.Attribute)
+                        and receiver.attr in store_attrs
+                        and isinstance(receiver.value, ast.Name)
+                    )
+                    if hit:
+                        loc = ".".join(self.name_stack) or "<module>"
+                        violations.append(
+                            f"{where}line {node.lineno} ({loc}): VectorMemoryStore.init() "
+                            "called inline in an async function — offload it via "
+                            "`await asyncio.to_thread(<store>.init)` (caller contract, "
+                            "vector_memory.py init docs, #5206/#5389)"
+                        )
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        return violations
+
+    def test_no_async_function_calls_init_inline(self) -> None:
+        import ast
+        import inspect
+        from pathlib import Path as _Path
+
+        import kiro_crew
+
+        pkg_root = _Path(inspect.getfile(kiro_crew)).parent
+        violations: list = []
+        for py in sorted(pkg_root.rglob("*.py")):
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+            rel = py.relative_to(pkg_root.parent)
+            violations.extend(self._find_inline_async_inits(tree, where=f"{rel}:"))
+        assert not violations, "inline async VectorMemoryStore.init() call(s):\n" + "\n".join(
+            violations
+        )
+
+    def test_guard_catches_a_seeded_violation(self) -> None:
+        """The guard must fail on a seeded inline call and stay quiet on the
+        offloaded / sync forms — otherwise a refactor that breaks its binding
+        or async tracking would silently disarm it."""
+        import ast
+
+        seeded = ast.parse(
+            "store = VectorMemoryStore()\n"
+            "class S:\n"
+            "    def __init__(self):\n"
+            "        self.vm = VectorMemoryStore()\n"
+            "    async def bad(self):\n"
+            "        store.init()\n"
+            "    async def bad_attr(self):\n"
+            "        self.vm.init()\n"
+            "    async def good(self):\n"
+            "        await asyncio.to_thread(store.init)\n"
+            "    def sync_ok(self):\n"
+            "        store.init()\n"
+            "    async def outer(self):\n"
+            "        def helper():\n"
+            "            store.init()\n"
+            "        await asyncio.to_thread(helper)\n"
+        )
+        violations = self._find_inline_async_inits(seeded)
+        # `bad` and `bad_attr` call init inline on the loop; `good` passes the
+        # callable uncalled; `sync_ok` is a sync function; `helper` is a sync
+        # function that runs at call time (inside to_thread).
+        assert len(violations) == 2
+        flagged = "\n".join(violations)
+        assert "(S.bad)" in flagged
+        assert "(S.bad_attr)" in flagged
+        assert "S.good" not in flagged
+        assert "S.sync_ok" not in flagged
+        assert "S.outer" not in flagged
+
+
 @pytest.mark.xdist_group("vector_memory_concurrency")
 class TestReaderConcurrency1947:
     """Stress the readers that ran UNLOCKED on the shared connection before

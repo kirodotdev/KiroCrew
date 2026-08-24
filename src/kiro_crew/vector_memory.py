@@ -973,13 +973,11 @@ class VectorMemoryStore:
         #
         # CALLER CONTRACT: an async caller must offload this. The Windows path shells
         # out to icacls, so calling ``init()`` directly on an event loop freezes it
-        # for seconds. ``eval.runner`` and ``slack.gateway`` offload via
-        # ``asyncio.to_thread``; ``dashboard/handlers/memory.py``'s standalone
-        # fallback routes through ``_get_vector_store_async``, which offloads the
-        # init-bearing path (#5221). ONE inline async caller remains:
-        # ``cli_server._run_task`` inits at one-shot CLI startup, before the loop
-        # serves anything concurrent, so the freeze has nothing to stall — tracked
-        # in #5389.
+        # for seconds. All async callers now offload: ``eval.runner``,
+        # ``slack.gateway`` and ``cli_server._run_task`` via ``asyncio.to_thread``
+        # (#5389); ``dashboard/handlers/memory.py``'s standalone fallback routes
+        # through ``_get_vector_store_async``, which offloads the init-bearing
+        # path (#5221).
         self._restrict_memory_files()
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)

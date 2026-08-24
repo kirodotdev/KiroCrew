@@ -924,6 +924,57 @@ class TestRunTask:
         assert vector.embed_fn_factory is None
         assert "Embedding model changed" in capsys.readouterr().err
 
+    def test_vector_init_is_offloaded_off_the_event_loop(
+        self, taskrunner_env, tmp_path, monkeypatch
+    ) -> None:
+        """``VectorMemoryStore.init()`` must honour its caller contract (#5389):
+        the Windows path shells out to icacls, so an async caller offloads it
+        via ``asyncio.to_thread`` instead of freezing the loop. Ordering is
+        asserted too: init must COMPLETE before ``_run_task`` wires the embed
+        hooks (a fire-and-forget offload would reorder them). The sibling
+        ``MemoryStore.init()`` (cheap mkdir+seed) carries no contract and is
+        deliberately not pinned to either thread here."""
+        import threading
+
+        events: list = []
+        init_threads: dict = {}
+
+        class _ThreadRecordingVector(_FakeVectorStore):
+            def init(self) -> None:
+                init_threads["vector"] = threading.current_thread()
+                events.append("init")
+                super().init()
+
+            @property
+            def embed_fn_factory(self):
+                return self.__dict__.get("_eff")
+
+            @embed_fn_factory.setter
+            def embed_fn_factory(self, value) -> None:
+                # First post-init wiring step in _run_task: recording it turns
+                # "init completed before first use" into an observed ordering.
+                events.append("wired")
+                self.__dict__["_eff"] = value
+
+        def _vector(**kw):
+            store = _ThreadRecordingVector(**kw)
+            taskrunner_env["vector"] = store
+            return store
+
+        monkeypatch.setattr(cli_server, "VectorMemoryStore", _vector)
+        taskrunner_env["install_runner"](_Result("completed"))
+        args = argparse.Namespace(
+            spec=str(_spec(tmp_path)), no_test=False, fresh=False, timeout=0, name=""
+        )
+        asyncio.run(cli_server._run_task(args))
+
+        # Offloaded: init ran in a worker thread, not on the loop thread.
+        assert init_threads["vector"] is not threading.current_thread()
+        assert taskrunner_env["vector"].inited is True
+        # Awaited, not fire-and-forget: init completed BEFORE the embed hooks
+        # were wired (the first use that follows it in _run_task).
+        assert events.index("init") < events.index("wired")
+
 
 # --------------------------------------------------------------------------
 # _update — git checkout path
