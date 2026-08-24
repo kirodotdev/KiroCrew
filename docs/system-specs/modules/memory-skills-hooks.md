@@ -535,6 +535,10 @@ flag, since a bare `if` on any object is legal. `stored` is the separate propert
 "is my lesson in the store" (true for a no-op re-submit, which is NOT a write). Surfaces
 that report to a human or a model — the `learn add` CLI, the `POST /api/lessons` response
 (`ok` / `outcome` / `reason`), the `learn_add` tool result — read `outcome` and `reason`.
+The dashboard Memory tab clears its draft and refreshes the list only for `inserted`
+or `enriched`; `unchanged` clears the draft but reports that it was already stored,
+while `deduped` and `refused` preserve the draft and surface the reason so it can be
+reworded instead of presenting a rejected write as success.
 
 **Write sources**:
 1. **`learn_add` MCP tool** (immediate): user says "remember X" → LLM calls tool → `POST /api/lessons` → `write_lesson()`

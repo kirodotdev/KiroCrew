@@ -50,7 +50,7 @@ beforeEach(() => {
   api.saveMemoryPreferences.mockResolvedValue({ ok: true })
   api.saveMemoryProjects.mockResolvedValue({ ok: true })
   api.saveMemoryHistory.mockResolvedValue({ ok: true })
-  api.createLesson.mockResolvedValue({ ok: true })
+  api.createLesson.mockResolvedValue({ ok: true, outcome: 'inserted', reason: '' })
   api.deleteLesson.mockResolvedValue({ ok: true })
   api.sessions.mockResolvedValue({ sessions: [{ key: 'zzq-s1' }, { key: 'zzq-s2' }] })
   api.consolidateMemory.mockResolvedValue({ ok: true })
@@ -185,6 +185,56 @@ describe('MemoryTab — lessons', () => {
 
     await waitFor(() => expect(api.createLesson).toHaveBeenCalledWith('zzq-new-rule', 'knowledge'))
     await waitFor(() => expect(api.lessons.mock.calls.length).toBeGreaterThan(reads))
+    expect(input.value).toBe('')
+  })
+
+  it('keeps a refused lesson editable and reports the backend reason', async () => {
+    api.createLesson.mockResolvedValue({
+      ok: false, outcome: 'refused', reason: 'blocked_not_clause',
+    })
+    render(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const reads = api.lessons.mock.calls.length
+    const input = screen.getByPlaceholderText(/Rule/) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'zzq-refused-rule' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Lesson not saved.*blocked_not_clause.*Edit it and try again/i,
+    )
+    expect(input.value).toBe('zzq-refused-rule')
+    expect(api.lessons).toHaveBeenCalledTimes(reads)
+  })
+
+  it('keeps a deduped lesson editable instead of implying it was added', async () => {
+    api.createLesson.mockResolvedValue({
+      ok: false, outcome: 'deduped', reason: 'substring',
+    })
+    render(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const reads = api.lessons.mock.calls.length
+    const input = screen.getByPlaceholderText(/Rule/) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'zzq-covered-rule' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      /existing lesson already covers this.*substring/i,
+    )
+    expect(input.value).toBe('zzq-covered-rule')
+    expect(api.lessons).toHaveBeenCalledTimes(reads)
+  })
+
+  it('clears an unchanged resubmission but says it was already stored', async () => {
+    api.createLesson.mockResolvedValue({
+      ok: true, outcome: 'unchanged', reason: 'identical',
+    })
+    render(<MemoryTab refreshTrigger={0} />)
+    await screen.findByText('zzq-rule-beta')
+    const input = screen.getByPlaceholderText(/Rule/) as HTMLInputElement
+    fireEvent.change(input, { target: { value: 'zzq-existing-rule' } })
+    await userEvent.click(screen.getByRole('button', { name: /^Add$/ }))
+
+    expect(await screen.findByRole('status')).toHaveTextContent(/already stored/i)
     expect(input.value).toBe('')
   })
 

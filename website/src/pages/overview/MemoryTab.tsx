@@ -17,6 +17,10 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
   const [pref, setPref] = useState(''); const [proj, setProj] = useState(''); const [hist, setHist] = useState('')
   const [prefSaved, setPrefSaved] = useState(false); const [projSaved, setProjSaved] = useState(false); const [histSaved, setHistSaved] = useState(false)
   const [lessons, setLessons] = useState<Lesson[]>([]); const [rule, setRule] = useState(''); const [cat, setCat] = useState('knowledge')
+  const [lessonFeedback, setLessonFeedback] = useState<{
+    tone: 'info' | 'warning' | 'error'
+    text: string
+  } | null>(null)
   const [idleHours, setIdleHours] = useState(3); const [maxDays, setMaxDays] = useState(90); const [settingsSaved, setSettingsSaved] = useState(false)
   const [migrated, setMigrated] = useState(false)
   const [vectorActive, setVectorActive] = useState(false)
@@ -71,6 +75,39 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     setConsolidating(false)
     scheduleClear(() => setConsolidateMsg(''), 4000)
   }
+  const addLesson = async () => {
+    if (!rule) return
+    setLessonFeedback(null)
+    const result = await api.createLesson(rule, cat)
+    if (result.outcome === 'inserted' || result.outcome === 'enriched') {
+      setRule('')
+      await loadLessons()
+      return
+    }
+    if (result.outcome === 'unchanged') {
+      setRule('')
+      setLessonFeedback({
+        tone: 'info',
+        text: i18nT('pages.overview.memoryTab.lesson_already_stored'),
+      })
+      return
+    }
+    if (result.outcome === 'deduped') {
+      setLessonFeedback({
+        tone: 'warning',
+        text: i18nT('pages.overview.memoryTab.lesson_already_covered', {
+          reason: result.reason,
+        }),
+      })
+      return
+    }
+    setLessonFeedback({
+      tone: 'error',
+      text: i18nT('pages.overview.memoryTab.lesson_not_saved', {
+        reason: result.reason,
+      }),
+    })
+  }
   return (<>
     {/* Graph/vector internals live on the Developer page (Memory tab); this
         surface is the user-facing browser: settings, preferences, projects,
@@ -116,7 +153,21 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
           value={cat}
           onChange={setCat}
         />
-        <SendBtn onClick={async () => { if (!rule) return; await api.createLesson(rule, cat); setRule(''); loadLessons() }}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
+        <SendBtn onClick={addLesson}>{i18nT('pages.overview.memoryTab.add')}</SendBtn>
+        {lessonFeedback && (
+          <span
+            role={lessonFeedback.tone === 'error' ? 'alert' : 'status'}
+            className={`text-[13px] ${
+              lessonFeedback.tone === 'error'
+                ? 'text-danger'
+                : lessonFeedback.tone === 'warning'
+                  ? 'text-warn'
+                  : 'text-muted'
+            }`}
+          >
+            {lessonFeedback.text}
+          </span>
+        )}
       </div>
       <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
         <tbody>{lessons.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
