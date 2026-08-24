@@ -56,12 +56,13 @@ const SC_ALIASES = [
 /**
  * Locale-specific aliases, keyed by the `html:lang()` rule that activates them.
  *
- * `KC Han Fallback` draws Simplified glyph forms and no Hangul at all, so leaving
- * it in front for `lang=ja` or `lang=ko` puts an alias that cannot serve the locale
- * ahead of one that can — which is why each entry REPLACES the default pair rather
- * than prepending to it.
+ * These are NOT the untagged default. A leading Simplified Chinese face would
+ * draw Japanese and Korean content (and untagged CJK in an English UI) with
+ * the wrong regional glyph forms. Each entry REPLACES every other Han pair
+ * rather than prepending to it.
  */
 const REGIONAL = [
+  { lang: 'zh-CN', body: 'KC Han Fallback', mono: 'KC Han Mono Fallback' },
   { lang: 'ja', body: 'KC Japanese Fallback', mono: 'KC Japanese Mono Fallback' },
   { lang: 'ko', body: 'KC Korean Fallback', mono: 'KC Korean Mono Fallback' },
 ] as const
@@ -74,6 +75,7 @@ const REGIONAL_ALIASES = REGIONAL.flatMap(r => [r.body, r.mono])
  * or merged token fails here rather than rendering from the OS cascade.
  */
 const SCRIPT_PROBES: Record<string, ReadonlyArray<readonly [string, number]>> = {
+  'zh-CN': [['CJK Unified Ideographs', 0x4e00], ['CJK punctuation', 0x3001]],
   ja: [['hiragana', 0x3042], ['katakana', 0x30a2]],
   ko: [['Hangul syllables', 0xac00], ['Hangul compatibility jamo', 0x3131]],
 }
@@ -150,6 +152,11 @@ function covers(family: string, codePoint: number): boolean {
 
 function ruleBody(pattern: RegExp): string {
   return INDEX_CSS.match(pattern)?.[1] ?? ''
+}
+
+/** An `html:lang(tag)` rule. Document-level only — no descendant content scope. */
+function htmlLangRuleBody(lang: string): string {
+  return ruleBody(new RegExp(`html:lang\\(${lang}\\)\\s*\\{([^}]*)\\}`))
 }
 
 /** A token is unusable unless it is present and carries the shared script aliases. */
@@ -282,7 +289,7 @@ describe('script fallback faces', () => {
     expect(root).toMatch(/--script-fallbacks-mono:/)
   })
 
-  it('keeps the Simplified Chinese aliases as the default token', () => {
+  it('keeps regional Han aliases out of the untagged default token', () => {
     const rootBlock = ruleBody(/:root\s*\{([^}]*)\}/)
     expect(rootBlock, 'no :root block found in index.css').not.toBe('')
 
@@ -290,7 +297,9 @@ describe('script fallback faces', () => {
     const rootMono = scriptToken(rootBlock, true)
     expectCommon('root body', root)
     expectCommon('root mono', rootMono)
-    expectAliasPair('root', root, rootMono, ...SC_ALIASES)
+    // Untagged CJK (English UI, Japanese chat, mixed messages) must reach the
+    // browser/OS locale-aware cascade. A leading regional Han alias would force
+    // every shared ideograph through one region's glyph forms.
     for (const family of REGIONAL_ALIASES) {
       expect(root, `${family} leaked into the default body token`).not.toContain(family)
       expect(rootMono, `${family} leaked into the default mono token`).not.toContain(family)
@@ -298,7 +307,7 @@ describe('script fallback faces', () => {
   })
 
   it.each(REGIONAL)('swaps to isolated aliases for html:lang($lang)', ({ lang, body, mono }) => {
-    const block = ruleBody(new RegExp(`html:lang\\(${lang}\\)\\s*\\{([^}]*)\\}`))
+    const block = htmlLangRuleBody(lang)
     expect(block, `no html:lang(${lang}) block found in index.css`).not.toBe('')
 
     const bodyToken = scriptToken(block)
@@ -315,6 +324,16 @@ describe('script fallback faces', () => {
       expect(bodyToken, `${family} leaked into the ${lang} body token`).not.toContain(family)
       expect(monoToken, `${family} leaked into the ${lang} mono token`).not.toContain(family)
     }
+  })
+
+  it('scopes Simplified aliases to html:lang(zh-CN), not a bare :lang(zh)', () => {
+    // `:lang(zh)` also matches zh-TW / zh-HK / zh-Hant and would force
+    // Traditional content through Simplified faces — the same class of bug
+    // this change removes for Japanese. The dashboard's Chinese UI is zh-CN.
+    const bareZh = INDEX_CSS.match(/(?<![\w-]):lang\(zh\)(?=\s*[,{])/)
+    expect(bareZh, 'bare :lang(zh) matches Traditional Chinese tags').toBeNull()
+    expect(INDEX_CSS).toMatch(/html:lang\(zh-CN\)/)
+    expect(INDEX_CSS).not.toMatch(/:lang\(zh-Hans\)/)
   })
 })
 

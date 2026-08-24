@@ -314,24 +314,30 @@ Kana, Hangul, Devanagari and Bengali, collects them into `--script-fallbacks` an
 consulted for Latin or general punctuation, so they cannot change Latin metrics
 or leading, and they are a no-op when the named face is not installed.
 
-The `:root` tokens use the Simplified Chinese `KC Han Fallback` and
-`KC Han Mono Fallback` aliases. Under `html:lang(ja)`, both shared tokens switch
+The `:root` tokens carry only the non-Han script aliases (Devanagari, Bengali).
+Regional Han faces are scoped with `html:lang(zh-CN)`, `html:lang(ja)`, and
+`html:lang(ko)` so untagged CJK in an English UI reaches the browser/OS
+locale-aware cascade instead of being forced through Simplified Chinese glyph
+forms. A bare `:lang(zh)` is not used: it also matches Traditional tags
+(`zh-TW`, `zh-HK`, `zh-Hant`). Under `html:lang(zh-CN)` the tokens switch to
+`KC Han Fallback` and `KC Han Mono Fallback`; under `html:lang(ja)` they switch
 to `KC Japanese Fallback` and `KC Japanese Mono Fallback`, whose ranges include
 Kana as well as shared ideographs; under `html:lang(ko)` they switch to
 `KC Korean Fallback` and `KC Korean Mono Fallback`, whose ranges add the Hangul
 syllable and Jamo blocks. Keep every other locale's aliases out of these tokens:
 if the named face is unavailable, the browser must reach its language-aware
-fallback for that script instead of being forced through a Simplified Chinese
-alias — which for Korean cannot draw Hangul at all. Every user font choice and
-theme declaration consumes the shared tokens, so changing the document language
-updates proportional and monospace fallbacks without a component-specific font
-stack.
+fallback for that script instead of being forced through a foreign Han alias —
+which for Korean cannot draw Hangul at all. The rules set only the fallback
+tokens: `--font-body` / `--mono` already resolve `var(--script-fallbacks)` on
+`<html>` (`:root` and `useZoom`), so document language updates both stacks
+without redeclaring them. Content `lang=` inside an English document is not
+wired; there is no in-repo producer of those attributes yet.
 
 **Do not reorder those stacks or drop the token when adding a family.** Moving a
 Latin family in front silently returns zh-CN, ja, ko, hi and bn to whatever the
 platform picks for a missing glyph. A test pins the `:root` tokens, every
-declaration site (including the theme blocks, which redeclare both), the Japanese
-and Korean locale overrides, and the ordering.
+declaration site (including the theme blocks, which redeclare both), the
+`html:lang(zh-CN/ja/ko)` overrides, and the ordering.
 
 ## Translating the corpus
 
