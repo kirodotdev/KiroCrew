@@ -53,6 +53,59 @@ export function parseBrandingConfig(text) {
   return parsed
 }
 
+/**
+ * Enforce the emitFile-over-publicDir precedence the overlay relies on.
+ *
+ * The edition overlay (editionExtensionPlugin.generateBundle) emits each
+ * allowlisted `public/` asset with a pinned `fileName` on the assumption that an
+ * emitted asset WINS over the same-named `publicDir` copy. That precedence is
+ * empirical (verified on Vite 8 / Rolldown), not a documented contract: if a
+ * future bundler upgrade flips it, an edition build would silently ship the
+ * stock icons/manifest on a green build — and because edition builds run
+ * downstream, outside this repo's CI, nothing automated would observe it. That
+ * is exactly the silent-degrade class the seam's fail-loud contract bans.
+ *
+ * This turns the assumption into an enforced build-time invariant: after the
+ * bundle is written, byte-compare each overlaid dist file against its edition
+ * `public/` source and throw on any mismatch (or a missing dist file). Pure and
+ * build-free: the caller injects a `readFile` (Buffer-returning, e.g.
+ * `fs.readFileSync`) and a `join` (e.g. `path.join`), so it is unit-testable
+ * without running a real build — the same layout as the rest of this module.
+ *
+ * @param {object} args
+ * @param {string} args.distDir - the written bundle output dir (build.outDir).
+ * @param {string} args.editionPublicDir - the edition's `public/` source dir.
+ * @param {string[]} args.overlayFiles - the overlaid file names (allowlisted).
+ * @param {(p: string) => Buffer} args.readFile - reads a file to a Buffer; may throw ENOENT.
+ * @param {(...parts: string[]) => string} args.join - path join.
+ * @throws {Error} fail-loud on a missing dist file or a byte mismatch.
+ */
+export function verifyOverlayBytes({ distDir, editionPublicDir, overlayFiles, readFile, join }) {
+  for (const file of overlayFiles) {
+    const src = readFile(join(editionPublicDir, file))
+    let dist
+    try {
+      dist = readFile(join(distDir, file))
+    } catch (e) {
+      throw new Error(
+        `[kirocrew-edition] overlaid asset '${file}' is missing from the build output ` +
+          `(${join(distDir, file)}): ${e instanceof Error ? e.message : e}. ` +
+          'The emitFile overlay should have written it — the emitFile-over-publicDir ' +
+          'precedence this seam relies on may have changed.'
+      )
+    }
+    if (!src.equals(dist)) {
+      throw new Error(
+        `[kirocrew-edition] overlaid asset '${file}' in the build output does not match the ` +
+          `edition source (${join(editionPublicDir, file)}): the stock publicDir copy appears to ` +
+          'have won over the emitted edition asset. The emitFile-over-publicDir precedence this ' +
+          'seam relies on is not a documented bundler contract; a Vite/Rolldown upgrade may have ' +
+          'flipped it. Edition builds run downstream, so this check is the only thing that catches it.'
+      )
+    }
+  }
+}
+
 /** Minimal HTML escape for text/attribute interpolation into index.html. */
 export function escapeHtml(s) {
   return String(s)

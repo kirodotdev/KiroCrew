@@ -5,6 +5,7 @@ import {
   escapeHtml,
   BRANDING_KEYS,
   SHELL_OVERLAY_ALLOWLIST,
+  verifyOverlayBytes,
 } from '../../scripts/lib/editionShell.mjs'
 
 // A trimmed copy of the real shell — the tags the seam patches, in the real order.
@@ -134,5 +135,84 @@ describe('SHELL_OVERLAY_ALLOWLIST', () => {
       'icon-512.png',
       'manifest.json',
     ])
+  })
+})
+
+describe('verifyOverlayBytes', () => {
+  // An in-memory filesystem: path -> bytes. A missing path throws like ENOENT,
+  // so the helper's missing-dist-file branch is exercised without touching disk.
+  const fakeFs = (files: Record<string, string>) => (p: string) => {
+    if (!(p in files)) {
+      const err = new Error(`ENOENT: no such file, open '${p}'`)
+      throw err
+    }
+    return Buffer.from(files[p])
+  }
+  // Deterministic, forward-slash join so assertions read the same on every OS.
+  const join = (...parts: string[]) => parts.join('/')
+
+  it('passes when every overlaid dist file matches its edition source', () => {
+    const readFile = fakeFs({
+      'edition/public/manifest.json': '{"name":"Acme"}',
+      'dist/manifest.json': '{"name":"Acme"}',
+      'edition/public/icon-192.png': 'PNGBYTES192',
+      'dist/icon-192.png': 'PNGBYTES192',
+    })
+    expect(() =>
+      verifyOverlayBytes({
+        distDir: 'dist',
+        editionPublicDir: 'edition/public',
+        overlayFiles: ['manifest.json', 'icon-192.png'],
+        readFile,
+        join,
+      })
+    ).not.toThrow()
+  })
+
+  it('throws loudly when a dist file has stock bytes (precedence flipped)', () => {
+    // The publicDir copy won over the emitted edition asset — the exact silent
+    // degrade this check exists to catch.
+    const readFile = fakeFs({
+      'edition/public/manifest.json': '{"name":"Acme"}',
+      'dist/manifest.json': '{"name":"Kiro Crew"}',
+    })
+    expect(() =>
+      verifyOverlayBytes({
+        distDir: 'dist',
+        editionPublicDir: 'edition/public',
+        overlayFiles: ['manifest.json'],
+        readFile,
+        join,
+      })
+    ).toThrow(/does not match the edition source/)
+  })
+
+  it('throws when an overlaid file is missing from the build output', () => {
+    const readFile = fakeFs({ 'edition/public/manifest.json': '{"name":"Acme"}' })
+    expect(() =>
+      verifyOverlayBytes({
+        distDir: 'dist',
+        editionPublicDir: 'edition/public',
+        overlayFiles: ['manifest.json'],
+        readFile,
+        join,
+      })
+    ).toThrow(/missing from the build output/)
+  })
+
+  it('is a no-op when there are no overlay files (stock build)', () => {
+    // A stock build resolves overlayFiles to [] and never reads anything.
+    const readFile = () => {
+      throw new Error('readFile should not be called for a stock build')
+    }
+    expect(() =>
+      verifyOverlayBytes({
+        distDir: 'dist',
+        editionPublicDir: 'edition/public',
+        overlayFiles: [],
+        readFile,
+        join,
+      })
+    ).not.toThrow()
   })
 })

@@ -24,6 +24,7 @@ import {
   parseBrandingConfig,
   applyBrandingToHtml,
   SHELL_OVERLAY_ALLOWLIST,
+  verifyOverlayBytes,
 } from './scripts/lib/editionShell.mjs'
 
 /** Shape produced by parseBrandingConfig (editionShell.mjs is untyped .mjs). */
@@ -346,6 +347,26 @@ function editionExtensionPlugin(): Plugin {
           source: readFileSync(path.join(path.dirname(editionEntry as string), 'public', file)),
         })
       }
+    },
+    // Enforce the emitFile-over-publicDir precedence generateBundle relies on.
+    // The overlay above assumes an emitted asset with a pinned fileName wins
+    // over the same-named publicDir copy; that is empirical (Vite 8 / Rolldown),
+    // not a documented bundler contract. writeBundle runs AFTER the bundle is
+    // written to disk, so it sees what actually landed: byte-compare each
+    // overlaid dist file against its edition source and fail loud on a mismatch
+    // or a missing file. A future bundler upgrade that flips the precedence
+    // would silently ship stock icons/manifest on a green build — and edition
+    // builds run downstream, outside this repo's CI, so this check is the only
+    // thing that would catch it. No-op for stock builds (overlayFiles is empty).
+    writeBundle(options) {
+      if (overlayFiles.length === 0) return
+      verifyOverlayBytes({
+        distDir: options.dir ?? path.resolve('dist'),
+        editionPublicDir: path.join(path.dirname(editionEntry as string), 'public'),
+        overlayFiles,
+        readFile: readFileSync,
+        join: path.join,
+      })
     },
     config() {
       if (editionDir) {
