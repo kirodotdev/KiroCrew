@@ -453,6 +453,86 @@ def test_dump_file_fileno_is_stable(dumps_dir: Path) -> None:
         dump_file.close()
 
 
+def test_dump_file_fd_survives_dropping_last_python_reference(dumps_dir: Path) -> None:
+    """The fd outlives every Python reference to the object that owns it (#1571).
+
+    This is the property that separates the raw-fd ``DumpFile`` from a buffered
+    ``open()``: faulthandler's C timer keeps only the integer fd, so if the last
+    Python reference to the file object is dropped and a finalizer closes the fd,
+    the timer later writes to a closed — or worse, a recycled — fd, and the dump
+    file keeps nothing but its header.  A buffered ``TextIOWrapper`` closes on
+    finalization; ``DumpFile`` never closes, so after collection the fd must
+    still be valid, still refer to the same file, and still be writable.
+
+    The two tests above cannot observe this: each keeps the file object bound to
+    a live local for its whole body, so it is never collectable and the
+    finalizer that would close the fd never runs.  ``open_dump_file`` also
+    publishes the object as ``_active_dump_file``, so that reference has to be
+    cleared as well before anything can be collected.
+    """
+    import errno
+    import gc
+
+    # Capture the prior global first, so the value restored in the finally is
+    # not itself a surviving reference to the object under test.
+    prior_active = crash_dump_store._active_dump_file
+    # Sentinel bound BEFORE the try: ``fd`` is assigned partway through the body,
+    # so if open_dump_file raises, the finally must not turn that failure into an
+    # UnboundLocalError.  -1 is never a valid descriptor.
+    fd = -1
+    try:
+        dump_file = open_dump_file(dumps_dir)
+        fd = dump_file.fileno()
+        dump_path = list(dumps_dir.iterdir())[0]
+        original_ino = os.stat(dump_path).st_ino
+
+        # Read the published reference into a bool rather than asserting on the
+        # object: an assert on ``dump_file`` itself can retain it in the frame,
+        # which would keep the object alive and make this test vacuous.
+        was_published = crash_dump_store._active_dump_file is dump_file
+
+        # Drop BOTH references — the module global and the local — then collect.
+        crash_dump_store._active_dump_file = None
+        del dump_file
+        gc.collect()
+
+        assert was_published, "open_dump_file must publish the DumpFile as _active_dump_file"
+
+        # (a) The fd is still valid.  A buffered file object's finalizer would
+        #     have closed it, and os.fstat would raise OSError(EBADF).
+        st = os.fstat(fd)
+
+        # (b) It is still the SAME file.  fd numbers are recycled, so an
+        #     unrelated open() could hand this number back out and make (a) and
+        #     (c) pass against a file that is not the dump.
+        assert st.st_ino == original_ino, (
+            f"fd {fd} no longer refers to the dump file (inode {st.st_ino} != "
+            f"{original_ino}) — it was closed and the number recycled"
+        )
+
+        # (c) It is still writable — this is what faulthandler's C thread does
+        #     when the timer fires, long after the arming frame has gone.
+        marker = b"# written after the last Python reference was dropped\n"
+        assert os.write(fd, marker) == len(marker)
+        assert marker.decode("utf-8") in dump_path.read_text(encoding="utf-8", errors="replace")
+    finally:
+        crash_dump_store._active_dump_file = prior_active
+        # Release the raw fd this test opened.  DumpFile.close() is a deliberate
+        # no-op, so nothing else will: leaving it open leaks a descriptor for the
+        # rest of the session and holds the tmp_path dump file open, which blocks
+        # the fixture's cleanup on Windows.  Every assertion above has already
+        # run by this point, so closing here cannot weaken them.
+        if fd != -1:
+            try:
+                os.close(fd)
+            except OSError as exc:
+                # Tolerate ONLY EBADF: a regression to a buffered open() would
+                # have closed the fd during collection, and raising here would
+                # mask the os.fstat failure that is this test's actual signal.
+                if exc.errno != errno.EBADF:
+                    raise
+
+
 # ── dump_replay_lines ──
 
 
