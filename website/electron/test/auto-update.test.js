@@ -739,8 +739,12 @@ test("an unreadable bundle path fails safe to updatable", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Consent flow with the electron-updater event shape. autoDownload=false makes
-// 'update-available' a DISCOVERY event: surfacing it must never download.
+// Consent flow with the electron-updater event shape. The library's
+// autoDownload stays false on every path, so 'update-available' is always a
+// DISCOVERY event; whether a download follows it is read per discovery from
+// getAutoDownloadPreference(). The module defaults that dep to FALSE, so the
+// cases below exercise the consent path with no extra wiring, and the
+// auto-download cases further down opt in explicitly.
 // ---------------------------------------------------------------------------
 
 test("'update-available' surfaces 'found' and does NOT call downloadUpdate (discovery never downloads)", async () => {
@@ -766,6 +770,116 @@ test("download() is the consent gate: it alone calls downloadUpdate", async () =
   await u.download();
   assert.strictEqual(calls.downloadUpdate, 1);
   assert.ok(stateNames().includes("downloading"));
+});
+
+// ---------------------------------------------------------------------------
+// Auto-download (the product default, wired from main.js). Discovery proceeds
+// straight to a download; the INSTALL is still deferred to the next quit by the
+// existing update-downloaded handler, so nothing swaps the bundle under a user
+// mid-session. The two library flags are unchanged on this path -- that is the
+// point, and it is asserted rather than assumed.
+// ---------------------------------------------------------------------------
+
+test("auto-download ON: 'update-available' downloads without a consent call", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0", releaseNotes: "Fixes things" });
+  assert.strictEqual(calls.downloadUpdate, 1, "auto-download must fetch on discovery");
+  // 'found' still precedes 'downloading': the renderer has to learn WHICH
+  // version is coming before the progress card replaces the card naming it.
+  const order = states.map((s) => s.state);
+  assert.ok(
+    order.indexOf("found") !== -1 && order.indexOf("found") < order.indexOf("downloading"),
+    `'found' must be emitted before 'downloading', got ${JSON.stringify(order)}`,
+  );
+  assert.strictEqual(states.find((s) => s.state === "found").version, "1.1.0");
+});
+
+test("auto-download ON does NOT touch the two library policy flags", async () => {
+  const { deps, emit } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  // autoDownload=true would fetch inside checkForUpdates, bypassing the one
+  // guarded entry point the preference can actually switch off.
+  assert.strictEqual(deps.autoUpdater.autoDownload, false, "library autoDownload must stay false");
+  // autoInstallOnAppQuit=true is the dangerous one: on darwin it stages eagerly,
+  // which ARMS ShipIt to swap the bundle on ANY exit -- including exits that
+  // skip the gateway teardown -- and cannot be un-armed, so it also defeats
+  // release retraction. Auto-download must never imply it.
+  assert.strictEqual(deps.autoUpdater.autoInstallOnAppQuit, false, "auto-download must not arm install-on-quit");
+});
+
+test("auto-download ON: an already-staged version is not re-downloaded", async () => {
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  emit("update-downloaded", { version: "1.1.0" });
+  assert.strictEqual(calls.downloadUpdate, 1);
+  // The 4-hourly poll re-reports the same version for the rest of the session,
+  // because the RUNNING version never changes. Without the staged-version
+  // short-circuit this would re-fetch the same bytes every four hours.
+  emit("update-available", { version: "1.1.0" });
+  assert.strictEqual(calls.downloadUpdate, 1, "a staged version must not be re-downloaded");
+});
+
+test("auto-download ON: a superseding version replaces the stale stage", async () => {
+  const { deps, calls, emit } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  emit("update-downloaded", { version: "1.1.0" });
+  emit("update-available", { version: "1.2.0" });
+  assert.strictEqual(calls.downloadUpdate, 2, "the newer build must be fetched, not the stale stage installed");
+});
+
+test("auto-download OFF is the opt-out and still only discovers", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => false;
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  assert.strictEqual(calls.downloadUpdate, 0, "the opt-out must hold");
+  assert.ok(states.some((s) => s.state === "found"), "the nudge must survive the opt-out");
+});
+
+test("a throwing preference reader falls back to consent, not to downloading", async () => {
+  const { deps, calls, emit, states } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => { throw new Error("store unreadable"); };
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  assert.strictEqual(calls.downloadUpdate, 0, "an unreadable preference must never read as consent");
+  assert.ok(states.some((s) => s.state === "found"), "discovery must still be surfaced");
+});
+
+test("notifyUpdateFound is told which mode was chosen", async () => {
+  const seen = [];
+  const { deps, emit } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  deps.notifyUpdateFound = (version, opts) => seen.push([version, opts]);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  emit("update-available", { version: "1.1.0" });
+  // main.js branches its notification copy on this: telling the user to go to
+  // About and download, when the download is already running, is the one wrong
+  // thing the nudge can say.
+  assert.deepStrictEqual(seen, [["1.1.0", { autoDownload: true }]]);
+});
+
+test("getInfo reports the auto-download preference for the About toggle", () => {
+  const { deps } = makeDeps({ appVersion: "1.0.0" });
+  deps.getAutoDownloadPreference = () => true;
+  assert.strictEqual(initAutoUpdate(deps).getInfo().autoDownload, true);
+  const off = makeDeps({ appVersion: "1.0.0" });
+  off.deps.getAutoDownloadPreference = () => false;
+  assert.strictEqual(initAutoUpdate(off.deps).getInfo().autoDownload, false);
 });
 
 test("download() with nothing discovered checks first instead of blind-downloading", async () => {

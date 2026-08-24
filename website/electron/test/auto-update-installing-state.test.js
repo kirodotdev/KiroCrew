@@ -15,7 +15,7 @@ const assert = require("node:assert");
 
 const { initAutoUpdate } = require("../auto-update");
 
-function installHarness() {
+function installHarness(opts = {}) {
   // One interleaved timeline of renderer emits and gateway calls, in the
   // exact order the module produced them — the order IS the assertion.
   const timeline = [];
@@ -46,13 +46,14 @@ function installHarness() {
     nativeAutoUpdater: { once: () => {} },
     onUpdateState: (p) => { timeline.push(`state:${p.state}`); payloads.push(p); },
     log: { info: () => {}, warn: () => {}, error: () => {} },
+    ...opts,
   };
   return {
     updater: initAutoUpdate(deps),
     timeline,
     payloads,
     fire: (ev, p) => handlers[ev] && handlers[ev](p),
-    quit: () => quitHook && quitHook({ preventDefault: () => {} }),
+    quit: () => quitHook && quitHook({ preventDefault: () => { timeline.push("preventDefault"); } }),
   };
 }
 
@@ -107,4 +108,82 @@ test("the deferred install on quit emits 'installing' before the gateway stops",
     installingAt < stopAt,
     `'installing' must precede the gateway stop on the quit path (got ${h.timeline.join(" -> ")})`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// The opt-out has to govern the update it was flipped BECAUSE OF.
+//
+// Raised independently by the UX and First-Principles lanes on 0eec60d77: the
+// nudge says "downloading and will install the next time you quit", the user
+// follows it to the toggle and switches it off, and the staged build lands
+// anyway. Two reviewers converging is why this is a behaviour change rather
+// than a copy change -- explaining the surprise would have been the wrong fix.
+// ---------------------------------------------------------------------------
+
+/** Drive a full AUTOMATIC discovery -> download -> stage, then quit. */
+function autoStagedHarness(prefSeq) {
+  let i = 0;
+  const h = installHarness({
+    // Read per call, so the test can flip the preference BETWEEN staging and
+    // quitting -- which is the whole scenario.
+    getAutoDownloadPreference: () => {
+      const v = prefSeq[Math.min(i, prefSeq.length - 1)];
+      i += 1;
+      return v;
+    },
+  });
+  h.fire("update-available", { version: "1.1.0" });
+  h.fire("update-downloaded", { version: "1.1.0" });
+  return h;
+}
+
+test("an AUTOMATIC stage does NOT install on quit once auto-download is turned off", () => {
+  // true at discovery (so the stage is automatic), false by quit time.
+  const h = autoStagedHarness([true, false]);
+  h.quit();
+  assert.ok(
+    !h.timeline.includes("quitAndInstall"),
+    `the declined update must not install on quit, got ${JSON.stringify(h.timeline)}`,
+  );
+  // The quit must proceed normally: no preventDefault, so the app actually
+  // quits instead of hanging on an install that was never going to run.
+  assert.ok(!h.timeline.includes("preventDefault"), "the quit must not be intercepted");
+});
+
+test("an AUTOMATIC stage still installs on quit while auto-download stays on", () => {
+  const h = autoStagedHarness([true, true, true]);
+  h.quit();
+  assert.ok(h.timeline.includes("preventDefault"), "the quit must be intercepted to install");
+});
+
+test("a USER-REQUESTED stage installs on quit even with auto-download off", async () => {
+  // The preference is off throughout, so discovery does not download; the user
+  // does. That stage is not the preference's to cancel.
+  const h = installHarness({ getAutoDownloadPreference: () => false });
+  h.fire("update-available", { version: "1.1.0" });
+  await h.updater.download();
+  h.fire("update-downloaded", { version: "1.1.0" });
+  h.quit();
+  assert.ok(
+    h.timeline.includes("preventDefault"),
+    `a stage the user asked for must stay armed, got ${JSON.stringify(h.timeline)}`,
+  );
+});
+
+test("an unreadable preference leaves an automatic stage un-installed rather than guessing", () => {
+  let calls = 0;
+  const h = installHarness({
+    getAutoDownloadPreference: () => {
+      calls += 1;
+      // On at discovery, then unreadable at quit time.
+      if (calls === 1) return true;
+      throw new Error("store unreadable");
+    },
+  });
+  h.fire("update-available", { version: "1.1.0" });
+  h.fire("update-downloaded", { version: "1.1.0" });
+  h.quit();
+  // Failing toward "do not install" is the direction that cannot surprise
+  // anyone here: the app quits as asked and the stage survives for later.
+  assert.ok(!h.timeline.includes("quitAndInstall"), "must not install on an unreadable preference");
 });

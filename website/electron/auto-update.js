@@ -437,9 +437,20 @@ function manualDownloadUrl(channel, osPlatform, osArch = process.arch, linuxForm
  * made deliberately — so they are set in one audited place rather than
  * scattered:
  *
- * - autoDownload=false        consent-first UX: discovery must never download.
- *                             The default (true) would download megabytes on a
- *                             background check with no user action.
+ * - autoDownload=false        electron-updater must never fetch from INSIDE
+ *                             checkForUpdates. This is not the same question as
+ *                             "may an update download without a click": that is
+ *                             a policy read per discovery from
+ *                             getAutoDownloadPreference(), and when it is on the
+ *                             "update-available" handler calls startDownload()
+ *                             itself. Keeping the library flag false is what
+ *                             makes every download — automatic or consented —
+ *                             pass through that one guarded function, so the
+ *                             preference can actually turn it off and the
+ *                             re-entrancy guards apply to both callers.
+ *                             It also keeps discovery cheap on macOS: see the
+ *                             autoInstallOnAppQuit note below for why staging,
+ *                             not fetching, is the dangerous step there.
  * - autoInstallOnAppQuit=false FALSE ON EVERY PLATFORM, for two different
  *                             reasons -- electron-updater gives this one flag
  *                             two unrelated meanings:
@@ -588,6 +599,17 @@ function initAutoUpdate(deps) {
     Notification,
     getFlavor,
     getChannelPreference = () => "",
+    // Whether discovery may proceed straight to a download without a click.
+    // Read FRESH per event, like getChannelPreference, so toggling it in
+    // Settings takes effect on the next check with no re-init.
+    //
+    // Defaults to FALSE, and that is deliberate: the module's fallback must be
+    // the consent path, so a host that forgets to wire this loses the
+    // convenience rather than silently downloading behind the user. The PRODUCT
+    // default (on) lives in main.js where the preference store does, and
+    // test/update-ipc-registration.test.js pins that wiring so it cannot
+    // disappear unnoticed.
+    getAutoDownloadPreference = () => false,
     notifyUpdateFound = null,
     stopGateway,
     // Host hook: an install is now in flight, so a gateway that stops answering
@@ -691,6 +713,13 @@ function initAutoUpdate(deps) {
       stampedChannel: stamped,
       channelSwitchable: !managed && (stamped === "insider" || stamped === "stable"),
       channelPreference: getChannelPreference() || "",
+      // Current auto-download policy, so About renders the toggle from the
+      // value the updater will actually act on rather than from its own copy
+      // of the store. Read through the same guard as the event path: a
+      // throwing reader reports "off", matching what would happen on discovery.
+      autoDownload: (() => {
+        try { return !!getAutoDownloadPreference(); } catch { return false; }
+      })(),
       // Externally-managed metadata, both empty on a self-updating install.
       managedBy: managed ? managed.managedBy || "" : "",
       updateCommand: managed ? managed.updateCommand || "" : "",
@@ -802,6 +831,15 @@ function initAutoUpdate(deps) {
   let downloading = false;
   let stagedVersion = null; // version electron-updater has downloaded + staged
   let stagedNotes = "";
+  // Was the staged build fetched by the auto-download policy rather than asked
+  // for? It decides whether turning the preference OFF also disarms the
+  // install-on-quit: a stage the user never requested must not land on a user
+  // who has just declined auto-updates, while a stage they explicitly
+  // downloaded stays armed because the preference is not what put it there.
+  let stagedWasAutomatic = false;
+  // Set when startDownload() is entered from the discovery handler, and read by
+  // the update-downloaded handler -- the event carries no provenance of its own.
+  let downloadWasAutomatic = false;
   let foundVersion = null; // last version surfaced to the user, awaiting consent
   let installing = false;
   let quitHandled = false;
@@ -904,10 +942,21 @@ function initAutoUpdate(deps) {
   }
 
   /**
-   * Explicit user consent: download the version last surfaced by safeCheck.
-   * Never called automatically — this is the whole point of autoDownload=false.
+   * Download the version last surfaced by safeCheck.
+   *
+   * Reached two ways: the user's explicit Download action, and — when
+   * getAutoDownloadPreference() is on — automatically from the
+   * "update-available" handler. Both enter here rather than through
+   * electron-updater's own autoDownload flag, which stays false: routing every
+   * download through one guarded function is what keeps the decision
+   * inspectable, cancellable by preference, and identical on all platforms.
+   *
+   * Every early return below is load-bearing for the automatic caller, which
+   * fires on a 4-hourly timer and can therefore re-enter: an in-flight download
+   * is not restarted, an already-staged version is not re-fetched, and a call
+   * with nothing discovered discovers instead of blind-downloading.
    */
-  async function startDownload() {
+  async function startDownload({ automatic = false } = {}) {
     if (downloading) { emit("downloading", { version: pendingVersion() }); return; }
     if (updateReady && stagedVersion) {
       emit("downloaded", { version: stagedVersion, notes: stagedNotes });
@@ -920,8 +969,9 @@ function initAutoUpdate(deps) {
       await safeCheck();
       return;
     }
-    log.info(`[update] user consented — downloading ${foundVersion}`);
+    log.info(`[update] downloading ${foundVersion}`);
     downloading = true;
+    downloadWasAutomatic = automatic;
     emit("downloading", { version: pendingVersion() });
     try {
       await autoUpdater.downloadUpdate();
@@ -1088,6 +1138,33 @@ function initAutoUpdate(deps) {
   // preventDefault, stop the gateway, then quitAndInstall.
   function deferredInstallOnQuit(event) {
     if (quitHandled || !updateReady) return;
+    // The opt-out has to govern the update the user opted out BECAUSE OF.
+    // Without this, the nudge says "downloading, will install on your next
+    // quit", the user follows it to the toggle and switches it off, and the
+    // stage lands anyway — the one outcome the toggle promises will not happen.
+    // Only an AUTOMATIC stage is dropped: one the user downloaded on purpose
+    // stays armed, because the preference is not what put it there.
+    //
+    // The bytes are kept either way. This disarms the install, it does not
+    // discard the stage, so an explicit Install still applies it immediately
+    // with nothing to re-download.
+    if (stagedWasAutomatic) {
+      let stillAuto = false;
+      try {
+        stillAuto = !!getAutoDownloadPreference();
+      } catch (err) {
+        // Unreadable preference: treat as opted OUT here. This is the same
+        // fail-toward-consent direction as the discovery path, and on this path
+        // it is the one that cannot surprise anyone -- the app quits as asked
+        // and the stage is still there to install later.
+        log.error("[update] getAutoDownloadPreference threw on quit — not installing", err);
+      }
+      if (!stillAuto) {
+        log.info(`[update] auto-download off — leaving ${stagedVersion} staged instead of `
+          + "installing on quit");
+        return;
+      }
+    }
     quitHandled = true;
     event.preventDefault();
     (async () => {
@@ -1209,8 +1286,10 @@ function initAutoUpdate(deps) {
     log.info("[update] up to date");
     emit("not-available");
   });
-  // CONSENT GATE: with autoDownload=false this fires on DISCOVERY, before any
-  // bytes move. Surface what was found and wait for an explicit download().
+  // DISCOVERY, before any bytes move. electron-updater's autoDownload stays
+  // false so it never fetches inside checkForUpdates; whether a download
+  // follows is OUR decision, made here from the preference, so the automatic
+  // and the consent paths share one guarded entry point (startDownload).
   autoUpdater.on("update-available", (info) => {
     foundVersion = (info && info.version) || null;
     // A stage is only useful if it is still the latest thing on the feed.
@@ -1223,7 +1302,7 @@ function initAutoUpdate(deps) {
         emit("downloaded", { version: stagedVersion, notes: stagedNotes });
         return;
       }
-      // Superseded: drop the stale stage so consent re-downloads the NEWEST
+      // Superseded: drop the stale stage so the next download takes the NEWEST
       // build rather than installing an already-old one.
       log.info(`[update] staged ${stagedVersion} superseded by ${foundVersion} — discarding stage`);
       updateReady = false;
@@ -1231,18 +1310,33 @@ function initAutoUpdate(deps) {
       stagedNotes = "";
       app.removeListener("before-quit", deferredInstallOnQuit);
     }
-    log.info(`[update] found ${foundVersion} (running ${app.getVersion()}) — awaiting user consent`);
-    // Nudge hook: main.js shows a native notification pointing at
-    // Settings > About (deduped there, once per version). Discovery-only —
-    // download/install still require the explicit consent actions.
+    let autoDownload = false;
+    try {
+      autoDownload = !!getAutoDownloadPreference();
+    } catch (err) {
+      // A throwing preference reader must not cost the user the discovery
+      // nudge, and it must not be read as consent either — fall back to the
+      // consent path, which is the safe half.
+      log.error("[update] getAutoDownloadPreference threw — treating as off", err);
+    }
+    log.info(`[update] found ${foundVersion} (running ${app.getVersion()}) — `
+      + (autoDownload ? "auto-downloading" : "awaiting user consent"));
+    // Nudge hook: main.js shows a native notification (deduped there, once per
+    // version). Its copy differs by mode, so pass the mode rather than letting
+    // main.js re-read the preference and risk disagreeing with this decision.
     if (typeof notifyUpdateFound === "function") {
-      try { notifyUpdateFound(foundVersion); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
+      try { notifyUpdateFound(foundVersion, { autoDownload }); } catch (err) { log.error("[update] notifyUpdateFound threw", err); }
     }
     emit("found", {
       version: foundVersion,
       notes: notesFrom(info),
       pubDate: (info && info.releaseDate) || "",
     });
+    // AFTER the "found" emit: the renderer must see the version it is about to
+    // download, and startDownload() emits "downloading" over the top of it.
+    // Fire-and-forget — startDownload owns its own error reporting, and this
+    // handler is a synchronous event listener that cannot await.
+    if (autoDownload) void startDownload({ automatic: true });
   });
   autoUpdater.on("download-progress", (p) => {
     // New capability vs. the hand-rolled updater: real progress, so the card
@@ -1258,6 +1352,7 @@ function initAutoUpdate(deps) {
     downloading = false;
     stagedVersion = (info && info.version) || null;
     stagedNotes = notesFrom(info);
+    stagedWasAutomatic = downloadWasAutomatic;
     log.info(`[update] downloaded ${stagedVersion} — ${uiDriven ? "notifying UI" : "prompting"}`);
     emit("downloaded", { version: stagedVersion || app.getVersion(), notes: stagedNotes });
     if (uiDriven) {

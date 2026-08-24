@@ -621,7 +621,10 @@ those installs permanently with a manual DMG re-download as the only escape.
 safe to remove once no pre-migration installs remain.
 
 Four updater policy flags each differ from the library default on purpose:
-`autoDownload=false` (consent-first: discovery must never pull megabytes),
+`autoDownload=false` (the library must never fetch from inside
+`checkForUpdates`; whether a discovered update downloads without a click is a
+separate preference read per discovery, and keeping the flag false is what
+routes the automatic and the consented download through one guarded function),
 `autoInstallOnAppQuit=false` (the default would swap the bundle on quit without
 stopping the embedded Python gateway), `allowDowngrade=true` (the gate is
 difference-based, so a feed pointed at an older version is offered, which is
@@ -629,6 +632,24 @@ what makes a channel switch-back work), and `allowPrerelease=true` (every
 nightly and insider stamp is a semver prerelease and would otherwise be
 invisible to its own channel). The library still refuses an equal version before
 the `allowDowngrade` branch, which is what prevents a self-reinstall loop.
+
+**Desktop updates download automatically by default, and install on the next
+quit.** The `autoDownloadUpdates` preference (electron-store, default `true`,
+opt out in Settings → About) decides whether the `update-available` handler
+calls `startDownload()` itself. The INSTALL is not made automatic by this: the
+existing `update-downloaded` handler arms a `before-quit` install that stops the
+gateway first, so a downloaded update lands on the user's own next quit rather
+than interrupting a live session. `autoInstallOnAppQuit` stays false on every
+platform — on macOS that flag stages eagerly, which arms ShipIt to swap the
+bundle on ANY exit (including exits that skip the gateway teardown) and cannot
+be un-armed, so it would also defeat release retraction.
+
+Turning the preference off keeps bytes already fetched but **disarms the
+install-on-quit for a stage that was downloaded automatically**, so the update a
+user just declined does not land on their next quit; a stage they explicitly
+downloaded stays armed, because the preference is not what put it there. The
+stage itself is never discarded, so an explicit Install still applies it with
+nothing to re-download.
 
 **Which channel a build follows is a default plus an opt-in, not a property of
 the bytes.** `channelForVersion()` classifies the version stamp and `nightly`

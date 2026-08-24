@@ -33,6 +33,7 @@ const UPDATE_HANDLERS = [
   'ipcMain.handle("update:download"',
   'ipcMain.handle("update:install"',
   'ipcMain.handle("update:set-channel"',
+  'ipcMain.handle("update:set-auto-download"',
 ];
 
 test("every update:* IPC handler registers before the awaited gateway boot", () => {
@@ -52,6 +53,28 @@ test("every update:* IPC handler registers before the awaited gateway boot", () 
       `${handler} is registered AFTER the awaited gateway boot. preload exposes the button regardless, so a stalled boot leaves it with no handler and the renderer throws "No handler registered". Move the updater block above startGateway().`,
     );
   }
+});
+
+// The product default for auto-download lives in main.js (the module's own dep
+// default is false, deliberately, so an unwired host falls back to the consent
+// path). That split means a silent regression is possible in exactly one way:
+// main.js stops passing the preference, the module keeps working, and every
+// desktop install quietly reverts to notify-only with nothing red. These two
+// assertions are what make that loud.
+test("main.js wires the auto-download preference into initAutoUpdate", () => {
+  assert.match(
+    SRC,
+    /getAutoDownloadPreference:\s*\(\)\s*=>\s*store\.get\("autoDownloadUpdates",\s*true\)\s*!==\s*false/,
+    "main.js no longer hands initAutoUpdate the auto-download preference. The module defaults it to FALSE, so without this line every desktop install silently drops to notify-only.",
+  );
+});
+
+test("auto-download is ON by default in the store defaults", () => {
+  assert.match(
+    SRC,
+    /autoDownloadUpdates:\s*true/,
+    "autoDownloadUpdates is no longer defaulted true in the electron-store defaults — desktop auto-update is off by default again.",
+  );
 });
 
 test("initAutoUpdate is wired before the awaited gateway boot", () => {

@@ -153,6 +153,7 @@ const store = new Store({
     lastNudgedVersion: "",                 // last update version announced via native notification (nudge once per version)
     themeAccent: "",                       // user's resolved theme accent hex; injected into the boot splash
     updateChannel: "",                     // "" = follow the stable default; "insider"|"stable" = user opt-in (Settings > About)
+    autoDownloadUpdates: true,             // ON by default: a discovered update downloads in the background and installs on the next quit. false = notify only, download on request (Settings > About)
     runLocalGateway: true,                 // false = act as a pure client; never start a gateway on this machine
     linuxFrameless: null,                  // Linux window chrome: true = frameless, false = native frame, null = follow the desktop environment (see linux-frame.js)
   },
@@ -4027,15 +4028,27 @@ app.whenReady().then(async () => {
     Notification,
     getFlavor: () => "stable",
     getChannelPreference: () => store.get("updateChannel", ""),
-    // Once-per-version nudge: tell the user an update exists; downloading and
-    // installing stay in Settings > About (the in-app dot guides them there).
-    notifyUpdateFound: (version) => {
+    // ON by default (see the store defaults). The updater reads this per
+    // discovery, so a Settings toggle takes effect on the next check.
+    getAutoDownloadPreference: () => store.get("autoDownloadUpdates", true) !== false,
+    // Once-per-version nudge. The copy has to match what actually happens next,
+    // so it branches on the mode the updater already decided and passed in --
+    // re-reading the store here could disagree with that decision if the
+    // preference changed between the two reads.
+    notifyUpdateFound: (version, { autoDownload = false } = {}) => {
       if (!version || store.get("lastNudgedVersion", "") === version) return;
       store.set("lastNudgedVersion", version);
       try {
         const n = new Notification({
           title: `${app.name} update available`,
-          body: `Version ${version} is ready. Open Settings > About to download and install.`,
+          body: autoDownload
+            // Names the opt-out. This notification is where an existing user
+            // first learns the default flipped, so it is the one place that
+            // must not assert the new behaviour without saying how to decline
+            // it -- the consent-mode sibling already points at the same panel.
+            ? `Version ${version} is downloading and will install the next time you quit. `
+              + "Manage in Settings > About."
+            : `Version ${version} is ready. Open Settings > About to download and install.`,
         });
         n.on("click", () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
@@ -4106,6 +4119,21 @@ app.whenReady().then(async () => {
     }
     store.set("updateChannel", c);
     updater.check();
+    return { ok: true, info: updaterInfo() };
+  });
+  // Auto-download opt-out. Turning it ON re-checks so a version already
+  // discovered this session starts downloading now instead of waiting up to
+  // four hours for the next poll. Turning it OFF keeps any bytes already
+  // fetched -- discarding a verified stage would leave the user with nothing to
+  // show for the transfer -- but it DOES disarm the install-on-quit for a stage
+  // that was downloaded automatically, so the update the user just declined
+  // does not land on their next quit. An explicit Install still applies it.
+  ipcMain.handle("update:set-auto-download", (_e, enabled) => {
+    if (typeof enabled !== "boolean") {
+      return { ok: false, error: `invalid value: ${typeof enabled}` };
+    }
+    store.set("autoDownloadUpdates", enabled);
+    if (enabled) updater.check();
     return { ok: true, info: updaterInfo() };
   });
 

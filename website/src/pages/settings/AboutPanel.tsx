@@ -123,6 +123,12 @@ type UpdateInfo = {
   stampedChannel?: string | null
   channelSwitchable?: boolean
   channelPreference?: string
+  /**
+   * Whether a discovered update downloads without a click. ON by default in the
+   * desktop shell; `undefined` from a shell that predates the preference, which
+   * is why the toggle reads it as `!== false` rather than truthy.
+   */
+  autoDownload?: boolean
   platform?: string
   /** Manual-reinstall permalink from the main process; absent when no lane. */
   downloadUrl?: string | null
@@ -140,6 +146,9 @@ type UpdateAPI = {
   install: () => Promise<unknown>
   getInfo: () => Promise<UpdateInfo>
   setChannel?: (channel: string) => Promise<{ ok: boolean; error?: string }>
+  // Optional so the panel still renders against an older desktop shell whose
+  // preload has no such bridge: the toggle is hidden rather than throwing.
+  setAutoDownload?: (enabled: boolean) => Promise<{ ok: boolean; error?: string }>
 }
 
 function getUpdateApi(): UpdateAPI | undefined {
@@ -337,6 +346,13 @@ export function AboutPanel() {
   const channelMutation = useMutation({
     mutationFn: (next: string) => desktopApi!.setChannel!(next),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
+  })
+  // Auto-download opt-out. The toggle renders from info.autoDownload, so the
+  // invalidate is what moves it -- there is no local optimistic state to roll
+  // back, and a failed write simply leaves the switch where it was.
+  const autoDownloadMutation = useMutation({
+    mutationFn: (next: boolean) => desktopApi!.setAutoDownload!(next),
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ['update-info'] }),
   })
 
   const version = info?.version || gatewayVersion || '—'
@@ -1103,6 +1119,23 @@ export function AboutPanel() {
               </div>
               {status && <div className="text-[13px]">{status}</div>}
               {updateCard}
+              {/* Auto-download opt-out. ON by default, so this row is the only
+                  place a user can decline the background download — it renders
+                  whenever the desktop bridge exposes the setter, and is absent
+                  on an older shell that does not. `autoDownload` comes from the
+                  updater's own getInfo(), not from a local copy of the store, so
+                  the switch reflects what the updater will actually do.
+                  Reuses the gateway row's label: on desktop the downloaded
+                  update installs on the next restart/quit, which is exactly what
+                  it says. */}
+              {desktopApi?.setAutoDownload && (
+                <div className="flex items-center justify-between pt-2.5 border-t border-border">
+                  <span className="text-sm text-text">{i18nT('pages.settings.aboutPanel.auto_update_on_restart')}</span>
+                  <Toggle checked={info?.autoDownload !== false}
+                    label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
+                    onChange={next => autoDownloadMutation.mutate(next)} />
+                </div>
+              )}
             </div>
           )
         ) : (

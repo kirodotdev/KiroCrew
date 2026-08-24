@@ -215,4 +215,7 @@ contextBridge.exposeInMainWorld("updateAPI", {
   // Channel switcher (Settings > About): "" follows the build stamp,
   // "insider"|"stable" opts the production app onto that lane.
   setChannel: (channel) => ipcRenderer.invoke("update:set-channel", channel),
+  // Auto-download opt-out (Settings > About). ON by default: a discovered
+  // update downloads in the background and installs on the next quit.
+  setAutoDownload: (enabled) => ipcRenderer.invoke("update:set-auto-download", enabled),
 });
