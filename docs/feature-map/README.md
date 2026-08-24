@@ -124,7 +124,7 @@ Settings → Overview; the graph visualizer is a Developer internals view.
 
 | Feature | What it is | Reach it | Page | Handler | Endpoints |
 |---|---|---|---|---|---|
-| Schedule | Cron jobs: recurring agent turns, scripts, commands | `/schedule` — rail **Schedule** | `pages/SchedulePage.tsx` | `handlers/cron.py` | `GET,POST /api/crons`, `DELETE /api/crons/{job_id}`, `GET /api/crons/history` |
+| Schedule | Cron jobs: recurring agent turns, scripts, commands | `/schedule` — rail **Schedule**; also created inline from the crew editor's "What wakes this crew" section (`/capabilities?tab=crews`) | `pages/SchedulePage.tsx`, `components/CrewWakeSection.tsx` | `handlers/cron.py` | `GET,POST /api/crons`, `DELETE /api/crons/{job_id}`, `GET /api/crons/history` |
 | Monitor loops | Same-session bounded monitors and legacy nudge loops watching an external thing | Agent/API for bounded monitors; Chat header → legacy loop popover | `components/AutoNudgePopover.tsx` | `handlers/autonudge.py` | `GET,POST /api/monitors`, `PATCH /api/monitors/{id}`, `GET /api/monitors/slot/{slot_key}`, `POST /api/monitors/{id}/stop`, `POST /api/monitors/{id}/restart`, `GET,POST /api/autonudge`, `PATCH,DELETE /api/autonudge/{loop_id}` |
 | Session ledger | Durable per-session work state surviving compaction | Agent-written; no dashboard page | — | `handlers/session_ledger.py` | `GET /api/session-ledger`, `POST /api/session-ledger/record` |
 | Session control | Create / stop / send-to a session from outside it | Agent and app callers, not a UI | — | `session_control.py` | `POST /api/session-control/create`, `.../stop`, `.../send`, `GET .../read` |

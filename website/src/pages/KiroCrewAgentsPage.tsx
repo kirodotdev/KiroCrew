@@ -81,6 +81,14 @@ type CrewView = 'cards' | 'list'
  *  for both surfaces rather than a second scheme for this one. */
 const VIEW_KEY = 'mc-crews-view'
 
+/** How long a schedule-draft discard confirm stays fully locked while the
+ *  create request is in flight. The lock exists because discarding cannot
+ *  cancel the POST; the unlock exists because a HUNG request (the client
+ *  sets no timeout) must not seal every exit from the modal editor. A
+ *  healthy create settles well under this, so the escape only surfaces for
+ *  genuinely stalled requests. */
+const DISCARD_FORCE_GRACE_MS = 8000
+
 /** Read the remembered layout. Guarded because `localStorage` throws outright
  *  in a partitioned/blocked-storage context rather than returning null. */
 function readStoredView(): CrewView {
@@ -986,7 +994,81 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
    *  pointed somewhere else, so a crew never opens on the pane the previous one
    *  happened to be left on. */
   const [pane, setPane] = useState<CrewPaneKey>('overview')
-  useEffect(() => { setPane('overview') }, [sheet])
+  const [schedDraft, setSchedDraft] = useState(false)
+  /** True while the schedule draft's create request is in flight. Discarding
+   *  then would unmount the form WITHOUT cancelling the POST, so the schedule
+   *  the user watched being "discarded" persists — the confirm's destructive
+   *  button locks on this for exactly the reason the pane's own toggle does. */
+  const [schedSaving, setSchedSaving] = useState(false)
+  /** Where the schedule-draft discard confirm would go if confirmed: a pane
+   *  key to switch to, 'close' to dismiss the editor, or 'chat' to open a
+   *  chat with this crew. null = no confirm showing. One state drives EVERY
+   *  destruction path so they get the same guard for the same reason -- the
+   *  footer's Save is already disabled for this draft, and a rail click, an
+   *  Escape, or the header's chat jump destroying it silently would make the
+   *  one tracked-dirty pane the one pane whose work a click erases. */
+  const [discardAsk, setDiscardAsk] = useState<CrewPaneKey | 'close' | 'chat' | 'collapse' | null>(null)
+  /** Escape hatch for a hung save: the create POST has no client timeout, so
+   *  a stalled request would otherwise lock EVERY exit from the editor for
+   *  as long as it stalls. After a grace period with the confirm open and
+   *  the save still in flight, the destructive button unlocks — the note
+   *  then says the honest thing: discarding cannot cancel the POST, so the
+   *  schedule may still be created. */
+  const [discardForce, setDiscardForce] = useState(false)
+  useEffect(() => {
+    if (discardAsk === null || !schedSaving) { setDiscardForce(false); return }
+    const t = setTimeout(() => setDiscardForce(true), DISCARD_FORCE_GRACE_MS)
+    return () => clearTimeout(t)
+  }, [discardAsk, schedSaving])
+  /** The section-owned collapse to run if the user confirms discarding via
+   *  the toggle ('collapse' target). A ref, not state: it is a continuation,
+   *  not something the render reads. */
+  const collapseProceed = useRef<(() => void) | null>(null)
+  useEffect(() => { setPane('overview'); setSchedDraft(false); setSchedSaving(false); setDiscardAsk(null) }, [sheet])
+
+  /** Rail-driven pane changes route through here: leaving the schedules pane
+   *  while a schedule draft is open asks before destroying the typed work
+   *  (the form's state is component-local and unmounts with the pane). */
+  const requestPane = useCallback((key: CrewPaneKey) => {
+    if (schedDraft && key !== pane) { setDiscardAsk(key); return }
+    setPane(key)
+  }, [schedDraft, pane])
+
+  /** Editor dismissal (footer Cancel, Escape, overlay click) routes through
+   *  here: same draft, same guard, same reason as the pane switch above. */
+  const requestClose = useCallback(() => {
+    if (schedDraft) { setDiscardAsk('close'); return }
+    closeSheet()
+  }, [schedDraft, closeSheet])
+
+  /** The header's "Chat with this crew" routes through here: it creates a
+   *  chat slot, closes the sheet and navigates -- three steps that would
+   *  destroy an open schedule draft as silently as an unguarded Escape. */
+  const requestChat = useCallback(() => {
+    if (schedDraft) { setDiscardAsk('chat'); return }
+    void chatWith(editing)
+  }, [schedDraft, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- chatWith is re-created per render; depping it would make this callback churn for no behavioural gain
+
+  /** The wake section's own cancel toggle asks here before collapsing a
+   *  dirty draft -- the one destruction path the page cannot intercept
+   *  itself (at narrow widths it is a bare icon-only X). */
+  const requestCancelDraft = useCallback((proceed: () => void) => {
+    collapseProceed.current = proceed
+    setDiscardAsk('collapse')
+  }, [])
+
+  const confirmDiscard = useCallback(() => {
+    const target = discardAsk
+    setDiscardAsk(null)
+    // The form unmounts with the pane or the sheet; its unmount cleanup is
+    // what clears `schedDraft`, so nothing here resets the flag by hand. The
+    // chat path only destroys on SUCCESS: a failed slot-create keeps the
+    // sheet open (chatWith settles the error and returns), draft intact.
+    if (target === 'close') closeSheet()
+    else if (target === 'chat') void chatWith(editing)
+    else if (target === 'collapse') { collapseProceed.current?.(); collapseProceed.current = null }
+    else if (target) setPane(target)
+  }, [discardAsk, closeSheet, editing]) // eslint-disable-line react-hooks/exhaustive-deps -- same chatWith identity note as requestChat
 
   /** Pane changes driven from INSIDE a pane (an overview diagram node) rather
    *  than from the rail. The clicked node unmounts with its pane, which would
@@ -1057,8 +1139,12 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     if (editEffort !== (editingAgent.reasoning_effort || '')) out.add('model')
     if (triggers !== (editingAgent.triggers || '')) out.add('routing')
     if (sessionColor !== (editingAgent.session_color || '')) out.add('routing')
+    // An open inline schedule-create form is pending work too: it gets the
+    // rail's unsaved dot and the note, so closing the editor cannot silently
+    // eat a half-typed schedule the way an untracked surface would.
+    if (schedDraft) out.add('schedules')
     return out
-  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor])
+  }, [editingAgent, kiroAgent, workspace, memoryStore, editModel, editEffort, triggers, sessionColor, schedDraft])
 
   const sections = useCrewEditorSections({
     templateLabel: provider.labels.agentTemplateField,
@@ -1245,7 +1331,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
         )}
       </div>
 
-      <Dialog open={!!sheet} onOpenChange={next => { if (!next) closeSheet() }}>
+      <Dialog open={!!sheet} onOpenChange={next => { if (!next) requestClose() }}>
         <DialogContent
           /* The rail needs horizontal room; the create form does not have one. */
           maxWidth={creating ? 560 : 790}
@@ -1266,7 +1352,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             </DialogTitle>
             {!creating && editingAgent?.source && <SourceBadge source={editingAgent.source} />}
             {!creating && (
-              <Btn className="ml-auto" onClick={() => chatWith(editing)}>
+              <Btn className="ml-auto" onClick={requestChat}>
                 <MessageSquare className="lucide-inline" aria-hidden="true" />
                 {i18nT('pages.kiroCrewAgentsPage.chat_with_this_crew')}
               </Btn>
@@ -1306,7 +1392,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 <CrewEditorRail
                   sections={sections}
                   value={pane}
-                  onChange={setPane}
+                  onChange={requestPane}
                   ariaLabel={i18nT('components.crewEditor.rail_label')}
                   unsavedLabel={i18nT('components.crewEditor.unsaved_changes')}
                   sharedLabel={i18nT('components.crewEditor.tag_shared')}
@@ -1444,7 +1530,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   )}
 
                   {pane === 'schedules' && (
-                    <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />
+                    <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} onDraftChange={setSchedDraft} onSavingChange={setSchedSaving} onRequestCancel={requestCancelDraft} />
                   )}
 
                   {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
@@ -1498,16 +1584,25 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             <ErrorNotice message={error} variant="inline" className="mr-auto" />
             {!creating && dirtyPanes.size > 0 && !error && (
               <span className="mr-auto text-[11.5px] text-muted" data-testid="crew-unsaved-note">
-                {i18nT('components.crewEditor.unsaved_changes')}
+                {/* While the open schedule draft is what disables Save, the note
+                    names that reason in visible text — the `title` on the button
+                    is hover-only, which keyboard and touch users never see. */}
+                {schedDraft
+                  ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first')
+                  : i18nT('components.crewEditor.unsaved_changes')}
               </span>
             )}
-            <Btn onClick={closeSheet}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
+            <Btn onClick={requestClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>
             {creating ? (
               <SendBtn onClick={create} disabled={sheetBusy}>
                 {createMut.isPending ? i18nT('pages.kiroCrewAgentsPage.creating') : i18nT('pages.kiroCrewAgentsPage.create')}
               </SendBtn>
             ) : (
-              <SendBtn onClick={saveEdit} disabled={sheetBusy || dirtyPanes.size === 0}>{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
+              <SendBtn
+                onClick={saveEdit}
+                disabled={sheetBusy || dirtyPanes.size === 0 || schedDraft}
+                title={schedDraft ? i18nT('pages.kiroCrewAgentsPage.finish_the_new_schedule_first') : undefined}
+              >{i18nT('pages.kiroCrewAgentsPage.save_changes')}</SendBtn>
             )}
           </DialogFooter>
 
@@ -1521,6 +1616,54 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
             onCreated={handleWsCreated}
             onClose={() => setWsModalOpen(false)}
           />
+
+          {/* The schedule-draft discard confirm. Same nesting rule and same
+              always-mounted rule as WorkspaceModal above — conditional
+              rendering skips Radix's layer deregistration and leaves the
+              editor believing it is no longer the top layer. The confirm
+              button restates the action; the dismiss restates the
+              alternative, because a bare "Cancel" beside the editor's own
+              footer Cancel is the ambiguity this PR removes elsewhere. */}
+          <Dialog open={discardAsk !== null} onOpenChange={next => { if (!next) setDiscardAsk(null) }}>
+            <DialogContent maxWidth={440} className="z-[110]" aria-label={i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}>
+              <DialogHeader>
+                <DialogTitle>{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule')}</DialogTitle>
+              </DialogHeader>
+              <DialogBody>
+                <p className="m-0 text-sm text-text">{i18nT('pages.kiroCrewAgentsPage.discard_new_schedule_body')}</p>
+                {/* The reason Discard is locked, as VISIBLE text: the button's
+                    `title` never reaches keyboard or touch users, and browsers
+                    often suppress titles on disabled controls entirely. */}
+                {schedSaving && (
+                  <p className="mb-0 mt-2 text-[12px] text-muted" data-testid="crew-sched-discard-saving-note">
+                    {discardForce
+                      ? i18nT('pages.kiroCrewAgentsPage.discard_anyway_note')
+                      : i18nT('pages.kiroCrewAgentsPage.discard_locked_while_saving')}
+                  </p>
+                )}
+              </DialogBody>
+              <DialogFooter>
+                <Btn onClick={() => setDiscardAsk(null)} data-testid="crew-sched-discard-keep">
+                  {i18nT('pages.kiroCrewAgentsPage.keep_editing')}
+                </Btn>
+                <Btn
+                  danger
+                  onClick={confirmDiscard}
+                  // While the create request is in flight, discarding would not
+                  // cancel it -- the schedule would persist after the user
+                  // watched it "discarded". Locked until the request settles,
+                  // EXCEPT after the grace period: a hung request must not
+                  // seal every exit from the editor, so the button unlocks
+                  // and the visible note carries the may-still-persist caveat.
+                  disabled={schedSaving && !discardForce}
+                  title={schedSaving ? i18nT('components.jobForm.saving') : undefined}
+                  data-testid="crew-sched-discard-confirm"
+                >
+                  {i18nT('pages.kiroCrewAgentsPage.discard_schedule_confirm')}
+                </Btn>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
         </DialogContent>
       </Dialog>
     </>
