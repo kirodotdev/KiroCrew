@@ -26,7 +26,8 @@ import { createImeLatch } from './useImeGuard'
  *    before acting on a choose-class key.
  *  - `Alt`/`Option`+`Enter`  — `onAltEnter(selected)` when provided; if it
  *    returns `true` the event is treated as handled.
- *  - `Escape`                — `onClose()`.
+ *  - `Escape`                — `onClose()`, unless the shared IME latch owns
+ *                              the key for candidate dismissal.
  *
  * The selection is mirrored into {@link selectedRef} so callbacks captured in
  * effects can read the live value without re-subscribing, matching the
@@ -114,7 +115,7 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   const onAltEnterRef = useRef(onAltEnter)
   onAltEnterRef.current = onAltEnter
 
-  // IME guard for the Enter-chooses-row path. This listener receives NATIVE
+  // IME guard for the hook's keyboard actions. This listener receives NATIVE
   // KeyboardEvents (document capture), which `useImeGuard`'s synthetic-only
   // `claimEnter` cannot consume — so it shares the guard's tracked latch via
   // `createImeLatch` instead of hand-rolling a second spelling. On WebKit the
@@ -155,6 +156,11 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   const onKey = useCallback((e: KeyboardEvent) => {
     const n = countRef.current
     if (e.key === 'Escape') {
+      // Escape dismisses an IME candidate list too. Let the shared latch own
+      // that key while composition is live and in WebKit's short
+      // post-composition window, so cancelling a candidate does not also close
+      // the picker and discard the user's query.
+      if (!imeLatchRef.current!.claimKey(e)) return
       e.preventDefault()
       e.stopPropagation()
       onCloseRef.current()

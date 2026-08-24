@@ -33,6 +33,9 @@ afterEach(() => {
 const enter = (init: KeyboardEventInit & { keyCode?: number } = {}) =>
   fireEvent.keyDown(document, { key: 'Enter', ...init })
 
+const escape = (init: KeyboardEventInit & { keyCode?: number } = {}) =>
+  fireEvent.keyDown(document, { key: 'Escape', ...init })
+
 describe('useListKeyboardNav IME guard', () => {
   it('plain Enter still chooses the selected row (positive control)', () => {
     const onChoose = vi.fn()
@@ -141,6 +144,37 @@ describe('useListKeyboardNav IME guard', () => {
     fireEvent.compositionEnd(input)
     fireEvent.keyDown(document, { key: 'Tab' })
     expect(onChoose).not.toHaveBeenCalled()
+  })
+
+  it('declines a mid-composition Escape without cancelling the IME candidate dismissal', () => {
+    const onClose = vi.fn()
+    render(<Harness onClose={onClose} />)
+    const notPrevented = escape({ isComposing: true })
+    expect(onClose).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(true)
+  })
+
+  it('declines the committing Escape in the post-composition window AND consumes it', () => {
+    const onClose = vi.fn()
+    const { getByTestId } = render(<Harness onClose={onClose} />)
+    const input = getByTestId('host-input')
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    const notPrevented = escape()
+    expect(onClose).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(false)
+  })
+
+  it('closes again once the post-composition window has elapsed', () => {
+    vi.useFakeTimers()
+    const onClose = vi.fn()
+    const { getByTestId } = render(<Harness onClose={onClose} />)
+    const input = getByTestId('host-input')
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    vi.advanceTimersByTime(60)
+    escape()
+    expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it('recovers from an abandoned composition when focus moves away', () => {
