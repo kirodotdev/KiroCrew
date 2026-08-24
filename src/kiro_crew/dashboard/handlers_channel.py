@@ -77,15 +77,32 @@ def _mgr(request: web.Request) -> ChannelManager:
     return mgr
 
 
+async def _json_object(request: web.Request) -> dict:
+    """Parse a JSON request body and require a top-level object."""
+    try:
+        body = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(
+            text='{"error":"invalid JSON","code":"invalid_json"}',
+            content_type="application/json",
+        )
+    if not isinstance(body, dict):
+        raise web.HTTPBadRequest(
+            text=(
+                '{"error":"request body must be a JSON object",'
+                '"code":"body_not_object"}'
+            ),
+            content_type="application/json",
+        )
+    return body
+
+
 async def _get_channel_body(request: web.Request):
     """Get channel + parsed JSON body, or raise web.HTTPException."""
     ch = _mgr(request).get(request.match_info["id"])
     if not ch:
         raise web.HTTPNotFound(text='{"error":"not found"}', content_type="application/json")
-    try:
-        body = await request.json()
-    except Exception:
-        raise web.HTTPBadRequest(text='{"error":"invalid JSON"}', content_type="application/json")
+    body = await _json_object(request)
     return ch, body
 
 
@@ -157,25 +174,77 @@ async def api_channel_get(request: web.Request) -> web.Response:
 
 
 async def api_channel_create(request: web.Request) -> web.Response:
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    topic = body.get("topic", "").strip()[:500]
+    body = await _json_object(request)
+    raw_topic = body.get("topic", "")
+    if not isinstance(raw_topic, str):
+        return web.json_response(
+            {"error": "topic must be a string", "code": "channel_topic_type_invalid"},
+            status=400,
+        )
+    topic = raw_topic.strip()[:500]
     if not topic:
-        return web.json_response({"error": "topic required"}, status=400)
+        return web.json_response(
+            {"error": "topic required", "code": "channel_topic_required"}, status=400
+        )
+
+    agents_def = body.get("agents", [])
+    if not isinstance(agents_def, list):
+        return web.json_response(
+            {"error": "agents must be an array", "code": "channel_agents_type_invalid"},
+            status=400,
+        )
+    valid_policies = {policy.value for policy in ApprovalPolicy}
+    for agent_def in agents_def:
+        if not isinstance(agent_def, dict):
+            return web.json_response(
+                {
+                    "error": "each agent must be an object",
+                    "code": "channel_agent_type_invalid",
+                },
+                status=400,
+            )
+        for field in ("role", "agent", "task"):
+            if field in agent_def and not isinstance(agent_def[field], str):
+                return web.json_response(
+                    {
+                        "error": f"agent {field} must be a string",
+                        "code": "channel_agent_field_type_invalid",
+                    },
+                    status=400,
+                )
+        if "is_orchestrator" in agent_def and not isinstance(
+            agent_def["is_orchestrator"], bool
+        ):
+            return web.json_response(
+                {
+                    "error": "agent is_orchestrator must be a boolean",
+                    "code": "channel_agent_orchestrator_type_invalid",
+                },
+                status=400,
+            )
+        approval = agent_def.get("approval", "writes")
+        if not isinstance(approval, str) or approval not in valid_policies:
+            return web.json_response(
+                {
+                    "error": "invalid agent approval policy",
+                    "code": "channel_agent_approval_invalid",
+                },
+                status=400,
+            )
 
     ch = _mgr(request).create(topic)
     if not ch:
         return web.json_response(
-            {"error": "Channel limit reached. Close an existing channel first."},
+            {
+                "error": "Channel limit reached. Close an existing channel first.",
+                "code": "channel_limit_reached",
+            },
             status=429,
         )
 
     state: DashboardState = request.app["state"]
 
     # Spawn agents from preset
-    agents_def = body.get("agents", [])
     has_orchestrator = any(a.get("is_orchestrator") for a in agents_def)
     if not has_orchestrator:
         agents_def = [
@@ -361,10 +430,7 @@ async def api_channel_approve_agent(request: web.Request) -> web.Response:
     agent = ch.members.get(request.match_info["aid"])
     if not agent:
         return web.json_response({"error": "agent not found"}, status=404)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
+    body = await _json_object(request)
     action = body.get("action", "rejected")  # approved|rejected|trust
     if action not in ("approved", "rejected", "trust"):
         return web.json_response({"error": "invalid action"}, status=400)
@@ -419,8 +485,8 @@ async def api_channel_clear_context(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     try:
-        body = await request.json()
-    except Exception:
+        body = await _json_object(request)
+    except web.HTTPBadRequest:
         sel().log_api_access(
             caller="dashboard", operation="channel.clear_context",
             outcome="denied", source="dashboard", resources=ch.id,
