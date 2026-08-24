@@ -1,6 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
 import DiffBlock, { extractFilePath } from '../components/DiffBlock'
+
+// These assertions exercise controls rendered by the lazy Pierre implementation,
+// not the Suspense fallback. Warm that chunk once so a saturated full-suite worker
+// cannot make Testing Library's default query timeout race module loading.
+beforeAll(() => import('../pierre/PierreImpl'))
 
 beforeEach(() => {
   globalThis.fetch = vi.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch

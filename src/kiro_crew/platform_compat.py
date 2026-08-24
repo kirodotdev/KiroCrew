@@ -15,6 +15,7 @@ import errno
 import functools
 import io
 import logging
+import ntpath
 import os
 import shutil
 import signal
@@ -38,6 +39,21 @@ IS_WINDOWS: bool = sys.platform == "win32"
 IS_POSIX: bool = not IS_WINDOWS
 IS_LINUX: bool = sys.platform == "linux"
 IS_MACOS: bool = sys.platform == "darwin"
+
+
+def reexec_python_module(module: str, args: Sequence[str]) -> None:
+    """Replace this process with ``sys.executable -m module``.
+
+    Windows reconstructs an ``execv`` command line from ``argv`` and reparses
+    it in the child.  A full ``argv[0]`` containing spaces is split before the
+    module flag, so Python treats the path suffix as a script name.  The
+    executable path passed separately to ``execv`` still selects the exact
+    interpreter; only its display name needs to be space-free.
+    """
+    executable = sys.executable
+    argv0 = ntpath.basename(executable) if IS_WINDOWS else executable
+    os.execv(executable, [argv0, "-m", module, *args])
+
 
 # Python's os.rename() replaces an existing empty directory on POSIX. Directory
 # publication sometimes needs the stronger create-if-absent contract, which the

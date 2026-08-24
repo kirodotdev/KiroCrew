@@ -105,7 +105,12 @@ async def notify(
 
 
 def save_progress(run: Project) -> None:
-    """Write TASK_PROGRESS.md next to the spec file."""
+    """Write TASK_PROGRESS.md next to the spec file, when the run has one."""
+    if not run.spec_path:
+        # Ad-hoc plans have no spec directory.  Treating Path("").parent as a
+        # destination leaks TASK_PROGRESS.md into the gateway's current working
+        # directory (and into the repository during tests).
+        return
     spec_dir = Path(run.spec_path).parent
     progress_path = spec_dir / PROGRESS_FILE
     try:

@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -263,6 +264,45 @@ def test_backend_only_diff_with_no_guards_runs_backend_alone(gate, monkeypatch) 
     monkeypatch.setattr(gate, "selector_must_run", lambda surface: [])
     plan = gate.build_plan(_args())
     assert _plan_labels(plan) == ["backend (full)"]
+
+
+# ---------------------------------------------------------------------------
+# execution: Node's Windows launchers are .cmd shims
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name", ["npm", "npx"])
+def test_node_command_resolves_platform_launcher(gate, monkeypatch, name: str) -> None:
+    launcher = rf"C:\Program Files\nodejs\{name}.CMD"
+    monkeypatch.setattr(gate.shutil, "which", lambda candidate: launcher)
+
+    assert gate._resolve_command([name, "vitest", "run"]) == [
+        launcher,
+        "vitest",
+        "run",
+    ]
+
+
+def test_non_node_command_is_unchanged(gate) -> None:
+    cmd = [gate.sys.executable, "-m", "pytest"]
+    assert gate._resolve_command(cmd) is cmd
+
+
+def test_missing_node_launcher_fails_cleanly(gate, monkeypatch, capsys) -> None:
+    monkeypatch.setattr(gate, "build_plan", lambda _args: gate.Plan("test plan"))
+    plan = gate.build_plan(None)
+    plan.add("frontend", ["npx", "vitest", "run"], gate._REPO_ROOT / "website")
+    monkeypatch.setattr(gate, "build_plan", lambda _args: plan)
+    monkeypatch.setattr(gate.shutil, "which", lambda _candidate: None)
+    monkeypatch.setattr(
+        gate.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0),
+    )
+
+    assert gate.main([]) == 127
+    err = capsys.readouterr().err
+    assert "FAILED to start" in err
+    assert "not found on PATH" in err
 
 
 # ---------------------------------------------------------------------------

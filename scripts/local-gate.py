@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -60,6 +61,7 @@ _SELECTOR = _REPO_ROOT / "scripts" / "ci-surface-tests.py"
 # pins this against the workflow file so drift fails a test instead of shipping.
 _FRONTEND_PREFIXES = ("website/",)
 _META_PREFIXES = (".github/", "scripts/")
+_NODE_LAUNCHERS = frozenset({"npm", "npx"})
 
 
 def classify(paths: list[str]) -> tuple[bool, bool, bool]:
@@ -159,6 +161,23 @@ def _frontend_full(plan: Plan) -> None:
     plan.add("frontend (full)", ["npm", "test"], _REPO_ROOT / "website")
 
 
+def _resolve_command(cmd: list[str]) -> list[str]:
+    """Resolve Node's platform launcher before passing argv to subprocess.
+
+    npm installs ``npm.cmd`` / ``npx.cmd`` on Windows.  ``subprocess.run`` with
+    ``shell=False`` does not apply the shell's PATHEXT lookup, so a bare
+    ``"npx"`` raises ``FileNotFoundError`` even though the same command works
+    at an interactive prompt.  ``shutil.which`` performs the portable lookup
+    and still preserves list argv / no-shell execution.
+    """
+    if not cmd or cmd[0] not in _NODE_LAUNCHERS:
+        return cmd
+    launcher = shutil.which(cmd[0])
+    if launcher is None:
+        raise FileNotFoundError(f"required launcher {cmd[0]!r} was not found on PATH")
+    return [launcher, *cmd[1:]]
+
+
 def build_plan(args: argparse.Namespace) -> Plan:
     if args.full:
         plan = Plan("--full requested")
@@ -250,7 +269,11 @@ def main(argv: list[str] | None = None) -> int:
 
     for label, cmd, cwd in plan.commands:
         print(f"local-gate: running [{label}]", file=sys.stderr)
-        proc = subprocess.run(cmd, cwd=cwd)
+        try:
+            proc = subprocess.run(_resolve_command(cmd), cwd=cwd)
+        except OSError as exc:
+            print(f"local-gate: [{label}] FAILED to start: {exc}", file=sys.stderr)
+            return 127
         if proc.returncode != 0:
             print(f"local-gate: [{label}] FAILED (rc={proc.returncode})", file=sys.stderr)
             return proc.returncode

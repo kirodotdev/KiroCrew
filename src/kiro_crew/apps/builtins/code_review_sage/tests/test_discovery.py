@@ -257,6 +257,9 @@ class TestPinnedRepoReadIsGuarded(unittest.TestCase):
         anywhere the gateway can read, under the shape the sidebar trusts.
         """
         outside = self.root.parent / "elsewhere.json"
+        # Register first: on Windows the symlink attempt below commonly skips,
+        # and unittest does not resume at the final unlink after skipTest().
+        self.addCleanup(outside.unlink, missing_ok=True)
         outside.write_text(json.dumps({"repos": [
             {"owner": "evil", "repo": "payload"}]}), encoding="utf-8")
         path = discovery.repos_path(self.root)

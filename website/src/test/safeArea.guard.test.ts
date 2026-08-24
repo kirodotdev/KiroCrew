@@ -23,6 +23,10 @@ import { join, relative } from 'node:path'
 const WEBSITE_ROOT = join(__dirname, '..', '..')
 const SRC = join(WEBSITE_ROOT, 'src')
 
+/** Stable repository-relative path for allowlists and diagnostics. `relative()`
+ *  uses the host separator, while the checked-in allowlists use POSIX paths. */
+const repoRelative = (file: string) => relative(WEBSITE_ROOT, file).replaceAll('\\', '/')
+
 /** Physical edges plus the two axis shorthands, mapped to the safe utility
  *  that satisfies each. `inset-{x,y}-*` are included deliberately: they pin two
  *  edges at once and are just as capable of hugging a notch as `left-*`. */
@@ -166,7 +170,7 @@ describe('fixed surfaces inset themselves from the safe area', () => {
     const violations: string[] = []
 
     for (const file of walk(SRC)) {
-      const rel = relative(WEBSITE_ROOT, file)
+      const rel = repoRelative(file)
       for (const literal of stringLiterals(readFileSync(file, 'utf8'))) {
         if (!hasBareFixed(literal) || hasBlanketInset(literal)) continue
 
@@ -222,7 +226,7 @@ describe('fixed surfaces inset themselves from the safe area', () => {
     const violations: string[] = []
 
     for (const file of walk(SRC)) {
-      const rel = relative(WEBSITE_ROOT, file)
+      const rel = repoRelative(file)
       const src = readFileSync(file, 'utf8')
 
       for (const m of src.matchAll(STYLE_OBJ)) {
@@ -276,7 +280,7 @@ describe('fixed surfaces inset themselves from the safe area', () => {
     const violations: string[] = []
 
     for (const file of walk(SRC)) {
-      const rel = relative(WEBSITE_ROOT, file)
+      const rel = repoRelative(file)
       const src = readFileSync(file, 'utf8')
       for (const m of src.matchAll(/position\s*:\s*['"`]fixed['"`]/g)) {
         // The enclosing object literal: back to its opening brace, forward to

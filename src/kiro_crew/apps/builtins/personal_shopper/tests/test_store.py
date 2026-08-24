@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import threading
 import unittest
+from contextlib import closing
 from pathlib import Path
 from unittest import mock
 
@@ -176,7 +177,9 @@ class TestVectorStaleness(PreferenceStoreTestCase):
         with _no_embedder():
             store.update(entry_id, text="budget under $400")
 
-        with sqlite3.connect(str(self.db)) as conn:
+        # sqlite's context manager commits/rolls back but does NOT close the
+        # handle.  Close explicitly so Windows can remove the WAL directory.
+        with closing(sqlite3.connect(str(self.db))) as conn:
             text, blob = conn.execute(
                 "SELECT text, embedding FROM preferences WHERE id = ?", (entry_id,)
             ).fetchone()
@@ -191,7 +194,7 @@ class TestVectorStaleness(PreferenceStoreTestCase):
         with _with_embedder(_FakeEmbedder({"prefers minimalist style": [0.0, 1.0]})):
             self.assertEqual(store.reembed_all(), 1)
 
-        with sqlite3.connect(str(self.db)) as conn:
+        with closing(sqlite3.connect(str(self.db))) as conn:
             (blob,) = conn.execute("SELECT embedding FROM preferences").fetchone()
         self.assertIsNotNone(blob)
 

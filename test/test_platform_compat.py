@@ -60,6 +60,38 @@ class TestPlatformFlags:
         assert isinstance(pc.SIGTERM, int) and pc.SIGTERM > 0
 
 
+class TestReexecPythonModule:
+    def test_windows_uses_space_free_argv0(self, monkeypatch):
+        executable = (
+            r"C:\Users\alice\AppData\Local\Programs\KiroCrew Nightly"
+            r"\resources\backend-dist\kirocrew-backend\python.exe"
+        )
+        calls = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.sys, "executable", executable)
+        monkeypatch.setattr(pc.os, "execv", lambda path, argv: calls.append((path, argv)))
+
+        pc.reexec_python_module("kiro_crew", ["gateway", "--port", "5476"])
+
+        assert calls == [
+            (
+                executable,
+                ["python.exe", "-m", "kiro_crew", "gateway", "--port", "5476"],
+            )
+        ]
+
+    def test_posix_preserves_full_argv0(self, monkeypatch):
+        executable = "/opt/Kiro Crew/bin/python3"
+        calls = []
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(pc.sys, "executable", executable)
+        monkeypatch.setattr(pc.os, "execv", lambda path, argv: calls.append((path, argv)))
+
+        pc.reexec_python_module("kiro_crew", ["gateway"])
+
+        assert calls == [(executable, [executable, "-m", "kiro_crew", "gateway"])]
+
+
 class TestFileLock:
     def test_exclusive_lock_round_trips(self, tmp_path):
         # The lock must acquire + release cleanly and run the body, on whatever

@@ -930,6 +930,15 @@ class TestSaveProgress:
         assert "boom" in content
         assert "(attempts: 2)" in content
 
+    def test_save_progress_without_spec_does_not_write_to_cwd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.chdir(tmp_path)
+        runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False)
+        run = TaskRun(spec_path="", spec_content="ad-hoc", started_at=1000.0)
+        runner._save_progress(run)
+        assert not (tmp_path / PROGRESS_FILE).exists()
+
 
 # ── 12.1a: Checkpoint Resume ──
 

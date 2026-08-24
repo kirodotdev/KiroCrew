@@ -8389,7 +8389,7 @@ class GatewayOrchestrator:
                 )
         if self.sessions:
             await self.sessions.close_all()
-        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
@@ -8876,7 +8876,7 @@ class GatewayOrchestrator:
             # Use -m kiro_crew rather than sys.argv[0] so the restart resolves
             # the freshly reinstalled entry point regardless of how the
             # original process was launched.
-            os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
         except Exception:
             logger.warning("Auto-update failed", exc_info=True)
             if self.dashboard_state:
@@ -9095,7 +9095,7 @@ class GatewayOrchestrator:
         if self.sessions:
             await self.sessions.close_all()
         # Restart into the freshly-installed version.
-        os.execv(sys.executable, [sys.executable, "-m", "kiro_crew"] + sys.argv[1:])
+        platform_compat.reexec_python_module("kiro_crew", sys.argv[1:])
 
     # ------------------------------------------------------------------
     # Main run loop

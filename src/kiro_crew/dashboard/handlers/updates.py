@@ -64,6 +64,7 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
+from kiro_crew.platform_compat import reexec_python_module
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -1189,7 +1190,7 @@ async def _restart_gateway(state: DashboardState) -> None:
     sys.stdout.flush()
     sys.stderr.flush()
     await asyncio.sleep(0.5)
-    os.execv(exe, [exe, "-m", "kiro_crew"] + sys.argv[1:])
+    reexec_python_module("kiro_crew", sys.argv[1:])
 
 
 async def api_update_apply(request: web.Request) -> web.Response:

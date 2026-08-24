@@ -304,8 +304,16 @@ class TestUnitRendering:
         monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/hermetic-pods")
         monkeypatch.setenv("KIROCREW_POD_REPO", "/tmp/some-repo")
         txt = unit_mod.render_unit(PodConfig.load())
-        assert "Environment=KIROCREW_POD_ROOT=/tmp/hermetic-pods" in txt
-        assert "Environment=KIROCREW_POD_REPO=/tmp/some-repo" in txt
+        assert 'Environment="KIROCREW_POD_ROOT=/tmp/hermetic-pods"' in txt
+        assert 'Environment="KIROCREW_POD_REPO=/tmp/some-repo"' in txt
+
+    def test_env_block_quotes_spaces(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KIROCREW_POD_ROOT", "/tmp/pod root")
+        cfg = PodConfig.load()
+        txt = unit_mod.render_unit(cfg)
+        root_line = next(line for line in txt.splitlines() if "KIROCREW_POD_ROOT=" in line)
+        assert root_line.startswith('Environment="')
+        assert "pod root" in root_line
 
     def test_unit_path_uses_prefix(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_UNIT_PREFIX", "kirocrew-podtest")
@@ -905,7 +913,7 @@ class TestLinuxTeardownOrdering:
         unit_file = tmp_path / "pod@.service"
         unit_file.write_text("[Service]\nExecStart=/x\nExecStopPost=/y pod _cleanup %i\n")
         monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
-        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         issued: list[str] = []
 
         def _systemctl(*args: str, **kwargs: object) -> subprocess.CompletedProcess:
@@ -1127,7 +1135,7 @@ class TestTheUnitFileNeverOutlivesAFailedLoad:
     def _plane(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         unit_file = tmp_path / "pod@.service"
         monkeypatch.setattr(rt.unit_mod, "unit_path", lambda c: unit_file)
-        monkeypatch.setattr(rt.unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(rt.unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         monkeypatch.setattr(rt, "require_backend", lambda: None)
         return unit_file
 
@@ -2483,7 +2491,7 @@ class TestUnitExecSelfHeal:
         cfg = self._cfg_with_unit(
             tmp_path,
             monkeypatch,
-            f"ExecStart={tmp_path}/gone/.venv/bin/kirocrew pod _run %i",
+            f"ExecStart={(tmp_path / 'gone/.venv/bin/kirocrew').as_posix()} pod _run %i",
         )
         assert unit_mod.unit_exec_ok(cfg) is False
 
@@ -2493,7 +2501,7 @@ class TestUnitExecSelfHeal:
         exe = tmp_path / "kirocrew"
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
-        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i")
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe.as_posix()} pod _run %i")
         assert unit_mod.unit_exec_ok(cfg) is True
 
     def test_missing_unit_file_detected(self, tmp_path, monkeypatch):
@@ -2513,7 +2521,7 @@ class TestUnitExecSelfHeal:
         exe = tmp_path / "kirocrew"
         exe.write_text("#!/bin/sh\n")
         exe.chmod(0o755)
-        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe} pod _run %i")
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, f"ExecStart={exe.as_posix()} pod _run %i")
         unit_path = tmp_path / "pod@.service"
         assert unit_mod.unit_is_current(cfg) is True  # what this build renders
         unit_path.write_text(unit_path.read_text() + f"ExecStopPost={exe} pod _cleanup %i\n")
@@ -2527,9 +2535,28 @@ class TestUnitExecSelfHeal:
         monkeypatch.setattr(unit_mod, "unit_path", lambda c: tmp_path / "pod@.service")
         # An executable that exists on every platform the suite runs on — a POSIX
         # path here made unit_exec_ok report "stale" on Windows.
-        monkeypatch.setattr(unit_mod, "_kirocrew_bin", lambda: sys.executable)
+        monkeypatch.setattr(unit_mod, "_kirocrew_argv", lambda: (sys.executable,))
         unit_mod.install_unit(cfg)
         assert unit_mod.unit_is_current(cfg) is True
+
+    def test_spaced_executable_is_quoted_and_current(self, cfg, monkeypatch, tmp_path):
+        from kiro_crew.pod import unit as unit_mod
+
+        exe = tmp_path / "venv with spaces" / "kirocrew"
+        exe.parent.mkdir()
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        monkeypatch.setattr(unit_mod, "unit_path", lambda c: tmp_path / "pod@.service")
+        monkeypatch.setattr(unit_mod, "_kirocrew_argv", lambda: (str(exe),))
+        rendered = unit_mod.install_unit(cfg).read_text()
+        assert 'ExecStart="' in rendered
+        assert unit_mod.unit_is_current(cfg) is True
+
+    def test_malformed_execstart_is_stale(self, tmp_path, monkeypatch):
+        from kiro_crew.pod import unit as unit_mod
+
+        cfg = self._cfg_with_unit(tmp_path, monkeypatch, 'ExecStart="unterminated')
+        assert unit_mod.unit_exec_ok(cfg) is False
 
     def test_start_pod_reinstalls_a_stale_unit_before_booting_it(self, cfg, monkeypatch):
         steps: list[str] = []

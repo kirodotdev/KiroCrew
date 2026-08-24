@@ -7011,6 +7011,12 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     # the line prompts. The taint pass already denies that shape, so this widens
     # nothing in practice.
     seen_bases: list[str] = []
+    # Classifying a base resolves symlinks and sensitive-home roots. A chained
+    # parameter expansion revisits the same bases many times, so repeating that
+    # filesystem work made this synchronous gate exceed its latency ceiling
+    # under normal test load. The filesystem cannot change while this one
+    # command is being inspected; keep the classification only for this call.
+    base_sensitivity: dict[str, bool] = {}
     # The directories `cd -` goes back to.
     prev_bases: list[str] = []
     # Saved (base_dirs, prev_bases, assignments) per open subshell.
@@ -7221,7 +7227,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             if not raw_targets:
                 # A bare `cd` goes to the home directory.
                 base_dirs = [os.path.expanduser("~")]
-                _remember_bases(seen_bases, base_dirs)
+                _remember_bases(seen_bases, base_dirs, base_sensitivity)
                 continue
             # A Windows home anchor becomes `~` BEFORE anything else looks at the
             # token: the hypothesis below reads `$env:USERPROFILE` as the variable
@@ -7267,7 +7273,7 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
             base_dirs = next_bases
             if len(base_dirs) > _MAX_TRACKED_BASES:
                 del base_dirs[: len(base_dirs) - _MAX_TRACKED_BASES]
-            _remember_bases(seen_bases, next_bases)
+            _remember_bases(seen_bases, next_bases, base_sensitivity)
             continue
 
         # No read-verb requirement: the operands of this segment are checked
@@ -7316,7 +7322,9 @@ def _check_sensitive_via_normalizer(command: str) -> str | None:
     return _check_sensitive_cd_taint(command)
 
 
-def _remember_bases(seen: list[str], bases: list[str]) -> None:
+def _remember_bases(
+    seen: list[str], bases: list[str], sensitivity: dict[str, bool]
+) -> None:
     """Add *bases* to the never-pruned *seen* list, keeping order and uniqueness.
 
     Bounded so a long chain of `cd`s cannot grow it without limit; the cap is far
@@ -7331,11 +7339,10 @@ def _remember_bases(seen: list[str], bases: list[str]) -> None:
         # Never evict sensitive bases -- an attacker could flood with dummy cd
         # targets to push a real sensitive base out of the tracked set.
         excess = len(seen) - _MAX_TRACKED_BASES
-        evictable = [
-            i
-            for i, b in enumerate(seen)
-            if not is_sensitive_path(b) and not _dir_holds_sensitive_leaf(b)
-        ]
+        for base in seen:
+            if base not in sensitivity:
+                sensitivity[base] = is_sensitive_path(base) or _dir_holds_sensitive_leaf(base)
+        evictable = [i for i, base in enumerate(seen) if not sensitivity[base]]
         to_remove = set(evictable[:excess])
         seen[:] = [b for i, b in enumerate(seen) if i not in to_remove]
 
