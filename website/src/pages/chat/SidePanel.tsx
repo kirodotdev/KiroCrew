@@ -22,6 +22,7 @@ import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs } from '../../hooks/usePanelTabs'
+import { scrollMemoryKeyFor } from '../../hooks/useScrollMemory'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { useSidePanelDock } from '../../hooks/useSidePanelDock'
 import {
@@ -847,9 +848,11 @@ function McpAppTabBody({ tab, slot }: { tab: PanelTab; slot: string }) {
  * Rail visibility is a single app-wide preference; the rail only renders at
  * all when the chat has a project dir whose tree the backend serves.
  */
-function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onAddToContext, onClose, onSubmitComments, onRevealConsumed }: {
+function FileTabBody({ tab, projectDir, scrollMemoryKey, onContentChange, onDiskContent, onDiffModeChange, onFileSave, onFileOpen, onAddToContext, onClose, onSubmitComments, onRevealConsumed }: {
   tab: PanelTab
   projectDir?: string
+  /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`. */
+  scrollMemoryKey?: string
   onContentChange: (c: string) => void
   /** Disk-originated content (file watch / Refresh): the panel routes it here
    *  so the tab's saved baseline moves with the buffer it just replaced. */
@@ -875,6 +878,7 @@ function FileTabBody({ tab, projectDir, onContentChange, onDiskContent, onDiffMo
       embedded
       filePath={tab.path || ''}
       content={tab.content || ''}
+      scrollMemoryKey={scrollMemoryKey}
       onContentChange={onContentChange}
       onDiskContent={onDiskContent}
       savedBaseline={tab.savedContent}
@@ -938,11 +942,17 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   if (tab.kind === 'terminal') return <CliPanel sessionId={tab.sessionId ?? ''} cwd={tab.cwd} visible={active} onSendToChat={onTerminalSendToChat} />
   if (tab.kind === 'browser') return <WebPreviewPanel sessionKey={slot} active={active} />
   if (tab.kind === 'app') return <McpAppTabBody tab={tab} slot={slot} />
+  // Cross-remount scroll identity for document bodies. Same slot+id key shape
+  // as the app-frame list: the tab id is unique within a slot and stable in
+  // the persisted bucket, so leaving and returning to this chat resolves the
+  // same key.
+  const scrollMemoryKey = scrollMemoryKeyFor(slot, tab.id)
   if (tab.kind === 'file') {
     return (
       <FileTabBody
         tab={tab}
         projectDir={projectDir}
+        scrollMemoryKey={scrollMemoryKey}
         onContentChange={onContentChange}
         onDiskContent={onDiskContent}
         onDiffModeChange={onDiffModeChange}
@@ -972,6 +982,7 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
         slug={tab.artifactSlug || ''}
         kind={tab.artifactKind || 'markdown'}
         content={tab.content || ''}
+        scrollMemoryKey={scrollMemoryKey}
         onClose={onClose}
         onSubmitComments={onSubmitComments}
       />

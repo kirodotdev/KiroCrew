@@ -29,6 +29,11 @@ interface Props {
   onSubmitComments?: (message: string) => void
   /** Render as a SidePanel tab body (fills parent, no resize handle/border). */
   embedded?: boolean
+  /** Stable cross-remount identity (slot + tab id) for the embedded body's
+   *  scroll position — a chat-slot switch unmounts the whole tab body, and
+   *  this is what lets the document come back where the user left it (see
+   *  `useScrollMemory`). Omitted by hosts without that lifecycle. */
+  scrollMemoryKey?: string
 }
 
 const BODY_HEIGHT_STYLE: React.CSSProperties = { height: '100%', minHeight: 0 }
@@ -101,7 +106,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
  * `onSubmitComments` (the local-file user-message path) rather than the
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
-export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSubmitComments, embedded }: Props) {
+export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSubmitComments, embedded, scrollMemoryKey }: Props) {
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -219,6 +224,12 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     bodyPreviewRef: React.RefObject<HTMLDivElement>,
     layer: typeof fa,
     flush = false,
+    // Embedded body only: cross-remount scroll identity, forwarded to
+    // ArtifactBodyNative (whose inner div is the real scroll container).
+    // The fullscreen instance omits it so two live instances never share a
+    // key. Iframe kinds scroll inside their sandbox — deliberately out of
+    // scope (#5701).
+    bodyScrollMemoryKey?: string,
   ) => (
     <div ref={bodyScrollRef} className="relative h-full overflow-auto pr-2">
       {isHydrating ? (
@@ -262,6 +273,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
           scrollNonce={layer.scrollNonce}
           unreadRootIds={layer.unreadRootIds}
           flush={flush}
+          scrollMemoryKey={bodyScrollMemoryKey}
         />
       )}
     </div>
@@ -326,7 +338,7 @@ export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSub
     >
       <div className="flex-1 overflow-hidden -mx-5 -my-4 py-4 flex flex-col pl-4 pr-0 min-h-0">
         <div className="relative flex-1 min-w-0 min-h-0">
-          {renderBody(scrollRef, previewRef, fa, true)}
+          {renderBody(scrollRef, previewRef, fa, true, scrollMemoryKey)}
         </div>
         {/* Sidebar stacks below content (height-capped) so content stays primary. */}
         {fa.sidebarOpen && (

@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import { Download, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { useSandboxDoc } from '../hooks/useSandboxDoc'
+import { useScrollMemory } from '../hooks/useScrollMemory'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -71,7 +72,7 @@ export function isEditableKind(kind: Artifact['kind']): boolean {
 export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   kind, content, editing, onChange, previewRef,
   comments, activeCommentId, scrollNonce, onActivateComment, unreadRootIds,
-  heightStyle, flush,
+  heightStyle, flush, scrollMemoryKey,
 }: {
   kind: Artifact['kind']
   content: string
@@ -96,6 +97,13 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  `ContentRenderer`, whose non-markdown paths draw a second border of their
    *  own unless told to run flush. */
   flush?: boolean
+  /** Cross-remount scroll identity (slot + tab id) — see `useScrollMemory`.
+   *  Passed only by the side panel's EMBEDDED body: a chat-slot switch
+   *  unmounts that instance, and this brings the document back where the
+   *  user left it. The full-page route and the fullscreen overlay omit it
+   *  (different lifecycles, and a second instance sharing the key would
+   *  fight the first over recording). */
+  scrollMemoryKey?: string
 }) {
   const fileType = fileTypeForKind(kind)
   const ext = extForKind(kind)
@@ -103,6 +111,10 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   const isMarkdown = fileType === 'markdown'
   const lang = langFor(ext)
   const scrollerRef = useRef<HTMLDivElement>(null)
+  // This div is the REAL scroll container for natively-rendered artifacts —
+  // the panel's outer wrapper never overflows (measured in the #5701 capture
+  // harness), so the memory must live here to observe anything.
+  const scrollMemory = useScrollMemory(scrollMemoryKey, scrollerRef, content !== '')
   const displayContent = isMarkdown ? content : wrapCode(content, ext)
   // Comment overlay for every natively-rendered body that has a previewRef —
   // markdown (rendered DOM) AND the code path (text/json/svg). Widgets/HTML use
@@ -111,6 +123,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
   return (
     <div
       ref={scrollerRef}
+      onScroll={scrollMemory.onScroll}
       className={`relative overflow-auto ${flush ? '' : 'rounded-xl border border-border bg-card'}`}
       style={heightStyle ?? { minHeight: 480, height: 'calc(100vh - 240px)' }}
     >

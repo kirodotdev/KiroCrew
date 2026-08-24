@@ -218,11 +218,17 @@ interface Props {
   /** Called once a reveal has landed, so the owner can drop the target and keep
    *  it a true one-shot. */
   onRevealConsumed?: () => void
+  /** Stable cross-remount identity (slot + tab id) for the embedded body's
+   *  scroll position — a chat-slot switch unmounts the whole tab body, and
+   *  this is what lets the document come back where the user left it (see
+   *  `useScrollMemory`). Omitted by hosts without that lifecycle. */
+  scrollMemoryKey?: string
 }
 
 import { PierreFilePair, type PierreEditorHandle, type RevealTarget } from '../pierre'
 import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
+import { useScrollMemory } from '../hooks/useScrollMemory'
 
 /**
  * File types that render through a dedicated viewer instead of a text editor.
@@ -823,7 +829,7 @@ export interface MarkdownPanelHandle {
   requestNavigate: (nav: (stillClean: () => boolean) => void) => void
 }
 
-export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle }: Props, ref) {
+export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPanel({ filePath, content, onContentChange, onDiskContent, onSave, onClose, liveWatch, onSubmitComments, onRefresh, reserveWidth, initialDiffMode, onDiffModeChange, embedded, savedBaseline, revealLine, onRevealConsumed, browserRail, railOpen, onRailToggle, scrollMemoryKey }: Props, ref) {
   const ime = useImeGuard()
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
@@ -965,6 +971,16 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const artifactState = useFileArtifactState(filePath, content)
   const previewRef = useRef<HTMLDivElement>(null)
   const sidePanelScrollRef = useRef<HTMLDivElement>(null)
+  // Cross-remount scroll memory for the embedded (side-panel) scroll box —
+  // a chat-slot switch unmounts the whole tab body. A pending line reveal is
+  // an explicit scroll target that outranks memory, so its presence at first
+  // ready suppresses the restore for this mount; recording continues.
+  const scrollMemory = useScrollMemory(
+    scrollMemoryKey,
+    sidePanelScrollRef,
+    content !== '',
+    { suppressRestore: !!revealLine },
+  )
   const fullscreenPreviewRef = useRef<HTMLDivElement>(null)
   const fullscreenBodyRef = useRef<HTMLDivElement>(null)
   const ext = extOf(filePath)
@@ -1733,7 +1749,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
           {/* In markdown preview the scroll box runs flush to the panel's right
               border so the overlay scrollbar and outline rail share that edge;
               pr-6 keeps the text clear of the ticks. */}
-          <div ref={sidePanelScrollRef} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'scrollbar-overlay pr-6' : ''}`}>
+          <div ref={sidePanelScrollRef} onScroll={scrollMemory.onScroll} className={`flex-1 min-h-0 overflow-auto ${isMarkdown && !editing ? 'scrollbar-overlay pr-6' : ''}`}>
             {zeroDiff && <ZeroDiffNotice onExitDiff={toggleDiffMode} />}
             {!zeroDiff && !diffChecking && !isRichType && (
               <DiffViewBlock flush sideBySide={diffSplit} diffMode={diffMode && !editing} fileName={fileName} originalContent={originalContent} content={content} lineNums={lineNums} wordWrap={wordWrap} collapseUnchanged={collapseUnchanged} />
