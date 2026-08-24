@@ -1234,15 +1234,30 @@ def _update(force: bool = False) -> None:
     # Re-install agent config so new denied commands take effect.
     # Run as subprocess since the current process has old code loaded.
     print("  🔒 Refreshing agent config…")
-    r = subprocess.run(
-        [sys.executable, "-m", "kiro_crew", "setup", "--agent-only"],
-        cwd=proj,
-        capture_output=True,
-        timeout=30,
-        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
-        **UTF8_TEXT,
-    )
-    if r.returncode == 0:
+    try:
+        r = subprocess.run(
+            [sys.executable, "-m", "kiro_crew", "setup", "--agent-only"],
+            cwd=proj,
+            capture_output=True,
+            timeout=30,
+            # Output is captured here, so an inherited stdin would let any prompt
+            # the child reaches block invisibly until the timeout: a prompt
+            # nobody can see is a hang. DEVNULL makes it EOF instead, which the
+            # wizard's `_input_or_skip` and `_SetupAborted` path already handles,
+            # and it holds for prompts added later rather than depending on each
+            # one carrying its own terminal check. Same posture as the detached
+            # gateway spawn in `_restart`.
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **UTF8_TEXT,
+        )
+    except subprocess.TimeoutExpired:
+        # Without this the timeout raises past the "Kiro Crew updated" banner
+        # already printed above and ends the command in a traceback, instead of
+        # the actionable warning below.
+        print("  ⚠️  Agent config refresh timed out after 30s")
+        r = None
+    if r is not None and r.returncode == 0:
         print("  ✅ Agent config refreshed (deniedCommands + hooks updated)")
     else:
         print("  ⚠️  Agent config refresh failed — run: kirocrew setup --agent-only")
