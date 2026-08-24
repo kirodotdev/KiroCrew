@@ -165,9 +165,17 @@ function openSection(label: string): void {
   fireEvent.click(screen.getByRole('button', { name: label }))
 }
 
-/** The label-wrapped radio rows (behavior / trust / tier) have no role. */
+/**
+ * The radio rows (behavior / trust / tier), reached by their visible text.
+ *
+ * They carry `role="radio"` rather than being `<label>`s: a label with no control
+ * inside is not a label, and the rows used to be mouse-only — no focus, no
+ * arrow-key movement, nothing announced. Selected by ROLE now, which is what a
+ * user's assistive technology sees, so the query cannot drift from the semantics
+ * again the way a tag-name query did.
+ */
 function clickRow(text: string): void {
-  const row = screen.getByText(text).closest('label')
+  const row = screen.getByText(text).closest('[role="radio"]')
   if (!row) throw new Error(`no option row for ${text}`)
   fireEvent.click(row)
 }
@@ -376,8 +384,8 @@ describe('SettingsPanel behavior section', () => {
     await mount()
     openSection('Behavior')
 
-    const quiet = screen.getByText('Quiet').closest('label') as HTMLElement
-    const normal = screen.getByText('Normal').closest('label') as HTMLElement
+    const quiet = screen.getByText('Quiet').closest('[role="radio"]') as HTMLElement
+    const normal = screen.getByText('Normal').closest('[role="radio"]') as HTMLElement
     expect(normal.style.background).toBe('var(--accent-glow)')
 
     fireEvent.click(quiet)
@@ -431,15 +439,15 @@ describe('SettingsPanel background activity section', () => {
     await mount()
     openSection('Background Activity')
 
-    expect((screen.getByText('Balanced').closest('label') as HTMLElement).style.background)
+    expect((screen.getByText('Balanced').closest('[role="radio"]') as HTMLElement).style.background)
       .toBe('var(--accent-glow)')
     clickRow('Economy')
-    expect((screen.getByText('Economy').closest('label') as HTMLElement).style.background)
+    expect((screen.getByText('Economy').closest('[role="radio"]') as HTMLElement).style.background)
       .toBe('var(--accent-glow)')
 
     // Behavior is a separate key and must be untouched by a tier pick.
     openSection('Behavior')
-    expect((screen.getByText('Normal').closest('label') as HTMLElement).style.background)
+    expect((screen.getByText('Normal').closest('[role="radio"]') as HTMLElement).style.background)
       .toBe('var(--accent-glow)')
   })
 

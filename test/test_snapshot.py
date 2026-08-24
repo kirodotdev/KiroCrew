@@ -38,8 +38,7 @@ def _setup_fake_kirocrew(d: Path) -> None:
 
     # memory.db with all tables
     conn = sqlite3.connect(str(d / "memory.db"))
-    conn.executescript(
-        """
+    conn.executescript("""
         CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);
         CREATE TABLE semantic_memory (key TEXT PRIMARY KEY, value_json TEXT NOT NULL,
             confidence REAL DEFAULT 0.5, source TEXT NOT NULL, created_at TEXT NOT NULL,
@@ -71,8 +70,7 @@ def _setup_fake_kirocrew(d: Path) -> None:
             VALUES ('user', 'prefers', 'dark_mode', 'ep1', '2026-01-01');
         INSERT INTO knowledge_edges (source_key, target_key, relation, weight, created_at)
             VALUES ('user', 'dark_mode', 'prefers', 1.0, '2026-01-01');
-    """
-    )
+    """)
     conn.close()
 
     (d / "crons.json").write_text(
@@ -452,6 +450,112 @@ class TestRestoreMerge:
         assert ret == 0
         assert (dst / "plan_memory/plan1.json").is_file()
         assert (dst / "plan_memory/local_plan.json").read_text(encoding="utf-8") == "local plan"
+
+    def test_merge_still_imports_other_components_after_a_crons_refusal(
+        self, tmp_path, monkeypatch
+    ):
+        """One unreadable component must not abort the whole merge."""
+        src = tmp_path / "src-partial"
+        _setup_fake_kirocrew(src)
+        (src / "crons.json").write_text("{not json", encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, tmp_path / "out-partial")
+
+        dst = tmp_path / "dst-partial"
+        _setup_fake_kirocrew(dst)
+        (dst / "telemetry_salt").unlink()
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        assert restore_main([str(tarball), "--mode", "merge", "--force"]) == 0
+        assert (dst / "telemetry_salt").is_file()
+
+    def test_merge_refuses_a_crons_file_that_is_not_an_object(self, env, capsys, monkeypatch):
+        """Valid JSON is not a valid cron file; `jobs` is looked up on it."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-list-crons"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text('["not", "a", "cron file"]', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            '{"jobs": null}',  # present but not iterable
+            '{"jobs": "not-a-list"}',  # iterable, but of characters
+            '{"jobs": [123]}',  # a list whose entries have no .get
+            '{"jobs": [{"name": []}]}',  # a present name must be hashable text
+            '{"jobs": [{"name": "\\ud800"}]}',  # a lone surrogate cannot be UTF-8 encoded
+        ],
+    )
+    def test_merge_refuses_a_crons_file_whose_jobs_are_the_wrong_shape(
+        self, env, capsys, monkeypatch, body
+    ):
+        """The merge reads each job and hashes present names, so the shape it
+        relies on has to hold before it starts."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / f"dst-shape-{abs(hash(body))}"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+        assert (dst / "crons.json").read_text(encoding="utf-8") == body
+
+    def test_merge_refuses_an_incoming_crons_file_with_a_non_object_job(
+        self, tmp_path, capsys, monkeypatch
+    ):
+        """Same contract on the incoming side."""
+        src = tmp_path / "src-bad-job"
+        _setup_fake_kirocrew(src)
+        (src / "crons.json").write_text('{"jobs": [123]}', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+        tarball = _make_snapshot(src, tmp_path / "out-bad-job")
+
+        dst = tmp_path / "dst-bad-job"
+        _setup_fake_kirocrew(dst)
+        keep = (dst / "crons.json").read_text(encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        ret = restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert ret == 0
+        assert "skipping" in capsys.readouterr().out.lower()
+        assert (dst / "crons.json").read_text(encoding="utf-8") == keep
+
+    def test_merge_treats_a_missing_jobs_key_as_empty(self, env, monkeypatch):
+        """Preservation: absent `jobs` already meant "no jobs" and still does."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-no-jobs-key"
+        _setup_fake_kirocrew(dst)
+        (dst / "crons.json").write_text('{"version": 1}', encoding="utf-8")
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        assert restore_main([str(tarball), "--mode", "merge", "--force"]) == 0
+
+        merged = json.loads((dst / "crons.json").read_text(encoding="utf-8"))
+        assert len(merged["jobs"]) == 1
+
+    def test_merge_still_imports_a_well_formed_crons_file(self, env, monkeypatch):
+        """Preservation: the guard must not change the ordinary merge."""
+        _, _, tarball, tmp_path = env
+        dst = tmp_path / "dst-good-crons"
+        _setup_fake_kirocrew(dst)
+        d = json.loads((dst / "crons.json").read_text(encoding="utf-8"))
+        d["jobs"][0]["name"] = "different-job"
+        (dst / "crons.json").write_text(json.dumps(d))
+        monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+        restore_main([str(tarball), "--mode", "merge", "--force"])
+
+        assert len(json.loads((dst / "crons.json").read_text(encoding="utf-8"))["jobs"]) == 2
 
     def test_merge_restores_missing_security(self, env, capsys, monkeypatch):
         """TEST 16"""
@@ -862,3 +966,80 @@ class TestConcurrentSnapshot:
         tarballs = list(out.glob("kirocrew-snapshot-*.tar.gz"))
         assert len(tarballs) == 2
         assert tarballs[0].name != tarballs[1].name
+
+
+class TestTheArchiveIsLockedDownBeforeItIsPublished:
+    """The snapshot tarball can contain ``sel_hmac.key``, so it is secret-bearing.
+
+    It was built at a ``.tmp`` sibling, renamed into place, and only then locked
+    down — so between the rename and the lockdown the archive sat at its final,
+    predictable path under whatever the destination directory gave it. Unlike
+    the other writers in this family that window is not Windows-only: ``tarfile``
+    does not create its file ``0600``, so on POSIX the archive is readable at the
+    final path until the ``chmod`` lands too.
+
+    Locking the temp down before the rename closes it on both platforms, and
+    makes the "abort rather than ship an under-protected archive" promise in the
+    code's own comment true by construction: a failure now happens before there
+    is anything published to take back.
+    """
+
+    def test_the_lockdown_runs_before_the_archive_is_published(self, tmp_path, monkeypatch):
+        from kiro_crew import platform_compat
+
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        real = platform_compat.restrict_to_owner
+        locked: list[Path] = []
+
+        def _recording(path):
+            locked.append(Path(path))
+            return real(path)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _recording)
+        snapshot_main([str(out)])
+
+        published = sorted(out.glob("kirocrew-snapshot-*.tar.gz"))
+        assert published, "no snapshot was produced"
+        archive_locks = [p for p in locked if p.parent == out]
+        assert archive_locks, "the snapshot archive was never locked down"
+        assert not [p for p in archive_locks if p in published], (
+            "the archive was locked down AFTER it was published at its final "
+            f"path, leaving a secret-bearing tarball readable first: {archive_locks}"
+        )
+
+    def test_a_failed_lockdown_publishes_no_archive(self, tmp_path, monkeypatch):
+        """The comment promises an abort; nothing may be left at the final path."""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        monkeypatch.setattr(
+            "kiro_crew.platform_compat.restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+
+        with pytest.raises(OSError):
+            snapshot_main([str(out)])
+
+        assert not list(
+            out.glob("kirocrew-snapshot-*.tar.gz")
+        ), "an archive whose lockdown failed was left at its final path"
+        assert not list(out.glob("*.tmp")), "the temp archive was not cleaned up"
+
+    def test_a_successful_snapshot_is_still_owner_only(self, tmp_path, monkeypatch):
+        """Preservation: the permission the lockdown exists to apply still lands."""
+        src = tmp_path / "src"
+        out = tmp_path / "out"
+        _setup_fake_kirocrew(src)
+        monkeypatch.setenv("KIROCREW_HOME", str(src))
+
+        snapshot_main([str(out)])
+        tarball = sorted(out.glob("kirocrew-snapshot-*.tar.gz"))[0]
+        assert tarball.is_file()
+        if os.name == "posix":
+            assert tarball.stat().st_mode & 0o777 == 0o600, oct(tarball.stat().st_mode)

@@ -51,6 +51,7 @@
         "chat_turn_timeout_secs": 7200,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
+        "session_control": false,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -661,6 +662,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 600
+    },
+    {
+      "path": "agent.session_control",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Control",
+      "help": "Let one chat session open a new session, and stop or read another session of yours. No session writes into another session's conversation: reading returns a transcript tail, stopping cancels an in-flight turn, and a created session starts empty for you to type into. Off by default: the three tools ride on a server you may already have assigned for other work, so reaching another session waits for you to grant it here rather than arriving with an upgrade. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.subagent_cost_gb",
@@ -4350,6 +4365,334 @@
       "defaultValue": ""
     },
     {
+      "path": "whatsapp",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "WhatsApp",
+      "help": "WhatsApp (QR-linked personal account) integration settings.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "dm_policy": "self",
+        "allowed_wa_ids": [],
+        "groups": [],
+        "db_path": "",
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95,
+        "session_folder": ""
+      }
+    },
+    {
+      "path": "whatsapp.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Enabled",
+      "help": "Enable the WhatsApp channel (QR-linked personal account over the WhatsApp Web protocol). Pair a device from Settings > Channels; needs the 'whatsapp' dependency extra installed.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "whatsapp.dm_policy",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "DM Policy",
+      "help": "Who may command the agent in direct chats: 'self' (only the linked account itself — your own messages, the default), 'allowlist' (yourself plus allowed_wa_ids), 'open' (any sender), or 'disabled'. Unknown values deny everyone (fail closed).",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "self"
+    },
+    {
+      "path": "whatsapp.allowed_wa_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Allowed WhatsApp IDs",
+      "help": "Phone numbers (digits only, country code, no '+') additionally permitted to DM the agent when dm_policy='allowlist'. Empty adds nobody beyond the linked account.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "whatsapp.allowed_wa_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "whatsapp.groups",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Group Rules",
+      "help": "Per-group participation rules. Each entry: {'jid': group JID (…@g.us), 'name': display label, 'mode': 'mention' (reply only when @-mentioned or quoted, the default) | 'rules' (also speak unprompted when the entry's rules say the agent can genuinely help) | 'off', 'rules': free-text guidance for when to speak, 'cooldown_s': minimum seconds between unprompted replies (default 120)}. Groups not listed are ignored entirely.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "whatsapp.groups.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "whatsapp.db_path",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Session DB Path",
+      "help": "Read-only. The pairing session database always lives at <data home>/whatsapp/session.db, because that path is what the sensitive-path protection matches: it holds the linked-device keys, and moving it elsewhere would take the credential out from behind the one control that stops an agent reading it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "whatsapp.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "Prompt the user to /compact or /new when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "whatsapp.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context passes this percentage.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
+      "path": "whatsapp.session_folder",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "whatsapp"
+      ],
+      "label": "Session Folder",
+      "help": "Optional sidebar folder for sessions that start on this channel. Empty (the default) leaves them unfiled; any other value is the folder name, created when these settings are saved and marked with the channel's brand mark. A configured folder that no longer exists leaves conversations unfiled until the next save recreates it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
+      "path": "feishu",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Feishu",
+      "help": "Feishu (Lark/飞书) channel configuration.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "enabled": false,
+        "allowed_open_ids": [],
+        "allow_group": false,
+        "allowed_group_ids": [],
+        "soft_threshold_pct": 80,
+        "hard_threshold_pct": 95
+      }
+    },
+    {
+      "path": "feishu.enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Enabled",
+      "help": "Enable the Feishu (Lark/飞书) channel. Requires FEISHU_APP_ID and FEISHU_APP_SECRET environment variables to be set.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "feishu.allowed_open_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allowed Open IDs",
+      "help": "Feishu open_ids allowed to DM the bot (deny-by-default: empty list authorises nobody). Find your open_id via the Feishu developer console.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "feishu.allowed_open_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "feishu.allow_group",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allow Group Chat",
+      "help": "Serve messages from group chats whose chat_id is in allowed_group_ids. The bot must be @-mentioned in a group to receive the message.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "feishu.allowed_group_ids",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Allowed Group IDs",
+      "help": "Feishu group chat_ids allowed to drive a turn (requires allow_group=true).",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "feishu.allowed_group_ids.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
+    },
+    {
+      "path": "feishu.soft_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Soft Context Threshold %",
+      "help": "When a conversation's context passes this, prompt the user to /compact or /new instead of auto-compacting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 80
+    },
+    {
+      "path": "feishu.hard_threshold_pct",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "feishu"
+      ],
+      "label": "Hard Context Threshold %",
+      "help": "Force a compaction when context reaches this so the window never overflows.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 95
+    },
+    {
       "path": "discord",
       "kind": "core",
       "type": "object",
@@ -4371,6 +4714,8 @@
         "allowed_channel_ids": [],
         "auto_thread": true,
         "soft_threshold_pct": 80,
+        "reactions_enabled": true,
+        "show_thinking": false,
         "session_folder": ""
       }
     },
@@ -4447,7 +4792,7 @@
         "discord"
       ],
       "label": "Allowed Thread IDs",
-      "help": "Discord server thread IDs where approved users may run the agent. Empty = DMs only. Normal server channels are always denied.",
+      "help": "Discord server thread IDs where approved users may run the agent. Empty = DMs only. A server channel is denied unless it is listed in allowed_channel_ids, and a turn there still runs in a thread.",
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": []
@@ -4527,6 +4872,38 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 80
+    },
+    {
+      "path": "discord.reactions_enabled",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Reactions Enabled",
+      "help": "Show phase-aware emoji reactions on Discord messages during processing.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
+    },
+    {
+      "path": "discord.show_thinking",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [
+        "discord"
+      ],
+      "label": "Show Thinking",
+      "help": "Post the model's thinking/reasoning as a subtext note in Discord. Off by default to keep responses concise.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "discord.session_folder",

@@ -21,6 +21,8 @@ from __future__ import annotations
 import logging
 import subprocess
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 logger = logging.getLogger(__name__)
 
 _GIT_TIMEOUT_SECS = 10
@@ -50,8 +52,8 @@ def resolve_remote_url(proj: str, *, remote: str = "", branch: str = "") -> str:
                 ["git", *args],
                 cwd=proj,
                 capture_output=True,
-                text=True,
                 timeout=_GIT_TIMEOUT_SECS,
+                **UTF8_TEXT,
             )
         except (OSError, subprocess.SubprocessError):
             return ""

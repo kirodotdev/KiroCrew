@@ -80,6 +80,7 @@ function safeApprovalUrl(value: string): string {
 // The loopback pre-check lives in `utils/loopbackReturnAddress` (shared with
 // the chat banner's relay affordance).
 import { isValidLoopbackReturnAddress } from '../../utils/loopbackReturnAddress'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 export interface PendingConnect {
   kind: 'new' | 'reconnect'
@@ -363,6 +364,7 @@ function ConnectionCard({
   onTest,
   onRelay,
 }: ConnectionCardProps) {
+  const ime = useImeGuard()
   const { t } = useTranslation()
   const [returnAddress, setReturnAddress] = useState('')
   const [invalidReturnAddress, setInvalidReturnAddress] = useState(false)
@@ -502,12 +504,7 @@ function ConnectionCard({
                     setReturnAddress(event.target.value)
                     if (invalidReturnAddress) setInvalidReturnAddress(false)
                   }}
-                  onKeyDown={event => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault()
-                      void runRelay()
-                    }
-                  }}
+                  {...ime.bindEnter({ onEnter: () => void runRelay() })}
                   placeholder={t('pages.connectionsPage.return_address_placeholder')}
                   autoComplete="off"
                   spellCheck={false}

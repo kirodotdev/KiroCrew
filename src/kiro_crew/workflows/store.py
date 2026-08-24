@@ -126,6 +126,14 @@ class WorkflowRunStore:
             tmp.write_text(payload, encoding="utf-8")
             os.replace(tmp, path)  # atomic on POSIX
             try:
+                # POSIX tightening only, deliberately NOT
+                # ``platform_compat.restrict_to_owner``: that helper spawns
+                # ``icacls`` on Windows (a blocking subprocess), and ``save``
+                # runs on the event loop via the registry's persist hooks,
+                # where a blocking call freezes every gateway task. The
+                # payload is already passed through ``_redact`` above, so
+                # what a wider Windows DACL could expose is the redacted
+                # run record, not credentials.
                 os.chmod(path, 0o600)
             except OSError:
                 pass

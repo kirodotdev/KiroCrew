@@ -996,3 +996,177 @@ class TestSearchDenyTargetSynthesis:
         from kiro_crew.hooks import _search_deny_target
 
         assert _search_deny_target(params) == ""
+
+
+class TestSearchTargetSynthesizedTier:
+    """The synthesized search target is evaluated in its own tier.
+
+    Run through the shared rule set it collides with the command-oriented built-ins on
+    argument text, and the only per-rule remedy -- disabling that rule by id -- also stops
+    it protecting real shell commands. So the shipped catalogue takes no part in a
+    synthesized target, and the patterns that do are passed in explicitly.
+    """
+
+    # A REAL built-in: `mkfs.*` (the one shipped rule that collides with a plausible
+    # search root). Named here rather than hand-rolled so the tests measure the shipped
+    # catalogue, not a fixture that could diverge from it.
+    COLLIDING_BUILTIN = r"mkfs.*"
+    NAMESPACE = "file-search"
+
+    def _effective(self):
+        from kiro_crew.security import BUILTIN_DENIED_RULES, compute_effective_denied
+
+        return list(compute_effective_denied(BUILTIN_DENIED_RULES, (), False, (), ()))
+
+    def test_the_colliding_builtin_is_actually_shipped(self):
+        # Guards the premise: if the catalogue drops or respells this rule, the collision
+        # tests below would silently stop measuring anything.
+        assert self.COLLIDING_BUILTIN in self._effective()
+
+    def test_no_shipped_builtin_is_authored_against_the_grammar(self):
+        # The load-bearing premise for the shipped catalogue taking no part: no built-in
+        # can express a scope rule for a synthesized target, so its only possible hit is
+        # incidental. Stated behaviourally rather than by grepping for the literal,
+        # because a regex can reference the namespace without containing it: for every
+        # shipped rule that matches a synthesized target, the match must SURVIVE
+        # replacing the namespace bytes -- i.e. it never depended on them.
+        #
+        # This is a ratchet, not a probe: a future built-in written against the grammar
+        # fails it, which is the signal to give that rule an explicit way into the tier.
+        from kiro_crew.security import _deny_pattern_matches
+
+        fill = "\x01" * len(self.NAMESPACE)  # inert, absent from every shipped pattern
+        for target in (
+            "file-search path=/srv/mkfs-tests max_depth=3",
+            "file-search path=/home/alice",
+            "file-search",
+        ):
+            stripped = fill + target.lower()[len(self.NAMESPACE) :]
+            for pattern in self._effective():
+                if not _deny_pattern_matches(pattern, target.lower(), True):
+                    continue
+                assert _deny_pattern_matches(pattern, stripped, True), (
+                    f"built-in {pattern!r} references the synthesized grammar; it needs an "
+                    f"explicit way into the synthesized tier rather than being excluded"
+                )
+
+    def test_the_deny_exception_map_is_still_empty(self):
+        # This tier deliberately omits the `_DENY_EXCEPTIONS` carve-out that `is_denied`
+        # carries, because the map ships empty and replicating it would be dead symmetry.
+        # The omission is only safe while that holds: an entry appearing here means a
+        # scoped exception exists that a synthesized target would silently not honour, so
+        # this reddens and the tier gets revisited deliberately.
+        from kiro_crew.security import _DENY_EXCEPTIONS
+
+        assert not _DENY_EXCEPTIONS
+
+    def test_a_command_rule_takes_no_part_in_a_synthesized_target(self):
+        from kiro_crew.security import is_denied_synthesized_target
+
+        # The shipped catalogue is simply not among the participating patterns.
+        assert is_denied_synthesized_target("file-search path=/srv/mkfs-tests") is None
+
+    def test_that_same_rule_still_denies_the_real_command(self):
+        # The whole point of a separate tier rather than disabling: the rule keeps working.
+        from kiro_crew.security import is_denied
+
+        assert is_denied("mkfs.ext4 /dev/sda1", denied_regexes=self._effective()) is not None
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [
+            r"path=/mnt/forbidden",  # names a grammar FIELD -- plainly written for this target
+            r"max_depth=99",  # the other grammar field
+            r"/mnt/forbidden",  # bare path text -- weaker, but still the operator's call
+            r"mkfs.*",  # text coincides with a shipped rule; still the OPERATOR's rule
+        ],
+    )
+    def test_an_operator_authored_regex_denies(self, pattern):
+        # Every participating pattern denies on a match, with no second judgement applied.
+        # The last case is the one an earlier revision got wrong: it classified the merged
+        # effective set by pattern TEXT, so an operator rule whose text coincided with a
+        # shipped one was read as shipped and dropped -- a silent fail-open on an explicit
+        # deny. Pattern text is not provenance.
+        from kiro_crew.security import is_denied_synthesized_target
+
+        assert (
+            is_denied_synthesized_target(
+                "file-search path=/mnt/forbidden/mkfs-x max_depth=99", [pattern]
+            )
+            is not None
+        )
+
+    def test_an_operator_authored_glob_denies(self):
+        from kiro_crew.security import is_denied_synthesized_target
+
+        assert (
+            is_denied_synthesized_target(
+                "file-search path=/mnt/forbidden", extra_patterns=["*forbidden*"]
+            )
+            is not None
+        )
+
+    def test_no_patterns_means_no_fallback_to_the_builtins(self):
+        # `None` must mean "the regex tier contributes nothing", NOT `is_denied`'s
+        # fail-closed-to-every-builtin. Getting this backwards would evaluate the whole
+        # shipped catalogue against a synthesized target and reinstate the collision.
+        from kiro_crew.security import is_denied_synthesized_target
+
+        assert is_denied_synthesized_target("file-search path=/srv/mkfs-tests", None) is None
+        assert is_denied_synthesized_target("file-search path=/srv/mkfs-tests", []) is None
+
+    def test_an_argv_floor_cannot_be_needed_by_a_synthesized_target(self):
+        # This tier does not run the argv-structural floors, so pin why that is not a
+        # hole: the synthesizer whitespace-encodes every value, so a hostile path cannot
+        # split into the two adjacent tokens a floor looks for, and the program token is
+        # always the namespace. A search of a tree cannot mint a credential.
+        from kiro_crew.hooks import _search_deny_target
+        from kiro_crew.security import _is_credential_mint, is_denied_synthesized_target
+
+        target = _search_deny_target({"path": "/srv/kirocrew token", "pattern": "*.py"})
+        assert " " not in target.split("path=", 1)[1]
+        assert not _is_credential_mint(target.lower())
+        assert is_denied_synthesized_target(target) is None
+
+    def test_the_gate_routes_an_operator_rule_and_drops_the_collision(self):
+        # End to end through HookManager, the only way the tier is reachable in
+        # production: the operator's own search rule denies, and the shipped rule that
+        # merely collides does not -- while the same manager still denies the real command.
+        mgr = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[
+                    UserDeniedPattern(id="u1", pattern=r"path=/mnt/forbidden")
+                ]
+            )
+        )
+        denied = mgr.on_tool_call(
+            "look around",
+            tool_kind="read",
+            raw_params={"path": "/mnt/forbidden", "pattern": "*.md"},
+        )
+        assert denied.action == TOOL_DENY
+        allowed = mgr.on_tool_call(
+            "look around",
+            tool_kind="read",
+            raw_params={"path": "/srv/mkfs-tests", "pattern": "*.md"},
+        )
+        assert allowed.action != TOOL_DENY
+        real = mgr.on_tool_call("format the disk", command="mkfs.ext4 /dev/sda1", is_shell=True)
+        assert real.action == TOOL_DENY
+
+    def test_a_disabled_operator_rule_does_not_participate(self):
+        # Only ENABLED operator patterns are passed, matching the regex tier's own
+        # semantics for a real command.
+        mgr = HookManager(
+            HooksConfig(
+                denied_commands_user_added=[
+                    UserDeniedPattern(id="u1", pattern=r"path=/mnt/forbidden", enabled=False)
+                ]
+            )
+        )
+        result = mgr.on_tool_call(
+            "look around",
+            tool_kind="read",
+            raw_params={"path": "/mnt/forbidden", "pattern": "*.md"},
+        )
+        assert result.action != TOOL_DENY

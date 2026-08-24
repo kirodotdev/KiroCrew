@@ -415,7 +415,20 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 # without the exemption the middleware 403s the runtime and every <mcwidget>
 # renders unstyled (Tailwind classes silently ignored, inline styles only).
 # Same exposure class as /assets/: static non-secret files.
-_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/vendor/", "/artifact-app/")
+# /sandbox-doc/ is the model-authored-HTML document channel: auth is the HMAC
+# path token minted by the authed POST /api/sandbox-doc endpoint. It exists
+# because a blob: URL is refused outright by some WebKit-based in-app browsers,
+# so artifact and widget frames load a real document instead. See
+# dashboard/handlers/sandbox_doc.py for the full security model.
+# Same exposure class as /assets/: static non-secret files.
+_BYPASS_PREFIXES = (
+    "/assets/",
+    "/static/",
+    "/fonts/",
+    "/vendor/",
+    "/artifact-app/",
+    "/sandbox-doc/",
+)
 _BYPASS_EXACT = {
     "/logo.png",
     "/manifest.json",
@@ -474,10 +487,75 @@ _BYPASS_EXACT = {
 # App-ID audience + signature) before processing. Only POST is routed today, so
 # the scope closes nothing yet — it is here so the shape a future entry gets
 # copied from is the safe one.
+
+#: The Bot Framework inbound webhook route. Named once because TWO independent
+#: middleware exemptions target it (the token gate below and the CSRF Origin
+#: check in ``server``), and a hand-copied second spelling is how one control
+#: ends up pointed at a route the other is not.
+TEAMS_WEBHOOK_PATH = "/api/messaging/teams"
+
+#: The inbound agent webhook route, named once for exactly the same reason
+#: :data:`TEAMS_WEBHOOK_PATH` is: the same two independent middleware exemptions
+#: target it, and one of them keying off a re-typed literal is how a route ends
+#: up exempt from one control and not the other.
+AGENT_HOOK_PATH = "/api/hooks/agent"
+
+#: Method scope shared by every self-authenticating external webhook entry: POST
+#: is the only method whose handler carries its own credential check.
+_SELF_AUTH_WEBHOOK_METHODS = frozenset({"POST"})
+
 _BYPASS_EXACT_METHODS: dict[str, frozenset[str]] = {
-    "/api/hooks/agent": frozenset({"POST"}),
-    "/api/messaging/teams": frozenset({"POST"}),
+    AGENT_HOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+    TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
 }
+
+# Exact-path exemptions from the CSRF **Origin** check, path -> allowed methods.
+# A separate map from the token-auth bypass above, deliberately: skipping the
+# cookie gate and skipping the Origin check are two different grants, and a route
+# may need one without the other.
+#
+# ONE entry, and adding a second is a security review rather than a copy of this
+# line. `/api/hooks/agent` shares the shape -- self-authenticating, cookie-less,
+# server-to-server -- and is in the token-auth bypass above, but it is NOT here:
+# no reported failure named it, its own proxy topologies already work, and a
+# perimeter exemption is far harder to withdraw once a caller depends on it than
+# it is to add later with its own cause.
+#
+# WHY dropping the Origin check is sound for the Teams route: CSRF exists to stop
+# a BROWSER making a cross-origin state-changing request that the browser then
+# decorates with the victim's cookies. ``api_teams_activity`` reads no cookie at
+# all, so there is nothing for a cross-origin page to ride; it authenticates the
+# Bot Framework JWT instead (issuer, App-ID audience, RS256 signature over the
+# Bot Framework JWKS, expiry). A cross-origin page can neither obtain nor forge
+# one, so an Origin the check would have rejected buys an attacker nothing.
+#
+# WHY the exemption is REQUIRED and not a convenience: the Connector is
+# server-to-server and sends neither ``Origin`` nor ``Referer``.
+# ``origin.check_origin`` trusts a header-less request only from a loopback peer
+# or the dashboard's unix socket, so such a POST arriving straight at the gateway
+# is refused 403 before the credential is ever examined -- which is the "public
+# hostname on a VM/App Service" topology in ``docs/teams-integration.md``.
+# Nothing an operator can configure widens it: unlike the Host allowlist, which
+# ``dashboard.url`` feeds, there is no setting that admits an Origin-less
+# non-loopback POST.
+#
+# The METHOD scope is load-bearing: only POST is exempt, so the ``PUT``/``DELETE``
+# ``/api/hooks/{hook_id}`` CRUD routes -- whose handler authenticates by dashboard
+# token alone -- keep their Origin check even though the literal ``agent`` matches
+# their wildcard.
+CSRF_EXEMPT_EXACT_METHODS: dict[str, frozenset[str]] = {
+    TEAMS_WEBHOOK_PATH: _SELF_AUTH_WEBHOOK_METHODS,
+}
+
+
+def is_csrf_exempt(path: str, method: str) -> bool:
+    """Whether *path* + *method* is a webhook exempt from the CSRF Origin check.
+
+    The single read point for :data:`CSRF_EXEMPT_EXACT_METHODS`, so both dashboard
+    middleware chains share one exemption rather than a literal list each.
+    """
+    return method in CSRF_EXEMPT_EXACT_METHODS.get(path, frozenset())
+
 
 # Anchored bypass for installed-app static UI bundles only (federated-app
 # design). Matches /apps/{name}/ui/<anything>, where {name} is the
@@ -514,6 +592,7 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/fonts/",
     "/app-assets/",
     "/artifact-app/",
+    "/sandbox-doc/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served
@@ -1662,25 +1741,36 @@ def caller_record_is_missing(
 
 
 def _cron_job_exists(jobs: object, job_id: str) -> bool:
-    """Whether a cron job id is in the registry (cache-only read, see ``_cron_job_owner``)."""
+    """Whether a cron job id is in the registry (cache-only read, see ``_cron_job_owner``).
+
+    Fails CLOSED: an unreadable/erroring registry returns ``False`` ("does not
+    exist") so the ``_internal_caller_record_missing`` DENY branch fires and the
+    delegated caller is refused rather than admitted as the unscoped dashboard
+    user. Per SAX-04 outcome_3, an auth decision must fail closed when the source
+    it depends on is unavailable; the in-memory registry makes this rare, but the
+    branch must not silently escalate a delegated caller on a torn read.
+    """
     try:
         snapshot = list(cast("Iterable[Any]", jobs))
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        # Cannot read the registry: do not manufacture a refusal from a failure
-        # to look, which would deny every delegated caller on a transient error.
-        return True
+        return False
     return any(str(getattr(j, "id", "") or "") == job_id for j in snapshot)
 
 
 def _subagent_record_exists(subagents: object, agent_id: str) -> bool:
-    """Whether a subagent id is in the registry (plain dict lookup)."""
+    """Whether a subagent id is in the registry (plain dict lookup).
+
+    Fails CLOSED on an unreadable registry (no ``get`` / lookup raises): returns
+    ``False`` so the delegated caller is denied rather than escalated. See
+    ``_cron_job_exists`` for the SAX-04 fail-closed rationale.
+    """
     lookup = getattr(subagents, "get", None)
     if lookup is None:
-        return True  # unreadable registry: see ``_cron_job_exists``
+        return False  # unreadable registry: fail closed, see ``_cron_job_exists``
     try:
         return lookup(agent_id) is not None
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return True
+        return False
 
 
 def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:

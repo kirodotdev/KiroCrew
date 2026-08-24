@@ -35,34 +35,39 @@ from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.attachments import IngestLimits, append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
+from kiro_crew.messaging.commands import (
+    YOLO_PHRASING_PLAIN,
+    format_ttl,
+    parse_dashboard_ttl,
+    run_yolo_command,
+    stop_running_turn,
+)
 from kiro_crew.messaging.dispatch import build_directive_consumer, delivery_is_muted
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
-    UNBIND_REASON_ORIGIN_REBIND,
     ChannelLink,
     bind_origin_mirror,
     build_dm_session_key,
-    legacy_dashboard_mirror_key,
+    rebind_conversation_location,
     release_conversation_location,
     seed_generation,
 )
 from kiro_crew.messaging.renderer import SilentRenderer
 from kiro_crew.messaging.transport import InboundMessage
-from kiro_crew.safety_override import describe_grant_lifetime, safety_override
+from kiro_crew.safety_override import safety_override
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.telegram.attachments import process_telegram_attachments
 from kiro_crew.telegram.commands import (
     ConversationState,
     build_help_text,
-    format_ttl,
     is_bare_mid_turn_override,
     parse_command,
     parse_command_argument,
-    parse_dashboard_ttl,
+    parse_dashboard_argument,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import TelegramApprovalDecider, TelegramRenderer
@@ -79,6 +84,7 @@ if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
     from kiro_crew.telegram.client import TelegramCallback, TelegramClient
 
+from kiro_crew.messaging.queue_receipt import MAX_COLLAPSE as _MAX_COLLAPSE
 from kiro_crew.messaging.queue_receipt import STEER_ACK_EMOJI as _STEER_ACK_EMOJI
 from kiro_crew.messaging.queue_receipt import (
     ReceiptQueue,
@@ -93,10 +99,6 @@ logger = logging.getLogger(__name__)
 # path's _DEFAULT_KIROCREW_AGENT.
 _DEFAULT_KIROCREW_AGENT = "kirocrew"
 
-# Upper bound on how many queued messages collapse into a single combined turn.
-# A single human won't realistically burst past this mid-turn; anything beyond
-# stays queued and drains after the next turn (logged for observability).
-_MAX_COLLAPSE = 50
 
 # Keep queue collapse within the shared ingestion layer's per-turn file cap.
 # Without this, two queued 10-photo albums would concatenate to 20 attachments
@@ -437,9 +439,7 @@ class TelegramDispatcher:
             self._bind_origin_mirror(session_key, route, chat_id)
             # ── Attachment ingestion (mirrors Discord) ──
             if msg.attachments:
-                attachment_result = await process_telegram_attachments(
-                    self.client, msg.attachments
-                )
+                attachment_result = await process_telegram_attachments(self.client, msg.attachments)
                 attachment_temp_paths = list(attachment_result.temp_paths)
                 text = append_attachment_context(text, attachment_result)
             if not text:
@@ -511,7 +511,9 @@ class TelegramDispatcher:
             # fall through to the except and re-record the successful turn). ──
             self.sessions.record_success(session_key)
             try:
-                await asyncio.to_thread(self._persist_turn, session_key, text, accumulated, is_new, agent)
+                await asyncio.to_thread(
+                    self._persist_turn, session_key, text, accumulated, is_new, agent
+                )
             except Exception:
                 logger.warning(
                     "Telegram: persist_turn failed session=%s", session_key, exc_info=True
@@ -665,7 +667,10 @@ class TelegramDispatcher:
         # we run it now (re-entering handle_message, which re-strips the directive
         # and runs it as a fresh turn) instead of stranding it.
         if not await self._enqueue_with_receipt(
-            session_key, chat_id, text, thread=thread,
+            session_key,
+            chat_id,
+            text,
+            thread=thread,
             attachments=list(msg.attachments) if msg.attachments else None,
         ):
             await self.handle_message(msg)
@@ -719,11 +724,7 @@ class TelegramDispatcher:
                         and len(all_attachments) + len(item_attachments)
                         > _MAX_COLLAPSED_ATTACHMENTS
                     )
-                    if (
-                        not defer_rest
-                        and len(texts) < _MAX_COLLAPSE
-                        and not exceeds_attachment_cap
-                    ):
+                    if not defer_rest and len(texts) < _MAX_COLLAPSE and not exceeds_attachment_cap:
                         texts.append(item[1])
                         all_attachments.extend(item_attachments)
                     else:
@@ -733,7 +734,10 @@ class TelegramDispatcher:
                         remainder.append(item)
                 for _ts, rtext, rkw in remainder:
                     self.sessions.enqueue(
-                        session_key, str(time.time()), rtext, force=True,
+                        session_key,
+                        str(time.time()),
+                        rtext,
+                        force=True,
                         attachments=list(rkw.get("attachments") or []),
                     )
                 if texts:
@@ -818,7 +822,10 @@ class TelegramDispatcher:
         assert self.client is not None
         async with self._queue.lock:
             if not self.sessions.enqueue(
-                session_key, str(time.time()), text, force=False,
+                session_key,
+                str(time.time()),
+                text,
+                force=False,
                 attachments=list(attachments or []),
             ):
                 return False
@@ -844,14 +851,6 @@ class TelegramDispatcher:
             session_key, self._receipt_surface(chat_id, None), answered, deferred
         )
 
-    async def _receipt_finish_cancelled_locked(self, session_key: str, chat_id: int) -> None:
-        """Finalize the receipt to a "🛑 Cancelled" record, if present. Caller
-        MUST hold ``self._queue.lock`` (/stop holds it across clear_queue + this)."""
-        assert self.client is not None
-        await self._queue.finish_cancelled_locked(
-            session_key, self._receipt_surface(chat_id, None)
-        )
-
     async def _handle_dashboard(
         self, route: tuple[str, str], chat_id: int, text: str, user_id: int
     ) -> None:
@@ -868,7 +867,11 @@ class TelegramDispatcher:
         Slack's always-DM delivery.
         """
         assert self.client is not None
-        from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+        from kiro_crew.dashboard.token_auth import (
+            MAX_SESSION_TTL_SECS,
+            generate_token,
+            parse_duration,
+        )
         from kiro_crew.dashboard.urls import dashboard_origin, parse_dashboard_url
 
         thread = self._route_thread(route)
@@ -880,7 +883,10 @@ class TelegramDispatcher:
                 thread=thread,
             )
             return
-        ttl_secs = min(parse_dashboard_ttl(text), MAX_SESSION_TTL_SECS)
+        ttl_secs = min(
+            parse_dashboard_ttl(parse_dashboard_argument(text), parse_duration=parse_duration),
+            MAX_SESSION_TTL_SECS,
+        )
         try:
             token = generate_token(str(user_id), ttl_seconds=ttl_secs)
             origin = dashboard_origin(self.cfg.dashboard.url)
@@ -906,9 +912,7 @@ class TelegramDispatcher:
                 thread=thread,
             )
         except Exception as exc:
-            logger.warning(
-                "telegram /kirocrew dashboard: token generation failed", exc_info=True
-            )
+            logger.warning("telegram /kirocrew dashboard: token generation failed", exc_info=True)
             try:
                 sel().log_api_access(
                     caller=str(user_id),
@@ -930,35 +934,22 @@ class TelegramDispatcher:
     async def _handle_stop(self, route: tuple[str, str], chat_id: int) -> None:
         """Hard cancel: abort the in-flight turn and clear everything.
 
-        Aborts the running turn via the provider's cooperative ACP cancel,
-        drops every queued message, and finalizes the queue receipt. On a shared
-        runtime the cancel is cooperative (it cannot force-kill a co-tenant), so
-        the turn stops at the next safe point. Fire-and-forget (no ack wait) so
-        the acknowledgement is snappy.
+        The cooperative-cancel contract, the lock ordering across
+        ``clear_queue`` + the receipt finalize, and both replies live in
+        :func:`~kiro_crew.messaging.commands.stop_running_turn`; this supplies
+        Telegram's address. The receipt surface is built with no ``thread``
+        because ``editMessageText`` is not threaded -- the message id already
+        identifies the message within its Topic -- while the reply itself must
+        land back in the originating Topic.
         """
         assert self.client is not None
-        session_key = self._session_key(route)
-        thread = self._route_thread(route)
-        cancelled_turn = False
-        if self.sessions.is_busy(session_key):
-            provider = self.sessions.get_provider(session_key)
-            cancel = getattr(provider, "cancel", None)
-            if cancel is not None:
-                try:
-                    await cancel(wait_ack_timeout=0)
-                    cancelled_turn = True
-                except Exception:
-                    logger.warning(
-                        "telegram /stop: cancel failed for %s", session_key, exc_info=True
-                    )
-        async with self._queue.lock:
-            self.sessions.clear_queue(session_key)
-            await self._receipt_finish_cancelled_locked(session_key, chat_id)
-        await self._reply(
-            chat_id,
-            "🛑 Stopped." if cancelled_turn else "🛑 Nothing was running — queue cleared.",
-            thread=thread,
+        reply = await stop_running_turn(
+            self.sessions,
+            self._session_key(route),
+            queue=self._queue,
+            surface=self._receipt_surface(chat_id, None),
         )
+        await self._reply(chat_id, reply, thread=self._route_thread(route))
 
     # ── /yolo (global auto-approve grant) ──────────────────────────────────
 
@@ -967,68 +958,19 @@ class TelegramDispatcher:
     ) -> None:
         """Report or change the global auto-approve grant.
 
-        Reads and writes the process-wide :func:`safety_override` grant — the
-        SAME one the dashboard toggle and Slack's ``/kirocrew yolo`` drive, so a
-        grant taken here shows up (and expires) everywhere. Reachable only by an
-        allow-listed Telegram user, because ``transport.receive`` is
-        deny-by-default and owner-only before dispatch ever runs.
-
-        Turning it on does NOT weaken the PreToolUse security gate: the
-        sensitive-path keystone, governance ceiling and deny-list all run ahead
-        of the auto-approve ladder in ``TurnDriver``, so a hard DENY still wins.
-
-        The three grant mutators run off-loop: ``activate`` resolves the ad-hoc
-        duration through a live config read and every one of them writes a SEL
-        record (activation's is ``critical=True``), so calling them inline would
-        put filesystem latency on the event loop and stall every other chat and
-        heartbeat task on a slow disk.
+        The ladder, its replies, the off-loop mutators and the SEL row live in
+        :func:`~kiro_crew.messaging.commands.run_yolo_command`. Reachable only by
+        an allow-listed Telegram user, because ``transport.receive`` is
+        deny-by-default and owner-only before dispatch ever runs, which is why
+        the user id is trustworthy as the audited caller.
         """
-        so = safety_override()
-        action = arg.strip().lower().split()[0] if arg.strip() else ""
-
-        if action in ("on", "off", "renew"):
-            outcome = "allowed"
-            if action == "on":
-                if so.is_active():
-                    reply = f"🟢 YOLO is already ON ({describe_grant_lifetime()})."
-                elif (await asyncio.to_thread(so.activate, "telegram")).active:
-                    reply = (
-                        f"🟢 YOLO ON ({describe_grant_lifetime()}) — every tool "
-                        f"auto-approves. Denied-by-policy tools are still blocked."
-                    )
-                else:
-                    reply = "❌ Couldn't turn YOLO on (audit system unavailable)."
-                    outcome = "denied"
-            elif action == "off":
-                # Unconditional: deactivate() also zeroes the deadline of a
-                # grant that already lapsed, which closes the renew grace
-                # window so a later "/yolo renew" cannot resurrect it, and
-                # records the operator's decision either way.
-                await asyncio.to_thread(so.deactivate, "telegram")
-                reply = "🔴 YOLO OFF — tools ask for approval again."
-            else:
-                renewed = (await asyncio.to_thread(so.renew, "telegram")).renewed
-                reply = (
-                    f"🟢 YOLO renewed ({describe_grant_lifetime()})."
-                    if renewed
-                    else "🔴 YOLO is not active — use /yolo on first."
-                )
-            sel().log_api_access(
-                caller=str(user_id),
-                operation="telegram.yolo_mode",
-                outcome=outcome,
-                source="telegram",
-                resources=f"yolo_{action}",
-            )
-            await self._reply(chat_id, reply, thread=thread)
-            return
-
-        status = f"ON 🟢 ({describe_grant_lifetime()})" if so.is_active() else "OFF 🔴"
-        await self._reply(
-            chat_id,
-            f"YOLO is {status}.\nUsage: /yolo on | off | renew",
-            thread=thread,
+        reply = await run_yolo_command(
+            arg,
+            source="telegram",
+            caller=str(user_id),
+            phrasing=YOLO_PHRASING_PLAIN,
         )
+        await self._reply(chat_id, reply, thread=thread)
 
     # ── /model (inline-button model picker) ────────────────────────────────
 
@@ -1263,18 +1205,22 @@ class TelegramDispatcher:
         # Topic id to thread the [OPTIONS:] echo sends back into (None for a DM).
         cb_thread = self._route_thread(route)
 
-        # Tool-approval decision: "a:<request_id>:<1|0>".
+        # Tool-approval decision: "a:<request_id>:<nonce>:<1|0>".
         if data.startswith("a:"):
             body = data[2:]
-            rid, _, flag = body.rpartition(":")
+            head, _, flag = body.rpartition(":")
+            rid, _, nonce = head.rpartition(":")
             approved = flag == "1"
             key = TelegramApprovalDecider.key(self._session_key(route), rid)
-            resolved = TelegramApprovalDecider.resolve_global(key, approved)
+            resolved = TelegramApprovalDecider.resolve_global(key, approved, nonce=nonce)
             if resolved:
                 verdict = "✅ Approved" if approved else "🚫 Denied"
             else:
                 # No pending decision to resolve — the request already timed out
-                # (decider denies by default and pops the key) or was answered.
+                # (decider denies by default and pops the key), was answered, or the
+                # press came from a STALE keyboard whose nonce no longer matches
+                # (request ids restart at 1 per provider process, so an old button can
+                # name an id that is live again for a different tool).
                 # Don't imply the press took effect: a post-timeout "Approve" on
                 # an already-denied tool must not display "Approved".
                 verdict = "⌛ This approval already expired."
@@ -1481,9 +1427,7 @@ class TelegramDispatcher:
             thread_id=(str(topic) if topic is not None else None),
         )
 
-    def _bind_origin_mirror(
-        self, session_key: str, route: tuple[str, str], chat_id: int
-    ) -> None:
+    def _bind_origin_mirror(self, session_key: str, route: tuple[str, str], chat_id: int) -> None:
         """Mirror this conversation's dashboard tab back to Telegram, unasked.
 
         The rule, the re-assert and the opt-out live in
@@ -1505,35 +1449,20 @@ class TelegramDispatcher:
     async def _handle_link(self, route: tuple[str, str], chat_id: int) -> None:
         """Re-enable mirroring of this conversation's dashboard tab back here.
 
-        Mirroring is automatic (see :meth:`_bind_origin_mirror`), so this is the
-        withdrawal of a previous ``/unlink`` rather than the only way to turn it
-        on. Clearing the opt-out is the load-bearing half: rebinding without it
-        would be undone by the next automatic bind check.
+        The rebind sequence, its batching and its reply live in the shared
+        :func:`~kiro_crew.messaging.link.rebind_conversation_location`, the
+        counterpart of the ``release_conversation_location`` that ``/unlink``
+        uses; this only supplies Telegram's spelling of "this conversation" and
+        of the unlink command.
         """
         assert self.client is not None
-        key = self._session_key(route)
-        # One write for the whole sequence: each of these mutations would
-        # otherwise rewrite the entire session map, stalling the loop three times
-        # for what is one user-visible action.
-        with self.sessions.batched_save():
-            self.sessions.set_mirror_opt_out(key, False)
-            self.sessions.set_mirror_link(
-                key,
-                self._origin_mirror_link(route, chat_id),
-                reason=UNBIND_REASON_ORIGIN_REBIND,
-            )
-            # Drop any pre-unification row so a stale binding cannot outlive the
-            # rebind (reads prefer the channel key, but a leftover row would still
-            # answer a clear).
-            self.sessions.clear_mirror_link(
-                legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
-            )
-        await self._reply(
-            chat_id,
-            "✅ Linked. Replies from the dashboard for this conversation will "
-            "also show up here. Send /unlink to stop.",
-            thread=self._route_thread(route),
+        reply = rebind_conversation_location(
+            self.sessions,
+            key=self._session_key(route),
+            location=self._origin_mirror_link(route, chat_id),
+            unlink_command="/unlink",
         )
+        await self._reply(chat_id, reply, thread=self._route_thread(route))
 
     async def _handle_unlink(self, route: tuple[str, str], chat_id: int) -> None:
         assert self.client is not None
@@ -1645,9 +1574,7 @@ class TelegramDispatcher:
                     result_text = "✅ Context compacted."
                 elif cr["type"] == "failed":
                     err = cr.get("summary", "")
-                    result_text = (
-                        f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
-                    )
+                    result_text = f"❌ Compaction failed: {err}" if err else "❌ Compaction failed."
                 else:
                     result_text = "⚠️ Compaction timed out."
             except Exception:

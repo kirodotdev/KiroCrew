@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import subprocess  # noqa: F401 -- used via monkeypatch.setattr
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -445,3 +445,340 @@ class TestUpdateDispatch:
         # Verify git commands were issued
         git_calls = [c for c in calls if c[0] == "git"]
         assert any("rev-parse" in c for c in git_calls)
+
+
+class TestUpdateDivergenceGuard:
+    """The git update path refuses a hard reset on a DIVERGED checkout.
+
+    ``git reset --hard origin/<branch>`` discards committed local work, and the
+    uncommitted-changes prompt only covers dirty files — a checkout both ahead
+    of and behind its upstream passed it silently. The dashboard's update check
+    only offers fast-forwardable updates for the same reason; the CLI mirrors
+    that verdict, with ``--force`` as the operator's explicit opt-in.
+    """
+
+    def _run_update(
+        self,
+        monkeypatch,
+        tmp_path,
+        *,
+        counts: str,
+        revlist_rc: int = 0,
+        force: bool = False,
+        porcelain: str = "",
+        answer: str = "y",
+        calls: list[list[str]] | None = None,
+        later_counts: str | None = None,
+    ) -> list[list[str]]:
+        """Drive ``cs._update`` through a faked git checkout; return the call log.
+
+        ``calls`` may be supplied by the caller so the log stays readable when
+        the update exits via ``SystemExit`` (the return value never lands then).
+        """
+        proj = tmp_path / "project"
+        proj.mkdir()
+        _init_repo(proj)
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(proj))
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_capability.running_from_checkout",
+            lambda root, **kw: True,
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.resolve_remote_url", lambda *a, **k: ""
+        )
+        monkeypatch.setattr(
+            "kiro_crew.platform.update_governance.update_blocked_reason", lambda *a: ""
+        )
+
+        import kiro_crew.cli_server as cs
+
+        if calls is None:
+            calls = []
+        seen_revlist = [0]
+
+        def fake_run(args, **kwargs):
+            calls.append(list(args))
+            result = MagicMock()
+            result.returncode = 0
+            result.stdout = ""
+            result.stderr = ""
+            if args[0] == "git":
+                if "--show-toplevel" in args:
+                    result.stdout = f"{proj}\n"
+                elif "--abbrev-ref" in args:
+                    result.stdout = "main\n"
+                elif "diff" in args:
+                    # Non-zero: the upstream has new commits, so the update
+                    # proceeds past the up-to-date early return.
+                    result.returncode = 1
+                elif "rev-list" in args:
+                    result.returncode = revlist_rc
+                    # ``later_counts`` models HEAD moving between the guard's
+                    # count and the pre-reset re-check (the operator committing
+                    # while the prompt waits): every call after the first
+                    # answers with the new distance.
+                    seen_revlist[0] += 1
+                    if later_counts is not None and seen_revlist[0] > 1:
+                        result.stdout = later_counts
+                    else:
+                        result.stdout = counts
+                elif "status" in args:
+                    result.stdout = porcelain
+            return result
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        # Short-circuit everything after the reset: the guard under test sits
+        # before these steps, and they are not what these tests assert on.
+        monkeypatch.setattr("kiro_crew.cli_server.shutil.which", lambda *_: None)
+        monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *_: None)
+        monkeypatch.setattr("kiro_crew.cli_server.build_frontend_sync", lambda *_: None)
+        monkeypatch.setattr("kiro_crew.cli_server.dep_sync.sync_or_reinstall", lambda *a, **k: 0)
+        monkeypatch.setattr("builtins.input", lambda *_: answer)
+
+        cs._update(force=force)
+        return calls
+
+    @staticmethod
+    def _reset_calls(calls: list[list[str]]) -> list[list[str]]:
+        return [c for c in calls if c[0] == "git" and "reset" in c]
+
+    def test_diverged_refuses_without_reset(self, monkeypatch, tmp_path, capsys) -> None:
+        """Ahead AND behind → refuse with counts + guidance, exit 1, NO reset."""
+        calls: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(monkeypatch, tmp_path, counts="2\t5\n", calls=calls)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "diverged" in out
+        assert "2 local commit(s)" in out
+        assert "5 behind" in out
+        assert "git rebase origin/main" in out
+        assert "--force" in out
+        assert not self._reset_calls(calls)
+
+    def test_diverged_with_force_resets(self, monkeypatch, tmp_path, capsys) -> None:
+        """``--force`` is the explicit opt-in: the reset runs, with a warning."""
+        calls = self._run_update(monkeypatch, tmp_path, counts="2\t5\n", force=True)
+        assert self._reset_calls(calls)
+        out = capsys.readouterr().out
+        assert "discarding 2 local commit(s)" in out
+
+    def test_behind_only_still_updates(self, monkeypatch, tmp_path, capsys) -> None:
+        """A fast-forwardable checkout (behind, not ahead) resets as before."""
+        calls = self._run_update(monkeypatch, tmp_path, counts="0\t5\n")
+        assert self._reset_calls(calls)
+        assert "diverged" not in capsys.readouterr().out
+
+    def test_ahead_only_reports_up_to_date_without_reset(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """Ahead-only has nothing to pull: no reset, reported as up to date.
+
+        With behind = 0 the upstream is an ancestor of HEAD, so a hard reset
+        could only REMOVE the local commits and never bring anything in.
+        """
+        calls = self._run_update(monkeypatch, tmp_path, counts="3\t0\n")
+        assert not self._reset_calls(calls)
+        out = capsys.readouterr().out
+        assert "Already up to date" in out
+        assert "3 local commit(s) ahead" in out
+
+    def test_ahead_only_force_still_never_resets(self, monkeypatch, tmp_path, capsys) -> None:
+        """--force lets a real update discard diverged work; with nothing to
+        pull it must not become a commit-deletion command."""
+        calls = self._run_update(monkeypatch, tmp_path, counts="3\t0\n", force=True)
+        assert not self._reset_calls(calls)
+        assert "Already up to date" in capsys.readouterr().out
+
+    def test_unreadable_counts_fail_closed(self, monkeypatch, tmp_path, capsys) -> None:
+        """A failed rev-list must not wave the destructive reset through."""
+        calls: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(monkeypatch, tmp_path, counts="", revlist_rc=128, calls=calls)
+        assert exc.value.code == 1
+        assert "Could not compare" in capsys.readouterr().out
+        assert not self._reset_calls(calls)
+
+    def test_unparseable_counts_fail_closed(self, monkeypatch, tmp_path, capsys) -> None:
+        """rev-list succeeding with garbage output is still a refusal."""
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(monkeypatch, tmp_path, counts="not-a-count\n")
+        assert exc.value.code == 1
+        assert "Could not parse the commit counts" in capsys.readouterr().out
+
+    def test_uncommitted_prompt_abort_unchanged(self, monkeypatch, tmp_path, capsys) -> None:
+        """The dirty-tree prompt still runs and still aborts on anything but y."""
+        calls: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(
+                monkeypatch,
+                tmp_path,
+                counts="0\t5\n",
+                porcelain=" M file.py\n",
+                answer="n",
+                calls=calls,
+            )
+        assert exc.value.code == 0
+        assert "Aborted" in capsys.readouterr().out
+        assert not self._reset_calls(calls)
+
+    def test_uncommitted_prompt_continue_unchanged(self, monkeypatch, tmp_path) -> None:
+        """Answering y at the dirty-tree prompt still proceeds to the reset."""
+        calls = self._run_update(
+            monkeypatch, tmp_path, counts="0\t5\n", porcelain=" M file.py\n", answer="y"
+        )
+        assert self._reset_calls(calls)
+
+    def test_commits_made_while_the_prompt_waits_are_not_reset(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """Committing the listed changes during the prompt must not lose them.
+
+        The first count is a snapshot and the prompt makes the gap to the reset
+        unbounded. Rescuing the listed edits with a commit in another terminal
+        is the natural response to that prompt, and it is exactly what makes
+        the snapshot's ``ahead`` stale.
+        """
+        calls: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(
+                monkeypatch,
+                tmp_path,
+                counts="0\t5\n",  # fast-forwardable when the guard looked
+                later_counts="2\t5\n",  # two commits appeared during the prompt
+                porcelain=" M file.py\n",
+                answer="y",
+                calls=calls,
+            )
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "appeared on HEAD while" in out
+        assert "2 local commit(s)" in out
+        assert not self._reset_calls(calls)
+
+    def test_force_still_resets_commits_made_during_the_prompt(self, monkeypatch, tmp_path) -> None:
+        """``--force`` keeps its meaning across the re-check: discard and reset."""
+        calls = self._run_update(
+            monkeypatch,
+            tmp_path,
+            counts="0\t5\n",
+            later_counts="2\t5\n",
+            porcelain=" M file.py\n",
+            answer="y",
+            force=True,
+            calls=[],
+        )
+        assert self._reset_calls(calls)
+
+    def test_recheck_fails_closed_when_it_cannot_count(self, monkeypatch, tmp_path, capsys) -> None:
+        """An unreadable re-check refuses too — the reset is the destructive step."""
+        calls: list[list[str]] = []
+        with pytest.raises(SystemExit) as exc:
+            self._run_update(
+                monkeypatch,
+                tmp_path,
+                counts="0\t5\n",
+                later_counts="garbage\n",
+                porcelain=" M file.py\n",
+                answer="y",
+                calls=calls,
+            )
+        assert exc.value.code == 1
+        assert "Could not parse the commit counts" in capsys.readouterr().out
+        assert not self._reset_calls(calls)
+
+    def test_rebased_during_the_prompt_is_never_reset_even_with_force(
+        self, monkeypatch, tmp_path, capsys
+    ) -> None:
+        """Ahead-only after the prompt must not reset, ``--force`` included.
+
+        Committing the listed edits and then rebasing them onto the upstream is
+        the natural two-step rescue. It leaves the checkout ahead-only, where a
+        reset can only delete those commits — so the re-check has to recognise
+        `up_to_date` exactly as the first pass does, rather than only asking
+        whether the checkout is diverged.
+        """
+        calls: list[list[str]] = []
+        self._run_update(
+            monkeypatch,
+            tmp_path,
+            counts="0\t5\n",  # fast-forwardable when the guard looked
+            later_counts="3\t0\n",  # committed + rebased during the prompt
+            porcelain=" M file.py\n",
+            answer="y",
+            force=True,
+            calls=calls,
+        )
+        assert not self._reset_calls(calls)
+        out = capsys.readouterr().out
+        assert "Already up to date" in out
+        assert "3 local commit(s) ahead" in out
+
+    @pytest.mark.parametrize(
+        "later, resets, force",
+        [
+            ("0\t5\n", True, False),  # still fast-forwardable -> reset
+            ("2\t5\n", False, False),  # became diverged -> refuse
+            ("2\t5\n", True, True),  # became diverged, opted in -> reset
+            ("3\t0\n", False, False),  # became ahead-only -> nothing to pull
+            ("3\t0\n", False, True),  # ...and --force does not change that
+            ("garbage\n", False, False),  # unreadable -> fail closed
+            ("garbage\n", False, True),  # ...and --force does not change that
+        ],
+    )
+    def test_recheck_recognises_the_same_states_as_the_first_pass(
+        self, monkeypatch, tmp_path, later, resets, force
+    ) -> None:
+        """The two passes may differ in wording, never in which states they see.
+
+        Both route through one classifier; this pins every verdict at the
+        second call site so a state handled before the prompt cannot be
+        forgotten after it.
+        """
+        calls: list[list[str]] = []
+        try:
+            self._run_update(
+                monkeypatch,
+                tmp_path,
+                counts="0\t5\n",
+                later_counts=later,
+                porcelain=" M file.py\n",
+                answer="y",
+                force=force,
+                calls=calls,
+            )
+        except SystemExit as exc:
+            assert exc.code == 1, "a refusal after the prompt is an error exit"
+        assert bool(self._reset_calls(calls)) is resets
+
+    def test_cli_wires_force_flag(self, monkeypatch) -> None:
+        """``kirocrew update --force`` reaches ``_update(force=True)``."""
+        import sys
+
+        with (
+            patch.object(sys, "argv", ["kirocrew", "update", "--force"]),
+            # These tests exercise argparse wiring only. Real logging setup
+            # attaches a RotatingFileHandler on gateway.log that outlives the
+            # test, and an open fd there blocks the isolated home's cleanup on
+            # Windows.
+            patch("kiro_crew.cli._setup_cli_logging"),
+            patch("kiro_crew.cli_server._update") as mock_update,
+        ):
+            from kiro_crew.cli import main
+
+            main()
+            mock_update.assert_called_once_with(force=True)
+
+    def test_cli_defaults_force_off(self, monkeypatch) -> None:
+        """A bare ``kirocrew update`` keeps the guard armed (force=False)."""
+        import sys
+
+        with (
+            patch.object(sys, "argv", ["kirocrew", "update"]),
+            patch("kiro_crew.cli._setup_cli_logging"),
+            patch("kiro_crew.cli_server._update") as mock_update,
+        ):
+            from kiro_crew.cli import main
+
+            main()
+            mock_update.assert_called_once_with(force=False)

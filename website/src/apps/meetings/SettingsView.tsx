@@ -29,6 +29,7 @@ import {
   type ConfigResponse,
   type MeetingsConfig,
 } from './api'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 interface Props {
   onBack: () => void
@@ -36,6 +37,7 @@ interface Props {
 }
 
 export default function SettingsView({ onBack, notify }: Props) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   // `patch()` builds a full-replace PUT from this cache, so a backgrounded tab
   // with stale cache would silently revert settings changed from another tab.
@@ -317,9 +319,7 @@ export default function SettingsView({ onBack, notify }: Props) {
               className="w-48"
               placeholder={i18nT('apps.meetings.settings.correctPlaceholder')}
               aria-label={i18nT('apps.meetings.settings.correctLabel')}
-              onKeyDown={e => {
-                if (e.key === 'Enter') submitTerm()
-              }}
+              {...ime.bindEnter({ onEnter: submitTerm })}
             />
             <SendBtn onClick={submitTerm} aria-label={i18nT('apps.meetings.settings.addTerm')}>
               <Plus className="lucide-inline" />

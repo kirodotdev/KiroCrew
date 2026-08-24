@@ -21,6 +21,7 @@ import { safeHttpUrl } from '../lib/safeUrl'
 import type { DiscoveredMcpServer, McpDiscoverDetail, McpInstallPlan } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 interface Props {
   open: boolean
   onClose: () => void
@@ -46,6 +47,7 @@ function installReadyFor(
 }
 
 export default function McpBrowserModal({ open, onClose }: Props) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
@@ -183,7 +185,8 @@ export default function McpBrowserModal({ open, onClose }: Props) {
     if (e.key === 'ArrowDown') { e.preventDefault(); moveSelection(1) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); moveSelection(-1) }
     else if (e.key === 'Enter' && selectedServer && !(selectedServer.installed || installedOverride.has(serverKey(selectedServer)))) {
-      e.preventDefault()
+      // Only the Enter branch is claimed — arrow navigation stays untouched.
+      if (!ime.claimEnter(e)) return
       // Consent gate: only install once the detail query for the selected
       // server has resolved — i.e. the pane showing the install plan and
       // required env is actually rendered, not still loading.
@@ -217,6 +220,7 @@ export default function McpBrowserModal({ open, onClose }: Props) {
           onQueryChange={handleQueryChange}
           onKeyDown={handleKeyDown}
           onClear={clearQuery}
+          inputProps={ime.bindComposition()}
         />
 
         <DiscoveryStates debouncedQuery={debouncedQuery} isLoading={isLoading} resultCount={results.length} noun="servers" />

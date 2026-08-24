@@ -10,7 +10,7 @@ is present in a dev environment but missing from ``setup.cfg``
 Hermetic — no network, no package installation, pure AST + configparser.
 
 Scope: only core kiro_crew modules (excludes apps/builtins/, knowledge/,
-workflows/, aidlc/ sub-trees which have their own dependency management).
+workflows/ sub-trees which have their own dependency management).
 
 The historical PyYAML gap and the opentelemetry
 gap both would have been caught by this gate on day one.
@@ -62,7 +62,6 @@ _EXCLUDED_SUBTREES: tuple[str, ...] = (
     "apps/builtins/",
     "knowledge/",
     "workflows/",
-    "aidlc/",
     # Fork-only artifact-deploy reaper Lambda payload; boto3/botocore come
     # from the AWS Lambda runtime, not core startup imports.
     "deploy/skills/",

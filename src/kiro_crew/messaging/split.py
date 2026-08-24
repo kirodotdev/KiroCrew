@@ -65,7 +65,58 @@ import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-__all__ = ["split_markdown_safe", "iter_fence_spans", "open_fence_at_end"]
+__all__ = [
+    "split_markdown_safe",
+    "iter_fence_spans",
+    "iter_fence_lines",
+    "open_fence_at_end",
+    "truncate_utf8",
+    "FENCE_OUTSIDE",
+    "FENCE_OPEN",
+    "FENCE_BODY",
+    "FENCE_CLOSE",
+]
+
+#: Per-line fence roles yielded by :func:`iter_fence_lines`. Named rather than
+#: booleans because a caller distinguishes four cases, not two: outside a fence,
+#: the opener, content, and the closer.
+FENCE_OUTSIDE = "outside"
+FENCE_OPEN = "open"
+FENCE_BODY = "body"
+FENCE_CLOSE = "close"
+
+
+def truncate_utf8(text: str, max_bytes: int) -> str:
+    """Truncate *text* to at most *max_bytes* UTF-8 bytes without splitting a
+    code point.
+
+    The exact guard for a channel whose wire limit is denominated in BYTES. A
+    reply can sit under a CHARACTER cap and still be over the byte cap — one CJK
+    character is three bytes and an emoji four — and a platform that refuses the
+    oversize send gives the user nothing at all, so this is the last thing
+    between an authored answer and a rejected frame.
+
+    ``errors="ignore"`` on the decode is what drops a trailing partial sequence
+    rather than raising, so the cut lands on the largest whole-code-point prefix
+    that fits. A non-positive *max_bytes* disables the guard and returns *text*
+    unchanged, matching :func:`split_markdown_safe`'s treatment of a non-positive
+    ``limit``: a caller with no budget to enforce must not lose its whole message
+    to a zero.
+
+    This TRUNCATES, and therefore loses the tail: it is a backstop, not a
+    delivery strategy. A caller with more text than one message may hold splits
+    first — ``split_markdown_safe`` against a byte-safe character budget, which
+    a byte-capped channel derives as ``<its byte budget> // 4`` so the character
+    splitter is byte-safe in the worst case — and reaches this only for a chunk
+    that still does not fit.
+    """
+    if max_bytes <= 0:
+        return text
+    encoded = text.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return text
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
+
 
 # An opener is <=3 spaces of indent + a run of >=3 backticks/tildes + an info
 # string. A backtick fence's info string may not contain a backtick (otherwise
@@ -354,6 +405,44 @@ def iter_fence_spans(text: str) -> Iterator[tuple[int, int]]:
         fence = after
     if fence is not None:
         yield open_at, len(text)
+
+
+def iter_fence_lines(text: str) -> Iterator[tuple[str, str]]:
+    """Yield ``(line, role)`` for every logical line of *text*.
+
+    ``line`` is the line without its terminator (``\\n``, and a ``\\r`` before
+    it). ``role`` is one of :data:`FENCE_OUTSIDE`, :data:`FENCE_OPEN`,
+    :data:`FENCE_BODY`, :data:`FENCE_CLOSE`.
+
+    This is the per-LINE view of the machine :func:`iter_fence_spans` views as
+    character spans, and it exists for the one thing spans cannot answer: which
+    lines are the delimiters. A channel whose own markup has a single code
+    marker and no info string (WhatsApp: always ```````, never
+    `````python``) has to REWRITE the delimiter lines while
+    leaving the content between them byte-exact, and telling those apart from a
+    span plus offsets is ambiguous for a fence left open -- its last line is
+    content, but it sits where a closer would. Deriving it from a second fence
+    regex is what this module exists to prevent.
+
+    A fence left open yields no :data:`FENCE_CLOSE`, which is how a caller
+    detects it: the block is unterminated and the caller owns what to append.
+    """
+    fence: _Fence | None = None
+    for line, _full, _terminated in _lines(text):
+        body = line[:-1] if line.endswith("\n") else line
+        if body.endswith("\r"):
+            body = body[:-1]
+        before = fence
+        fence = _advance(fence, line)
+        if before is None and fence is not None:
+            role = FENCE_OPEN
+        elif before is not None and fence is None:
+            role = FENCE_CLOSE
+        elif fence is not None:
+            role = FENCE_BODY
+        else:
+            role = FENCE_OUTSIDE
+        yield body, role
 
 
 def _safe_cut(fence: _Fence | None, frag: str, room: int) -> int:

@@ -273,7 +273,7 @@ no longer destroy older turns.
   set by rewind/regenerate after they truncate the window and cleared only on a
   successful rewrite save, so a failed inline rewrite still gets retried as an
   archive-safe rewrite by the next flush (never silently overwritten).
-- **Foreign-append merge & timestamp-first dedup** (`_frozen_prefix_and_foreign_appends`):
+- **Foreign-append merge & id-first dedup** (`_frozen_prefix_and_foreign_appends`):
   a default save captures its `window` snapshot BEFORE taking `_locked`, so a
   cross-process writer (subagent / cron / CLI) can fully append + release the
   lock in that gap. A bare `meta + frozen + window` replace would then delete
@@ -282,60 +282,85 @@ no longer destroy older turns.
   represent and carries them into the payload as `foreign_lines`. Matching is
   **count-bounded** (deques of window-entry indices; each disk line matches at
   most one window entry and each window entry absorbs at most one disk line) and
-  runs in TWO passes so the outcome is independent of disk-line order:
-  - **Pass 1 — exact `(ts, role, content)`** across all disk lines: an unchanged
-    re-serialization, unambiguously **ours** (dropped — the window re-writes it).
-    Resolving these first is what makes a burst of messages sharing ONE `ts`
-    (coarse clocks — notably Windows' ~15 ms tick — stamp rapid appends with an
-    identical `datetime.now().isoformat()`) match one-for-one instead of being
+  runs in ordered passes so the outcome is independent of disk-line order:
+  - **Pass 0 — `meta.mid`** across all disk lines, resolved before every
+    heuristic tier: every window append mints a stable per-message id
+    (`meta.mid`, read via `row_mid`), a save persists it, and the durable-copy
+    writers carry the window row's id onto their copy. An id match folds only
+    when **corroborated** by body or `ts` (same `(role, content)` — a durable
+    copy — or same `ts` — an in-place edit): `meta.mid` is caller-suppliable
+    (`_ChatSlot.append` preserves a pre-existing id), so bare id equality
+    could pair two genuinely distinct messages. A corroborated match IS the
+    same message — the line is dropped (the window re-serializes it) and,
+    being exact, it is **not** a dedup drop and never churns the
+    `foreign-dedup` archive. An id match with **no** corroborating entry
+    falls through to the legacy ladder as if id-less (typically preserved).
+    An id-carrying line whose id matches **no** available window entry is
+    **foreign regardless of body equality** — two genuinely distinct
+    identical-content messages carry distinct ids, which is exactly the case
+    the body tiebreak below could never tell apart — and bypasses the
+    heuristic tiers; it still **counts in the ts-ambiguity accounting**, so
+    its `ts` group stays contested and an id-less line sharing that `ts` is
+    preserved (a rare stale duplicate) rather than silently ts-folded — the
+    same favour-duplication-over-loss direction as the ambiguity gate itself.
+    Id-less lines (pre-id transcripts, writers that pass no id) fall through
+    to the legacy ladder below, unchanged.
+  - **Pass 1 — exact `(ts, role, content)`** across the id-less disk lines: an
+    unchanged re-serialization, unambiguously **ours** (dropped — the window
+    re-writes it). Resolving these before the ts/rc passes is what makes a
+    burst of messages sharing ONE `ts` (coarse clocks — notably Windows'
+    ~15 ms tick — stamp rapid appends with an identical
+    `datetime.now().isoformat()`) match one-for-one instead of being
     mis-classified and duplicated on disk.
   - **Pass 2**, for each still-unmatched disk line, in order: (a) a **ts-only**
     match — an in-place edit keeps `ts` but changes content, so the window's
     version wins and the disk line is dropped — but applied ONLY when the `ts`
     group is an unambiguous 1:1 (exactly one unmatched window entry AND exactly
     one unmatched disk line share it); OR (b) a bounded `(role, content)`
-    tiebreak against an as-yet-unconsumed window entry — covers a same-process
+    tiebreak against an as-yet-unconsumed window entry — covers an id-less
     `append_if_absent` durable copy persisted with a fresh `ts` (the workflow/
     cron-result injectors reflect the message in the slot AND write it via
     `append_if_absent_off_loop`, so the same message legitimately exists twice
     with different timestamps and must NOT be double-persisted; both copies
     carry one `meta.mid` — the injectors pass the window row's minted id
-    through the append path — though this fold matches by `(role, content)`,
-    not by id). A line matching
+    through the append path — so those copies fold in pass 0 and reach this
+    tiebreak only when the id is missing). A line matching
     NEITHER is foreign and preserved.
   - **Count-bounded, exact-first identity (the fix for GPT 5.6's HIGH data-loss
     findings).** `(role, content)` is only a bounded tiebreak in which **each
     window entry absorbs at most ONE disk copy**. So if the on-disk window region
-    holds two lines with identical `(role, content)` but distinct timestamps —
-    the window's own persisted copy PLUS a *genuinely distinct* event from
-    another process (e.g. a cron that reports the same status text twice) — the
-    first is folded and the **second is preserved as a foreign append** (an
-    earlier plain-`(role, content)`-set match collapsed both real events into
-    one). Symmetrically, because colliding timestamps make a ts-only match
-    AMBIGUOUS (a foreign append that happens to share the `ts` is
+    holds two id-less lines with identical `(role, content)` but distinct
+    timestamps — the window's own persisted copy PLUS a *genuinely distinct*
+    event from another process (e.g. a cron that reports the same status text
+    twice) — the first is folded and the **second is preserved as a foreign
+    append** (an earlier plain-`(role, content)`-set match collapsed both real
+    events into one). Symmetrically, because colliding timestamps make a
+    ts-only match AMBIGUOUS (a foreign append that happens to share the `ts` is
     indistinguishable from an edited window entry), ts-only matching is applied
     ONLY to unambiguous 1:1 `ts` groups; an ambiguous group preserves its disk
     lines as foreign — favouring a rare stale duplicate over irreversibly
     dropping an acknowledged cross-process append.
-  - **Archive of ambiguous drops (no permanent loss).** A fresh-`ts` copy folded
-    by tiebreak (b) is the genuinely ambiguous case (indistinguishable from a
-    distinct same-content message without a stable id), so those drops are
-    returned as `dedup_dropped` and routed through `_archive_lines`
-    (`reason="foreign-dedup"`) by `_save_slot_to_history` before the atomic
-    replace — the trade-off loses no data permanently. (A ts-less / ts-matched
-    plain re-serialization is a normal window copy and is dropped silently to
-    avoid archive spam.)
-  - **Intended successor identity.** Timestamp is the closest thing to a stable
-    per-message id available today. The intended successor is a **creation-time
-    per-message uuid** (stamped when the message is created, carried through the
-    slot and onto disk) so identity is *exact* rather than inferred; the bounded
-    heuristic above is the bridge until that lands. This is a tracked, committed
-    follow-up — see
-    [issue #381](https://github.com/kirodotdev/KiroCrew/issues/381) — not an
-    open-ended aspiration: when the uuid lands it **demotes this heuristic to a
-    legacy fallback** used only for un-stamped (pre-uuid) lines, and both this
-    paragraph and the `test_foreign_append_content_identity_dedup_semantics`
-    contract test must be updated in the same commit.
+  - **Archive of ambiguous drops (no permanent loss).** A fresh-`ts` id-less
+    copy folded by tiebreak (b) is the genuinely ambiguous case
+    (indistinguishable from a distinct same-content message without a stable
+    id), so those drops are returned as `dedup_dropped` and routed through
+    `_archive_lines` (`reason="foreign-dedup"`) by `_save_slot_to_history`
+    before the atomic replace — the trade-off loses no data permanently. (A
+    ts-less / ts-matched plain re-serialization is a normal window copy and is
+    dropped silently to avoid archive spam; a corroborated id-matched pass-0
+    fold is exact, not ambiguous, and is likewise silent.)
+  - **Successor identity, landed on the save side.** The **creation-time
+    per-message uuid** (`meta.mid`, minted by `_ChatSlot.append`, persisted by
+    the save, carried onto durable copies — the successor identity tracked by
+    [issue #381](https://github.com/kirodotdev/KiroCrew/issues/381)) is now the
+    fold's pass-0 identity, so for stamped lines identity is *exact* rather
+    than inferred. The bounded timestamp-first heuristic above is thereby
+    **demoted to a legacy fallback** for un-stamped lines: pre-id transcripts
+    are never migrated, and writers that persist id-less copies (e.g. the
+    Discord/Slack dashboard mirrors) still resolve through it until they thread
+    the id through. The
+    `test_foreign_append_content_identity_dedup_semantics` contract test pins
+    that fallback; the `TestForeignFoldMidIdentity` cases pin pass 0.
   - **Residual window (rewrite saves).** The scan runs only for default saves
     (`collect_foreign = not rewrite`). Rewrite saves (rewind / regenerate / fork)
     intentionally truncate the window and are same-session/same-process, so they

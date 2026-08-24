@@ -949,14 +949,25 @@ export default function PullRequestPanel({
   const showAllChecksPassed = allChecksPassed && !query.isFetching
   const mergeBlocker = source ? pullRequestMergeBlocker(source) : null
   const statusByUrl = useMemo(() => {
-    const merged: Record<string, PullRequestStatus> = { ...(statusQuery.data?.statuses || {}) }
+    const cached = statusQuery.data?.statuses || {}
+    const merged: Record<string, PullRequestStatus> = { ...cached }
     // The selected pull request already has a full, user-refreshable payload —
     // prefer it over the cached chip status so its own chip never lags the
     // header badge it sits above.
     if (source) {
+      // A degraded payload (the provider's checks read failed or truncated, so
+      // `checks` is flagged in `partialSections`) carries nothing to recompute
+      // CI from. Mirror the backend's keep-known rule
+      // (`record_full_payload_status` in `source_providers.py`): fall back to
+      // the chip status the backend deliberately kept alive instead of erasing
+      // the glyph. A genuinely empty checks section (no CI configured, not
+      // flagged partial) still clears a stale glyph.
+      const keptCi = source.partialSections?.includes('checks')
+        ? cached[source.url]?.ci
+        : undefined
       merged[source.url] = {
         state: pullRequestLifecycleState(source),
-        ci: pullRequestCiSignal(source.checks),
+        ci: pullRequestCiSignal(source.checks) ?? keptCi,
       }
     }
     return merged

@@ -36,10 +36,24 @@
 // visible regression, since the window would come back windowed and the geometry
 // listener would persist it as windowed for the next launch too. Off darwin this
 // stays exactly the plain hide it has always been.
+//
+// CANCELLATION: while the hide is deferred (up to the 2s backstop) the window is
+// still visible, so a show request landing in that gap — Dock activate, the tray
+// "Show" item, the summon hotkey — would either be skipped (`isVisible()` is
+// still true) or be silently undone moments later when the deferred hide fires.
+// `cancelPendingTrayHide(win)` disarms the pending hide (clears the backstop and
+// removes the listener) so the show wins; every show path that expresses user
+// intent to see the window calls it first.
 
 // How long to wait for `leave-full-screen` before hiding anyway. Generous
 // relative to the ~0.5s macOS Space animation.
 const DEFAULT_LEAVE_TIMEOUT_MS = 2000;
+
+// The one pending deferred hide per window, keyed on the window itself so a
+// show path can disarm it without threading a handle through main.js. WeakMap:
+// a window destroyed (or dropped) mid-deferral must not be kept alive by its
+// own cancel closure.
+const pendingHides = new WeakMap();
 
 const isDead = (win) => {
   try {
@@ -114,9 +128,14 @@ function hideToTray(win, opts = {}) {
 
   let settled = false;
   let timer = null;
-  const finish = () => {
+  // Exactly-once settlement, shared by all three exits: the event, the
+  // backstop, and a cancellation. `hide` distinguishes the first two (tear the
+  // machinery down, then hide) from a cancel (tear it down and leave the window
+  // visible — the user just asked for it back).
+  const settle = (hide) => {
     if (settled) return;
     settled = true;
+    pendingHides.delete(win);
     if (timer !== null) {
       try {
         clearTimer(timer);
@@ -140,13 +159,23 @@ function hideToTray(win, opts = {}) {
     } catch {
       /* best effort */
     }
-    hideNow();
+    if (hide) hideNow();
   };
+  function finish() {
+    settle(true);
+  }
+
+  // Registered before the listener is armed so no window exists in which the
+  // hide is pending but not cancellable. A stale entry is impossible: every
+  // settle path deletes it, and cancelling an already-settled hide is a no-op
+  // behind the `settled` guard.
+  pendingHides.set(win, () => settle(false));
 
   try {
     win.once("leave-full-screen", finish);
   } catch {
     // Cannot observe the transition, so a deferred hide would never land.
+    pendingHides.delete(win);
     result.hidden = hideNow();
     return result;
   }
@@ -179,4 +208,26 @@ function hideToTray(win, opts = {}) {
   return result;
 }
 
-module.exports = { hideToTray, DEFAULT_LEAVE_TIMEOUT_MS };
+/**
+ * Disarm a hide that hideToTray() deferred to the fullscreen exit, so a show
+ * request that lands inside that window (Dock activate, tray "Show", the summon
+ * hotkey) is not silently undone when the exit completes. Clears the backstop
+ * timer and removes the `leave-full-screen` listener; the fullscreen exit
+ * itself is NOT reversed — the window simply stays visible, windowed, which is
+ * what a user asking for the window back expects.
+ *
+ * Call it before performing any user-initiated show. Safe to call always: a
+ * window with no pending hide is a no-op.
+ *
+ * @param {object} win  The window that was passed to hideToTray().
+ * @returns {boolean}   true when a pending deferred hide was disarmed.
+ */
+function cancelPendingTrayHide(win) {
+  if (!win) return false;
+  const cancel = pendingHides.get(win);
+  if (!cancel) return false;
+  cancel();
+  return true;
+}
+
+module.exports = { hideToTray, cancelPendingTrayHide, DEFAULT_LEAVE_TIMEOUT_MS };

@@ -54,14 +54,40 @@ class FakeStdin:
 
 
 class FakeProc:
-    """Minimal asyncio.subprocess.Process stand-in with feedable streams."""
+    """Minimal asyncio.subprocess.Process stand-in with feedable streams.
+
+    The readers are created on FIRST USE rather than in ``__init__``, and that is
+    load-bearing. ``asyncio.StreamReader()`` binds to whatever
+    ``get_event_loop()`` answers at CONSTRUCTION time, and this class is built by
+    a SYNC fixture -- which runs before the loop pytest-asyncio gives the test.
+    Bound to that earlier loop, ``feed_data`` sets its waiters there and the
+    peer's reader task, awaiting on the test's loop, is never woken: every
+    ``call`` then fails its 30s timeout while the request itself is written
+    correctly, so the symptom points at the peer rather than at the fixture.
+    Whether the two loops coincide depends on the platform's default policy and
+    on fixture ordering, which is why this was green in CI and red on macOS.
+    First use is always inside the running loop -- ``peer.start()`` reads
+    ``stdout``, and ``feed`` is only ever called from an async test.
+    """
 
     def __init__(self) -> None:
         self.stdin = FakeStdin(self)
-        self.stdout = asyncio.StreamReader(limit=STDOUT_LINE_LIMIT)
-        self.stderr = asyncio.StreamReader()
+        self._stdout: asyncio.StreamReader | None = None
+        self._stderr: asyncio.StreamReader | None = None
         self.returncode: int | None = None
         self.killed = False
+
+    @property
+    def stdout(self) -> asyncio.StreamReader:
+        if self._stdout is None:
+            self._stdout = asyncio.StreamReader(limit=STDOUT_LINE_LIMIT)
+        return self._stdout
+
+    @property
+    def stderr(self) -> asyncio.StreamReader:
+        if self._stderr is None:
+            self._stderr = asyncio.StreamReader()
+        return self._stderr
 
     def feed(self, frame: dict[str, Any]) -> None:
         self.stdout.feed_data((json.dumps(frame) + "\n").encode())

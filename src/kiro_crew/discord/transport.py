@@ -30,6 +30,7 @@ from kiro_crew.discord.client import (
 )
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.messaging.outbound_files import OutboundFile
+from kiro_crew.messaging.tables import TABLE_POLICY_AUTO
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
     InboundMessage,
@@ -58,14 +59,17 @@ class DiscordInboundMessage(InboundMessage):
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
 
 # Discord's capabilities: edit-based streaming, a 2000-char cap (we chunk at
-# 1900 for headroom), up to 5 buttons per action row, emoji reactions (used
-# for steer-ack receipts), native markdown rendering, and allow-listed server
+# 1900 for headroom), up to 5 buttons per action row, emoji reactions (steer-ack
+# receipts and the phase ladder), native markdown rendering, and allow-listed server
 # threads (represented by Discord as channels). Single source of truth for the
 # renderer's degradation decisions.
 DISCORD_CAPABILITIES = TransportCapabilities(
     streaming=True,
     edit=True,
-    reactions=True,  # add_reaction — used for the steer-ack receipt
+    # Two readers: the mid-turn steer-ack receipt (add_reaction on the user's own
+    # message) and the renderer's phase ladder, which checks this flag before it
+    # arms. A capability is a claim other code trusts, so both are named here.
+    reactions=True,
     # Both directions are wired: attachments are ingested
     # (discord/attachments.py), and a sealed segment's local images are uploaded
     # as multipart attachments (renderer -> client.send_message_with_files). The
@@ -75,6 +79,9 @@ DISCORD_CAPABILITIES = TransportCapabilities(
     files_outbound=True,
     rich_blocks=False,
     threads=True,
+    # Discord renders pipe tables literally. ``auto`` keeps grids only when
+    # they fit a phone-sized monospace viewport and cards wider tables.
+    table_mode=TABLE_POLICY_AUTO,
     max_message_chars=DISCORD_CHUNK_LIMIT,
     # 25 = TOTAL interactive choices (5 buttons/row x 5 action rows -- the
     # platform max the renderer actually ships). The previous 5 was the
@@ -311,7 +318,28 @@ class DiscordTransport(MessagingTransport):
                 # (`elif inbound.channel_id not in self._allowed_threads` below).
                 # The dispatcher's own copy (button interactions) is updated via
                 # the callback right after.
+                #
+                # Audited because this is a GRANT, not a denial: a new authorized
+                # disclosure boundary appears at runtime, readable by every member
+                # who can view the thread, and every refusal on this path already
+                # leaves a record. Without it the audit log shows the turns that
+                # ran in the thread but never the decision that admitted it, so
+                # reconstructing which surfaces the agent was reachable in means
+                # inferring it from traffic.
+                #
+                # The set is deliberately unbounded: each entry is a thread an
+                # ALREADY-approved user created, and evicting one would silently
+                # stop answering in a conversation they are still holding: worse
+                # than the memory, which is bounded in practice by that user's
+                # own thread count.
                 self._allowed_threads.add(created)
+                sel().log_api_access(
+                    caller=inbound.user_id,
+                    operation="discord_transport.auto_thread",
+                    outcome="thread_authorized",
+                    source="discord",
+                    resources=f"channel={inbound.channel_id},thread={created}",
+                )
                 if self._on_thread_created is not None:
                     self._on_thread_created(created)
             elif inbound.channel_id not in self._allowed_threads:

@@ -18,6 +18,7 @@ import { papyrusApi, type Project } from './api'
 import { pruneSlots } from './lib'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 export interface ProjectListProps {
   onOpenProject: (name: string) => void
@@ -38,6 +39,8 @@ function formatModified(epochSeconds: number): string {
 }
 
 export default function ProjectList({ onOpenProject }: ProjectListProps) {
+  // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [newName, setNewName] = useState('')
   const [cloneUrl, setCloneUrl] = useState('')
@@ -253,7 +256,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
               placeholder={i18nT('apps.papyrus.page.new_paper_name_placeholder')}
               value={newName}
               onChange={e => setNewName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') submitCreate() }}
+              {...ime.bindEnter({ onEnter: submitCreate })}
             />
             <SendBtn onClick={submitCreate} disabled={!newName.trim() || createMutation.isPending}>
               {createMutation.isPending
@@ -269,7 +272,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
               placeholder={i18nT('apps.papyrus.page.clone_url_placeholder')}
               value={cloneUrl}
               onChange={e => setCloneUrl(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') submitClone() }}
+              {...ime.bindEnter({ onEnter: submitClone })}
             />
             <Btn onClick={submitClone} disabled={!cloneUrl.trim() || cloneMutation.isPending}>
               {cloneMutation.isPending

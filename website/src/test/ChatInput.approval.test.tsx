@@ -260,6 +260,20 @@ describe('ChatInput approval flow', () => {
     expect(buttons.some(b => b.textContent?.includes('ls') && b.textContent?.includes('commands'))).toBe(true)
   })
 
+  it('chat surface offers all three trust tiers for a shell command (regression guard)', () => {
+    // The channels surface deliberately drops the command-scoped tiers
+    // (hasCommand={false}); the chat surface must keep every tier — a future
+    // change must not silently strip trust_command / trust_base here (#4421).
+    const store = createTestStore(stateWithApproval())
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    fireEvent.click(screen.getByText('Trust'))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(3)
+    expect(items.some(b => b.textContent?.includes('ls /tmp'))).toBe(true)          // trust_command
+    expect(items.some(b => b.textContent?.includes('commands'))).toBe(true)         // trust_base
+    expect(items.some(b => b.textContent?.includes('Trust all tools'))).toBe(true)  // trust
+  })
+
   it('detects shell command from tool_title prefix', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })

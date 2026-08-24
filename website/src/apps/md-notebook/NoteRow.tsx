@@ -16,6 +16,7 @@ import Clickable from '../../components/Clickable'
 import { relTime, rowBadge } from './utils'
 import type { Note, NoteActions, TreeNode } from './types'
 import { compareText } from '../../i18n/format'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /** Sync badge, matching the Sessions list tag-chip recipe. */
 function badgeStyle(status: string): CSSProperties {
@@ -83,6 +84,7 @@ export function NoteRow({
   /** Omitted in contexts with no row affordances (e.g. a preview list). */
   actions?: NoteActions
 }) {
+  const ime = useImeGuard()
   // In flat-list view the folder tree is gone, so surface the note's parent
   // folder in the meta line to disambiguate same-named notes.
   const folder =
@@ -169,11 +171,11 @@ export function NoteRow({
           aria-label={i18nT('apps.mdNotebook.row.renameField')}
           onChange={e => setDraft(e.target.value)}
           onClick={e => e.stopPropagation()}
-          onBlur={commitRename}
+          {...ime.bindComposition({ onBlur: commitRename })}
           onKeyDown={e => {
             e.stopPropagation()
             if (e.key === 'Enter') {
-              e.preventDefault()
+              if (!ime.claimEnter(e)) return
               commitRename()
             } else if (e.key === 'Escape') {
               e.preventDefault()

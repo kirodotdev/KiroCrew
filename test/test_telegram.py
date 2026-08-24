@@ -19,6 +19,8 @@ from unittest.mock import patch
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.dashboard.token_auth import parse_duration
+from kiro_crew.messaging.commands import parse_dashboard_ttl
 from kiro_crew.messaging.link import (
     UNBIND_REASON_UNSPECIFIED,
     ChannelLink,
@@ -48,11 +50,10 @@ from kiro_crew.telegram.commands import (
     ConversationState,
     bot_command_payload,
     build_help_text,
-    format_ttl,
     is_bare_mid_turn_override,
     parse_command,
     parse_command_argument,
-    parse_dashboard_ttl,
+    parse_dashboard_argument,
     parse_mid_turn_override,
 )
 from kiro_crew.telegram.renderer import (
@@ -621,42 +622,44 @@ class TestBotMentionSuffix:
 
 
 class TestParseDashboardTtl:
+    """Telegram's half of ``/kirocrew dashboard [<ttl>]`` is the WORD COUNT.
+
+    The TTL vocabulary, the default and the formatter are channel-neutral and live
+    in ``messaging/commands.py`` (pinned in ``test_messaging_commands.py``); what
+    stays here is that the argument starts after BOTH command tokens, and that the
+    composition the dispatcher performs still resolves every duration the way it
+    did when one function did both jobs.
+    """
+
+    def _ttl(self, text: str) -> int:
+        return parse_dashboard_ttl(parse_dashboard_argument(text), parse_duration=parse_duration)
+
     def test_default_ttl(self) -> None:
         """Default is 1 hour when no TTL specified."""
-        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
+        assert self._ttl("/kirocrew dashboard") == 3600
 
     def test_hours(self) -> None:
-        assert parse_dashboard_ttl("/kirocrew dashboard 2h") == 7200
-        assert parse_dashboard_ttl("/kirocrew dashboard 5H") == 18000
+        assert self._ttl("/kirocrew dashboard 2h") == 7200
+        assert self._ttl("/kirocrew dashboard 5H") == 18000
 
     def test_minutes(self) -> None:
-        assert parse_dashboard_ttl("/kirocrew dashboard 30m") == 1800
-        assert parse_dashboard_ttl("/kirocrew dashboard 90M") == 5400
+        assert self._ttl("/kirocrew dashboard 30m") == 1800
+        assert self._ttl("/kirocrew dashboard 90M") == 5400
 
     def test_invalid_ttl_uses_default(self) -> None:
         """Invalid TTL format falls back to 1 hour."""
-        assert parse_dashboard_ttl("/kirocrew dashboard xyz") == 3600
-        assert parse_dashboard_ttl("/kirocrew dashboard") == 3600
+        assert self._ttl("/kirocrew dashboard xyz") == 3600
+        assert self._ttl("/kirocrew dashboard") == 3600
 
-
-class TestFormatTtl:
-    def test_exact_hours(self) -> None:
-        assert format_ttl(3600) == "1h"
-        assert format_ttl(7200) == "2h"
-
-    def test_minutes_only(self) -> None:
-        assert format_ttl(1800) == "30m"
-        assert format_ttl(60) == "1m"
-
-    def test_mixed_never_truncates(self) -> None:
-        """90m must NOT display as '1h' -- the link lives 1.5h."""
-        assert format_ttl(5400) == "1h 30m"
-        assert format_ttl(3660) == "1h 1m"
-
-    def test_sub_minute_floors_to_zero_minutes(self) -> None:
-        # parse_duration never yields <60s, but the formatter stays total.
-        assert format_ttl(0) == "0m"
-        assert format_ttl(59) == "0m"
+    def test_the_argument_starts_after_both_command_tokens(self) -> None:
+        # A channel whose dashboard command is ONE token must not inherit this
+        # offset, which is why the shared parser takes the argument, not the text.
+        assert parse_dashboard_argument("/kirocrew dashboard 2h") == "2h"
+        # Telegram's clients append @BotUsername to a slash command in any chat
+        # with more than one participant, which must not shift the argument.
+        assert parse_dashboard_argument("/kirocrew@KiroCrewBot dashboard 2h") == "2h"
+        assert parse_dashboard_argument("/kirocrew dashboard") == ""
+        assert parse_dashboard_argument("/kirocrew") == ""
 
 
 class TestCommandCatalogue:
@@ -1238,6 +1241,37 @@ class TestTransportReceive:
 
 
 class TestRenderer:
+    def test_the_approval_prompt_names_the_tool_the_request_is_about(self) -> None:
+        # `_last_tool` is the last tool_call the renderer saw and is never
+        # cleared, so a permission arriving without its own titled tool_call
+        # would ask the operator to approve the PREVIOUS tool.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_tool_call("t1", "fs_read")
+            await r.on_prompt_choice([], request_id="rq1", tool_title="execute_bash")
+
+        asyncio.run(_go())
+        prompt = cli.sent[-1][0]
+        assert "execute_bash" in prompt
+        assert "fs_read" not in prompt
+
+    def test_the_approval_prompt_falls_back_to_the_last_tool(self) -> None:
+        # Non-vacuity: without a title on the event the remembered name is still
+        # better than "this tool", so the fallback must survive.
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.on_tool_call("t1", "fs_read")
+            await r.on_prompt_choice([], request_id="rq2")
+
+        asyncio.run(_go())
+        assert "fs_read" in cli.sent[-1][0]
+
     def test_a_streamed_table_reply_still_goes_out_as_a_rich_message(self) -> None:
         # THE regression this feature exists to prevent. A normal agent reply
         # streams, so _stream_live has already sent a plaintext bubble and set
@@ -2370,15 +2404,52 @@ class TestApprovalDecider:
     def test_resolve_pending(self) -> None:
         async def _go() -> bool:
             d = TelegramApprovalDecider(session_key="telegram:1:0")
+            TelegramApprovalDecider.arm("telegram:1:0:rq7", "n1")
             task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
             await asyncio.sleep(0.02)
-            TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", True)
+            TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", True, nonce="n1")
             return await task
 
         assert asyncio.run(_go()) is True
 
     def test_resolve_unknown_key_returns_false(self) -> None:
-        assert TelegramApprovalDecider.resolve_global("no-such-key", True) is False
+        assert TelegramApprovalDecider.resolve_global("no-such-key", True, nonce="n1") is False
+
+    def test_a_stale_keyboard_cannot_approve_a_live_prompt(self) -> None:
+        """Request ids restart at 1 per provider process.
+
+        So a button left in a Telegram chat from a previous run names an id that is
+        live again for a DIFFERENT tool. The nonce is what refuses it.
+        """
+
+        async def _go() -> bool:
+            d = TelegramApprovalDecider(session_key="telegram:1:0")
+            TelegramApprovalDecider.arm("telegram:1:0:rq7", "fresh")
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq7")))
+            await asyncio.sleep(0.02)
+            stale = TelegramApprovalDecider.resolve_global(
+                "telegram:1:0:rq7", True, nonce="from-a-previous-run"
+            )
+            assert stale is False, "a stale press must resolve nothing"
+            # The prompt is still waiting: the stale press neither approved nor
+            # consumed it.
+            TelegramApprovalDecider.resolve_global("telegram:1:0:rq7", False, nonce="fresh")
+            return await task
+
+        assert asyncio.run(_go()) is False
+
+    def test_an_unarmed_prompt_fails_closed(self) -> None:
+        """No nonce armed means no widget this process minted, so nothing to answer."""
+
+        async def _go() -> bool:
+            d = TelegramApprovalDecider(session_key="telegram:1:0")
+            task = asyncio.ensure_future(d(SimpleNamespace(request_id="rq8")))
+            await asyncio.sleep(0.02)
+            assert TelegramApprovalDecider.resolve_global("telegram:1:0:rq8", True) is False
+            TelegramApprovalDecider._REGISTRY["telegram:1:0:rq8"].set_result(False)
+            return await task
+
+        assert asyncio.run(_go()) is False
 
 
 # ── transport_dispatch.py: turn + callback routing ─────────────────────────
@@ -2475,13 +2546,14 @@ class TestDispatcher:
             key = TelegramApprovalDecider.key(d._session_key(("direct", "7")), "rq1")
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
+            TelegramApprovalDecider.arm(key, "n1")
             try:
                 cb = SimpleNamespace(
                     callback_query_id="q1",
                     user_id=7,
                     chat_id=7,
                     message_id=100,
-                    data="a:rq1:0",  # reject (flag 0)
+                    data="a:rq1:n1:0",  # reject (flag 0)
                     label="",
                     chat_type="private",
                 )
@@ -2756,12 +2828,13 @@ class TestDispatcher:
             key = TelegramApprovalDecider.key(d._session_key(("direct", "7")), "rq9")
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
+            TelegramApprovalDecider.arm(key, "n1")
             cb = SimpleNamespace(
                 callback_query_id="q2",
                 user_id=7,
                 chat_id=7,
                 message_id=100,
-                data="a:rq9:1",
+                data="a:rq9:n1:1",
                 label="",
                 chat_type="private",
             )
@@ -4201,13 +4274,14 @@ class TestForumCallbackGate:
             key = TelegramApprovalDecider.key(d._session_key(("forum", "-1001234567890:5")), "rqF")
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             TelegramApprovalDecider._REGISTRY[key] = fut
+            TelegramApprovalDecider.arm(key, "n1")
             try:
                 cb = SimpleNamespace(
                     callback_query_id="qF",
                     user_id=7,
                     chat_id=-1001234567890,
                     message_id=60,
-                    data="a:rqF:1",
+                    data="a:rqF:n1:1",
                     label="",
                     chat_type="supergroup",
                     message_thread_id=5,

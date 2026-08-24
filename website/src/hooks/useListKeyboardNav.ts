@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
+import { createImeLatch } from './useImeGuard'
 
 /**
  * Shared list keyboard-navigation hook for picker-menu / palette surfaces
@@ -16,6 +17,13 @@ import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
  *    palette uses it to cycle category tabs) registers its own *window*-capture
  *    listener — which runs before this document-capture one — and calls
  *    `stopImmediatePropagation()` so this handler never sees the event.
+ *    Both choose keys are IME-guarded: while a composition is live or inside
+ *    the post-composition latch window (shared with `useImeGuard` via
+ *    `createImeLatch`), the key declines the choose and is consumed per
+ *    `claimKey`'s contract instead. A host interceptor that outranks this
+ *    listener bypasses that guard along with the dispatch, so it must consult
+ *    the same latch through the returned {@link ListKeyboardNav.claimKey}
+ *    before acting on a choose-class key.
  *  - `Alt`/`Option`+`Enter`  — `onAltEnter(selected)` when provided; if it
  *    returns `true` the event is treated as handled.
  *  - `Escape`                — `onClose()`.
@@ -73,6 +81,19 @@ export interface ListKeyboardNav {
   selectedRef: MutableRefObject<number>
   /** Per-row element refs; assign with `ref={el => { itemRefs.current[i] = el }}`. */
   itemRefs: MutableRefObject<(HTMLElement | null)[]>
+  /**
+   * The hook's IME-guard claim, for a HOST-LEVEL interceptor that outranks the
+   * hook's own document-capture listener (the window-capture Tab takeover the
+   * `onChoose` doc describes). Such an interceptor acts on choose-class keys
+   * BEFORE the hook's guarded dispatch can decline them, so it must consult
+   * the SAME tracked latch: call this first in each intercepted choose branch
+   * and bail out on `false` — the claim has already consumed the decline per
+   * `claimKey`'s contract in useImeGuard.ts (stopPropagation always,
+   * preventDefault only where the browser would otherwise act). A private
+   * latch in the host is the drift the `ImeEnterClaimRatchet` pins; this is
+   * the sanctioned spelling.
+   */
+  claimKey: (e: globalThis.KeyboardEvent) => boolean
 }
 
 export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboardNav {
@@ -92,6 +113,19 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
   onCloseRef.current = onClose
   const onAltEnterRef = useRef(onAltEnter)
   onAltEnterRef.current = onAltEnter
+
+  // IME guard for the Enter-chooses-row path. This listener receives NATIVE
+  // KeyboardEvents (document capture), which `useImeGuard`'s synthetic-only
+  // `claimEnter` cannot consume — so it shares the guard's tracked latch via
+  // `createImeLatch` instead of hand-rolling a second spelling. On WebKit the
+  // keydown that commits an IME candidate arrives AFTER `compositionend` with
+  // `isComposing` already false; unguarded, committing a candidate into the
+  // filter query would activate whatever row is highlighted (switch project,
+  // insert a file/skill/slash command, dispatch a palette row) against
+  // half-composed text. The latch lives in a ref so `onKey` reads the live
+  // value without re-subscribing.
+  const imeLatchRef = useRef<ReturnType<typeof createImeLatch>>()
+  if (!imeLatchRef.current) imeLatchRef.current = createImeLatch()
 
   const move = useCallback((next: number) => {
     selectedRef.current = next
@@ -141,6 +175,17 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
       }
       return
     }
+    // A choose key the IME owns must not activate the row. `claimKey` owns
+    // the whole decline (stopPropagation always; preventDefault only in the
+    // post-composition latch window where the browser would otherwise act) —
+    // see its contract in useImeGuard.ts. Covers Tab as well as Enter: IMEs
+    // use Tab to cycle the candidate list, and Tab is the same unconditional
+    // choose dispatch below. Deliberately after the empty-list block above,
+    // whose release path must stay untouched (the host composer carries its
+    // own IME guard).
+    if ((e.key === 'Enter' || e.key === 'Tab') && !imeLatchRef.current!.claimKey(e)) {
+      return
+    }
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       e.stopPropagation()
@@ -172,6 +217,45 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     }
   }, [move, wrap, releaseKeysWhenEmpty])
 
+  // Composition tracking + latch lifecycle, keyed on `open` ONLY. The keydown
+  // subscription below re-attaches whenever `onKey`'s identity changes (wrap /
+  // releaseKeysWhenEmpty — consumers derive the latter from live query/fetch
+  // state), and a latch reset riding along on that churn would clear the
+  // post-composition window at exactly the moment it matters: the commit's own
+  // input event mutates the query right before the committing keydown arrives.
+  // Same constraint useListboxKeyboard states for its guard ("no reset()
+  // firing mid-composition on unrelated re-renders").
+  useEffect(() => {
+    if (!open) return
+    const latch = imeLatchRef.current!
+    // A reopened surface must not inherit a latch stranded by a composition
+    // that ended (or was abandoned) while it was closed.
+    latch.reset()
+    // Composition tracking listens at document capture like the keydown
+    // listener itself: the filter input these surfaces pair with lives in the
+    // host (outside the menu), so element-scoped listeners have nothing
+    // reliable to attach to.
+    const onCompositionStart = () => latch.onCompositionStart()
+    const onCompositionEnd = () => latch.onCompositionEnd()
+    // Stranded-latch recovery, mirroring bindComposition's blur reset: a
+    // composition abandoned WITHOUT compositionend (focus moves off the input
+    // mid-composition, an OS-level IME cancel, the element unmounts) would
+    // otherwise leave the latch set — and a latched guard consumes what it
+    // declines, so the surface would silently stop responding to Enter/Tab.
+    const onRecover = () => latch.reset()
+    document.addEventListener('compositionstart', onCompositionStart, true)
+    document.addEventListener('compositionend', onCompositionEnd, true)
+    document.addEventListener('focusout', onRecover, true)
+    return () => {
+      document.removeEventListener('compositionstart', onCompositionStart, true)
+      document.removeEventListener('compositionend', onCompositionEnd, true)
+      document.removeEventListener('focusout', onRecover, true)
+      // Drop any pending post-composition timer with the listeners so a timer
+      // from the closing surface cannot fire into the next open.
+      latch.reset()
+    }
+  }, [open])
+
   useEffect(() => {
     if (!open) return
     document.addEventListener('keydown', onKey, true)
@@ -186,5 +270,13 @@ export function useListKeyboardNav(opts: UseListKeyboardNavOptions): ListKeyboar
     move(next)
   }, [move])
 
-  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs }
+  // Stable delegate onto the instance latch, so a host's window-capture
+  // interceptor consults the same composition tracking as the hook's own
+  // choose dispatch (see the ListKeyboardNav.claimKey contract).
+  const claimKey = useCallback(
+    (e: globalThis.KeyboardEvent) => imeLatchRef.current!.claimKey(e),
+    [],
+  )
+
+  return { selected, setSelected: setSelectedSynced, selectedRef, itemRefs, claimKey }
 }

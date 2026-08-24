@@ -50,6 +50,7 @@ Other style rules:
 | Python version | >= 3.10; `from __future__ import annotations` for type hints |
 | Imports | `import logging` plus `logger = logging.getLogger(__name__)` |
 | Async | `asyncio` throughout; `async def` for all I/O |
+| Module-global asyncio primitives | Never a bare `asyncio.Lock()`/`Event()`/`Queue()` at module scope — it binds to the import-time (or first-use) loop and raises `RuntimeError` from any other loop (Python 3.10+). Use `kiro_crew.loop_lock.LoopBoundLock` for locks, or create the primitive inside the coroutine. CI enforces this (`loop-bound-locks` gate). |
 | Dataclasses | `@dataclass` for data containers |
 | Errors | Custom exceptions in `acp/client.py`; return error strings at tool boundaries. See [error-handling](error-handling.md). |
 
@@ -74,11 +75,11 @@ Keep them concise. `_vendor/` (vendored third-party code) and pragma comments
 
 ## The lint pitfalls
 
-The blocking gates are black (baselined), isort, flake8 and mypy. Run them before
+The blocking gates are black (baselined), the subprocess-encoding gate (baselined), isort, flake8 and mypy. Run them before
 committing:
 
 ```bash
-python3 scripts/check_black_formatting.py && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
@@ -108,6 +109,30 @@ The formatter, linter and type-checker are pinned to exact versions in both
 `setup.cfg`'s `dev` extra and `pyproject.toml`'s `dependency-groups`, because
 black and mypy change their output across minor releases and a floating range
 makes a local venv disagree with CI. Bump them in lockstep.
+
+## Subprocess output is decoded explicitly
+
+A text-mode subprocess call (`text=True` / `universal_newlines=True`) without an
+explicit `encoding=` decodes the child's output with the locale's code page —
+UTF-8 on POSIX, the legacy ANSI code page on Windows, where any non-ASCII byte
+becomes mojibake (#3219). CI gates this with
+`scripts/check_subprocess_encoding.py` (AST-based, so multi-line calls are
+judged as one call), behind the shrink-only
+`.github/subprocess-encoding-baseline.txt`.
+
+For a child whose output encoding is knowable — `git`, `gh`, a Python
+interpreter we spawn running our own code — pin the decode with the shared
+definition in `kiro_crew.subprocess_utf8`: splat `**UTF8_TEXT` into the call
+(this keeps the call going through the module's own `subprocess` attribute, so
+tests that patch it by name keep intercepting — and it adds no new spawn
+primitive for `test_spawn_audit` to police). For a Python child, also pin the
+EMIT side with `env={**os.environ, "PYTHONIOENCODING": "utf-8"}`: piped stdout
+on Windows otherwise re-encodes with the ANSI code page before the decode ever
+sees it. Standalone scripts that cannot
+import the package write `encoding="utf-8", errors="replace"` inline. A child
+that genuinely writes in the console encoding (`ps`, `systeminfo`, user shells)
+keeps locale decoding and says so with an inline `# subprocess-encoding: locale`
+marker — an audit trail, not an escape hatch.
 
 ## Frontend
 

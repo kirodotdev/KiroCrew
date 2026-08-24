@@ -4,6 +4,7 @@ This module owns the sequence every non-Slack channel dispatcher runs around
 :class:`TurnDriver`:
 
     governance gate
+    -> hook auto-reply                   (HOOK_REPLY short-circuits, no session)
     -> renderer.on_turn_start()          (typing indicator before cold start)
     -> sessions.get_or_create + set_channel
     -> publish_turn_identity
@@ -31,12 +32,12 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_AUTO_APPROVE, TOOL_DENY
+from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.messaging.renderer import SilentRenderer
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -87,6 +88,41 @@ class ChannelTurn:
     """``None`` for channels with no interactive buttons (deny-by-default for
     INTERACTIVE mode; ``auto``/``trust`` still work)."""
 
+    auto_approve_session: Optional[Callable[[], bool]] = None
+    """``() -> bool`` honoring a per-session Trust / operator YOLO grant.
+
+    Without it, a channel that renders no approve/deny buttons is stuck: the
+    INTERACTIVE ladder denies by default and there is no decider to say otherwise,
+    so every tool call fails and the agent can only talk. Supplying this lets such
+    a channel grant trust out of band (a ``/yolo``-style command) while the deny
+    default stays intact for every session that has not opted in.
+
+    ``None`` keeps the previous behavior exactly, so channels that do not set it
+    are unaffected."""
+    minimal_context: bool = False
+    """Assemble the prompt WITHOUT the operator's private context.
+
+    ``ContextBuilder.build_message`` gates memory, lessons, skills and prior
+    conversation history on this, leaving date/time plus agent identity. Set it
+    for a turn driven by someone the channel admits but who is not its operator:
+    denying that sender's tools does not help, because the exposure is in the
+    PROMPT and is assembled before any tool runs, so the operator's memory and
+    profile can otherwise be quoted straight back to a peer.
+
+    Every channel that admits a non-owner (an allowlisted peer, an ``open`` DM
+    policy, a group member) has the same exposure, which is why the switch lives
+    on the shared seam rather than in one dispatcher. Defaults False, so every
+    existing adopter is byte-identical."""
+
+    deny_all_tools: bool = False
+    """Reject every tool this turn asks for, ahead of every auto-approve path.
+
+    For a turn driven by someone the channel does not trust as its operator. The
+    approval mode cannot express it: the PreToolUse hook may answer
+    ``auto_approve`` and a session carrying Trust short-circuits, both before the
+    interactive ladder is consulted. Defaults False, so every existing adopter is
+    byte-identical."""
+
     persist: Optional[Callable[[str, str, bool], None]] = None
     """``(user_text, reply_text, is_new) -> None``, called off the event loop."""
 
@@ -104,14 +140,73 @@ class ChannelTurn:
     """SEL audit caller label; defaults to ``<channel_type>:unknown``."""
 
 
-async def inbound_permitted(channel_type: str) -> bool:
+#: Every spelling a channel accepts for "abort the running turn". The union of
+#: the per-channel command tables (``/stop`` and ``/cancel`` everywhere, plus
+#: Discord's ``!`` bang forms and WeCom's ``停止``), owned here because the
+#: governance exemption below is channel-neutral.
+#:
+#: This is a MIRROR of data that lives in the channel packages, so it cannot be
+#: kept correct by intention alone — and it already drifted once: WeCom shipped
+#: ``停止`` in its own table and on its ``/help`` card while this set knew only
+#: the ASCII spellings, so a denied WeCom conversation had no reachable
+#: off-switch in the language that channel exists for. Deriving the union here
+#: would mean the shared layer importing all nine channel packages, which
+#: inverts the dependency it exists to hold. So the tripwire lives in
+#: ``test_messaging_dispatch.py``, and it DISCOVERS the channel tables rather
+#: than listing them: the earlier version checked Discord and Telegram by hand
+#: and was blind to the three channels that actually diverged.
+_CANCEL_ALIASES = frozenset(("/stop", "/cancel", "!stop", "!cancel", "停止"))
+
+
+def is_pure_cancel(text: str, *, has_attachments: bool = False) -> bool:
+    """Whether *text* is nothing but a cancellation, carrying nothing with it.
+
+    PURE is the load-bearing word, and it is why the match is exact rather than a
+    prefix or a search:
+
+    * **Whole message.** A cancel alias with anything else on the line is an
+      ordinary message that happens to start with one, and every channel's own
+      ``parse_command`` already matches only the whole message.
+    * **No attachments.** A channel fetches media AFTER it authorizes the message,
+      so exempting an attachment-bearing cancel would spend an authenticated
+      download, a transcription, and a ``channel_history`` write on a conversation
+      policy has denied -- the exact leak the gate exists to stop -- before any
+      turn is refused. Such a message is gated like any other.
+
+    Case- and whitespace-insensitive, matching the per-channel tables.
+    """
+    if has_attachments:
+        return False
+    return text.strip().lower() in _CANCEL_ALIASES
+
+
+async def inbound_permitted(
+    channel_type: str, *, text: str = "", has_attachments: bool = False
+) -> bool:
     """Per-message governance gate.
 
     Rechecked on every message (not just at connect) so a host-profile deny
     added while the transport is live stops dispatch without a restart. The
     pipeline calls this itself, so a channel cannot forget it.
+
+    A PURE cancellation is the one exemption, matching the native Slack route's
+    ``!stop`` carve-out: a denied channel must still be able to halt a runaway
+    session it previously STARTED, and on a channel with no interactive buttons
+    (``max_buttons=0``) the typed cancel is the only affordance there is, so
+    gating it makes the off-switch unreachable exactly when it is needed. Nothing
+    else is exempt -- a restart is not a cancellation.
+
+    Callers pass *text* and *has_attachments* only where a cancel can arrive: the
+    dispatcher's per-message entry, ahead of command parsing. The defaults leave
+    the gate strict, which is what keeps ``drive_turn``'s backstop a backstop -- a
+    cancel runs no turn, so it never reaches it.
     """
     if await channel_inbound_permitted(channel_type):
+        return True
+    if text and is_pure_cancel(text, has_attachments=has_attachments):
+        # Logged, not silent: an operator reading the trail needs to see that a
+        # governed-off channel was still allowed to stop its own session.
+        logger.info("%s cancellation allowed through a channels governance deny", channel_type)
         return True
     logger.info("%s inbound dropped: denied by channels governance policy", channel_type)
     return False
@@ -267,6 +362,41 @@ def conversation_is_muted(sessions: Any, turn: ChannelTurn) -> bool:
     return delivery_is_muted(sessions, turn.session_key, turn.channel_type)
 
 
+def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
+    """The canned answer a user-defined ``on_message`` hook gives *text*, else None.
+
+    ``None`` means no hook claimed the message (passthrough, modify, context
+    injection, or no hooks at all), so the caller runs a normal turn. A string --
+    including an empty one -- means a hook ANSWERED it and the turn must not run:
+    that is the whole point of an auto-reply, and running the model anyway would
+    both contradict the operator's rule and bill them for it.
+
+    The text is redacted here because this path skips :class:`TurnDriver`, which
+    is what redacts everything else on its way to a channel. The pair applied is
+    the driver's own (exfiltration URLs, then credentials); mention syntax is
+    deliberately NOT defanged, because a hook reply is operator-authored config
+    rather than model or remote output, so an ``@name`` in it is intended.
+
+    Every lookup is defensive: the hook manager is optional on this seam, and a
+    channel that supplies a context builder without one must fall through to a
+    normal turn rather than fail the message.
+
+    Asking the hooks here means ``build_message`` asks them again on the turn
+    path, which is what Slack does too and is safe because ``on_message`` is a
+    pure pattern match over the text. The alternative -- reading the hook result
+    ``build_message`` already returns -- is too late: by then the session has been
+    cold-started, which is the cost an auto-reply exists to avoid.
+    """
+    hooks = getattr(ctx_builder, "hooks", None)
+    on_message = getattr(hooks, "on_message", None)
+    if not callable(on_message):
+        return None
+    result = on_message(text)
+    if getattr(result, "action", "") != HOOK_REPLY:
+        return None
+    return redact(str(getattr(result, "text", "") or ""))
+
+
 async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> None:
     """Run one authorized inbound message end to end.
 
@@ -297,6 +427,35 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             getattr(renderer, "channel_type", "") or turn.channel_type,
         )
     try:
+        # ── Hook auto-reply: answer and stop, without acquiring a session ──
+        # A ``HOOK_REPLY`` from the context builder's user-defined hooks
+        # short-circuits the turn exactly as it does on Slack: the canned reply
+        # goes out, the exchange is recorded, and no ACP session is started, so a
+        # message a hook already answers costs neither a cold start nor a
+        # billable turn. Enforced HERE rather than per channel for the same
+        # reason the governance gate is: a channel cannot honour a hook it never
+        # calls, and every adopter would otherwise have to re-derive this.
+        #
+        # Placed after the mute substitution so a disconnected conversation drops
+        # the write like any other output, and BEFORE ``on_turn_start`` so no
+        # typing indicator is opened for a turn that never runs. Inside the try
+        # so the ``finally`` still finalizes the renderer; ``_acquired`` is still
+        # False, so nothing is released.
+        hook_reply = hook_auto_reply(ctx_builder, turn.user_text)
+        if hook_reply is not None:
+            if hook_reply:
+                await renderer.on_text_chunk(hook_reply)
+            # ``on_done`` is what actually delivers on the buffered renderers, so
+            # it runs even for an empty reply: the renderer then finalizes a
+            # blank answer the same way it does one from the model.
+            await renderer.on_done()
+            if turn.persist is not None:
+                # ``is_new`` is False: no session was created, so there is no
+                # new-session bookkeeping (title, dashboard surfacing) owed. What
+                # is recorded is the redacted text the user actually saw, so the
+                # transcript matches the conversation.
+                await asyncio.to_thread(turn.persist, turn.user_text, hook_reply, False)
+            return
         # Typing indicator first (before the potentially slow cold start);
         # on_turn_start is idempotent so the driver's later call no-ops.
         await renderer.on_turn_start()
@@ -318,6 +477,7 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             channel_id=turn.conversation_id,
             agent=turn.agent,
             resumed=resumed,
+            minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
         )
 
@@ -326,6 +486,8 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             renderer,
             approval_mode=turn.approval_mode,
             decider=turn.decider,
+            auto_approve_session=turn.auto_approve_session,
+            deny_all_tools=turn.deny_all_tools,
             auto_approve_tool=build_auto_approve(ctx_builder),
             tool_gate=build_tool_gate(ctx_builder, session_key=session_key, agent=turn.agent),
             directive_consumer=turn.directive_consumer,

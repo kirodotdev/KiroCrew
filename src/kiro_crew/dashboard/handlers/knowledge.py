@@ -54,6 +54,7 @@ from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
+from kiro_crew.messaging.raster import SNIFF_BYTES
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -1400,7 +1401,7 @@ async def ingest_file(request: web.Request) -> web.Response:
     try:
         total_size = 0
         # Capture the leading bytes so the claimed extension can be verified
-        # against the file signature; 16 bytes covers every prefix in the
+        # against the file signature; SNIFF_BYTES covers every signature in the
         # sibling gate (PNG magic is 8, WEBP needs bytes 8:12, zip/PDF fewer).
         head = bytearray()
         while True:
@@ -1413,8 +1414,8 @@ async def ingest_file(request: web.Request) -> web.Response:
                 Path(tmp.name).unlink(missing_ok=True)
                 return web.json_response(
                     {"error": f"file too large (max {_MAX_INGEST_FILE_SIZE // (1024 * 1024)} MB)"}, status=413)
-            if len(head) < 16:
-                head.extend(chunk[: 16 - len(head)])
+            if len(head) < SNIFF_BYTES:
+                head.extend(chunk[: SNIFF_BYTES - len(head)])
             tmp.write(chunk)
         tmp.close()
 

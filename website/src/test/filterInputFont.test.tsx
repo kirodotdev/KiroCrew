@@ -5,10 +5,21 @@ import React from 'react'
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { configureStore } from '@reduxjs/toolkit'
 
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
 import AgentSelector from '../components/AgentSelector'
 import type { KiroCrewAgent } from '../components/AgentSelector'
+import chatReducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
+import notificationsReducer from '../store/notificationsSlice'
+import { api } from '../api/client'
+
+// The nested ReasoningEffortDropdown persists slider picks over the wire
+// (#5120); these tests never touch the slider, but the stub keeps an
+// accidental future interaction from hitting a real fetch.
+vi.spyOn(api, 'chatSlotReasoningEffort').mockResolvedValue({ ok: true } as never)
 
 /**
  * A dropdown's filter box is CHROME. Its placeholder ("Type to filter…") is
@@ -51,7 +62,13 @@ const agents: KiroCrewAgent[] = [
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  // The nested ReasoningEffortDropdown persists picks into the slot store
+  // (#5120), so the tree needs the redux context. A per-render store (not
+  // the app singleton) keeps one test's persist from leaking into the next.
+  const store = configureStore({
+    reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+  })
+  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 describe('dropdown filter inputs follow the Font Family setting', () => {

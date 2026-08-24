@@ -448,3 +448,31 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('same text'))
   })
 })
+
+describe('ChatPane file drop', () => {
+  it('shows the pane overlay and uploads a dropped file exactly once', async () => {
+    renderPane('pane-drop')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    const file = new File(['hello'], 'hello.txt', { type: 'text/plain' })
+    const dataTransfer = {
+      types: ['Files'],
+      items: [{
+        kind: 'file',
+        type: file.type,
+        getAsFile: () => file,
+        webkitGetAsEntry: () => ({ isDirectory: false }),
+      }],
+      files: [file],
+      dropEffect: 'none',
+    } as unknown as DataTransfer
+
+    fireEvent.dragEnter(box, { dataTransfer })
+    expect(screen.getByTestId('chat-drop-overlay')).toBeInTheDocument()
+
+    fireEvent.drop(box, { dataTransfer })
+    await waitFor(() => expect(api.uploadFiles).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(screen.queryByTestId('chat-drop-overlay')).not.toBeInTheDocument()
+    })
+  })
+})

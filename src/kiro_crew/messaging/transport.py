@@ -81,6 +81,21 @@ class TransportCapabilities:
       land per channel and in different changes — Weixin ingests CDN media
       today with no upload half written.
 
+    * ``table_mode`` — the per-target table presentation policy: ``off`` /
+      ``cards`` / ``grid`` / ``native`` / ``auto``. Renderers read this field
+      at the outbound boundary, so the same canonical turn may stay native on
+      one target and become cards on another. ``off`` is the conservative
+      default: a transport opts in only when its renderer applies the shared
+      table transform or already owns an equivalent conversion.
+
+    * ``native_tables`` — whether the target renders a GFM pipe table AS a
+      table. ``messaging.tables.resolve_table_policy`` checks it, so
+      ``table_mode=native`` passes through only where the capability is true
+      and safely becomes cards otherwise. Claiming native support wrongly ships
+      literal pipes, which is the output the conversion exists to prevent.
+      Slack is deliberately false — it renders no table, and its own flattening
+      in ``slack/format.py`` predates this.
+
     ASPIRATIONAL (declared, honest, but nothing reads them yet — the
     capability-gated interface work will consume them; do NOT write code that
     assumes they are enforced):
@@ -101,6 +116,13 @@ class TransportCapabilities:
     files_outbound: bool = False
     rich_blocks: bool = False
     threads: bool = False
+    # Per-target table presentation. Renderers that opt into the shared table
+    # transform read this value; ``off`` keeps every pre-existing channel byte
+    # unchanged until its transport declares an intentional mode.
+    table_mode: str = "off"
+    # Native rich-table support. Default False because over-claiming it leaks
+    # literal pipes on platforms that cannot render a GFM table.
+    native_tables: bool = False
     # parameters (channels differ widely -- NOT booleans)
     max_message_chars: int = 4096  # CHARS. Slack path caps 3900, Telegram 4000, Discord 1900
     max_buttons: int = 3  # TOTAL interactive choices per prompt (WhatsApp reply buttons = 3)
@@ -120,6 +142,8 @@ class TransportCapabilities:
             "files_outbound": self.files_outbound,
             "rich_blocks": self.rich_blocks,
             "threads": self.threads,
+            "table_mode": self.table_mode,
+            "native_tables": self.native_tables,
             "max_message_chars": self.max_message_chars,
             "max_buttons": self.max_buttons,
             "supports_proactive_send": self.supports_proactive_send,

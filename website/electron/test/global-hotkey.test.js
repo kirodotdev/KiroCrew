@@ -205,6 +205,45 @@ test("the handler creates a window when none exists or it is destroyed", () => {
   assert.deepStrictEqual(gone.calls, []);
 });
 
+// A summon landing while hideToTray() is still waiting out the macOS
+// fullscreen-exit animation must disarm the pending hide — otherwise the show
+// below is silently undone the moment the exit completes and the user watches
+// the window they just summoned vanish. Drive the REAL hide-to-tray module (it
+// is pure, no Electron dependency) so this pins the integration, not a stub.
+test("the handler disarms a deferred tray hide before showing", () => {
+  const { mod } = loadModule();
+  const { hideToTray } = require(path.join(__dirname, "..", "hide-to-tray"));
+  const win = fakeWindow();
+  const listeners = new Map();
+  win.isFullScreen = () => true;
+  win.setFullScreen = () => win.calls.push("setFullScreen");
+  // Record hide() so the final "no hide after summon" assertion is not
+  // vacuously true on a window with no hide member.
+  win.hide = () => win.calls.push("hide");
+  win.once = (event, fn) => listeners.set(event, fn);
+  win.off = (event, fn) => {
+    if (listeners.get(event) === fn) listeners.delete(event);
+  };
+  let backstop = null;
+  hideToTray(win, {
+    isMac: true,
+    setTimeoutFn: (fn) => { backstop = fn; return { unref() { return this; } }; },
+    clearTimeoutFn: () => { backstop = null; },
+  });
+  assert.deepStrictEqual(win.calls, ["setFullScreen"], "hide must be deferred, not immediate");
+
+  const handler = mod.createSummonHandler({ getWindow: () => win, createWindow: () => {} });
+  handler();
+  assert.deepStrictEqual(win.calls, ["setFullScreen", "show", "focus"]);
+
+  // The exit animation still completes and the backstop may already be in
+  // flight — neither may hide the window the user just summoned.
+  const leave = listeners.get("leave-full-screen");
+  if (leave) leave();
+  if (backstop) backstop();
+  assert.deepStrictEqual(win.calls, ["setFullScreen", "show", "focus"], "no hide after summon");
+});
+
 test("a throwing summon handler is caught, not propagated to the dispatcher", () => {
   const { mod, state } = loadModule();
   const logs = [];

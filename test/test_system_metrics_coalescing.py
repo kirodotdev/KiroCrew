@@ -26,13 +26,13 @@ from kiro_crew.dashboard import handlers_system as hs
 def _clear_caches():
     hs._metrics_cache = {}
     hs._metrics_cache_ts = 0.0
-    hs._metrics_lock = None
+    hs._metrics_lock = hs.LoopBoundLock()
     hs._proc_scan_cache = {}
     hs._proc_scan_cache_ts = 0.0
     yield
     hs._metrics_cache = {}
     hs._metrics_cache_ts = 0.0
-    hs._metrics_lock = None
+    hs._metrics_lock = hs.LoopBoundLock()
     hs._proc_scan_cache = {}
     hs._proc_scan_cache_ts = 0.0
 

@@ -27,17 +27,44 @@ export interface PinMessageBody {
   preview: string
 }
 
+/**
+ * Structured error from the pins API: a plain `Error` carrying the
+ * machine-readable `code` field the backend returns (e.g. `pin_limit_reached`,
+ * `preview_too_large`, `persist_failed`) so callers can branch on the specific
+ * failure rather than showing a single generic message.
+ *
+ * Deliberately a TYPE, not a class: consumers branch structurally on `code`
+ * (see `pinErrorCode` in useChatPins), which stays correct across module-mock
+ * boundaries in tests, where an `instanceof` against a re-exported class would
+ * not — and a type adds no runtime export a partial mock could drop.
+ */
+export type PinApiError = Error & { code?: string }
+
 export const pinsApi = {
   list: (slotKey: string): Promise<{ pins: ChatPin[] }> =>
     fetch(`/api/chat/pins?slot=${encodeURIComponent(slotKey)}`, { headers: _sk })
       .then(r => { if (!r.ok) throw new Error(`Pin list failed: ${r.status}`); return r.json() }),
 
-  create: (body: PinMessageBody): Promise<ChatPin> =>
-    fetch('/api/chat/pins', {
+  create: async (body: PinMessageBody): Promise<ChatPin> => {
+    const r = await fetch('/api/chat/pins', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ..._sk },
       body: JSON.stringify(body),
-    }).then(r => { if (!r.ok) throw new Error(`Pin create failed: ${r.status}`); return r.json() }),
+    })
+    if (!r.ok) {
+      let code: string | undefined
+      try {
+        const data = await r.json() as Record<string, unknown>
+        if (typeof data.code === 'string') code = data.code
+      } catch {
+        // Body parse failure — fall through to the generic error below
+      }
+      const err: PinApiError = new Error(`Pin create failed: ${r.status}`)
+      err.code = code
+      throw err
+    }
+    return r.json() as Promise<ChatPin>
+  },
 
   remove: (id: string): Promise<{ ok: boolean }> =>
     fetch(`/api/chat/pins/${encodeURIComponent(id)}`, {

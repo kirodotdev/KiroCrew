@@ -62,6 +62,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.dashboard.channel_folders import lookup_channel_folder
 from kiro_crew.dashboard.state import _normalize_slot_key
 from kiro_crew.history import carry_provenance, is_incognito_transcript
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import channel_namespace_of, is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -87,6 +88,7 @@ _CHANNEL_LABELS: dict[str, str] = {
     "teams": "Teams",
     "weixin": "Weixin",
     "imessage": "iMessage",
+    "feishu": "Feishu",
     "unified": "Direct message",
 }
 #: In-memory window for a newly surfaced slot. Deliberately the same bound the
@@ -518,7 +520,7 @@ def _window_refresh_is_safe(slot: "_ChatSlot") -> bool:
 #: Per-state reconcile lock. Keyed weakly so a discarded state is collectable —
 #: a WeakKeyDictionary lets the lock die with the state it guards rather than
 #: not pin its lock.
-_RECONCILE_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_RECONCILE_LOCKS: "weakref.WeakKeyDictionary[Any, LoopBoundLock]" = weakref.WeakKeyDictionary()
 
 #: Per-state in-memory close tombstones: slot name -> epoch of the most recent
 #: tab close. Written synchronously on the event loop by the tab-close paths
@@ -611,10 +613,10 @@ def _tombstone_blocks(state: "DashboardState", session: dict[str, Any]) -> bool:
     return modified <= when
 
 
-def _reconcile_lock(state: "DashboardState") -> asyncio.Lock:
+def _reconcile_lock(state: "DashboardState") -> LoopBoundLock:
     lock = _RECONCILE_LOCKS.get(state)
     if lock is None:
-        lock = asyncio.Lock()
+        lock = LoopBoundLock()
         _RECONCILE_LOCKS[state] = lock
     return lock
 

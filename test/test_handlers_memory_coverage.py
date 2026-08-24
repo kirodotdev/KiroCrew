@@ -14,8 +14,11 @@ GGUF, or a sandbox.
 
 from __future__ import annotations
 
+import ast
 import asyncio
+import inspect
 import json
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -420,6 +423,151 @@ class TestRedactAndStoreResolution:
         ctor.assert_called_once()
         created.init.assert_called_once()
         assert mem.vector_store is created
+
+
+# ---------------------------------------------------------------------------
+# _get_vector_store_async (#5221) — the standalone fallback's ``init()`` must
+# never run on the event loop (VectorMemoryStore's caller contract: the
+# Windows path shells out to icacls and would freeze the loop for seconds).
+# ---------------------------------------------------------------------------
+
+
+class TestGetVectorStoreAsync:
+    @staticmethod
+    def _fallback_state() -> Any:
+        """A state whose only resolution path is the standalone fallback."""
+        mem = SimpleNamespace(vector_store=None)
+        return SimpleNamespace(context_builder=SimpleNamespace(memory=mem))
+
+    @pytest.mark.asyncio
+    async def test_standalone_fallback_init_runs_off_event_loop(self, monkeypatch) -> None:
+        """Fail-before: with the sync call reinstated, init runs on this thread."""
+        import kiro_crew.vector_memory as vm_mod
+
+        init_threads: list[threading.Thread] = []
+
+        class RecordingStore:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def init(self) -> None:
+                init_threads.append(threading.current_thread())
+
+        monkeypatch.setattr(vm_mod, "VectorMemoryStore", RecordingStore)
+        state = self._fallback_state()
+        with patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()):
+            store = await mem_mod._get_vector_store_async(state)
+
+            assert isinstance(store, RecordingStore)
+            assert len(init_threads) == 1
+            assert init_threads[0] is not threading.current_thread()
+
+            # Cached: the second call takes the sync fast path — same store,
+            # no second ``init()``, and no thread hop at all.
+            with patch(f"{_MOD}.asyncio.to_thread", new_callable=AsyncMock) as hop:
+                assert await mem_mod._get_vector_store_async(state) is store
+            hop.assert_not_awaited()
+        assert len(init_threads) == 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_first_caller_does_not_double_init(self, monkeypatch) -> None:
+        """Cancelling the first caller (e.g. an aiohttp client disconnect)
+        must not let a racing request arm a second ``init()``: the shared
+        shielded task keeps the in-flight init as the single flight."""
+        import kiro_crew.vector_memory as vm_mod
+
+        init_calls: list[threading.Thread] = []
+        started = threading.Event()
+        release = threading.Event()
+
+        class SlowStore:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def init(self) -> None:
+                init_calls.append(threading.current_thread())
+                started.set()
+                release.wait(timeout=5)
+
+        monkeypatch.setattr(vm_mod, "VectorMemoryStore", SlowStore)
+        state = self._fallback_state()
+        with patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()):
+            first = asyncio.ensure_future(mem_mod._get_vector_store_async(state))
+            # Wait until init() is genuinely running in the worker thread,
+            # then cancel the caller mid-init.
+            await asyncio.to_thread(started.wait, 5)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            # A request landing in the cancellation window must join the
+            # orphaned-but-alive init, not start a second one.
+            second = asyncio.ensure_future(mem_mod._get_vector_store_async(state))
+            await asyncio.sleep(0.05)
+            release.set()
+            store = await second
+        assert isinstance(store, SlowStore)
+        assert len(init_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_concurrent_first_calls_init_once(self, monkeypatch) -> None:
+        """Single-flight: the lock restores the serialization the sync call
+        sites used to get for free from the event loop."""
+        import kiro_crew.vector_memory as vm_mod
+
+        init_calls: list[threading.Thread] = []
+        release = threading.Event()
+
+        class SlowStore:
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def init(self) -> None:
+                init_calls.append(threading.current_thread())
+                release.wait(timeout=5)
+
+        monkeypatch.setattr(vm_mod, "VectorMemoryStore", SlowStore)
+        state = self._fallback_state()
+        with patch(f"{_MOD}.KiroCrewConfig.load", return_value=_cfg()):
+            t1 = asyncio.ensure_future(mem_mod._get_vector_store_async(state))
+            t2 = asyncio.ensure_future(mem_mod._get_vector_store_async(state))
+            # Let both tasks pass the fast-path check and reach the lock while
+            # the first ``init()`` is still blocked in its worker thread.
+            await asyncio.sleep(0.05)
+            release.set()
+            first, second = await asyncio.gather(t1, t2)
+        assert first is second
+        assert len(init_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_supplied_store_fast_path_pays_no_thread_hop(self) -> None:
+        store = _store()
+        state = _make_state(vector_store=store)
+        with patch(f"{_MOD}.asyncio.to_thread", new_callable=AsyncMock) as hop:
+            assert await mem_mod._get_vector_store_async(state) is store
+        hop.assert_not_awaited()
+
+    def test_no_async_handler_calls_sync_get_vector_store(self) -> None:
+        """Tripwire: every ``async def`` in the handler module must route
+        through ``_get_vector_store_async`` (the one place allowed to call the
+        sync helper, because it offloads the init-bearing path)."""
+        tree = ast.parse(inspect.getsource(mem_mod))
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if node.name == "_get_vector_store_async":
+                continue
+            for call in ast.walk(node):
+                if (
+                    isinstance(call, ast.Call)
+                    and isinstance(call.func, ast.Name)
+                    and call.func.id == "_get_vector_store"
+                ):
+                    offenders.append(f"{node.name}:{call.lineno}")
+        assert not offenders, (
+            "async handlers must await _get_vector_store_async(...) instead of "
+            f"calling the sync helper on the event loop (#5221): {offenders}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1046,6 +1194,28 @@ class TestEmbeddingModelEndpoint:
             resp = await mem_mod.api_memory_embedding_model(req)
         assert resp.status == 503
         assert _body(resp)["code"] == "vector_store_unavailable"
+        prog.begin_apply.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_apply_armed_during_store_await_is_409_and_arms_nothing(self) -> None:
+        """The awaited store acquisition can yield to the loop (#5221), so a
+        concurrent apply may arm between the single-flight gate and
+        ``begin_apply()`` — the post-await re-check must refuse it."""
+        state = _make_state()
+        prog = _prog()
+        req = _make_request(state, method="POST", json_body={"path": ""})
+
+        async def _arm_mid_await(_state: Any) -> Any:
+            prog.is_active.return_value = True
+            return _store()
+
+        with (
+            patch(f"{_MOD}.reembed_progress", return_value=prog),
+            patch(f"{_MOD}._get_vector_store_async", side_effect=_arm_mid_await),
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        assert resp.status == 409
+        assert _body(resp)["code"] == "model_change_in_progress"
         prog.begin_apply.assert_not_called()
 
     @pytest.mark.asyncio

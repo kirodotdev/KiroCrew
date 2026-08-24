@@ -5,6 +5,7 @@ import ToggleRow from './ToggleRow'
 import { BREAK_PRESETS, BREAK_MIN_MINS, BREAK_MAX_MINS, BREAK_DEFAULT_MINS } from './constants'
 import { clampBreakMins } from './reminders'
 import type { ReminderConfigPatch, RemindersPayload } from './types'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 
 export default function SettingsSection({ rem, remError, onCfg, customMins, setCustomMins }: {
@@ -21,6 +22,7 @@ export default function SettingsSection({ rem, remError, onCfg, customMins, setC
   customMins: string | null
   setCustomMins: (v: string | null) => void
 }) {
+  const ime = useImeGuard()
   const mins = rem?.breakReminderMins ?? BREAK_DEFAULT_MINS
   const isPreset = BREAK_PRESETS.includes(mins)
 
@@ -63,13 +65,20 @@ export default function SettingsSection({ rem, remError, onCfg, customMins, setC
             aria-label={i18nT('apps.crewCompanion.settings.custom_minutes')}
             placeholder={i18nT('apps.crewCompanion.settings.custom_placeholder')}
             value={customMins !== null ? customMins : (isPreset ? '' : String(mins))}
-            onFocus={() => setCustomMins(isPreset ? '' : String(mins))}
+            {...ime.bindComposition({
+              onFocus: () => setCustomMins(isPreset ? '' : String(mins)),
+              onBlur: () => {
+                const next = clampBreakMins(customMins ?? '')
+                setCustomMins(null)
+                if (next !== null) onCfg({ breakReminderMins: next })
+              },
+            })}
             onChange={(e) => setCustomMins(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur() }}
-            onBlur={() => {
-              const next = clampBreakMins(customMins ?? '')
-              setCustomMins(null)
-              if (next !== null) onCfg({ breakReminderMins: next })
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter') return
+              // Early-return BEFORE the blur: a committing IME Enter must not commit.
+              if (ime.isComposing(e)) return
+              ;(e.target as HTMLInputElement).blur()
             }}
           />
         </div>

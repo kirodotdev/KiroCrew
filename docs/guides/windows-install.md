@@ -35,11 +35,24 @@ Current status:
   `win.signtoolOptions.publisherName`, so a mis-signed publish would break every
   client's update at once rather than degrade quietly — which is why the publish
   lane verifies the signature before the bytes become immutable.
-- **Assisted installer, per user by default** — `nsis.oneClick` is false and
-  `perMachine` is false, so the installer offers an install-mode page whose
-  default is a per-user install into a directory named from the product name,
-  with no UAC prompt. Choosing "for all users" on that page opts into an
-  elevated install under Program Files instead. The per-user default is what
+- **Full-window assisted installer, per user by default** — the themed setup
+  surface combines install scope, destination, desktop-shortcut and Windows
+  startup choices on one light frosted-glass page. It fits the full composition
+  proportionally inside the available work area without a scrollable inner
+  container and keeps every functional label and control native (including all
+  26 bundled installer languages). The same light control palette is used under
+  both Windows app themes so checkbox and text backgrounds remain integrated
+  with the dock. All eight Kiro characters remain in the static scene; avoiding
+  full-window bitmap animation keeps the NSIS UI thread responsive throughout
+  extraction.
+
+  New installs default to the current user and a desktop shortcut. Starting
+  Kiro Crew with Windows is an explicit opt-in; both checkboxes can be changed
+  before installing. A current-user install needs no UAC prompt. Choosing "all
+  users" switches the destination to Program Files and requests elevation. The
+  installer keeps a custom destination inside a channel-specific app folder, so
+  uninstalling Kiro Crew cannot recursively remove a shared folder selected in
+  the Browse dialog. The per-user default is what
   keeps a nightly install (`KiroCrew Nightly`) side by side with a stable one
   rather than replacing it; nightly additionally pins its own `nsis.guid` so
   the two channels do not share an uninstall registry key, and its own
@@ -53,12 +66,15 @@ Current status:
   missing even though its `.exe` is untouched. Either mode leaves
   the Kiro Crew home alone (`deleteAppDataOnUninstall` stays false, and
   `~/.kiro/crew` is outside the install directory).
-- **Guided Kiro Crew artwork** — the welcome and finish pages use the existing
-  Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
-  pages retain a compact branded header. Buttons, progress, install-mode copy,
-  keyboard behavior, and localization remain the standard Windows experience.
+- **Guided Kiro Crew artwork** — the upper brand field uses the shipped app mark
+  and leaves only “Kiro Crew” in the center. The lower glass plane is
+  deliberately text-free artwork, so native fonts and longer translations sit
+  above it without being obscured. Its light palette uses WCAG-AA control colors
+  in both Windows themes; the raster glass is also the visual fallback where
+  Windows 11's system backdrop is unavailable.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
-  the install directory, the Start Menu shortcut, the uninstall registry key,
+  the install directory, the Start Menu and desktop shortcuts, the uninstall
+  registry key, this channel's “start with Windows” Run entry,
   and — via the `customUnInstall` macro in `website/electron/build/installer.nsh`
   — this channel's electron-updater cache under
   `%LOCALAPPDATA%\<package-name>-updater`, which holds a full installer payload
@@ -267,6 +283,49 @@ what is created from then on: a file that already existed inside keeps its own
 DACL and — because Windows grants *Bypass Traverse Checking* to Everyone by
 default — stays reachable through the tightened parent, so repairing an
 existing install needs a per-file pass, not a parent tighten.
+
+### The memory store: why a per-file pass, not just the directory
+
+`memory.db` (semantic/episodic memories and their embeddings) is the first
+caller to need that repair pass, and it names every memory-bearing file rather
+than only the `.db`. It runs under `journal_mode=WAL`, so SQLite keeps
+`memory.db-wal` and `memory.db-shm` beside it, and a *committed* row lives in
+the `-wal` until a checkpoint moves it — locking the `.db` alone would leave
+committed memories readable under whatever DACL a pre-lockdown sidecar carries.
+The pass covers the `.db`, its `-wal`/`-shm` sidecars, and `memory.faiss` /
+`memory.ids.json` (the embedding index and its id map).
+
+`VectorMemoryStore.init()` calls `make_owner_only_dir` on the parent first, so
+everything SQLite and FAISS create from then on inherits owner-only access on
+both platforms. The per-file pass is for what already exists — a restored
+backup, a home migration, a manual edit, or simply an install predating this
+lockdown. It therefore runs on **every** init rather than only when init created
+the files: gating on creation would leave every pre-existing install permanently
+readable, which is most of them.
+
+It runs **twice**, once before `sqlite3.connect` and once after. The first call
+is what stops the schema migrations running against a file another local user
+can still write; the second covers whatever SQLite has just created.
+
+The Windows cost is up to 11 `icacls` spawns per init — one for the directory
+plus one per file on each of the two passes, and a file that does not exist
+still spawns (icacls exits non-zero and the caller warns). That is more than it
+sounds and still cheap in context: once per workspace per process, beside the
+`sqlite3.connect`, the migrations and the FAISS index load already in that
+function — and `context.get_memory_for` caches the store and is reached from a
+worker thread, not the gateway event loop.
+
+It is fail-soft (warn, keep going), which is the contract `restrict_to_owner`
+documents for its callers: memory being unavailable is a supported degraded
+state, so a read-only filesystem must not take init down.
+
+> **Scope note.** With the default `db_path`, "the directory" *is* the data home
+> (`config_dir()`), so a memory init tightens the whole home to owner-only. That
+> direction is right — the home also holds the security policy, sessions and
+> lessons, all private on the same boundary — but it is wider than memory and it
+> is the only place in the tree that does it today. `memory.py`'s FTS index
+> (`memory_index.db`) and its sidecars carry the same secrets and are **not** yet
+> covered by the per-file pass.
 
 ## File locking on Windows
 

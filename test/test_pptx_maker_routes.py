@@ -746,6 +746,26 @@ class TestRedactArtifactHelper(unittest.TestCase):
         blob = base64.b64encode(b"\x89PNG\r\n\x1a\n" + _raster_body(64)).decode()
         self.assertIsNotNone(routes._scanned_bitmap_bytes(blob)[0])
 
+    def test_the_signature_check_accepts_every_bitmap_format(self) -> None:
+        # The pre-existing accept-set: PNG/JPEG/GIF/BMP and real WebP via the
+        # shared sniffer, plus the retained offset-4 ftyp check for HEIC/AVIF.
+        for raw in (
+            b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            b"\xff\xd8\xff\xe0" + b"\x00" * 12,
+            b"GIF87a" + b"\x00" * 10,
+            b"GIF89a" + b"\x00" * 10,
+            b"BM" + b"\x00" * 14,
+            b"RIFF\x10\x00\x00\x00WEBPVP8 ",
+            b"\x00\x00\x00\x18ftypheic" + b"\x00" * 8,
+        ):
+            self.assertTrue(routes._has_bitmap_signature(raw), raw)
+
+    def test_a_bare_riff_container_is_no_longer_a_bitmap(self) -> None:
+        # The old local table matched any RIFF container, so a WAVE audio blob
+        # counted as a bitmap. The shared sniffer requires WebP's form tag at
+        # offset 8 — this tightening is the intended fix, not a regression.
+        self.assertFalse(routes._has_bitmap_signature(b"RIFF\x24\x00\x00\x00WAVEfmt "))
+
 
 class TestConfigRoutes(_RoutesFixture):
     async def test_get_reports_the_resolved_deck_root(self) -> None:

@@ -489,14 +489,35 @@ def test_canonicalization_is_the_dialled_host_by_construction(hostname):
     assert canonical_host(hostname) == expected
 
 
-def test_a_host_yarl_itself_refuses_is_refused():
-    """A ZWJ label encodes fine under IDNA2003 but yarl will not build the URL."""
+def test_a_zwj_label_tracks_whatever_the_dialler_does_with_it():
+    """A ZWJ label encodes fine under IDNA2003; whether yarl accepts it VARIES.
 
-    with pytest.raises((ValueError, UnicodeError)):
-        URL("https://\u0938\u0940\u200d.example/x")
+    The invariant is agreement with the dialler, in both directions, and it is
+    asserted that way rather than against one codec's verdict. `idna` 3.18 drops
+    the ZWJ and yarl builds `xn--12bq.example`; older releases raise. Pinned to
+    the raise, this test failed wherever the newer codec was resolved -- reporting
+    a codec upgrade as a defect in the guard, while the guard was doing exactly
+    its job: `canonical_host` read the encoding back from yarl and returned the
+    host aiohttp would actually contact.
 
-    assert canonical_host("\u0938\u0940\u200d.example") is None
-    assert is_local_host("\u0938\u0940\u200d.example") is True
+    Both arms matter for security, and for opposite reasons. When yarl refuses,
+    nothing can ever be dialled, so refusing is the only honest answer and
+    `is_local_host` fails CLOSED. When yarl accepts, the host IS reachable, and
+    canonicalizing to anything other than what will be contacted is the mismatch
+    this module exists to prevent -- vet host A, dial host B.
+    """
+
+    host = "\u0938\u0940\u200d.example"
+    try:
+        dialed = URL(f"https://{host}/x").raw_host
+    except (ValueError, UnicodeError):
+        assert canonical_host(host) is None
+        assert is_local_host(host) is True
+        return
+
+    assert dialed, "yarl built the URL, so it must name a host"
+    assert canonical_host(host) == dialed.rstrip(".").lower()
+    assert is_local_host(host) is False
 
 
 @pytest.mark.parametrize(

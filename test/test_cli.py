@@ -1160,6 +1160,61 @@ class TestCronCli:
             ns = mock_cron.call_args[0][0]
             assert ns.agent is None
 
+    def test_cron_remove_emits_sel_audit(self):
+        # Single-job delete must be SEL-audited like cron.add/cron.update:
+        # after the job vanishes from crons.json the audit trail is the only
+        # way to tell a deliberate delete from data loss.
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = True
+            args = argparse.Namespace(cron_action="remove", job_id="abc123")
+            _cron(args)
+            mock_svc.remove_job.assert_called_once_with("abc123")
+            mock_sel.return_value.log_api_access.assert_called_once_with(
+                caller="cli",
+                operation="cron.remove",
+                outcome="allowed",
+                source="cli",
+                resources="job_id=abc123",
+            )
+
+    def test_cron_remove_not_found_audits_not_found(self):
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = False
+            args = argparse.Namespace(cron_action="remove", job_id="ghost")
+            _cron(args)
+            mock_sel.return_value.log_api_access.assert_called_once_with(
+                caller="cli",
+                operation="cron.remove",
+                outcome="not_found",
+                source="cli",
+                resources="job_id=ghost reason=not_found",
+            )
+
+    def test_cron_remove_succeeds_when_audit_raises(self, capsys):
+        # The first sel() of a process constructs the log and can raise; the
+        # job is already removed by then, so the command must still report the
+        # completed delete instead of crashing.
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,
+            patch("kiro_crew.cli_commands.sel") as mock_sel,
+        ):
+            mock_svc = mock_svc_cls.return_value
+            mock_svc.remove_job.return_value = True
+            mock_sel.side_effect = RuntimeError("SEL trust root unavailable")
+            args = argparse.Namespace(cron_action="remove", job_id="abc123")
+            _cron(args)
+            out = capsys.readouterr()
+            assert "Removed job: abc123" in out.out
+            assert "audit log write failed" in out.err
+
 
 class TestPortEnvValidatedAtEntry:
     """`main()` rejects an unusable KIROCREW_PORT before any subcommand runs.
@@ -3608,6 +3663,40 @@ class TestDoctorMcpTools:
         # No probe attempted since no server spec survived the parse failure.
         probe_mock.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "content", ["[1, 2, 3]", "42", "null", "true", '"a string"']
+    )
+    def test_valid_json_non_object_agent_config_does_not_crash(
+        self, tmp_path, capsys, content
+    ):
+        """A spec that is valid JSON but not an object (a list, a scalar,
+        null) parses fine, so the json.loads try/except never fires — but
+        every .get() on the result would raise AttributeError. Doctor must
+        coerce it to an empty config, say what is wrong, and report cleanly,
+        same as the truncated case above — and it must never rewrite the
+        user's file with the coerced empty config."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        agent_path.write_text(content)
+
+        issues: list[str] = []
+        with self._mock_probe({}) as probe_mock:
+            _doctor_mcp_tools(agent_path, issues)
+
+        out = capsys.readouterr().out
+        # The defect itself is named, not just its downstream symptoms.
+        assert "agent spec is not a JSON object" in out
+        # Empty config → both managed servers report missing from mcpServers.
+        assert "@kirocrew-core: ❌ missing from mcpServers" in out
+        assert "@kirocrew-cron: ❌ missing from mcpServers" in out
+        # No probe attempted since no server spec survived the coercion.
+        probe_mock.assert_not_called()
+        # The no-clobber contract: doctor diagnoses the broken spec, it never
+        # persists the coerced empty config over the user's original file.
+        assert agent_path.read_text() == content
+        assert "Auto-fixed" not in out
+
 
 class TestDoctorStt:
     """Tests for doctor Speech-to-Text section."""
@@ -3917,6 +4006,63 @@ class TestConfigDirOverride:
         content = (tmp_path / ".env").read_text(encoding="utf-8")
         assert "xapp-test" in content
 
+    def test_setup_slack_tokens_locks_env_to_owner(self, tmp_path, monkeypatch):
+        """The credential write must route through atomic_write's owner
+        lockdown: a bare chmod(0o600) is a silent no-op for Windows ACLs, and
+        any lockdown applied only AFTER the tokens are on disk leaves them
+        readable through the directory's inherited DACL in the failure window.
+        The lockdown therefore lands on the temp file, before any token byte
+        reaches it."""
+        import os as os_mod
+
+        import kiro_crew.cli_setup as cs
+        from kiro_crew import platform_compat as pc
+
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr("kiro_crew.cli_setup.env_path", lambda: env_file)
+        inputs = iter(["y", "xapp-test", "xoxb-test", "U12345"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+
+        seen: list[tuple[Path, bool]] = []
+        real = pc.restrict_to_owner
+
+        def _spy(path):
+            # Record what the lockdown saw: the path, and whether the tokens
+            # were already readable there at that moment.
+            p = Path(path)
+            seen.append((p.parent, "xoxb-test" in p.read_text(encoding="utf-8")))
+            return real(path)
+
+        monkeypatch.setattr(pc, "restrict_to_owner", _spy)
+        cs._setup_slack_tokens()
+        # Locked exactly once, on a file in the credential dir, while it was
+        # still empty of tokens.
+        assert seen == [(tmp_path, False)]
+        assert "xoxb-test" in env_file.read_text(encoding="utf-8")
+        assert not list(tmp_path.glob("*.tmp"))  # no temp residue
+        if os_mod.name == "posix":
+            assert env_file.stat().st_mode & 0o777 == 0o600
+
+    def test_setup_slack_tokens_survives_a_lockdown_refusal(self, tmp_path, monkeypatch):
+        """A host where the owner lockdown fails (e.g. SID resolution refused)
+        must not abort the wizard with a traceback after the user already
+        typed their tokens: the .env doctrine is enforce-and-warn, matching
+        the dashboard credential writers."""
+        import kiro_crew.cli_setup as cs
+        from kiro_crew import platform_compat as pc
+
+        env_file = tmp_path / ".env"
+        monkeypatch.setattr("kiro_crew.cli_setup.env_path", lambda: env_file)
+        inputs = iter(["y", "xapp-test", "xoxb-test", "U12345"])
+        monkeypatch.setattr("builtins.input", lambda _: next(inputs))
+        monkeypatch.setattr(
+            pc, "restrict_to_owner", MagicMock(side_effect=OSError("icacls failed"))
+        )
+
+        cs._setup_slack_tokens()  # must not raise
+        assert "xoxb-test" in env_file.read_text(encoding="utf-8")
+        assert not list(tmp_path.glob("*.tmp"))  # failure leaves no temp residue
+
 
 class TestSetupChannelGating:
     """`kirocrew setup` runs the Slack steps only with --slack.
@@ -3956,6 +4102,7 @@ class TestSetupChannelGating:
             monkeypatch.setattr(cs, name, lambda *a, **k: None)
         monkeypatch.setattr(cs, "_setup_slack_tokens", lambda: calls.append("slack_tokens"))
         monkeypatch.setattr(cs, "_setup_slash_command", lambda: calls.append("slash_command"))
+        monkeypatch.setattr(cs, "_setup_whatsapp", lambda: calls.append("whatsapp"))
         # Conductor-skill step catches Exception and continues.
         monkeypatch.setattr(
             cs, "KiroCrewConfig", MagicMock(load=MagicMock(side_effect=RuntimeError("no config")))
@@ -3996,6 +4143,51 @@ class TestSetupChannelGating:
         calls = self._run_setup(monkeypatch, tmp_path, agent_only=True)
         assert calls == []
         out = capsys.readouterr().out
+        assert "--slack is ignored" not in out
+
+    def test_default_setup_names_whatsapp_among_the_connectable_channels(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """The fallback blurb is where an operator learns which channels exist.
+        Omitting WhatsApp made the only channel with an install prerequisite the
+        one channel the wizard never mentions."""
+        self._run_setup(monkeypatch, tmp_path)
+        out = capsys.readouterr().out
+        assert "WhatsApp" in out
+        assert "setup --whatsapp" in out
+
+    def test_whatsapp_flag_opts_into_the_whatsapp_step_only(self, tmp_path, monkeypatch):
+        """--whatsapp runs its own step and NOT the Slack ones (there is no token
+        to collect and no slash command on WhatsApp)."""
+        calls = self._run_setup(monkeypatch, tmp_path, whatsapp=True)
+        assert calls == ["whatsapp"]
+
+    def test_both_flags_run_both_guided_setups(self, tmp_path, monkeypatch):
+        calls = self._run_setup(monkeypatch, tmp_path, slack=True, whatsapp=True)
+        assert calls == ["slack_tokens", "slash_command", "whatsapp"]
+
+    def test_the_whatsapp_flag_reaches_setup_from_the_command_line(self):
+        """The wizard-level tests call ``_setup_impl`` directly, so the argparse
+        flag and its plumbing need their own guard: without them
+        ``kirocrew setup --whatsapp`` exits 2 instead of running anything."""
+        import sys
+
+        argv = ["kirocrew", "setup", "--whatsapp"]
+        with patch.object(sys, "argv", argv), patch("kiro_crew.cli._setup") as mock_setup:
+            from kiro_crew.cli import main
+
+            main()
+            assert mock_setup.call_args.kwargs["whatsapp"] is True
+
+    def test_agent_only_with_whatsapp_warns_and_skips_the_step(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """--agent-only --whatsapp: the step is skipped, and the notice names the
+        flag the caller actually passed rather than only --slack."""
+        calls = self._run_setup(monkeypatch, tmp_path, agent_only=True, whatsapp=True)
+        assert calls == []
+        out = capsys.readouterr().out
+        assert "--whatsapp is ignored with --agent-only" in out
         assert "--slack is ignored" not in out
 
 

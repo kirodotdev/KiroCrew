@@ -15,7 +15,9 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 
-from kiro_crew.teams.client import TeamsClient
+import pytest
+
+from kiro_crew.teams.client import TeamsClient, TeamsSendError
 from kiro_crew.testing.channel_fixtures import load_fixture
 from kiro_crew.testing.fake_channel_wire import FakeWireSession, WireResponse
 
@@ -48,17 +50,19 @@ class TestOutboundCredentialIsNeverSentInPlaintext:
     it were honoured verbatim, an ``http://`` value would put the app bearer
     credential on the wire in plaintext. The client refuses; this asserts the
     refusal by observing that NO request is made at all.
+
+    The refusal RAISES rather than returning ``None``: a caller that cannot
+    distinguish "refused" from "delivered with no id" records an answer the user
+    never received.
     """
 
     def test_an_http_service_url_sends_nothing(self) -> None:
         wire = _wired()
         client = _client(wire)
 
-        out = asyncio.run(
-            client.send_message("conv-1", "hi", "http://smba.trafficmanager.net/teams")
-        )
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", "http://smba.trafficmanager.net/teams"))
 
-        assert out is None
         assert wire.requests == [], (
             "a non-https serviceUrl must produce NO request -- not even the "
             "credential exchange, which would itself leak nothing but proves the "
@@ -69,15 +73,18 @@ class TestOutboundCredentialIsNeverSentInPlaintext:
         wire = _wired()
         client = _client(wire)
 
-        assert asyncio.run(client.send_message("conv-1", "hi", "//evil.example")) is None
-        assert asyncio.run(client.send_message("conv-1", "hi", "smba.example")) is None
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", "//evil.example"))
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", "smba.example"))
         assert wire.requests == []
 
     def test_an_empty_service_url_sends_nothing(self) -> None:
         wire = _wired()
         client = _client(wire)
 
-        assert asyncio.run(client.send_message("conv-1", "hi", "")) is None
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", ""))
         assert wire.requests == []
 
     def test_an_https_service_url_is_accepted(self) -> None:
@@ -100,7 +107,13 @@ class TestActivityRequestShape:
 
         activity = [r for r in wire.requests if "/v3/conversations/" in r.path][0]
         assert activity.path == "/teams/v3/conversations/conv-1/activities"
-        assert activity.json_body == {"type": "message", "text": "hello"}
+        # textFormat=markdown opts into Teams' markdown subset; without it the
+        # Connector renders the reply as literal plain text.
+        assert activity.json_body == {
+            "type": "message",
+            "text": "hello",
+            "textFormat": "markdown",
+        }
         assert activity.headers["Authorization"] == "Bearer " + _CREDENTIAL["access_token"]
 
     def test_typing_posts_a_typing_activity(self) -> None:
@@ -156,17 +169,23 @@ class TestCredentialExchange:
         )
         client = _client(wire)
 
-        out = asyncio.run(client.send_message("conv-1", "hi", _SERVICE_URL))
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", _SERVICE_URL))
 
-        assert out is None
-        assert not [r for r in wire.requests if "/v3/conversations/" in r.path], (
-            "an unauthenticated activity post would be a wasted 401 round trip"
-        )
+        assert not [
+            r for r in wire.requests if "/v3/conversations/" in r.path
+        ], "an unauthenticated activity post would be a wasted 401 round trip"
         assert client.last_error
 
 
 class TestConnectorErrors:
-    def test_a_4xx_activity_is_reported_not_raised(self) -> None:
+    def test_a_4xx_activity_raises_so_the_caller_cannot_report_it_delivered(self) -> None:
+        """A dropped send must be loud.
+
+        Every caller treats a return as proof of delivery -- the renderer records
+        the answer as sent and a proactive leg reports it delivered -- so a
+        swallowed 4xx makes the gateway claim a message the user never saw.
+        """
         wire = (
             FakeWireSession()
             .route("POST", "/oauth2/v2.0/token", _CREDENTIAL)
@@ -174,9 +193,35 @@ class TestConnectorErrors:
         )
         client = _client(wire)
 
-        out = asyncio.run(client.send_message("conv-1", "hi", _SERVICE_URL))
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", _SERVICE_URL))
 
-        assert out is None
-        assert client.last_error.startswith("send failed"), (
-            "a connector failure must surface on last_error for the status badge"
+        assert client.last_error.startswith(
+            "send failed"
+        ), "a connector failure must surface on last_error for the status badge"
+
+    def test_a_403_is_not_retried(self) -> None:
+        """Only the Connector's transient set is retried; a 403 is permanent."""
+        wire = (
+            FakeWireSession()
+            .route("POST", "/oauth2/v2.0/token", _CREDENTIAL)
+            .route("POST", "/v3/conversations/", WireResponse(body="forbidden", status=403))
         )
+        client = _client(wire)
+
+        with pytest.raises(TeamsSendError):
+            asyncio.run(client.send_message("conv-1", "hi", _SERVICE_URL))
+
+        posts = [r for r in wire.requests if "/v3/conversations/" in r.path]
+        assert len(posts) == 1, "a permanent failure must not be retried"
+
+    def test_typing_swallows_failure_so_a_good_answer_still_lands(self) -> None:
+        """The indicator is a progress hint, never a reason to fail a turn."""
+        wire = (
+            FakeWireSession()
+            .route("POST", "/oauth2/v2.0/token", _CREDENTIAL)
+            .route("POST", "/v3/conversations/", WireResponse(body="nope", status=403))
+        )
+        client = _client(wire)
+
+        asyncio.run(client.send_typing("conv-1", _SERVICE_URL))

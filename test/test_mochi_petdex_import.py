@@ -151,9 +151,25 @@ class TestSniffMime:
         assert pdx._sniff_mime(_WEBP) == "image/webp"
         assert pdx._sniff_mime(_PNG) == "image/png"
 
+    def test_recognises_jpeg_and_gif(self) -> None:
+        assert pdx._sniff_mime(b"\xff\xd8\xff\xe0" + b"\x00" * 12) == "image/jpeg"
+        assert pdx._sniff_mime(b"GIF89a" + b"\x00" * 10) == "image/gif"
+
     def test_rejects_a_non_image(self) -> None:
         with pytest.raises(pdx.PetdexError):
             pdx._sniff_mime(b"#!/bin/sh\nrm -rf /\n")
+
+    def test_rejects_a_riff_wave_payload(self) -> None:
+        # Shares WebP's RIFF prefix but carries the WAVE form tag at offset 8;
+        # the shared sniffer checks the tag, so this is not an image.
+        with pytest.raises(pdx.PetdexError):
+            pdx._sniff_mime(b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 8)
+
+    def test_rejects_bmp_even_though_the_shared_sniffer_knows_it(self) -> None:
+        # petdex never accepted BMP; the local allowlist keeps that exact
+        # accept-set on top of the shared sniffer.
+        with pytest.raises(pdx.PetdexError):
+            pdx._sniff_mime(b"BM" + b"\x00" * 14)
 
 
 class TestInstalledPets:

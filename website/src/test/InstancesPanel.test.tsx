@@ -84,7 +84,10 @@ describe('InstancesPanel', () => {
     )
   })
 
-  it('blocks adding an instance whose remote port duplicates another (SEC-016 mirror)', async () => {
+  it('allows adding an instance whose remote port matches another (#1972)', async () => {
+    // Two stock installs necessarily report the SAME default remote port. The
+    // local forward port is allocated independently, so this is a supported
+    // configuration — the form must not treat it as a conflict.
     ;vi.mocked(api.listInstances).mockResolvedValue({
       active: true,
       warm_set_cap: 5,
@@ -93,7 +96,7 @@ describe('InstancesPanel', () => {
           id: 'cd-1',
           name: 'CD1',
           ssh_host: 'cd-1-alias',
-          remote_port: 7777,
+          remote_port: 5476,
           local_port: 0,
           ttl: '20h',
           status: { state: 'disconnected' },
@@ -103,17 +106,16 @@ describe('InstancesPanel', () => {
     const u = userEvent.setup()
     renderWithProviders(<InstancesPanel />)
 
-    // Default remote port is 7777, which collides with the existing instance.
-    expect(
-      await screen.findByText(/already used by another remote crew/i),
-    ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeDisabled()
-
-    // A distinct port clears the guard and re-enables Add.
-    const portInput = screen.getByPlaceholderText('7777')
-    await u.clear(portInput)
-    await u.type(portInput, '7800')
+    // The form pre-fills the port a stock gateway actually binds, which is the
+    // same port the existing crew uses.
+    const portInput = await screen.findByPlaceholderText('5476')
+    expect(portInput).toHaveValue('5476')
     expect(screen.queryByText(/already used by another remote crew/i)).not.toBeInTheDocument()
+
+    // Filling the remaining required fields enables Add despite the shared port.
+    await u.type(screen.getByLabelText('Name'), 'CD2')
+    await u.type(screen.getByLabelText('SSH host / alias'), 'cd-2-alias')
+    expect(screen.getByRole('button', { name: 'Add remote crew' })).toBeEnabled()
   })
 
   it('switching the connection method to AWS SSM swaps in the SSM fields', async () => {

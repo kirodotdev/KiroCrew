@@ -11,6 +11,7 @@ import { PanelRightSolid } from '../../components/icons/panels'
 import { motion, AnimatePresence, useReducedMotion } from 'framer-motion'
 import type { ChatMessage } from '../../types'
 import { ToolDetails } from './ToolDetails'
+import { extractDenyDetail } from '../../utils/denyReason'
 import { registerToolPill } from '../../store/toolPillRegistry'
 import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS } from './rowPill'
 import { extractToolFilePath } from '../../utils/toolFilePath'
@@ -114,7 +115,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
 
   // Pull the matching toolLog entry. Returns purpose/input/output for the inline
   // expansion as well as completion status for the icon.
-  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, fromLog } = useAppSelector(s => {
+  const { effectiveId, isDone: logIsDone, isRejected, isAutoDenied, autoDenyReason, purpose, input, output, auto, ts, executionStartedAt, hasEntry, isShell, toolKind, toolName, fromLog } = useAppSelector(s => {
     // Slot-aware: for a non-active slot (split-view pane) read that slot's
     // per-slot tool log / messages / running state; `slot` undefined or equal to
     // the active slot → active-slot globals.
@@ -140,26 +141,31 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     // tool, the gateway appends a SECOND tool message — "🚫 <title> …" —
     // sharing this pill's tool_call_id. That message never renders (TurnBlock
     // hides every tool message not starting with 🔧), so the visible 🔧 pill
-    // must find its hidden sibling to know the call was blocked. Only the
-    // sibling's PRESENCE is used: its content is a redacted event title (often
-    // just "shell"), not a reliable human-readable reason, so the Output panel
-    // shows a standard "blocked by security policy" message instead. The
-    // interactive user-reject path also appends a 🚫 message, but that flow
-    // ALSO resolves a permission message as rejected — wasRejectedByPerm()
-    // takes precedence below, so a user rejection still shows red, not amber.
-    const hasAutoDenySibling = (): boolean => {
-      if (!toolCallId) return false
+    // must find its hidden sibling to know the call was blocked. Its CONTENT is
+    // used too: the row carries "— Blocked by security policy: <reason>", and the
+    // Output panel leads with its own LOCALIZED sentence and follows with the
+    // rule, so the user learns which rule fired without a translated sentence
+    // being replaced by untranslated English (extractDenyDetail yields "" for a
+    // row without that marker, and the panel then shows the localized line
+    // alone). The interactive user-reject path also appends a 🚫 message, but
+    // that flow ALSO resolves a permission message as rejected —
+    // wasRejectedByPerm() takes precedence below, so a user rejection still
+    // shows red, not amber.
+    const autoDenySiblingContent = (): string => {
+      if (!toolCallId) return ''
       for (let j = msgs.length - 1; j >= 0; j--) {
         const m = msgs[j]
         if (m.role !== 'tool' || m.meta?.tool_call_id !== toolCallId) continue
-        if (m.content.startsWith('🚫')) return true
+        if (m.content.startsWith('🚫')) return m.content
         // The pill's own 🔧 message reached without a 🚫 sibling above it —
         // any earlier match would predate this call; stop scanning.
         if (m === message) break
       }
-      return false
+      return ''
     }
-    const autoDenied = hasAutoDenySibling()
+    const denySibling = autoDenySiblingContent()
+    const autoDenied = !!denySibling
+    const autoDenyReason = extractDenyDetail(denySibling)
 
     for (let i = log.length - 1; i >= 0; i--) {
       const e = log[i]
@@ -171,6 +177,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
           effectiveId: e.tool_call_id || null,
           isDone, isRejected: rejected,
           isAutoDenied: !rejected && autoDenied,
+          autoDenyReason,
           purpose: e.purpose || '',
           input: e.input || '',
           output: e.output || '',
@@ -205,6 +212,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
       effectiveId: toolCallId || null,
       isDone: true, isRejected: rejected,
       isAutoDenied: !rejected && autoDenied,
+      autoDenyReason,
       purpose: (message.meta?.purpose as string) || '',
       input: metaInput, output: metaOutput, auto: false,
       // ChatMessage.ts is a string (ISO timestamp) when restored from history;
@@ -591,6 +599,17 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
     ? (isRejected ? 'var(--danger)' : isAutoDenied ? 'var(--warn)' : 'var(--ok)')
     : hasPendingPerm ? 'var(--warn)' : 'var(--accent)'
   const barStyle = `color-mix(in srgb, ${barColor} 70%, transparent)`
+  // A blocked call's Output leads with the LOCALIZED sentence and follows with
+  // the rule that fired. Leading with the rule would hand every non-English
+  // reader untranslated English (and a bare regex is not an explanation in any
+  // language), while showing only the localized line is what this change set out
+  // to fix: it names no rule, so the reader cannot tell WHICH policy fired.
+  // Detail is absent for a hook-blocked row, which carries no marker; the
+  // localized line then stands alone, exactly as it did before.
+  const denyOutput = [i18nT('pages.chat.toolCallLine.blocked_by_security_policy'), autoDenyReason]
+    .filter(Boolean)
+    .join('\n')
+
   // Purpose is the agent's prose label (simplified mode). Guard it against the
   // active UI language so a purpose written in another language (e.g. a Chinese
   // label persisted before the user switched to English) falls back to the
@@ -892,7 +911,7 @@ export default memo(function ToolCallLine({ message, running: _running, slot, on
             transition={{ duration: 0.35, ease: [0.4, 0.0, 0.2, 1] /* Material standard */ }}
             style={{ overflow: 'hidden' }}
           >
-            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? i18nT('pages.chat.toolCallLine.blocked_by_security_policy') : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
+            <ToolDetails purpose={purpose} pillLabel={toolLabel} toolName={label} input={input} output={isAutoDenied ? denyOutput : output} auto={auto} pending={hasPendingPerm} ts={ts} hasEntry={hasEntry} fmtTime={fmtTime} barColor={barStyle} layoutId={`tool-detail-${effectiveId || toolCallId || fallbackId}`} flush />
           </motion.div>
         )}
       </AnimatePresence>

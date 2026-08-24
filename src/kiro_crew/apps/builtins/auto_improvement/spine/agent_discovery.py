@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from kiro_crew.llm_helpers import _extract_json_of_type
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from .git_safety import GIT_SAFE_CONFIG, require_pinned
 
@@ -121,8 +122,8 @@ def _git(args: list[str], cwd: Path, timeout: float = 60.0) -> str:
         proc = subprocess.run(
             ["git", "-C", str(cwd), *_GIT_SAFE_CONFIG, *args],
             capture_output=True,
-            text=True,
             timeout=timeout,
+            **UTF8_TEXT,
         )
     except Exception:  # noqa: BLE001
         return ""

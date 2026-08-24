@@ -21,7 +21,6 @@ caller can usefully retry one and not the other.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from functools import wraps
 from typing import Any, Awaitable, Callable
@@ -120,7 +119,7 @@ async def _body(request: web.Request) -> dict[str, Any]:
     """Parse a JSON object body, treating anything else as empty."""
     try:
         parsed = await request.json()
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return {}
     return parsed if isinstance(parsed, dict) else {}
 

@@ -109,6 +109,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
     unregister_status_delta_sink,
 )
 from kiro_crew.dashboard.handlers.weixin_qr import setup_weixin_routes
+from kiro_crew.dashboard.handlers.whatsapp_setup import setup_whatsapp_routes
 from kiro_crew.dashboard.loop_watchdog import LoopStallWatchdog
 from kiro_crew.dashboard.origin import (
     PROBE_PATHS,
@@ -132,6 +133,7 @@ from kiro_crew.dashboard.state import _DEFAULT_PORT, DashboardState
 from kiro_crew.dashboard.token_auth import (
     _cookie_port_from_host,
     _is_spa_shell_request,
+    is_csrf_exempt,
     register_app_window_paths,
     token_auth_middleware,
     token_embed_parent_port,
@@ -314,11 +316,32 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         "/api/slack/reactions",
         "/api/slack-profile",  # MCP-only (slack_profile tool); no browser caller
         "/api/sessions/summarize",  # MCP-only (list_sessions summarize leg); internal-secret, no browser caller
+        # MCP-only (session_ledger_read / session_ledger_record tools); no
+        # browser caller. Prefix matching covers "/api/session-ledger/record".
+        # Without this entry the tools' internal-secret calls fall through to
+        # cookie auth and are refused before the handler's own session
+        # recognition can run.
+        "/api/session-ledger",
         # MCP-only (knowledge_add_document tool); no browser caller — the
         # dashboard ingests via its own cookie-authed knowledge routes. Same
         # wiring class as "/api/notifications/agent" above.
         "/api/knowledge/agent-document",
         "/api/mcp/servers",
+        # Session control -- the three routes behind the session_create /
+        # session_stop / session_read_message MCP tools.
+        # STRICT, not mixed: no browser calls them, and they are the entry point
+        # to opening, stopping, and reading ANOTHER live conversation. A cookie
+        # fall-through there would be a new authorization path, not a
+        # convenience.
+        #
+        # Every route registered under /api/session-control MUST appear here.
+        # An unlisted path falls through to the general branch, which honors only
+        # cookie/query tokens, so the MCP caller's X-Internal-Secret is ignored
+        # and the handler's own internal_auth re-assert then refuses it -- the
+        # tool is unreachable in production while handler-level tests still pass.
+        "/api/session-control/create",
+        "/api/session-control/stop",
+        "/api/session-control/read",
     }
 )
 
@@ -407,6 +430,66 @@ def _make_host_validation_middleware(caller: str) -> Callable:
         return await handler(request)  # type: ignore[operator]
 
     return host_validation_middleware
+
+
+#: Methods the CSRF barrier skips. A safe method does not mutate state, and
+#: GET-based exfiltration is covered by the Host barrier above, which runs on
+#: every method.
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+def _make_csrf_middleware(caller: str) -> Callable:
+    """Build the cross-site CSRF barrier middleware.
+
+    SHARED by BOTH entrypoints (``start_dashboard`` and the ``--slack-only``
+    ``start_api_server``) so the two chains can never drift — same rationale as
+    :func:`_make_host_validation_middleware`. In particular this is the SINGLE
+    read point for ``token_auth.CSRF_EXEMPT_EXACT_METHODS``, so an exemption can
+    never be granted on one server and withheld on the other.
+
+    Blocks state-mutating requests that a cross-origin page issued. Loopback
+    local processes (mcp-core, cron, doctor) send no Origin header and are
+    trusted by ``check_origin``; a browser always sends Origin, so a cross-site
+    page is rejected here even before token auth runs.
+
+    Webhook exemption: a self-authenticating external webhook is a
+    server-to-server caller that sends neither ``Origin`` nor ``Referer``, which
+    ``check_origin`` can only accept from a loopback peer — so without the
+    exemption the route is unreachable in the topology that exposes the gateway
+    directly, with no configuration that fixes it. Those handlers ignore cookies
+    and authenticate a bearer credential a browser cannot forge, which is the
+    entire threat CSRF addresses; ``token_auth.CSRF_EXEMPT_EXACT_METHODS`` holds
+    the full decision, and any addition to it is a security review. The exempted
+    request is still audited — ``sel_audit_middleware`` logs every mutating
+    ``/api/`` call in both chains — so the carve-out writes no SEL event of its
+    own, matching ``PROBE_PATHS`` on the Host barrier.
+
+    ``caller`` labels the SEL audit line (``dashboard_user`` for the full
+    dashboard, ``mcp_tool`` for the headless API server).
+    """
+
+    @web.middleware  # type: ignore[misc]
+    async def csrf_middleware(
+        request: web.Request,
+        handler: object,
+    ) -> web.StreamResponse:
+        guarded = request.method not in _CSRF_SAFE_METHODS and not is_csrf_exempt(
+            request.path, request.method
+        )
+        if guarded and not check_origin(request, require=True, fallback_header="Referer"):
+            await _audit_denied(
+                caller,
+                request,
+                "CSRF check failed: origin not allowed: "
+                f"{request.headers.get('Origin', '')[:100]}",
+            )
+            raise web.HTTPForbidden(
+                text="CSRF check failed: request origin not allowed.",
+                content_type="text/plain",
+            )
+        return await handler(request)  # type: ignore[operator]
+
+    return csrf_middleware
 
 
 # Mixed internal API paths — called by BOTH internal processes (loopback +
@@ -968,6 +1051,27 @@ def _precompute_telemetry(state: "DashboardState") -> None:
         _log.debug("telemetry.record_event(gateway_start) failed", exc_info=True)
 
 
+def _deferred_session_control(handler_name: str) -> Callable:
+    """Bind a session-control route without importing the subsystem at boot.
+
+    Session control is feature-flagged (``agent.session_control``), and the
+    enabled check lives inside the handler -- so a module-level import would be
+    an eager import of an optional subsystem whose gate runs after it, which the
+    boot-path rule names explicitly. Route registration itself is allowed at
+    boot; only the import moves to first request, so an operator who disabled the
+    feature never pays for loading it.
+    """
+
+    async def _route(request: web.Request) -> web.StreamResponse:
+        from kiro_crew.dashboard.handlers import session_control
+
+        handler = getattr(session_control, handler_name)
+        return await handler(request)
+
+    _route.__name__ = handler_name
+    return _route
+
+
 def _register_mcp_routes(app: web.Application) -> None:
     """Register API routes used by MCP tools (spawn, lessons, crons, etc.)."""
     app.router.add_post("/api/spawn", handlers.api_spawn)
@@ -986,6 +1090,8 @@ def _register_mcp_routes(app: web.Application) -> None:
     app.router.add_get("/api/lessons", handlers.api_lessons)
     app.router.add_post("/api/lessons", handlers.api_lessons_create)
     app.router.add_delete("/api/lessons", handlers.api_lessons_delete)
+    app.router.add_get("/api/session-ledger", handlers.api_session_ledger_get)
+    app.router.add_post("/api/session-ledger/record", handlers.api_session_ledger_record)
     app.router.add_get("/api/crons", handlers.api_crons)
     app.router.add_post("/api/crons", handlers.api_crons_create)
     app.router.add_delete("/api/crons", handlers.api_cron_batch_delete)
@@ -1013,6 +1119,19 @@ def _register_mcp_routes(app: web.Application) -> None:
     # here (not the dashboard-only block) so headless --slack-only mode
     # serves it too; it is on _STRICT_INTERNAL_API_PATHS like send-message.
     app.router.add_post("/api/notifications/agent", handlers.api_notification_agent_push)
+    # Session control. Registered here so the headless --slack-only server
+    # serves the same MCP surface as the dashboard; all three are on
+    # _STRICT_INTERNAL_API_PATHS, which test_session_control_routes_are_strict
+    # pins by deriving the route set from the router rather than a hand-copied list.
+    app.router.add_post(
+        "/api/session-control/create", _deferred_session_control("api_session_control_create")
+    )
+    app.router.add_post(
+        "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+    )
+    app.router.add_get(
+        "/api/session-control/read", _deferred_session_control("api_session_control_read")
+    )
     app.router.add_get("/api/browser/install", handlers.api_browser_install_get)
     app.router.add_put("/api/browser/token", handlers.api_browser_token_put)
     app.router.add_post("/api/browser/install", handlers.api_browser_install_start)
@@ -1110,6 +1229,11 @@ def _register_mcp_routes(app: web.Application) -> None:
     from kiro_crew.dashboard.handlers.webapp_preview import register_webapp_preview_routes
 
     register_webapp_preview_routes(app)
+    # The document channel artifact and widget frames load from — see
+    # handlers/sandbox_doc.py for why a blob: URL was not survivable.
+    from kiro_crew.dashboard.handlers.sandbox_doc import register_sandbox_doc_routes
+
+    register_sandbox_doc_routes(app)
     app.router.add_get("/api/artifacts/session-docs", api_artifact_session_docs)
     app.router.add_post("/api/artifacts/materialize", api_artifact_materialize)
     app.router.add_get("/api/artifacts/publish-providers", api_artifact_publish_providers)
@@ -1737,30 +1861,102 @@ def _dispatch_override_expiry_notification(state: DashboardState, notify_coro_fa
 
 
 async def _dm_owner(state: DashboardState, text: str) -> None:
-    """Best-effort owner Slack DM. No-op if Slack/owner are not configured.
+    """Best-effort owner notification, Slack first then any live channel.
 
-    The shared owner-notification exit point to Slack (currently the
+    The shared owner-notification exit point (currently the
     safety-override-expiry path), so the open_dm → post_message →
     swallow-and-log idiom lives in one place.
 
-    Defense-in-depth: because this is the single exit point to Slack for owner
+    **Slack is not the only place an operator lives.** This used to no-op entirely
+    without Slack, which made an expiring unattended grant invisible on a
+    Teams-only, Discord-only or Telegram-only install — silence about a security
+    grant lapsing is the one outcome this notice exists to prevent. So a Slack DM
+    is still preferred (it is the owner's direct address), and every registered
+    channel transport that advertises a reachable configured target is used as the
+    FALLBACK when Slack is absent or could not deliver. Not in addition: an
+    operator with Slack should get one notice, not one per channel.
+
+    Defense-in-depth: because this is the single exit point for owner
     notifications and is intended for reuse, ``text`` is passed through
     ``redact_exfiltration_urls()`` then ``redact_credentials()`` (same order as
     the rest of the Slack surface) so a future caller that forwards
     LLM/user-derived content can never leak credentials or exfil URLs, even
     though today's callers only pass static constants.
     """
-    slack_client = state.slack_client
-    owner_id = state.owner_id
-    if not (slack_client and owner_id):
-        return
     safe_text, _ = redact_exfiltration_urls(text)
     safe_text, _ = redact_credentials(safe_text)
+    slack_client = state.slack_client
+    owner_id = state.owner_id
+    if slack_client and owner_id:
+        try:
+            dm_channel = await slack_client.open_dm(owner_id)
+            await slack_client.post_message(dm_channel, safe_text)
+            return
+        except Exception:
+            logger.debug("Owner Slack DM failed; trying the channel transports", exc_info=True)
+    await _notify_owner_channels(state, safe_text)
+
+
+async def _notify_owner_channels(state: DashboardState, safe_text: str) -> None:
+    """Deliver an already-redacted owner notice to a channel that can NAME the owner.
+
+    "Reachable" is the transport's OWN answer (`configured_targets` →
+    `resolve_configured_target`), so this reaches only destinations that channel
+    already authorized — a Teams DM whose route was learned from an allow-listed
+    sender, never an address chosen here. Each channel is independent: one that
+    cannot deliver must not stop the next.
+
+    **Exactly one candidate across EVERY channel, or nothing.** This notice carries the
+    operator's own security state — an expiring unattended auto-approve grant, for
+    instance — and there is no channel-neutral owner identity to check it against: Slack
+    has an owner id and is preferred above; nothing else does. An allow-list is a list of
+    people permitted to TALK to the agent, not a claim that any of them is the operator.
+
+    So the only sound inference is a counting one, and it has to be counted across the
+    whole install rather than per channel. Two channels each holding a DIFFERENT single
+    identity is two people, and delivering to both hands one of them the other's security
+    state — a per-channel "exactly one target" rule misses that entirely. With exactly one
+    reachable person in the whole configuration, that person is the operator; with two or
+    more, refuse everybody. Same premise as `/sessions`' owner-only rule.
+
+    Counted over ALL configured targets, not just the reachable ones: a three-person
+    allow-list where only one route happens to have been learned is still a guess.
+
+    The false negative is deliberate and is the safe direction: the same human configured
+    on two channels reads as two candidates and gets no channel notice. The dashboard feed
+    carries the same notice unconditionally, so silence here costs a convenience, while
+    misdelivery would cost the operator's security state. Positively binding a channel
+    identity to the operator is a per-identity authority model that does not exist yet;
+    when it does, this becomes a lookup instead of a count.
+    """
+    candidates: list[tuple[str, Any, Any]] = []
+    for channel_type, transport in list(state.channel_transports.items()):
+        try:
+            if not transport.capabilities.supports_proactive_send:
+                continue
+            candidates.extend(
+                (channel_type, transport, target) for target in transport.configured_targets()
+            )
+        except Exception:
+            logger.debug("Owner notice enumeration failed for %s", channel_type, exc_info=True)
+    if len(candidates) != 1:
+        if candidates:
+            logger.debug(
+                "Owner notice skipped: %d channel targets, none positively the owner",
+                len(candidates),
+            )
+        return
+    channel_type, transport, target = candidates[0]
+    if not target.available:
+        return
     try:
-        dm_channel = await slack_client.open_dm(owner_id)
-        await slack_client.post_message(dm_channel, safe_text)
+        resolved = await transport.resolve_configured_target(target.target_id)
+        if not resolved:
+            return
+        conversation_id, thread_id = resolved
+        await transport.send_message(conversation_id, safe_text, thread_id)
     except Exception:
-        logger.debug("Owner Slack DM skipped", exc_info=True)
+        logger.debug("Owner notice skipped for %s", channel_type, exc_info=True)
 
 
 def _dispatch_owner_dm(state: DashboardState, text: str) -> None:
@@ -2635,6 +2831,7 @@ async def start_dashboard(
     setup_weixin_routes(app)
     setup_feedback_routes(app)
     setup_secrets_routes(app)
+    setup_whatsapp_routes(app)
 
     # Link previews (chat unfurl). Route is always registered; the handler gates
     # itself on cfg.dashboard.link_previews, so toggling the feature needs no
@@ -2773,9 +2970,6 @@ async def start_dashboard(
                 return await handlers.index(request)
             raise
 
-    # CSRF: block state-mutating requests from cross-origin pages
-    _safe_methods = {"GET", "HEAD", "OPTIONS"}
-
     # SEL: log mutating API operations
     _sel_log_methods = {"POST", "PUT", "DELETE", "PATCH"}
 
@@ -2850,25 +3044,9 @@ async def start_dashboard(
     # for the barrier AND the PROBE_PATHS exemption; see
     # _make_host_validation_middleware).
     host_validation_middleware = _make_host_validation_middleware("dashboard_user")
-
-    @web.middleware  # type: ignore[misc]
-    async def csrf_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        if request.method not in _safe_methods:
-            if not check_origin(request, require=True, fallback_header="Referer"):
-                await _audit_denied(
-                    "dashboard_user",
-                    request,
-                    "CSRF check failed: origin not allowed: "
-                    f"{request.headers.get('Origin', '')[:100]}",
-                )
-                raise web.HTTPForbidden(
-                    text="CSRF check failed: request origin not allowed.",
-                    content_type="text/plain",
-                )
-        return await handler(request)  # type: ignore[operator]
+    # Same factory as the headless server's barrier, so the CSRF exemption set is
+    # one decision rather than two (see _make_csrf_middleware).
+    csrf_middleware = _make_csrf_middleware("dashboard_user")
 
     # Generate per-session secret for local app / IPC authentication.
     # NOTE: file write (and parent mkdir) deferred until after port bind
@@ -3242,9 +3420,18 @@ async def start_dashboard(
         state.broadcast_ws("yolo_expired", {"source": source})
         state.push_slots_update()
         if state.sessions is not None:
+            from kiro_crew.dashboard.chat_utils import effective_session_key
+
             for slot in state._slots.values():
                 if not slot._trust and not slot._trust_reads:
-                    state.sessions.set_approval_policy(f"dashboard:{slot.key}", "")
+                    # The SAME derivation the grant used. A channel-born slot's
+                    # turns run on the channel's own session key, which is what
+                    # `linked_session_key` holds, so clearing `dashboard:<slot>`
+                    # here cleared a key nothing on the channel path ever reads:
+                    # the TTL could not expire the grant it had handed out, which
+                    # is worse than a missing off-switch because the operator was
+                    # told it was time-bounded.
+                    state.sessions.set_approval_policy(effective_session_key(slot), "")
         # Slack cleanup — isolated so failures don't block dashboard operations
         try:
             from kiro_crew.slack.handler import (
@@ -3525,7 +3712,6 @@ async def start_api_server(
 
     # SEL audit middleware — log mutating MCP tool calls
     _sel_methods = {"GET", "POST", "PUT", "PATCH", "DELETE"}
-    _safe_methods = {"GET", "HEAD", "OPTIONS"}
 
     @web.middleware  # type: ignore[misc]
     async def sel_audit_middleware(
@@ -3561,29 +3747,10 @@ async def start_api_server(
     # origin.PROBE_PATHS): headless gateways are the instances most likely to
     # sit behind an orchestrator addressing them by pod/container IP.
     host_validation_middleware = _make_host_validation_middleware("mcp_tool")
-
-    @web.middleware  # type: ignore[misc]
-    async def csrf_middleware(
-        request: web.Request,
-        handler: object,
-    ) -> web.StreamResponse:
-        # Cross-site CSRF barrier on state-changing routes, parity with
-        # start_dashboard. Loopback local processes (mcp-core, cron) send no
-        # Origin header and are trusted by check_origin; a browser always sends
-        # Origin, so a cross-site page is rejected here even before token auth.
-        if request.method not in _safe_methods:
-            if not check_origin(request, require=True, fallback_header="Referer"):
-                await _audit_denied(
-                    "mcp_tool",
-                    request,
-                    "CSRF check failed: origin not allowed: "
-                    f"{request.headers.get('Origin', '')[:100]}",
-                )
-                raise web.HTTPForbidden(
-                    text="CSRF check failed: request origin not allowed.",
-                    content_type="text/plain",
-                )
-        return await handler(request)  # type: ignore[operator]
+    # Cross-site CSRF barrier at parity with start_dashboard by construction —
+    # the SAME factory builds both, including the self-authenticating-webhook
+    # exemption (see _make_csrf_middleware).
+    csrf_middleware = _make_csrf_middleware("mcp_tool")
 
     # Warm the auth singletons off the event loop before building the chain
     # (parity with start_dashboard) so no blocking key-file I/O hits the loop.

@@ -14,8 +14,11 @@ unrepresentable.
 ``slot`` is the dashboard chat slot when the caller has one (chat_runner) and
 ``None`` for a channel turn (TurnDriver). A missing slot NEVER weakens a
 boundary: the dashboard-only directives are refused outright for a slot-less
-caller (they act on a slot, so there is nothing to apply them to), and the
-monitor trio only reads ``slot`` through fail-safe ``getattr``.
+caller (they act on a slot, so there is nothing to apply them to);
+``set_project`` — user-surface-gated rather than dashboard-only, though its
+effect targets the slot — is likewise refused when the turn
+holds no slot; and the monitor trio only reads ``slot`` through fail-safe
+``getattr``.
 
 Every branch returns a human-readable confirmation string and NEVER raises into
 the runner. NOTE: gateway-off (the default), the MODEL already received the
@@ -125,16 +128,16 @@ async def apply_session_directive(
     if kind in _DASHBOARD_ONLY_DIRECTIVES and (
         slot is None or not has_dashboard_surface(session_key)
     ):
-        # These three act on a dashboard chat SLOT (its project/CWD, its
-        # follow-up card, its question card), so the boundary is whether an open
-        # tab exists to receive the effect — not where the conversation started.
-        # A channel-born session displayed in a tab qualifies; a cron, sub-agent
-        # or otherwise tabless caller does not, and must not silently retarget a
-        # slot's project or address a card nothing will render. A slot-less
-        # caller (a channel transport's TurnDriver) is refused for the same
-        # reason even when a tab happens to be open: the effect targets the
-        # SLOT, and this turn does not hold one. The consumer is the only layer
-        # that knows the authoritative session, so the check belongs HERE.
+        # These two act on a dashboard chat SLOT (its follow-up card, its
+        # question card), so the boundary is whether an open tab exists to
+        # receive the effect — not where the conversation started. A
+        # channel-born session displayed in a tab qualifies; a cron, sub-agent
+        # or otherwise tabless caller does not, and must not address a card
+        # nothing will render. A slot-less caller (a channel transport's
+        # TurnDriver) is refused for the same reason even when a tab happens to
+        # be open: the effect targets the SLOT, and this turn does not hold
+        # one. The consumer is the only layer that knows the authoritative
+        # session, so the check belongs HERE.
         _audit(session_key, kind, "denied")
         return (
             f"Error: {kind} only works from a dashboard chat session "
@@ -402,7 +405,7 @@ async def _autonudge_stop(slot: Any, session_key: str, args: dict[str, Any]) -> 
     )
 
 
-# ── dashboard-only effects ───────────────────────────────────────────────────
+# ── slot-targeted effects (the dashboard-only pair + set_project) ────────────
 
 
 async def _set_project(state: Any, slot: Any, args: dict[str, Any]) -> str:

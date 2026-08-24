@@ -371,7 +371,10 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             { value: 'normal' as const, Icon: Cat, label: i18nT('apps.mochi.settingsPanel.mode_normal'), desc: i18nT('apps.mochi.settingsPanel.mode_normal_desc') },
             { value: 'quiet' as const, Icon: Moon, label: i18nT('apps.mochi.settingsPanel.mode_quiet'), desc: i18nT('apps.mochi.settingsPanel.mode_quiet_desc') },
           ]).map((opt) => (
-            <label key={opt.value} onClick={() => editMochi({ activityMode: opt.value })} style={{
+            <div key={opt.value} role="radio" aria-checked={config.mochi.activityMode === opt.value} tabIndex={0} onClick={() => editMochi({ activityMode: opt.value })}
+              onKeyDown={(e) => {
+                if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); editMochi({ activityMode: opt.value }) }
+              }} style={{
               display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
               padding: '6px 8px', borderRadius: 6,
               background: config.mochi.activityMode === opt.value ? 'var(--accent-glow)' : 'transparent',
@@ -386,7 +389,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text)', fontWeight: config.mochi.activityMode === opt.value ? 600 : 400 }}><opt.Icon size={13} /> {opt.label}</div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
               </div>
-            </label>
+            </div>
           ))}
         </div>
       </Section>
@@ -429,7 +432,10 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
             { value: 'trust_reads', label: i18nT('apps.mochi.settingsPanel.trust_reads'), desc: i18nT('apps.mochi.settingsPanel.trust_reads_desc') },
             { value: 'trust', label: i18nT('apps.mochi.settingsPanel.trust_trust'), desc: i18nT('apps.mochi.settingsPanel.trust_trust_desc') },
           ] as const).map((opt) => (
-            <label key={opt.value} onClick={() => setTrustMode(opt.value)} style={{
+            <div key={opt.value} role="radio" aria-checked={trustMode === opt.value} tabIndex={0} onClick={() => setTrustMode(opt.value)}
+              onKeyDown={(e) => {
+                if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); setTrustMode(opt.value) }
+              }} style={{
               display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
               padding: '6px 8px', borderRadius: 6,
               background: trustMode === opt.value ? 'var(--accent-glow)' : 'transparent',
@@ -444,7 +450,7 @@ export const SettingsPanel: React.FC<{ onClose: () => void }> = ({ onClose }) =>
                 <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: trustMode === opt.value ? 600 : 400 }}>{opt.label}</div>
                 <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
               </div>
-            </label>
+            </div>
           ))}
           {/* The level is app-wide and `yolo` is not settable here, so a slot
               already in it would otherwise render as three unselected radios —
@@ -1335,7 +1341,10 @@ const BackgroundActivitySection: React.FC<{
       </div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 8 }}>
         {tiers.map((opt) => (
-          <label key={opt.value} onClick={() => editMochi({ activityTier: opt.value })} style={{
+          <div key={opt.value} role="radio" aria-checked={tier === opt.value} tabIndex={0} onClick={() => editMochi({ activityTier: opt.value })}
+            onKeyDown={(e) => {
+              if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); editMochi({ activityTier: opt.value }) }
+            }} style={{
             display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
             padding: '6px 8px', borderRadius: 6,
             background: tier === opt.value ? 'var(--accent-glow)' : 'transparent',
@@ -1350,7 +1359,7 @@ const BackgroundActivitySection: React.FC<{
               <div style={{ fontSize: 12, color: 'var(--text)', fontWeight: tier === opt.value ? 600 : 400 }}>{opt.label}</div>
               <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>{opt.desc}</div>
             </div>
-          </label>
+          </div>
         ))}
       </div>
       {usage && (

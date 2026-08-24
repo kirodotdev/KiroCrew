@@ -23,6 +23,10 @@
  */
 
 const { globalShortcut } = require("electron");
+// Pure helper (no Electron dependency): disarms a tray hide that hideToTray()
+// deferred to the fullscreen exit, so a summon landing in that gap is not
+// silently undone when the exit completes.
+const { cancelPendingTrayHide } = require("./hide-to-tray");
 
 /**
  * Platform-appropriate default, mirroring the modifier rationale documented in
@@ -92,6 +96,10 @@ function createSummonHandler({ getWindow, createWindow, focusApp }) {
   return () => {
     const win = typeof getWindow === "function" ? getWindow() : null;
     if (win && !(typeof win.isDestroyed === "function" && win.isDestroyed())) {
+      // A summon during hideToTray()'s deferred fullscreen-exit hide must win
+      // over the pending hide, or the window shown below is hidden again the
+      // moment the exit animation completes.
+      cancelPendingTrayHide(win);
       if (typeof win.isMinimized === "function" && win.isMinimized() && win.restore) {
         win.restore();
       }

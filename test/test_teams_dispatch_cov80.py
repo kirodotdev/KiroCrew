@@ -13,6 +13,7 @@ acquired. Those branches are what these tests pin.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 
 import pytest
@@ -22,7 +23,7 @@ from kiro_crew.teams.client import TeamsInbound
 from kiro_crew.teams.transport_dispatch import TeamsDispatcher
 
 _EMAIL = "quinn@example.com"
-_SVC = "https://smba.example.com/"
+_SVC = "https://smba.trafficmanager.net/"
 
 
 class _Provider:
@@ -90,6 +91,49 @@ class _Sessions:
         self.failures: list[str] = []
         self.acquired: list[str] = []
         self.busy_checks = 0
+        self.queues: dict[str, list] = {}
+        self.cleared: list[str] = []
+        self.mirror_links: dict = {}
+        self.opt_outs: dict = {}
+
+    # -- dashboard mirror -------------------------------------------------
+    def mirror_opt_out(self, key) -> bool:
+        return bool(self.opt_outs.get(key))
+
+    def set_mirror_opt_out(self, key, value) -> None:
+        self.opt_outs[key] = value
+
+    def get_mirror_link(self, key):
+        return self.mirror_links.get(key)
+
+    def set_mirror_link(self, key, link, *, reason="") -> None:
+        self.mirror_links[key] = link
+
+    def clear_mirror_link(self, key, *, reason="") -> bool:
+        return self.mirror_links.pop(key, None) is not None
+
+    def is_mirror_paused(self, key, *, origin=False) -> bool:
+        return False
+
+    def batched_save(self):
+        return contextlib.nullcontext()
+
+    # -- mid-turn queue ---------------------------------------------------
+    def enqueue(self, key, msg_ts, text, *, force=False, **kwargs) -> bool:
+        # Mirrors the real contract: a no-op once the semaphore is free, so the
+        # caller runs the message as a fresh turn instead of stranding it.
+        if not force and not self.is_busy(key):
+            return False
+        self.queues.setdefault(key, []).append((msg_ts, text, kwargs))
+        return True
+
+    def dequeue(self, key):
+        queue = self.queues.get(key) or []
+        return queue.pop(0) if queue else None
+
+    def clear_queue(self, key) -> None:
+        self.cleared.append(key)
+        self.queues.pop(key, None)
 
     async def get_or_create(self, key, *, agent, channel_id):
         return self._p, True, False
@@ -119,6 +163,19 @@ class _Sessions:
     def has_session(self, key) -> bool:
         return self._has_session
 
+    async def aflush(self) -> None:
+        # The resume release flushes the session map before it reports success; a
+        # double without this correctly surfaces as a release FAILURE.
+        return None
+
+    def clear_mirror_links_at(self, link, *, reason: str = "") -> list:
+        return []
+
+    def find_mirror_sessions(self, link, *, inbound_only: bool = False) -> list:
+        # No resumed dashboard session in these tests, so routing is a no-op. Present
+        # because Teams routes EVERY message through the resume resolver.
+        return []
+
     def is_busy(self, key) -> bool:
         self.busy_checks += 1
         idx = min(self.busy_checks - 1, len(self._busy) - 1)
@@ -139,7 +196,11 @@ class _Ctx:
     def __init__(self) -> None:
         self.hooks = _Hooks()
 
-    def build_message(self, text, is_new, key, *, channel_id, agent, resumed, runtime_source):
+    # Names only the kwargs it asserts on and takes ``**kw`` for the rest: the
+    # shared pipeline owns the call shape, so a fake that pins every kwarg
+    # breaks on any field the pipeline later forwards, without that field
+    # having anything to do with this channel. Mirrors the pipeline's own fake.
+    def build_message(self, text, is_new, key, *, channel_id, agent, resumed, runtime_source, **kw):
         return (text, None)
 
 
@@ -204,11 +265,16 @@ class TestMidTurnMessage:
         await d.handle_message(_inbound("also check the logs"))
 
         assert provider.steered == ["also check the logs"]
-        assert client.sent == [("CONV", "⏳ Folded into the reply in progress.", _SVC)]
+        assert client.sent == [("CONV", "🫡 Folded into the reply in progress.", _SVC)]
         assert sessions.successes == []
 
     @pytest.mark.asyncio
-    async def test_refused_steer_asks_the_user_to_resend(self) -> None:
+    async def test_refused_steer_queues_instead_of_losing_the_message(self) -> None:
+        """A message the running turn would not absorb must be HELD, not dropped.
+
+        Asking the user to resend loses the message, which is the whole failure a
+        queue exists to prevent.
+        """
         provider = _Provider(steer_result=False)
         sessions = _Sessions(provider, busy=[True, True])
         client = _Client()
@@ -216,10 +282,12 @@ class TestMidTurnMessage:
 
         await d.handle_message(_inbound("second message"))
 
-        assert "please resend" in client.sent[0][1]
+        key = d._session_key(_EMAIL)
+        assert [text for _, text, _ in sessions.queues[key]] == ["second message"]
+        assert "Queued (1)" in client.sent[0][1]
 
     @pytest.mark.asyncio
-    async def test_provider_without_steer_support_asks_to_resend(self) -> None:
+    async def test_provider_without_steer_support_queues(self) -> None:
         provider = _Provider(supports_steer=False)
         sessions = _Sessions(provider, busy=[True, True])
         client = _Client()
@@ -228,10 +296,16 @@ class TestMidTurnMessage:
         await d.handle_message(_inbound("second message"))
 
         assert provider.steered == []
-        assert "please resend" in client.sent[0][1]
+        assert sessions.queues[d._session_key(_EMAIL)]
 
     @pytest.mark.asyncio
     async def test_finished_turn_is_never_falsely_acknowledged(self) -> None:
+        """``is_busy`` stays true through post-turn bookkeeping.
+
+        Steering a prompt that already ended is silently swallowed, so a steer
+        gated on ``is_busy`` alone would acknowledge a merge that never happened.
+        The message must reach the queue instead.
+        """
         provider = _Provider(active_turn=False)
         sessions = _Sessions(provider, busy=[True, True])
         client = _Client()
@@ -240,7 +314,33 @@ class TestMidTurnMessage:
         await d.handle_message(_inbound("second message"))
 
         assert provider.steered == []
-        assert "please resend" in client.sent[0][1]
+        assert sessions.queues[d._session_key(_EMAIL)]
+        assert "Queued (1)" in client.sent[0][1]
+
+    @pytest.mark.asyncio
+    async def test_queue_directive_forces_the_queue_path_for_one_message(self) -> None:
+        provider = _Provider()
+        sessions = _Sessions(provider, busy=[True, True])
+        client = _Client()
+        d = _dispatcher(sessions, client)
+
+        await d.handle_message(_inbound("/queue what time is it"))
+
+        assert provider.steered == [], "an explicit /queue must not steer"
+        queued = [text for _, text, _ in sessions.queues[d._session_key(_EMAIL)]]
+        assert queued == ["what time is it"], "the directive is stripped from the payload"
+
+    @pytest.mark.asyncio
+    async def test_a_bare_directive_answers_with_usage(self) -> None:
+        """Handing the literal "/queue" to the model reads as a missing feature."""
+        sessions = _Sessions(_Provider(), busy=[False])
+        client = _Client()
+        d = _dispatcher(sessions, client)
+
+        await d.handle_message(_inbound("/queue"))
+
+        assert "/queue <message>" in client.sent[0][1]
+        assert sessions.successes == [], "usage must not start a turn"
 
     @pytest.mark.asyncio
     async def test_turn_that_ended_mid_check_runs_as_a_fresh_turn(self) -> None:

@@ -107,12 +107,20 @@ export default function TagManagerList({ mode, selectedIds = [], onToggleTag, cr
                 aria-label={i18nT('components.tagManagerList.rename_tag', { name: t.name })}
                 defaultValue={t.name}
                 className="flex-1 min-w-0 bg-transparent border-none outline-none text-[12px] text-text py-0 px-0.5 rounded focus-visible:bg-bg-elevated focus-visible:border focus-visible:border-accent/50"
-                onBlur={e => { const v = e.target.value.trim(); if (!v) { e.target.value = t.name; return } if (v !== t.name) updateTagMutation.mutate({ id: t.id, body: { name: v } }) }}
+                {...ime.bindComposition<HTMLInputElement>({
+                  onBlur: e => { const v = e.target.value.trim(); if (!v) { e.target.value = t.name; return } if (v !== t.name) updateTagMutation.mutate({ id: t.id, body: { name: v } }) },
+                })}
                 onKeyDown={e => {
                   const el = e.currentTarget as HTMLInputElement
                   if (e.key !== 'Enter' && e.key !== 'Escape') return
-                  e.stopPropagation()
+                  // Escape restores the canonical name first, so its path can never
+                  // persist a draft. Enter commits through the focus move below (it
+                  // fires this input's onBlur), so a committing IME Enter — whose
+                  // candidate text is still intermediate — must not reach it. Rule 1:
+                  // single-line input, so the declined key is left unconsumed.
                   if (e.key === 'Escape') el.value = t.name
+                  else if (ime.isComposing(e)) return
+                  e.stopPropagation()
                   // Move focus to the row's first button (swatch in column-filter mode,
                   // status ⚡ in manage mode) instead of blur()ing to <body>. This still
                   // fires the input's onBlur (commit) but keeps focus inside the owning

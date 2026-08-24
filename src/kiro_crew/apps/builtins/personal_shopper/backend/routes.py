@@ -38,6 +38,7 @@ from aiohttp import web
 from kiro_crew.apps.builtins.personal_shopper.backend.store import PreferenceStore
 from kiro_crew.apps.manager import app_data_dir, is_app_enabled
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ _PREFIX = f"/api/apps/{APP_NAME}"
 # directory and runs sqlite DDL, which must not happen merely because the module
 # was imported (a test or a CLI import would write into the real data home).
 _store: PreferenceStore | None = None
-_store_lock = asyncio.Lock()
+_store_lock = LoopBoundLock()
 
 
 async def _get_store() -> PreferenceStore:
@@ -105,7 +106,7 @@ async def _json_object(
     """
     try:
         body = await request.json(loads=_strict_loads)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return None, _bad_request("invalid JSON", "invalid_json")
     if not isinstance(body, dict):
         return None, _bad_request("body must be a JSON object", "body_not_object")

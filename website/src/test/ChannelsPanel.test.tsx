@@ -47,6 +47,7 @@ vi.mock('../api/client', () => ({
     getWeComConfig: vi.fn().mockRejectedValue(new Error('boom')),
     getWeixinConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     getIMessageConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
+    getWhatsAppConfig: vi.fn().mockResolvedValue({ connected: false, configured: false }),
     // Governance policy map; default all-permitted so the existing (non-governance)
     // tests are unaffected. Governance-specific tests override it per case.
     getGovernanceChannels: (...a: unknown[]) => govChannelsMock(...a),
@@ -133,7 +134,7 @@ describe('ChannelsPanel — wide (two-pane)', () => {
     renderAt()
     expect(await screen.findByText('Connected')).toBeInTheDocument()       // slack
     expect(await screen.findByText('Not connected')).toBeInTheDocument()   // discord
-    expect((await screen.findAllByText('Needs setup')).length).toBe(5)     // telegram, webex, teams, weixin, imessage
+    expect((await screen.findAllByText('Needs setup')).length).toBe(6)     // telegram, webex, teams, weixin, imessage, whatsapp
     expect(await screen.findByText('Status unavailable')).toBeInTheDocument() // wecom (fetch error)
   })
 })

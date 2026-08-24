@@ -609,16 +609,22 @@ def test_rewriter_calls_restrict_to_owner_on_windows(
     assert "overlay" in made_dir_names, f"overlay_dir not via make_owner_only_dir: {made_owner_dirs}"
     assert "stubs" in made_dir_names, f"stubs_dir not via make_owner_only_dir: {made_owner_dirs}"
 
-    # Files (env sidecar, overlay spec) still use restrict_to_owner directly
-    # because the non-POSIX guard in the write path fires.
+    # Files (env sidecar, overlay spec) are locked down on their TEMP name
+    # BEFORE any content reaches them (atomic_write's restrict_to_owner=True
+    # for the overlay, the hand-rolled temp-first order for the sidecar), so
+    # the recorded paths are mkstemp names inside the target directory, not
+    # the final published names.
     env_sidecars = [p for p in restricted_paths if "stubs" in str(p.parent)]
     assert env_sidecars, f"env sidecar file not restricted: {restricted_paths}"
-    # The overlay agent spec lives in overlay/ directory
+    # The overlay agent spec's temp file lives in overlay/ directory. The
+    # ".tmp" suffix pins atomic_write's mkstemp suffix — the only externally
+    # observable trace of the temp-first ordering — so a suffix change there
+    # is what breaks this line, not the rewriter.
     overlay_specs = [
         p for p in restricted_paths
-        if p.suffix == ".json" and p.parent.name == "overlay"
+        if p.suffix == ".tmp" and p.parent.name == "overlay"
     ]
-    assert overlay_specs, f"overlay spec file not restricted: {restricted_paths}"
+    assert overlay_specs, f"overlay spec temp file not restricted: {restricted_paths}"
 
 
 def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:
@@ -672,6 +678,52 @@ def test_rewriter_overlay_dirs_are_traversable_on_posix(tmp_path: Path) -> None:
             f"{d.name} has mode {oct(mode)}, expected 0o700 (owner rwx). "
             f"0o600 would break directory traversal."
         )
+
+
+def test_overlay_lockdown_precedes_content(tmp_path: Path, monkeypatch) -> None:
+    """The per-agent overlay writer locks the temp file down BEFORE content
+    reaches it (the settings overlay shares the same atomic_write call shape).
+
+    Overlays carry passed-through env blocks (tokens / API keys); the previous
+    Windows-only post-rename restrict_to_owner left them readable under the
+    inherited DACL for the whole write window (issue #5285). Asserted by
+    measuring the file's SIZE at lockdown time — zero means no payload byte
+    existed yet. A post-write stat passes on the buggy ordering too, so it
+    would not be a regression test.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.mcp_gateway.rewriter import rewrite_agents
+
+    source_dir = tmp_path / "agents"
+    _spec_with_env(source_dir)
+
+    overlay_dir = tmp_path / "overlay" / "agents"
+    sizes_by_dir: dict[str, list[int]] = {}
+    real_restrict = platform_compat.restrict_to_owner
+
+    def _measuring(target):
+        p = Path(str(target))
+        if p.is_file():
+            sizes_by_dir.setdefault(p.parent.name, []).append(os.stat(p).st_size)
+        return real_restrict(target)
+
+    monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
+    rewrite_agents(
+        source_dir=source_dir,
+        overlay_dir=overlay_dir,
+        socket_path=tmp_path / "gw.sock",
+        work_dir=tmp_path / "wd",
+        sandbox_mode="auto",
+        approval_mode="interactive",
+        stub_servers=frozenset(["myserver"]),
+    )
+
+    assert (overlay_dir / "test-agent.json").exists(), "premise: overlay written"
+    agent_sizes = sizes_by_dir.get("agents", [])
+    assert agent_sizes, f"per-agent overlay lockdown never ran: {sizes_by_dir}"
+    assert all(s == 0 for s in agent_sizes), (
+        f"an overlay file already held payload bytes at lockdown time: {agent_sizes}"
+    )
 
 
 def _spec_with_env(source_dir: Path) -> None:

@@ -41,6 +41,7 @@ import {
   stopDevServer as apiStopDevServer,
 } from './api'
 import { deliveryVerdict, needsDeliveryRetry } from './delivery'
+import { useImeGuard } from '../../hooks/useImeGuard'
 import type {
   Project, Request, Comment, ThreadEntry, EditSelection,
   PreviewScoped, OverlayMessage,
@@ -484,6 +485,8 @@ function RequestGroup({
 
 
 export default function DesignTweak() {
+  // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
+  const ime = useImeGuard()
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
@@ -1650,7 +1653,7 @@ export default function DesignTweak() {
                           value={newPath}
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setNewPath(e.target.value)}
-                          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && addProject()}
+                          {...ime.bindEnter({ onEnter: () => addProject() })}
                           placeholder={i18nT('apps.designTweak.projects.path_placeholder')}
                           className="flex-1 h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                         />
@@ -2050,10 +2053,7 @@ export default function DesignTweak() {
                           value={devDraft}
                           autoFocus
                           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setDevDraft(e.target.value)}
-                          onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
-                            if (e.key === 'Enter') setDevServer(devDraft.trim())
-                            if (e.key === 'Escape') { setDevOpen(false); setDevDraft('') }
-                          }}
+                          {...ime.bindEnter({ onEnter: () => setDevServer(devDraft.trim()), onEscape: () => { setDevOpen(false); setDevDraft('') } })}
                           placeholder={i18nT('apps.designTweak.devServer.url_placeholder')}
                           className="h-8 px-2 rounded-md bg-bg-elevated border border-border text-[12px] text-text"
                           style={{ width: '190px' }}

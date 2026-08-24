@@ -25,7 +25,10 @@ import uuid
 from aiohttp import web
 
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 from kiro_crew.validation import (
@@ -121,6 +124,11 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
         )
     except Exception:
         logger.warning("SEL audit failed for non-owner denial", exc_info=True)
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
     return web.json_response({"error": "forbidden"}, status=403)
 
 

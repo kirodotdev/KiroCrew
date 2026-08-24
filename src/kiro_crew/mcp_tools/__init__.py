@@ -18,6 +18,7 @@ from typing import Any
 DOMAIN_MODULES: tuple[str, ...] = (
     "spawn",
     "learn",
+    "ledger",
     "skills",
     "control",
     "messaging",

@@ -136,6 +136,38 @@ async def _wait_for_operation(service: KiroPrerequisiteService) -> None:
 
 
 class TestKiroPrerequisiteHelpers:
+    def test_identity_file_lockdown_precedes_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A staged identity file must never exist with content in it before
+        it is locked down.
+
+        ``_atomic_write_secret_bytes`` routes through
+        ``atomic_write(restrict_to_owner=True)``, which applies the lockdown
+        to the TEMP file before the identity bytes reach it (the previous
+        post-rename lockdown left them readable under the inherited DACL on
+        Windows for the write window, issue #5285). Asserted by measuring the
+        file's SIZE at lockdown time — zero means no payload byte existed yet.
+        """
+        sizes: list[int] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            sizes.append(os.stat(target).st_size)
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
+        target = tmp_path / "staged" / "kiro-token.json"
+        prerequisite_module._atomic_write_secret_bytes(target, b"identity-bytes")
+
+        assert target.read_bytes() == b"identity-bytes"
+        if platform_compat.IS_POSIX:
+            assert stat.S_IMODE(target.stat().st_mode) == 0o600
+        assert sizes, "premise: the lockdown ran at all"
+        assert sizes[0] == 0, (
+            f"the file already held {sizes[0]} payload bytes at lockdown time"
+        )
+
     @pytest.mark.parametrize("windows", [True, False], ids=["windows", "posix"])
     def test_identity_env_forwards_proxy_configuration_and_refuses_secrets(
         self,

@@ -7,6 +7,7 @@ import {
 import type { CronFolder } from '../utils/cronFolders'
 import { TableCell, TableRow } from './ui/table'
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 
 interface Props {
   folder: CronFolder
@@ -19,6 +20,7 @@ interface Props {
 }
 
 export default function CronFolderHeader({ folder, jobCount, collapsed, onToggleCollapse, onRename, onDelete, colSpan }: Props) {
+  const ime = useImeGuard()
   const [editing, setEditing] = useState(false)
   const [editName, setEditName] = useState(folder.name)
   const [confirmingDelete, setConfirmingDelete] = useState(false)
@@ -43,11 +45,7 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                   className="bg-bg rounded px-2 py-0.5 flex-none min-w-[120px]"
                   value={editName}
                   onChange={e => setEditName(e.target.value)}
-                  onKeyDown={e => {
-                    if (e.key === 'Enter') commitRename()
-                    if (e.key === 'Escape') setEditing(false)
-                  }}
-                  onBlur={commitRename}
+                  {...ime.bindEnter({ onEnter: commitRename, onEscape: () => setEditing(false), onBlur: commitRename })}
                 />
               </>
             ) : (
@@ -73,7 +71,19 @@ export default function CronFolderHeader({ folder, jobCount, collapsed, onToggle
                   <MoreHorizontal size={14} />
                 </Btn>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="min-w-[140px]">
+              <DropdownMenuContent
+                align="end"
+                className="min-w-[140px]"
+                // Radix restores focus to the trigger when the menu closes, and
+                // that restore is deferred, as is mounting the rename input. With
+                // no ordering between them the restore can land AFTER the input
+                // has autofocused, which fires `focusout` on an input the user has
+                // not typed in yet: `commitRename` then reads an unchanged name,
+                // commits nothing, and closes the box the user just opened. The
+                // item that ran has already put focus where it belongs (the input,
+                // or the delete confirmation), so the restore has nothing to add.
+                onCloseAutoFocus={e => e.preventDefault()}
+              >
                 <DropdownMenuItem onSelect={() => { setEditName(folder.name); setTimeout(() => setEditing(true), 0) }}>
                   <Pencil size={13} className="shrink-0" />
                   <span>{i18nT('pages.schedulePage.cronFolders.rename')}</span>

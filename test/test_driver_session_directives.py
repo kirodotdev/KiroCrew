@@ -536,11 +536,19 @@ class TestChannelApplierBoundary:
         assert "targets this turn's chat slot" in result
 
     @pytest.mark.asyncio
-    async def test_slotless_set_project_refusal_audits_denied(self, monkeypatch, no_dashboard_tabs):
+    @pytest.mark.parametrize(
+        "args", [{"project": "/tmp"}, {"clear": True}], ids=["set-path", "clear"]
+    )
+    async def test_slotless_set_project_refusal_audits_denied(
+        self, args, monkeypatch, no_dashboard_tabs
+    ):
         """SEL truthfulness for the slot-less set_project refusal: it is a
         permission DECISION, so it must audit ``denied`` — never ``error``
         (the crash shape a missing slot-None guard would produce) and never
-        ``success``. Nothing may be mutated on the way out."""
+        ``success``. Nothing may be mutated on the way out. Pinned for BOTH
+        arg shapes: ``_set_project``'s clear path writes slot state before any
+        validation, so the guard is all that keeps a slot-less clear from
+        mutating on the way to the crash."""
         calls: list[dict] = []
 
         class _SelSpy:
@@ -553,7 +561,7 @@ class TestChannelApplierBoundary:
             None,
             "slack:1755000000.123456",
             "set_project",
-            {"project": "/tmp"},
+            dict(args),
         )
         assert result.startswith("Error:")
         assert "targets this turn's chat slot" in result

@@ -127,7 +127,11 @@ class FakeCtx:
     def __init__(self) -> None:
         self.hooks = FakeHooks()
 
-    def build_message(self, text, is_new, key, *, channel_id, agent, resumed, runtime_source):
+    # Names only the kwargs it asserts on and takes ``**kw`` for the rest: the
+    # shared pipeline owns the call shape, so a fake that pins every kwarg
+    # breaks on any field the pipeline later forwards, without that field
+    # having anything to do with this channel. Mirrors the pipeline's own fake.
+    def build_message(self, text, is_new, key, *, channel_id, agent, resumed, runtime_source, **kw):
         assert runtime_source == "webex"
         return (text, None)
 

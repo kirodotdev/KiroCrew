@@ -429,9 +429,11 @@ trusted forge and have the gateway read it with ambient credentials.
 
 **The same-repo carve-out** relaxes that for the monorepo layout. When an index
 entry's effective clone URL is byte-identical to the registry repo URL the owner
-configured, the owner did designate exactly that URL, so manifest fetches and
-installs use owner credentials. The comparison is exact string equality with no
-normalization: sibling repos on the same host stay anonymous and strict.
+configured, the owner did designate exactly that URL, so all three clone
+chokepoints use owner credentials: the manifest fetch, the install clone, and
+the App Store's icon/screenshot blob fetch. The comparison is exact string
+equality with no normalization: sibling repos on the same host stay anonymous
+and strict.
 
 **Private-forge recipe.** On a credential-only forge (SSH keys, no anonymous
 read), keep every app inside the registry repo so the carve-out applies:
@@ -443,8 +445,20 @@ apps/
   other-app/app.json
 ```
 
-Apps in separate repos on the same private forge will not benefit from the
-carve-out and will fail to clone.
+With this layout the store lists, installs, and renders icons/screenshots for
+those apps using the owner's credentials. Apps in separate repos on the same
+private forge do not benefit from the carve-out: they fail to clone, and their
+icons and screenshots fall back to the name-seeded gradient.
+
+**Keep the configured URL byte-identical.** Because the carve-out is exact
+string equality, editing the registry `repo` between otherwise-equivalent forms
+— `ssh://host/x` versus `ssh://user@host/x`, or adding/removing a trailing
+`.git` — silently drops every app back to anonymous + strict. On a credential-only
+forge that means apps stop cloning and icons go blank, and the changed URL also
+triggers a one-time move-aside re-clone of any already-installed app. This is
+deliberate and safe (the new string is a URL the owner did not previously
+designate), but if you see "apps stopped cloning after I changed the registry
+URL", restore the byte-identical value or expect the one-time re-clone to settle.
 
 ## 12. How a user install runs
 

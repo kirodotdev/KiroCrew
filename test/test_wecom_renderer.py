@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from kiro_crew.wecom.renderer import WeComRenderer, _strip_options
+from kiro_crew.wecom.renderer import WeComRenderer, _render_options_as_text
 from kiro_crew.wecom.transport import WECOM_CAPABILITIES
 
 
@@ -24,16 +24,16 @@ class TestStripOptionsRedos:
         # so the whole still-streaming partial is hidden.
         evil = "[OPTIONS:" + ("\t" * 200_000) + "x"
         start = time.perf_counter()
-        result = _strip_options(evil)
+        result = _render_options_as_text(evil)
         assert time.perf_counter() - start < 1.0, "possible ReDoS"
-        assert result == ""
+        assert result == "", "an unterminated marker is hidden, never rendered"
 
         # Many repeated "[OPTIONS:" prefixes (the real polynomial pump): the
         # linear match must still return promptly. There is no closing ']', so
         # the trailer regex does not match and the text is returned unchanged.
         evil = "[OPTIONS:" * 100_000 + "x"
         start = time.perf_counter()
-        result = _strip_options(evil)
+        result = _render_options_as_text(evil)
         assert time.perf_counter() - start < 1.0, "possible ReDoS"
 
 
@@ -44,12 +44,44 @@ class FakeClient:
         self.frames: list[dict] = []
         self.replies: list[tuple[str, str]] = []
         self._stream_ok = stream_ok
+        self.dead_streams: set[str] = set()
+        #: (chat_id, content) of confirmed pushes — the answer's tail, and a head
+        #: re-delivered after its sealing frame turned out to be refused.
+        self.pushed: list[tuple[str, str]] = []
 
     async def send_stream(
-        self, req_id: str, stream_id: str, content: str, *, finish: bool
+        self,
+        req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool,
+        await_ack: bool = False,
     ) -> bool:
-        self.frames.append({"req_id": req_id, "content": content, "finish": finish})
+        self.frames.append(
+            {"req_id": req_id, "stream_id": stream_id, "content": content, "finish": finish}
+        )
         return self._stream_ok
+
+    def stream_is_dead(self, stream_id: str) -> bool:
+        """The renderer consults this before every frame, so the fake owes it.
+
+        Bubbles are live unless a test says otherwise; sealing behaviour has its
+        own coverage in test_wecom_wire_reliability.py.
+        """
+        return stream_id in self.dead_streams
+
+    def stream_had_rejection(self, stream_id: str) -> bool:
+        """The narrower question: was everything written here ACCEPTED.
+
+        Consulted by the aged rotation and by the post-turn seal recheck. A dead
+        bubble was also refused, so it answers for both.
+        """
+        return stream_id in self.dead_streams
+
+    async def send_proactive(self, chat_id: str, content: str) -> bool:
+        self.pushed.append((chat_id, content))
+        return True
 
     async def send_reply(self, url: str, content: str) -> None:
         self.replies.append((url, content))
@@ -65,7 +97,10 @@ class TestStreaming:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
-        assert c.frames[0]["content"] == "🤔 …"
+        # WeCom renders <think>…</think> as its own collapsed reasoning block, so
+        # the placeholder does not sit in the answer and does not have to be
+        # cleared before the real text arrives.
+        assert c.frames[0]["content"] == "<think>…</think>"
         assert c.frames[0]["finish"] is False
 
     @pytest.mark.asyncio
@@ -89,13 +124,15 @@ class TestStreaming:
         assert final["finish"] is True
 
     @pytest.mark.asyncio
-    async def test_options_trailer_stripped(self) -> None:
+    async def test_options_trailer_becomes_a_numbered_list(self) -> None:
         c = FakeClient()
         r = _renderer(c)
         await r.on_turn_start()
         await r.on_text_chunk("Pick one\n\n[OPTIONS: A | B | C]")
         await r.on_done()
-        assert c.frames[-1]["content"] == "Pick one"
+        # Numbered text, not deleted: WeCom renders no chips, but the user still
+        # has to learn the choices exist and can answer by typing one.
+        assert c.frames[-1]["content"] == "Pick one\n\n1. A\n2. B\n3. C"
 
     @pytest.mark.asyncio
     async def test_tool_footer_pushed(self) -> None:

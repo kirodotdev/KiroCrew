@@ -5616,12 +5616,15 @@ class AcpClient:
         # Record optionIds the agent advertised so approve_tool / reject_tool
         # can echo the exact ids. We record when EITHER an allow option (for
         # approve) OR a reject option (for a clean reject) was advertised.
-        # claude-agent-acp advertises a {kind:"reject_once", optionId:"reject"}
-        # option whose selection yields behavior:"deny" — sending that is far
-        # better than a "cancelled" outcome, which the adapter turns into the
-        # cryptic "Tool use aborted". kiro-cli advertises no reject option, so
-        # reject_tool falls back to "cancelled" there (handled as a clean
-        # rejection by kiro).
+        # Both backends advertise a reject option — claude-agent-acp as
+        # {kind:"reject_once", optionId:"reject"}, kiro-cli as
+        # {kind:"reject_once", optionId:"reject_once"} — and sending it is far
+        # better than a "cancelled" outcome: kiro-cli resolves a clean reject to
+        # a FAILED tool call and lets the turn continue to a model-inference
+        # boundary, whereas "cancelled" ends the turn outright with
+        # stopReason:"refusal" (and the claude adapter turns it into the cryptic
+        # "Tool use aborted"). reject_tool falls back to "cancelled" only for a
+        # backend that advertised no reject option at all.
         any_allow = kind_to_id.get("allow_once") or kind_to_id.get("allow_always")
         any_reject = kind_to_id.get("reject_once") or kind_to_id.get("reject_always")
         if request_id != "" and (any_allow is not None or any_reject is not None):

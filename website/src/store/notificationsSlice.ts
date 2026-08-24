@@ -67,6 +67,59 @@ const pruneAckStamps = (state: NotificationsState) => {
   }
 }
 
+/**
+ * Boot-time notifications dedupe (#765). App's mount effect and the
+ * WebSocket's FIRST-connect handler used to each dispatch `fetchNotifications`
+ * -- two identical round-trips on every boot. The first-connect copy is the
+ * one that must stay authoritative: its HTTP snapshot is taken AFTER the
+ * socket is registered, so a notification created after the snapshot is
+ * guaranteed to arrive as a WS push. A mount-time snapshot has no such
+ * guarantee -- a notification created between it and socket registration is
+ * pushed to nobody and would be invisible until a reconnect. So the mount
+ * effect no longer fetches; it arms this fallback instead, which fires only
+ * when no boot fetch has happened within the window (a socket that never
+ * connects, e.g. a proxy that strips Upgrade) so the inbox still populates
+ * over plain HTTP. First-connect marks the flag before dispatching; the
+ * fallback marks it too, so the two can never double-fire.
+ */
+export const BOOT_NOTIFICATIONS_FALLBACK_MS = 5000
+let bootNotificationsFetched = false
+// In-flight fallback fetch, held so a late first connect can SERIALIZE its own
+// fetch after it. Without this, a connect landing just after the fallback
+// fired could resolve its (newer) snapshot first and then have the older
+// fallback response replace membership wholesale -- notifications gone until
+// a reconnect. fetchNotifications.fulfilled has generation guards for clears
+// and acks, not for two overlapping boot fetches.
+let inflightFallbackFetch: Promise<unknown> | null = null
+/**
+ * Marks the boot fetch as owned by the caller (the first-connect handler).
+ * Returns the in-flight fallback fetch when one already fired, so the caller
+ * can chain its own fetch after it settles -- guaranteeing the newest
+ * (post-registration) snapshot always lands last. Null when no fallback fired.
+ */
+export function markBootNotificationsFetched(): Promise<unknown> | null {
+  bootNotificationsFetched = true
+  const p = inflightFallbackFetch
+  inflightFallbackFetch = null
+  return p
+}
+/** Arms the no-WS fallback; returns the disarm function for effect cleanup. */
+export function armBootNotificationsFallback(run: () => unknown, ms: number = BOOT_NOTIFICATIONS_FALLBACK_MS): () => void {
+  const t = setTimeout(() => {
+    if (bootNotificationsFetched) return
+    bootNotificationsFetched = true
+    // Redux thunk dispatch promises settle with the action (never reject);
+    // Promise.resolve covers a non-promise return defensively.
+    inflightFallbackFetch = Promise.resolve(run()).catch(() => undefined)
+  }, ms)
+  return () => clearTimeout(t)
+}
+/** Test-only: restores the pristine boot state between cases. */
+export function resetBootNotificationsForTest(): void {
+  bootNotificationsFetched = false
+  inflightFallbackFetch = null
+}
+
 export const fetchNotifications = createAsyncThunk(
   'notifications/fetch',
   async (_arg: void, { getState }) => {

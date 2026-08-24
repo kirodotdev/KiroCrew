@@ -38,6 +38,8 @@ def _get_git_mtime(filepath: Path) -> float:
             ["git", "log", "-1", "--format=%ct", "--", str(filepath)],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             cwd=str(filepath.parent),
             timeout=5,
         )

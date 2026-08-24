@@ -33,6 +33,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 from .bug_gate import BugGate
 from .contracts import (
     BUG_ERROR,
@@ -71,11 +73,11 @@ def _changed_paths(worktree: Path, base_sha: str) -> list[str]:
     # Stage first so NEW (untracked) files count — a bug fix's reproducing test is a new
     # file, and a bare ``git diff --name-only base`` omits untracked paths. We diff the
     # index (``--cached``) against base after ``git add -A`` so adds are included.
-    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, text=True)
+    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, **UTF8_TEXT)
     r = subprocess.run(
         _git_argv(worktree, "diff", "--cached", "--name-only", base_sha),
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
     )
     return [p for p in r.stdout.splitlines() if p.strip()]
 
@@ -86,11 +88,11 @@ def _changed_status_paths(worktree: Path, base_sha: str) -> list[tuple[str, str]
     Lets the allowlist distinguish an ADDED reproducing test (allowed on the bug track)
     from a MODIFIED existing test (gate-gaming, always forbidden). ``--diff-filter`` is
     not used; we parse ``--name-status`` so all change kinds are visible."""
-    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, text=True)
+    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, **UTF8_TEXT)
     r = subprocess.run(
         _git_argv(worktree, "diff", "--cached", "--name-status", base_sha),
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
     )
     if r.returncode != 0:
         # A git failure (bad/nonexistent base_sha, detached/corrupt repo) writes its
@@ -126,16 +128,16 @@ def _head_sha(worktree: Path) -> str:
     # The candidate's edit lives uncommitted in the worktree; for the same-sha
     # contract we record the base/HEAD sha the gate built against. We commit the
     # worktree edit so the measured artifact has a stable sha.
-    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, text=True)
+    subprocess.run(_git_argv(worktree, "add", "-A"), capture_output=True, **UTF8_TEXT)
     c = subprocess.run(
         _git_argv(worktree, "commit", "-q", "-m", "candidate gate snapshot", "--allow-empty"),
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
     )
     if c.returncode != 0:
         return ""
     return subprocess.run(
-        _git_argv(worktree, "rev-parse", "HEAD"), capture_output=True, text=True
+        _git_argv(worktree, "rev-parse", "HEAD"), capture_output=True, **UTF8_TEXT
     ).stdout.strip()
 
 

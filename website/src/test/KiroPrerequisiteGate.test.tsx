@@ -250,6 +250,39 @@ describe('KiroPrerequisiteGate', () => {
     expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
   })
 
+  it('swaps the ask-the-owner body for the re-auth remedy while the auth banner is up', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({
+      platform: 'gateway',
+      setup_allowed: false,
+    }))
+    // The stale-owner banner element is the signal source: present at mount.
+    const banner = document.createElement('div')
+    banner.id = 'mc-session-expired'
+    document.body.prepend(banner)
+    try {
+      renderWithProviders(
+        <KiroPrerequisiteGate><div>Dashboard loaded</div></KiroPrerequisiteGate>,
+      )
+      // One instruction, not two: eyebrow, headline, and body all name the
+      // sign-in remedy instead of telling the viewer to ask someone else.
+      expect(await screen.findByText(/Sign in again to continue/)).toBeInTheDocument()
+      expect(screen.getByText(/Sign in required/)).toBeInTheDocument()
+      expect(screen.getByText(/predates the configured owner/)).toBeInTheDocument()
+      expect(screen.queryByText(/gateway owner needs to finish setup/)).not.toBeInTheDocument()
+      expect(screen.queryByText(/Ask the .* owner to install/)).not.toBeInTheDocument()
+      // "Check again" cannot succeed until sign-in, so the state carries no
+      // retry affordance — the banner is the single action.
+      expect(screen.queryByRole('button', { name: 'Check again' })).not.toBeInTheDocument()
+      // Clearing the banner flips the whole surface back to the setup copy.
+      window.dispatchEvent(new CustomEvent('mc-auth-cleared'))
+      expect(await screen.findByText(/Ask the .* owner to install/)).toBeInTheDocument()
+      expect(screen.getByText(/gateway owner needs to finish setup/)).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeEnabled()
+    } finally {
+      banner.remove()
+    }
+  })
+
   it('lets a non-owner observe owner completion without reloading', async () => {
     vi.mocked(api.kiroPrerequisite)
       .mockResolvedValueOnce(status({

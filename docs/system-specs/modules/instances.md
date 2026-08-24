@@ -122,7 +122,7 @@ after startup and a restart is still pending.
         v
  +--------------- Remote gateway (dev host / EC2 / home server) ---------+
  |  kirocrew gateway bound to 127.0.0.1:<remote_port> (registry default  |
- |  7777; the local gateway's own default port is 5476)                  |
+ |  5476, the port a stock gateway binds)                                |
  +-----------------------------------------------------------------------+
 ```
 
@@ -136,34 +136,41 @@ Module responsibilities:
 | `ssm_token_mint.py` | The SSM sibling of `token_mint.py`: runs the same subcommand via `aws ssm send-command` through the launcher's `cloud.ssm` chokepoint, reusing the shared remote-command builders. Token in memory only, **never logged**. See §13. |
 | `validation.py` | The authoritative injection-safe guard on `ssh_host` / `remote_bin`, and on `ssm_target` / `aws_profile` / `aws_region` / `ssm_run_as`, applied immediately before any command line is built. See §11. |
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
-| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart, orphan-forwarder reaping. One state machine, two transports. |
+| `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two transports. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder) and `diagnose_instance_ssm` (SSM ladder). |
 | `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
 
-**The local forward port mirrors the remote port.** `connect()` sets
-`local_port = inst.remote_port` rather than allocating a fresh one: the embedded
-iframe loads from `http://<host>:<local_port>`, and the remote gateway only
-trusts CSRF/WebSocket `Origin`s on its own configured port, so mirroring keeps
-the Origin valid with no per-instance allowlisting. The consequence is a hard
-constraint: **every simultaneously-connected instance must use a distinct remote
-port**, and a busy port is a clear connect error rather than a silent fallback
-(a different local port would leave the pane unable to stream or act). The
-`PortAllocator` is therefore constructed but not on the connect path today; the
-`tunnel_base_port` setting configures it.
+**The local forward port is allocated, not mirrored.** `connect()` takes a free
+loopback port from `PortAllocator` (from `tunnel_base_port`, skipping ports the
+registry has already handed out) and does not require it to equal
+`inst.remote_port`. The embedded iframe loads from `http://<host>:<local_port>`
+and the remote gateway accepts that on any port because `check_origin` trusts a
+loopback `Origin` that equals the request's own `Host` — exactly the shape the
+iframe produces — `build_allowed_hosts` compares hostname only, and the session
+cookie is keyed off the browser-facing port (`_cookie_port_from_host`), so
+distinct local ports get distinct cookies in the shared `127.0.0.1` jar. This
+does not weaken CSE SEC-016: a malicious local page on an arbitrary port sends
+its own `Origin` while `Host` stays the gateway's, so the two differ and the
+request is rejected; browsers forbid scripts from forging either header.
+
+Earlier revisions mirrored the port (`local_port = inst.remote_port`) for the
+Origin reason above, which imposed a hard constraint that every
+simultaneously-connected instance use a distinct remote port. The shipped
+defaults contradicted it — a stock gateway binds the same default port on both
+ends, so a stock hub already held the port a stock remote reported and two stock
+installs could never connect (#1972). Reconnects reuse the instance's own
+previous port so the iframe origin and its cookie stay stable.
 
 **Platform note.** The hub side of this feature assumes a POSIX host with an
-OpenSSH `ssh` client on `PATH`. Two paths make that explicit: the
-orphan-forwarder reaper shells `ps -axww -o pid=,command=` and signals with a
-direct `os.kill(pid, signal.SIGTERM)` rather than going through
-`platform_compat`, and run-marker port discovery refuses outright on non-POSIX
-(§12). Treat a Windows hub as unverified.
+OpenSSH `ssh` client on `PATH`, and run-marker port discovery refuses outright on
+non-POSIX (§12). Treat a Windows hub as unverified.
 
 ---
 
 ## 4. The connect → warm → self-heal lifecycle
 
 1. **Connect.** `POST /api/instances/{id}/connect` validates the ssh inputs,
-   reaps any orphaned forwarder still holding the mirrored port, starts
+   allocates a free local forward port, starts
    `ssh -N -L`, waits until the local forward accepts a TCP connection, mints a
    dashboard token on the remote over SSH, and returns the live status plus the
    token. Connect is **idempotent**: an already-connected instance returns its
@@ -277,8 +284,9 @@ to gain).
 `~/.kiro/crew/instances.json`, one record per instance:
 
 ```
-id, name, ssh_host, remote_port (default 7777), local_port (0 = unallocated),
-ttl (default "20h"), remote_bin, was_connected
+id, name, ssh_host, remote_port (default 5476), local_port (0 = unallocated),
+ttl (default "20h"), remote_bin, was_connected, forwarder_pid (0 = none),
+forwarder_start ("" = unknown), forwarder_sig ("" = unsigned)
 ```
 
 plus a top-level `last_active_id`. `id` is a slug (`^[a-z0-9][a-z0-9-]{0,62}$`)
@@ -302,8 +310,49 @@ Two persisted hints drive lazy reconnect:
   not just one, and the active pane is frontend state. `get_last_active()` is the
   only reader and has no production caller.
 
+A third hint pair, `forwarder_pid` + `forwarder_start`, exists for crash
+recovery rather than reconnect intent: `connect()` records the spawned
+forwarder child's pid and its opaque `platform_compat.process_start_time`
+identity next to `local_port` (one write), and a successful self-heal rebuild
+moves both to the replacement child. A gateway hard-kill (SIGKILL/crash) never
+runs teardown, so the forwarder survives, reparented to init, still holding its
+port and its session to the remote. The next `connect()` reclaims exactly that
+child, best-effort (a failed reclaim never fails the connect). The registry is
+agent-writable state, so a recorded claim is honored only when it
+authenticates: the record must carry `forwarder_sig`, the gateway's own HMAC
+over (instance id, pid, start time, port) under a key derived from the SEL
+trust root (`sel_hmac_key_path()`, domain-separated exactly like the
+`session_pid_sig` sidecar protocol) — a root an agent can neither read nor
+replace, so a record written, edited, or re-pointed by anything but the
+gateway fails verification outright and nothing is ever signalled for it.
+Behind the MAC, defense in depth from kernel-owned facts: the candidate must
+be a genuine ORPHAN — not a pid this manager currently supervises, and
+reparented to init (`get_ppid == 1`), which no live gateway's forwarder is
+(subreaper hosts read as non-orphaned and merely miss the reclaim). Then, iff
+the recorded
+`local_port` probes occupied AND both identity halves are recorded AND the
+pid's live start time equals the recorded one AND its **full argv exactly
+equals** the forward command line the manager would construct for the recorded
+port (`platform_compat.process_argv_matches_exact`), it is signalled — SIGTERM
+escalating to SIGKILL on a bounded grace, with the start-time identity
+**re-verified before the SIGKILL** (the grace window is exactly where a pid can
+exit and be recycled); pid-scoped for ssh, whose child shares the dead
+gateway's process group; group-scoped for SSM, whose child owns its group, with
+completion judged by the whole group being gone and the port actually
+releasing. Anything short of full identity — either hint missing, start time
+differing or unreadable, argv unreadable (always the case on Windows, so the
+guard fails closed there), or any argv element differing — means the identity
+cannot be confirmed: the process is left alone (logged, and SEL-audited when
+anything was signalled) and allocation simply skips its port; the freed port
+returns to the pool at the next allocation rather than being re-taken by the
+same connect. Reclamation is keyed on the manager's OWN recorded identity,
+never a process-table scan — matching the table by argv pattern is what once
+SIGTERMed forwards operators had opened themselves (#1972).
+
 `disconnect()` resets `local_port` to the unallocated sentinel together with
-`was_connected` in one write, so a freed port is never left reserved.
+`was_connected` and the forwarder identity pair in one write, so a freed port
+is never left reserved and a stale identity never reaches a later reclaim's
+checks.
 
 ---
 
@@ -447,8 +496,8 @@ what its own edit invalidated, and never reopens anything on the user's behalf.
 3. **Add** an instance:
    - *Name*: any label.
    - *SSH host / alias*: what you would type after `ssh` (see §9).
-   - *Remote port*: the port the remote gateway listens on. It must be unique
-     across instances, because the local forward mirrors it.
+   - *Remote port*: the port the remote gateway listens on. Instances may share
+     it — the local forward port is allocated independently.
    - *Token TTL*: default `20h`.
    - *Remote kirocrew path*: only needed when `kirocrew` lives somewhere
      non-standard on the remote.
@@ -738,7 +787,7 @@ whose current variable parts are all charset-bound literals.
 | Iframe is blank or black | The pane's embedded SPA never announced readiness within 15s, so the error panel with **Retry** appears (Retry force-reloads even an identical src). An iframe reports no load error to its parent, so this watchdog is the only signal. |
 | Connect fails with an SSH auth error | Refresh your SSH credentials (re-add the key to `ssh-agent`); `BatchMode` never prompts, so a missing credential is an immediate failure. Tunnels self-heal once auth is restored. |
 | Connect fails for another reason | Use **Diagnose**. The ladder reports the first broken link: `ssh_unreachable` (check SSH access or the host alias), `remote_down` (remote gateway not listening), `not_connected` (SSH and remote are fine, this instance has no tunnel yet: click Connect), or `tunnel_down` (reconnect). |
-| "local port N is already in use" | The forward mirrors the remote port, so two instances cannot share one. Change this instance's remote port (and the remote gateway's own port to match), or stop whatever holds the port. |
+| "local port N was taken while connecting" | The allocator picked a port that something grabbed in the moment before `ssh` bound it. Retry. If it persists, stop whatever keeps taking ports in that range or move `instances.tunnel_base_port` to a quieter one. |
 | Instance keeps dropping | The health probe plus 2-tier self-heal retry over roughly a two-minute window (8 attempts, capped-exponential backoff). Tune `instances.max_recovery_attempts` / `recover_backoff_max_secs` / `probe_failure_threshold`; both recovery values are clamped so they cannot loop indefinitely. If self-heal gives up, diagnosis runs automatically. Check the remote gateway and SSH stability. |
 | A pane vanished from the warm set but its switcher entry is still there | It was LRU-evicted (warm set full). The tunnel is untouched: selecting the crew re-warms it. Raise `instances.warm_set_cap` if you want more panes resident. |
 | Every token mint fails on one remote, though its gateway is healthy | The remote's `~/.local/bin/kirocrew` probably points at an uninstalled checkout. See §12: the run-marker is what makes mint follow the *running* gateway's install. |

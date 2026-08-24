@@ -3446,8 +3446,10 @@
       }
     },
     "artifactBody": {
+      "could_not_render": "Couldn't render this artifact",
       "image_could_not_be_loaded": "Image couldn't be loaded",
-      "rendering": "Rendering…"
+      "rendering": "Rendering…",
+      "retry": "Retry"
     },
     "artifactFolderDeleteDialog": {
       "cancel": "Cancel",
@@ -4011,7 +4013,7 @@
       "pin_model_unavailable": "<model/> isn't offered right now",
       "reasoning": "Reasoning",
       "set_default_for_agent": "Set <model/> as default model for <agent/>",
-      "set_default_for_new_sessions": "Global fallback for new sessions…",
+      "set_default_for_new_sessions": "Global default for new sessions…",
       "type_to_filter": "Type to filter…"
     },
     "monacoCodeBlock": {
@@ -4582,8 +4584,10 @@
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Try: “Create a plan to analyze {{productName}} code package and report file count by major components”"
     },
     "widgetFrame": {
+      "could_not_render": "Couldn't render this widget",
       "download_as_html": "Download as HTML",
       "open_in_new_tab": "Open in new tab",
+      "retry": "Retry",
       "save_failed": "save failed"
     },
     "widgetPlaceholder": {
@@ -5214,9 +5218,6 @@
         "resolving": "Resolving…",
         "resolving_2": "resolving...",
         "resources": "Resources",
-        "trusted": "Trusted",
-        "trusted_base": "Trusted base",
-        "trusted_command": "Trusted command",
         "waiting_for_output": "Waiting for output…",
         "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit"
       },
@@ -5335,6 +5336,7 @@
         "recovered_continuing": "continuation sent automatically",
         "resuming_the_interrupted_turn": "resuming the interrupted turn",
         "safety_policy_continuing": "safety policy blocked the call · continuation sent automatically",
+        "safety_policy_told_in_turn": "safety policy blocked the call · the agent was told why, in this turn",
         "session_busy_continuing": "session busy · continuation sent automatically",
         "subagents_finished": "Sub-agents finished",
         "system_notice": "System notice",
@@ -5453,6 +5455,7 @@
         "no_pinned_messages": "No pinned messages yet. Hover a message in the chat and click the pin icon to save it here.",
         "message_unavailable": "This pinned message is no longer available in the loaded history.",
         "pin_failed": "Could not pin the message. Try again.",
+        "pin_limit_reached": "Pin limit reached — unpin a message to add another.",
         "unpin_failed": "Could not unpin the message. Try again.",
         "you": "You",
         "assistant": "Assistant",
@@ -6703,6 +6706,10 @@
       "in_use": "In use",
       "move_to_trash_bulk": "Move to Trash",
       "move_to_trash_single": "Move to Trash",
+      "next_page": "Next",
+      "no_matches": "No conversations match that search.",
+      "page_of": "Page {{page}} of {{pages}}",
+      "prev_page": "Previous",
       "preview_sweep": "Preview sweep",
       "reclaim_by_age": "Reclaim by age",
       "refused_heading": "{{count}} sessions could not be moved",
@@ -6713,6 +6720,7 @@
       "restore": "Restore",
       "resumable": "Resumable",
       "search_placeholder": "Search sessions",
+      "showing_range": "Showing {{from}}–{{to}} of {{total}}",
       "sort_largest": "Largest first",
       "sort_name": "Name",
       "sort_oldest": "Oldest first",
@@ -6882,8 +6890,8 @@
         "content_width": "Content Width",
         "context": "Context",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
-        "default_defers_to_your_agent_config_and_then_to": "Fallback only: agents with a configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
-        "default_model": "Fallback Model",
+        "default_defers_to_your_agent_config_and_then_to": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
+        "default_model": "Default Model",
         "default_normal_length": "Default — normal length",
         "default_reasoning_effort": "Default Reasoning Effort",
         "default_to_autopilot_mode": "Default to Autopilot Mode",
@@ -7061,7 +7069,6 @@
         "home_you_local_bin_kirocrew_leave_blank_for_stan": "/home/you/.local/bin/kirocrew  —  leave blank for standard installs",
         "host_1_alias": "host-1-alias",
         "instances_stay_warm_live_tunnel_at_once_the_rest": "remote crews stay warm (live tunnel) at once; the rest reconnect on\n                demand. Tune with",
-        "is_already_used_by_another_instance_choose_a_dif": "is already used by another remote crew — choose a different one\n              (and configure that port on the remote host).",
         "is_installed_somewhere_non_standard_on_the_remot": "is installed somewhere\n            non-standard on the remote. Leave blank for a normal pip install on PATH. To find\n            it, run on the remote host:",
         "kirocrew": "kirocrew",
         "kirocrew_restart": "kirocrew restart",
@@ -7069,15 +7076,13 @@
         "local_bin_kirocrew": "~/.local/bin/kirocrew",
         "multi_instance_management_is": "Remote crew management is",
         "multi_instance_management_is_off": "Remote crew management is off",
-        "must_match_the_port_the_remote_gateway_serves_on": "Use the port the remote gateway listens on. Ports must be distinct; do not reuse ports across remote crews.",
+        "must_match_the_port_the_remote_gateway_serves_on": "Use the port the remote gateway listens on. Crews may share a port — the local forward port is allocated separately.",
         "name": "Name",
         "no_instances_configured_yet_add_one_below_to_man": "No remote crews configured yet. Add one below to manage a remote crew.",
         "only_needed_if": "Only needed if",
         "opens_ssh_n_l_to_the_host_requires_non_interacti": "Opens ssh -N -L to the host. Requires non-interactive SSH access (key in your ssh-agent).",
         "optional": "(optional)",
-        "port": "Port",
-        "port_2": "· port",
-        "port_the_local_forward_mirrors_it": "port — the local forward mirrors it.",
+        "port_2": "· remote port",
         "refresh": "Refresh",
         "remote_host_1": "Remote Host 1",
         "remote_kirocrew_path": "Remote kirocrew path",
@@ -7087,7 +7092,7 @@
         "ssh_host_alias": "SSH host / alias",
         "ssh_tunnel": "SSH tunnel",
         "ssm_target_instance_id": "SSM target (instance id)",
-        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "The gateway opens a tunnel (SSH or AWS SSM) and mints a short-lived token on connect.\n        The local forward port mirrors the remote port, so each connected remote crew must\n        use a distinct remote port.",
+        "the_gateway_opens_an_ssh_tunnel_and_mints_a_shor": "The gateway opens a tunnel (SSH or AWS SSM) and mints a short-lived token on connect.",
         "the_user_the_remote_gateway_runs_as_sudo_u_for_s": "The user the remote gateway runs as — SSM commands run via sudo -u. Use ubuntu on Ubuntu AMIs.",
         "to_fully_tear_down_any_tunnels_still_running_fro": "to fully tear down any tunnels still running from before.",
         "to_start_the_ssh_tunnel_manager_and_activate_ins": "to start the tunnel manager and activate remote crew switching.",
@@ -7543,6 +7548,11 @@
     },
     "settingsPage": {
       "kirocrew_v": "Kiro Crew v",
+      "search": {
+        "aria_label": "Search settings",
+        "no_results": "No matching settings",
+        "placeholder": "Search settings…"
+      },
       "settings": "Settings"
     },
     "systemPage": {

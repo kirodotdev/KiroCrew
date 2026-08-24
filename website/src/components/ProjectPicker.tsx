@@ -240,7 +240,6 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
               value={input}
               onChange={e => setInput(e.target.value)}
               {...ime.bindComposition()}
-              onFocus={() => ime.reset()}
               onKeyDown={e => {
                 const n = filteredBrowse.length
                 const commit = () => { const p = input.trim() || browsePath; if (p) select(p) }
@@ -248,9 +247,8 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
                 else if (e.key === 'ArrowUp') { e.preventDefault(); setBrowseSel(s => Math.max(s - 1, 0)) }
                 else if (e.key === 'Enter') {
                   // Rule 2: the handler also carries the arrow keys, so only the
-                  // Enter path is gated — claiming would break list navigation.
-                  if (ime.isComposing(e)) return
-                  e.preventDefault()
+                  // Enter path is claimed — arrow navigation stays untouched.
+                  if (!ime.claimEnter(e)) return
                   if (e.metaKey || e.ctrlKey) commit()                               // ⌘/Ctrl+Enter commits the current dir
                   else if (n > 0 && filteredBrowse[browseSel]) browse(filteredBrowse[browseSel].path)  // Enter drills into the highlighted folder
                   else commit()                                                       // nothing to drill into -> commit typed path

@@ -8,7 +8,7 @@
  * that is an implementation detail and the report carries no per-store
  * breakdown, so this screen cannot accidentally surface it.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronLeft, ChevronRight, Info, Search } from 'lucide-react'
 import { api } from '../../api/client'
@@ -37,6 +37,22 @@ type SortKey = 'largest' | 'oldest' | 'name'
  */
 const CONFIRM_ARM_MS = 600
 
+/**
+ * Rows per page.
+ *
+ * The list is a full inventory: an install that has been running for months holds
+ * hundreds of conversations, and the replay-only group is capped at 200 rows on the
+ * server. Rendering all of them put the Trash section — the one place a staged
+ * delete is confirmed or undone — thousands of pixels below the fold, so the
+ * screen's own footer was unreachable without scrolling past the entire store.
+ *
+ * Twenty is a little under two viewport-heights of rows at the shipped row height,
+ * which keeps the pager, the sweep control and the Trash reachable on one screen
+ * while still showing enough rows that "biggest first" answers the question the
+ * screen exists for without paging at all.
+ */
+const PAGE_SIZE = 20
+
 export default function SessionStorageScreen({ onBack }: { onBack: () => void }) {
   const qc = useQueryClient()
   const [search, setSearch] = useState('')
@@ -45,6 +61,11 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [trashOpen, setTrashOpen] = useState(true)
   const [refused, setRefused] = useState<SessionTrashRefusal[]>([])
+  // One page cursor per list. They are independent because the replay-only group is
+  // collapsed by default: paging the main list must not move a reader's place inside
+  // the group they had open, and vice versa.
+  const [page, setPage] = useState(1)
+  const [bgPage, setBgPage] = useState(1)
 
   // Arming state for destructive actions (same two-guard pattern as before)
   const [arming, setArming] = useState<string | null>(null)
@@ -117,12 +138,39 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
     return sorted
   }, [foreground, search, sort])
 
+  // A new query or a new sort makes the old page number meaningless — page 7 of a
+  // three-page result is an empty screen — so the cursor goes back to the start.
+  useEffect(() => { setPage(1) }, [search, sort])
+
+  /**
+   * The visible slice, and the page the reader is actually on.
+   *
+   * `page` is clamped rather than trusted: a delete or a sweep can shrink the list
+   * under a cursor that is already past the end, and clamping here keeps the rows
+   * and the pager label reading from the same number instead of showing "page 9 of
+   * 4" over an empty list.
+   */
+  const pages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, pages)
+  const pageStart = (safePage - 1) * PAGE_SIZE
+  const visible = useMemo(
+    () => filtered.slice(pageStart, pageStart + PAGE_SIZE),
+    [filtered, pageStart],
+  )
+
   // The replay-only group's true size and total come from the server. The rows in
   // `data.sessions` are only its largest members — deriving the group from them
   // would under-report by six figures on the installs this screen exists for.
   const bgSummary = data?.background
   const bgExpanded = expanded.has('__background__')
   const bgNotListed = Math.max(0, (bgSummary?.sessions ?? 0) - backgroundGroup.length)
+  const bgPages = Math.max(1, Math.ceil(backgroundGroup.length / PAGE_SIZE))
+  const bgSafePage = Math.min(bgPage, bgPages)
+  const bgStart = (bgSafePage - 1) * PAGE_SIZE
+  const bgVisible = useMemo(
+    () => backgroundGroup.slice(bgStart, bgStart + PAGE_SIZE),
+    [backgroundGroup, bgStart],
+  )
   // Whether the age sweep is actually on screen. The truncation note tells the
   // reader where to reclaim the rest, so it must not point at a control that is
   // hidden — which it is when reclaiming is refused, or when no threshold has
@@ -310,7 +358,15 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
 
           {/* Session list */}
           <div className="border-t border-border">
-            {filtered.map(session => (
+            <Pager
+              page={safePage}
+              pages={pages}
+              total={filtered.length}
+              from={filtered.length === 0 ? 0 : pageStart + 1}
+              to={Math.min(pageStart + PAGE_SIZE, filtered.length)}
+              onPage={setPage}
+            />
+            {visible.map(session => (
               <SessionRow
                 key={session.uid}
                 session={session}
@@ -324,6 +380,21 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
                 onTrash={() => trashMut.mutate([session.uid])}
               />
             ))}
+
+            {/* A search that matches nothing rendered as a blank gap between the
+                toolbar and the Trash, which reads as a screen that failed to load
+                rather than a query with no hits.
+
+                Scoped to CONVERSATIONS on purpose: the filter covers this list only,
+                and the replay-only group below renders unfiltered. A line claiming
+                "no sessions match" would be false on screen the moment a search hit
+                one of the group's rows, and would stop a reader who had found what
+                they were looking for. */}
+            {search.trim() !== '' && filtered.length === 0 && (
+              <p className="text-[12px] text-muted px-1.5 py-3 border-b border-border">
+                {i18nT('pages.sessionStorage.no_matches')}
+              </p>
+            )}
 
             {/* Background agents group */}
             {backgroundGroup.length > 0 && bgSummary && (
@@ -354,7 +425,17 @@ export default function SessionStorageScreen({ onBack }: { onBack: () => void })
                         )}
                       </p>
                     )}
-                    {backgroundGroup.map(session => (
+                    {backgroundGroup.length > PAGE_SIZE && (
+                      <Pager
+                        page={bgSafePage}
+                        pages={bgPages}
+                        total={backgroundGroup.length}
+                        from={bgStart + 1}
+                        to={Math.min(bgStart + PAGE_SIZE, backgroundGroup.length)}
+                        onPage={setBgPage}
+                      />
+                    )}
+                    {bgVisible.map(session => (
                       <SessionRow
                         key={session.uid}
                         session={session}
@@ -502,6 +583,58 @@ function ReclaimByAge({
           </Btn>
         </>
       )}
+    </div>
+  )
+}
+
+/* ─────────────────── Pager ─────────────────── */
+
+/**
+ * Page controls for one list.
+ *
+ * Rendered ABOVE its rows, not below. Below the last row is the conventional
+ * position and the wrong one here: the reason the list is paged at all is that a
+ * reader could not reach the end of it, so putting the control that fixes that at
+ * the end would only be reachable by the scroll it exists to avoid.
+ *
+ * The range label carries the totals, so "20 rows" never reads as "20 sessions" —
+ * the count of what is NOT on screen is the fact a person deciding what to reclaim
+ * needs, and it is the one a bare pager throws away.
+ */
+function Pager({
+  page, pages, total, from, to, onPage,
+}: {
+  page: number
+  pages: number
+  total: number
+  from: number
+  to: number
+  onPage: (page: number) => void
+}) {
+  if (pages <= 1) return null
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2 px-1.5 py-2 border-b border-border">
+      <span className="text-[11.5px] text-muted tabular-nums">
+        {i18nT('pages.sessionStorage.showing_range', {
+          from: fmtNumber(from),
+          to: fmtNumber(to),
+          total: fmtNumber(total),
+        })}
+      </span>
+      <div className="flex items-center gap-2">
+        <Btn disabled={page <= 1} onClick={() => onPage(page - 1)}>
+          {i18nT('pages.sessionStorage.prev_page')}
+        </Btn>
+        <span className="text-[12px] text-muted tabular-nums">
+          {i18nT('pages.sessionStorage.page_of', {
+            page: fmtNumber(page),
+            pages: fmtNumber(pages),
+          })}
+        </span>
+        <Btn disabled={page >= pages} onClick={() => onPage(page + 1)}>
+          {i18nT('pages.sessionStorage.next_page')}
+        </Btn>
+      </div>
     </div>
   )
 }

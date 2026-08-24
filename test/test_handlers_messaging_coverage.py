@@ -1228,6 +1228,14 @@ class TestTeamsConfigSave:
         monkeypatch.setattr(loader, "config_path", lambda: cfg)
         monkeypatch.setattr(mod, "is_direct_local_request", lambda req: True)
         monkeypatch.setenv("MICROSOFT_APP_PASSWORD", "")
+
+        async def _accept(app_id: str, app_password: str, tenant_id: str) -> None:
+            """The save verifies a changed credential against Azure AD, which a
+            unit test must never actually reach. The reject / unreachable /
+            accepted branches are covered in test_teams_config_handlers.py."""
+            return None
+
+        monkeypatch.setattr(mod, "_validate_teams_app_credentials", _accept)
         return _run(mod.api_teams_config_save, _Req(_state(), body)), env, cfg
 
     def test_403_from_remote_sessions(self, monkeypatch) -> None:
@@ -1386,6 +1394,41 @@ class TestWriteEnvUpdates:
         monkeypatch.setattr(platform_compat, "restrict_to_owner", _boom)
         mod._write_env_updates({"A": "1"})
         assert env.read_text(encoding="utf-8") == "A=1\n"
+
+    def test_the_owner_lockdown_precedes_any_content_byte(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """The ordering IS the security property: fchmod_safe is a no-op on
+        Windows, so a lockdown applied after the write leaves the tokens
+        readable under the directory-inherited DACL for the whole write. The
+        shared helper restricts the empty temp file first; assert the sequence
+        through the same os.write seam the helper's own ordering test uses."""
+        import os as _os
+
+        from kiro_crew import platform_compat
+
+        env = tmp_path / ".env"
+        monkeypatch.setattr(loader, "env_path", lambda: env)
+
+        events: list[str] = []
+        real_restrict = platform_compat.restrict_to_owner
+        real_os_write = _os.write
+
+        def _spy(path: Any) -> None:
+            events.append("restrict")
+            return real_restrict(path)
+
+        def _tracking_write(fd: int, data: Any) -> int:
+            events.append("write")
+            return real_os_write(fd, data)
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _spy)
+        monkeypatch.setattr(_os, "write", _tracking_write)
+
+        mod._write_env_updates({"SLACK_BOT_TOKEN": "xoxb-secret"})
+
+        assert events == ["restrict", "write"], events
+        assert env.read_text(encoding="utf-8") == "SLACK_BOT_TOKEN=xoxb-secret\n"
 
 
 class _FakeResponse:

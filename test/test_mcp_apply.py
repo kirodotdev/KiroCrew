@@ -1086,10 +1086,9 @@ class TestApplyMutex:
         monkeypatch.setattr(mcp_mod, "_GLOBAL_MCP_JSON", tmp_path / "kiro.json")
         monkeypatch.setattr(mcp_mod, "_extra_mcp_scopes", lambda: [])
         monkeypatch.setattr("kiro_crew.dashboard.handlers.mcp.rebuild_agent_config", lambda: None)
-        # Reset the module-global apply lock so a stale loop binding from an
-        # earlier test can't leak in.
-        monkeypatch.setattr(mcp_mod, "_apply_lock", None)
-        monkeypatch.setattr(mcp_mod, "_apply_lock_loop", None)
+        # Reset the module-global apply lock so a permit a crashed earlier test
+        # left held can't leak in (LoopBoundLock rebinds per loop on its own).
+        monkeypatch.setattr(mcp_mod, "_apply_lock", mcp_mod.LoopBoundLock())
 
         class _NoLock:
             async def __aenter__(self):

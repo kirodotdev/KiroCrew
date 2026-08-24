@@ -11,6 +11,7 @@ import { useProvider } from '../../providers'
 import type { KiroCrewAgent } from '../../components/AgentSelector'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 type KiroCrewAgentCfg = Omit<KiroCrewAgent, 'name'>
 interface WorkspaceCfg { dir: string }
 interface MemoryStoreCfg { description: string; embedding_provider: string }
@@ -84,6 +85,7 @@ function CfgSelect({ label, path, value, options, hint, labels, onSave }: { labe
 }
 
 function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { label: string; path: string; value: number; suffix?: string; min?: number; max?: number; hint?: string; onSave: (p: string, v: number) => void }) {
+  const ime = useImeGuard()
   const [local, setLocal] = useState(String(value))
   const { ok, markDirty } = useDirtyTrack(value)
   const [err, setErr] = useState('')
@@ -101,8 +103,7 @@ function CfgNumber({ label, path, value, suffix, min, max, hint, onSave }: { lab
         className={`${inputCls} text-right ${err ? 'border-danger' : ''}`}
         value={local}
         onChange={e => { setLocal(e.target.value); setErr('') }}
-        onBlur={commit}
-        onKeyDown={e => { if (e.key === 'Enter') commit() }}
+        {...ime.bindEnter({ onEnter: commit, onBlur: commit })}
       />
       {suffix && <span className="text-muted text-[12px]">{suffix}</span>}
       {err && <span className="text-danger text-[11px]">{err}</span>}

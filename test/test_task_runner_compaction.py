@@ -15,12 +15,20 @@ Plus the promoted post-compaction verification: an ineffective-and-still-
 critical SETTLED verdict escalates to a reset (awaited on the seam, scheduled
 on the sync turn-end path), while unmeasurable readings — unknown, or stale
 showing no drop — defer instead of destroying a healthy session.
+
+Full gate-ladder parity between the two entry points (#5132) is pinned by
+``TestGateLadderParity``: both consume
+``SessionManager._compaction_gate_decision`` — the single owner of the gate
+order — so a gate added to one path only cannot silently diverge again.
 """
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import contextlib
+import inspect
+import textwrap
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -253,7 +261,7 @@ class TestConcurrentTriggerDedup:
             # Second awaited trigger collapses...
             assert await mgr.compact_if_needed(KEY) == "in_progress"
             # ...and so does the gateway's fire-and-forget trigger.
-            mgr._trigger_compaction(KEY, "context at 92%", 92.0)
+            assert mgr._trigger_compaction(KEY, "context at 92%", 92.0, provider) == "in_progress"
 
             gate.set()
             assert await first == "ok"
@@ -442,3 +450,262 @@ class TestPostCompactionResetPromotion:
             assert KEY in mgr._sessions, "replacement survives"
             clear_sid.assert_not_called()
             assert KEY not in mgr._compact_pending_verdict, "stale verdict not re-armed"
+
+
+class _FakeClaudeCode:
+    """Minimal stand-in for the dormant CC seam's provider (never started).
+
+    ``session.ClaudeCodeProvider`` is ``None`` in the public core, so the
+    ``cc_managed`` rung is reachable only by restoring a class at that module
+    seam and handing the ladder an instance of it.
+    """
+
+    connection_mode = "per_session"
+
+    @staticmethod
+    def context_usage_pct() -> float:
+        return 92.0
+
+    @staticmethod
+    def context_usage_unknown() -> bool:
+        return False
+
+
+class TestGateLadderParity:
+    """Full gate-order parity between the two compaction entry points (#5132).
+
+    ``check_context_usage`` (sync, fire-and-forget via ``_trigger_compaction``)
+    and ``compact_if_needed`` (awaited) must decide compaction identically:
+    both consume ``SessionManager._compaction_gate_decision``, the single
+    owner of the gate ladder. These tests pin that each entry point consults
+    the ladder exactly once per call and reaches the same decision on every
+    rung, that stacked decline states resolve in ladder order on both paths,
+    and that the entry points read no gate state of their own — the
+    regression this refactor exists to prevent is a future gate added to one
+    path only.
+    """
+
+    @staticmethod
+    def _spy_gate(mgr):
+        """Patch the ladder with a recording pass-through; return (ctx, log)."""
+        decisions: list[str | None] = []
+        real = mgr._compaction_gate_decision
+
+        def spy(key, provider, pct):
+            decision = real(key, provider, pct)
+            decisions.append(decision)
+            return decision
+
+        return patch.object(mgr, "_compaction_gate_decision", side_effect=spy), decisions
+
+    @pytest.mark.asyncio
+    async def test_every_rung_declines_identically_on_both_paths(self, cfg):
+        """One scenario per decline rung: each entry point consults the shared
+        ladder exactly once, reaches the same decision, and neither compacts."""
+
+        def _mark_in_progress(mgr):
+            mgr._compacting.add(KEY)
+
+        def _arm_cooldown(mgr):
+            mgr._compact_cooldown_until[KEY] = time.monotonic() + 999
+
+        scenarios = [
+            ("below_threshold", {"pct_before": 10.0}, None),
+            ("unconfirmed", {"unknown_before": True}, None),
+            ("in_progress", {}, _mark_in_progress),
+            ("cooldown", {}, _arm_cooldown),
+        ]
+        for expected, factory_kwargs, mutate in scenarios:
+            async with _managed(cfg, _compacting_provider_factory(**factory_kwargs)) as mgr:
+                provider, _, _ = await mgr.get_or_create(KEY)
+                mgr.release(KEY)
+                if mutate is not None:
+                    mutate(mgr)
+                ctx, decisions = self._spy_gate(mgr)
+                with ctx:
+                    assert await mgr.compact_if_needed(KEY) == expected
+                    mgr.check_context_usage(KEY, provider)
+                assert decisions == [expected, expected]
+                provider.stream_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cc_managed_declines_first_on_both_paths(self, cfg):
+        """The dormant CC ``per_session`` rung declines before every other
+        rung on BOTH paths — even over threshold, mid-compaction, and cooling
+        down, the decision is ``cc_managed``."""
+        async with _managed(cfg, _compacting_provider_factory()) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            cc = _FakeClaudeCode()
+            # The awaited seam reads the provider off the session entry.
+            mgr._sessions[KEY].provider = cc
+            mgr._compacting.add(KEY)
+            mgr._compact_cooldown_until[KEY] = time.monotonic() + 999
+            try:
+                ctx, decisions = self._spy_gate(mgr)
+                with ctx, patch("kiro_crew.session.ClaudeCodeProvider", _FakeClaudeCode):
+                    assert await mgr.compact_if_needed(KEY) == "cc_managed"
+                    assert mgr.check_context_usage(KEY, cc) == 92.0
+                assert decisions == ["cc_managed", "cc_managed"]
+            finally:
+                mgr._sessions[KEY].provider = provider  # restore for teardown
+            provider.stream_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stacked_declines_resolve_in_ladder_order_on_both_paths(self, cfg):
+        """Multiple rungs armed at once: the FIRST in ladder order wins,
+        identically on both paths — pinning gate ORDER, not just presence."""
+        # threshold beats unconfirmed + dedup + cooldown
+        async with _managed(
+            cfg, _compacting_provider_factory(pct_before=10.0, unknown_before=True)
+        ) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            mgr._compacting.add(KEY)
+            mgr._compact_cooldown_until[KEY] = time.monotonic() + 999
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                assert await mgr.compact_if_needed(KEY) == "below_threshold"
+                mgr.check_context_usage(KEY, provider)
+            assert decisions == ["below_threshold", "below_threshold"]
+        # unconfirmed beats dedup + cooldown
+        async with _managed(cfg, _compacting_provider_factory(unknown_before=True)) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            mgr._compacting.add(KEY)
+            mgr._compact_cooldown_until[KEY] = time.monotonic() + 999
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                assert await mgr.compact_if_needed(KEY) == "unconfirmed"
+                mgr.check_context_usage(KEY, provider)
+            assert decisions == ["unconfirmed", "unconfirmed"]
+        # dedup beats cooldown
+        async with _managed(cfg, _compacting_provider_factory()) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            mgr._compacting.add(KEY)
+            mgr._compact_cooldown_until[KEY] = time.monotonic() + 999
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                assert await mgr.compact_if_needed(KEY) == "in_progress"
+                mgr.check_context_usage(KEY, provider)
+            assert decisions == ["in_progress", "in_progress"]
+
+    @pytest.mark.asyncio
+    async def test_settle_arms_the_cooldown_the_same_call_then_honors(self, cfg):
+        """The pending-verdict settle is the FIRST rung on both paths: an
+        ineffective deferred verdict arms the cooldown, and the very same
+        call's cooldown rung then declines on it."""
+        async with _managed(cfg, _compacting_provider_factory(pct_before=92.0)) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                mgr._compact_pending_verdict[KEY] = 92.0
+                assert await mgr.compact_if_needed(KEY) == "cooldown"
+                assert KEY not in mgr._compact_pending_verdict
+                # Twin on the sync path: re-arm the verdict, disarm the cooldown.
+                mgr._compact_pending_verdict[KEY] = 92.0
+                del mgr._compact_cooldown_until[KEY]
+                mgr.check_context_usage(KEY, provider)
+                assert KEY not in mgr._compact_pending_verdict
+            assert decisions == ["cooldown", "cooldown"]
+            provider.stream_command.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_both_entry_points_honor_the_ladder_verbatim(self, cfg):
+        """A synthetic decline injected at the shared ladder is honored by
+        BOTH entry points: the decision has exactly one owner and neither
+        path second-guesses it."""
+        async with _managed(cfg, _compacting_provider_factory()) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            with patch.object(
+                mgr, "_compaction_gate_decision", return_value="synthetic_decline"
+            ) as gate:
+                assert await mgr.compact_if_needed(KEY) == "synthetic_decline"
+                assert mgr.check_context_usage(KEY, provider) == 92.0
+            assert gate.call_count == 2
+            provider.stream_command.assert_not_called()
+            assert KEY not in mgr._compacting
+
+    @pytest.mark.asyncio
+    async def test_proceed_commits_on_both_paths(self, cfg):
+        """A ``None`` decision commits on both paths: the awaited seam runs
+        the attempt inline; the sync path schedules it as a background task.
+        Separate managers — each path's own compaction would otherwise change
+        the state the other decides on."""
+        async with _managed(cfg, _compacting_provider_factory()) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                assert await mgr.compact_if_needed(KEY) == "ok"
+            assert decisions == [None]
+            provider.stream_command.assert_called_once_with("/compact")
+        async with _managed(cfg, _compacting_provider_factory()) as mgr:
+            provider, _, _ = await mgr.get_or_create(KEY)
+            mgr.release(KEY)
+            ctx, decisions = self._spy_gate(mgr)
+            with ctx:
+                mgr.check_context_usage(KEY, provider)
+                await _drain_background(mgr)
+            assert decisions == [None]
+            provider.stream_command.assert_called_once_with("/compact")
+
+    def test_gate_state_reads_live_only_in_the_shared_ladder(self):
+        """Tripwire for the regression this refactor exists to prevent (a
+        future gate added inline to one entry point instead of the shared
+        ladder): the entry points may COMMIT the dedup entry
+        (``_compacting.add``) but must not READ gate state — every read below
+        belongs to ``_compaction_gate_decision`` alone.
+
+        Scope, stated so nobody over-trusts it: the needle set enumerates
+        TODAY'S gate-state reads and the entry-point set TODAY'S consumers,
+        so a future gate reading a brand-new attribute, an aliased read, or
+        a fourth entry point growing its own inline ladder is out of reach —
+        the per-rung behavioral parity tests above are the primary guard;
+        this one only makes re-inlining a KNOWN rung loud. Docstrings and
+        comments are stripped before matching, so prose that mentions a rung
+        (e.g. to explain the delegation) cannot false-positive, and a
+        docstring mention alone cannot satisfy the delegation check — each
+        entry point must contain the actual delegating CALL.
+        """
+
+        def executable_source(fn) -> str:
+            """Function source minus docstrings and comments (AST round-trip)."""
+            tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+            for node in list(ast.walk(tree)):
+                if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef)):
+                    body = node.body
+                    if (
+                        body
+                        and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)
+                    ):
+                        del body[0]
+            return ast.unparse(tree)
+
+        gate_state_reads = (
+            "_compact_pending_verdict",
+            "_compact_cooldown_until",
+            "_context_pct_is_unknown",
+            "in self._compacting",
+            "connection_mode",
+        )
+        # check_context_usage delegates via the trigger seam, which is itself
+        # pinned below to delegate to the ladder — the chain has one owner.
+        delegation_markers = (
+            (SessionManager.check_context_usage, "self._trigger_compaction("),
+            (SessionManager.compact_if_needed, "self._compaction_gate_decision("),
+            (SessionManager._trigger_compaction, "self._compaction_gate_decision("),
+        )
+        for entry, marker in delegation_markers:
+            src = executable_source(entry)
+            assert marker in src, f"{entry.__qualname__} no longer delegates its decision"
+            for needle in gate_state_reads:
+                assert needle not in src, f"{entry.__qualname__} reads gate state: {needle}"
+        ladder_src = executable_source(SessionManager._compaction_gate_decision)
+        for needle in gate_state_reads:
+            assert needle in ladder_src, f"ladder lost its own rung read: {needle}"

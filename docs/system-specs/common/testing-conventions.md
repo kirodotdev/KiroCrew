@@ -151,6 +151,17 @@ one scope down:
   undoes it, so a test driving that code cannot avoid it.
   `log_redaction.uninstall_log_redaction()` exists for a test that wants to assert on
   the uninstalled state itself.
+* `_restore_autonudge_singleton` puts `autonudge._INSTANCE` back to whatever the test
+  inherited. `AutoNudgeService.start()` publishes itself there and `stop()` clears it, so
+  a test that starts the service — or drives a dashboard handler that does — leaves a live
+  instance holding timer TASKS created on that test's event loop. Every later test in the
+  same worker then reaches those tasks through the singleton on a loop that has since
+  closed, which is how `test_dashboard_chat.py`'s `TestCloseBroadcastDurability` came to
+  answer 500 from a leak in an unrelated file. Restored rather than blamed, for the same
+  reason the CWD restore is: production really does publish this singleton. The teardown
+  retires the leaked instance's timers through `_cancel_timer`, which is the one place
+  that knows a task on a closed loop must be DROPPED rather than cancelled — `Task.cancel`
+  schedules through `loop.call_soon` and raises `RuntimeError: Event loop is closed`.
 
 It registers the xdist worker budget too — the policy is in the repo-root
 `xdist_budget.py`, a plain module rather than a second conftest, because the module
@@ -357,6 +368,15 @@ which testpath asked for the workers.
   per run to `<platform temp>/kc-pytest-<user>-<pid>`, which the run removes at the end,
   so an unregistered directory no longer accumulates in the shared temp root forever.
   Residue there is still **reported** — relocation is not absolution.
+
+  On **macOS** `<platform temp>` is forced to `/tmp` (`_SHORT_TMP_BASE`), which is what
+  Linux and CI already resolve to. launchd's per-user temp dir is
+  `/var/folders/<2>/<30 random>/T`: long enough that an AF_UNIX socket under a pytest temp
+  dir exceeds Darwin's 104-byte `sun_path` and cannot bind at all, and random enough that
+  the path clears the credential redactor's entropy floor — `/` is inside its
+  `[A-Za-z0-9+/]{40,}` run, so a temp path is one contiguous match and comes back
+  `[REDACTED: credential]`. Both are properties of the host prefix rather than of the code
+  under test, and both used to fail ~13 tests locally while CI stayed green.
 
   A run only ever deletes the root it created itself — there is deliberately no sweep of
   other runs' roots, because every signal for "that directory is abandoned" is unsound from
@@ -631,7 +651,7 @@ rest of the list, which is why a single-file run needs no `--override-ini` at al
 | Debugging a specific failure | `pytest --lf` with the override, or `-k "test_name" -n0` |
 | One file | `pytest test/test_foo.py -n0 -q` |
 | Small-RAM laptop | Run a subset. For a full run, let the budget clamp `-n auto` and expect it to be slow; do not raise it. |
-| Checkpoint before committing | `scripts/check_black_formatting.py && isort && flake8 && mypy && python -m pytest` |
+| Checkpoint before committing | `scripts/check_black_formatting.py && scripts/check_subprocess_encoding.py && isort && flake8 && mypy && python -m pytest` |
 
 ## Determinism: the five flake classes
 

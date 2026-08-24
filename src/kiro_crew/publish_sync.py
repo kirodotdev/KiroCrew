@@ -40,6 +40,7 @@ from pathlib import Path
 # not by module-import side-effect. So this orchestration stays provider-agnostic
 # and imports only the neutral publish_provider registry + result/error types.
 from kiro_crew.artifacts import Artifact, ArtifactPublication, ForkMetadata, get_default_store
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.publish_provider import (
     DEFAULT_PROVIDER,
     Capability,
@@ -1124,7 +1125,7 @@ async def pull_upstream(
 # Serializes clone so two concurrent clones of the same cloud artifact can't
 # both pass the "not local yet" check and create duplicate local copies
 # (find-then-create is otherwise a non-atomic check-then-act).
-_clone_lock = asyncio.Lock()
+_clone_lock = LoopBoundLock()
 
 
 async def clone_from_remote(artifact_id: str, *, provider_name: str = DEFAULT_PROVIDER) -> Artifact:

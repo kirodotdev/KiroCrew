@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, Loader2, User, MessageSquare } from 'lucide-react'
+import { ArrowLeft, AlertTriangle, ExternalLink, GitFork, Loader2, User, MessageSquare, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
 import { safeHttpUrl } from '../lib/safeUrl'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -17,6 +17,7 @@ import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridg
 import type { ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useSandboxDoc } from '../hooks/useSandboxDoc'
 function readThemeVars(): Record<string, string> {
   if (typeof window === 'undefined' || typeof document === 'undefined') return {}
   const computed = getComputedStyle(document.documentElement)
@@ -205,14 +206,10 @@ export default function RemoteArtifactDetailPage() {
     () => (isHtml && art?.content ? buildSrcdoc({ html: art.content, themeVars, mode: theme, enableComments: true }) : null),
     [isHtml, art?.content, themeVars, theme],
   )
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
-  useEffect(() => {
-    if (!srcdoc) { setBlobUrl(null); return }
-    const blob = new Blob([srcdoc], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    setBlobUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [srcdoc])
+  // A gateway-served document, not a `blob:` URL — the same reason the artifact
+  // and widget frames moved: some WebKit-based in-app browsers refuse a blob
+  // load outright and can take the whole page down with it.
+  const { url: blobUrl, failed, retry } = useSandboxDoc(srcdoc)
 
   // Anchored-comment highlights for the remote markdown body use the SAME
   // DOM-rect overlay as the local artifact page (InlineCommentOverlay), so
@@ -366,6 +363,14 @@ export default function RemoteArtifactDetailPage() {
                     style={{ height: 'calc(100vh - 240px)', minHeight: 480 }}
                     title={i18nT('pages.remoteArtifactDetailPage.remote_artifact_3', { name: externalId })}
                   />
+                ) : failed ? (
+                  <div className="p-6 flex items-center gap-3 text-text">
+                    <span>{i18nT('components.artifactBody.could_not_render')}</span>
+                    <Btn onClick={retry} className="flex items-center gap-1">
+                      <RotateCw className="lucide-inline" />
+                      {i18nT('components.artifactBody.retry')}
+                    </Btn>
+                  </div>
                 ) : <div className="p-6 text-muted">{i18nT('pages.remoteArtifactDetailPage.rendering')}</div>}
               </div>
             ) : (

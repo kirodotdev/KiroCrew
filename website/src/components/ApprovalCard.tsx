@@ -6,9 +6,16 @@ import ErrorNotice from './ErrorNotice'
 import { ApiError } from '../api/client'
 
 import { i18nT } from '../i18n/t'
-export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, onApprove }: {
+export default function ApprovalCard({ title, toolInput, showButtons, showTrust = true, hasCommand = true, trustAllLabelKey, onApprove }: {
   title: string; toolInput: string; showButtons: boolean; showTrust?: boolean
-  onApprove: (decision: string, pattern?: string) => void | Promise<unknown>
+  /** False when the surface has no tool command behind the approval (the
+      channels surface titles the card with an agent role): forwarded to
+      TrustDropdown so command-scoped tiers are not offered there. */
+  hasCommand?: boolean
+  // Passed through to TrustDropdown: a surface whose `trust` decision grants
+  // more than the session (e.g. channel-wide, persisted) labels the real grant.
+  trustAllLabelKey?: string
+  onApprove: (decision: string, pattern?: string) => void
 }) {
   const [decided, setDecided] = useState<string | null>(null)
   // null = no failure. `terminal` marks a refusal that retrying can never
@@ -82,7 +89,7 @@ export default function ApprovalCard({ title, toolInput, showButtons, showTrust 
       {showButtons && !decided && !failure?.terminal && (
         <div ref={buttonsRef} className="mt-1.5 flex gap-1.5 flex-wrap">
           <button className={btnClass} onClick={() => handle('approved')}><CheckCircle className="lucide-inline" /> {i18nT('components.approvalCard.approve')}</button>
-          {showTrust && <TrustDropdown fullCommand={normalized} baseCommand={baseCmd} isShell={isShell} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
+          {showTrust && <TrustDropdown fullCommand={normalized} baseCommand={baseCmd} isShell={isShell} hasCommand={hasCommand} trustAllLabelKey={trustAllLabelKey} className={btnClass} onAction={(action, pattern) => handle(action, pattern)} />}
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => handle('rejected')}><Ban className="lucide-inline" /> {i18nT('components.approvalCard.reject')}</button>
         </div>
       )}

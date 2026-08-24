@@ -117,7 +117,7 @@ async def api_chat_pins_create(request: web.Request) -> web.Response:
         if body_error.status == 400 and body_error.text:
             try:
                 error_body = json.loads(body_error.text)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 error_body = {}
             if error_body.get("code") == "body_not_object":
                 return web.json_response(
@@ -241,6 +241,10 @@ async def api_chat_pins_create(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "failed to persist pin", "code": "persist_failed"}, status=500
             )
+    # Broadcast after the lock is released: slot_key only, no pin content.
+    # dashboard-user connections only (app tokens must not receive other slots'
+    # pin signals — see CWE-269 and App Kit §5.2).
+    state.broadcast_ws_owners("pins_changed", {"slot_key": slot_key})
     return web.json_response(pin, status=201)
 
 
@@ -284,6 +288,8 @@ async def api_chat_pins_delete(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "failed to persist pin", "code": "persist_failed"}, status=500
             )
+    # Broadcast after the lock is released: slot_key only, no pin content.
+    state.broadcast_ws_owners("pins_changed", {"slot_key": removed["slot_key"]})
     return web.json_response({"ok": True})
 
 
@@ -351,4 +357,6 @@ async def api_chat_pins_delete_by_query(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "failed to persist pin", "code": "persist_failed"}, status=500
             )
+    # Broadcast after the lock is released: slot_key only, no pin content.
+    state.broadcast_ws_owners("pins_changed", {"slot_key": slot_key})
     return web.json_response({"ok": True})

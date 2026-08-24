@@ -1,9 +1,9 @@
 # Messaging Transport Architecture
 
 Channel-neutral contracts used by Kiro Crew's shipped Slack, Discord, Telegram,
-Webex, WeCom, Teams, Weixin, and iMessage integrations. They also let future
-channels such as WhatsApp be added without re-implementing streaming, tool
-approval, session identity, or rendering for each one.
+Webex, WeCom, Teams, Weixin, iMessage, and WhatsApp integrations. They also let a
+further channel be added without re-implementing streaming, tool approval,
+session identity, or rendering for each one.
 
 - **Package:** `kiro_crew.messaging`
 - **Status:** contracts plus Slack, Discord, Telegram, Webex, WeCom, Teams,
@@ -79,14 +79,23 @@ the neutral layers can degrade gracefully instead of branching on channel type:
 
 | Field | Slack | Telegram | Discord | WhatsApp |
 |---|---|---|---|---|
-| `streaming` | ✅ | via draft API | ❌ | ❌ |
-| `edit` | ✅ | ✅ | ✅ | ❌ |
-| `reactions` | ✅ | limited | ✅ | ❌ |
+| `streaming` | ✅ | via draft API | ❌ | ✅ (edit) |
+| `edit` | ✅ | ✅ | ✅ | ✅ (20 min) |
+| `reactions` | ✅ | limited | ✅ | ✅ |
 | `rich_blocks` | ✅ (Block Kit) | ✅ | ✅ (embeds) | ❌ |
 | `threads` | ✅ | reply_to | ✅ | ❌ |
 | `max_message_chars` | ~40000 | 4096 | 2000 | 4096 |
-| `max_buttons` | many | ~8/row | 5/row | 3 |
-| `supports_proactive_send` | ✅ | ✅ | ✅ | ❌ (24h window) |
+| `max_buttons` | many | ~8/row | 5/row | 0 |
+| `supports_proactive_send` | ✅ | ✅ | ✅ | ✅ |
+
+The WhatsApp column is the **personal-account** channel Kiro Crew ships, paired
+as a linked device over the WhatsApp Web protocol. Its numbers differ from the
+Business Cloud API in both directions, so figures quoted for the Cloud API do not
+apply: `max_buttons` is 0, so a trailing `[OPTIONS:]` trailer degrades to a
+numbered list the user answers by typing, but equally there is no 24-hour
+customer-service window, so a reminder
+or a cron result can be delivered at any time, and the Web protocol exposes a
+message edit the Cloud API does not, which is what lets the reply stream.
 
 `InboundMessage` is the normalized inbound shape every channel produces:
 `channel_type, user_id, conversation_id, text, thread_id, is_mention`.
@@ -123,13 +132,24 @@ class Renderer(ABC):
     async def on_text_chunk(self, text) -> None: ...
     async def on_thinking(self, text) -> None: ...
     async def on_tool_call(self, tool_call_id, title, tool_kind="", tool_purpose="") -> None: ...
-    async def on_prompt_choice(self, options, request_id) -> None: ...
+    async def on_prompt_choice(
+        self, options, request_id, tool_title="", tool_purpose=""
+    ) -> None: ...
     async def on_compaction(self, context_usage_pct) -> None: ...
     async def on_done(self, stop_reason="") -> None: ...
 ```
 
 Helper `chunk_text(text, max_chars)` splits long output for channels with a
-small `max_message_chars`.
+small `max_message_chars`. It is a **fixed-width slice**, so use
+`messaging.split.split_markdown_safe(text, limit)` instead for anything that can
+contain a code block: a blind cut leaves the second part without its fence
+opener, and every line in it then takes the prose branch of the channel's dialect
+converter, which rewrites the `**`, `#` and `- ` *inside* the code. The shared
+splitter seals each chunk with a synthetic closer and reopens the next with the
+original opener line, so each part stands alone. Any caller that pre-splits before
+`transport.send_message` must use it, because each part then arrives already under
+the cap and the channel's own fence-safe splitter is a no-op on it — whatever cut
+the caller made is the one the reader sees.
 
 ### Layer 3 — session identity (`ChannelLink` + SessionMap)
 
@@ -194,7 +214,11 @@ graceful degradation, and long-message chunking.
 3. **Implement `Renderer`** (`<channel>/renderer.py`): map each `on_*`
    callback onto the channel API. Use `chunk_text()` for `max_message_chars`;
    render `on_prompt_choice` with the channel's interactive controls (or, if
-   `capabilities` lacks buttons, degrade to a numbered text prompt).
+   `capabilities` lacks buttons, degrade to a numbered text prompt). Name the
+   tool from that callback's `tool_title`/`tool_purpose`, which describe the tool
+   THIS request asks about: never from a remembered earlier `on_tool_call`, which
+   names the previous tool whenever a permission arrives without one of its own.
+   The `options` are the ANSWERS, so an option label is not a tool name either.
 
 4. **Wire dispatch** (`<channel>/transport_dispatch.py`): mirror
    `slack/transport_dispatch.py` — acquire the session (namespaced

@@ -5,17 +5,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createElement, type ReactNode } from 'react'
 import { useChatPins } from '../hooks/useChatPins'
 import { PinnedMessagesPanel } from '../pages/chat/PinnedMessagesPanel'
-import { PIN_PREVIEW_INPUT_MAX_CHARS, type ChatPin } from '../api/pins'
+import { PIN_PREVIEW_INPUT_MAX_CHARS, type ChatPin, type PinApiError } from '../api/pins'
+import { pinErrorCode } from '../hooks/useChatPins'
 
-// Mock the pins API
-vi.mock('../api/pins', () => ({
-  PIN_PREVIEW_INPUT_MAX_CHARS: 4096,
-  pinsApi: {
-    list: vi.fn(),
-    create: vi.fn(),
-    remove: vi.fn(),
-  },
-}))
+/** Build the plain-Error-with-code shape pinsApi.create throws. */
+function pinError(message: string, code?: string): PinApiError {
+  const err: PinApiError = new Error(message)
+  err.code = code
+  return err
+}
+
+// Mock the pins API. The hook branches structurally on the error's `code`
+// property via its own module-local pinErrorCode helper, so the mock needs no
+// extra re-exports to keep the hook's error handling working.
+vi.mock('../api/pins', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/pins')>()
+  return {
+    PIN_PREVIEW_INPUT_MAX_CHARS: actual.PIN_PREVIEW_INPUT_MAX_CHARS,
+    pinsApi: {
+      list: vi.fn(),
+      create: vi.fn(),
+      remove: vi.fn(),
+    },
+  }
+})
 
 // Mock i18n
 vi.mock('../i18n/t', () => ({
@@ -153,6 +166,54 @@ describe('useChatPins', () => {
     await waitFor(() => expect(result.current.pins).toHaveLength(1))
     expect(result.current.pins[0].id).toBe('pin-1')
     expect(result.current.error).toBe('pin')
+  })
+
+  it('pinMessage sets pin_limit error when API returns 409 pin_limit_reached', async () => {
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper() })
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+
+    ;(pinsApi.create as ReturnType<typeof vi.fn>).mockRejectedValue(
+      pinError('Pin create failed: 409', 'pin_limit_reached'),
+    )
+
+    await act(async () => {
+      try {
+        await result.current.pinMessage({ mid: 'm-limit-pin', message_ts: 'ts-limit', role: 'user', preview: 'test' })
+      } catch { /* expected */ }
+    })
+
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+    expect(result.current.error).toBe('pin_limit')
+  })
+
+  it('pinMessage sets generic pin error for non-limit API failures (e.g. 500)', async () => {
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper() })
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+
+    ;(pinsApi.create as ReturnType<typeof vi.fn>).mockRejectedValue(
+      pinError('Pin create failed: 500', 'persist_failed'),
+    )
+
+    await act(async () => {
+      try {
+        await result.current.pinMessage({ mid: 'm-server-error', message_ts: 'ts-err', role: 'user', preview: 'test' })
+      } catch { /* expected */ }
+    })
+
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+    expect(result.current.error).toBe('pin')
+  })
+
+  it('pinErrorCode extracts the backend code structurally', () => {
+    expect(pinErrorCode(pinError('Pin create failed: 409', 'pin_limit_reached'))).toBe('pin_limit_reached')
+    expect(pinErrorCode(pinError('Pin create failed: 500'))).toBeUndefined()
+    expect(pinErrorCode(new Error('plain'))).toBeUndefined()
+    expect(pinErrorCode('not an error')).toBeUndefined()
+    expect(pinErrorCode(undefined)).toBeUndefined()
+    // A non-string code (e.g. a Node errno number) is not a pins API code.
+    const errno = new Error('x') as Error & { code?: unknown }
+    errno.code = 42
+    expect(pinErrorCode(errno)).toBeUndefined()
   })
 
   it('unpinMessage optimistically removes, rolls back on error', async () => {
@@ -312,6 +373,259 @@ describe('useChatPins', () => {
     expect(hookSrc).not.toContain('crypto.randomUUID()')
   })
 
+  // === In-flight create + unpin race (issue #5135) ===
+
+  it('unpin during in-flight create issues NO network DELETE with a temp- id', async () => {
+    // The create is pending; unpinById is called before it resolves.
+    // No DELETE should ever reach the network with a temp-… id.
+    let resolveCreate!: (pin: ChatPin) => void
+    ;(pinsApi.create as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<ChatPin>(resolve => { resolveCreate = resolve }),
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper(qc) })
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+
+    // Start the pin mutation (do not await — it's pending)
+    let pinPromise!: Promise<void>
+    act(() => {
+      pinPromise = result.current.pinMessage({
+        mid: 'm-inflight-mid',
+        message_ts: 'ts-inflight',
+        role: 'user',
+        preview: 'in-flight pin',
+      })
+    })
+
+    // Wait for the optimistic entry to appear in the cache
+    let tempPin!: ChatPin
+    await waitFor(() => {
+      const found = result.current.pins.find(p => p.id.startsWith('temp-'))
+      expect(found).toBeDefined()
+      tempPin = found!
+    })
+
+    // Unpin immediately — create still pending
+    let unpinPromise!: Promise<void>
+    act(() => {
+      unpinPromise = result.current.unpinById(tempPin.id)
+    })
+
+    // No DELETE should have been issued yet with a temp- id
+    await waitFor(() => {
+      const deleteCallsWithTempId = (pinsApi.remove as ReturnType<typeof vi.fn>)
+        .mock.calls.filter(([id]: [string]) => id.startsWith('temp-'))
+      expect(deleteCallsWithTempId).toHaveLength(0)
+    })
+
+    // Clean up: resolve the in-flight create so both promises settle
+    const serverPin: ChatPin = { ...mockPin, id: 'pin-server-inflight', mid: 'm-inflight-mid' }
+    ;(pinsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ pins: [] })
+    await act(async () => {
+      resolveCreate(serverPin)
+      await Promise.allSettled([pinPromise, unpinPromise])
+    })
+  })
+
+  it('after create resolves the real id is deleted on the server', async () => {
+    // After the in-flight create resolves, unpin should DELETE the real server id.
+    let resolveCreate!: (pin: ChatPin) => void
+    ;(pinsApi.create as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<ChatPin>(resolve => { resolveCreate = resolve }),
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper(qc) })
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+
+    // Start the pin mutation (do not await — it's pending)
+    let pinPromise!: Promise<void>
+    act(() => {
+      pinPromise = result.current.pinMessage({
+        mid: 'm-resolve-mid',
+        message_ts: 'ts-resolve',
+        role: 'user',
+        preview: 'will resolve',
+      })
+    })
+
+    // Wait for the optimistic entry to appear in the cache
+    let tempPin!: ChatPin
+    await waitFor(() => {
+      const found = result.current.pins.find(p => p.id.startsWith('temp-'))
+      expect(found).toBeDefined()
+      tempPin = found!
+    })
+
+    // Trigger unpin while create is still pending
+    let unpinPromise!: Promise<void>
+    act(() => {
+      unpinPromise = result.current.unpinById(tempPin.id)
+    })
+
+    // Now resolve the create with a real server id
+    const serverPin: ChatPin = { ...mockPin, id: 'pin-real-server', mid: 'm-resolve-mid' }
+    ;(pinsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ pins: [] })
+    await act(async () => {
+      resolveCreate(serverPin)
+      await Promise.allSettled([pinPromise, unpinPromise])
+    })
+
+    // pinsApi.remove should have been called with the real server id, not the temp id
+    await waitFor(() => {
+      expect(pinsApi.remove).toHaveBeenCalledWith('pin-real-server')
+    })
+    const tempDeleteCalls = (pinsApi.remove as ReturnType<typeof vi.fn>)
+      .mock.calls.filter(([id]: [string]) => id.startsWith('temp-'))
+    expect(tempDeleteCalls).toHaveLength(0)
+  })
+
+  it('same mid in two slots: unpinning one slot never touches the other slot (in-flight map keyed by slot)', async () => {
+    // Forked sessions can carry the SAME mid in DIFFERENT slots. Two hooks,
+    // one per slot, each start a create for mid 'm-shared'. Unpinning the
+    // temp pin in slot-a must await slot-a's create and delete slot-a's
+    // server pin — never slot-b's.
+    let resolveA!: (pin: ChatPin) => void
+    let resolveB!: (pin: ChatPin) => void
+    ;(pinsApi.create as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(new Promise<ChatPin>(r => { resolveA = r }))
+      .mockReturnValueOnce(new Promise<ChatPin>(r => { resolveB = r }))
+    ;(pinsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ pins: [] })
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const hookA = renderHook(() => useChatPins('slot-a'), { wrapper: createWrapper(qc) })
+    const hookB = renderHook(() => useChatPins('slot-b'), { wrapper: createWrapper(qc) })
+    await waitFor(() => expect(hookA.result.current.loading).toBe(false))
+    await waitFor(() => expect(hookB.result.current.loading).toBe(false))
+
+    const body = { mid: 'm-shared', message_ts: 'ts-x', role: 'user' as const, preview: 'p' }
+    let pinA!: Promise<void>
+    let pinB!: Promise<void>
+    act(() => { pinA = hookA.result.current.pinMessage(body) })
+    act(() => { pinB = hookB.result.current.pinMessage(body) })
+
+    let tempA!: ChatPin
+    await waitFor(() => {
+      const found = hookA.result.current.pins.find(p => p.id.startsWith('temp-'))
+      expect(found).toBeDefined()
+      tempA = found!
+    })
+
+    // Unpin slot-a's temp pin while both creates are in flight.
+    let unpinA!: Promise<void>
+    act(() => { unpinA = hookA.result.current.unpinById(tempA.id) })
+
+    // Resolve both creates: distinct server pins per slot.
+    const serverA: ChatPin = { ...mockPin, id: 'pin-real-a', mid: 'm-shared', slot_key: 'slot-a' }
+    const serverB: ChatPin = { ...mockPin, id: 'pin-real-b', mid: 'm-shared', slot_key: 'slot-b' }
+    ;(pinsApi.remove as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+    act(() => { resolveA(serverA); resolveB(serverB) })
+    await act(async () => { await Promise.allSettled([pinA, pinB, unpinA]) })
+
+    // slot-a's real pin was deleted; slot-b's was never touched.
+    const removedIds = (pinsApi.remove as ReturnType<typeof vi.fn>).mock.calls.map(([id]: [string]) => id)
+    expect(removedIds).toContain('pin-real-a')
+    expect(removedIds).not.toContain('pin-real-b')
+  })
+
+  it('pin -> pending unpin -> pin again: the deferred delete is skipped and the re-created pin survives', async () => {
+    // GPT round-2 scenario: while the unpin awaits the first create, the user
+    // pins the same message again. The server create is idempotent (returns
+    // the FIRST record), so the deferred DELETE would destroy the re-created
+    // pin. The newer pin intent must win: no DELETE at all.
+    let resolveCreate1!: (pin: ChatPin) => void
+    const serverPin: ChatPin = { ...mockPin, id: 'pin-idem-1', mid: 'm-repin' }
+    ;(pinsApi.create as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(new Promise<ChatPin>(r => { resolveCreate1 = r }))
+      .mockResolvedValueOnce(serverPin) // idempotent second create: same record
+    ;(pinsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ pins: [] })
+    ;(pinsApi.remove as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true })
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper(qc) })
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    const body = { mid: 'm-repin', message_ts: 'ts-r', role: 'user' as const, preview: 'p' }
+    let pin1!: Promise<void>
+    act(() => { pin1 = result.current.pinMessage(body) })
+
+    let tempPin!: ChatPin
+    await waitFor(() => {
+      const found = result.current.pins.find(p => p.id.startsWith('temp-'))
+      expect(found).toBeDefined()
+      tempPin = found!
+    })
+
+    // Unpin while create 1 is still pending.
+    let unpin1!: Promise<void>
+    act(() => { unpin1 = result.current.unpinById(tempPin.id) })
+
+    // User pins the SAME message again before create 1 resolves.
+    let pin2!: Promise<void>
+    act(() => { pin2 = result.current.pinMessage(body) })
+
+    // Now the first create resolves.
+    act(() => { resolveCreate1(serverPin) })
+    await act(async () => { await Promise.allSettled([pin1, pin2, unpin1]) })
+
+    // The deferred delete was skipped: the re-created pin was never removed.
+    expect((pinsApi.remove as ReturnType<typeof vi.fn>)).not.toHaveBeenCalled()
+  })
+
+  it('create-fails-then-unpin does not call remove and surfaces no unpin error', async () => {
+    // If the create failed, there is nothing on the server.
+    // Unpinning the already-gone optimistic entry must not call remove
+    // and must not set error='unpin'.
+    let rejectCreate!: (err: Error) => void
+    ;(pinsApi.create as ReturnType<typeof vi.fn>).mockReturnValue(
+      new Promise<ChatPin>((_resolve, reject) => { rejectCreate = reject }),
+    )
+
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { result } = renderHook(() => useChatPins('slot-abc'), { wrapper: createWrapper(qc) })
+    await waitFor(() => expect(result.current.pins).toHaveLength(1))
+
+    // Start the pin mutation (do not await — it's pending, will be rejected later)
+    let pinPromise!: Promise<void>
+    act(() => {
+      pinPromise = result.current.pinMessage({
+        mid: 'm-fail-then-unpin',
+        message_ts: 'ts-fail',
+        role: 'user',
+        preview: 'will fail',
+      }).catch(() => { /* expected rejection */ })
+    })
+
+    // Wait for the optimistic entry to appear in the cache
+    let tempPin!: ChatPin
+    await waitFor(() => {
+      const found = result.current.pins.find(p => p.id.startsWith('temp-'))
+      expect(found).toBeDefined()
+      tempPin = found!
+    })
+
+    // Trigger unpin while create is still pending (but we'll reject it next)
+    let unpinPromise!: Promise<void>
+    act(() => {
+      unpinPromise = result.current.unpinById(tempPin.id)
+    })
+
+    ;(pinsApi.list as ReturnType<typeof vi.fn>).mockResolvedValue({ pins: [mockPin] })
+    // Reject the create — simulates a network failure
+    await act(async () => {
+      rejectCreate(new Error('create failed'))
+      await Promise.allSettled([pinPromise, unpinPromise])
+    })
+
+    // remove must never have been called
+    expect(pinsApi.remove).not.toHaveBeenCalled()
+    // The error state should reflect 'pin' failure, not 'unpin'
+    await waitFor(() => {
+      expect(result.current.error).not.toBe('unpin')
+    })
+  })
+
   it('removes ghost optimistic pin on error when ctx.prev is undefined', async () => {
     // Create a fresh QueryClient with NO pre-seeded data for the slot,
     // so when the mutation's onMutate runs cancelQueries + getQueryData,
@@ -459,6 +773,17 @@ describe('PinnedMessagesPanel', () => {
     // The parent onJumpToMessage should NOT fire because Clickable only activates
     // on keydowns targeting itself (e.target === e.currentTarget check)
     expect(defaultProps.onJumpToMessage).not.toHaveBeenCalled()
+  })
+
+  it('actions row reveals on keyboard focus (focus-within) — WCAG 2.4.7', () => {
+    // The actions row must be visible when any child button receives focus so that
+    // keyboard users can see and operate the controls they have tabbed onto.
+    render(<PinnedMessagesPanel {...defaultProps} />)
+    const actionRows = screen.getAllByTestId('pin-actions')
+    // Row must carry focus-within:opacity-100 so CSS reveals it on child focus
+    actionRows.forEach(row => {
+      expect(row.className).toContain('focus-within:opacity-100')
+    })
   })
 })
 

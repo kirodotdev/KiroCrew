@@ -40,7 +40,9 @@ class _FakeLog:
         return list(self._messages)
 
 
-def _slot(messages, *, title="My session", titled=True, agent="", dirty=False, project=""):
+def _slot(
+    messages, *, title="My session", titled=True, agent="", dirty=False, project="", disk_older=0
+):
     return SimpleNamespace(
         key="slot-1",
         title=title,
@@ -51,6 +53,11 @@ def _slot(messages, *, title="My session", titled=True, agent="", dirty=False, p
         _dirty=dirty,
         _resumed_count=len(messages),
         _disk_window_len=len(messages),
+        # Frozen-prefix length for the id-based tail merge (_append_unflushed_tail
+        # scans the disk read from this offset). 0 fits fakes whose disk read IS
+        # the window; a test whose window is a tail of a longer transcript must
+        # override it with the real prefix length.
+        _disk_older_count=disk_older,
         _pending_rewrite=False,
         _dirty_gen=0,
         memory_mode="persistent",
@@ -97,7 +104,9 @@ def test_bundle_reads_full_history_not_just_resident_window():
     """A long session keeps only a tail in memory; the bundle must be complete."""
     on_disk = [{"role": "user", "content": f"turn {i}", "ts": ""} for i in range(10)]
     # slot.messages holds only the last two — bundling those would truncate.
-    slot = _slot(on_disk[-2:])
+    # disk_older=8 is what a real slot reports: eight on-disk rows precede the
+    # resident window, and the tail merge must scan only the window region.
+    slot = _slot(on_disk[-2:], disk_older=8)
     bundle = build_transfer_bundle(_state(on_disk), slot)
 
     assert len(bundle["messages"]) == 10
@@ -112,6 +121,115 @@ def test_bundle_appends_unflushed_tail():
     bundle = build_transfer_bundle(_state(on_disk), slot)
 
     assert [m["content"] for m in bundle["messages"]] == ["persisted", "not yet saved"]
+
+
+def test_durably_injected_row_is_not_duplicated_in_the_bundle():
+    """Regression for #4684 — mirrors #4137's duplication test on the read path.
+
+    A durable injector (``cron_inject``/``workflow_inject``/``crew_chat``) puts
+    the same row into the window AND onto disk with one ``meta.mid``, without a
+    save — so ``_disk_window_len`` does not move while the disk read already
+    returns the row. Sizing the un-flushed tail as
+    ``slot.messages[slot._disk_window_len:]`` then re-appends the injected row
+    on top of its own disk copy, and the exported bundle carries it twice.
+
+    Both rows here carry ids, so this exercises the id-matching arm — the one a
+    durable injector's rows actually take.
+    """
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    slot = _slot([persisted])  # boundary == 1: the save never saw the injection
+    slot.messages = [persisted, dict(injected)]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
+        "a durably-injected row the disk read already returned was appended again"
+    )
+
+
+def test_durably_injected_row_is_not_duplicated_when_older_rows_have_no_id():
+    """Same contract on the ordered-comparison arm.
+
+    A transcript written before ids existed holds id-less rows, so the id arm is
+    ineligible (it requires EVERY window-region disk row to carry one) and the
+    tail must be sized by the ordered body walk instead — which must equally
+    refuse to re-append the injected row.
+    """
+    persisted = {"role": "user", "content": "hello", "ts": "t1"}  # pre-id era row
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    slot = _slot([persisted])
+    slot.messages = [persisted, dict(injected)]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == ["hello", "cron result"], (
+        "a durably-injected row the disk read already returned was appended again"
+    )
+
+
+def test_genuinely_owed_row_still_travels_after_an_injection():
+    """Control, mirroring #4137's: a fix that merely stopped appending would pass
+    the duplication tests above and silently drop a real un-flushed turn here."""
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
+    slot = _slot([persisted])
+    slot.messages = [persisted, dict(injected), owed]
+    bundle = build_transfer_bundle(_state([persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == [
+        "hello",
+        "cron result",
+        "follow-up",
+    ], "each turn must appear exactly once, with the owed turn last"
+
+
+def test_durably_injected_row_with_a_frozen_prefix_is_not_duplicated():
+    """The sync path's one new field dependency: ``_disk_older_count``.
+
+    The tail merge scans only the disk WINDOW region, ``all_msgs[disk_older:]``.
+    With two frozen-prefix rows ahead of the window, an off-by-one in that
+    offset would either let a prefix occurrence fund a false id match (dropping
+    an owed row) or re-append the injected row. Exercise the injection with a
+    non-zero prefix to pin the arithmetic.
+    """
+    prefix = [
+        {"role": "user", "content": "old 0", "ts": "t0", "meta": {"mid": "m-p0"}},
+        {"role": "assistant", "content": "old 1", "ts": "t0b", "meta": {"mid": "m-p1"}},
+    ]
+    persisted = {"role": "user", "content": "hello", "ts": "t1", "meta": {"mid": "m-1"}}
+    injected = {
+        "role": "assistant",
+        "content": "cron result",
+        "ts": "t2",
+        "meta": {"mid": "m-2"},
+    }
+    owed = {"role": "user", "content": "follow-up", "ts": "t3", "meta": {"mid": "m-3"}}
+    slot = _slot([persisted], disk_older=2)
+    slot.messages = [persisted, dict(injected), owed]
+    bundle = build_transfer_bundle(_state(prefix + [persisted, dict(injected)]), slot)
+
+    assert [m["content"] for m in bundle["messages"]] == [
+        "old 0",
+        "old 1",
+        "hello",
+        "cron result",
+        "follow-up",
+    ], "each turn must appear exactly once, prefix intact, owed turn last"
 
 
 def test_bundle_title_marker_does_not_compound_across_hops():
@@ -338,14 +456,17 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
 
-def test_bundle_boundary_is_the_disk_window_not_the_resume_count():
-    """Regression: the persisted boundary is ``_disk_window_len``, not ``_resumed_count``.
+def test_bundle_ignores_the_resume_count_and_ships_each_turn_once():
+    """Regression, restated for the id-based tail (#4684).
 
-    ``_resumed_count`` records how many messages were loaded when the slot was
-    REHYDRATED, so for a session created in this gateway run it stays 0 no matter
-    how often the slot flushes. Slicing on it appended the entire resident window
-    on top of the disk history and duplicated every persisted turn — the ordinary
-    case, not an edge case.
+    Originally this pinned "the boundary is ``_disk_window_len``, not
+    ``_resumed_count``": slicing on the resume count (0 for a slot created in
+    this gateway run) appended the entire resident window on top of the disk
+    history and duplicated every persisted turn. The sync builder no longer
+    slices on ANY counter — the tail is sized by message identity — so the
+    surviving contract is the one that always mattered: with two of three
+    window rows already on disk, each turn appears exactly once and the
+    un-flushed one still travels, regardless of what either counter says.
     """
     persisted = [
         {"role": "user", "content": "one", "ts": ""},
@@ -2735,13 +2856,19 @@ def test_a_mapped_but_unreadable_layer_b_is_reported_as_withheld(monkeypatch):
 def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     """Fail CLOSED, and leave nothing behind.
 
-    On Windows the ``mode=0o600`` on the write is a no-op, so the DACL call is the
-    only thing making the file owner-only -- if it raises, the context is readable
-    by other local accounts on a shared machine. Refusing costs only resume
-    fidelity (the import lands transcript-only), so it is the cheaper side of the
-    trade. Both files must go: the pair is useless alone and the ``.json`` carries
-    context too.
+    On Windows the POSIX mode bits are a no-op, so the owner-only DACL applied by
+    ``atomic_write(restrict_to_owner=True)`` is the only thing making the file
+    owner-only -- if it fails, the context would be readable by other local
+    accounts on a shared machine. Refusing costs only resume fidelity (the import
+    lands transcript-only), so it is the cheaper side of the trade. Both files
+    must go: the pair is useless alone and the ``.json`` carries context too.
+
+    The lockdown seam lives inside ``atomic_write`` now (it locks the temp file
+    down BEFORE any content reaches it, issue #5285), so the failure is injected
+    at ``platform_compat.restrict_to_owner`` -- the module-level function the
+    helper calls -- not at a name in this module.
     """
+    from kiro_crew import platform_compat
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
@@ -2749,7 +2876,7 @@ def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     def _refuse(_path):
         raise OSError("cannot resolve the invoking user's SID")
 
-    monkeypatch.setattr(st, "restrict_to_owner", _refuse)
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _refuse)
 
     got = st._write_layer_b_files(
         {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
@@ -2758,6 +2885,41 @@ def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     assert got is None, "returned a sid for context it could not protect"
     leftovers = [p.name for p in tmp_path.iterdir()]
     assert leftovers == [], f"left unprotected context on disk: {leftovers}"
+
+
+def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
+    """The context window must never exist in a file that has not been locked
+    down yet.
+
+    On Windows the POSIX mode bits are a no-op, so the owner-only DACL is the
+    only protection; applying it after the rename left Layer B readable under
+    the inherited ACL for the write window (issue #5285). Asserted by measuring
+    each file's SIZE at the moment its lockdown is applied — zero means no
+    payload byte existed yet. A post-write stat passes on the buggy ordering
+    too, so it would not be a regression test.
+    """
+    from kiro_crew import platform_compat
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
+    sizes: list[int] = []
+    real_restrict = platform_compat.restrict_to_owner
+
+    def _measuring_restrict(target):
+        sizes.append(os.stat(target).st_size)
+        return real_restrict(target)
+
+    monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+
+    got = st._write_layer_b_files(
+        {"envelope": {"session_id": "old"}, "events": '{"kind":"Prompt"}\n'}, "agent"
+    )
+
+    assert got is not None
+    assert len(sizes) == 2, f"expected one lockdown per file of the pair: {sizes}"
+    assert sizes == [0, 0], (
+        f"a file already held payload bytes when it was locked down: {sizes}"
+    )
 
 
 def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):

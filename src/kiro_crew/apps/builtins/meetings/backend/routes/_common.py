@@ -27,6 +27,7 @@ from kiro_crew.apps.builtins.meetings.backend import store
 from kiro_crew.apps.builtins.meetings.backend.domain.session import MeetingSession
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.hooks import get_global_hook_store  # noqa: F401  (re-export for handlers)
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.meetings")
@@ -169,14 +170,14 @@ ACTIVE = _ActiveMeeting()
 #: the first — whose transcript then fails to dispatch with a confusing 409. An
 #: asyncio lock (not threading: this guards event-loop interleaving, not threads)
 #: makes the read and the install one critical section.
-START_LOCK = asyncio.Lock()
+START_LOCK = LoopBoundLock()
 
 # Dispatch appends await worker-thread file IO, while lifecycle flushes can await
 # slow agent turns. This separate admission lock protects only the short
 # check/append/fan-out transaction. Lifecycle handlers close ingress under it and
 # then release it before draining, so later speech is rejected promptly rather
 # than waiting behind the slowest agent.
-DISPATCH_LOCK = asyncio.Lock()
+DISPATCH_LOCK = LoopBoundLock()
 
 
 # ── authorization ───────────────────────────────────────────────────────────

@@ -444,7 +444,21 @@ def _under_system_tmp(path: Path) -> bool:
             roots.append(Path(candidate).resolve())
         except (OSError, ValueError):  # pragma: no cover - defensive: unusable root
             continue
-    return any(path == root or root in path.parents for root in roots)
+    # The PATH is resolved too, not just the roots. Resolving one side only made the
+    # comparison cross namespaces on exactly the platform this rule was added for:
+    # macOS resolves `/tmp` to `/private/tmp`, so a checkout at `/tmp/<scratch clone>`
+    # -- the literal shape #4781 reports -- kept `/tmp` among its parents, matched
+    # nothing, and read as DURABLE. The guard then stamped a machine-wide agent spec
+    # from a tree the OS reaps at reboot, which is the outcome it exists to prevent.
+    #
+    # Resolving is also the safe direction for a symlink pointing OUT of the temp tree:
+    # the checkout really lives at the target, so a durable target correctly stops
+    # matching rather than being declined for the shape of its path.
+    try:
+        target = path.resolve()
+    except (OSError, ValueError):  # pragma: no cover - defensive: unresolvable path
+        target = path
+    return any(target == root or root in target.parents for root in roots)
 
 
 def _in_linked_git_worktree(path: Path) -> bool:

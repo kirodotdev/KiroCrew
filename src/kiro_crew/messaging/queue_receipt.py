@@ -46,6 +46,19 @@ RECEIPT_MAX_ITEMS = 5
 #: and folded into the running turn (not merely "seen" — 👀 reads as passive).
 STEER_ACK_EMOJI = "🫡"
 
+#: Upper bound on how many queued messages collapse into a single combined turn.
+#: A single human will not realistically burst past this mid-turn; anything beyond
+#: stays queued and drains after the next turn. Lives here rather than in each
+#: dispatcher because it bounds the same collapse in every channel that carries
+#: the queue, and three copies had already drifted apart by comment alone.
+MAX_COLLAPSE = 50
+
+#: What a receipt SHOWS for a message whose only content was an upload. An
+#: attachment-only message has no text, and a blank line in the bubble reads as a
+#: message the queue lost. Lives here because every channel that ingests files
+#: needs the same substitution in both receipt transitions.
+ATTACHMENT_PLACEHOLDER = "[attachment]"
+
 
 def short(text: str, limit: int = 40) -> str:
     """Collapse whitespace and truncate for compact receipt display."""
@@ -140,9 +153,10 @@ class ReceiptQueue:
         """Create the receipt, or append to it and edit in place.
 
         ``display_text`` is what the receipt SHOWS, which is not always the raw
-        message: Discord substitutes "[attachment]" for an attachment-only
-        message so the bubble is not blank. Caller MUST hold :attr:`lock`, and
-        MUST have already enqueued the message under that same hold.
+        message: a file-capable channel substitutes :data:`ATTACHMENT_PLACEHOLDER`
+        for an attachment-only message so the bubble is not blank. Caller MUST hold
+        :attr:`lock`, and MUST have already enqueued the message under that same
+        hold.
         """
         receipt = self._receipts.get(session_key)
         if receipt is None:
@@ -191,8 +205,6 @@ class ReceiptQueue:
         if receipt is None:
             return
         try:
-            await surface.edit_receipt(
-                receipt.msg_id, receipt_text(receipt.texts, cancelled=True)
-            )
+            await surface.edit_receipt(receipt.msg_id, receipt_text(receipt.texts, cancelled=True))
         except Exception:
             logger.debug("%s: queue receipt cancel-finalize failed", surface.label, exc_info=True)

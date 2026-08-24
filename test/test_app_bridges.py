@@ -323,6 +323,30 @@ class TestAgentRegistration:
         assert link.is_file(), "the working config must survive a failed rewrite"
         assert link.read_text(encoding="utf-8") == good, "…with its old contents intact"
 
+    @pytest.mark.parametrize("content", ["[1, 2, 3]", "42", "null", "true", '"a string"'])
+    def test_a_valid_json_non_object_agent_spec_is_skipped(
+        self, tmp_path, app_env, content
+    ):
+        """A spec that is valid JSON but not an object parses fine, so the
+        JSONDecodeError guard never fires — but ``.get`` on the parsed value
+        would raise AttributeError and take down the whole registration pass.
+        Same disposition as the unreadable case: skip that agent, register
+        nothing for it, and do not crash.
+        """
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+        (app_root / "agents" / "my-agent.json").write_text(content, encoding="utf-8")
+
+        registered = _register_agents("test-app", manifest, app_root)
+
+        assert registered == []
+        link = app_env["kiro_agents"] / "test-app--my-agent.json"
+        assert not link.exists(), "a spec that was never understood must not be materialized"
+
     def test_a_legacy_symlink_is_still_replaced(self, tmp_path, app_env):
         """A symlink from an older KiroCrew is dropped and replaced with a real file."""
         src = _make_app_source(tmp_path)
@@ -3334,6 +3358,33 @@ class TestPruneAbortsOnUnreadableAgent:
 
         bridges_mod._prune_stale_app_resources("test-app", manifest, app_root)
         assert keep.is_file(), "prune must abort — not delete a config over an unreadable source"
+
+    @pytest.mark.parametrize("content", ["[1, 2, 3]", "42", "null", "true", '"a string"'])
+    def test_a_valid_json_non_object_agent_spec_aborts_the_agent_prune(
+        self, tmp_path, app_env, monkeypatch, content
+    ):
+        """Valid JSON that is not an object parses fine, so the JSONDecodeError
+        guard never fires — but ``.get`` on the parsed value would raise
+        AttributeError. A spec that cannot be read as an object is the same
+        cannot-read != removed situation: the agent must be RETAINED (treated
+        as present), never pruned out of its last-good materialized config.
+        """
+        from kiro_crew.apps import bridges as bridges_mod
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+        # A materialized config that MUST survive if the prune aborts.
+        keep = app_env["kiro_agents"] / "test-app--my-agent.json"
+        keep.write_text('{"name": "my-agent"}', encoding="utf-8")
+        # Make the declared agent source valid JSON but not an object.
+        (app_root / "agents" / "my-agent.json").write_text(content, encoding="utf-8")
+
+        bridges_mod._prune_stale_app_resources("test-app", manifest, app_root)
+        assert keep.is_file(), "prune must retain the agent — a non-object spec is unreadable, not removed"
 
 
 class TestMalformedConfigIsNotClobbered:

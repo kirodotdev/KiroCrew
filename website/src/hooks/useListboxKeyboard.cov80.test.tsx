@@ -222,3 +222,59 @@ describe('Enter', () => {
     expect(closeToTrigger).not.toHaveBeenCalled()
   })
 })
+
+describe('IME guard on Enter-selects-sole-match', () => {
+  // The committing Enter of a WebKit composition arrives AFTER compositionend
+  // with the native flag already false; the hook's internal latch (tracked via
+  // native listeners on the filter input) is the only signal left. Unguarded,
+  // the dispatch below selected the sole match — switching agent/model — with
+  // half-composed filter text (#4292).
+  it('declines the committing Enter in the post-composition window AND consumes it', () => {
+    const onEnterSingleMatch = vi.fn()
+    render(<Harness hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />)
+    const input = screen.getByTestId('zzq-input')
+    input.focus()
+    fireEvent.compositionStart(input)
+    fireEvent.compositionEnd(input)
+    const notPrevented = fireEvent.keyDown(list(), { key: 'Enter' })
+    expect(onEnterSingleMatch).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(false)
+  })
+
+  it('leaves a mid-composition Enter to the IME (native flag set)', () => {
+    const onEnterSingleMatch = vi.fn()
+    render(<Harness hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />)
+    screen.getByTestId('zzq-input').focus()
+    const notPrevented = fireEvent.keyDown(list(), { key: 'Enter', isComposing: true })
+    expect(onEnterSingleMatch).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(true)
+  })
+
+  it('recovers from an abandoned composition on blur/refocus', () => {
+    const onEnterSingleMatch = vi.fn()
+    render(<Harness hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />)
+    const input = screen.getByTestId('zzq-input')
+    input.focus()
+    fireEvent.compositionStart(input) // abandoned: no compositionEnd follows
+    input.blur()
+    input.focus()
+    fireEvent.keyDown(list(), { key: 'Enter' })
+    expect(onEnterSingleMatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not inherit a stale latch across a close/reopen', () => {
+    const onEnterSingleMatch = vi.fn()
+    const { rerender } = render(
+      <Harness hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />,
+    )
+    const input = screen.getByTestId('zzq-input')
+    input.focus()
+    fireEvent.compositionStart(input) // abandoned mid-composition
+    rerender(<Harness open={false} hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />)
+    rerender(<Harness hasFilterInput filteredCount={1} onEnterSingleMatch={onEnterSingleMatch} />)
+    const reopened = screen.getByTestId('zzq-input')
+    reopened.focus()
+    fireEvent.keyDown(list(), { key: 'Enter' })
+    expect(onEnterSingleMatch).toHaveBeenCalledTimes(1)
+  })
+})

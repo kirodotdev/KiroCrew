@@ -6,6 +6,14 @@ import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import type { Artifact } from '../types'
 
+// The sandboxed frames mint their document URL through the api client. The
+// automock resolves every method to `undefined`, which the component cannot
+// await — without this stub the frame throws instead of rendering.
+beforeEach(() => {
+  vi.mocked(api.sandboxDocUrl).mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+})
+
+
 vi.mock('../api/client')
 // Stub the embedded chat page (companion chat) — its rendering is covered by its
 // own suites; here it just needs to mount without ChatPage's full hook/provider

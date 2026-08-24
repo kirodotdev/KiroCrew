@@ -18,7 +18,7 @@ import enXA from './locales/en-XA.json'
 import glossary from './glossary.json'
 import {
   splitUnits, isFiller, latinLeaks, gradeRun, dntViolations, expansionBudget,
-  browserBundle, ALWAYS_LATIN, PSEUDO_PAD,
+  browserBundle, scanDocument, ALWAYS_LATIN, PSEUDO_PAD,
 } from '../../scripts/lib/render-scan.mjs'
 
 const flat = (obj, prefix = '', out = {}) => {
@@ -240,5 +240,76 @@ describe('the pseudolocale invariants the scanner depends on', () => {
       if (latinLeaks(inner).length) offenders.push(v)
     }
     expect(offenders).toEqual([])
+  })
+})
+
+describe('scanDocument — an opaque child is skipped, not joined', () => {
+  // `scanDocument` normally runs inside the gate's real browser; happy-dom is
+  // enough for the RUN-WALK topology under test here because inline-ness falls
+  // back to the tag list and `isOpaque` is a `closest()` call. What happy-dom
+  // cannot answer (computed display from CSS classes, mono font detection)
+  // stays covered by the CI gate itself.
+  const mount = (html: string) => {
+    document.body.replaceChildren(document.createRange().createContextualFragment(html))
+  }
+  const pseudoScan = () => scanDocument({ mode: 'pseudo' })
+
+  it('does not charge <kbd> keycap text to the surrounding prose run', () => {
+    mount('<div><span>[Þŕèşş ···]</span> <kbd>Ctrl</kbd></div>')
+    expect(pseudoScan().filter(f => f.kind === 'latin-leak')).toEqual([])
+  })
+
+  it('still reports prose on the far side of an opaque child', () => {
+    // The opaque child is skipped, not the rest of the walk: text around it
+    // stays in the run and is graded.
+    mount('<div><kbd>K</kbd> hardcoded prose</div>')
+    const leaks = pseudoScan().filter(f => f.kind === 'latin-leak').map(f => f.detail)
+    expect(leaks).toContain('hardcoded')
+    expect(leaks).toContain('prose')
+  })
+
+  it('an inline [data-i18n-opaque] child is excluded from the run', () => {
+    mount(
+      '<div><span>[Ĺàbèĺ ···]</span><span data-i18n-opaque>Alt</span></div>')
+    expect(pseudoScan().filter(f => f.kind === 'latin-leak')).toEqual([])
+  })
+
+  it('an inline wrapper AROUND opaque content is excluded too', () => {
+    // The ShortcutRow shape: the keycaps sit inside a plain span container, so
+    // the opaque element is a grandchild. The run is built from `textContent`,
+    // which reaches through the wrapper — so the wrapper must be skipped.
+    mount(
+      '<div><span>[Ĵùɱþ ţø çĥàţ ···]</span><span><span>+</span><kbd>Alt</kbd></span></div>')
+    expect(pseudoScan().filter(f => f.kind === 'latin-leak')).toEqual([])
+  })
+
+  it('a wrapper around a computed-monospace child is excluded too', () => {
+    // Mono is the other half of the opaque contract and is not
+    // selector-expressible, so the descendant probe must read computed style
+    // (the PerformanceTab machine-identity strip: a plain span wrapping a
+    // font-mono strong).
+    mount(
+      '<div><span>[Ĥøşţñàɱè ···]</span><span><strong style="font-family: monospace">Ctrl</strong></span></div>')
+    expect(pseudoScan().filter(f => f.kind === 'latin-leak')).toEqual([])
+  })
+
+  it('still grades prose inside a wrapper that also carries a keycap', () => {
+    // Skipping the wrapper must not exempt the wrapper's own prose: the
+    // element loop visits it and grades its text around the keycap.
+    mount(
+      '<div><span>press <kbd>K</kbd> anytime</span></div>')
+    const leaks = pseudoScan().filter(f => f.kind === 'latin-leak').map(f => f.detail)
+    expect(leaks).toContain('press')
+    expect(leaks).toContain('anytime')
+  })
+
+  it('keeps the multi-unit fragment signal across an opaque child', () => {
+    // The opaque child is skipped WITHOUT ending the run: a sentence spliced
+    // from several catalog keys around a keycap or code term is a real
+    // reorder defect (the fix is one key with interpolation), and flushing at
+    // the boundary would let it pass unseen.
+    mount(
+      '<div><span>[Ûñìţ øñè·]</span><kbd>⌘</kbd><span>[Ûñìţ ţŵø·]</span></div>')
+    expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
   })
 })

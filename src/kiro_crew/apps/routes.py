@@ -26,6 +26,7 @@ import aiohttp
 import yarl
 from aiohttp import web
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.backend import (
     get_app_backend_port,
     list_app_processes,
@@ -78,9 +79,14 @@ from kiro_crew.apps.registry import (
     _REGISTRY_TRUST_TIERS,
     _TRUST_INDEX,
     _TRUST_OWNER,
+    _context_clone_sandbox_mode,
+    _entry_git_url,
     _git_url_host,
+    _is_owner_designated_repo,
     _pinned_registries,
     _registry_identity_key,
+    _sel_credential_grant,
+    anonymous_git_env,
     get_registry_app_by_repo,
     get_server_platform,
     install_from_registry,
@@ -88,13 +94,20 @@ from kiro_crew.apps.registry import (
     known_registry_repos,
     list_catalog_apps,
     list_registry,
+    minimal_env,
     registry_name_from_source,
 )
 from kiro_crew.apps.spawn_sdk import build_spawn_impl
 from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, config_path
+from kiro_crew.config.loader import (
+    ConfigReadError,
+    KiroCrewConfig,
+    config_dir,
+    config_path,
+    update_config_locked,
+)
 from kiro_crew.cron import CronStoreBusy
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.publish_governance import DEPLOY_WEB_PROVIDER_ID, publish_denied_reason
@@ -156,26 +169,45 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
 
 
 def _sync_builtin_config(name: str, *, enabled: bool) -> None:
-    """Update config.json for a builtin app so gateway reads the right state on restart."""
+    """Update config.json for a builtin app so gateway reads the right state on restart.
+
+    Blocking: performs a file-locked read-modify-write of config.json and, on
+    Windows, spawns ``icacls`` (``restrict_to_owner``). Callers on the event
+    loop must offload this through ``asyncio.to_thread``.
+    """
     cfg_key, _ = _BUILTIN_SERVICE_APPS.get(name, (None, None))
     if cfg_key is None:
         return
-    path = config_path()
+
+    def _mutate(data: dict) -> dict:
+        data.setdefault(cfg_key, {})["enabled"] = enabled
+        return data
+
+    # update_config_locked, the required path for new config.json mutations:
+    # the whole read-modify-write runs under an advisory sidecar file lock, so
+    # this write is serialized against every other converted writer and other
+    # processes — not merely against itself, which is all an in-module lock
+    # could offer. The write itself is mode-preserving (an operator's
+    # tightened 0600 survives) and symlink-safe. A corrupt config fails
+    # closed; it is re-raised as OSError because that is the failure type the
+    # call sites catch and surface as a warning.
     try:
-        data = json.loads(path.read_text()) if path.exists() else {}
-    except (json.JSONDecodeError, OSError) as exc:
+        update_config_locked(config_path(), mutate=_mutate)
+    except ConfigReadError as exc:
         raise OSError(f"Could not read config.json: {exc}") from exc
-    section = data.setdefault(cfg_key, {})
-    section["enabled"] = enabled
-    tmp = path.with_suffix(".tmp")
-    try:
-        tmp.write_text(json.dumps(data, indent=2))
-        tmp.chmod(0o600)
-        tmp.replace(path)  # replace, not rename: Windows rename refuses to overwrite
-    except OSError:
-        if tmp.exists():
-            tmp.unlink(missing_ok=True)
-        raise
+    if not platform_compat.IS_POSIX:  # pragma: no cover — exercised on Windows CI
+        # POSIX mode bits are meaningless on Windows, so the preserved mode
+        # protects nothing there, and the shared helpers deliberately apply
+        # no DACL themselves because they are also called from loop-reachable
+        # paths (restrict_to_owner spawns icacls, a blocking subprocess).
+        # This caller runs off-loop (to_thread), so it applies the owner
+        # lockdown here: config.json can hold inline credentials. Warn rather
+        # than raise — the settings write itself succeeded, and the callers
+        # must still notify the service of the new enabled state.
+        try:
+            platform_compat.restrict_to_owner(config_path())
+        except OSError:
+            logger.warning("could not restrict config.json permissions", exc_info=True)
     logger.info("Synced config.json %s.enabled = %s", cfg_key, enabled)
 
 
@@ -1319,7 +1351,9 @@ async def handle_enable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=True)
+                # to_thread: the sync helper does file I/O and, on Windows,
+                # spawns icacls — neither may run on the event loop.
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=True)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 resp.setdefault("warnings", []).append(
@@ -1405,7 +1439,9 @@ async def handle_disable_app(request: web.Request) -> web.Response:
         origin = info.get("origin", "")
         if origin == "builtin" and name in _BUILTIN_SERVICE_APPS:
             try:
-                _sync_builtin_config(name, enabled=False)
+                # to_thread: the sync helper does file I/O and, on Windows,
+                # spawns icacls — neither may run on the event loop.
+                await asyncio.to_thread(_sync_builtin_config, name, enabled=False)
             except OSError as exc:
                 logger.warning("Failed to sync config.json for %s: %s", name, exc)
                 warnings.append(_redact_warning(f"config sync failed: {exc}"))
@@ -1947,17 +1983,30 @@ def _blob_cache_dir() -> Path:
     return config_dir() / "cache" / "blobs"
 
 
-def _blob_cache_key(repo: str) -> str:
+def _blob_cache_key(repo: str, clone_url: str = "") -> str:
     """Derive a flat, filesystem-safe AND injective cache key for a repo.
 
     ``repo`` may be a full git URL (``/``, ``:``), so it can't be used as a
     directory tree.  Slugification alone is not injective (``org/app`` and
     ``org_app`` would collide and serve each other's blobs), so a short stable
-    sha256 of the ORIGINAL repo is appended to guarantee distinct repos never
-    share a cache directory.
+    sha256 is appended to guarantee distinct repos never share a cache directory.
+
+    The cache key is bound to the blob's PROVENANCE — the resolved clone URL
+    (``clone_url``), not the ``repo`` key alone.  A ``repo`` key is not stable
+    provenance: two registries can publish the same ``repo`` key over time
+    (registry A is removed and registry B is later configured reusing key X), so
+    a key derived from ``repo`` alone would let B's request hit A's cached
+    (possibly private) bytes — a stale-provenance cross-registry read.  Folding
+    the resolved clone URL into the hash namespaces the cache by the URL the
+    bytes were actually cloned from, so a repo-key reuse across registries lands
+    in a DISTINCT cache directory (a miss, then a fresh clone of B's own URL)
+    rather than serving A's stale bytes.  ``clone_url`` defaults to empty only so
+    the pure key of a bare-name repo with no resolvable URL stays stable; when a
+    URL is resolved it MUST be threaded in.
     """
     slug = re.sub(r"[^A-Za-z0-9_.-]", "_", repo)
-    return f"{slug}-{hashlib.sha256(repo.encode('utf-8')).hexdigest()[:8]}"
+    digest = hashlib.sha256(f"{repo}\x00{clone_url}".encode("utf-8")).hexdigest()[:16]
+    return f"{slug}-{digest}"
 
 
 _BLOB_FETCH_TIMEOUT = 30  # seconds — shallow clone of a single-branch repo
@@ -2046,49 +2095,108 @@ def _derive_registry_name(repo: str) -> str:
     return f"{slug}-{digest}"
 
 
-def _registry_git_url(repo: str) -> str | None:
-    """Resolve the git clone URL for a registry repo, or ``None``.
+def _repo_key_owner_count(repo: str) -> int:
+    """Count the configured registry SOURCES that publish an entry keyed on ``repo``.
 
-    The registry entry's ``repo`` field carries the clone URL for the
-    open-source build (e.g. ``https://github.com/org/app`` or
-    ``git@github.com:org/app.git``).  An entry may also set an explicit
-    ``gitUrl``/``cloneUrl`` field.  Returns ``None`` when the entry has no
-    resolvable URL so the caller can fail gracefully instead of assuming
-    any particular host.
+    The blob credential carve-out grants owner credentials only when
+    :func:`_is_owner_designated_repo` confirms the resolved entry's clone URL is
+    byte-identical to *its own* registry's configured ``repo``.  That predicate is
+    entry-scoped and sound for the entry it is handed — but the entry is SELECTED
+    by :func:`get_registry_app_by_repo`, which returns the FIRST source (bundled,
+    then each external/federated registry) whose entry ``repo`` key equals the
+    served ``repo``.  The selection is keyed on ``repo`` alone and provenance-blind.
+
+    So if two configured registries both publish the same ``repo`` key, a request
+    reachable through registry B can resolve to registry A's owner-designated
+    entry and clone A's private repo with A's credentials, serving A's private
+    image bytes to a caller who only had access to B — a cross-registry
+    confused-deputy read.  The grant is only honestly attributable to a single
+    owner when exactly ONE configured source claims the key.
+
+    This counts the DISTINCT sources (the bundled registry counts once; each
+    external registry counts once) whose entries carry ``entry["repo"] == repo``,
+    using the SAME union :func:`known_registry_repos` admits — reading local sync
+    caches only (``ignore_ttl``), never fetching, so it is safe on the per-request
+    blob worker thread.  A return of ``> 1`` means the provenance is ambiguous and
+    the caller must downgrade to anonymous+strict.  On any read failure it returns
+    ``2`` (treat-as-ambiguous): a provenance we cannot establish must never buy a
+    credential grant.
     """
-    entry = get_registry_app_by_repo(repo)
-    if entry:
-        for key in ("gitUrl", "cloneUrl"):
-            url = entry.get(key)
-            if isinstance(url, str) and url:
-                return url
-    # The repo field itself is treated as a clone URL when it looks like one.
-    # This must apply even when ``get_registry_app_by_repo`` finds no entry:
-    # that lookup searches BUNDLED entries only, so an external (federated)
-    # registry whose ``repo`` is a full git URL never resolves an ``entry`` —
-    # yet ``_is_safe_repo_identifier`` admits such URLs, so we must honor the
-    # validated URL directly or external-registry blobs become unreachable.
-    if ("://" in repo) or repo.startswith("git@") or repo.endswith(".git"):
-        return repo
-    return None
+    from kiro_crew.apps.registry import (
+        _effective_registries,
+        _load_registry_file,
+        _read_external_registry_cache,
+    )
+
+    try:
+        sources = 0
+        if any(e.get("repo") == repo for e in _load_registry_file()):
+            sources += 1
+        for reg in _effective_registries():
+            cached = _read_external_registry_cache(reg.name or reg.repo, ignore_ttl=True)
+            if any(isinstance(e, dict) and e.get("repo") == repo for e in cached or []):
+                sources += 1
+                if sources > 1:
+                    return sources  # already ambiguous — no need to keep counting
+        return sources
+    except Exception:  # provenance unresolvable → treat as ambiguous, never grant
+        logger.debug("_repo_key_owner_count: read failed for %r", repo, exc_info=True)
+        return 2
 
 
-async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path) -> bool:
+async def _fetch_git_blob(
+    repo: str,
+    ref: str,
+    file_path: str,
+    cache_path: Path,
+    *,
+    git_url: str,
+    owner_designated: bool = False,
+) -> bool:
     """Fetch a single file from a registry app's git repo via a shallow clone.
 
     Public git hosts (GitHub, etc.) disable the ``git-upload-archive`` service
     used by ``git archive --remote``, so we instead perform a shallow
     ``git clone --depth 1 --branch <ref>`` into a throwaway temp directory
     (mirroring how :mod:`kiro_crew.apps.registry` already clones), read the
-    requested file out of the checkout, and write it to the blob cache.  The
-    clone URL is resolved from the registry entry; returns ``False`` (graceful
-    fallback) when no URL is resolvable or anything goes wrong.
-    """
-    from kiro_crew.apps.registry import (
-        anonymous_git_env,
-    )
+    requested file out of the checkout, and write it to the blob cache.
 
-    git_url = _registry_git_url(repo)
+    ``git_url`` is the clone URL, a REQUIRED parameter supplied by the caller.
+    It is never resolved here from ``repo``: this function performs no registry
+    lookup on any branch.  The caller (:func:`handle_blob_proxy`) resolves it
+    ONCE — for a bundled entry, atomically with the ``owner_designated``
+    credential decision, from the SAME registry entry that decision was made
+    against (via :func:`kiro_crew.apps.registry._entry_git_url`); for the
+    no-entry external/federated branch, by an inline in-memory URL-form check on
+    the already-validated ``repo`` — and threads it in.  The one threaded value
+    decides credentials AND is the URL cloned; this function never looks the URL
+    up again, so there is no second read to race on ANY branch.  Threading the
+    decided URL closes the TOCTOU window a re-resolution would open: with two
+    independent reads, a concurrent registry refresh could swap the entry backing
+    ``repo`` between the decision and the clone, so a grant decided for one URL
+    would clone a different one (a private sibling repo) with owner credentials.
+
+    ``owner_designated`` extends the same-repo credential carve-out (PR 918) to
+    this third clone chokepoint.  It is ``True`` only when the caller has
+    confirmed — via the merged :func:`_is_owner_designated_repo` predicate,
+    evaluated against the SAME entry ``git_url`` was resolved from — that the
+    entry's clone URL is byte-identical to the owner-typed
+    ``ExternalRegistryConfig.repo``.  In that case the confused-deputy defense
+    does not apply (the owner designated exactly this URL by configuring the
+    registry), so the clone uses owner credentials: ``minimal_env`` + the
+    context clone sandbox mode, exactly like the manifest/clone chokepoints.
+    A sibling repo on the same host is a *different* URL, so it never matches
+    and stays anonymous + strict — the carve-out is URL-exact, not host-granular.
+    Because the decision and the clone now use one threaded value, the granted
+    credentials and the URL they reach cannot disagree; the only credential
+    decision here is the GRANT below, which is SEL-audited against ``git_url``.
+    """
+    # ``git_url`` is the caller's once-resolved clone URL (required param); the
+    # value used for the SSRF gate, the credential decision, and the clone is
+    # always exactly what the caller supplied — one read, no re-resolution, no
+    # race.  The caller already rejects an unresolvable URL (the
+    # ``blob_no_git_url`` early-return), so ``git_url`` is non-empty here; keep a
+    # defensive guard rather than assume it.
     if not git_url:
         logger.debug("No git URL resolvable for registry repo %r — skipping blob fetch", repo)
         return False
@@ -2128,18 +2236,45 @@ async def _fetch_git_blob(repo: str, ref: str, file_path: str, cache_path: Path)
             git_url,
             tmp_root,
         ]
-        # Index-originated automatic clone (browse-time icon/blob fetch): force
-        # strict sandbox (~/.ssh hidden) and a credential-free env so a
-        # trusted-host repo injected by an untrusted registry index can't be
-        # cloned with the gateway's ambient git/ssh identity (confused-deputy
-        # defense — see anonymous_git_env).
-        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode="strict")
+        # Credential posture for the browse-time icon/blob clone.  By default
+        # this is an index-originated automatic clone, so it forces the strict
+        # sandbox (~/.ssh hidden) and a credential-free env: a trusted-host repo
+        # injected by an untrusted registry index can't be cloned with the
+        # gateway's ambient git/ssh identity (confused-deputy defense — see
+        # anonymous_git_env).  The same-repo carve-out flips BOTH knobs together
+        # when the caller confirmed the blob's URL is byte-identical to the
+        # owner-configured registry repo: minimal_env + the context clone
+        # sandbox mode.  The strict sandbox hiding ~/.ssh is the load-bearing
+        # defense (not the env), which is why env and sandbox mode move as a
+        # pair — exactly as the merged manifest/clone chokepoints do.
+        if owner_designated:
+            # ``_context_clone_sandbox_mode`` reaches the same config subsystem the
+            # two sibling calls in this function already offload (the SSRF-gate
+            # ``is_clone_host_trusted`` above and the caller's
+            # ``_is_owner_designated_repo``): it flows
+            # ``_configured_registry_hosts`` -> ``_effective_registries`` ->
+            # ``KiroCrewConfig.load`` (an unbounded ``read_text`` + ``json.loads`` +
+            # ``jsonschema.validate`` on a cold/invalidated cache, e.g. right after
+            # a registry refresh rewrites config).  ``_fetch_git_blob`` runs on the
+            # gateway event loop during App Store browsing, so calling it inline
+            # would freeze every concurrent chat turn and the liveness heartbeat —
+            # offload it, exactly like the adjacent reads.
+            clone_mode = await asyncio.to_thread(_context_clone_sandbox_mode, git_url)
+            clone_env = minimal_env()
+            # Escalating this clone from anonymous+strict to owner credentials is
+            # a security-relevant permission decision — leave an SEL audit record,
+            # mirroring the merged carve-out's grants at the manifest/install sites.
+            await asyncio.to_thread(_sel_credential_grant, "app_blob_proxy", git_url)
+        else:
+            clone_mode = "strict"
+            clone_env = anonymous_git_env()
+        sandboxed_cmd, _cleanup = wrap_argv(clone_cmd, mode=clone_mode)
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=anonymous_git_env(),
+            env=clone_env,
         )
         try:
             _, stderr = await asyncio.wait_for(proc.communicate(), timeout=_BLOB_FETCH_TIMEOUT)
@@ -2196,10 +2331,13 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     """
     repo = request.query.get("repo", "")
     file_path = request.query.get("path", "")
+    # Resolve the registry entry once: it feeds both the branch fallback below
+    # and the same-repo credential carve-out decision at fetch time.  The lookup
+    # reads local sync caches only (never fetches), so it is cheap and safe here.
+    entry = await asyncio.to_thread(get_registry_app_by_repo, repo) if repo else None
     # Look up the registry entry's branch; fall back to query param or main
     ref = request.query.get("ref", "")
     if not ref:
-        entry = await asyncio.to_thread(get_registry_app_by_repo, repo) if repo else None
         ref = entry.get("branch", "main") if entry else "main"
 
     # Validate inputs
@@ -2213,6 +2351,19 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid ref"}, status=400)
     if ".." in file_path or file_path.startswith("/"):
         return web.json_response({"error": "invalid path"}, status=400)
+    # ``ref`` becomes a path segment in the blob cache tree
+    # (``.../{repo_key}/{ref}/{file_path}``).  ``_SAFE_REF_RE`` permits ``.`` and
+    # ``/``, so a value like ``../<other-repo-key>/main`` matches the regex; the
+    # cache-root containment check below catches an escape OUT of the cache root
+    # but NOT a ``..`` that stays UNDER the root while crossing into a DIFFERENT
+    # repo's cache directory — a crafted ``ref`` would then yield a cache hit that
+    # returns another repo's cached (possibly private) bytes without
+    # authorization.  Reject any ``..`` segment or leading ``/`` in ``ref``
+    # BEFORE it is used to build or read the cache path, mirroring the
+    # ``file_path`` guard above, so a ``ref`` can only ever name a flat branch
+    # subtree under its own ``repo_key``.
+    if ".." in ref or ref.startswith("/"):
+        return web.json_response({"error": "invalid ref", "code": "blob_invalid_ref"}, status=400)
     # Block access to git internals and other hidden directories
     if any(seg.startswith(".") for seg in Path(file_path).parts):
         return web.json_response({"error": "hidden path segments not allowed"}, status=400)
@@ -2226,11 +2377,47 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     if repo not in allowed:
         return web.json_response({"error": "repo not in registry"}, status=403)
 
+    # Resolve the blob's PROVENANCE — the clone URL — BEFORE the cache lookup, so
+    # the cache key can be bound to it.  A ``repo`` key alone is not stable
+    # provenance: registry A (private) can cache a blob under key X, be removed,
+    # and registry B later be configured reusing key X — then B's request would
+    # hit A's cached private bytes.  Binding the cache key to the resolved clone
+    # URL namespaces the cache by the URL the bytes were actually cloned from, so
+    # a repo-key reuse across registries lands in a distinct directory (a miss +
+    # a fresh clone of B's own URL) rather than serving A's stale bytes.
+    #
+    # Both resolutions here are PURE in-memory (no registry read, no event-loop
+    # stall): ``_entry_git_url`` reads the already-loaded ``entry`` dict, and the
+    # no-entry branch is a string-shape test on the already-validated ``repo``.
+    # The SAME ``entry`` object also backs the ``owner_designated`` credential
+    # decision below, so the URL that keys the cache, the URL authorized, and the
+    # URL cloned are one value by identity.
+    if entry is not None:
+        clone_url = _entry_git_url(entry)
+    else:
+        # No bundled entry: an external (federated) registry whose ``repo`` is
+        # itself a full git URL never resolves an ``entry`` (that lookup searches
+        # bundled entries only), yet ``_is_safe_repo_identifier`` admits such
+        # URLs.  Honor the validated URL directly, or external blobs become
+        # unreachable.  A second ``get_registry_app_by_repo`` read would stall the
+        # event loop and reopen the TOCTOU seam, so this is a string-shape test on
+        # ``repo``, never a lookup.
+        clone_url = (
+            repo if ("://" in repo) or repo.startswith("git@") or repo.endswith(".git") else ""
+        )
+    if not clone_url:
+        logger.debug("No git URL resolvable for registry repo %r — skipping blob fetch", repo)
+        return web.json_response(
+            {"error": "failed to fetch blob", "code": "blob_no_git_url"}, status=502
+        )
+
     # Check cache.  ``repo`` may now be a full git URL (containing ``/`` and
     # ``:``), so derive a flat, filesystem-safe, injective cache key rather than
-    # using the raw value as a directory tree.  The resolved-path check below
-    # still guards against any escape out of the cache root.
-    repo_key = _blob_cache_key(repo)
+    # using the raw value as a directory tree.  The key is bound to the resolved
+    # ``clone_url`` (provenance) so a repo-key reuse across registries cannot
+    # serve another registry's cached bytes.  The resolved-path check below still
+    # guards against any escape out of the cache root.
+    repo_key = _blob_cache_key(repo, clone_url)
     cache_path = _blob_cache_dir() / repo_key / ref / file_path
 
     # SECURITY: Verify resolved path stays within cache dir BEFORE any
@@ -2255,10 +2442,65 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not cache_path.is_file():
+        # Same-repo credential carve-out (PR 918, extended to the blob chokepoint):
+        # only when the entry's clone URL is byte-identical to the owner-typed
+        # registry repo does the clone get owner credentials.  Reuse the merged
+        # predicate verbatim — no host normalization, no index-supplied URL trust;
+        # a bundled entry (no ``_registry``) or a sibling repo on the same host
+        # returns False and stays anonymous + strict.
+        #
+        # ``clone_url`` was resolved above (atomically with the cache-key
+        # binding) from the SAME ``entry`` object the credential decision is made
+        # against, and is threaded into ``_fetch_git_blob`` for BOTH authorization
+        # and the clone.  The callee never re-resolves from ``repo``.  This closes
+        # a TOCTOU window: if the callee re-read the URL from ``repo`` a concurrent
+        # registry refresh could, between this decision and the clone, swap the
+        # entry backing ``repo`` to a private sibling — and the owner-credential
+        # grant decided for the old URL would then clone the new one.  One read
+        # of one entry makes ``owner_designated`` and ``clone_url`` describe the
+        # same value by identity, not "by construction" across two reads.
+        owner_designated = False
+        if entry is not None:
+            # The owner-credential grant must be scoped to the entry's CONFIGURED
+            # branch, not an attacker-chosen ``ref``.  ``ref`` falls back to the
+            # entry's ``branch`` only when the query param is empty; a caller can
+            # otherwise supply any ``_SAFE_REF_RE``-valid ``ref`` (e.g.
+            # ``iconPath=logo.png&ref=private``).  Without this gate the grant is
+            # decided on the entry alone, so a crafted ``ref`` would drive an
+            # owner-credentialed clone of an UNCONFIGURED (e.g. private) branch of
+            # the owner's repo and serve its image bytes.  The configured branch
+            # is the only ref the owner designated for this registry; require the
+            # effective ``ref`` to equal it before honoring ``owner_designated``.
+            # A differing ``ref`` is not rejected (the anonymous path still serves
+            # a public branch) — it simply never attaches credentials.
+            configured_branch = entry.get("branch", "main")
+            if ref == configured_branch:
+                # ``get_registry_app_by_repo`` selected this entry by ``repo`` key
+                # alone (bundled first, then each external registry).  Provenance
+                # is only unambiguous — and the owner-credential grant only
+                # honestly attributable to the entry actually being served — when
+                # exactly ONE configured source publishes that key.  If more than
+                # one registry claims the same ``repo``, a request reachable
+                # through registry B could resolve to registry A's owner-designated
+                # entry, so downgrade to anonymous+strict (never grant) rather than
+                # clone A's private repo with A's credentials on a B-reachable
+                # request.  Only a single owner may reach
+                # ``_is_owner_designated_repo``; the grant then stays gated on the
+                # entry-scoped byte-identical URL check as before (no widening).
+                owner_count = await asyncio.to_thread(_repo_key_owner_count, repo)
+                if owner_count == 1:
+                    owner_designated = await asyncio.to_thread(_is_owner_designated_repo, entry)
         async with _BLOB_FETCH_SEMAPHORE:
             # Re-check after acquiring semaphore (another request may have cached it)
             if not cache_path.is_file():
-                ok = await _fetch_git_blob(repo, ref, file_path, cache_path)
+                ok = await _fetch_git_blob(
+                    repo,
+                    ref,
+                    file_path,
+                    cache_path,
+                    git_url=clone_url,
+                    owner_designated=owner_designated,
+                )
                 if not ok:
                     return web.json_response({"error": "failed to fetch blob"}, status=502)
 

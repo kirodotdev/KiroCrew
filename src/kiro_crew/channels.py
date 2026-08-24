@@ -35,6 +35,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from kiro_crew.discord.gateway import maybe_start_discord
+from kiro_crew.feishu.gateway import maybe_start_feishu
 from kiro_crew.imessage.gateway import maybe_start_imessage
 from kiro_crew.messaging.registry import ChannelDescriptor
 from kiro_crew.teams.gateway import maybe_start_teams
@@ -42,6 +43,7 @@ from kiro_crew.telegram.gateway import maybe_start_telegram
 from kiro_crew.webex.gateway import maybe_start_webex
 from kiro_crew.wecom.gateway import maybe_start_wecom
 from kiro_crew.weixin.gateway import maybe_start_weixin
+from kiro_crew.whatsapp.gateway import maybe_start_whatsapp
 
 
 @lru_cache(maxsize=1)
@@ -56,4 +58,6 @@ def builtin_channel_descriptors() -> tuple[ChannelDescriptor, ...]:
         ChannelDescriptor(channel_type="teams", start=maybe_start_teams),
         ChannelDescriptor(channel_type="weixin", start=maybe_start_weixin),
         ChannelDescriptor(channel_type="imessage", start=maybe_start_imessage),
+        ChannelDescriptor(channel_type="whatsapp", start=maybe_start_whatsapp),
+        ChannelDescriptor(channel_type="feishu", start=maybe_start_feishu),
     )

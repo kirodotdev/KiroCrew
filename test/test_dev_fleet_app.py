@@ -273,17 +273,22 @@ async def test_remove_refuses_when_branch_oid_diverged():
     """Squash-safe race guard: branch OID != PR headRefOid -> refuse removal."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
+    full_head = "a" * 40
+    cache = AsyncMock(return_value={"state": "MERGED"})
+    git = AsyncMock(return_value=full_head)
     with patch.object(mod, "_find_worktree", new_callable=AsyncMock,
                       return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
          patch.object(mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
-         patch.object(mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
+         patch.object(mod, "_pr_status_cached", cache), \
          patch.object(mod, "_own_commits_count", new_callable=AsyncMock, return_value=3), \
-         patch.object(mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="bbb2222"), \
+         patch.object(mod, "_git", git), \
+         patch.object(mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="b" * 40), \
          patch.object(mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is False
     assert "OID diverged" in result["error"]
+    git.assert_any_await("/fake/wt", "rev-parse", "HEAD")
+    cache.assert_awaited_once_with("feat-x", full_head)
 
 
 @pytest.mark.asyncio
@@ -5983,19 +5988,22 @@ async def test_pr_query_one_carries_title_and_hides_body():
     payload = json.dumps([{
         "number": 42, "state": "OPEN",
         "url": "https://github.com/o/r/pull/42", "isDraft": False,
-        "title": "My PR title", "body": "Fixes #7",
+        "title": "My PR title", "body": "Fixes #7", "headRefOid": "a" * 40,
     }])
     with patch.object(mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, payload, "")):
         pr = await mod._pr_query_one("o/r", "feat/x")
     assert pr is not None
     assert pr["title"] == "My PR title"
     assert pr["_body"] == "Fixes #7"
+    assert pr["_head_oid"] == "a" * 40
     assert "body" not in pr  # moved to internal _body
+    assert "headRefOid" not in pr
     redacted = mod._redact_pr(pr)
     assert redacted["title"] == "My PR title"
     assert redacted["number"] == 42
     assert "_body" not in redacted  # internal fields dropped from payload
     assert "_repo" not in redacted
+    assert "_head_oid" not in redacted
 
 
 # --- _build_context: parses PR body + commits, builds links ---
@@ -6136,6 +6144,29 @@ async def test_fleet_payload_marks_an_inferred_main_checkout():
 
     assert fleet["main_repo"] == mod.MAIN_REPO
     assert fleet["main_repo_inferred"] is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_redacts_credentials_in_main_repo():
+    sensitive = f"/tmp/ghp_{'A' * 40}/checkout"
+    with patch.object(mod, "_repo", return_value=sensitive):
+        fleet = await _fleet_with(
+            [{"path": "/repo", "branch": "main", "is_main": True}]
+        )
+
+    assert "ghp_" not in fleet["main_repo"]
+    assert "[REDACTED" in fleet["main_repo"]
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_preserves_ordinary_main_repo_path():
+    ordinary = "/home/user/oss/KiroCrew"
+    with patch.object(mod, "_repo", return_value=ordinary):
+        fleet = await _fleet_with(
+            [{"path": "/repo", "branch": "main", "is_main": True}]
+        )
+
+    assert fleet["main_repo"] == ordinary
 
 
 @pytest.mark.asyncio
@@ -9020,3 +9051,124 @@ async def test_gateway_start_id_foreground_fallback(monkeypatch, tmp_path):
          patch.object(mod, "shutil",
                       MagicMock(which=MagicMock(return_value=None))):
         assert await mod._gateway_start_id() is None
+
+
+# ---------------------------------------------------------------------------
+# Regression tests: make-live artifact validation inside the cutover lock
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_make_live_artifact_changed_before_lock_is_revalidated(
+    monkeypatch, tmp_path
+):
+    """Artifacts that are valid at early-probe time but gone before the lock
+    is acquired are caught by the in-lock re-validation.
+
+    A side-effecting lock wrapper removes the venv binary at the instant the
+    lock is acquired, reproducing a concurrent provision that replaces the
+    binary between the early check and the commit.  The cutover must refuse
+    with ``missing_venv`` and must NOT write the pointer.
+
+    Without the production fix the early probe passes, the lock is acquired,
+    and the cutover proceeds to write the pointer and stage a restart — the
+    stale validation is never repeated and the race window is not closed.
+    This test proves the ordering by observing the final response code and
+    the pointer-file state.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False)
+
+    kcbin = wt / ".venv" / "bin" / "kirocrew"
+
+    # Wrap _MAKE_LIVE_LOCK so that entering the lock removes the binary,
+    # simulating a concurrent rebuild that completes between the early probe
+    # and the lock-acquire.
+    real_lock = asyncio.Lock()
+
+    class _SideEffectLock:
+        """Proxy that removes *kcbin* when the lock body is entered."""
+
+        def locked(self) -> bool:
+            return real_lock.locked()
+
+        async def __aenter__(self):
+            await real_lock.__aenter__()
+            # Binary vanishes at the moment the lock body begins.
+            kcbin.unlink(missing_ok=True)
+            return self
+
+        async def __aexit__(self, *args):
+            return await real_lock.__aexit__(*args)
+
+    monkeypatch.setattr(mod, "_MAKE_LIVE_LOCK", _SideEffectLock())
+
+    res = await mod._make_live(str(wt), dry_run=False)
+
+    assert res["ok"] is False, (
+        "cutover must be refused when the binary disappears inside the lock; "
+        "got ok=True — the in-lock re-validation is absent or not running"
+    )
+    assert res["code"] == "missing_venv", (
+        f"expected missing_venv from in-lock re-validation, got {res.get('code')!r}"
+    )
+    ptr_file = ptr_dir / "live_target.json"
+    assert not ptr_file.exists(), (
+        "the live-target pointer must NOT be written when in-lock re-validation fails"
+    )
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_make_live_artifact_checks_are_executor_offloaded(
+    monkeypatch, tmp_path
+):
+    """The artifact filesystem checks (``is_file`` / ``os.access``) are
+    submitted to ``loop.run_in_executor`` rather than called inline on the
+    event loop, preventing a slow or network-backed filesystem from stalling
+    all Dev Fleet requests.
+
+    The test wraps ``subprocess_executor()`` to record every callable submitted
+    via ``loop.run_in_executor``.  A helper named ``_validate_artifacts_sync``
+    must be submitted at least twice — once for the early probe and once for
+    the in-lock re-validation — proving the checks are offloaded.
+
+    Without the production fix, the checks are plain synchronous expressions
+    (``kcbin.is_file()``, ``os.access()``, ``dist_index.is_file()``) executed
+    inline; no callable named ``_validate_artifacts_sync`` is ever submitted.
+    """
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_COMMITTED", False)
+    monkeypatch.setattr(mod, "_MAKE_LIVE_LOCK", asyncio.Lock())
+
+    submitted_qualnames: list[str] = []
+
+    # Intercept every run_in_executor call by wrapping the event loop's method.
+    # asyncio.get_running_loop() inside _make_live returns the SAME object that
+    # asyncio.get_event_loop() returns under pytest-asyncio's per-test loop.
+    # We patch the loop object's method directly so the intercept is in place
+    # when _make_live calls loop.run_in_executor(…).
+    running_loop = asyncio.get_running_loop()
+    real_run_in_executor = running_loop.run_in_executor
+
+    async def _recording_run_in_executor(executor, fn, *args):
+        submitted_qualnames.append(fn.__qualname__)
+        return await real_run_in_executor(executor, fn, *args)
+
+    monkeypatch.setattr(running_loop, "run_in_executor", _recording_run_in_executor)
+
+    await mod._make_live(str(wt), dry_run=False)
+
+    validate_submissions = [
+        q for q in submitted_qualnames if "_validate_artifacts_sync" in q
+    ]
+    assert len(validate_submissions) >= 2, (
+        "artifact validation must be submitted to the executor at least twice "
+        "(early probe + in-lock re-validation); "
+        f"all submitted callables: {submitted_qualnames!r}.  "
+        "Zero entries means the checks are still inline on the event loop."
+    )

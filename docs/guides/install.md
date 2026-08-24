@@ -438,8 +438,9 @@ channel later -- Slack (`kirocrew setup --slack` or
 [Telegram](../../src/kiro_crew/docs/telegram-integration.md),
 [Teams](../../src/kiro_crew/docs/teams-integration.md),
 [Webex](../../src/kiro_crew/docs/webex-integration.md),
-[WeCom](../../src/kiro_crew/docs/wecom-integration.md), or
-[WeChat](../../src/kiro_crew/docs/weixin-integration.md) --
+[WeCom](../../src/kiro_crew/docs/wecom-integration.md),
+[WeChat](../../src/kiro_crew/docs/weixin-integration.md), or
+[WhatsApp](../../src/kiro_crew/docs/whatsapp-integration.md) --
 when you want to reach the same agent away from your desk.
 
 These flags narrow the wizard:
@@ -1063,8 +1064,9 @@ sign-off is tracked in
   [Telegram](../../src/kiro_crew/docs/telegram-integration.md),
   [Teams](../../src/kiro_crew/docs/teams-integration.md),
   [Webex](../../src/kiro_crew/docs/webex-integration.md),
-  [WeCom](../../src/kiro_crew/docs/wecom-integration.md), and
-  [WeChat](../../src/kiro_crew/docs/weixin-integration.md).
+  [WeCom](../../src/kiro_crew/docs/wecom-integration.md),
+  [WeChat](../../src/kiro_crew/docs/weixin-integration.md), and
+  [WhatsApp](../../src/kiro_crew/docs/whatsapp-integration.md).
 - [Remote and mobile access](remote-and-mobile.md): 24/7 operation on a remote
   host, and reaching the dashboard from a phone.
 - [Architecture overview](../architecture/overview.md): system diagrams and the

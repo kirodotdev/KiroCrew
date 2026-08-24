@@ -105,7 +105,11 @@ class WeixinRenderer(Renderer):
         return None
 
     async def on_prompt_choice(
-        self, options: list[dict[str, Any]], request_id: str | int
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
     ) -> None:
         # iLink has no interactive buttons. The driver only dispatches
         # prompt_choice for INTERACTIVE + a decider, and this channel runs

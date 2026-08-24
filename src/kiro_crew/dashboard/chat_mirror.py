@@ -41,7 +41,7 @@ from kiro_crew.messaging.link import (
     ChannelLink,
     is_channel_session_key,
 )
-from kiro_crew.messaging.renderer import chunk_text
+from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.platform.context import redact_via_context
 from kiro_crew.platform.governance_profiles import vet_and_audit
 from kiro_crew.sel import sel
@@ -111,9 +111,7 @@ def _resumes_inbound(transport: Any) -> bool:
     ``getattr`` chain is the conservative branch: a transport with no capability
     object at all degrades to outbound-only.
     """
-    return bool(
-        getattr(getattr(transport, "capabilities", None), "supports_session_resume", False)
-    )
+    return bool(getattr(getattr(transport, "capabilities", None), "supports_session_resume", False))
 
 
 async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
@@ -126,8 +124,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     conversation id is never accepted as a send target, so a session's transcript
     can only be anchored into a channel the user has actually configured. The
     target channel's transport must be registered at boot AND
-    ``supports_proactive_send`` — Telegram qualifies; WeCom, whose replies are
-    bound to an inbound token, does not.
+    ``supports_proactive_send`` — Telegram and WeCom both qualify. WeCom's
+    availability is per-TARGET rather than blanket: ``aibot_send_msg`` needs no
+    token, but the platform only delivers into a conversation the user has already
+    written to, so ``configured_targets`` lists an allow-listed userid that has
+    never messaged the bot with a reason instead of offering it. What
+    ``resolve_configured_target`` rechecks here is MEMBERSHIP; deliverability is
+    WeCom's to answer, and it comes back on the send ACK.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info.get("name") or request.match_info.get("slot", "")
@@ -350,13 +353,13 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     def _units_for(row: dict) -> list[str]:
         # redact_via_context is the canonical egress shim (a loaded companion's
         # extra credential regexes apply, not just the OSS baseline) and it never
-        # truncates. chunk_text at the transport's own limit matches how a normal
+        # truncates. Splitting at the transport's own limit matches how a normal
         # mirrored turn is delivered in _deliver_cross_surface_reply, so a long
         # message arrives in full instead of being cut at 2,000 chars. No Slack
         # mrkdwn conversion here: this path targets Telegram/Discord/Teams.
         speaker = "You" if row.get("role") == "user" else "Kiro Crew"
         text = redact_via_context(backfill_content(row))
-        return chunk_text(f"{speaker}: {text}", max_chars)
+        return split_markdown_safe(f"{speaker}: {text}", max_chars)
 
     # Bound the INLINE delivery. Unlike the Slack drain this cannot be
     # backgrounded -- the per-unit governance re-check below has to be able to
@@ -388,7 +391,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
         every unit fits, but the reservation pushed the oldest turn out and then
         spent the reserved slot announcing the omission it had just caused.
         """
-        tail = recent_turn_units[total_turns - keep:] if keep else []
+        tail = recent_turn_units[total_turns - keep :] if keep else []
         dropped = total_turns - keep
         marker = 1 if (selection.skipped_turns or dropped) else 0
         head = len(head_units) if with_head else 0
@@ -412,7 +415,7 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     if not keep_turns and total_turns:
         keep_turns, include_head = 1, False
 
-    kept = recent_turn_units[total_turns - keep_turns:] if keep_turns else []
+    kept = recent_turn_units[total_turns - keep_turns :] if keep_turns else []
     skipped_total = (
         selection.skipped_turns
         + (total_turns - keep_turns)
@@ -642,9 +645,7 @@ async def api_chat_slot_mirror_unlink(request: web.Request) -> web.Response:
         return web.json_response({"error": "not found"}, status=404)
 
     session_key = effective_session_key(slot)
-    cleared = state.sessions.clear_mirror_link(
-        session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK
-    )
+    cleared = state.sessions.clear_mirror_link(session_key, reason=UNBIND_REASON_DASHBOARD_UNLINK)
     state.push_slots_update()
     sel().log_api_access(
         caller="dashboard",

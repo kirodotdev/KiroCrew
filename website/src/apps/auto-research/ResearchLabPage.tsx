@@ -12,6 +12,7 @@ import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 const ACTIVE_STATUSES = ['running', 'paused', 'stagnant', 'needs_input']
 
 interface Campaign { id: string; name: string; question: string; sub_questions: string; sources: string; max_cycles: number; idle_secs: number; status: string; total_cycles: number; findings?: Finding[]; error_message?: string; pending_question?: string; parent_id?: string; parallel_workers?: number }
@@ -29,6 +30,7 @@ function GrowTextarea({ value, onChange, onSubmit, placeholder, className = '', 
   className?: string
   ariaLabel?: string
 }) {
+  const ime = useImeGuard()
   const ref = useRef<HTMLTextAreaElement>(null)
   useEffect(() => {
     const el = ref.current
@@ -46,9 +48,9 @@ function GrowTextarea({ value, onChange, onSubmit, placeholder, className = '', 
       value={value}
       placeholder={placeholder}
       onChange={e => onChange(e.target.value)}
+      {...ime.bindComposition<HTMLTextAreaElement>()}
       onKeyDown={e => {
-        if (onSubmit && e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault()
+        if (onSubmit && e.key === 'Enter' && !e.shiftKey && ime.claimEnter(e)) {
           onSubmit()
         }
       }}

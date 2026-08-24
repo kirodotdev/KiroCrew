@@ -8,6 +8,7 @@ import { useModelsDegraded } from '../providers/modelListHealth'
 import ChatMessageList from '../app-sdk/ChatMessageList'
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import ChatInput from './ChatInput'
+import ChatDropOverlay, { useChatFileDrop } from './ChatDropOverlay'
 import PendingQuestionCard from './PendingQuestionCard'
 import QueueStack, { SubagentDeliveryProgress, splitPaneMessages } from './QueueStack'
 import SubagentProgressBar from '../pages/chat/SubagentProgressBar'
@@ -26,6 +27,7 @@ import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capt
 import { confirmedDelivered } from '../utils/sendDelivery'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
+import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
@@ -69,6 +71,7 @@ export default function ChatPane({
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
 }) {
+  // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
   const provider = useProvider()
   // Same gate the main chat uses: hide a Connections-owned OAuth banner only
@@ -76,7 +79,6 @@ export default function ChatPane({
   const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
-  const [dragOver, setDragOver] = useState(false)
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -211,10 +213,16 @@ export default function ChatPane({
   }, [msgHash, running])
 
 
-  const switchAgent = useCallback((name: string) => {
+  const switchAgent = useCallback(async (name: string) => {
     dispatch(setAgentSwitchNotice(null))
-    api.chatSlotAgent(slotKey, name)
-      .catch((e) => dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e))))
+    try {
+      // Same protocol as switchModel below (#4523): the pane must not depend
+      // on the coalesced slots rebroadcast to see its own pick.
+      // performAgentSlotSwitch mirrors exactly what the response names.
+      await performAgentSlotSwitch(slotKey, name, dispatch)
+    } catch (e) {
+      dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(e)))
+    }
   }, [dispatch, slotKey])
   const switchModel = useCallback(async (name: string) => {
     try {
@@ -277,12 +285,12 @@ export default function ChatPane({
   // appended — the pane does not track a live composer caret. In a plain
   // browser no real path is visible, so classifyDrop leaves folders on the
   // upload route there (today's behaviour).
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault(); e.stopPropagation(); setDragOver(false)
-    const { files, dirPaths } = classifyDrop(e.dataTransfer)
+  const handleDrop = useCallback((dataTransfer: DataTransfer) => {
+    const { files, dirPaths } = classifyDrop(dataTransfer)
     if (dirPaths.length) setInput((prev) => spliceDirTokens(prev, null, dirPaths).value)
     if (files.length) uploadFiles(files)
   }, [uploadFiles])
+  const { active: dragOver, dropTargetProps } = useChatFileDrop(handleDrop)
 
   /** Put a payload the server never accepted back into the composer.
    *
@@ -499,10 +507,11 @@ export default function ChatPane({
            name: classes here are styling and can churn without anyone
            auditing focus behaviour. */
         data-chat-pane={focused ? 'focused' : ''}
-        className={`flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
+        {...dropTargetProps}
+        className={`relative flex flex-col h-full min-h-0 rounded-lg overflow-hidden bg-bg border transition-colors ${focused ? 'border-accent' : 'border-border'}`}
         style={{ '--mc-content-width': '100%' } as React.CSSProperties}
       >
-        <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
+        <div className="relative z-50 flex items-center gap-2 px-3 py-2 border-b border-border bg-card shrink-0">
           <span className={`w-2 h-2 rounded-full shrink-0 ${running ? 'bg-ok animate-pulse' : 'bg-accent'}`} />
           <span className="text-[13px] font-semibold text-text-strong truncate min-w-0">{title}</span>
           {parentKey && (
@@ -531,6 +540,8 @@ export default function ChatPane({
             </button>
           )}
         </div>
+
+        <ChatDropOverlay active={dragOver} />
 
         {/* stable theming hook 'chat-container' — see website/docs/theming-contract.md */}
         {/* overflow-x-hidden: `overflow-y-auto` alone leaves overflow-x at
@@ -608,10 +619,9 @@ export default function ChatPane({
           pendingFiles={pendingFiles}
           onRemoveFile={(p) => setPendingFiles((prev) => prev.filter((x) => x !== p))}
           uploading={uploadMutation.isPending}
-          onDrop={handleDrop}
-          dragOver={dragOver}
-          onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(true) }}
-          onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false) }}
+          onDrop={dropTargetProps.onDrop}
+          onDragOver={dropTargetProps.onDragOver}
+          onDragLeave={dropTargetProps.onDragLeave}
         />
 
         {/* Agent picker portal — anchored to the input-bar agent button. */}
@@ -630,7 +640,10 @@ export default function ChatPane({
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={agentDD.filter}
                 onChange={(e) => agentDD.setFilter(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') agentDD.setOpen(false); if (e.key === 'Enter' && agentDD.filtered.length === 1) { switchAgent(agentDD.filtered[0].name); agentDD.setOpen(false) } }}
+                /* Enter/Escape live on the portal container's onListKeyDown
+                   (useListboxKeyboard), which claims Enter against IME
+                   composition internally — a second handler here would give
+                   the same keys two dispatch paths. */
                 className={ddInputCls}
               />
             </div>
@@ -659,7 +672,10 @@ export default function ChatPane({
                 placeholder={i18nT('components.chatPane.type_to_filter')}
                 value={modelDD.filter}
                 onChange={(e) => modelDD.setFilter(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Escape') modelDD.setOpen(false); if (e.key === 'Enter' && modelDD.filtered.length === 1) { switchModel(modelDD.filtered[0].name); modelDD.setOpen(false) } }}
+                /* Enter/Escape live on the portal container's onListKeyDown
+                   (useListboxKeyboard), which claims Enter against IME
+                   composition internally — a second handler here would give
+                   the same keys two dispatch paths. */
                 className={ddInputCls}
               />
             </div>

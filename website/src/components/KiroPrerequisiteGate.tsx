@@ -149,6 +149,27 @@ function OwnerSetupRequired({
   retrying: boolean
   onRetry: () => void
 }) {
+  // When the re-auth banner is up, this viewer IS the owner on a session that
+  // predates the configured owner id — "ask the owner" would tell them they
+  // cannot fix what one sign-in fixes. Swap the body for the banner's own
+  // remedy so the two surfaces give ONE instruction. Same event pair App.tsx
+  // subscribes to; the seed probes the banner ELEMENT rather than importing
+  // api/client's isAuthBannerShown, because this gate renders in suites that
+  // mock that module wholesale — one boolean is not worth coupling the gate's
+  // module graph (and every such mock factory) to the full client.
+  const [authRequired, setAuthRequired] = useState<boolean>(
+    () => typeof document !== 'undefined' && document.getElementById('mc-session-expired') !== null,
+  )
+  useEffect(() => {
+    const onRequired = () => setAuthRequired(true)
+    const onCleared = () => setAuthRequired(false)
+    window.addEventListener('mc-auth-required', onRequired)
+    window.addEventListener('mc-auth-cleared', onCleared)
+    return () => {
+      window.removeEventListener('mc-auth-required', onRequired)
+      window.removeEventListener('mc-auth-cleared', onCleared)
+    }
+  }, [])
   return (
     <SetupShell>
       <>
@@ -156,20 +177,32 @@ function OwnerSetupRequired({
           <ShieldCheck className="lucide-inline" />
         </div>
         <p className="mt-6 text-[12px] font-bold uppercase tracking-[0.16em] text-accent">
-          {i18nT('components.kiroPrerequisiteGate.gateway_setup_required')}
+          {authRequired
+            ? i18nT('components.kiroPrerequisiteGate.sign_in_required')
+            : i18nT('components.kiroPrerequisiteGate.gateway_setup_required')}
         </p>
         <h1 className="mt-2 text-3xl font-bold tracking-tight text-text-strong">
-          {i18nT('components.kiroPrerequisiteGate.the_gateway_owner_needs_to_finish_setup')}
+          {authRequired
+            ? i18nT('components.kiroPrerequisiteGate.sign_in_again_to_continue')
+            : i18nT('components.kiroPrerequisiteGate.the_gateway_owner_needs_to_finish_setup')}
         </h1>
         <p className="mt-3 max-w-lg text-sm leading-relaxed text-muted">
-          {i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
+          {authRequired
+            ? i18nT('api.client.stale_owner_session_sign_in_again')
+            : i18nT('components.kiroPrerequisiteGate.ask_the_kiro_crew_owner_to_install_kiro_cli_and')}
         </p>
-        <div className="mt-6">
-          <Btn type="button" disabled={retrying} onClick={onRetry}>
-            <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
-            {i18nT('components.kiroPrerequisiteGate.check_again')}
-          </Btn>
-        </div>
+        {/* "Check again" re-probes readiness, which cannot change for this
+            viewer until they sign back in — a retry that cannot succeed is a
+            false affordance, so the re-auth state carries no button and the
+            banner remains the single action. */}
+        {!authRequired && (
+          <div className="mt-6">
+            <Btn type="button" disabled={retrying} onClick={onRetry}>
+              <RefreshCw className={`lucide-inline ${retrying ? 'animate-spin' : ''}`} />
+              {i18nT('components.kiroPrerequisiteGate.check_again')}
+            </Btn>
+          </div>
+        )}
       </>
     </SetupShell>
   )

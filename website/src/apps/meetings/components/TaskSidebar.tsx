@@ -12,6 +12,7 @@ import { i18nT } from '../../../i18n/t'
 import SimpleSelect from '../../../components/SimpleSelect'
 import { Badge, Btn, Input, SendBtn } from '../../../components/ui'
 import { PRIORITY_LABEL_KEY, type Task, type TaskPriority } from '../api'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 
 const PRIORITIES: TaskPriority[] = ['high', 'medium', 'low']
 
@@ -30,6 +31,7 @@ interface Props {
 }
 
 export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete }: Props) {
+  const ime = useImeGuard()
   const quickAddRef = useRef<HTMLInputElement>(null)
 
   const quickAdd = () => {
@@ -145,9 +147,7 @@ export default function TaskSidebar({ tasks, onClose, onAdd, onUpdate, onDelete 
           className="flex-1"
           placeholder={i18nT('apps.meetings.taskSidebar.quickAddPlaceholder')}
           aria-label={i18nT('apps.meetings.taskSidebar.quickAddPlaceholder')}
-          onKeyDown={e => {
-            if (e.key === 'Enter') quickAdd()
-          }}
+          {...ime.bindEnter({ onEnter: quickAdd })}
         />
         <SendBtn onClick={quickAdd} aria-label={i18nT('apps.meetings.taskSidebar.add')}>
           <Plus className="lucide-inline" />

@@ -340,6 +340,43 @@ def _reset_safety_override_between_tests():
 
 
 @pytest.fixture(autouse=True)
+def _restore_autonudge_singleton():
+    """Floor under ``autonudge._INSTANCE`` — the process-global service reference.
+
+    ``AutoNudgeService.start()`` publishes itself here and ``stop()`` clears it, so a test
+    that starts the service (or drives a dashboard handler that does) leaves a live
+    instance behind, holding timer TASKS created on that test's event loop. Every later
+    test in the same worker then reaches those tasks through the singleton, on a loop that
+    has since closed — which is how `test_dashboard_chat.py`'s
+    ``TestCloseBroadcastDurability`` came to answer 500 with no production-code change,
+    from a leak in a file that has nothing to do with it.
+
+    Restores what the test INHERITED rather than a pristine ``None``, so a leak from an
+    earlier test is not re-reported against every test after it. Restores silently rather
+    than failing: production really does publish this singleton, and a test driving that
+    code cannot avoid inheriting it — the damage is to other tests, and stopping it
+    propagating is the part that is never optional.
+
+    Retiring the leaked instance's timers goes through ``_cancel_timer``, which is the one
+    place that knows a task on a closed loop must be dropped rather than cancelled.
+    """
+    from kiro_crew import autonudge as _an
+
+    inherited = _an._INSTANCE
+    try:
+        yield
+    finally:
+        leaked = _an._INSTANCE
+        if leaked is not None and leaked is not inherited:
+            for loop_id in list(getattr(leaked, "_timers", {})):
+                try:
+                    leaked._cancel_timer(loop_id)
+                except Exception:  # noqa: BLE001 - teardown must not mask the test result
+                    pass
+        _an._INSTANCE = inherited
+
+
+@pytest.fixture(autouse=True)
 def _reset_reasoning_effort_globals():
     """Snapshot + restore the process-global reasoning-effort allowlist around
     each test. The allowlist is union-only/monotonic by design (persistence

@@ -458,16 +458,29 @@ def test_every_middleware_denial_is_audited_off_the_loop() -> None:
     )
     assert "except Exception" in helper, "_audit_denied is no longer best-effort"
 
+    # Both pre-audit barriers are built by a shared factory, so the deny arms live
+    # there rather than in either entrypoint.
     for func, name in (
-        (server_mod.start_dashboard, "start_dashboard"),
-        (server_mod.start_api_server, "start_api_server"),
         (server_mod._make_host_validation_middleware, "host_validation"),
+        (server_mod._make_csrf_middleware, "csrf"),
     ):
         src = inspect.getsource(func)
         assert "_audit_denied(" in src, (
             f"{name} has a deny arm that no longer audits via _audit_denied"
         )
         assert 'outcome="denied"' not in src, (
+            f"{name} re-grew a hand-rolled denial audit; route it through "
+            "_audit_denied so the off-loop and best-effort properties hold "
+            "(sel_audit_middleware's ok/error request audit is unaffected)"
+        )
+
+    # The entrypoints themselves must not grow a private denial audit: a deny arm
+    # added there would bypass both factories AND the helper's two properties.
+    for func, name in (
+        (server_mod.start_dashboard, "start_dashboard"),
+        (server_mod.start_api_server, "start_api_server"),
+    ):
+        assert 'outcome="denied"' not in inspect.getsource(func), (
             f"{name} re-grew a hand-rolled denial audit; route it through "
             "_audit_denied so the off-loop and best-effort properties hold "
             "(sel_audit_middleware's ok/error request audit is unaffected)"

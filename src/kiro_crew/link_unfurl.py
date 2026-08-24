@@ -159,6 +159,39 @@ class ExtractedMeta:
     """
 
 
+def _is_not_public(
+    ip: "ipaddress.IPv4Address | ipaddress.IPv6Address",
+) -> bool:
+    """Whether *ip* is anything other than a globally reachable unicast address.
+
+    Allowlist AND denylist, deliberately both. ``is_global`` is the allowlist half
+    and is the only formulation that closes a whole class rather than one instance
+    — enumerating non-public categories already leaked ``100.64.0.0/10`` (RFC 6598
+    shared space, what a Tailscale tailnet and most CGNAT hand out), which CPython
+    special-cases in ``is_global`` but not in ``is_private``.
+
+    ``is_global`` alone is NOT sufficient either, because CPython's IPv6
+    ``is_global`` is just ``not is_private`` and its private table omits ranges
+    that are plainly not routable: ``ff00::/8`` multicast and the deprecated
+    ``fec0::/10`` site-local both report ``is_global=True``. So every category flag
+    ``ipaddress`` exposes is also rejected. Neither half is redundant: the
+    allowlist catches what the flags forgot, the flags catch what ``is_global``
+    forgot, and ``test_vet_rejects_every_special_purpose_range`` pins the union
+    against a table of IANA special-purpose prefixes so the next gap is found by
+    the suite instead of by a reviewer.
+    """
+    return (
+        not ip.is_global
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_link_local
+        or ip.is_loopback
+        or ip.is_unspecified
+        # IPv6-only; absent on IPv4Address.
+        or getattr(ip, "is_site_local", False)
+    )
+
+
 def _reject_if_internal_ip(candidate: str) -> None:
     """Raise ``blocked_url`` if *candidate* parses as a non-public IP.
 
@@ -175,6 +208,13 @@ def _reject_if_internal_ip(candidate: str) -> None:
       reports ``is_loopback == False``, and its ``is_private`` only consults the
       mapped address on Python 3.13+ — so on every supported version below that,
       the mapped form is a clean bypass unless unwrapped by hand.
+    * 6to4 is checked on BOTH readings, not unwrapped. ``2002:0a00:0001::1`` is a
+      routable v6 address AND names the v4 tunnel endpoint ``10.0.0.1``, so each
+      has to pass: ``2002::/16`` entered CPython's IPv6 private table only with
+      gh-113171 (3.10.14, 3.11.9, 3.12.4), so on an older patch release of a
+      version this project supports the v6 form reports ``is_global`` while the
+      packet goes inward — and substituting the payload instead would let
+      ``2002:8000::`` through, whose payload ``128.0.0.0`` is public.
     """
     try:
         ip = ipaddress.ip_address(canonicalize_ip(candidate))
@@ -183,32 +223,12 @@ def _reject_if_internal_ip(candidate: str) -> None:
     mapped = getattr(ip, "ipv4_mapped", None)
     if mapped is not None:
         ip = mapped
-    # Allowlist AND denylist, deliberately both. `is_global` is the allowlist half
-    # and is the only formulation that closes a whole class rather than one
-    # instance — enumerating non-public categories already leaked
-    # `100.64.0.0/10` (RFC 6598 shared space, what a Tailscale tailnet and most
-    # CGNAT hand out), which CPython special-cases in `is_global` but not in
-    # `is_private`.
-    #
-    # `is_global` alone is NOT sufficient either, because CPython's IPv6
-    # `is_global` is just `not is_private` and its private table omits ranges that
-    # are plainly not routable: `ff00::/8` multicast and the deprecated
-    # `fec0::/10` site-local both report `is_global=True`. So every category flag
-    # `ipaddress` exposes is also rejected. Neither half is redundant: the
-    # allowlist catches what the flags forgot, the flags catch what `is_global`
-    # forgot, and `test_vet_rejects_every_special_purpose_range` pins the union
-    # against a table of IANA special-purpose prefixes so the next gap is found
-    # by the suite instead of by a reviewer.
-    if (
-        not ip.is_global
-        or ip.is_multicast
-        or ip.is_reserved
-        or ip.is_link_local
-        or ip.is_loopback
-        or ip.is_unspecified
-        # IPv6-only; absent on IPv4Address.
-        or getattr(ip, "is_site_local", False)
-    ):
+    # 6to4 is an ADDITIONAL refusal rather than a substitution — see the docstring
+    # for why the two encodings are not symmetric.
+    sixtofour = getattr(ip, "sixtofour", None)
+    if sixtofour is not None and _is_not_public(sixtofour):
+        raise UnfurlRejected("blocked_url")
+    if _is_not_public(ip):
         raise UnfurlRejected("blocked_url")
 
 
@@ -285,10 +305,18 @@ def vet_unfurl_url(
         resolver = resolve or _default_resolve
         try:
             addresses: Sequence[str] = resolver(host, port)
-        except OSError:
+        except (OSError, UnicodeError):
             # NXDOMAIN, no route, resolver timeout. Fail CLOSED: an unresolvable
             # host is one whose addresses we could not check, and the vet's
             # contract is "safe to connect to", not "probably fine".
+            #
+            # `UnicodeError` is listed because it is NOT an `OSError` -- it is a
+            # `ValueError`. `getaddrinfo` raises it for a host carrying a lone
+            # surrogate (`https://\ud800.example/`), which arrives intact from a
+            # JSON string, so an `OSError`-only catch let it escape the vet
+            # entirely and surface as a 500. A host the resolver cannot encode is
+            # a host whose addresses were never checked: the same answer as
+            # NXDOMAIN, for the same reason.
             raise UnfurlRejected("blocked_url") from None
         if not addresses:
             raise UnfurlRejected("blocked_url")
@@ -301,6 +329,17 @@ def vet_unfurl_url(
         addresses = [literal]
 
     normalized = urlunsplit((scheme, parts.netloc, parts.path or "/", parts.query, ""))
+    # yarl raises `UnicodeError` (a `ValueError`, not an `OSError`) encoding a host
+    # that carries a lone surrogate — reachable because a JSON string can hold one,
+    # so it arrives intact from a request body or a config value. Refused rather
+    # than propagated: a URL whose wire form cannot be derived is one this function
+    # cannot promise anything about, which is the same fail-closed answer the
+    # resolver branch gives. Derived here, before the result is built, so the
+    # failure has one exit instead of a half-constructed `VettedUrl`.
+    try:
+        wire_host = yarl.URL(normalized).raw_host or host
+    except (ValueError, UnicodeError):
+        raise UnfurlRejected("invalid_url") from None
     return VettedUrl(
         url=normalized,
         scheme=scheme,
@@ -312,7 +351,7 @@ def vet_unfurl_url(
         # link would be refused by our own pin, surface as a 502, and sit in the
         # negative cache for ten minutes. Deriving it here keeps "the pinned host
         # is exactly what the client asks for" true in one provable place.
-        wire_host=yarl.URL(normalized).raw_host or host,
+        wire_host=wire_host,
         port=port,
         ip=str(addresses[0]),
         domain=host[4:] if host.startswith("www.") else host,

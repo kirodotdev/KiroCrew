@@ -90,6 +90,7 @@ except ImportError:  # Python 3.10, which this project still supports
     except ImportError:
         _toml = None  # type: ignore[assignment]
 
+
 #: How a caller receives this module's own messages: ``(message, is_error)``.
 #: Positional rather than keyword so a caller can pass a plain two-argument
 #: function without importing anything from here.
@@ -374,7 +375,10 @@ def interpreter_version(target_py: Path) -> tuple[int, int, int] | None:
     proc = subprocess.run(
         [str(target_py), "-c", "import sys;print('%d.%d.%d' % sys.version_info[:3])"],
         capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if proc.returncode != 0:
         return None
@@ -446,7 +450,10 @@ def installed_package_origin(target_py: Path) -> str | None:
         proc = subprocess.run(
             [str(target_py), "-c", probe],
             capture_output=True,
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except OSError:
         return None
@@ -648,7 +655,10 @@ def installed_console_script_target(target_py: Path, script: str) -> str | None:
     proc = subprocess.run(
         [str(target_py), "-c", probe],
         capture_output=True,
+        env={**os.environ, "PYTHONIOENCODING": "utf-8"},
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     if proc.returncode != 0:
         return None

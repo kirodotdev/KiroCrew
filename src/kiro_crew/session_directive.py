@@ -184,6 +184,29 @@ def match_tool(raw: str) -> str:
     return ""
 
 
+def directive_tool_for(mcp_server_name: str, tool_name: str) -> str:
+    """Return the directive-tool name for a recorded tool CALL, or ``""``.
+
+    THE forgery-gate identity predicate, spelled once: a directive-tool name is
+    honoured ONLY when the call's trusted ``_meta.kiro`` identity says it was
+    served by Kiro Crew's OWN core MCP server (:data:`CORE_MCP_SERVER`) AND its
+    CANONICAL tool name resolves to a :data:`DIRECTIVE_TOOLS` member via
+    :func:`match_tool`. Both ``EVENT_TOOL_CALL`` consumers (the dashboard's
+    ``chat_runner`` and ``messaging.driver.TurnDriver``) MUST call this instead
+    of inlining the two checks, so the boundary cannot silently diverge.
+
+    Both arguments MUST come from the out-of-band ``_meta.kiro`` channel
+    (``mcpServerName`` / ``toolName``) — never the LLM-authored title. A shell
+    tool has no MCP server name and a canonical tool name like
+    ``execute_bash``, so it resolves to ``""``; so does a third-party MCP
+    server that merely exposes a tool named e.g. ``monitor_start``. Absent
+    identity (empty server name) fails closed.
+    """
+    if mcp_server_name != CORE_MCP_SERVER:
+        return ""
+    return match_tool(tool_name or "")
+
+
 def strip_marker(text: str) -> str:
     """Remove the directive or refusal marker line from *text* for transcript display."""
     idx = -1

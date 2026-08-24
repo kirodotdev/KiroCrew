@@ -72,6 +72,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import github_client, provider,
 from kiro_crew.apps.manager import is_app_enabled
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import ui_language_tag
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kirocrew.app.issue-radar")
@@ -406,7 +407,7 @@ _probe_inflight: dict[_ProbeKey, "asyncio.Future[dict]"] = {}
 # Guards the two maps ONLY. It is deliberately never held across the probe call
 # itself: a global lock around a 20s-timeout `gh` invocation would make one slow
 # repo's probe stall every other repo's and kind's poll response.
-_probe_lock = asyncio.Lock()
+_probe_lock = LoopBoundLock()
 
 
 def _remember_probe(key: _ProbeKey, task: "asyncio.Future[dict]") -> None:
@@ -618,7 +619,10 @@ async def _handle_issues_first_page(
             partial(client.list_open_issues_first_page, owner, repo, **pkw)
         )
     except GhCliError as exc:
-        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+        logger.warning("issue-radar list_open_issues provider error: %s", exc)
+        return web.json_response(
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
+        )
     return web.json_response({
         **_identity(key), "state": "open",
         "issues": issues, "from_cache": False, "partial": True,
@@ -1159,7 +1163,10 @@ async def _handle_pulls_first_page(
             partial(client.list_open_pulls_first_page, owner, repo, **pkw)
         )
     except GhCliError as exc:
-        return web.json_response({"error": str(exc), "code": "provider_error"}, status=502)
+        logger.warning("issue-radar list_open_pulls provider error: %s", exc)
+        return web.json_response(
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
+        )
     return web.json_response({
         **_identity(key), "state": "open",
         "pulls": pulls, "from_cache": False, "partial": True,
@@ -2555,7 +2562,7 @@ async def _handle_issue_assignees(request: web.Request) -> web.Response:
     except GhCliError as exc:
         _audit("issue_assignees", target, "failure", error=str(exc))
         return web.json_response(
-            {"error": str(exc), "code": "provider_error"}, status=502
+            {"error": "upstream provider error", "code": "provider_error"}, status=502
         )
 
     if final_assignees is None:

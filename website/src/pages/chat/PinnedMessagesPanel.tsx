@@ -88,7 +88,7 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
               {pin.preview}
             </div>
             {/* Hover actions — forced visible + 40px targets where the pointer cannot hover */}
-            <div className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
+            <div data-testid="pin-actions" className={`flex items-center gap-1 mt-0.5 opacity-0 group-hover/pin:opacity-100 focus-within:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
               <button
                 onClick={(e) => { e.stopPropagation(); copyToClipboard(pin.preview) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
@@ -98,7 +98,7 @@ const PinnedMessagesPanel = memo(function PinnedMessagesPanel({
                 <Copy size={12} />
               </button>
               <button
-                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode) }}
+                onClick={(e) => { e.stopPropagation(); copySessionLink(slotKey, slotTitle, pin.message_ts, mode, pin.mid) }}
                 className="text-muted hover:text-text p-0.5 rounded transition-colors"
                 title={i18nT('pages.chat.pins.copy_link')}
                 aria-label={i18nT('pages.chat.pins.copy_link')}

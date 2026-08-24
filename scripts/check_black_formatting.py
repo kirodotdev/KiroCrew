@@ -101,6 +101,8 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
         cwd=ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
     )
     # black exits 1 for "would reformat", 123 for an internal error. Only the
     # former is a verdict; the latter must not read as "everything is clean".
@@ -139,7 +141,14 @@ def _unformatted(targets: tuple[str, ...]) -> set[str]:
 
 
 def _git(*args: str) -> tuple[int, str]:
-    proc = subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True)
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     return proc.returncode, proc.stdout
 
 

@@ -150,6 +150,25 @@ async function renderAndSettle(projects = [STATIC_PROJECT], activeId = 'proj-1')
   return result
 }
 
+/**
+ * The preview iframe, once it has actually rendered.
+ *
+ * `renderAndSettle` waits for the fetch to be CALLED and flushes one microtask,
+ * which is not the same as waiting for React Query's data to land and the frame
+ * to mount. Reading `document.querySelector('iframe')` straight afterwards
+ * therefore raced: under parallel load it returned null and the assertion failed
+ * with `Cannot read properties of null (reading 'src')` — a flake that only
+ * appeared in the full suite, never in isolation. Polling for the post-condition
+ * is the fix; a longer flush would only move the race.
+ */
+async function awaitIframe(): Promise<HTMLIFrameElement> {
+  return await waitFor(() => {
+    const el = document.querySelector('iframe')
+    expect(el).not.toBeNull()
+    return el as HTMLIFrameElement
+  })
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 describe('DesignTweakPage — Preview Pane', () => {
 
@@ -158,8 +177,7 @@ describe('DesignTweakPage — Preview Pane', () => {
   describe('iframe src and sandbox', () => {
     it('derives previewSrc from loopback previewUrl with nonce query param', async () => {
       await renderAndSettle()
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
-      expect(iframe).not.toBeNull()
+      const iframe = await awaitIframe()
       // The src must start with the project's previewUrl (loopback).
       expect(iframe.src).toContain('http://127.0.0.1:9100/')
       // Must contain a cache-buster nonce parameter.
@@ -168,7 +186,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
     it('iframe must NOT point to a dashboard-origin URL', async () => {
       await renderAndSettle()
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       // The dashboard serves from window.location.origin — the preview frame
       // must never share it, because allow-same-origin on same-origin is unsafe.
       expect(iframe.src).not.toContain(window.location.origin)
@@ -176,7 +194,7 @@ describe('DesignTweakPage — Preview Pane', () => {
 
     it('iframe has sandbox attribute with required permissions', async () => {
       await renderAndSettle()
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       expect(iframe).toHaveAttribute('sandbox')
       const sandbox = iframe.getAttribute('sandbox')!
       expect(sandbox).toContain('allow-scripts')
@@ -186,13 +204,13 @@ describe('DesignTweakPage — Preview Pane', () => {
 
     it('iframe width matches DIMS[desktop] = 100% by default', async () => {
       await renderAndSettle()
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       expect(iframe.style.width).toBe('100%')
     })
 
     it('uses dev-server previewUrl for framework projects', async () => {
       await renderAndSettle([DEV_PROJECT], 'proj-2')
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       expect(iframe.src).toContain('http://127.0.0.1:5173/')
       expect(iframe.src).toMatch(/_t=\d+/)
     })
@@ -203,7 +221,7 @@ describe('DesignTweakPage — Preview Pane', () => {
   describe('refresh (nonce bump)', () => {
     it('clicking refresh button changes iframe src nonce', async () => {
       await renderAndSettle()
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       const originalSrc = iframe.src
 
       // The refresh button has a specific aria-label from i18nT.
@@ -262,7 +280,7 @@ describe('DesignTweakPage — Preview Pane', () => {
       const tabletOption = screen.getByText('Tablet (768px)')
       await act(async () => { fireEvent.click(tabletOption) })
 
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       expect(iframe.style.width).toBe('768px')
     })
 
@@ -274,7 +292,7 @@ describe('DesignTweakPage — Preview Pane', () => {
       const mobileOption = screen.getByText('Mobile (390px)')
       await act(async () => { fireEvent.click(mobileOption) })
 
-      const iframe = document.querySelector('iframe') as HTMLIFrameElement
+      const iframe = await awaitIframe()
       expect(iframe.style.width).toBe('390px')
     })
 

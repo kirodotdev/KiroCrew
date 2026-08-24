@@ -12,6 +12,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +68,7 @@ _CATEGORY_DESCRIPTIONS = {
 _CONFLICT_STRATEGIES = frozenset({"skip", "rename", "overwrite"})
 _ITEM_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _ITEM_OUTCOMES = frozenset({"accepted", "deduplicated", "rejected"})
-_IMPORT_LOCK = asyncio.Lock()
+_IMPORT_LOCK = LoopBoundLock()
 
 
 class _InvalidSelection(ValueError):
@@ -462,7 +463,7 @@ def _merge_import_results(
     return merged
 
 
-def _get_config_lock() -> asyncio.Lock:
+def _get_config_lock() -> LoopBoundLock:
     # Circular import: handlers.agents is re-exported by the package that imports us.
     from kiro_crew.dashboard.handlers.agents import _get_config_lock as get_lock
 

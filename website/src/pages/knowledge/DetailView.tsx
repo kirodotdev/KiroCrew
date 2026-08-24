@@ -9,6 +9,7 @@ import { typeBadgeVariant, formatDate, useCopy } from './helpers'
 import type { KnowledgeItem, Entity } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -47,6 +48,7 @@ function RelatedItems({ itemId, entities }: { itemId: string; entities: Entity[]
 }
 
 function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: string }) {
+  const ime = useImeGuard()
   const queryClient = useQueryClient()
   const [editing, setEditing] = useState(false)
   const [value, setValue] = useState(currentTags)
@@ -82,7 +84,7 @@ function TagEditor({ itemId, currentTags }: { itemId: string; currentTags: strin
       <Tag size={11} className="text-muted shrink-0" />
       <input aria-label={i18nT('pages.knowledge.detailView.comma_separated_tags')} value={value} onChange={e => setValue(e.target.value)} placeholder={i18nT('pages.knowledge.detailView.tag1_tag2_tag3')}
         className="flex-1 px-2 py-1 text-[12px] bg-bg-elevated border border-border rounded outline-none focus-ring"
-        onKeyDown={e => { if (e.key === 'Enter') saveMutation.mutate(value); if (e.key === 'Escape') setEditing(false) }}
+        {...ime.bindEnter({ onEnter: () => saveMutation.mutate(value), onEscape: () => setEditing(false) })}
         autoFocus />
       <button onClick={() => saveMutation.mutate(value)} disabled={saveMutation.isPending}
         className="text-[11px] text-accent bg-transparent border-none cursor-pointer">{i18nT('pages.knowledge.detailView.save')}</button>

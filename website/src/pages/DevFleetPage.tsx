@@ -690,6 +690,13 @@ export default function DevFleetPage() {
   // so the fleet-driven reattach below never starts a second poll loop for a
   // run this session is already polling.
   const provAttachedRef = useRef<Set<string>>(new Set())
+  // Synchronous per-worktree in-flight guard for the provision() entry point.
+  // React state updates are asynchronous: setProv({ status: 'starting' })
+  // does not disable the Provision button until the next render commit.
+  // A rapid double-click therefore sends two POST requests before any re-render.
+  // This ref is checked and set BEFORE the first `await`, so the second click
+  // in the same render turn is blocked synchronously rather than racing the DOM.
+  const provInFlightRef = useRef<Set<string>>(new Set())
   // Poll-loop lifecycle: loops exit when the component unmounts or a run is
   // explicitly dismissed — otherwise navigation would leak up-to-900-request
   // closures, and dismissing the stepper would be undone by the next tick.
@@ -1045,6 +1052,20 @@ export default function DevFleetPage() {
   }
 
   async function provision(name: string) {
+    // Synchronous guard: blocks re-entry before React re-renders the button into
+    // its disabled state. A rapid double-click fires both event handlers in the
+    // same render turn (before any setState takes effect), so checking React state
+    // here would NOT catch the second click.  provInFlightRef is updated
+    // synchronously and persists across renders, so it reliably blocks the second
+    // invocation whether it arrives in the same turn or in a later one while the
+    // request is still awaited. The finally block releases the guard after the
+    // request/polling lifecycle exits; remounting creates a fresh ref.
+    if (provInFlightRef.current.has(name)) {
+      // The first invocation already owns the API request, polling, and UI state.
+      // Returning here prevents both a duplicate POST and a second poll loop.
+      return
+    }
+    provInFlightRef.current.add(name)
     const startedAt = Date.now()
     clearTimeout(provDoneTimersRef.current[name])
     setProvLogOpen((o) => { const n = { ...o }; delete n[name]; return n })
@@ -1072,6 +1093,11 @@ export default function DevFleetPage() {
       notify(msg, { type: 'error' })
       setProv((p) => ({ ...p, [name]: { status: 'failed', failed: true, lines: [msg], startedAt, exit: null } }))
       setProvLogOpen((o) => ({ ...o, [name]: true }))
+    } finally {
+      // Release the per-name guard so a retry after failure or dismissal can
+      // re-enter.  pollProvisionRun already owns its completion lifecycle;
+      // this only gates the entry point.
+      provInFlightRef.current.delete(name)
     }
   }
 

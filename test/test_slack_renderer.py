@@ -19,6 +19,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
 )
 from kiro_crew.messaging import APPROVAL_INTERACTIVE, TurnDriver
+from kiro_crew.slack.client import RealSlackClient
 from kiro_crew.slack.renderer import (
     _STATUS_WORKING,
     TOOL_APPROVE_ACTION_PREFIX,
@@ -42,7 +43,10 @@ class _RecSlack:
         return f"ts-{self._n}"
 
     async def start_stream(self, channel, thread_ts, **kw):
-        self.calls.append(("start_stream", {"channel": channel, "thread_ts": thread_ts}))
+        self.calls.append((
+            "start_stream",
+            {"channel": channel, "thread_ts": thread_ts, "user_id": kw.get("user_id")},
+        ))
         return self._ts()
 
     async def append_stream(self, channel, ts, text):
@@ -352,6 +356,47 @@ class TestSlackRendererMapping:
         }
         assert f"{TOOL_APPROVE_ACTION_PREFIX}rq1" in all_ids
         assert provider.approved == ["rq1"]
+
+    def test_the_approval_card_names_the_tool_not_the_answer(self):
+        """The card promises a tool name, so an option LABEL must not fill it in.
+
+        The options are the ANSWERS ("Allow", "Reject"), so reading the first one
+        put a verb where the operator reads a tool name, and the tool the request
+        is about never appeared on the card at all.
+        """
+        rec = _RecSlack()
+        decider = SlackApprovalDecider()
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, decider=decider)
+        provider = _Provider([
+            AcpEvent(
+                kind=EVENT_PERMISSION_REQUEST,
+                request_id="rq1",
+                title="execute_bash",
+                options=[{"id": "allow", "label": "Allow"}],
+            ),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        driver = TurnDriver(
+            provider, renderer, approval_mode=APPROVAL_INTERACTIVE, decider=decider
+        )
+
+        async def scenario():
+            task = asyncio.create_task(driver.run("hi"))
+            for _ in range(1000):
+                if decider._futures:
+                    break
+                await asyncio.sleep(0)
+            decider.resolve("rq1", True)
+            await task
+
+        asyncio.run(scenario())
+        sections = [
+            b["text"]["text"]
+            for m, kw in rec.calls if m == "post_blocks"
+            for b in kw["blocks"] if b.get("type") == "section"
+        ]
+        assert any("execute_bash" in t for t in sections), sections
+        assert not any("*Allow*" in t for t in sections), sections
 
     def test_prompt_choice_suppressed_without_decider(self):
         # Deny-by-default (no decider): no dead approve/deny buttons are posted.
@@ -766,3 +811,81 @@ class TestShowThinking:
         assert thinking, rec.calls
         assert "AKIA1234567890ABCDEX" not in thinking[0]
         assert "[REDACTED: credential]" in thinking[0]
+
+
+class _RecWeb:
+    """Records outgoing Slack Web API bodies (stands in for AsyncWebClient)."""
+
+    def __init__(self):
+        self.bodies: list[tuple[str, dict]] = []
+
+    async def api_call(self, method, json=None):
+        self.bodies.append((method, dict(json or {})))
+        return {"ok": True, "ts": f"ts-{len(self.bodies)}"}
+
+
+def _real_client_with_recorder():
+    """A RealSlackClient whose transport is recorded instead of sent.
+
+    ``__new__`` skips ``__init__`` so no bot token is needed; the only attribute
+    the streaming calls touch beyond ``_web`` is the channel->team cache, which
+    is already ``getattr``-guarded for exactly this case.
+    """
+    client = RealSlackClient.__new__(RealSlackClient)
+    web = _RecWeb()
+    client._web = web
+    return client, web
+
+
+def _start_stream_bodies(web):
+    return [body for method, body in web.bodies if method == "chat.startStream"]
+
+
+class TestStreamRecipientRouting:
+    """chat.startStream needs recipient routing, and the renderer holds it.
+
+    Slack rejects the call with ``missing_recipient_user_id`` when the field is
+    absent; the renderer then demotes to the non-streaming chat.update surface,
+    which still produces a correct reply. That is why these assertions read the
+    OUTGOING request body rather than the rendered text -- a test that only
+    checks the reply text passes either way.
+    """
+
+    def test_open_stream_sends_recipient_user_id(self):
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, user_id="U123")
+        asyncio.run(renderer._ensure_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 1, web.bodies
+        assert bodies[0]["recipient_user_id"] == "U123", bodies[0]
+
+    def test_rotated_stream_sends_recipient_user_id(self):
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False, user_id="U123")
+        asyncio.run(renderer._ensure_stream())
+        asyncio.run(renderer._rotate_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 2, web.bodies
+        assert all(b["recipient_user_id"] == "U123" for b in bodies), bodies
+
+    def test_absent_user_id_omits_the_field(self):
+        """No sender id => the same request as before, not an empty recipient."""
+        client, web = _real_client_with_recorder()
+        renderer = SlackRenderer(client, "C1", "t1", reactions_enabled=False)
+        asyncio.run(renderer._ensure_stream())
+        bodies = _start_stream_bodies(web)
+        assert len(bodies) == 1, web.bodies
+        assert "recipient_user_id" not in bodies[0], bodies[0]
+
+    def test_driver_turn_forwards_user_id_on_both_call_sites(self):
+        """Whole-turn coverage: the initial open and the rotation both carry it."""
+        rec = _FlakyAppendSlack()  # first append fails => one rotation
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False, user_id="U123")
+        provider = _Provider([
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="hi"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ])
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("x"))
+        opens = [kw for m, kw in rec.calls if m == "start_stream"]
+        assert len(opens) == 2, rec.calls
+        assert [kw["user_id"] for kw in opens] == ["U123", "U123"], opens

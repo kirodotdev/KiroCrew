@@ -16,8 +16,6 @@ import threading
 from kiro_crew.cloud import connect as connect_mod
 from kiro_crew.cloud import ec2, iam, login, sizes
 from kiro_crew.cloud.aws import AWSError
-from kiro_crew.instances.port_allocator import PortAllocator
-from kiro_crew.instances.registry import InstancesRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -105,37 +103,6 @@ class _RealSigninHandle:
 class RealLaunchEngine:
     """Drives a launch against the user's AWS account via the ``cloud/`` engine."""
 
-    def __init__(self) -> None:
-        # Settled once per launch, then reused for BOTH ends: the crew's gateway
-        # starts on it (KIROCREW_PORT via the stack) and the registry records it as
-        # remote_port, which the tunnel mirrors locally. See _allocate_port.
-        self._port = 0
-
-    def _allocate_port(self) -> int:
-        """Pick a gateway port this crew can actually be reached on.
-
-        The tunnel forces ``local_port == remote_port`` so the embedded dashboard's
-        Origin matches what the remote gateway trusts, and it hard-fails rather than
-        falling back when that port is busy. Registering every crew on the default
-        5476 therefore produced a crew that could never be connected: the operator's
-        own gateway usually owns 5476, and a second crew would collide with the
-        first. Allocate deterministically upward from the tunnel base, skipping every
-        port the registry already hands out.
-        """
-        if self._port:
-            return self._port
-        used: set[int] = set()
-        try:
-            for inst in InstancesRegistry().list():
-                used.add(inst.remote_port)
-                if inst.local_port:
-                    used.add(inst.local_port)
-        except Exception as exc:  # pragma: no cover - registry absent is not fatal
-            logger.info("could not read the instances registry for port reuse: %s", exc)
-        self._port = PortAllocator().allocate(exclude=used)
-        logger.info("allocated gateway port %d for this crew", self._port)
-        return self._port
-
     def preflight(self, profile: str, region: str) -> None:
         reach = iam.reachability_check(profile, region)
         if not reach.get("reachable"):
@@ -144,12 +111,16 @@ class RealLaunchEngine:
 
     def provision(self, *, tag: str, size_key: str, profile: str, region: str) -> str:
         tier = sizes.get_tier(size_key)
+        # No dashboard_port override: the stack binds its own DashboardPort
+        # default. A crew once needed a bespoke port here because the tunnel
+        # forced local_port == remote_port and hard-failed on a busy one; the
+        # hub now picks its local forward port independently, so crews can
+        # share the stock remote port instead of each consuming a fresh one.
         result = ec2.deploy(
             tag=tag,
             tier=tier,
             profile=profile,
             region=region,
-            dashboard_port=self._allocate_port(),
         )
         return result.instance_id
 
@@ -157,11 +128,11 @@ class RealLaunchEngine:
         return _RealSigninHandle(instance_id, profile, region)
 
     def register(self, *, instance_id: str, tag: str, profile: str, region: str) -> None:
+        # remote_port stays at register_instance's own default, which matches
+        # the stack's DashboardPort default bound above — the two ends of one
+        # crew must name the same port or the tunnel forwards to nothing.
         registered = connect_mod.register_instance(
             instance_id, name=f"Kiro Crew Cloud ({tag})", profile=profile, region=region,
-            # Must match the port the stack started the gateway on, or the mirrored
-            # tunnel would forward to a port nothing is listening on.
-            remote_port=self._allocate_port(),
         )
         if registered is None:
             # register_instance is best-effort BY CONTRACT: it returns None both when the

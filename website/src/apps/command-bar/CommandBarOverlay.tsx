@@ -9,6 +9,7 @@ import { useAppDispatch } from '../../store'
 import { createSlot } from '../../store/chatSlice'
 import { Highlighted } from '../../components/commandPalette/Highlighted'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import { localizedSettingLabel } from '../../components/commandPalette/settingsSearchCore'
 import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import { usePaletteActions } from '../../components/commandPalette/paletteActions'
@@ -22,6 +23,7 @@ import { useLanguage } from '../../i18n/LanguageProvider'
 
 import { loadUsage, recordUse, type UsageMap } from './frecency'
 import { rankRootRows, type RankedRow, type RootGroup, type RootRow, type RootRowKind } from './rootIndex'
+import { useImeGuard } from '../../hooks/useImeGuard'
 
 /**
  * Command Bar — the ⌘K launcher.
@@ -93,6 +95,7 @@ export default function CommandBarOverlay({
   open: boolean
   onClose: () => void
 }) {
+  const ime = useImeGuard()
   const vv = useVisualViewport()
   const inputRef = useRef<HTMLInputElement | null>(null)
   const dialogRef = useRef<HTMLDivElement | null>(null)
@@ -214,7 +217,10 @@ export default function CommandBarOverlay({
     for (const entry of SETTINGS_REGISTRY) {
       rows.push({
         id: `setting:${entry.id}`,
-        title: entry.labelKey ? i18nT(entry.labelKey) : entry.label,
+        // The shared resolver, not a bare labelKey lookup: resolving the key
+        // alone drops the fan-out suffix ("Bot Token (Discord)" → "Bot
+        // Token"), rendering per-channel rows as indistinguishable titles.
+        title: localizedSettingLabel(entry),
         subtitle: settingsSubtitle(entry),
         group: 'settings',
         kind: 'navigate',
@@ -351,7 +357,8 @@ export default function CommandBarOverlay({
         e.preventDefault()
         setSelected(i => (rowCount === 0 ? 0 : (i - 1 + rowCount) % rowCount))
       } else if (e.key === 'Enter') {
-        e.preventDefault()
+        // Only the Enter branch is claimed — arrow navigation stays untouched.
+        if (!ime.claimEnter(e)) return
         activateIndex(selected)
       } else if (e.key === 'Backspace' && query === '' && scope) {
         // Leaving a scope is Backspace on an empty input — the same gesture that
@@ -437,6 +444,7 @@ export default function CommandBarOverlay({
               setQuery(e.target.value)
               setSelected(0)
             }}
+            {...ime.bindComposition()}
             onKeyDown={onKeyDown}
             placeholder={
               scope

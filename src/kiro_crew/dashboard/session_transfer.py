@@ -63,6 +63,13 @@ from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
+
+# Layering: this module may import chat_handlers, never the reverse — the only
+# consumer of session_transfer is handlers_instances, which chat_handlers'
+# transitive graph does not reach. If chat_handlers ever needs session_transfer,
+# move _append_unflushed_tail and its collaborators down to chat_persistence
+# first rather than creating the cycle.
+from kiro_crew.dashboard.chat_handlers import _append_unflushed_tail
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -70,7 +77,6 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
-from kiro_crew.platform_compat import restrict_to_owner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -417,29 +423,37 @@ def _write_layer_b_files(layer_b: dict[str, Any], agent: str) -> str | None:
             # concurrent writers cannot collide on a deterministic ``.tmp`` name
             # (an ENOENT race the previous hand-rolled write here was exposed to),
             # and it retries the Windows rename window.
-            atomic_write(path, text, mode=0o600)
+            #
+            # ``restrict_to_owner=True`` applies the owner-only lockdown to the
+            # temp file BEFORE any content reaches it — POSIX mode bits are
+            # meaningless against NTFS ACLs, and the previous post-rename
+            # ``restrict_to_owner`` call left Layer B readable under the
+            # inherited DACL for the whole write window (issue #5285). It
+            # implies 0o600 on POSIX, and the default
+            # ``restrict_on_error="raise"`` keeps this site FAIL CLOSED.
             try:
-                # POSIX mode bits are meaningless against NTFS ACLs, so on Windows
-                # this call is the ONLY thing making the file owner-only -- the
-                # ``mode=0o600`` above is a no-op there. It raises for documented,
-                # reachable reasons (it refuses to apply a half-configured DACL
-                # when the invoking user's SID will not resolve).
-                restrict_to_owner(path)
+                atomic_write(path, text, restrict_to_owner=True)
             except OSError:
                 # FAIL CLOSED. This is the model's whole context window; leaving it
                 # readable by other local accounts on a shared machine is worse
                 # than not resuming, and this feature already has an honest
                 # fallback for exactly that -- returning ``None`` imports the
                 # session transcript-only. Both files go, not just this one: the
-                # pair is useless alone and the ``.json`` carries context too.
+                # pair is useless alone and the ``.json`` carries context too
+                # (a lockdown failure on the SECOND file leaves the first,
+                # already-published one behind otherwise).
                 #
                 # This overrides the warn-and-continue precedent in
                 # ``handlers/weixin_qr.py``. That path has no fallback -- refusing
                 # breaks the feature outright -- whereas refusing here costs only
                 # resume fidelity, so the same trade resolves the other way.
+                #
+                # The outer ``except Exception`` below performs the same
+                # cleanup as a backstop for non-OSError failures; keep the two
+                # paths in sync.
                 logger.warning(
-                    "session_transfer: could not restrict Layer B permissions on %s; "
-                    "discarding it and importing transcript-only",
+                    "session_transfer: could not write owner-only Layer B file %s; "
+                    "discarding the pair and importing transcript-only",
                     path.name,
                     exc_info=True,
                 )
@@ -500,6 +514,13 @@ async def build_transfer_bundle_async(
     state: DashboardState, slot: _ChatSlot, *, origin: str = ""
 ) -> dict[str, Any]:
     """:func:`build_transfer_bundle` with the disk read off the event loop.
+
+    The two builders size the un-flushed tail DIFFERENTLY: this one keeps a
+    ``_disk_window_len`` boundary slice, valid only because the flush below runs
+    first — the save folds a durable injector's ``append_if_absent`` copy into
+    the window and advances the boundary, so the counter is honest by the time
+    the tail is snapshotted. The sync sibling cannot flush, so it sizes by
+    message id instead — see the comment at its tail merge.
 
     The transcript read is synchronous file IO plus JSON parsing over a whole
     session, which is exactly the "large synchronous file IO" the
@@ -717,8 +738,6 @@ def _read_and_assemble(
     """
     history = _read_chained_history(state, session_key)
     history.extend(tail)
-    if not history:
-        history = list(tail)
     layer_b = _read_layer_b(layer_b_sid)
     if layer_b_sid and layer_b is None:
         # A sid was MAPPED but its files would not read -- pruned, over the size
@@ -746,7 +765,10 @@ def build_transfer_bundle(
 
     *history* supplies an already-read on-disk transcript so the blocking read
     can happen in a thread; when omitted it is read inline, which is fine for
-    tests and any caller not on the event loop.
+    tests and any caller not on the event loop. It must be the FULL chained
+    corpus (:func:`_read_chained_history`'s shape): the tail merge below indexes
+    it with ``slot._disk_older_count``, so a single-file or partial read would
+    mis-size the window region.
 
     *origin* is a human label for where the session came from (an instance name
     or ``"local"``); it is recorded for provenance and shown on arrival.
@@ -759,20 +781,23 @@ def build_transfer_bundle(
     # Append the resident messages that are not on disk yet, so the bundle carries
     # the tail the user can actually see.
     #
-    # The boundary is ``_disk_window_len`` — set by the save path to "how many
-    # window messages are now on disk" — NOT ``_resumed_count``, which only
-    # records how many messages were loaded when the slot was rehydrated. For a
-    # session created in this gateway run ``_resumed_count`` stays 0 no matter how
-    # many times it flushes, so using it appended the ENTIRE resident window on
-    # top of the disk history and duplicated every persisted turn.
-    #
-    # No ``_dirty`` gate: the boundary alone is authoritative, and the slice is
-    # empty when everything is persisted.
-    new_msgs = slot.messages[slot._disk_window_len :]
-    if new_msgs:
-        all_messages.extend(new_msgs)
-    if not all_messages:
-        all_messages = list(slot.messages)
+    # Sized by MESSAGE IDENTITY, not by ``_disk_window_len``. That counter
+    # advances only on the save and load paths, but a durable injector
+    # (``cron_inject``, ``workflow_inject``, ``crew_chat``) appends the same row
+    # to the window AND to disk without going through a save — the disk read
+    # above already returns the row while the counter has not moved, so a
+    # boundary slice starts one row too early and ships the injection twice.
+    # The read path rejected this exact estimator for this exact job (#4137,
+    # measured: substituting it broke the duplication regression) and replaced
+    # it with :func:`_append_unflushed_tail`, which matches window rows against
+    # the disk read by ``meta.mid`` — the id a durable injector stamps on both
+    # copies — falling back to an ordered body comparison when any row in the
+    # disk window region lacks an id, and merges in only the rows disk does not
+    # already hold. (The async sibling keeps its boundary snapshot: it flushes a
+    # dirty slot first, and the save both folds the injector's durable copy into
+    # the window and advances the boundary, so its slice is taken against a
+    # counter the flush just made honest.)
+    all_messages = _append_unflushed_tail(slot, all_messages)
     return _assemble_bundle(
         all_messages,
         slot.title if slot._titled else "",

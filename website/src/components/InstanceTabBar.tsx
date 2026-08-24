@@ -25,7 +25,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, Fragment, type CSSProperties } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Home, Loader2, ChevronDown, Pin } from 'lucide-react'
+import { Home, Loader2, ChevronDown, Pin, Check } from 'lucide-react'
 import { api, ApiError, type InstanceView } from '../api/client'
 import { useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
@@ -180,6 +180,61 @@ function subscribePinned(cb: () => void) {
 export function useCrewPins(): [Set<string>, (id: string) => void] {
   const pinned = useSyncExternalStore(subscribePinned, () => pinnedState, () => pinnedState)
   return [pinned, toggleCrewPin]
+}
+
+// Persisted preference: keep the switcher's chip row in a FIXED order instead of
+// pulling the crew on screen to the leading slot. Off by default — the active
+// crew leads, which reads well for an occasional switcher but reshuffles the row
+// on every switch, which a frequent switcher finds disorienting. When on, pinned
+// crews hold their configured order and the active one is only highlighted in
+// place, so the row never moves under the user.
+//
+// A module-level store (not usePersistedBool) for the SAME reason the pin set is
+// one: several bars in this realm are mounted at once (the header's inline bar
+// and the InstancesViewport loading/error overlay strips, hidden via
+// display:none rather than unmounted) and must all flip the instant the
+// preference toggles. Like the pin store it cannot cross into a remote pane's
+// embedded bar — that runs in a separate cross-origin iframe realm with its own
+// localStorage — so the embedded bar reads its own value there; the top-level
+// dashboard header is the surface this preference governs.
+const STABLE_ORDER_PREF_KEY = 'mc-crew-switcher-stable-order'
+
+function readStableOrder(): boolean {
+  try {
+    return localStorage.getItem(STABLE_ORDER_PREF_KEY) === '1'
+  } catch {
+    // Private mode or disabled storage: default (active leads) is the safe
+    // fallback, never a throw during module init.
+    return false
+  }
+}
+
+let stableOrderState: boolean = readStableOrder()
+
+const stableOrderListeners = new Set<() => void>()
+
+/** Set the stable-order preference and broadcast to every bar in this realm. */
+export function setStableOrder(on: boolean) {
+  stableOrderState = on
+  safeSetItem(STABLE_ORDER_PREF_KEY, on ? '1' : '0')
+  stableOrderListeners.forEach(l => l())
+}
+
+function subscribeStableOrder(cb: () => void) {
+  stableOrderListeners.add(cb)
+  return () => {
+    stableOrderListeners.delete(cb)
+  }
+}
+
+/** Reactive read of the stable-order preference + a toggler that broadcasts. */
+export function useCrewSwitcherStableOrder(): [boolean, () => void] {
+  const on = useSyncExternalStore(
+    subscribeStableOrder,
+    () => stableOrderState,
+    () => stableOrderState,
+  )
+  return [on, () => setStableOrder(!stableOrderState)]
 }
 
 /** Parse a `<int>[hm]` TTL (e.g. "20h", "30m") to seconds; 0 if unparseable. */
@@ -424,6 +479,9 @@ function SwitcherMenu({
   pinned,
   onTogglePin,
   clippedPinned,
+  stableOrder,
+  onToggleStableOrder,
+  showStableOrderToggle,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -431,6 +489,9 @@ function SwitcherMenu({
   pinned: Set<string>
   onTogglePin: (id: string) => void
   clippedPinned: Set<string>
+  stableOrder: boolean
+  onToggleStableOrder: () => void
+  showStableOrderToggle: boolean
 }) {
   const [open, setOpen] = useState(false)
   // Unread the user cannot see: everything that is neither the active pane nor a
@@ -489,6 +550,37 @@ function SwitcherMenu({
             </Fragment>
           ))}
         </DropdownMenuRadioGroup>
+        {/* A row-order preference, not a destination: it sits below the crew list
+            behind a separator so it never reads as one more crew to switch to.
+            `onSelect`'s preventDefault keeps the menu open — the user sees the
+            checkmark flip and can keep adjusting pins in the same session, the
+            same discipline the per-crew pin toggle uses. Hidden in an embedded
+            pane, where the preference has no host-model relay yet. */}
+        {showStableOrderToggle ? (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              role="menuitemcheckbox"
+              aria-checked={stableOrder}
+              data-testid="crew-stable-order-toggle"
+              className="gap-2 text-[13px]"
+              title={i18nT('components.instanceTabBar.keep_tab_order_fixed')}
+              aria-label={i18nT('components.instanceTabBar.keep_tab_order_fixed')}
+              onSelect={(e: Event) => {
+                e.preventDefault()
+                onToggleStableOrder()
+              }}
+            >
+              <Check
+                className={`lucide-inline shrink-0 ${stableOrder ? 'text-accent' : 'opacity-0'}`}
+                aria-hidden
+              />
+              <span className="flex-1 min-w-0">
+                {i18nT('components.instanceTabBar.keep_tab_order_fixed')}
+              </span>
+            </DropdownMenuItem>
+          </>
+        ) : null}
       </DropdownMenuContent>
     </DropdownMenu>
   )
@@ -777,6 +869,9 @@ function Switcher({
   onSelect,
   pinned: pinnedProp,
   onTogglePin: onTogglePinProp,
+  stableOrder: stableOrderProp,
+  onToggleStableOrder: onToggleStableOrderProp,
+  embedded = false,
 }: {
   entries: SwitcherEntry[]
   activeId: string | null
@@ -789,21 +884,52 @@ function Switcher({
   /** Paired override: the embedded pane relays a toggle up to the parent (which
    *  owns the one shared preference) instead of writing its own store. */
   onTogglePin?: (id: string) => void
+  /** Override for the stable-order preference. Defaults to this realm's own
+   *  localStorage-backed store; callers that own the preference elsewhere pass
+   *  it explicitly. */
+  stableOrder?: boolean
+  /** Paired toggler for `stableOrder`. */
+  onToggleStableOrder?: () => void
+  /** True inside a remote pane's embedded switcher. The stable-order preference
+   *  has no host-model relay yet, so a pane toggling it would write only its own
+   *  cross-origin localStorage and drift from the parent header and sibling panes.
+   *  Until that relay exists, an embedded switcher forces the default ordering and
+   *  hides the toggle, rather than exposing a control that silently half-works. */
+  embedded?: boolean
 }) {
   const [storePinned, storeTogglePin] = useCrewPins()
   const pinned = pinnedProp ?? storePinned
   const togglePin = onTogglePinProp ?? storeTogglePin
+  const [storeStableOrder, storeToggleStableOrder] = useCrewSwitcherStableOrder()
+  // Embedded panes ignore their own origin's store (it is not the authoritative
+  // preference and would apply inconsistently); everywhere else it is the default.
+  const stableOrder = embedded ? false : (stableOrderProp ?? storeStableOrder)
+  const toggleStableOrder = onToggleStableOrderProp ?? storeToggleStableOrder
   const [clippedPinned, setClippedPinned] = useState<Set<string>>(() => new Set())
   const active = entries.find(e => (e.id ?? null) === activeId) ?? entries[0]
-  // The crew on screen leads the row and is never a pinned chip as well: two
-  // copies of one name would spend the track's width saying the same thing twice.
+  // Two orderings for the always-visible chips:
+  //  • Default: the crew on screen LEADS the row and is never also a pinned chip
+  //    — two copies of one name would spend the track's width saying the same
+  //    thing twice. Reads well for an occasional switcher, but reshuffles the row
+  //    on every switch.
+  //  • Stable order (opt-in): pinned crews hold their configured order and the
+  //    active one is only highlighted in place, so a frequent switcher's row
+  //    never moves under them. The active crew is still pulled out to lead when
+  //    it is NOT itself a pinned chip, so it stays reachable without opening the
+  //    dropdown — for a user who pins every crew that branch never fires and the
+  //    row is fully fixed.
   const chips = useMemo(
-    () => entries.filter(e => pinned.has(e.id ?? LOCAL_VALUE) && (e.id ?? null) !== activeId),
-    [entries, pinned, activeId],
+    () =>
+      stableOrder
+        ? entries.filter(e => pinned.has(e.id ?? LOCAL_VALUE))
+        : entries.filter(e => pinned.has(e.id ?? LOCAL_VALUE) && (e.id ?? null) !== activeId),
+    [entries, pinned, activeId, stableOrder],
   )
+  const activeIsChip = chips.some(e => (e.id ?? null) === activeId)
+  const showLeadingActive = !stableOrder || !activeIsChip
   return (
     <div className="flex items-center gap-1 min-w-0">
-      {active ? (
+      {showLeadingActive && active ? (
         <SwitcherChip
           entry={active}
           active
@@ -826,6 +952,9 @@ function Switcher({
         pinned={pinned}
         onTogglePin={togglePin}
         clippedPinned={clippedPinned}
+        stableOrder={stableOrder}
+        onToggleStableOrder={toggleStableOrder}
+        showStableOrderToggle={!embedded}
       />
     </div>
   )
@@ -886,6 +1015,7 @@ function EmbeddedInstanceTabBar({ variant }: { variant: 'strip' | 'inline' }) {
         onSelect={onSelect}
         pinned={pinnedFromHost}
         onTogglePin={onTogglePin}
+        embedded
       />
     </div>
   )

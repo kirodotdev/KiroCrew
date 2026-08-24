@@ -56,14 +56,35 @@ describe('truncateCommandLabel — label only, never the pattern', () => {
   })
 
   it('leaves a command of exactly the max length untouched', () => {
-    const exactly64 = 'a'.repeat(64)
-    expect(truncateCommandLabel(exactly64)).toBe(exactly64)
+    const exactly256 = 'a'.repeat(256)
+    expect(truncateCommandLabel(exactly256)).toBe(exactly256)
+  })
+
+  it('renders an ordinary long command IN FULL — the ceiling only guards pathological input', () => {
+    // The whole point of raising the budget from 64: a realistic long command
+    // (a `gh api …/contents/…` path is ~100 chars) is the user's basis for an
+    // exact-string grant and must be readable whole, not elided.
+    const cmd = 'gh api repos/kirodotdev/KiroCrew/contents/website/src/config/production.json --jq .content.sha'
+    expect(cmd.length).toBeGreaterThan(64)
+    expect(truncateCommandLabel(cmd)).toBe(cmd)
+  })
+
+  it('distinguishes two commands that COLLIDED under the old 64 budget', () => {
+    // Same first 42 chars (the old head cut) and same last 23 chars (covering
+    // the old 21-char tail cut), differing only in the middle: under max=64
+    // these rendered one identical label on an exact-string consent control.
+    const head = 'gh api repos/kirodotdev/KiroCrew/contents/'
+    const tail = '.json --jq .content.sha'
+    const production = `${head}website/src/config/production${tail}`
+    const staging = `${head}website/test/fixtures/staging${tail}`
+    expect(truncateCommandLabel(production, 64)).toBe(truncateCommandLabel(staging, 64))
+    expect(truncateCommandLabel(production)).not.toBe(truncateCommandLabel(staging))
   })
 
   it('elides the middle and never exceeds the budget', () => {
-    const long = 'a'.repeat(65) + 'TAIL'
+    const long = 'a'.repeat(257) + 'TAIL'
     const label = truncateCommandLabel(long)
-    expect(label.length).toBe(64)
+    expect(label.length).toBe(256)
     expect(label).toContain('…')
     // The tail survives -- that is the whole point.
     expect(label.endsWith('TAIL')).toBe(true)
@@ -71,16 +92,32 @@ describe('truncateCommandLabel — label only, never the pattern', () => {
   })
 
   it('keeps two commands distinguishable when they share a prefix LONGER than the budget', () => {
-    // The defect head-truncation leaves behind: a longer owner/repo pushes the
+    // The defect head-truncation leaves behind: a longer shared path pushes the
     // distinguishing filename past any fixed head budget, so the two collide
     // again. Middle-ellipsis keeps the tail, where they actually differ.
-    const base = 'gh api repos/rapid7-security-platform-team/ai-vault-service/contents/'
+    const base = `gh api repos/kirodotdev/KiroCrew/contents/${'deeply/nested/path/segment/'.repeat(9)}`
     const config = `${base}config.json --jq .sha`
     const secrets = `${base}secrets.json --jq .sha`
-    expect(base.length).toBeGreaterThan(64)
+    expect(base.length).toBeGreaterThan(256)
     expect(truncateCommandLabel(config)).not.toBe(truncateCommandLabel(secrets))
     // ...and pin that HEAD truncation is what collided, so reverting to it fails.
-    expect(config.slice(0, 64)).toBe(secrets.slice(0, 64))
+    expect(config.slice(0, 256)).toBe(secrets.slice(0, 256))
+  })
+
+  it('can still collide PAST the ceiling — the residual risk is documented, not hidden', () => {
+    // Middle-ellipsis collides two commands that share the kept head (170 chars
+    // at max=256) AND the kept tail (85 chars) while differing only in the
+    // elided middle. Raising the ceiling moved this cliff to pathological
+    // lengths; it did not remove it. This test is the honest record of that —
+    // and it reddens if the cut arithmetic changes silently.
+    const head = `gh api repos/kirodotdev/KiroCrew/contents/${'deeply/nested/path/segment/'.repeat(6)}`.slice(0, 170)
+    const tail = `common/suffix/${'seg/'.repeat(15)}file.json --jq .content.sha`.slice(-85)
+    expect(tail).toHaveLength(85) // shorter, and the differing middle leaks into the kept tail
+    const one = `${head}MIDDLE-ONE-${'x'.repeat(40)}${tail}`
+    const two = `${head}MIDDLE-TWO-${'y'.repeat(40)}${tail}`
+    expect(one.length).toBeGreaterThan(256)
+    expect(one).not.toBe(two)
+    expect(truncateCommandLabel(one)).toBe(truncateCommandLabel(two))
   })
 
   it('does not collide two commands that share a long prefix', () => {
@@ -114,13 +151,14 @@ describe('truncateCommandLabel — label only, never the pattern', () => {
 
     // Sweep the emoji across the WHOLE string so it straddles the head cut and
     // the tail cut in turn -- a sweep that only crosses one of them leaves the
-    // other snap untested (measured: it did).
-    const total = 90
+    // other snap untested (measured: it did). The string must exceed the 256
+    // default budget or nothing truncates and the sweep is vacuous.
+    const total = 300
     for (let i = 0; i <= total; i++) {
       const cmd = `gh ${'a'.repeat(i)}😀${'b'.repeat(total - i)}`
       const label = truncateCommandLabel(cmd)
       expect(lone(label), `emoji at ${i} produced a lone surrogate: ${label}`).toBe(false)
-      expect(label.length).toBeLessThanOrEqual(64)
+      expect(label.length).toBeLessThanOrEqual(256)
     }
     // ...and at a small budget, where head and tail are only a few chars each.
     for (let pad = 0; pad < 12; pad++) {
@@ -132,7 +170,8 @@ describe('truncateCommandLabel — label only, never the pattern', () => {
   it('shortens for display without altering what would be granted', () => {
     // The caller passes the untruncated command as the trust_command pattern;
     // this helper only feeds the button label.
-    const long = 'find /very/long/path -name "*.tsx" -exec grep -l something-quite-long {} +'
+    const long = `find ${'/very/long/path/segment'.repeat(12)} -name "*.tsx" -exec grep -l something {} +`
+    expect(long.length).toBeGreaterThan(256)
     const label = truncateCommandLabel(long)
     expect(label).not.toBe(long)
     expect(label).toContain('…')

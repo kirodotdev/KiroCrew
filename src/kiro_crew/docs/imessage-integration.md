@@ -40,7 +40,8 @@ deliberately does not use one.
      "allowed_handles": ["+15551234567"]
    }
    ```
-3. **Restart the gateway**, then message yourself from another device and say hi.
+3. **Restart the gateway**, then send it a message and say hi. Messaging your own
+   handle from another device works — see [Messaging yourself](#messaging-yourself).
 
 If the gateway is not on your Mac, or `imsg` is missing, the channel reports why
 in **Settings → Channels → iMessage** instead of failing silently.
@@ -59,6 +60,28 @@ Formatting is ignored when handles are compared, so `+1 (555) 123-4567` and
 **Group chats are refused**, and this is deliberate: a reply in a group would
 deliver the agent's output — including tool results — to everyone in the thread,
 allow-listed or not. Direct messages only.
+
+### Messaging yourself
+
+Listing your **own** handle and messaging it from another device is supported,
+and it is the most convenient setup: no second number, no second Apple Account.
+It is also the one chat where the agent is talking to its own identity, so the
+channel needs a way to tell your words from its own.
+
+It does not use the platform's own outbound flag alone for that. In a self-chat
+every message belongs to your account in both directions, and Messages writes
+that attribution asynchronously — the bridge's watch waits 500ms expressly so a
+correction can land — so a reply can come back looking exactly like something you
+typed. The channel instead remembers what it just sent, for 30 seconds, and
+ignores that coming back. Without it the agent answers its own reply and the
+conversation never stops.
+
+**One consequence, and it applies to every chat rather than only this one:** if
+you send the agent back the **exact** text it has just sent you, within those 30
+seconds, that message is read as the echo and ignored — no reply, and nothing
+said about it. Send anything else, or wait, and it goes through normally. The
+alternative is worse: the only way to tell a returning message from the agent's
+own is the platform's attribution, and trusting that is what produced the loop.
 
 ## What a conversation looks like
 
@@ -125,6 +148,12 @@ not.
 mistyped `allowed_handles` is the common cause, and by design it produces
 silence rather than an error. **Settings → Channels → iMessage** shows whether
 the channel is connected and why not.
+
+**It answers its own messages / the conversation never stops.** A self-chat where
+the echo guard is not doing its job — [Messaging yourself](#messaging-yourself)
+explains the mechanism. Turn the channel off in **Settings → Channels →
+iMessage** to stop it immediately (every cycle is a real turn), and please report
+it: the log records the handle, redacted, the first time it suppresses an echo.
 
 **"Messages database unavailable".** Full Disk Access is missing for the process
 running the gateway. Grant it, then quit and relaunch — macOS only re-reads that

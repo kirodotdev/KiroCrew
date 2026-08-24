@@ -547,7 +547,7 @@ class TestVectorStoreLessonScope:
         store = self._store(tmp_path)
         try:
             self._plant_malformed(store, "always rebase before pushing")
-            assert store.write_lesson("always rebase before pushing", "tool") is True
+            assert store.write_lesson("always rebase before pushing", "tool").wrote is True
             assert "always rebase before pushing" in store.get_lessons_context()
         finally:
             store.close()
@@ -568,7 +568,7 @@ class TestVectorStoreLessonScope:
         # neither deduped the other.
         store = self._store(tmp_path)
         try:
-            assert store.write_lesson("r", "tool", repo_scope="src/pkg") is True
+            assert store.write_lesson("r", "tool", repo_scope="src/pkg").wrote is True
             store.write_lesson("r", "tool", repo_scope="src/pkg/")
             assert len(store.get_lessons()) == 1
         finally:
@@ -583,7 +583,10 @@ class TestVectorStoreLessonScope:
         try:
             rule = "\u4e00" * 500
             negative = "\u4e00" * 500
-            assert store.write_lesson(rule, "tool", negative=negative, repo_scope="src/pkg") is True
+            assert (
+                store.write_lesson(rule, "tool", negative=negative, repo_scope="src/pkg").wrote
+                is True
+            )
             assert len(store.get_lessons()) == 1
         finally:
             store.close()
@@ -596,11 +599,11 @@ class TestVectorStoreLessonScope:
         # scope, which stores it globally. It refuses.
         store = self._store(tmp_path)
         try:
-            assert store.write_lesson("r", "tool", repo_scope="/src/pkg") is False
+            assert store.write_lesson("r", "tool", repo_scope="/src/pkg").wrote is False
             assert store.get_lessons() == []
             # A trailing slash is an equivalent SPELLING, not an invalid scope, so it
             # still folds and still writes.
-            assert store.write_lesson("r", "tool", repo_scope="src/pkg/") is True
+            assert store.write_lesson("r", "tool", repo_scope="src/pkg/").wrote is True
             assert _lesson_scope(json.loads(store.get_lessons()[0]["value_json"])) == "src/pkg"
         finally:
             store.close()

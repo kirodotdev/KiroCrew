@@ -201,6 +201,21 @@ class TestSessionManager:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_recycle_held_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("thread1")
+        key = mgr._fold_key("thread1")
+        session = mgr._sessions[key]
+        mgr.enqueue(key, "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr._recycle_held(key, session, 95.0)
+
+        assert not img.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_creates_session(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         provider, is_new, _resumed = await mgr.get_or_create("thread1")
@@ -969,6 +984,30 @@ class TestDeadProviderCleanup:
         await mgr.close_all()
 
     @pytest.mark.asyncio
+    async def test_dead_provider_removal_unlinks_temp_files_from_its_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        dead_provider = self._make_provider(alive=True)
+        call_count = 0
+
+        def factory(session_key=None, agent=None, channel_id=None, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            return dead_provider if call_count == 1 else self._make_provider()
+
+        mgr = SessionManager(cfg, provider_factory=factory)
+        await mgr.get_or_create("sess1")
+        mgr.enqueue("sess1", "ts1", "queued", force=True, image_temp_paths=[str(img)])
+        mgr.release("sess1")
+
+        dead_provider.is_alive.return_value = False
+        dead_provider.is_process_alive.return_value = False
+        await mgr.get_or_create("sess1")
+
+        assert not img.exists()
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
     async def test_dead_provider_shutdown_exception_does_not_propagate(self, cfg):
         """If shutdown() raises on a dead provider, get_or_create still succeeds."""
         dead_provider = self._make_provider(alive=True)
@@ -1458,7 +1497,7 @@ class TestCompactCallback:
     @pytest.mark.asyncio
     async def test_trigger_compaction_threads_pct_through(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.get_or_create("dashboard:chat-2")
+        provider, _, _ = await mgr.get_or_create("dashboard:chat-2")
         mgr.release("dashboard:chat-2")
         captured: list[tuple[str, float, bool]] = []
 
@@ -1467,7 +1506,7 @@ class TestCompactCallback:
 
         mgr.set_compact_callback(cb)
 
-        mgr._trigger_compaction("dashboard:chat-2", "context at 92%", 92.0)
+        mgr._trigger_compaction("dashboard:chat-2", "context at 92%", 92.0, provider)
         # _trigger_compaction schedules the work as a background task
         await asyncio.gather(*mgr._background_tasks, return_exceptions=True)
 
@@ -1693,6 +1732,25 @@ class TestDrainProviders:
         assert providers == []
 
     @pytest.mark.asyncio
+    async def test_drain_all_providers_unlinks_temp_files_from_every_queue(
+        self, cfg, tmp_path
+    ):
+        img1 = tmp_path / "img1.png"
+        img2 = tmp_path / "img2.png"
+        img1.write_bytes(b"fake")
+        img2.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img1)])
+        await mgr.get_or_create("k2")
+        mgr.enqueue("k2", "ts3", "third", force=True, image_temp_paths=[str(img2)])
+
+        await mgr.drain_all_providers()
+
+        assert not img1.exists()
+        assert not img2.exists()
+
+    @pytest.mark.asyncio
     async def test_drain_warm_pool(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         # Manually put items in the warm pool
@@ -1796,6 +1854,18 @@ class TestResetWithPid:
         await mgr.reset("k1")
         provider.shutdown.assert_awaited_once()
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_reset_unlinks_temp_files_from_the_dropped_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.reset("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_reset_with_acp_pid_dead_after_shutdown(self, cfg):
@@ -1993,7 +2063,9 @@ class TestCheckContextUsage:
         provider.context_usage_pct = lambda: 92.0
         with patch.object(mgr, "_trigger_compaction") as mock_trigger:
             mgr.check_context_usage("k1", provider)
-            mock_trigger.assert_called_once_with("k1", "context at 92%", 92.0)
+            # The trigger seam receives the provider the reading was observed
+            # on — the gate ladder inside it evaluates against that provider.
+            mock_trigger.assert_called_once_with("k1", "context at 92%", 92.0, provider)
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -2003,9 +2075,10 @@ class TestCheckContextUsage:
         provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
         provider.context_usage_pct = lambda: 50.0
-        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+        with patch.object(mgr, "_compact_session", new_callable=AsyncMock) as compact:
             mgr.check_context_usage("k1", provider)
-            mock_trigger.assert_not_called()
+        compact.assert_not_called()
+        assert "k1" not in mgr._compacting
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -2019,9 +2092,10 @@ class TestCheckContextUsage:
         mgr.release("k1")
         provider.context_usage_pct = lambda: 95.0
         provider.context_usage_unknown = lambda: True
-        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+        with patch.object(mgr, "_compact_session", new_callable=AsyncMock) as compact:
             pct = mgr.check_context_usage("k1", provider)
-            mock_trigger.assert_not_called()
+        compact.assert_not_called()
+        assert "k1" not in mgr._compacting
         assert pct == 95.0  # reading is still returned, only the trigger is gated
         await mgr.close_all()
 
@@ -2036,9 +2110,10 @@ class TestCheckContextUsage:
         mgr.release("k1")
         provider.context_usage_pct = lambda: 95.0
         provider.context_usage_unknown = lambda: False
-        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+        with patch.object(mgr, "_compact_session", new_callable=AsyncMock) as compact:
             mgr.check_context_usage("k1", provider)
-            mock_trigger.assert_called_once_with("k1", "context at 95%", 95.0)
+            await asyncio.gather(*mgr._background_tasks, return_exceptions=True)
+        compact.assert_awaited_once_with("k1", 95.0)
         await mgr.close_all()
 
     def test_missing_session_still_returns_pct(self, cfg):
@@ -2064,6 +2139,18 @@ class TestDestroy:
         # resume binding with it, and the map audits the removal under this name.
         mock_delete.assert_called_once_with("k1", reason="session_destroyed")
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_destroy_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.destroy("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_destroy_nonexistent_still_deletes_map(self, cfg):
@@ -2108,6 +2195,20 @@ class TestDiscardConversation:
         mock_clear.assert_called_once_with("k1")
         mock_delete.assert_not_called()
         assert not mgr.has_session("k1")
+
+    @pytest.mark.asyncio
+    async def test_discard_conversation_unlinks_temp_files_from_the_session_queue(
+        self, cfg, tmp_path
+    ):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.discard_conversation("k1")
+
+        assert not img.exists()
 
     @pytest.mark.asyncio
     async def test_discard_preserves_slack_linkage(self, cfg):
@@ -2838,13 +2939,13 @@ class TestCompaction:
     @pytest.mark.asyncio
     async def test_trigger_compaction_duplicate_is_noop(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
-        await mgr.get_or_create("k1")
+        provider, _, _ = await mgr.get_or_create("k1")
         mgr.release("k1")
         # First trigger starts compaction
-        mgr._trigger_compaction("k1", "test", 92.0)
+        assert mgr._trigger_compaction("k1", "test", 92.0, provider) is None
         assert "k1" in mgr._compacting
         # Second trigger on same key is a no-op (already in progress)
-        mgr._trigger_compaction("k1", "test again", 95.0)
+        assert mgr._trigger_compaction("k1", "test again", 95.0, provider) == "in_progress"
         await asyncio.sleep(0.1)
         await mgr.close_all()
 
@@ -2935,7 +3036,7 @@ class TestClaudeBackendCompaction:
         ):
             mgr.check_context_usage("k1", provider)
 
-        mock_trigger.assert_called_once_with("k1", "context at 40%", 40.0)
+        mock_trigger.assert_called_once_with("k1", "context at 40%", 40.0, provider)
         await mgr.close_all()
 
     @pytest.mark.asyncio
@@ -3395,7 +3496,7 @@ class TestCompactFailureCooldown:
         # Set cooldown 60s in the future.
         mgr._compact_cooldown_until["k1"] = time.monotonic() + 60.0
 
-        mgr._trigger_compaction("k1", "context at 90%", 90.0)
+        assert mgr._trigger_compaction("k1", "context at 90%", 90.0, AsyncMock()) == "cooldown"
 
         # No background task scheduled, no compacting marker set.
         assert "k1" not in mgr._compacting
@@ -3423,7 +3524,7 @@ class TestCompactFailureCooldown:
         # Cooldown already in the past.
         mgr._compact_cooldown_until["k1"] = time.monotonic() - 1.0
 
-        mgr._trigger_compaction("k1", "context at 90%", 90.0)
+        assert mgr._trigger_compaction("k1", "context at 90%", 90.0, AsyncMock()) is None
 
         # Background task scheduled and compacting marker set.
         assert "k1" in mgr._compacting
@@ -3607,6 +3708,18 @@ class TestRemove:
         assert not mgr.has_session("k1")
 
     @pytest.mark.asyncio
+    async def test_remove_unlinks_temp_files_from_the_session_queue(self, cfg, tmp_path):
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
+        await mgr.get_or_create("k1")
+        mgr.enqueue("k1", "ts2", "second", force=True, image_temp_paths=[str(img)])
+
+        await mgr.remove("k1")
+
+        assert not img.exists()
+
+    @pytest.mark.asyncio
     async def test_remove_missing_key_is_noop(self, cfg):
         mgr = SessionManager(cfg, provider_factory=_mock_provider_factory())
         await mgr.remove("nonexistent")  # should not raise
@@ -3771,9 +3884,10 @@ class TestGetOrCreatePoolClaim:
         assert stats.context_pct_unknown is False
 
         # ...so the first turn-end check does not compact the empty session.
-        with patch.object(mgr, "_trigger_compaction") as mock_trigger:
+        with patch.object(mgr, "_compact_session", new_callable=AsyncMock) as compact:
             pct = mgr.check_context_usage("dashboard:slot1", provider)
-            mock_trigger.assert_not_called()
+        compact.assert_not_called()
+        assert "dashboard:slot1" not in mgr._compacting
         assert pct == 0.0
         await mgr.close_all()
 
@@ -4451,7 +4565,9 @@ class TestIneffectiveCompactionCooldown:
         # notice would misdescribe a completed attempt).
         cb.assert_awaited_once_with("dashboard:chat-1", 92.0, success=True)
         # The immediate next trigger is suppressed by the cooldown.
-        mgr._trigger_compaction("dashboard:chat-1", "context 92%", 92.0)
+        assert mgr._trigger_compaction("dashboard:chat-1", "context 92%", 92.0, provider) == (
+            "cooldown"
+        )
         assert "dashboard:chat-1" not in mgr._compacting
         provider.stream_command.assert_called_once()
         await mgr.close_all()

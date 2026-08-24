@@ -50,6 +50,8 @@ vi.mock('../api/client', () => ({
     // remapped, project paths realpath-normalized server-side).
     chatSlotModel: vi.fn().mockResolvedValue({ ok: true, model: 'claude-sonnet-5' }),
     chatSlotProject: vi.fn().mockResolvedValue({ ok: true, project: '/home/user/proj-x' }),
+    // The agent switch also names the re-resolved workspace binding.
+    chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'researcher', workspace: 'research-ws' }),
     recentProjects: vi.fn().mockResolvedValue({ dirs: ['/home/user/proj-x'] }),
     browseDirs: vi.fn().mockResolvedValue({ path: '/home/user', parent: '/home', dirs: [] }),
     projectGit: vi.fn().mockRejectedValue(new Error('not a repo')),
@@ -61,7 +63,7 @@ vi.mock('../api/client', () => ({
 }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' }) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'kirocrew' }, { name: 'researcher' }], defaultAgent: 'kirocrew' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/MarkdownPanel', () => ({ default: () => null }))
@@ -232,5 +234,38 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     // follows it with no slot-list refetch involved.
     await waitFor(() => expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.project).toBe('/home/user/proj-x'))
     expect(await waitFor(() => screen.getByTitle('Project: /home/user/proj-x'))).toBeTruthy()
+  })
+
+  it('agent pick writes agent AND workspace to the store without a slot-list round trip (#5120)', async () => {
+    const store = await renderChat()
+    const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
+    const chip = screen.getByTitle('Agent: kirocrew')
+    await act(async () => { fireEvent.click(chip) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
+    await act(async () => { fireEvent.click(option) })
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('slot-a', 'researcher'))
+    // The write mirrors exactly what the response names: the stored agent
+    // plus the re-resolved workspace binding, as one pair.
+    const slot = () => store.getState().dashboard.slots.find(s => s.key === 'slot-a')
+    await waitFor(() => expect(slot()?.agent).toBe('researcher'))
+    expect(slot()?.workspace).toBe('research-ws')
+    // …and not because anything re-fetched the slot list (no websocket
+    // exists in this harness to push one either).
+    expect(vi.mocked(api.chatSlots).mock.calls.length).toBe(slotsFetchesBeforePick)
+    expect(await waitFor(() => screen.getByTitle('Agent: researcher'))).toBeTruthy()
+  })
+
+  it('keeps the pre-switch agent when the agent switch fails (#5120)', async () => {
+    vi.mocked(api.chatSlotAgent).mockRejectedValueOnce(new Error('boom'))
+    const store = await renderChat()
+    const chip = screen.getByTitle('Agent: kirocrew')
+    await act(async () => { fireEvent.click(chip) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /researcher/ }))
+    await act(async () => { fireEvent.click(option) })
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalled())
+    expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.agent).toBe('kirocrew')
+    expect(screen.getByTitle('Agent: kirocrew')).toBeTruthy()
   })
 })

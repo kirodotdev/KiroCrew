@@ -358,6 +358,29 @@ class TestResolvedLaunch:
         )
         assert R.resolved_launch(str(tmp_path), "npx", ["-y", "foo@1.0.0"]) is None
 
+    def test_digest_collision_execs_nothing(self, tmp_path, monkeypatch) -> None:
+        """A 64-bit digest collision must NOT exec the other spec's program (CWE-328).
+
+        ``spec_dir`` keys on the ``NpmSpec.digest`` property = a SHA-256 truncated
+        to 16 hex chars (64 bits), so two distinct specs can collide onto the same
+        directory. Force that: pin every spec's digest to one constant so the
+        installed ``innocent`` tree and a requested ``evil`` spec share a dir.
+        Without the ``record.package == spec.package`` guard the path-containment
+        and isfile checks both pass and the launcher execs the WRONG program;
+        with it the mismatch is a cache miss. A control run for the installed
+        spec (same constant digest) still launches, proving the miss is the
+        package-equality guard and not a broken directory.
+        """
+        monkeypatch.setattr(R.shutil, "which", lambda _n: "/usr/bin/node")
+        monkeypatch.setattr(R.NpmSpec, "digest", property(lambda self: "deadbeefdeadbeef"))
+        installed = R.NpmSpec(package="innocent@1.0.0", passthrough=())
+        _commit_tree(str(tmp_path), installed)
+
+        # The requested spec resolves to the SAME dir but names a different pkg.
+        assert R.resolved_launch(str(tmp_path), "npx", ["-y", "evil@9.9.9"]) is None
+        # Control: the spec the tree was actually installed for still launches.
+        assert R.resolved_launch(str(tmp_path), "npx", ["-y", "innocent@1.0.0"]) is not None
+
     def test_stale_record_still_launches(self, tmp_path, monkeypatch) -> None:
         # Staleness is the prefetcher's business. A stale tree still launches
         # correctly, and treating "due for refresh" as "cannot launch" would turn

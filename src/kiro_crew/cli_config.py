@@ -288,6 +288,6 @@ def _parse_value(raw: str) -> object:
         pass
     try:
         return json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         pass
     return raw

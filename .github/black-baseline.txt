@@ -20,7 +20,6 @@ src/kiro_crew/apps/app_storage.py
 src/kiro_crew/apps/backend.py
 src/kiro_crew/apps/bridges.py
 src/kiro_crew/apps/builtins/auto_improvement/backend/routes.py
-src/kiro_crew/apps/builtins/auto_improvement/spine/driver.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/gate.py
 src/kiro_crew/apps/builtins/auto_improvement/spine/git_safety.py
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_data_home_isolation.py
@@ -194,7 +193,6 @@ src/kiro_crew/cli.py
 src/kiro_crew/cli_bench.py
 src/kiro_crew/cli_cloud.py
 src/kiro_crew/cli_desktop.py
-src/kiro_crew/cli_doctor.py
 src/kiro_crew/cli_server.py
 src/kiro_crew/cli_setup.py
 src/kiro_crew/cloud/connect.py
@@ -222,8 +220,6 @@ src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_folders.py
 src/kiro_crew/dashboard/chat_fork.py
-src/kiro_crew/dashboard/chat_handlers.py
-src/kiro_crew/dashboard/chat_mirror.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_orchestrator.py
 src/kiro_crew/dashboard/chat_persistence.py
@@ -255,7 +251,6 @@ src/kiro_crew/dashboard/handlers/notifications_push.py
 src/kiro_crew/dashboard/handlers/prompts.py
 src/kiro_crew/dashboard/handlers/security.py
 src/kiro_crew/dashboard/handlers/session_storage.py
-src/kiro_crew/dashboard/handlers/sessions.py
 src/kiro_crew/dashboard/handlers/side.py
 src/kiro_crew/dashboard/handlers/skill_budget.py
 src/kiro_crew/dashboard/handlers/source_providers.py
@@ -306,9 +301,6 @@ src/kiro_crew/deploy/skills/artifact-deploy/templates/handler-example.py
 src/kiro_crew/deploy/webapp_types.py
 src/kiro_crew/diagnostics.py
 src/kiro_crew/discord/attachments.py
-src/kiro_crew/discord/client.py
-src/kiro_crew/discord/gateway.py
-src/kiro_crew/discord/transport_dispatch.py
 src/kiro_crew/doc_parser.py
 src/kiro_crew/embeddings.py
 src/kiro_crew/emoji_list.py
@@ -389,11 +381,7 @@ src/kiro_crew/mcp_tools/skills.py
 src/kiro_crew/mcp_tools/spawn.py
 src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
-src/kiro_crew/messaging/attachments.py
-src/kiro_crew/messaging/driver.py
 src/kiro_crew/messaging/link.py
-src/kiro_crew/messaging/queue_receipt.py
-src/kiro_crew/messaging/renderer.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/local_exporter.py
 src/kiro_crew/metrics/provider.py
@@ -439,7 +427,6 @@ src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/gateway.py
 src/kiro_crew/slack/handler.py
 src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/renderer.py
@@ -451,11 +438,7 @@ src/kiro_crew/suggestions.py
 src/kiro_crew/task_models.py
 src/kiro_crew/task_planner.py
 src/kiro_crew/taskrunner.py
-src/kiro_crew/teams/client.py
-src/kiro_crew/teams/renderer.py
-src/kiro_crew/teams/transport_dispatch.py
 src/kiro_crew/telegram/client.py
-src/kiro_crew/telegram/transport_dispatch.py
 src/kiro_crew/testing/channel_fixtures.py
 src/kiro_crew/testing/fake_acp_backend.py
 src/kiro_crew/tips.py
@@ -463,12 +446,8 @@ src/kiro_crew/transcribe.py
 src/kiro_crew/validation.py
 src/kiro_crew/vector_memory.py
 src/kiro_crew/voice_reply.py
-src/kiro_crew/webex/transport_dispatch.py
 src/kiro_crew/webhooks.py
-src/kiro_crew/wecom/gateway.py
-src/kiro_crew/wecom/renderer.py
 src/kiro_crew/weixin/client.py
-src/kiro_crew/weixin/gateway.py
 src/kiro_crew/weixin/transport_dispatch.py
 src/kiro_crew/weixin/turn_renderer.py
 src/kiro_crew/workflows/agent_exec.py
@@ -612,7 +591,6 @@ test/test_bug_proposal_skip_status_default.py
 test/test_bug_validation_send_message_schema.py
 test/test_build_desktop_launcher_symlink.py
 test/test_build_desktop_rm_resilient.py
-test/test_builtin_app_assets.py
 test/test_builtin_app_lifecycle.py
 test/test_builtin_app_optional_enable.py
 test/test_builtin_discovery.py
@@ -1041,8 +1019,6 @@ test/test_memory_selfheal.py
 test/test_merge_queued_messages.py
 test/test_message_provenance.py
 test/test_message_queue.py
-test/test_messaging_attachments.py
-test/test_messaging_driver.py
 test/test_messaging_link.py
 test/test_mochi_activity.py
 test/test_mochi_agent_policy.py
@@ -1076,7 +1052,6 @@ test/test_orphaned_approval_card.py
 test/test_outbox_binary.py
 test/test_outbox_notify_broadcast.py
 test/test_override_expiry_notice.py
-test/test_override_expiry_notification.py
 test/test_papyrus_gitops.py
 test/test_papyrus_latex.py
 test/test_papyrus_routes.py
@@ -1239,7 +1214,6 @@ test/test_slack_events_coverage.py
 test/test_slack_gateway.py
 test/test_slack_gateway_coverage.py
 test/test_slack_gateway_cron_exec_coverage.py
-test/test_slack_golden_transcript.py
 test/test_slack_handler_coverage.py
 test/test_slack_handler_coverage_branches.py
 test/test_slack_handler_more_coverage.py
@@ -1273,7 +1247,6 @@ test/test_spawn_list_redaction.py
 test/test_spec_builder_routes_coverage.py
 test/test_stable_release_gate.py
 test/test_stale_asset_watchdog.py
-test/test_status_reactions.py
 test/test_steering_api.py
 test/test_stop_handler_idempotent.py
 test/test_stop_kill_cancel.py
@@ -1313,11 +1286,8 @@ test/test_taskrunner_autoapprove.py
 test/test_taskrunner_coverage.py
 test/test_taskrunner_v2_scenarios.py
 test/test_tcc_protected_dirs.py
-test/test_teams_client.py
 test/test_teams_config.py
-test/test_teams_dispatch.py
 test/test_teams_gateway.py
-test/test_teams_wire.py
 test/test_telegram.py
 test/test_telegram_album.py
 test/test_telegram_attachments.py
@@ -1367,7 +1337,6 @@ test/test_webhooks_signing.py
 test/test_webhooks_store.py
 test/test_website_build_heap.py
 test/test_wecom_config_handlers.py
-test/test_wecom_renderer.py
 test/test_wecom_wire.py
 test/test_weixin_dispatch.py
 test/test_weixin_media.py

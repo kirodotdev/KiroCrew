@@ -742,12 +742,13 @@ class AcpRuntime:
         # Volume bound for in-flight auto-answer tasks. Each task can block
         # on stdin drain() against a backend that floods permission frames
         # while never reading its stdin — unbounded, that grows the task set
-        # until the gateway OOMs. Awaiting inline on the reader instead
+        # until the gateway OOMs. Awaiting an answer inline on the reader
         # would hand the same hostile backend a demux freeze for every
-        # session, so the bound treats overflow as a dead pipe (see
-        # _spawn_answer_task).
+        # session, so the bound treats a capacity timeout as a dead pipe
+        # (see _wait_for_answer_capacity).
         self._max_answer_tasks: int = 128
-        # Bounded discrimination wait at the cap (see _spawn_answer_task):
+        # Bounded discrimination wait at the cap (see
+        # _wait_for_answer_capacity):
         # small enough that a wedged pipe is condemned promptly, large enough
         # that a responsive backend's in-flight answers can complete.
         self._answer_cap_wait_secs: float = 5.0
@@ -1351,6 +1352,78 @@ class AcpRuntime:
             next(iter(self._session_queues)) if len(self._session_queues) == 1 else None
         )
 
+    async def _wait_for_answer_capacity(
+        self,
+        msg: JsonRpcMessage,
+        *,
+        request_kind: str,
+        session_id: str = "",
+        audit_reason: str | None = None,
+    ) -> bool:
+        """Wait briefly for shared answer capacity or condemn a wedged pipe.
+
+        Server-to-client requests require a response, so overflowing answers
+        cannot take the notification counted-drop path. A responsive backend
+        may fill the set with already-buffered requests before completed-task
+        callbacks run; one completion admits the current request. No
+        completion within the bound means writes are wedged, so marking the
+        runtime dead resolves every pending wait instead of leaving the remote
+        requester unanswered indefinitely.
+        """
+        def _deny() -> bool:
+            """Refuse admission, recording the decision first.
+
+            A refusal that reaches a caller which had already been admitted to
+            wait must leave a SEL record, or a permission decision that denied a
+            real tool invocation is indistinguishable from one never made.
+            """
+            if audit_reason is not None:
+                self._audit_denied_off_loop(msg, session_id, audit_reason)
+            return False
+
+        # Deliberately NOT audited: on an already-dead runtime a flooding
+        # backend's frames are gated out here, and auditing each one would grow
+        # audit tasks without bound — the very failure the cap prevents.
+        if self._dead:
+            return False
+        if len(self._answer_tasks) < self._max_answer_tasks:
+            return True
+
+        done, _pending = await asyncio.wait(
+            set(self._answer_tasks),
+            timeout=self._answer_cap_wait_secs,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if done:
+            # asyncio schedules task callbacks separately from waking waiters.
+            # Remove completed entries here so admitting the replacement never
+            # transiently exceeds the shared cap; the callbacks remain an
+            # idempotent cleanup backstop.
+            self._answer_tasks.difference_update(done)
+            if self._dead:
+                # A concurrent waiter condemned the runtime while this one was
+                # parked: capacity freed but admission still fails, so this
+                # refusal owes an audit like any other.
+                return _deny()
+            return True
+
+        logger.error(
+            "answer-task cap (%d) reached at %s request id=%s%s and no "
+            "in-flight answer completed in %gs — backend is flooding frames "
+            "while not reading stdin; marking runtime dead so every pending "
+            "wait resolves",
+            self._max_answer_tasks,
+            request_kind,
+            msg.id,
+            f" for session {session_id}" if session_id else "",
+            self._answer_cap_wait_secs,
+        )
+        # Audit before condemning the runtime, so the record for this decision
+        # cannot race the wait-resolution _mark_dead triggers.
+        refusal = _deny()
+        self._mark_dead(f"{request_kind}-answer task cap reached (backend not reading)")
+        return refusal
+
     async def _spawn_answer_task(
         self,
         msg: JsonRpcMessage,
@@ -1364,59 +1437,18 @@ class AcpRuntime:
         ``drain()`` against a backend that is not reading — awaiting inline
         would freeze the shared reader (every session's demux) on one hostile
         or wedged backend. Bounded because each blocked task is retained in
-        ``_audit_tasks``: a backend that floods permission frames while never
+        ``_answer_tasks``: a backend that floods permission frames while never
         reading stdin would otherwise grow that set until the gateway OOMs.
-        Past the cap the frame takes the counted-drop path instead — the
-        flooding backend hangs on its own unanswered request; well-behaved
-        backends (a handful of concurrent in-flight answers at most) never
-        come near the cap.
+        At capacity the shared admission wait either observes progress or
+        marks the runtime dead so the requester cannot remain unanswered.
         """
-        if self._dead:
-            # Already dead (this cap fired, or any other death path): the
-            # teardown has resolved/poisoned every wait, and no answer can be
-            # written to a dead pipe. Without this gate the still-draining
-            # reader would re-take the cap branch for every remaining flood
-            # frame and enqueue one audit task each — the same unbounded
-            # growth the cap exists to stop, rebuilt out of audits.
+        if not await self._wait_for_answer_capacity(
+            msg,
+            request_kind="permission",
+            session_id=session_id,
+            audit_reason="answer_task_cap_runtime_dead",
+        ):
             return
-        if len(self._answer_tasks) >= self._max_answer_tasks:
-            # At the cap, DISCRIMINATE before condemning: a burst of frames
-            # already buffered lets readline() return without suspending, so
-            # a RESPONSIVE backend can hit this branch before its (fast)
-            # answers had any loop time to complete. Give the in-flight set
-            # a bounded chance to make progress — if even one answer
-            # completes, the pipe is alive and this request proceeds; only
-            # when nothing completes (writes genuinely wedged on drain())
-            # is the runtime condemned.
-            done, _pending = await asyncio.wait(
-                set(self._answer_tasks),
-                timeout=self._answer_cap_wait_secs,
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-            if not done:
-                # 128 blocked writes and none completed in 5s = the backend
-                # is provably not reading its stdin. Not a shed-and-forget:
-                # SEL-audit the denial (every permission decision leaves a
-                # record) and mark the runtime dead — teardown resolves
-                # every pending oneshot, so the requester does NOT hang, and
-                # the task set stops growing. Counts ONLY answer tasks
-                # (never SEL audits) so audit bursts cannot trip this.
-                logger.error(
-                    "answer-task cap (%d) reached at permission request id=%s "
-                    "for session %s and no in-flight answer completed in 5s — "
-                    "backend is flooding frames while not reading stdin; "
-                    "marking runtime dead so every pending wait resolves",
-                    self._max_answer_tasks,
-                    msg.id,
-                    session_id,
-                )
-                self._audit_denied_off_loop(
-                    msg, session_id, "answer_task_cap_runtime_dead"
-                )
-                self._mark_dead(
-                    "permission-answer task cap reached (backend not reading)"
-                )
-                return
         _t = asyncio.ensure_future(
             self._answer_unroutable_permission(msg, session_id, reason=reason)
         )
@@ -1795,7 +1827,23 @@ class AcpRuntime:
                     and msg.error is None
                     and msg.is_method(METHOD_KAS_AUTH_GET_ACCESS_TOKEN)
                 ):
-                    asyncio.ensure_future(self._answer_get_access_token(msg.id))
+                    # Token resolution can outlive a reader-loop tick and the
+                    # eventual stdin write can block. Retain it in the same
+                    # bounded set as other off-loop answers: a separate token
+                    # cap would let their combined total exceed the real
+                    # resource ceiling. Because this is a request, capacity
+                    # uses the same bounded progress-or-dead admission as
+                    # permission answers; counted-drop is only valid for
+                    # notifications that do not require a response.
+                    if not await self._wait_for_answer_capacity(
+                        msg, request_kind="KAS auth"
+                    ):
+                        continue
+                    answer_task = asyncio.ensure_future(
+                        self._answer_get_access_token(msg.id)
+                    )
+                    self._answer_tasks.add(answer_task)
+                    answer_task.add_done_callback(self._answer_tasks.discard)
                     continue
 
                 # Route notifications by sessionId

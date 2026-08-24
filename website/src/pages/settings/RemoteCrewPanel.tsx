@@ -240,7 +240,6 @@ function CrewRow({
   onEditRebase,
   editing,
   blocked,
-  otherPorts,
 }: {
   inst: InstanceView
   cloudTag: string | null
@@ -270,8 +269,6 @@ function CrewRow({
   editing: boolean
   /** This row's Edit was refused because another row holds unsaved changes. */
   blocked: boolean
-  /** Ports held by the OTHER crews, so the edit form can flag a real conflict. */
-  otherPorts: number[]
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
@@ -463,7 +460,6 @@ function CrewRow({
       <EditInstanceForm
         key={`edit-${inst.id}-${editDraftSeq}`}
         inst={inst}
-        usedPorts={otherPorts}
         onSaved={onEditSaved}
         onCancel={() => onEdit(null)}
         draft={editDraft}
@@ -1192,7 +1188,6 @@ export function RemoteCrewPanel() {
                       if (updated.status?.state !== 'connected') dispatch(removeWarm(inst.id))
                       reloadInstances()
                     }}
-                    otherPorts={instances.filter(i => i.id !== inst.id).map(i => i.remote_port)}
                   />
                 ))}
                 {inProgress.length === 0 && instances.length === 0 && (
@@ -1204,7 +1199,7 @@ export function RemoteCrewPanel() {
             {confirmRemoveId !== null && <p className="mt-2 text-[12px] text-warn">{i18nT('pages.settings.remoteCrewPanel.remove_warning')}</p>}
           </Card>
 
-          <AddInstanceForm onAdded={reloadInstances} usedPorts={instances.map(i => i.remote_port)} />
+          <AddInstanceForm onAdded={reloadInstances} />
         </div>
       ) : (
         <div className="space-y-4">

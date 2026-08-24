@@ -34,6 +34,7 @@ from kiro_crew.config.loader import (
     config_path,
 )
 from kiro_crew.dashboard.handlers import core as core_mod
+from kiro_crew.sel import SelVerification as _SelVerification
 
 # ── shared helpers ───────────────────────────────────────────────────────
 
@@ -309,15 +310,42 @@ class TestSttPrereqCommands:
         assert "-m pip install" in cmds[0]
         assert core_mod.shlex.quote(core_mod.sys.executable) in cmds[0]
 
-    def test_transcribe_prereq_windows_uses_call_operator(self, monkeypatch) -> None:
-        """POSIX single-quoting breaks on Windows shells; the PowerShell form
-        must be emitted there instead."""
+    def test_transcribe_prereq_windows_is_powershell_literal_quoted(self, monkeypatch) -> None:
+        """The user's shell is unknowable on Windows (the command may be pasted
+        into PowerShell OR cmd), so the emitted form must be free of SILENT
+        corruption in both. PowerShell is the harder shell: a double-quoted
+        string AND a bare unquoted token both expand ``$names`` and honour
+        backtick escapes — legal path characters — silently rewriting the
+        interpreter path. Single quotes are PowerShell's literal form (spaces
+        included, so the all-users ``C:\\Program Files`` layout works), and cmd
+        rejects the leading ``&`` loudly rather than corrupting anything."""
         monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
         monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
         monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
         monkeypatch.setattr(core_mod.os, "name", "nt")
+        monkeypatch.setattr(
+            core_mod.sys, "executable", "C:\\Program Files\\Python312\\python.exe"
+        )
         cmds = core_mod._stt_prereq_commands("transcribe")
-        assert cmds == [f'& "{core_mod.sys.executable}" -m pip install "kirocrew[voice]"']
+        assert cmds == [
+            "& 'C:\\Program Files\\Python312\\python.exe' -m pip install kirocrew[voice]"
+        ]
+        # Named properties the exact match locks in:
+        assert '"' not in cmds[0]  # PS double quotes still expand $ and backtick
+        assert "`" not in cmds[0]  # never emit a PS escape character
+
+    def test_transcribe_prereq_windows_metachar_paths_survive_literally(self, monkeypatch) -> None:
+        """``$`` and a literal single quote are legal Windows path characters.
+        Inside PowerShell single quotes ``$python`` is NOT expanded, and a
+        quote in the path is escaped by doubling — PowerShell's own rule — so
+        the interpreter reaches pip byte-for-byte."""
+        monkeypatch.setattr(core_mod, "_pip_install_channel_available", lambda: True)
+        monkeypatch.setattr(core_mod, "_voice_extra_importable", lambda: False)
+        monkeypatch.setattr(core_mod.shutil, "which", lambda _n: "C:\\ffmpeg\\ffmpeg.exe")
+        monkeypatch.setattr(core_mod.os, "name", "nt")
+        monkeypatch.setattr(core_mod.sys, "executable", "C:\\tools\\$python\\o'brien.exe")
+        cmds = core_mod._stt_prereq_commands("transcribe")
+        assert cmds == ["& 'C:\\tools\\$python\\o''brien.exe' -m pip install kirocrew[voice]"]
 
     def test_transcribe_prereq_without_install_channel_is_empty(self, monkeypatch) -> None:
         """When no install channel can make the extra importable (bundled
@@ -890,16 +918,32 @@ class TestSelEndpoints:
 
     @pytest.mark.asyncio
     async def test_verify_reports_intact_chain(self, fake_sel) -> None:
-        fake_sel.verify_integrity.return_value = (7, 7)
+        fake_sel.verify_integrity.return_value = _SelVerification(7, 7, True, "")
         body = json.loads((await core_mod.api_sel_verify(_req())).body)
-        assert body == {"total": 7, "valid": 7, "integrity": "ok", "tampered": 0}
+        assert body == {
+            "total": 7,
+            "valid": 7,
+            "integrity": "ok",
+            "tampered": 0,
+            "detail": "",
+        }
 
     @pytest.mark.asyncio
     async def test_verify_reports_tampering(self, fake_sel) -> None:
-        fake_sel.verify_integrity.return_value = (7, 5)
+        fake_sel.verify_integrity.return_value = _SelVerification(7, 5, True, "")
         body = json.loads((await core_mod.api_sel_verify(_req())).body)
         assert body["integrity"] == "compromised"
         assert body["tampered"] == 2
+
+    @pytest.mark.asyncio
+    async def test_verify_reports_unverifiable_history(self, fake_sel) -> None:
+        """A refused pin must not answer ``ok`` over the live log alone."""
+        fake_sel.verify_integrity.return_value = _SelVerification(
+            7, 7, False, "segment directory refused to pin (planted link?)"
+        )
+        body = json.loads((await core_mod.api_sel_verify(_req())).body)
+        assert body["integrity"] == "unverifiable"
+        assert "refused" in body["detail"]
 
 
 class TestSecurityStats:
@@ -1125,6 +1169,67 @@ class TestAgentSettingsPut:
         assert "some_edition" not in body
         assert "s3cret" not in json.dumps(body)
         assert "agent" in body
+
+
+class TestAgentSettingsPutLockOffload:
+    """Regression tests for the locked + offloaded read-modify-write path.
+
+    Before the fix the PUT handler called ``path.read_text`` / ``os.replace``
+    directly on the event loop, racing concurrent writers (lost-write) and
+    blocking the loop.  After the fix the write goes through
+    ``update_config_locked`` under ``_get_config_lock``, making two
+    concurrent PUTs serialize rather than clobber each other.
+    """
+
+    @pytest.mark.asyncio
+    async def test_concurrent_puts_serialize_not_clobber(
+        self, seeded_config, fake_sel
+    ) -> None:
+        """Two concurrent PUTs must both land — neither write clobbers the other.
+
+        We fire two coroutines simultaneously: one sets ``subagent_max_turns=3``
+        and one sets ``max_subagents=4``.  Because the RMW is now serialized
+        under the config lock, the config file must end up with BOTH values
+        after both coroutines complete, not just the last one written.
+        """
+        async with TestClient(TestServer(_agent_cfg_app())) as client:
+            r1, r2 = await asyncio.gather(
+                _put_agent(client, {"subagent_max_turns": 3}),
+                _put_agent(client, {"max_subagents": 0}),
+            )
+        assert r1.status == 200
+        assert r2.status == 200
+        persisted = json.loads(seeded_config.read_text(encoding="utf-8"))["agent"]
+        # Both writes must have survived — a lost-write would drop one of them.
+        assert persisted.get("subagent_max_turns") == 3
+        assert persisted.get("max_subagents") == 0
+
+    @pytest.mark.asyncio
+    async def test_write_goes_through_atomic_helper(
+        self, seeded_config, fake_sel, monkeypatch
+    ) -> None:
+        """The write path must call ``update_config_locked``, not a bare
+        ``write_text`` / ``os.replace``.  Patching the helper to a spy lets us
+        assert it was invoked while still allowing the real write to complete."""
+        import kiro_crew.config.loader as _loader
+
+        calls: list[str] = []
+        _real = _loader.update_config_locked
+
+        def _spy(path=None, *, mutate, **kw):
+            calls.append("update_config_locked")
+            return _real(path, mutate=mutate, **kw)
+
+        monkeypatch.setattr(_loader, "update_config_locked", _spy)
+        async with TestClient(TestServer(_agent_cfg_app())) as client:
+            resp = await _put_agent(client, {"subagent_max_turns": 5})
+        assert resp.status == 200
+        assert calls == ["update_config_locked"], (
+            "PUT did not route through update_config_locked — lost-write race still present"
+        )
+        assert json.loads(seeded_config.read_text(encoding="utf-8"))["agent"][
+            "subagent_max_turns"
+        ] == 5
 
 
 # ── PATCH validators not reachable through the editable-field table ─────

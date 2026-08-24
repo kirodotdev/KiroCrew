@@ -17,6 +17,11 @@ not as defensive extras:
   ENDS when its buffer fills; a client that ignores the notification goes
   permanently silent under a burst rather than losing one message.
 
+It also keeps a short-lived **ledger of what it has sent**, because the watch is
+an all-chat stream and the bridge's own attribution is not sufficient to
+recognise the channel's own traffic in every chat. See
+:meth:`IMessageClient.is_own_echo`.
+
 Handles are normalized before comparison so an allowlist entry written as
 ``+61 400 000 000`` matches the ``+61400000000`` the bridge reports.
 """
@@ -27,6 +32,8 @@ import asyncio
 import json
 import logging
 import re
+import time
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
@@ -50,6 +57,21 @@ PROTOCOL_VERSION = 1
 #: end: a window smaller than the buffer would let part of the replay through.
 DEDUPE_WINDOW = 1024
 
+#: How long a message this client sent stays recognisable as its own echo.
+#: This single number balances the two failures, in opposite directions: too
+#: short and an echo arriving late is answered, which is the unbounded loop this
+#: guard exists to stop; too long and the window in which a user's genuine
+#: repeat of the agent's exact words is read as that echo grows. So it is sized
+#: at the smallest value comfortably above a delivery round trip -- the bridge's
+#: own watch debounce is 500ms, and the echo is a local database row appearing
+#: after a local send -- rather than at anything to do with a conversation's
+#: length.
+ECHO_TTL_S = 30.0
+
+#: Bound on remembered outbound messages. A long answer is delivered as several
+#: sends, so this is entries, not turns; the oldest are evicted first.
+ECHO_WINDOW = 256
+
 #: Watch buffer size requested from the bridge (its own default is 256).
 WATCH_BUFFER_LIMIT = 256
 
@@ -60,6 +82,13 @@ RECONNECT_MAX_S = 30.0
 #: Bridge error code for "configured database currently unavailable" --
 #: retryable, and the usual symptom of missing Full Disk Access.
 ERR_DATABASE_UNAVAILABLE = -32002
+
+#: JSON-RPC invalid params. The bridge rejects at validation, before dispatch.
+ERR_INVALID_PARAMS = -32602
+
+#: The only failures that PROVE a send never reached Messages, when the bridge
+#: did not spell out a delivery disposition of its own.
+_DEFINITIVE_REJECTIONS = frozenset({ERR_DATABASE_UNAVAILABLE, ERR_INVALID_PARAMS})
 
 #: Non-digit characters to drop when comparing phone-shaped handles.
 _PHONE_NOISE = re.compile(r"[\s()\-.]")
@@ -78,6 +107,71 @@ def normalize_handle(handle: str) -> str:
     if "@" in value:
         return value.lower()
     return _PHONE_NOISE.sub("", value)
+
+
+def _echo_key(handle: str, text: str) -> str:
+    """The ledger key for one (handle, body) pair.
+
+    The body is NFC-normalized and stripped before comparison because the text
+    makes a round trip through Messages and back out of the database, and a
+    composed/decomposed mismatch on a single accented character would silently
+    stop an echo being recognised as one. Handle and body are joined on a
+    newline, which ``normalize_handle`` can never produce, so no pair of
+    distinct inputs can collide on one key.
+    """
+    return f"{normalize_handle(handle)}\n{unicodedata.normalize('NFC', text).strip()}"
+
+
+def _proves_nothing_was_sent(exc: BaseException) -> bool:
+    """Whether ``exc`` PROVES the send never reached Messages.
+
+    Fails closed, because the two mistakes do not cost the same. Dropping the
+    echo guard for a message that DID go out lets its echo be answered, which is
+    the unbounded loop this whole mechanism exists to stop. Keeping a guard for a
+    message that never went out only suppresses one identical inbound for the
+    rest of the TTL. So anything not recognisably definitive is treated as
+    possibly delivered.
+
+    The bridge's own delivery disposition is the authority when it gives one: it
+    documents ``retry_safe`` and ``disposition`` on a delivery failure's ``data``,
+    where ``not_started`` is the one value that proves the transport never
+    dispatched. Absent that, only a rejection that happens before dispatch
+    counts. A transport failure, a timeout and a cancellation prove nothing --
+    the request may already have been written to the bridge's stdin.
+    """
+    if not isinstance(exc, RpcError):
+        return False
+    if isinstance(exc.data, dict):
+        return exc.data.get("retry_safe") is True or exc.data.get("disposition") == "not_started"
+    return exc.code in _DEFINITIVE_REJECTIONS
+
+
+@dataclass
+class _OwnSend:
+    """One message this client sent, remembered long enough to recognise its echo.
+
+    A sent message is recognisable two ways -- by the body it was sent with, and
+    by the GUID the bridge reports for it -- and they are held together in ONE
+    record on purpose. As two independent entries, matching on either left the
+    other alive to swallow the next genuine message carrying it.
+
+    The lifetime rule is the other half, and it is why ``expires_at`` is optional
+    rather than a timestamp computed up front: **the TTL clock starts when the
+    send's outcome is known, and a record with no outcome yet never expires.** A
+    pre-computed expiry cannot express "not counting yet", and overloading one
+    absolute timestamp with both meanings is what let a slow send outlive its own
+    guard -- ``_call`` waits up to 30s and the TTL is 30s, so a send that reached
+    its timeout left a record already eligible for pruning at the moment its echo
+    could arrive, and the echo was answered.
+    """
+
+    body_key: str
+    #: ``None`` while the send is in flight: an unresolved record never expires,
+    #: because the echo can arrive before the call returns. Set once, to
+    #: ``monotonic() + ECHO_TTL_S``, when the send succeeds or fails ambiguously.
+    expires_at: float | None = None
+    #: Set once the send returns, since the bridge reports it best-effort.
+    guid: str = ""
 
 
 @dataclass
@@ -157,6 +251,12 @@ class IMessageClient:
         self._subscription: int | None = None
         self._since_rowid: int = 0
         self._seen_guids: dict[str, None] = {}
+        #: Ledger of what THIS client sent, oldest first. One record per sent
+        #: message, carrying both of the keys it can be recognised by.
+        self._own_sends: list[_OwnSend] = []
+        #: Handles already reported as looping, so the warning is written once
+        #: per handle instead of once per suppressed message.
+        self._echo_reported: set[str] = set()
         self._resubscribe_task: Optional[asyncio.Task[None]] = None
         self._closing = False
 
@@ -294,8 +394,143 @@ class IMessageClient:
         # exercises the SMS-fallback path by accident.
         if self._service != "imessage":
             params["service"] = self._service
-        result = await self._call("send", params)
-        return _str(result.get("guid"))
+        # Recorded BEFORE the call, not after: the watch can emit the row for
+        # this message while `send` is still awaiting its own result (the bridge
+        # verifies the inserted row before answering, and its watch debounce is
+        # only 500ms), and an echo that arrives before it is remembered is an
+        # echo that gets answered. A send that then fails leaves one stale entry
+        # behind, which costs no more than the TTL already does.
+        # Recorded BEFORE the call, and with NO expiry: the watch can emit the row
+        # for this message while `send` is still awaiting its own result (the
+        # bridge verifies the inserted row before answering, and its watch
+        # debounce is only 500ms), so an echo that arrives before the record
+        # exists -- or after a pre-computed TTL would already have pruned it --
+        # is an echo that gets answered. The clock starts below, once the outcome
+        # is known.
+        record = self._remember_own_send(_echo_key(to, text))
+        try:
+            result = await self._call("send", params)
+        except BaseException as exc:
+            if _proves_nothing_was_sent(exc):
+                # Definitively rejected, so nothing can echo -- and leaving the
+                # record would have the undelivered body suppress a genuine
+                # message carrying those words for the rest of the TTL.
+                self._forget_own_send(record)
+            else:
+                # Ambiguous: the bridge documents -32001 as "may have completed
+                # or remains in flight", and a timeout, a cancellation or a dead
+                # child says nothing about what it did with a request already
+                # written to its stdin. The message may still arrive and echo, so
+                # the guard stays and its clock starts here.
+                record.expires_at = time.monotonic() + ECHO_TTL_S
+            raise
+        record.expires_at = time.monotonic() + ECHO_TTL_S
+        guid = _str(result.get("guid"))
+        # `id`/`guid` are best-effort in the bridge's contract, so this is an
+        # additional key on the same record rather than the mechanism. It is the
+        # stronger of the two -- a GUID this client sent can never legitimately
+        # arrive as user input, so unlike the body it has no false positive.
+        if guid:
+            record.guid = guid
+        return guid
+
+    def _remember_own_send(self, body_key: str) -> _OwnSend:
+        """Record one outbound message, evicting the oldest RESOLVED record if needed.
+
+        The record starts with no expiry -- see :class:`_OwnSend` -- and eviction
+        skips unresolved records for the same reason pruning does: an unresolved
+        record is the guard for a send that has not returned, so dropping it is
+        exactly the loop this ledger exists to prevent. Reaching that needs many
+        sends outstanding at once, which this channel does not do today (``send``
+        awaits its own call, so one conversation has one send in flight), but the
+        invariant is cheaper to hold than to reason about per caller.
+
+        The list can therefore overshoot ``ECHO_WINDOW`` while sends are in
+        flight. That is bounded by concurrent sends rather than by conversation
+        length, and it always drains, because every send resolves: success and an
+        ambiguous failure both set an expiry, and a definitive rejection removes
+        the record outright.
+        """
+        record = _OwnSend(body_key=body_key)
+        self._own_sends.append(record)
+        # A long answer is delivered as several sends, so the bound is entries,
+        # not turns; the oldest RESOLVED ones go first.
+        overflow = len(self._own_sends) - ECHO_WINDOW
+        if overflow > 0:
+            kept: list[_OwnSend] = []
+            for held in self._own_sends:
+                if overflow > 0 and held.expires_at is not None:
+                    overflow -= 1
+                    continue
+                kept.append(held)
+            self._own_sends = kept
+        return record
+
+    def _forget_own_send(self, record: _OwnSend) -> None:
+        """Drop one record. Identity, not equality -- two sends can be identical."""
+        for index, held in enumerate(self._own_sends):
+            if held is record:
+                del self._own_sends[index]
+                return
+
+    def is_own_echo(self, inbound: IMessageInbound) -> bool:
+        """Whether ``inbound`` is this channel's own outbound message coming back.
+
+        The all-chat watch sees every row, including the ones this client caused,
+        and ``is_from_me`` alone does not separate them in every chat. In a
+        **self-chat** -- the user's own handle, which the docs used to prescribe
+        for the first run -- the allow-listed sender IS the identity the agent
+        sends as, so an echo of the agent's reply is indistinguishable from user
+        input unless that flag is both present and correct on the row. The
+        bridge's contract says it need not be: ``watch.subscribe`` defaults to a
+        500ms debounce expressly so an ``is_from_me`` *correction* can land
+        first, and ``sender`` is documented as empty for some self-sent
+        messages. Trusting it as the only guard is what let the channel answer
+        itself without limit (issue #5246).
+
+        So the guard is a record of what this client itself sent, which is the
+        one signal it fully owns. The matching record is CONSUMED WHOLE, so the
+        ledger suppresses each sent message exactly once and a genuine later
+        repeat of the same words is delivered normally. Rows the bridge already
+        attributes to us (``is_from_me``) are dropped by the transport before
+        they reach here, so they never consume the entry the real echo needs.
+        """
+        now = time.monotonic()
+        # Expired records are dropped rather than skipped: an expired entry can
+        # never legitimately match again, and pruning here is what keeps a run of
+        # failed sends from holding the list at its bound. A record with no expiry
+        # is still IN FLIGHT and is never pruned -- that is the whole point of the
+        # optional expiry, since the echo of a slow send arrives before its
+        # outcome does.
+        self._own_sends = [r for r in self._own_sends if r.expires_at is None or r.expires_at > now]
+        body_key = _echo_key(inbound.handle, inbound.text)
+        for index, record in enumerate(self._own_sends):
+            if not ((inbound.guid and record.guid == inbound.guid) or record.body_key == body_key):
+                continue
+            del self._own_sends[index]
+            handle = normalize_handle(inbound.handle)
+            # Every suppression is recorded, because a drop with no signal at all
+            # is indistinguishable from a message that never arrived -- and this
+            # one is silent to the user by construction (replying would be the
+            # loop). The WARNING fires once per handle so a self-chat announces
+            # itself without writing a line per outbound message; the rest land
+            # at debug so a support question has something to read.
+            if handle not in self._echo_reported:
+                self._echo_reported.add(handle)
+                logger.warning(
+                    "imessage: dropping this channel's own message echoed back from %s. "
+                    "This is what a self-chat looks like -- the handle the agent "
+                    "replies to is its own -- and without this the channel would "
+                    "answer itself in a loop.",
+                    redact_handle(inbound.handle),
+                )
+            else:
+                logger.debug(
+                    "imessage: suppressed an echo of this channel's own message from %s",
+                    redact_handle(inbound.handle),
+                )
+            return True
+        return False
 
     async def send_typing(self, selector: dict[str, Any]) -> None:
         """Show a typing indicator, if the bridge offers one.

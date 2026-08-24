@@ -28,11 +28,15 @@ auditing happen IN THE GATEWAY (``computer_use/tools.py`` →
   down the process kiro-cli is talking to, and this file is byte-identical in
   behavior on macOS, Linux and Windows.
 
-Identity is resolved with :func:`mcp_core._resolve_session_key_strict` — the env
-var, or ``KIROCREW_HOST_PID`` plus the HMAC sidecar signed with the
-keystone-protected ``sel_hmac.key``. The lenient resolver is deliberately NOT
-used: it walks ``/proc`` ancestors over ``session_pid_<pid>.txt``, which
-``mcp_core`` itself documents as "agent-writable and therefore forgeable".
+Identity is resolved with :func:`mcp_core._resolve_session_key_strict` — the
+gateway-injected per-call caller block first (this server advertises
+``kirocrew.caller-identity``, so gatewayd injects one whenever it can name the
+caller — the only identity source that works on a pooled backend serving many
+sessions), then the env var, then ``KIROCREW_HOST_PID`` plus the HMAC sidecar
+signed with the keystone-protected ``sel_hmac.key``. The lenient resolver is
+deliberately NOT used: it walks ``/proc`` ancestors over
+``session_pid_<pid>.txt``, which ``mcp_core`` itself documents as
+"agent-writable and therefore forgeable".
 
 **An unresolved key is NOT a refusal.** It is forwarded empty and the call proceeds.
 Neither accepted source exists for a GUI-launched kiro-cli on macOS —
@@ -155,9 +159,13 @@ ERR_GATEWAY_UNREACHABLE = (
 # class this feature can produce.
 #
 # The fix is a per-PROCESS identity, not a refusal. kiro-cli spawns one shim process
-# per session, so the shim's own pid separates the namespaces exactly as far as the
-# sessions are actually separate — and it does so without reinstating the
-# unattended-surface refusal that was removed by product decision. It is
+# per session, so in the 1:1 shim topology the pid separates the namespaces exactly
+# as far as the sessions are actually separate — and it does so without reinstating
+# the unattended-surface refusal that was removed by product decision. On a POOLED
+# backend one process serves many sessions, so the pid separates only what the
+# injected caller block does not already name: co-tenants gatewayd can name get real
+# per-session keys, and the residual — unnamed co-tenants sharing one
+# ``unresolved:<pid>`` namespace — is tracked as #5322. It is
 # deliberately NOT presented as trustworthy attribution: the prefix names it as
 # unresolved so an audit reader cannot mistake a pid for a session identity.
 UNRESOLVED_SESSION_PREFIX = "unresolved:"
@@ -768,6 +776,37 @@ def _invoke(session_key: str, name: str, args: dict[str, Any]) -> dict[str, Any]
     return decoded
 
 
+#: Whether this server advertises ``kirocrew.caller-identity`` — i.e. whether it
+#: consumes the per-call caller block gatewayd injects instead of reading identity
+#: from its own process. True here because it does: the session key forwarded to
+#: the gateway comes from :func:`mcp_core._resolve_session_key_strict`, whose
+#: first source is that block.
+#:
+#: Advertising is not cosmetic. ``mcp_gateway/backend.py`` strips any client-forged
+#: caller block from EVERY forwarded request and re-injects its own only when the
+#: backend advertised this capability — so without the advertisement the block
+#: never arrives, and this server's resolver reads an empty identity no matter how
+#: correctly it is written. Nothing declines to POOL an unadvertised backend
+#: (``rewriter.UNPOOLABLE_SERVERS`` is empty and documents that the capability is
+#: read only to decide injection), so the unadvertised state was not "per-session
+#: spawn" — it was pooled AND identity-blind. For this server that silently
+#: degraded every pooled call to the unresolved-identity path: the call still
+#: proceeds (by product decision), but the audit trail loses attribution it was
+#: built to carry.
+#:
+#: A module-level constant rather than a bare argument below so the value is
+#: readable without executing :func:`run_mcp_server`, and so
+#: ``test/test_mcp_managed_caller_identity.py`` can assert it against the argument
+#: actually handed to the shim.
+ADVERTISE_CALLER_IDENTITY = True
+
+
 def run_mcp_server() -> None:
     """Run the MCP stdio server — reads JSON-RPC from stdin, writes to stdout."""
-    run_mcp_stdio_loop(SERVER_NAME, SERVER_VERSION, _list_tools, _call_tool)
+    run_mcp_stdio_loop(
+        SERVER_NAME,
+        SERVER_VERSION,
+        _list_tools,
+        _call_tool,
+        advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+    )

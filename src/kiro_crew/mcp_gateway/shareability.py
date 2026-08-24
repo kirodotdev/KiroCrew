@@ -345,9 +345,14 @@ def assess(
     #    something is observed" posture cannot cover: both hazard codes are
     #    routing-shaped, so a server serving the wrong session's data without ever
     #    emitting an unroutable frame produces no ledger entry. There is no retreat
-    #    to fall back on, so the gate stays until the servers it names consume the
-    #    injected caller block (#4622) -- at which point the input has no producer
-    #    and this branch is deleted rather than relaxed.
+    #    to fall back on. The set of producers has narrowed as managed servers
+    #    adopted the caller block (#4622, #4659), but the branch keeps two jobs:
+    #    ``kirocrew-computer`` advertises yet stays session-bound deliberately
+    #    (its UNNAMED co-tenants would share one ``unresolved:<pid>`` snapshot
+    #    namespace, #5322), and the conservative default for a future managed
+    #    server missing from ``_MANAGED_SERVERS_CALLER_AWARE`` (pinned by
+    #    ``test_a_managed_server_missing_from_the_aware_set_reads_as_session_bound``)
+    #    must land HERE, as a disqualifier, rather than in the shareable set.
     #
     #    Checked BEFORE the probe gate: it is a config fact, true whether or not
     #    the server ever started.

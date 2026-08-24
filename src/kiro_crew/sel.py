@@ -43,9 +43,10 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import IO, Literal, overload
+from typing import IO, Literal, NamedTuple, overload
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
@@ -209,6 +210,102 @@ _MAX_ARG_LEN = 500
 # read so read-after-write stays consistent.
 _QUEUE_DRAIN_BATCH = 256  # max events appended per open() in the writer loop
 _FLUSH_TIMEOUT_SECS = 5.0  # bound on flush() so a stuck writer can't hang reads
+
+
+def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
+    """Apply *redactor* to every string reachable in *obj*, copying containers.
+
+    Shared by the on-disk write path (:func:`_redacted_metadata_copy`) and the
+    forward-callback path (``_forward_event``) so the two surfaces can never
+    silently diverge in which shapes they cover. Sequences are rebuilt as plain
+    ``list``/``tuple`` (mirroring json's own array degradation) rather than via
+    ``type(obj)(...)``: a namedtuple or a subclass with a different constructor
+    signature is legal metadata today (json serializes it fine), and a
+    ``TypeError`` here would cost a whole writer batch. Keys and non-string
+    leaves pass through unchanged.
+    """
+    if isinstance(obj, str):
+        return redactor(obj)
+    if isinstance(obj, dict):
+        return {k: _redact_deep(v, redactor) for k, v in obj.items()}
+    if isinstance(obj, tuple):
+        return tuple(_redact_deep(i, redactor) for i in obj)
+    if isinstance(obj, list):
+        return [_redact_deep(i, redactor) for i in obj]
+    return obj
+
+
+# AWS access-key ids case-insensitively. The shared redactor's pattern is
+# case-SENSITIVE (a real key is upper-case, and loosening it there would
+# false-positive on ordinary prose across every egress surface). SEL callers,
+# however, log NORMALIZED text — e.g. the dashboard file-search handler
+# lowercases the query before logging it in ``resources`` — and a lowercased
+# key is trivially reversible, so the audit trail needs the case-insensitive
+# net that ordinary egress does not. Bounded on both sides so a longer
+# alphanumeric run (where extra chars change the case-restore candidates)
+# stays out of scope.
+_AWS_KEY_ANYCASE_RE = re.compile(
+    r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Za-z0-9]{16}(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _redact_text(text: str) -> str:
+    """Apply the baseline credential/exfiltration passes to one string.
+
+    Adds a case-insensitive AWS access-key pass on top of ``security.redact``:
+    SEL callers may normalize case before logging (see ``_AWS_KEY_ANYCASE_RE``),
+    which would slip a lowercased key past the shared case-sensitive pattern.
+    """
+    # circular import: kiro_crew.security imports SecurityEvent/SecurityEventLog
+    # from this module at top level, so the redactor can only be imported
+    # lazily here (same pattern as _forward_event / log_governance_decision).
+    from kiro_crew.security import redact
+
+    return _AWS_KEY_ANYCASE_RE.sub("[REDACTED: credential]", redact(text))
+
+
+# Free-form string fields on SecurityEvent that carry caller-influenced text
+# (a tool/operation name, a resources summary, an exception message) and are
+# therefore redacted by the writer alongside metadata. The identity-shaped
+# fields (caller_identity, agent, source, downstream_service, request_id) are
+# constrained vocabularies, not caller free-text, and stay verbatim.
+_REDACTED_TEXT_FIELDS = ("operation", "resources", "error")
+
+
+def _redact_and_clip(text: str) -> str:
+    """Redact *text*, THEN clip it to ``_MAX_ARG_LEN``.
+
+    Order is the whole point. Clipping first can cut a credential in half, and
+    the surviving prefix no longer matches any credential grammar (they are all
+    anchored on a full-length token), so the writer's own pass cannot recover
+    it: a long ``resources`` line with a key straddling byte 500 would persist
+    most of that key. Redacting the FULL string first replaces the token
+    outright, and only then is the (now secret-free) text clipped.
+
+    Used by the ``log_*`` helpers, which are where the clip happens. The
+    writer's pass in ``_flush_batch`` stays as the backstop for events built by
+    constructing :class:`SecurityEvent` directly.
+    """
+    return _redact_text(text)[:_MAX_ARG_LEN]
+
+
+def _redacted_metadata_copy(metadata: dict) -> dict:
+    """Return a copy of *metadata* with credential/exfiltration text redacted.
+
+    ``metadata`` is a free-form dict whose string values often carry
+    caller-supplied text verbatim (search queries, document titles). The SEL
+    file is persisted and dashboard-readable, so a secret pasted into such a
+    field must never land on disk. String VALUES are redacted at any nesting
+    depth (dicts, lists, tuples); keys and non-string values pass through
+    unchanged.
+
+    Always builds a NEW structure: callers may reuse their metadata dict after
+    logging, so redaction must never be observable through the object they
+    passed in. May raise on a pathological value; the writer contains that
+    per event by persisting a placeholder — the raw text is never written.
+    """
+    return {k: _redact_deep(v, _redact_text) for k, v in metadata.items()}
 
 
 @dataclass
@@ -391,6 +488,69 @@ class SecurityEventLog:
         from the running thread means a future inline caller cannot reintroduce
         that stall by forgetting a flag.
         """
+        # Redact caller-supplied text before the chain hash is computed, so the
+        # persisted bytes and the HMAC signature agree on the redacted form.
+        # This is the single convergence point for every CALLER-originated event
+        # (async writer, sync mode, and the critical fail-closed path all land
+        # here), so a credential pasted into a free-form field — a metadata
+        # value, an exception message in ``error``, a resources summary — never
+        # reaches disk regardless of which log_* helper recorded it. The one
+        # write that bypasses this method, the ``sel_rotation`` boundary record,
+        # carries no caller text (a generated segment name and a byte count), so
+        # it needs no pass. Covered surfaces: ``metadata`` values (any nesting
+        # depth) and the free-form top-level strings in
+        # ``_REDACTED_TEXT_FIELDS``; identity-shaped fields stay verbatim.
+        # Caller-side passes (the governance helpers'
+        # ``redact_via_context``) remain as a broader first layer. Runs outside
+        # the chain lock: regex cost must not extend the critical section that
+        # synchronous fallbacks and prune contend on. Fail-closed per event: a
+        # redaction failure replaces the offending text with a placeholder —
+        # the raw text is never persisted, and one bad value never costs the
+        # rest of the batch.
+        for event in events:
+            for field_name in _REDACTED_TEXT_FIELDS:
+                value = getattr(event, field_name)
+                if not value:
+                    continue
+                try:
+                    cleaned = _redact_text(value)
+                except Exception as exc:
+                    logger.warning(
+                        "SEL: %s redaction failed for a %s event; persisting a "
+                        "placeholder instead of the raw text",
+                        field_name,
+                        event.event_type,
+                        exc_info=True,
+                    )
+                    cleaned = f"[redaction_error: {type(exc).__name__}]"
+                if cleaned != value:
+                    logger.info(
+                        "SEL: redacted %s text in a %s event",
+                        field_name,
+                        event.event_type,
+                    )
+                    setattr(event, field_name, cleaned)
+            if not event.metadata:
+                continue
+            try:
+                redacted = _redacted_metadata_copy(event.metadata)
+            except Exception as exc:
+                logger.warning(
+                    "SEL: metadata redaction failed for a %s event; persisting "
+                    "a placeholder instead of the raw metadata",
+                    event.event_type,
+                    exc_info=True,
+                )
+                redacted = {"redaction_error": type(exc).__name__}
+            if redacted != event.metadata:
+                # Observability only — a secret reaching audit metadata signals
+                # an upstream handling defect. Keys only, never values.
+                logger.info(
+                    "SEL: redacted metadata value(s) in a %s event (keys: %s)",
+                    event.event_type,
+                    list(event.metadata),
+                )
+            event.metadata = redacted
         callback: Callable[[dict], None] | None
         with self._lock:
             try:
@@ -563,7 +723,13 @@ class SecurityEventLog:
             # can see that it has moved on.
             written = os.fstat(f.fileno())
         # Ensure permissions are correct even if file pre-existed with
-        # wrong mode (e.g. created by an older version).
+        # wrong mode (e.g. created by an older version). POSIX repair only,
+        # deliberately NOT ``platform_compat.restrict_to_owner``: that helper
+        # spawns ``icacls`` on Windows (a blocking subprocess), and this
+        # append path can run inline on a caller's thread that may be the
+        # asyncio event loop — the ``critical=True`` audit-or-deny write, and
+        # the fallback taken when the writer thread cannot start (see
+        # ``_may_rotate``) — where a blocking call freezes every gateway task.
         try:
             os.chmod(self._path, 0o600)
         except OSError:
@@ -578,16 +744,7 @@ class SecurityEventLog:
             # only be imported lazily here.
             from kiro_crew.security import redact
 
-            def _redact_deep(obj: object) -> object:
-                if isinstance(obj, str):
-                    return redact(obj)
-                if isinstance(obj, dict):
-                    return {k: _redact_deep(v) for k, v in obj.items()}
-                if isinstance(obj, (list, tuple)):
-                    return type(obj)(_redact_deep(i) for i in obj)
-                return obj
-
-            callback(_redact_deep(asdict(event)))  # type: ignore[arg-type]
+            callback(_redact_deep(asdict(event), redact))  # type: ignore[arg-type]
         except Exception:
             logger.warning("forward_callback failed", exc_info=True)
 
@@ -800,60 +957,26 @@ class SecurityEventLog:
                 )
             return existing
         key = os.urandom(32)
-        # Create the key ATOMICALLY: write the full 32 bytes to a temp file in
-        # the same dir (0o600 from birth, so never briefly world-readable) and
-        # os.replace() it into place — the same pattern prune() uses. A plain
-        # os.open()+os.write() is NOT atomic: a crash or full-disk partial
-        # write between the two calls leaves a 0-byte/short key on disk, which
-        # the load-time length check above would then reject with a hard
-        # RuntimeError on the NEXT boot — bricking every SecurityEventLog()
+        # Create the key ATOMICALLY (temp file + rename via ``atomic_write``,
+        # whose short-write loop was modelled on the hand-rolled one this call
+        # replaces): a plain os.open()+os.write() is NOT atomic — a crash or
+        # full-disk partial write leaves a 0-byte/short key on disk, which the
+        # load-time length check above would then reject with a hard
+        # RuntimeError on the NEXT boot, bricking every SecurityEventLog()
         # init until an operator manually removes the file. os.replace() makes
-        # the key file visible only once it is complete, so KiroCrew itself can
-        # never manufacture the hard-fail state; it fires solely on genuine
-        # external corruption/tampering (which is what the error message is
-        # written for).
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=str(key_path.parent), prefix=".sel_hmac_", suffix=".tmp"
-        )
-        try:
-            # os.write() may return a SHORT count (fewer bytes than len(key)),
-            # notably when storage is nearly full. Ignoring it would publish a
-            # truncated key while the running process keeps signing with the
-            # full in-memory key — the next boot then hard-fails on the short
-            # on-disk key and the existing records can't be verified. Loop
-            # until every byte is written; treat a 0-byte write as an error.
-            mv = memoryview(key)
-            while mv:
-                n = os.write(tmp_fd, mv)
-                if n == 0:
-                    raise OSError("short write persisting SEL HMAC key (wrote 0 bytes)")
-                mv = mv[n:]
-            os.close(tmp_fd)
-            tmp_fd = -1
-            os.replace(tmp_path, str(key_path))
-        except BaseException:
-            if tmp_fd != -1:
-                os.close(tmp_fd)
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-            raise
-        # Re-enforce owner-only perms (POSIX 0o600 / Windows owner-only DACL).
-        # Fail-SOFT by design: a read-only FS must not crash SecurityEventLog
-        # init (see test_chmod_failure_is_swallowed). Unlike token_secret.py,
-        # which treats the same failure as merely a warning too, the SEL key
-        # tolerates chmod failure at startup.
-        try:
-            platform_compat.restrict_to_owner(key_path)
-        except OSError:
-            # Logs the key file PATH, never the key bytes.
-            logger.warning(  # nosemgrep: python-logger-credential-disclosure
-                "failed to set owner-only permissions on SEL HMAC key %s; "
-                "file may be readable by other users",
-                key_path,
-                exc_info=True,
-            )
+        # the key file visible only once it is complete.
+        #
+        # ``restrict_to_owner=True`` locks the temp file down BEFORE the key
+        # bytes reach it — the previous post-rename lockdown left a brand-new
+        # key readable under the inherited DACL on Windows for the write
+        # window (issue #5285) — and implies 0o600 on POSIX.
+        # ``restrict_on_error="warn"`` keeps this site's fail-SOFT policy: a
+        # read-only FS / chmod failure must not crash SecurityEventLog init
+        # (see test_chmod_failure_is_swallowed). The linked-parent refusal
+        # implied by ``restrict_to_owner=True`` raises unconditionally, which
+        # is the right behavior for the key that signs the audit chain: a
+        # pre-planted link under the trust dir is hostile (#4381).
+        atomic_write(key_path, key, restrict_to_owner=True, restrict_on_error="warn")
         return key
 
     @contextmanager
@@ -1240,7 +1363,7 @@ class SecurityEventLog:
         )
         return None
 
-    def _segments_oldest_first(self) -> list[Path]:
+    def _segments_oldest_first(self, *, pin: _SegmentDirPin | None = None) -> list[Path]:
         """Closed segments in rotation order (oldest first).
 
         Only files matching ``_SEGMENT_NAME_RE`` in full are returned, so an
@@ -1279,11 +1402,41 @@ class SecurityEventLog:
         (``no-blocking-call-on-event-loop``), so the scan stops at the cap and
         works with what it has: rotation then simply does not find the segments
         beyond it, which leaves the log over budget rather than blocking a write.
+
+        *pin* is the read-side directory pin (#4999). The walk itself stays
+        the same bounded, BY-NAME scan on every platform — the cap above is
+        the memory bound, and materializing an unbounded listing first (as an
+        fd-relative ``os.listdir`` would) would spend unbounded memory just to
+        refuse it afterwards. The pin closes the redirect the name allows:
+        after the walk, the path must still name the directory the read
+        pinned (any swap — planted link, or a different real directory, whose
+        identity also differs — fails closed to no segments), and on
+        descriptor platforms the per-file opens that follow resolve RELATIVE
+        to the pinned descriptor, so a swap after the revalidation still
+        cannot redirect a read. Rotation calls this UNPINNED: it repairs the
+        directory itself first (:meth:`_ensure_segment_dir`), and its callers
+        are not read paths.
         """
-        try:
-            scanner = os.scandir(self._segment_dir)
-        except OSError:
-            return []
+        if pin is not None and pin.fd is not None:
+            # fd-relative walk: a PATH swap can neither redirect nor empty
+            # this scan. That closes the ABA shape — swap a decoy in DURING
+            # the walk, restore the real directory before any recheck — in
+            # which a by-name scan enumerates the decoy and then sees the
+            # restored identity pass. os.scandir(fd) stays lazy, so the cap
+            # below keeps bounding the walk on a legacy directory pre-filled
+            # before the fence.
+            try:
+                scanner = os.scandir(pin.fd)
+            except OSError:
+                logger.warning(
+                    "SEL could not enumerate the pinned segment dir", exc_info=True
+                )
+                return []
+        else:
+            try:
+                scanner = os.scandir(self._segment_dir)
+            except OSError:
+                return []
         # A hardlink ALIAS is deliberately NOT handled here (or anywhere):
         # an alias IS the regular file its name points at, so telling it from
         # the original requires a cross-name decision — and every key
@@ -1318,7 +1471,7 @@ class SecurityEventLog:
                         entry.name,
                     )
                     continue
-                named.append(Path(entry.path))
+                named.append(self._segment_dir / entry.name)
         if truncated:
             logger.warning(
                 "SEL segment dir %s holds more than %d entries; scan stopped there. "
@@ -1328,6 +1481,18 @@ class SecurityEventLog:
                 _SEGMENT_SCAN_CAP,
                 _SEGMENT_KEEP + 1,
             )
+        if pin is not None and pin.fd is None and not pin.matches(self._segment_dir):
+            # Identity pin (this platform has no directory descriptors): the
+            # walk above was by NAME, so a directory swapped in mid-walk
+            # would have been followed. The identity the read pinned and the
+            # identity the path names NOW differ, so fail closed rather than
+            # return entries from a tree the pin never covered.
+            logger.warning(
+                "SEL segment dir %s was replaced during enumeration (planted "
+                "link?); its entries are not audit history",
+                self._segment_dir,
+            )
+            return []
         return sorted(named, key=_segment_seq)
 
     def _enforce_segment_retention_locked(self) -> int:
@@ -1442,7 +1607,7 @@ class SecurityEventLog:
                             continue
                         try:
                             data = json.loads(line)
-                        except (json.JSONDecodeError, ValueError):
+                        except ValueError:
                             # Truncated/corrupt line — skip backward to the last
                             # complete record rather than resetting the chain to
                             # genesis. Flag it so the corruption is not hidden.
@@ -1564,8 +1729,8 @@ class SecurityEventLog:
                 outcome=outcome,
                 request_id=str(request_id),
                 downstream_service=downstream_service,
-                resources=resources[:_MAX_ARG_LEN] if resources else "",
-                error=error[:_MAX_ARG_LEN] if error else "",
+                resources=_redact_and_clip(resources) if resources else "",
+                error=_redact_and_clip(error) if error else "",
                 metadata=metadata or {},
             ),
             critical=critical,
@@ -1592,11 +1757,14 @@ class SecurityEventLog:
         codebase).  ``scope``/``item``/``rule``/``layer`` go in ``metadata`` for
         ``policy explain`` and forensic queries.
 
-        On-disk SEL records are NOT redacted by the writer, and the persisted
-        HMAC chain signs the bytes as-written, so the operation/resources/reason
-        are redacted HERE (before ``log``) via ``redact_via_context`` — a command
-        body or path that tripped governance must not leak a credential into the
-        audit log.
+        The writer applies the baseline credential/exfiltration passes to
+        ``operation``/``resources``/``error`` and metadata values before
+        persisting, but ``redact_via_context`` is broader (a loaded
+        companion's extra regexes apply) — so ``operation``/``item``/``reason``
+        are ALSO redacted HERE (before ``log``): a command body or path that
+        tripped governance must not leak anything the broader pass would have
+        caught. The writer's narrower pass is a second layer, not a
+        replacement.
 
         Pass ``critical=True`` when the caller enforces "audit-or-deny" for a
         GOVERNED decision (e.g. a governed transport-start allow): the event is
@@ -1622,14 +1790,14 @@ class SecurityEventLog:
                 caller_identity=session_key,
                 agent=agent,
                 source=_infer_source(session_key),
-                operation=safe_operation[:_MAX_ARG_LEN],
+                operation=_redact_and_clip(safe_operation),
                 outcome=outcome,
-                resources=safe_item[:_MAX_ARG_LEN],
+                resources=_redact_and_clip(safe_item),
                 metadata={
                     "scope": scope,
                     "rule": rule,
                     "layer": layer,
-                    "reason": safe_reason[:_MAX_ARG_LEN],
+                    "reason": _redact_and_clip(safe_reason),
                 },
             ),
             critical=critical,
@@ -1674,13 +1842,13 @@ class SecurityEventLog:
                 caller_identity=session_key,
                 agent="kirocrew",
                 source=_infer_source(session_key),
-                operation=chokepoint[:_MAX_ARG_LEN],
+                operation=_redact_and_clip(chokepoint),
                 outcome="blocked" if failed_closed else "degraded",
                 resources="",
                 metadata={
                     "scope": scope,
                     "app": app,
-                    "reason": safe_reason[:_MAX_ARG_LEN],
+                    "reason": _redact_and_clip(safe_reason),
                     "disposition": "failed_closed" if failed_closed else "failed_open",
                 },
             ),
@@ -1714,13 +1882,19 @@ class SecurityEventLog:
                 source=source,
                 operation=operation,
                 outcome=outcome,
-                resources=resources[:_MAX_ARG_LEN] if resources else "",
-                error=error[:_MAX_ARG_LEN] if error else "",
+                resources=_redact_and_clip(resources) if resources else "",
+                error=_redact_and_clip(error) if error else "",
             ),
             critical=critical,
         )
 
-    def verify_integrity(self) -> tuple[int, int]:
+    @overload
+    def verify_integrity(self) -> tuple[int, int]: ...
+
+    @overload
+    def verify_integrity(self, *, detailed: Literal[True]) -> SelVerification: ...
+
+    def verify_integrity(self, *, detailed: bool = False) -> tuple[int, int] | SelVerification:
         """Verify the HMAC chains. Returns (total_entries, valid_entries).
 
         Every rotated segment (oldest first) is verified BEFORE the live log.
@@ -1736,25 +1910,76 @@ class SecurityEventLog:
         :meth:`_rotation_event` for why that claim cannot be made true without
         serializing every append, and why a check that can fire on a benign cause
         is worse than no check.
+
+        Segments are enumerated under a read-side directory pin (#4999): the
+        segment dir that refused to pin (a planted link, or not a directory)
+        contributes NOTHING here rather than being walked by name — which is
+        what makes a swapped ``security_events.d`` fail closed instead of
+        inflating ``total`` with another tree's files (a false tamper alarm).
+
+        ``detailed=True`` adds the third outcome that refusal needs (#5051
+        review): ``history_verifiable=False`` with a ``reason`` when the
+        directory refused to pin or was replaced mid-verification, because
+        the rotated segments were not checked and "intact over the live log
+        alone" must not be able to hide that. A directory that simply does
+        not exist yet stays verifiable — a fresh install has no history to
+        vouch for.
         """
         self.flush()  # ensure all queued events are on disk before verifying
         total = 0
         valid = 0
-        for path in self._segments_oldest_first() + [self._path]:
-            if not path.exists():
-                continue
-            file_total, file_valid = self._verify_file(path)
-            total += file_total
-            valid += file_valid
-        return total, valid
+        pin, absent = _open_segment_dir(self._segment_dir)
+        try:
+            # Enumerate INSIDE the try: a mid-readdir I/O error must still
+            # unwind through the finally that releases the pin, not strand
+            # the descriptor on every failed request.
+            segments = self._segments_oldest_first(pin=pin) if pin is not None else []
+            for path in segments + [self._path]:
+                if pin is None or pin.fd is None:
+                    # Pathname walks may see a segment retention-deleted
+                    # between enumeration and here; that is benign. An
+                    # fd-pinned walk must not re-touch the PATH at all — a
+                    # swap racing the recheck would skip real segments here
+                    # and the fd-relative open below handles absence itself.
+                    if not path.exists():
+                        continue
+                file_total, file_valid = self._verify_file(path, pin=pin)
+                total += file_total
+                valid += file_valid
+        finally:
+            if pin is not None:
+                pin.close()
+        if not detailed:
+            return total, valid
+        reason = ""
+        if pin is None:
+            if not absent:
+                # absent is what the PIN itself observed, so a concurrent
+                # repair removing a refused link cannot reclassify the
+                # refusal as benign absence after the fact.
+                reason = "segment directory refused to pin (planted link?)"
+        elif not pin.matches(self._segment_dir):
+            # matches() is lstat-based, so it still answers after close();
+            # a mid-verification swap leaves the totals computed from the
+            # pinned directory but the tree on disk no longer is it.
+            reason = "segment directory was replaced during verification"
+        return SelVerification(
+            total=total, valid=valid, history_verifiable=not reason, reason=reason
+        )
 
     @overload
-    def _reader_handle(self, path: Path, *, binary: Literal[True]) -> IO[bytes] | None: ...
+    def _reader_handle(
+        self, path: Path, *, binary: Literal[True], pin: _SegmentDirPin | None = ...
+    ) -> IO[bytes] | None: ...
 
     @overload
-    def _reader_handle(self, path: Path, *, binary: Literal[False]) -> IO[str] | None: ...
+    def _reader_handle(
+        self, path: Path, *, binary: Literal[False], pin: _SegmentDirPin | None = ...
+    ) -> IO[str] | None: ...
 
-    def _reader_handle(self, path: Path, *, binary: bool) -> IO[str] | IO[bytes] | None:
+    def _reader_handle(
+        self, path: Path, *, binary: bool, pin: _SegmentDirPin | None = None
+    ) -> IO[str] | IO[bytes] | None:
         """Reader-side open policy, shared by both readers.
 
         The LIVE log opens with ordinary ``open()``: it is a fixed
@@ -1764,7 +1989,9 @@ class SecurityEventLog:
         while every read reports empty and ``verify_integrity`` counts a
         clean ``(0, 0)``. Rotated segments ARE enumerated, attacker-nameable
         entries, and take the descriptor-validating funnel
-        (:func:`_open_segment`).
+        (:func:`_open_segment`), which resolves them relative to *pin* when
+        the read holds one (#4999) — a segment dir swapped after the pin
+        cannot redirect the open.
         """
         if path == self._path:
             try:
@@ -1774,14 +2001,14 @@ class SecurityEventLog:
             except OSError:
                 logger.warning("SEL could not open the live log %s", path.name, exc_info=True)
                 return None
-        fd = _open_segment(path)
+        fd = _open_segment(path, pin=pin)
         if fd is None:
             return None
         if binary:
             return os.fdopen(fd, "rb")
         return os.fdopen(fd, encoding="utf-8")
 
-    def _verify_file(self, path: Path) -> tuple[int, int]:
+    def _verify_file(self, path: Path, *, pin: _SegmentDirPin | None = None) -> tuple[int, int]:
         """Verify one log file's chain. Returns (total, valid).
 
         Streamed line by line so a capped-but-large segment is never loaded whole.
@@ -1792,7 +2019,7 @@ class SecurityEventLog:
         total = 0
         valid = 0
         prev_hash = ""
-        handle = self._reader_handle(path, binary=False)
+        handle = self._reader_handle(path, binary=False, pin=pin)
         if handle is None:
             return 0, 0
         with handle:
@@ -1850,31 +2077,40 @@ class SecurityEventLog:
         # Newest first: the live log, then rotated segments newest to oldest.
         # Segments are discovered LAZILY (only if the live log has not already
         # satisfied the request), so the common tail read touches one file.
-        for path in self._read_sources_newest_first():
-            if not path.exists():
-                continue
-            for line in self._iter_lines_backward(path):
-                try:
-                    data = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
-                    continue
-                if not isinstance(data, dict):
-                    continue
-                if windowed:
-                    ts = _parse_timestamp(data.get("timestamp", ""))
-                    if ts is None:
+        # The segment dir is PINNED for the whole walk (#4999) so a directory
+        # swapped mid-read cannot redirect later opens; the early returns below
+        # all unwind through the finally that releases the pin.
+        pin, _absent = _open_segment_dir(self._segment_dir)
+        try:
+            for path in self._read_sources_newest_first(pin=pin):
+                if pin is None or pin.fd is None:
+                    if not path.exists():
                         continue
-                    if until is not None and ts >= until:
+                for line in self._iter_lines_backward(path, pin=pin):
+                    try:
+                        data = json.loads(line)
+                    except ValueError:
                         continue
-                    if since is not None and ts < since:
-                        # Append-ordered log: everything from here back is older.
+                    if not isinstance(data, dict):
+                        continue
+                    if windowed:
+                        ts = _parse_timestamp(data.get("timestamp", ""))
+                        if ts is None:
+                            continue
+                        if until is not None and ts >= until:
+                            continue
+                        if since is not None and ts < since:
+                            # Append-ordered log: everything from here back is older.
+                            return result
+                    result.append(data)
+                    if len(result) >= limit:
                         return result
-                result.append(data)
-                if len(result) >= limit:
-                    return result
+        finally:
+            if pin is not None:
+                pin.close()
         return result
 
-    def _read_sources_newest_first(self) -> Iterator[Path]:
+    def _read_sources_newest_first(self, *, pin: _SegmentDirPin | None) -> Iterator[Path]:
         """The live log, then ADMISSIBLE segments newest to oldest.
 
         A segment is only handed to the read path once one of its records
@@ -1896,10 +2132,22 @@ class SecurityEventLog:
 
         A generator so segments are neither listed nor opened when the live log
         already answered the caller.
+
+        *pin* is the caller's read-side directory pin (#4999), owned and
+        released by the caller. ``None`` means the directory refused to pin —
+        a planted link, or not a directory — and the response is to offer NO
+        segment sources rather than fall back to a by-name walk, which is
+        exactly what a swapped directory exploits.
         """
         yield self._path
-        for path in reversed(self._segments_oldest_first()):
-            if self._segment_is_signed_by_us(path):
+        if pin is None:
+            # _open_segment_dir already logged the refusal at the severity
+            # the cause deserves (a planted link warns; a directory that
+            # simply does not exist yet — a fresh install — stays quiet).
+            logger.debug("SEL offering no segment sources: the segment dir did not pin")
+            return
+        for path in reversed(self._segments_oldest_first(pin=pin)):
+            if self._segment_is_signed_by_us(path, pin=pin):
                 yield path
             else:
                 logger.warning(
@@ -1908,12 +2156,12 @@ class SecurityEventLog:
                     path.name,
                 )
 
-    def _segment_is_signed_by_us(self, path: Path) -> bool:
+    def _segment_is_signed_by_us(self, path: Path, *, pin: _SegmentDirPin | None = None) -> bool:
         """Whether *path* holds at least one record signed with our HMAC key."""
-        for line in self._iter_lines_backward(path):
+        for line in self._iter_lines_backward(path, pin=pin):
             try:
                 data = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 continue
             if isinstance(data, dict) and self._record_signature_matches(data):
                 return True
@@ -1932,7 +2180,9 @@ class SecurityEventLog:
         expected = hmac.new(self._hmac_key, payload, hashlib.sha256).hexdigest()
         return hmac.compare_digest(stored, expected)
 
-    def _iter_lines_backward(self, path: Path) -> Iterator[str]:
+    def _iter_lines_backward(
+        self, path: Path, *, pin: _SegmentDirPin | None = None
+    ) -> Iterator[str]:
         """Yield *path*'s non-empty lines from last to first, reading in chunks.
 
         Same backward scan as :meth:`_read_last_hash`: only the tail is touched
@@ -1952,9 +2202,10 @@ class SecurityEventLog:
         The handle comes from :meth:`_reader_handle`, so a symlink or FIFO
         planted under a segment name yields nothing here instead of being
         followed (or, for a FIFO, blocking the reader inside ``open``); the
-        live log itself opens ordinarily, matching its writer.
+        live log itself opens ordinarily, matching its writer. A read holding
+        a directory pin resolves segments relative to it (#4999).
         """
-        handle = self._reader_handle(path, binary=True)
+        handle = self._reader_handle(path, binary=True, pin=pin)
         if handle is None:
             return
         try:
@@ -2135,7 +2386,7 @@ class SecurityEventLog:
         for line in self._iter_lines_backward(path):
             try:
                 data = json.loads(line)
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 continue
             if not isinstance(data, dict):
                 continue
@@ -2161,7 +2412,7 @@ def _segment_seq(path: Path) -> int:
     return int(match.group("seq")) if match else 0
 
 
-def _open_segment(path: Path) -> int | None:
+def _open_segment(path: Path, *, pin: _SegmentDirPin | None = None) -> int | None:
     """Open *path* read-only as a validated ROTATED SEGMENT, or ``None``.
 
     The dirent check in :meth:`SecurityEventLog._segments_oldest_first` judges
@@ -2171,6 +2422,14 @@ def _open_segment(path: Path) -> int | None:
     attacker-nameable surface; the LIVE log deliberately does not come here —
     its writer follows an operator's symlink, so its readers must too
     (:meth:`SecurityEventLog._reader_handle` owns that split).
+
+    With a *pin* (#4999) the final DIRECTORY hop is pinned too: the open (and
+    the identity check below) resolve RELATIVE to the pinned descriptor where
+    the platform has directory descriptors, so a ``security_events.d`` swapped
+    after the pin cannot redirect the open into another tree; where it does
+    not, the pin's directory identity is revalidated against the path first,
+    refusing a swapped parent mid-read. The per-file funnel below is otherwise
+    unchanged.
 
     Three layers, each covering what the previous one cannot:
 
@@ -2205,6 +2464,17 @@ def _open_segment(path: Path) -> int | None:
     passes to the caller. A refusal warns in the same "planted link?" style as
     the dirent filter, so the two layers read consistently in the log.
     """
+    rel_fd = pin.fd if pin is not None else None
+    if pin is not None and rel_fd is None and not pin.matches(path.parent):
+        # Identity pin (no directory descriptors on this platform): the parent
+        # no longer names the directory the read pinned, so the path may walk
+        # through a swapped-in link. Fail closed.
+        logger.warning(
+            "SEL refusing audit file %s: the segment dir was replaced mid-read "
+            "(planted link?); it is not audit history",
+            path.name,
+        )
+        return None
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -2212,7 +2482,10 @@ def _open_segment(path: Path) -> int | None:
         | getattr(os, "O_BINARY", 0)
     )
     try:
-        fd = os.open(path, flags)
+        if rel_fd is not None:
+            fd = os.open(path.name, flags, dir_fd=rel_fd)
+        else:
+            fd = os.open(path, flags)
     except OSError as exc:
         if exc.errno in (
             errno.ELOOP,
@@ -2233,7 +2506,10 @@ def _open_segment(path: Path) -> int | None:
         return None
     try:
         opened = os.fstat(fd)
-        named = os.lstat(path)
+        if rel_fd is not None:
+            named = os.stat(path.name, dir_fd=rel_fd, follow_symlinks=False)
+        else:
+            named = os.lstat(path)
     except OSError:
         os.close(fd)
         logger.warning("SEL could not stat opened audit file %s", path.name, exc_info=True)
@@ -2255,6 +2531,178 @@ def _open_segment(path: Path) -> int | None:
         )
         return None
     return fd
+
+
+#: Whether this platform can pin a directory BY DESCRIPTOR: ``O_DIRECTORY``
+#: plus ``dir_fd``-relative open and no-follow stat. Where those hold,
+#: fd-taking ``os.listdir`` holds too (same fdopendir capability), so it is
+#: not probed separately. The POSIX branch of the read-side pin below is
+#: built on this; Windows has none of it, so its pin carries identity
+#: revalidation instead (see ``_SegmentDirPin``).
+# supports_dir_fd holds FUNCTION OBJECTS — a string membership test is always
+# False, which would silently strand every platform on the identity pin. And
+# the no-follow lstat flavor is NOT a member even where it works: its
+# dir_fd-relative spelling is stat(follow_symlinks=False), so THAT is what
+# both the gate and the call sites use.
+_PIN_BY_FD_SUPPORTED = (
+    hasattr(os, "O_DIRECTORY") and os.open in os.supports_dir_fd and os.stat in os.supports_dir_fd
+)
+
+
+@dataclass
+class _SegmentDirPin:
+    """A read-side pin on the segment directory (#4999).
+
+    ``fd`` is the strong form — an open directory descriptor nothing can swap
+    afterwards — and every per-file OPEN held by the read resolves RELATIVE
+    to it, immune to a later swap of the path. On every platform the pin also
+    carries the directory's ``identity`` (the fd's ``fstat`` where there is
+    one, the ``lstat`` otherwise), revalidated after enumeration and before
+    each child open, so a directory swapped for a link — or for a different
+    real directory, whose identity also differs — is refused mid-read. The
+    residual is the gap between one revalidation and the next resolution
+    through the name, which on fd platforms the descriptor-relative opens
+    close and elsewhere the rotation-time repair (``_ensure_segment_dir``)
+    bounds; the same ``st_ino == 0`` degradation note as
+    :func:`_open_segment` applies.
+    """
+
+    fd: int | None
+    identity: tuple[int, int]
+
+    def close(self) -> None:
+        """Release the descriptor, if this pin holds one."""
+        if self.fd is not None:
+            os.close(self.fd)
+            self.fd = None
+
+    def matches(self, path: Path) -> bool:
+        """Whether *path* still names the pinned directory (False on any error)."""
+        try:
+            current = os.lstat(path)
+        except OSError:
+            return False
+        return (current.st_dev, current.st_ino) == self.identity
+
+
+def _open_segment_dir(path: Path) -> tuple[_SegmentDirPin | None, bool]:
+    """Pin the segment DIRECTORY a read is about to walk (#4999).
+
+    The directory-level analog of :func:`_open_segment`: that function pins
+    the final component, this one pins the hop above it. Without it, a
+    ``security_events.d`` replaced with a link (planted before this release,
+    or swapped while a read is in flight) redirected enumeration AND every
+    per-file open into another tree — whose segment-shaped regular files pass
+    every per-file check, because they are regular files.
+
+    Returns ``(pin, absent)``. ``pin is None`` is a REFUSAL, not a fallback:
+    callers treat it as "no segments are readable" and fail closed, because
+    walking the path anyway is exactly what a swapped directory exploits.
+    *absent* is CONFIRMED absence (ENOENT) as the pin itself observed it —
+    the one benign shape, a fresh install, which yields the same empty
+    outcome the unpinned scan always produced. A caller reporting on the
+    read must keep THAT classification instead of re-stating the path: a
+    concurrent repair can remove a refused link before anyone looks again,
+    and the refusal would silently reclassify as absence (#5051 review).
+    Judged, in the same three-layer spirit:
+
+    - ``lstat`` + ``is_link_or_junction`` (junction-aware on Windows) refuses
+      a linked directory outright, and ``S_ISDIR`` refuses a non-directory.
+    - On a descriptor-capable platform the directory is then opened with
+      ``O_DIRECTORY | O_NOFOLLOW | O_NONBLOCK``, so a link swapped in after
+      the ``lstat`` fails the open itself.
+    - The descriptor's ``fstat`` identity must equal what the name's ``lstat``
+      said — the same mid-swap mismatch refusal as the per-file funnel.
+    """
+    try:
+        named = os.lstat(path)
+    except OSError as exc:
+        if exc.errno == errno.ENOENT:
+            # No segment dir yet: nothing was ever rotated, which the callers
+            # already treat as "no segments".
+            logger.debug("SEL segment dir %s does not exist yet", path)
+            return None, True
+        logger.warning("SEL could not stat the segment dir %s", path, exc_info=True)
+        return None, False
+    if platform_compat.is_link_or_junction(path):
+        logger.warning(
+            "SEL refusing the segment dir %s: it is a link (planted link?); "
+            "it is not audit history",
+            path,
+        )
+        return None, False
+    if not stat.S_ISDIR(named.st_mode):
+        logger.warning("SEL refusing the segment dir %s: it is not a directory", path)
+        return None, False
+    if not _PIN_BY_FD_SUPPORTED:
+        return _SegmentDirPin(fd=None, identity=(named.st_dev, named.st_ino)), False
+    # O_DIRECTORY types as POSIX-only; the capability constant above already
+    # gated this branch to platforms that have it.
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, getattr(errno, "EMLINK", -1), getattr(errno, "EFTYPE", -1)):
+            logger.warning(
+                "SEL refusing the segment dir %s: it is a link (planted link?); "
+                "it is not audit history",
+                path,
+            )
+        elif exc.errno == errno.ENOENT:
+            # Vanishing AFTER lstat already saw it is not fresh-install
+            # absence — the directory WAS there, and its removal before the
+            # pin landed is interference the refusal must surface.
+            logger.warning(
+                "SEL refusing the segment dir %s: it vanished between the lstat "
+                "and the pin (planted link?)",
+                path,
+            )
+            return None, False
+        else:
+            logger.warning("SEL could not pin the segment dir %s", path, exc_info=True)
+        return None, False
+    try:
+        opened = os.fstat(fd)
+    except OSError:
+        os.close(fd)
+        logger.warning("SEL could not stat the pinned segment dir %s", path, exc_info=True)
+        return None, False
+    if not stat.S_ISDIR(opened.st_mode):
+        os.close(fd)
+        logger.warning("SEL refusing the segment dir %s: it is not a directory", path)
+        return None, False
+    if (named.st_dev, named.st_ino) != (opened.st_dev, opened.st_ino):
+        os.close(fd)
+        logger.warning(
+            "SEL refusing the segment dir %s: it is not the directory its name "
+            "points at (planted link?); it is not audit history",
+            path,
+        )
+        return None, False
+    return _SegmentDirPin(fd=fd, identity=(opened.st_dev, opened.st_ino)), False
+
+
+class SelVerification(NamedTuple):
+    """``verify_integrity(detailed=True)``'s result (#5051 review).
+
+    ``total``/``valid`` keep the plain two-number contract; the added pair
+    states whether the audit HISTORY was verifiable at all. A segment
+    directory that refused to pin (a planted link) or was replaced
+    mid-verification leaves the rotated segments UNCHECKED, and a caller
+    whose job is to surface tampering must not report that run as "intact"
+    over the live log alone. A directory that simply does not exist yet
+    stays verifiable — a fresh install has no history to vouch for.
+    """
+
+    total: int
+    valid: int
+    history_verifiable: bool
+    reason: str
 
 
 def _parse_timestamp(raw: object) -> datetime | None:
@@ -2325,6 +2773,8 @@ def _infer_source(session_key: str) -> str:
         "telegram",
         "wecom",
         "weixin",
+        "whatsapp",
+        "feishu",
         "webex",
         "teams",
         "imessage",
@@ -2349,6 +2799,8 @@ _AUDIT_SOURCES: tuple[str, ...] = (
     "telegram",
     "wecom",
     "weixin",
+    "whatsapp",
+    "feishu",
     "webex",
     "teams",
     "imessage",

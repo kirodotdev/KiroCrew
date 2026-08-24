@@ -12,6 +12,7 @@ import { ACCENT, SEL_BG, Btn } from './shared'
 import { DocSkeleton } from './Shimmer'
 
 import { i18nT } from '../../../i18n/t'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 interface Selection {
   text: string
   x: number
@@ -42,6 +43,7 @@ export interface DocViewProps {
 }
 
 export default function DocView({ detail, tab, addComment, running = false }: DocViewProps) {
+  const ime = useImeGuard()
   const content = detail?.files?.[tab + '.md']
   const boxRef = useRef<HTMLDivElement>(null)
   const [sel, setSel] = useState<Selection | null>(null)
@@ -138,7 +140,7 @@ export default function DocView({ detail, tab, addComment, running = false }: Do
               autoFocus
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') { setNote(null); setDraft('') } }}
+              {...ime.bindEnter({ onEnter: submit, onEscape: () => { setNote(null); setDraft('') } })}
               placeholder={i18nT('apps.specBuilder.components.docView.your_feedback_on_this_passage_enter_adds_it_to_t')}
               aria-label={i18nT('apps.specBuilder.components.docView.your_feedback_on_the_passage_in', { document: note.tab }) + '.md'}
               className="flex-1"

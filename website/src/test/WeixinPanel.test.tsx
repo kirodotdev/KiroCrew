@@ -581,3 +581,58 @@ describe('WeixinPanel — session folder', () => {
     expect(await screen.findByLabelText('Folder name')).toBeDisabled()
   })
 })
+
+describe('WeixinPanel — QR sign-in', () => {
+  /**
+   * The sign-in mutation's three outcomes. Its shared folder-save plumbing moved
+   * into `useChannelFolderSave`, so what is left in this file is mostly this
+   * flow, and it had no unit coverage at all.
+   */
+  it('shows the returned code and waits for the scan', async () => {
+    vi.spyOn(api, 'weixinQrStart').mockResolvedValue({
+      session_id: 'sess-1',
+      qrcode_img_content: 'data:image/png;base64,AAAA',
+    })
+    renderWithProviders(<WeixinPanel />)
+    fireEvent.click(await screen.findByTestId('weixin-connect'))
+    await waitFor(() => expect(screen.getByText('Waiting for scan…')).toBeInTheDocument())
+    expect(screen.getByTestId('weixin-connect')).toBeDisabled()
+  })
+
+  it('reports a service that answered without a session', async () => {
+    // A 2xx body carrying no session is a failure the panel has to name: the
+    // request succeeded, so nothing throws, and the operator would otherwise be
+    // left looking at a button that did nothing.
+    vi.spyOn(api, 'weixinQrStart').mockResolvedValue({
+      session_id: '',
+      qrcode_img_content: '',
+    })
+    renderWithProviders(<WeixinPanel />)
+    fireEvent.click(await screen.findByTestId('weixin-connect'))
+    await waitFor(() =>
+      expect(
+        screen.getByText('Could not reach the WeChat login service.'),
+      ).toBeInTheDocument(),
+    )
+  })
+
+  it('prefers the error text the service sends over the fallback', async () => {
+    vi.spyOn(api, 'weixinQrStart').mockResolvedValue({
+      session_id: '',
+      qrcode_img_content: '',
+      error: 'account is suspended',
+    })
+    renderWithProviders(<WeixinPanel />)
+    fireEvent.click(await screen.findByTestId('weixin-connect'))
+    await waitFor(() =>
+      expect(screen.getByText('account is suspended')).toBeInTheDocument(),
+    )
+  })
+
+  it('reports a request that never reached the service', async () => {
+    vi.spyOn(api, 'weixinQrStart').mockRejectedValue(new Error('network down'))
+    renderWithProviders(<WeixinPanel />)
+    fireEvent.click(await screen.findByTestId('weixin-connect'))
+    await waitFor(() => expect(screen.getByText('network down')).toBeInTheDocument())
+  })
+})

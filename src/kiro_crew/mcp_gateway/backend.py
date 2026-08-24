@@ -1841,7 +1841,7 @@ class Backend:
             partial = json.loads(prefix.split("\n", 1)[0]) if prefix.strip().endswith("}") else None
             if isinstance(partial, dict):
                 msg_id = partial.get("id")
-        except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        except (ValueError, UnicodeDecodeError):
             pass
         # If prefix-parse failed, try a targeted regex for "id": value.
         if msg_id is None:
@@ -1850,7 +1850,7 @@ class Backend:
             if m:
                 try:
                     msg_id = json.loads(m.group(1))
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     pass
         if msg_id is not None:
             pending = self._pending_requests.pop(str(msg_id), None)

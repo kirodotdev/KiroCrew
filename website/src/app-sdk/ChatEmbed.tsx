@@ -196,9 +196,8 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
           {...ime.bindComposition()}
           onKeyDown={e => {
             if (e.key !== 'Enter' || e.shiftKey) return
-            // Rule 1: single-line input; the emptiness test stays outside the guard.
-            if (ime.isComposing(e)) return
-            if (input.trim()) { e.preventDefault(); send() }
+            // The emptiness test stays outside the guard.
+            if (input.trim() && ime.claimEnter(e)) send()
           }}
           placeholder={running ? i18nT('appSdk.chatEmbed.agent_is_working') : (placeholder || i18nT('appSdk.chatEmbed.message'))}
           disabled={sendMutation.isPending}

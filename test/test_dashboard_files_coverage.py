@@ -417,6 +417,28 @@ class TestFileRaw:
             assert "not a recognized format" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
+    async def test_riff_wave_audio_is_not_served_as_an_image(self, tmp_path, mock_sel):
+        # RIFF alone is not WebP: the shared sniffer checks the form tag at
+        # offset 8, so a WAVE audio file is not a recognized format here.
+        f = tmp_path / "sound.webp"
+        f.write_bytes(b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 8)
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-raw?path={f}")
+            assert resp.status == 403
+            assert "not a recognized format" in (await resp.json())["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_truncated_png_signature_is_not_recognized(self, tmp_path, mock_sel):
+        # The shared sniffer requires PNG's full 8-byte signature; the old
+        # local table matched a 4-byte prefix. Aligning every consumer on the
+        # canonical signature is the point of the de-duplication.
+        f = tmp_path / "trunc.png"
+        f.write_bytes(b"\x89PNGxxxx" + b"\x00" * 8)
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-raw?path={f}")
+            assert resp.status == 403
+
+    @pytest.mark.asyncio
     async def test_forbidden_path_is_400(self, mock_sel):
         with patch("kiro_crew.dashboard.handlers._validate_dashboard_path", return_value=None):
             async with TestClient(TestServer(self._client_app())) as client:
@@ -1156,6 +1178,27 @@ class TestContentMatchesExt:
         assert files_mod._content_matches_ext(".gif", b"GIF89a")
         assert files_mod._content_matches_ext(".pdf", b"%PDF-1.4")
         assert files_mod._content_matches_ext(".gz", b"\x1f\x8b\x08")
+
+    def test_raster_accept_set_is_unchanged_by_the_shared_sniffer(self):
+        # Snapshot of the accept-set from before the shared-sniffer migration:
+        # every raster extension still accepts its own true signature.
+        accepted = {
+            ".png": b"\x89PNG\r\n\x1a\n" + b"\x00" * 8,
+            ".jpg": b"\xff\xd8\xff\xe0" + b"\x00" * 12,
+            ".jpeg": b"\xff\xd8\xff\xe1" + b"\x00" * 12,
+            ".gif": b"GIF87a" + b"\x00" * 10,
+            ".bmp": b"BM" + b"\x00" * 14,
+            ".webp": b"RIFF\x10\x00\x00\x00WEBPVP8 ",
+        }
+        for ext, payload in accepted.items():
+            assert files_mod._content_matches_ext(ext, payload), ext
+
+    def test_a_riff_wave_payload_is_rejected_for_every_raster_ext(self):
+        # A RIFF/WAVE audio file shares WebP's RIFF prefix; the shared sniffer
+        # checks the form tag at offset 8, so it is not an image of any kind.
+        wave = b"RIFF\x24\x00\x00\x00WAVEfmt " + b"\x00" * 8
+        for ext in (".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp"):
+            assert not files_mod._content_matches_ext(ext, wave), ext
 
     def test_unsignable_extensions_pass_through(self):
         # No reliable magic for text or SVG: the extension allowlist is the gate.

@@ -38,11 +38,15 @@ def test_listeners_posix_parses_and_dedupes_lsof_output(monkeypatch) -> None:
         return "1234\n1234\n5678\n\nnot-a-pid\n"
 
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
+    monkeypatch.setattr(
+        pr.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+    )
     monkeypatch.setattr(pr.subprocess, "check_output", _check_output)
 
     assert pr._listeners_on_port(5476) == [1234, 5678]
-    # The LISTEN filter matters: a client socket on the port is not a holder.
-    assert calls == [["lsof", "-ti", "TCP:5476", "-sTCP:LISTEN"]]
+    # The LISTEN filter matters: a client socket on the port is not a holder;
+    # the binary comes from the trusted system directories, never from PATH.
+    assert calls == [["/usr/bin/lsof", "-ti", "TCP:5476", "-sTCP:LISTEN"]]
 
 
 def test_listeners_posix_lsof_missing_returns_none(monkeypatch) -> None:
@@ -51,6 +55,9 @@ def test_listeners_posix_lsof_missing_returns_none(monkeypatch) -> None:
     def _boom(_cmd, **_kw):
         raise FileNotFoundError("lsof")
 
+    monkeypatch.setattr(
+        pr.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+    )
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(pr.subprocess, "check_output", _boom)
     assert pr._listeners_on_port(5476) is None
@@ -62,6 +69,9 @@ def test_listeners_posix_wedged_lsof_returns_none(monkeypatch) -> None:
     def _timeout(_cmd, **_kw):
         raise subprocess.TimeoutExpired(cmd="lsof", timeout=5)
 
+    monkeypatch.setattr(
+        pr.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+    )
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(pr.subprocess, "check_output", _timeout)
     assert pr._listeners_on_port(5476) is None
@@ -73,6 +83,9 @@ def test_listeners_posix_no_match_returns_empty_list(monkeypatch) -> None:
     def _nonzero(_cmd, **_kw):
         raise subprocess.CalledProcessError(returncode=1, cmd="lsof")
 
+    monkeypatch.setattr(
+        pr.platform_compat, "trusted_system_bin", lambda name: f"/usr/bin/{name}"
+    )
     monkeypatch.setattr(pr.platform_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(pr.subprocess, "check_output", _nonzero)
     assert pr._listeners_on_port(5476) == []

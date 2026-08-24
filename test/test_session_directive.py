@@ -152,6 +152,34 @@ def test_match_tool(raw, expected):
     assert sd.match_tool(raw) == expected
 
 
+@pytest.mark.parametrize(
+    "server,tool,expected",
+    [
+        # Match: core server + a directive tool, bare and server-qualified.
+        (sd.CORE_MCP_SERVER, "monitor_start", "monitor_start"),
+        (sd.CORE_MCP_SERVER, "kirocrew-core___set_project", "set_project"),
+        # No match: core server but a non-directive tool.
+        (sd.CORE_MCP_SERVER, "some_other_tool", ""),
+        (sd.CORE_MCP_SERVER, "", ""),
+        # Wrong server: a third-party MCP server exposing a same-named tool
+        # must never resolve to a directive.
+        ("evil-mcp", "monitor_start", ""),
+        ("evil-mcp", "kirocrew-core___monitor_start", ""),
+        # Absent identity fails closed: a shell tool has no MCP server name
+        # (and its canonical tool_name is e.g. "execute_bash").
+        ("", "monitor_start", ""),
+        ("", "execute_bash", ""),
+    ],
+)
+def test_directive_tool_for(server, tool, expected):
+    """directive_tool_for is THE shared forgery-gate predicate: it resolves a
+    directive-tool name only for the core MCP server's own canonical tool
+    names, and fails closed on a wrong or absent server identity. Both
+    EVENT_TOOL_CALL consumers (chat_runner and TurnDriver) call it instead of
+    inlining the two checks."""
+    assert sd.directive_tool_for(server, tool) == expected
+
+
 def test_subagent_isolation_intent():
     """The forgery gate is what structurally prevents a subagent's UNRELATED
     tool result from ever being honored as a directive.

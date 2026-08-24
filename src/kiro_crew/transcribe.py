@@ -19,6 +19,7 @@ from typing import Any
 
 from kiro_crew import aws_consent, platform_compat
 from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Transcribe-path deps are an OPTIONAL 'aws' extra (amazon-transcribe + boto3).
 # The module MUST stay importable when they're absent (default install, partial
@@ -125,7 +126,10 @@ def _python3_bin_dir() -> str:
         out = subprocess.check_output(
             [py, "-c", "import sysconfig; print(sysconfig.get_path('scripts'))"],
             timeout=5,
-            text=True,
+            # The child re-encodes its stdout with the console code page when piped
+            # on Windows unless pinned; the decode side alone cannot fix that.
+            env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+            **UTF8_TEXT,
         ).strip()
         return out
     except Exception:

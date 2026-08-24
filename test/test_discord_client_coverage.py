@@ -25,6 +25,7 @@ import pytest
 from kiro_crew.discord import client as dc
 from kiro_crew.discord.client import (
     _API_BASE,
+    _APP_COMMAND_DESC_LIMIT,
     _CALLBACK_DEFERRED_UPDATE_MESSAGE,
     _GATEWAY_URL,
     _INTENT_DIRECT_MESSAGES,
@@ -42,6 +43,7 @@ from kiro_crew.discord.client import (
     DiscordInteraction,
     _resolve_proxy,
 )
+from kiro_crew.messaging.outbound_files import OutboundFile
 
 _PROXY_VARS = (
     "HTTPS_PROXY",
@@ -1174,10 +1176,68 @@ class TestDispatchNormalization:
             username="zed",
         )
 
-    def test_non_component_interactions_are_ignored(self) -> None:
+    @pytest.mark.parametrize("kind", [1, 4, 5])
+    def test_unanswerable_interaction_types_are_ignored(self, kind: int) -> None:
+        """PING, autocomplete and modal submit are dropped at the boundary.
+
+        Each needs its own callback shape inside Discord's ~3s deadline, so
+        forwarding one to a handler that cannot answer it would leave the user's
+        client spinning rather than fail visibly.
+        """
         client = _make_client()
-        client._on_dispatch("INTERACTION_CREATE", {"id": 1, "type": 2})
+        client._on_dispatch("INTERACTION_CREATE", {"id": 1, "type": kind})
         assert client._handler_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_application_command_normalizes_name_and_flat_options(self) -> None:
+        seen: list[DiscordInteraction] = []
+
+        async def _handler(interaction: DiscordInteraction) -> None:
+            seen.append(interaction)
+
+        client = _make_client(on_interaction=_handler)
+        client._on_dispatch(
+            "INTERACTION_CREATE",
+            {
+                "id": 9,
+                "token": "tok",
+                "type": 2,
+                "channel_id": 2,
+                "user": {"id": 4, "username": "zed"},
+                "data": {
+                    "name": "STATUS",
+                    "options": [
+                        {"name": "action", "type": 3, "value": "on"},
+                        # A subcommand row carries nested options and no value:
+                        # it has nothing to bind, so it must not land as "".
+                        {"name": "sub", "type": 1, "options": [{"name": "x", "value": "y"}]},
+                    ],
+                },
+            },
+        )
+        tasks = tuple(client._handler_tasks)
+        assert tasks
+        await asyncio.gather(*tasks)
+        itx = seen[0]
+        assert itx.is_command and itx.kind == 2
+        assert itx.command_name == "status"  # lower-cased
+        assert itx.options == {"action": "on"}
+        assert itx.guild_id == "" and itx.message_id == ""
+
+    @pytest.mark.asyncio
+    async def test_a_component_press_still_reports_itself_as_not_a_command(self) -> None:
+        seen: list[DiscordInteraction] = []
+
+        async def _handler(interaction: DiscordInteraction) -> None:
+            seen.append(interaction)
+
+        client = _make_client(on_interaction=_handler)
+        client._on_dispatch(
+            "INTERACTION_CREATE",
+            {"id": 1, "token": "t", "type": 3, "data": {"custom_id": "a:1:n:1"}},
+        )
+        await asyncio.gather(*tuple(client._handler_tasks))
+        assert not seen[0].is_command and seen[0].command_name == "" and seen[0].options == {}
 
 
 class TestHandlerIsolation:
@@ -1354,10 +1414,16 @@ class TestApi:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         client = _make_client()
+        # A 500 is the TRANSIENT class, so the ladder spends its whole retry
+        # budget before giving up. Queue enough responses to cover it: the
+        # assertion is about an unparsable error BODY, which is orthogonal to how
+        # many attempts the class is worth, and a short queue would fail here for
+        # the unrelated reason that the stub ran dry.
         session = FakeSession(
-            responses=[FakeResponse(500, json_error=ValueError("html error page"))]
+            responses=[FakeResponse(500, json_error=ValueError("html error page"))] * 4
         )
         _bind_session(client, session, monkeypatch)
+        _patch_sleep(monkeypatch)
         assert await client._api("GET", "/p", None) is None
 
     @pytest.mark.asyncio
@@ -1372,7 +1438,11 @@ class TestApi:
         exc: BaseException,
     ) -> None:
         client = _make_client()
-        _bind_session(client, FakeSession(responses=[exc]), monkeypatch)
+        # Same reason as the 500 above: a connector error and a timeout are both
+        # transient, so every attempt in the budget needs a queued outcome. The
+        # patched sleep keeps the back-off from waiting in real seconds.
+        _bind_session(client, FakeSession(responses=[exc] * 4), monkeypatch)
+        _patch_sleep(monkeypatch)
         with caplog.at_level(logging.WARNING, logger="kiro_crew.discord.client"):
             assert await client._api("POST", "/p", {}) is None
         assert "transport error" in caplog.text
@@ -1412,3 +1482,208 @@ class TestResolveProxy:
         monkeypatch.setenv("HTTPS_PROXY", "http://env.invalid:3128")
         client = DiscordClient(token="t", proxy="http://arg.invalid:1")
         assert client._proxy == "http://arg.invalid:1"
+
+
+class TestMentionSuppression:
+    """No send may notify anyone: every message body is model- or tool-derived.
+
+    ``allowed_mentions: {"parse": []}`` is Discord's own suppression, so it holds
+    for a mention no text pass ever saw — including one reassembled across a
+    chunk boundary, and on the several send paths that never route through the
+    renderer's text-level defang (the option-choice echo, the help card, a queue
+    receipt, a threshold notice, every proactive delivery).
+    """
+
+    def _payloads(self, monkeypatch: pytest.MonkeyPatch, client: Any) -> list[Any]:
+        seen: list[Any] = []
+
+        async def _api(method: str, path: str, payload: Any, timeout: int = 30) -> Any:
+            seen.append(payload)
+            return {"id": 1}
+
+        async def _api_multipart(
+            method: str, path: str, payload: Any, files: Any, timeout: int = 60
+        ) -> Any:
+            seen.append(payload)
+            return {"id": 1}
+
+        monkeypatch.setattr(client, "_api", _api)
+        monkeypatch.setattr(client, "_api_multipart", _api_multipart)
+        return seen
+
+    @pytest.mark.asyncio
+    async def test_every_message_path_suppresses_mentions(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _make_client()
+        seen = self._payloads(monkeypatch, client)
+        payload_file = OutboundFile(path="/tmp/a.png", data=b"\x89PNG", alt="a", mime="image/png")
+
+        await client.send_message("c1", "@everyone ship it")
+        await client.edit_message("c1", "m1", "@everyone ship it")
+        await client.send_message_with_files("c1", "@here look", [payload_file])
+        await client.edit_message_with_files("c1", "m1", "@here look", [payload_file])
+        await client.respond_interaction("i1", "tok", "@everyone status")
+
+        assert len(seen) == 5
+        for payload in seen:
+            body = payload.get("data", payload)
+            assert body["allowed_mentions"] == {"parse": []}, payload
+
+    @pytest.mark.asyncio
+    async def test_the_mention_text_survives_so_only_the_ping_is_removed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Suppression must not rewrite the answer: the reader still sees what
+        the agent wrote, they just do not get notified."""
+        client = _make_client()
+        seen = self._payloads(monkeypatch, client)
+        await client.send_message("c1", "tell @everyone about <@&12345>")
+        assert seen[0]["content"] == "tell @everyone about <@&12345>"
+
+    @pytest.mark.asyncio
+    async def test_a_reply_does_not_ping_the_author_it_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``replied_user`` is omitted (it defaults off): the reply already lands
+        in the conversation the recipient is reading."""
+        client = _make_client()
+        seen = self._payloads(monkeypatch, client)
+        await client.send_message("c1", "done", reply_to_message_id="m9")
+        assert "replied_user" not in seen[0]["allowed_mentions"]
+        assert seen[0]["message_reference"]["message_id"] == "m9"
+
+    @pytest.mark.asyncio
+    async def test_an_edit_can_still_retire_its_buttons(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An edit passes ``[]`` to clear components, so an empty list must
+        survive into the payload, while a create treats empty as "none"."""
+        client = _make_client()
+        seen = self._payloads(monkeypatch, client)
+        await client.edit_message("c1", "m1", "done", components=[])
+        await client.send_message("c1", "hi", components=[])
+        assert seen[0]["components"] == []
+        assert "components" not in seen[1]
+
+
+class TestApplicationCommandRegistration:
+    @pytest.mark.asyncio
+    async def test_no_application_id_yet_refuses_rather_than_calling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """READY populates the id; without it there is no path to PUT to, and the
+        ``!`` text commands are the floor so this is never fatal."""
+        client = _make_client()
+        called: list[Any] = []
+
+        async def _api(*args: Any, **kwargs: Any) -> Any:
+            called.append(args)
+            return {}
+
+        monkeypatch.setattr(client, "_api", _api)
+        assert await client.register_application_commands([{"name": "new", "description": "d"}]) is False
+        assert called == []
+
+    @pytest.mark.asyncio
+    async def test_a_malformed_row_is_skipped_not_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Discord rejects the ENTIRE array on one bad row, so one typo would
+        otherwise cost the user every command."""
+        client = _make_client()
+        client.application_id = "app1"
+        seen: list[Any] = []
+
+        async def _api(method: str, path: str, payload: Any, timeout: int = 30) -> Any:
+            seen.append((method, path, payload))
+            return []
+
+        monkeypatch.setattr(client, "_api", _api)
+        ok = await client.register_application_commands(
+            [
+                {"name": "good", "description": "fine"},
+                {"name": "BAD NAME", "description": "uppercase and spaces"},
+                {"name": "nodesc", "description": ""},
+            ]
+        )
+        assert ok is True
+        method, path, payload = seen[0]
+        assert method == "PUT" and path == "/applications/app1/commands"
+        # A top-level JSON ARRAY, which is what the bulk-overwrite route takes.
+        assert isinstance(payload, list)
+        assert [row["name"] for row in payload] == ["good"]
+
+    @pytest.mark.asyncio
+    async def test_every_row_malformed_sends_nothing(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _make_client()
+        client.application_id = "app1"
+        called: list[Any] = []
+
+        async def _api(*args: Any, **kwargs: Any) -> Any:
+            called.append(args)
+            return []
+
+        monkeypatch.setattr(client, "_api", _api)
+        assert await client.register_application_commands([{"name": "X", "description": ""}]) is False
+        assert called == []
+
+    @pytest.mark.asyncio
+    async def test_an_over_long_description_is_truncated_to_the_platform_limit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _make_client()
+        client.application_id = "app1"
+        seen: list[Any] = []
+
+        async def _api(method: str, path: str, payload: Any, timeout: int = 30) -> Any:
+            seen.append(payload)
+            return []
+
+        monkeypatch.setattr(client, "_api", _api)
+        await client.register_application_commands([{"name": "x", "description": "d" * 400}])
+        assert len(seen[0][0]["description"]) == _APP_COMMAND_DESC_LIMIT
+
+    def test_ready_captures_the_application_id_as_a_string(self) -> None:
+        """A snowflake exceeds 2^53, so it must never become a float."""
+        client = _make_client()
+        client._on_dispatch(
+            "READY",
+            {
+                "session_id": "s",
+                "user": {"id": 1},
+                "application": {"id": 1056389999999999999},
+            },
+        )
+        assert client.application_id == "1056389999999999999"
+
+    def test_a_ready_without_an_application_block_leaves_the_id_empty(self) -> None:
+        client = _make_client()
+        client._on_dispatch("READY", {"session_id": "s", "user": {"id": 1}})
+        assert client.application_id == ""
+
+
+class TestEphemeralInteractionResponse:
+    @pytest.mark.asyncio
+    async def test_ephemeral_sets_the_flag_and_visible_omits_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """EPHEMERAL is message flag 1<<6. A command reply carries runtime state
+        or a login link, so it is the default."""
+        client = _make_client()
+        seen: list[Any] = []
+
+        async def _api(method: str, path: str, payload: Any, timeout: int = 30) -> Any:
+            seen.append((path, payload))
+            return {}
+
+        monkeypatch.setattr(client, "_api", _api)
+        await client.respond_interaction("i1", "tok", "secret")
+        await client.respond_interaction("i2", "tok", "public", ephemeral=False)
+        assert seen[0][0] == "/interactions/i1/tok/callback"
+        # CHANNEL_MESSAGE_WITH_SOURCE
+        assert seen[0][1]["type"] == 4
+        assert seen[0][1]["data"]["flags"] == 64
+        assert "flags" not in seen[1][1]["data"]

@@ -60,6 +60,26 @@ function scheduleTermThemeRefresh() {
   if (_themeRaf) cancelAnimationFrame(_themeRaf)
   _themeRaf = requestAnimationFrame(() => { _themeRaf = 0; refreshTermThemes() })
 }
+/** Whether a batch of mutation records is one of the two theme signals.
+ *
+ * Split out of the observer callback so the CLASSIFICATION can be asserted directly.
+ * Driving it through a live MutationObserver in a test means asserting on happy-dom's
+ * record DELIVERY, which is bistable in this suite -- the same file passes under
+ * `--coverage` and fails without it -- so a test written that way reports on the
+ * environment rather than on this rule.
+ */
+export function isThemeSignal(records: MutationRecord[]): boolean {
+  for (const r of records) {
+    // (1) a built-in theme / mode swap flips <html data-theme>.
+    if (r.type === 'attributes') return true
+    // (2) a CUSTOM theme's vars only resolve once useTheme injects its <style>.
+    for (const n of r.addedNodes) {
+      if (n instanceof HTMLStyleElement && n.id.startsWith('mc-custom-theme-')) return true
+    }
+  }
+  return false
+}
+
 function ensureThemeObserver() {
   if (_themeObserver || typeof document === 'undefined') return
   // A terminal's xterm colours are a construction-time snapshot (canvas, not
@@ -71,15 +91,7 @@ function ensureThemeObserver() {
   //      observer misses it and the terminal stays on the boot-default palette.
   // The attribute filter catches (1); watching <head> childList catches (2).
   _themeObserver = new MutationObserver((records) => {
-    for (const r of records) {
-      if (r.type === 'attributes') { scheduleTermThemeRefresh(); return }
-      for (const n of r.addedNodes) {
-        if (n instanceof HTMLStyleElement && n.id.startsWith('mc-custom-theme-')) {
-          scheduleTermThemeRefresh()
-          return
-        }
-      }
-    }
+    if (isThemeSignal(records)) scheduleTermThemeRefresh()
   })
   _themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] })
   _themeObserver.observe(document.head, { childList: true })

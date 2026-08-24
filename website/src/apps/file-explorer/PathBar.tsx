@@ -8,6 +8,7 @@ import { useDebouncedValue } from './hooks'
 import type { GitInfo, TreeEntry } from './types'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 interface PathBarProps {
   rootPath: string
   gitInfo: GitInfo | null
@@ -16,6 +17,7 @@ interface PathBarProps {
 }
 
 export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }: PathBarProps) {
+  const ime = useImeGuard()
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState(rootPath)
   const [open, setOpen] = useState(false)
@@ -62,8 +64,9 @@ export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }:
     if (!open && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { setOpen(true); return }
     if (open && e.key === 'ArrowDown') { e.preventDefault(); setActiveIdx((i) => suggestions.length === 0 ? -1 : (i + 1) % suggestions.length) }
     else if (open && e.key === 'ArrowUp') { e.preventDefault(); setActiveIdx((i) => suggestions.length === 0 ? -1 : (i - 1 + suggestions.length) % suggestions.length) }
-    else if (open && e.key === 'Enter') { e.preventDefault(); if (activeIdx >= 0 && suggestions[activeIdx]) accept(suggestions[activeIdx]); else commit() }
-    else if (!open && e.key === 'Enter') { e.preventDefault(); commit() }
+    // Only the Enter branches are claimed — arrow/Tab navigation stays untouched.
+    else if (open && e.key === 'Enter') { if (!ime.claimEnter(e)) return; if (activeIdx >= 0 && suggestions[activeIdx]) accept(suggestions[activeIdx]); else commit() }
+    else if (!open && e.key === 'Enter') { if (ime.claimEnter(e)) commit() }
     else if (e.key === 'Escape') { setDraft(rootPath); setEditing(false); setOpen(false) }
     else if (e.key === 'Tab' && open && suggestions.length > 0) { e.preventDefault(); setDraft(suggestions[activeIdx >= 0 ? activeIdx : 0].path) }
   }
@@ -83,7 +86,7 @@ export default function PathBar({ rootPath, gitInfo, onChangeRoot, onNavigate }:
               aria-label={i18nT('apps.fileExplorer.pathBar.folder_path')}
               value={draft}
               onChange={(e) => { setDraft(e.target.value); setOpen(true) }}
-              onFocus={() => setOpen(true)}
+              {...ime.bindComposition({ onFocus: () => setOpen(true) })}
               onKeyDown={onKeyDown}
               placeholder={i18nT('apps.fileExplorer.pathBar.path_to_folder')}
               spellCheck={false}

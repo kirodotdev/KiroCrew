@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState, useCallback, useMemo, type ReactNode } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Handshake, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
+import { Bot, ScrollText, X, Lock, CheckCircle, AlertCircle, Loader as LoaderIcon, Ban, Wrench, MessageCircleQuestionMark, Workflow, BookmarkPlus, Component, GitPullRequest, CircleDot, Square, RotateCcw, Clock, Search, Link as LinkIcon, ExternalLink } from 'lucide-react'
 import { api } from '../../api/client'
 import { LogViewer } from '../LogsPage'
-import TrustDropdown from '../../components/TrustDropdown'
 import Clickable from '../../components/Clickable'
 import type { SubagentActivity, ToolActivity, Artifact } from '../../types'
 import { countDiffStats } from '../../utils/diffLineCounts'
@@ -246,32 +245,26 @@ const isSpawnApproval = (e: ToolActivity) => (e.type === 'approval' || e.type ==
 
 /* ── Approval entry ── */
 
-function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
+function ApprovalEntry({ entry }: { entry: ToolActivity }) {
   const resolved = entry.type === 'approval_resolved'
   const [localDecision, setLocalDecision] = useState<string | null>(null)
   const isResolved = resolved || !!localDecision
   const [acting, setActing] = useState(false)
-  const onAction = useCallback(async (action: string, pattern?: string) => {
+  const onAction = useCallback(async (action: string) => {
     setActing(true)
     setLocalDecision(action)
     try {
-      if (entry.approval_type === 'chat') {
-        const extra: Record<string, string> = {}
-        if (entry.approval_id) extra.request_id = entry.approval_id
-        if (pattern) extra.pattern = pattern
-        await api.approveChatSlot(slot, action, extra)
-      } else {
-        await api.resolveApproval(entry.approval_id!, action === 'rejected' ? 'reject' : 'approve')
-      }
+      await api.resolveApproval(entry.approval_id!, action === 'rejected' ? 'reject' : 'approve')
     } catch { setLocalDecision(null); setActing(false) }
-  }, [entry.approval_id, entry.approval_type, slot])
+  }, [entry.approval_id])
 
-  const toolTitle = entry.text || ''
-  const isShell = toolTitle.startsWith('Running: ')
-  const normalized = toolTitle.replace(/^(Running: |Reading )/, '')
-  const baseCmd = normalized.split(/\s+/)[0] || normalized
-
-  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted')}</>, trust_command: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted_command')}</>, trust_base: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.trusted_base')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.rejected')}</> }
+  // This card mounts only for non-chat approvals (see the `isSpawnApproval`
+  // filter at the render site), which resolve through `api.resolveApproval` —
+  // an endpoint with no trust verb, so the only decisions this card can carry
+  // out are a one-shot approve or reject. Offering trust tiers here (or
+  // labelling a decision "Trusted") would overstate the grant: the next
+  // identical call prompts again (#5400).
+  const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approved')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.rejected')}</> }
   const btnClass = 'px-2.5 py-1 rounded-md border border-border bg-transparent text-muted text-[12px] cursor-pointer hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all'
   return (
     <div className={`mx-2 mb-2 rounded-lg border overflow-hidden shadow-sm transition-all ${isResolved ? 'border-ok/40 bg-card' : 'border-warn/40 bg-warn/5'}`}>
@@ -284,13 +277,6 @@ function ApprovalEntry({ entry, slot }: { entry: ToolActivity; slot: string }) {
       {!isResolved && !acting && (
         <div className="px-3 pb-2 flex gap-1.5">
           <button className={btnClass} onClick={() => onAction('approved')}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.activityViewer.approve')}</button>
-          <TrustDropdown
-            fullCommand={normalized}
-            baseCommand={baseCmd}
-            isShell={isShell}
-            className={btnClass}
-            onAction={(action, pattern) => onAction(action, pattern)}
-          />
           <button className={btnClass + ' hover:!text-danger hover:!border-danger'} onClick={() => onAction('rejected')}><Ban className="lucide-inline" /> {i18nT('pages.chat.activityViewer.reject')}</button>
         </div>
       )}
@@ -976,7 +962,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
           )}
           {/* Pending approvals */}
           {visibleLog.filter(isSpawnApproval).map((entry, i) => (
-            <ApprovalEntry key={`a${i}`} entry={entry} slot={slot} />
+            <ApprovalEntry key={`a${i}`} entry={entry} />
           ))}
           {/* Accepted-but-not-started banner: the only signal for a wave still
               behind the concurrency cap. Shown alongside started agents too,

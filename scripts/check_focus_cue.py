@@ -780,7 +780,13 @@ def self_test() -> int:
 
         def run(*args: str) -> str:
             return subprocess.run(
-                ["git", *args], cwd=repo, capture_output=True, text=True, check=True
+                ["git", *args],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=True,
             ).stdout
 
         run("init", "-q")

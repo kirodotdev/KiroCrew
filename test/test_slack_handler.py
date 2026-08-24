@@ -2035,10 +2035,10 @@ class TestAutoTitleSlack:
         from kiro_crew.slack.handler import _titled_threads
 
         _titled_threads.clear()
-        _h._auto_title_lock = None
+        _h._auto_title_lock = _h.LoopBoundLock()
         yield
         _titled_threads.clear()
-        _h._auto_title_lock = None
+        _h._auto_title_lock = _h.LoopBoundLock()
 
     @pytest.mark.asyncio
     async def test_auto_title_happy_path(self):
@@ -2054,6 +2054,74 @@ class TestAutoTitleSlack:
         assert len(title_actions) == 1
         assert title_actions[0][1]["title"] == "ETL Debug Session"
         assert "sk1" in _titled_threads
+
+    @pytest.mark.asyncio
+    async def test_auto_title_unexpected_error_surfaces_at_warning(self, caplog):
+        """An unexpected failure is logged at WARNING with the exception type.
+
+        Regression for #4800: this blanket handler runs on a fire-and-forget
+        task, so its log line is the only place a real defect surfaces. At
+        DEBUG it masked a deterministic cross-loop ``RuntimeError`` into three
+        order-dependent CI flake classes (#4177, #4789). The claim must also be
+        released so the next exchange retries.
+        """
+        import logging
+
+        from kiro_crew.slack.handler import _mark_titled, _maybe_auto_title_slack, _titled_threads
+
+        class ExplodingSessionManager(FakeSessionManager):
+            async def get_or_create(self, key, agent=None, channel_id=None):
+                raise RuntimeError("bound to a different event loop")
+
+        slack = MockSlackClient()
+        _mark_titled("sk-err")
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.handler"):
+            await _maybe_auto_title_slack(
+                slack, ExplodingSessionManager(), "C1", "sk-err", None, "help", "sure"
+            )
+
+        warnings = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.WARNING and "auto-title failed" in r.getMessage()
+        ]
+        assert len(warnings) == 1, "unexpected error must surface at WARNING, not debug"
+        assert "RuntimeError" in warnings[0].getMessage()
+        assert warnings[0].exc_info is not None, "traceback must be attached"
+        # Claim released so the next exchange can retry.
+        assert "sk-err" not in _titled_threads
+        # And nothing was titled.
+        assert not [a for a in slack.actions if a[0] == "set_thread_title"]
+
+    @pytest.mark.asyncio
+    async def test_auto_title_stream_timeout_stays_at_debug(self, caplog):
+        """A title-stream timeout is routine noise, not the masking concern:
+        it must NOT emit the WARNING traceback (one per exchange on a slow
+        model would be log spam), while still releasing the claim for retry."""
+        import logging
+
+        from kiro_crew.slack.handler import _mark_titled, _maybe_auto_title_slack, _titled_threads
+
+        class TimingOutSessionManager(FakeSessionManager):
+            async def get_or_create(self, key, agent=None, channel_id=None):
+                raise asyncio.TimeoutError()
+
+        slack = MockSlackClient()
+        _mark_titled("sk-slow")
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.slack.handler"):
+            await _maybe_auto_title_slack(
+                slack, TimingOutSessionManager(), "C1", "sk-slow", None, "help", "sure"
+            )
+
+        assert not [
+            r for r in caplog.records if r.levelno >= logging.WARNING
+        ], "timeout must not warn"
+        assert [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and "timed out" in r.getMessage()
+        ]
+        assert "sk-slow" not in _titled_threads  # claim released for retry
 
     @pytest.mark.asyncio
     async def test_auto_title_skip_removes_claim(self):

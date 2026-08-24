@@ -9,7 +9,6 @@ registration (agents, skills, crons) to bridge functions.
 
 from __future__ import annotations
 
-import asyncio
 import ipaddress
 import json
 import logging
@@ -37,6 +36,7 @@ from kiro_crew.config.loader import (
     config_path,
     write_config_atomically,
 )
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.sel import sel
 
@@ -273,7 +273,7 @@ def _validate_source_path(source: Path) -> list[str]:
         return errors
     try:
         manifest = AppManifest.from_json_file(manifest_path)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         errors.append(f"invalid {APP_MANIFEST_FILENAME}: {exc}")
         return errors
     errors.extend(manifest.validate(app_root=source))
@@ -408,17 +408,17 @@ def _copy_app_tree(source: Path, dest: Path) -> None:
 # otherwise race the installed-check against the copy — and update/uninstall
 # use shared move-aside names (``.{name}-data-tmp``), so an interleaving can
 # destroy preserved user data.  Different apps proceed in parallel.
-_LIFECYCLE_LOCKS: dict[str, "asyncio.Lock"] = {}
+_LIFECYCLE_LOCKS: dict[str, LoopBoundLock] = {}
 
 
-def app_lifecycle_lock(name: str) -> "asyncio.Lock":
-    """Return the per-app asyncio lock guarding install/update/uninstall.
+def app_lifecycle_lock(name: str) -> LoopBoundLock:
+    """Return the per-app lock guarding install/update/uninstall (loop-bound, #4800).
 
     Must be called from (and the lock used on) the event loop thread; the
     guarded blocking work itself runs off-loop via executor/``to_thread``.
     """
     if name not in _LIFECYCLE_LOCKS:
-        _LIFECYCLE_LOCKS[name] = asyncio.Lock()
+        _LIFECYCLE_LOCKS[name] = LoopBoundLock()
     return _LIFECYCLE_LOCKS[name]
 
 

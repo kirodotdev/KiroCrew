@@ -1958,6 +1958,21 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             removed = svc.remove_job(jid)
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
+        # SEL audit: single delete records the affected job and outcome, same
+        # shape as cron.create/cron.update above. Best-effort and exception-
+        # contained: the first sel() of a process CONSTRUCTS the log and can
+        # raise, and the job is already removed — a completed delete must not
+        # surface as a tool error because the audit trail is unavailable.
+        try:
+            sel().log_api_access(
+                caller="mcp",
+                operation="cron.remove",
+                outcome="allowed" if removed else "not_found",
+                source="mcp",
+                resources=f"job_id={jid}",
+            )
+        except Exception:
+            logger.warning("SEL audit for cron_remove failed (job %s)", jid, exc_info=True)
         if removed:
             return f"Removed job: {jid}"
         return f"Job not found: {jid}"

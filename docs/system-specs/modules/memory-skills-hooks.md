@@ -260,7 +260,7 @@ Embeddings run in-process via the vendored llama-cpp-python 0.3.34 runtime (`kir
 - **Non-blocking model load**: the GGUF load runs on a background daemon thread (`_kick_background_load()`, thread name `kc-embed-load`) — `embed()`/`embed_batch()` NEVER block on the load. When the model isn't in memory yet, the call kicks the background load and returns `None` immediately; memory degrades to keyword search until the load lands. The gateway/dashboard event loop is never stalled by embedding work. `wait_ready(timeout)` exists for sync contexts (tests, one-shot CLI flows) that legitimately want to block — never call it from an event-loop thread
 - The underlying `Llama` object is NOT thread-safe — inference on a loaded model is serialized behind a lock (tens of ms per short text)
 - `get_shared_embedder()` — process-wide singleton (~700MB RSS when loaded), shared by vector memory AND the knowledge library; `close()` unloads the model to free RSS
-- Per-platform native libs live in `_vendor/llama_cpp_libs/{linux_x86_64,linux_aarch64,macos_arm64,macos_x86_64,win_amd64}`, selected at import time via `LLAMA_CPP_LIB_PATH` (upstream-supported override; an operator-set value wins, enabling e.g. a GPU build). Unsupported platforms and import failures degrade to keyword-only memory search. See `_vendor/README.md`
+- Per-platform native libs live in `_vendor/llama_cpp_libs/{linux_x86_64,linux_aarch64,macos_arm64,macos_x86_64,win_amd64}`, selected at import time via `LLAMA_CPP_LIB_PATH` (upstream-supported override; an operator-set value wins, enabling e.g. a GPU build). Before loading the bundled Linux x86_64 runtime, `_load_llama_class()` intersects the `flags` reported for every visible processor in `/proc/cpuinfo` and requires the baseline compiled into the shipped upstream wheel (AVX, AVX2, BMI2, F16C, FMA, SSE3, SSSE3). A missing or unreadable feature list refuses the native runtime before it can raise an uncatchable SIGILL; memory stays available through keyword search. The gate does not apply to an operator-set `LLAMA_CPP_LIB_PATH`, because that directory may contain a lower-baseline build. Unsupported platforms, incompatible bundled CPUs, and import failures all degrade to keyword-only memory search. See `_vendor/README.md`
 - **The shipped closure is declared, not inferred.** `_REQUIRED_VENDORED_LIBS` names the exact files each platform must carry, and `verify_vendored_libs(root=None)` returns `{platform: [missing…]}` (empty when complete) against a source tree, an unpacked sdist, or an installed wheel. `_load_llama_class()` consults it before importing, so an incomplete install is reported as a **packaging defect naming the absent files** rather than surfacing as ctypes' `Shared library with base name 'llama' not found` — which reads as an unsupported architecture and misdirected the real-world diagnosis of this bug. `kirocrew doctor` prints the same detail. The check is **skipped when `LLAMA_CPP_LIB_PATH` is set**: the libs then load from the operator's directory, so the bundled tree's contents no longer determine whether the runtime works, and refusing on them would disable the documented override for exactly the users an incomplete wheel stranded (the warning names the env var as a remedy for that reason). Each packaging lane selects these files by a different mechanism (MANIFEST.in for the sdist, `package_data` for the wheel — which the desktop bundle inherits, since it pip-installs the project into its bundled interpreter), so each is guarded independently in `test/test_vendored_llama_payload.py`, and both `build.yml` (every PR) and `build-wheel.yml` (release/nightly) re-check the built wheel **and** sdist against the same declaration via the shared `scripts/verify_vendored_payload.py` (one script for both lanes, so they cannot drift into a gate that stops guarding without failing) — the sdist explicitly, because `python -m build --wheel` never evaluates `MANIFEST.in` and so cannot see an sdist regression at all. Linux ships no BLAS backend by design: upstream publishes none in its Linux CPU wheels (macOS gets `libggml-blas` only via the system Accelerate framework), and the Linux `libggml-cpu` carries the optimized GEMM kernels instead
 - Failed model loads (corrupt file, bad native libs) are retried only after a 300s cooldown so a broken state can't spawn a loader thread per embed call
 
@@ -510,6 +510,31 @@ whose `repo_scope` is present but unusable counts as neither.
 - Substring dedup: "use dark mode" won't duplicate "always use dark mode"
 - Topic-overlap dedup: "use light mode" replaces "use dark mode" (>50% keyword overlap → newer wins)
 - Allowlist validation, injection scanning, audit logging
+
+**What a write reports.** `write_lesson()` returns a `LessonWriteResult` naming WHICH
+outcome occurred: `inserted` / `enriched` / `unchanged` / `deduped` / `refused`, plus a
+short reason code (a `SemanticRejectCode` value for a refusal, the dedup rule's name for
+a dedup, `kept_stored_clause` for the one `unchanged` case that is not a byte-identical
+re-submit). The vocabulary is shared with `LessonStore.save_or_enrich()`, which already
+returned the first three words, so both stores describe the same events the same way.
+The distinction matters because two outcomes mean "your lesson did not land"
+(`refused`, `deduped`) while two mean "your lesson is fine, there was nothing to do"
+(`unchanged`, and the kept-clause variant) — a caller reading only a bool cannot tell
+them apart, and the `learn add` CLI guessed wrong, writing a second `lessons.jsonl`
+record on every one of them.
+
+**The result's truth value is the old bool, deliberately.** `bool(result)` is `wrote`,
+byte-for-byte the predicate the previous `-> bool` return answered, so the three callers
+that only branch on success (`history.py` consolidation counting, the
+`vector_memory` migration loop, the task runner discarding it) and ~55 bare
+`assert store.write_lesson(...)` assertions are semantically unchanged. That is what
+allowed the bool to be REPLACED rather than kept beside a second reporting method:
+without `__bool__`, an ordinary return object is truthy by default, so every positive
+bare assertion would keep passing while asserting nothing — a silent hazard mypy cannot
+flag, since a bare `if` on any object is legal. `stored` is the separate property for
+"is my lesson in the store" (true for a no-op re-submit, which is NOT a write). Surfaces
+that report to a human or a model — the `learn add` CLI, the `POST /api/lessons` response
+(`ok` / `outcome` / `reason`), the `learn_add` tool result — read `outcome` and `reason`.
 
 **Write sources**:
 1. **`learn_add` MCP tool** (immediate): user says "remember X" → LLM calls tool → `POST /api/lessons` → `write_lesson()`

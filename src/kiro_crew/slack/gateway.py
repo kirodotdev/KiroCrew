@@ -61,6 +61,8 @@ from kiro_crew.channels import builtin_channel_descriptors
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     CRED_DISCORD_BOT_TOKEN,
+    CRED_FEISHU_APP_ID,
+    CRED_FEISHU_APP_SECRET,
     CRED_MICROSOFT_APP_ID,
     CRED_MICROSOFT_APP_PASSWORD,
     CRED_MICROSOFT_APP_TENANT_ID,
@@ -106,7 +108,7 @@ from kiro_crew.dashboard.cron_inject import (
     inject_cron_result_to_dashboard,
 )
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
-from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
+from kiro_crew.dashboard.handlers.autonudge import compose_nudge_body
 from kiro_crew.dashboard.handlers.messaging import _rehydrate_slot_from_history
 from kiro_crew.dashboard.handlers.updates import remediation_command as _remediation_command
 from kiro_crew.dashboard.handlers.usage import (
@@ -181,6 +183,7 @@ from kiro_crew.mcp_gateway.rewriter import (
 )
 from kiro_crew.memory import MemoryStore
 from kiro_crew.messaging import registry
+from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.messaging.link import (
     CHANNEL_SESSION_NAMESPACES,
@@ -191,7 +194,7 @@ from kiro_crew.messaging.link import (
     channel_namespace_of,
     parse_session_key,
 )
-from kiro_crew.messaging.renderer import chunk_text
+from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import InboundMessage
 from kiro_crew.platform import boot_platform
 from kiro_crew.platform.context import (
@@ -204,6 +207,7 @@ from kiro_crew.platform.governance_profiles import (
     HOST_SESSION_KEY,
     audit_governance_degraded,
     governance_permits,
+    vet_and_audit,
 )
 from kiro_crew.platform.update_capability import (
     CHECK_SUCCEEDED,
@@ -253,6 +257,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
+from kiro_crew.wecom.gateway import warn_if_wecom_uncredentialed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -267,6 +272,7 @@ if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
     from kiro_crew.wecom.client import WeComClient
     from kiro_crew.weixin.client import WeixinClient
+    from kiro_crew.whatsapp.client import WhatsAppClient
 
 
 async def _persist_turn_row(
@@ -1499,6 +1505,29 @@ class GatewayOrchestrator:
             cfg.weixin.enabled and self._weixin_token and self._weixin_account_id
         )
         self._weixin_client: "WeixinClient | None" = None
+        # WhatsApp (QR-linked personal account) — no credential: pairing state
+        # lives in the channel's session DB, created by the Settings QR flow.
+        # Enablement is config-only; maybe_start_whatsapp reports the missing
+        # optional dependency or an unpaired session via the status badge.
+        self._whatsapp_enabled = bool(cfg.whatsapp.enabled)
+        self._whatsapp_client: "WhatsAppClient | None" = None
+        # Feishu (Lark/飞书) — FEISHU_APP_ID / FEISHU_APP_SECRET (env/.env),
+        # matching the Feishu developer console's own naming; everything else
+        # from the typed cfg.feishu dataclass. Both are registered credentials,
+        # so they are stripped from the agent subprocess environment by
+        # sandbox._AGENT_DENIED_ENV_KEYS — the gateway is their only consumer.
+        # Deny-by-default: an empty allowed_open_ids authorises nobody, and a
+        # group chat needs BOTH allow_group and an allow-listed chat_id. The
+        # client handle is owned by the channel registry (``kiro_crew.channels``),
+        # which also closes it on shutdown.
+        self._feishu_app_id = creds.get(CRED_FEISHU_APP_ID, "")
+        self._feishu_app_secret = creds.get(CRED_FEISHU_APP_SECRET, "")
+        self._feishu_enabled = bool(
+            cfg.feishu.enabled and self._feishu_app_id and self._feishu_app_secret
+        )
+        self._feishu_allowed_open_ids: list[str] = list(cfg.feishu.allowed_open_ids)
+        self._feishu_allow_group: bool = bool(cfg.feishu.allow_group)
+        self._feishu_allowed_group_ids: list[str] = list(cfg.feishu.allowed_group_ids)
         # Discord — the DISCORD_BOT_TOKEN credential (env/.env) overrides
         # cfg.discord.bot_token; all other settings come from the typed
         # cfg.discord dataclass (mirrors the Telegram block above).
@@ -2187,9 +2216,7 @@ class GatewayOrchestrator:
             await self._kill_startup_child(proc)
             await self._reap_startup_child(proc)
             print("❌ pip install timed out — run manually: kirocrew update")
-            logger.error(
-                "Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS
-            )
+            logger.error("Dep repair timed out after %.0fs", self._DEP_INSTALL_TIMEOUT_SECS)
             return
         except asyncio.CancelledError:
             # Gateway shutdown / Ctrl-C mid-install: leaving pip running would
@@ -2563,19 +2590,39 @@ class GatewayOrchestrator:
     async def _deliver_cron_response(
         self, parent_key: str, text: str, *, silent: bool = False
     ) -> bool:
-        """Deliver a cron session's post-subagent response to Slack.
+        """Deliver a cron session's post-subagent response to its own channel.
 
         When a cron session spawns subagents via ``spawn_run``, the agent's
-        synthesized response was only appended to the dashboard notification
-        body and never posted to Slack — making subagent delegation useless in
-        cron contexts. This routes that response to the channel/thread the cron
-        originally posted in (stored on the session at delivery time), falling
-        back to the owner's DM. No-op when silent, when Slack is unavailable,
-        or when no channel can be resolved.
+        synthesized response would otherwise only be appended to the dashboard
+        notification body, making subagent delegation invisible in cron
+        contexts. Two legs carry it, in this order:
+
+        1. the channel that scheduled the job, resolved from the job's origin
+           session key (:meth:`_cron_origin_key`) and delivered through the
+           governed transport ladder;
+        2. Slack, the channel/thread the cron originally posted in (stored on
+           the session at delivery time), falling back to the owner's DM.
+
+        The channel leg is tried FIRST and, when it delivers, it is the only leg:
+        a job belongs to the conversation that scheduled it, so adding a Slack
+        owner DM on top would notify one operator twice for one response. Slack
+        remains the delivery for a Slack-origin, dashboard-origin or
+        origin-less job, which is every job an install carries today. No-op when
+        silent or when the text is blank. Returns True when a leg delivered; a
+        False leaves the caller's dashboard notification as the only surface.
         """
-        if silent or self.slack is None or not text.strip():
+        if silent or not text.strip():
             return False
         assert self.sessions is not None
+        # Resolved before the Slack leg so a Slack-less install still delivers.
+        delivered = await self._deliver_cron_to_channel(
+            self._cron_origin_key(parent_key), text, actor_key=parent_key
+        )
+        # One surface per response. The channel that scheduled the job is the one
+        # its owner is watching, so a Slack owner DM on top of it is a duplicate
+        # rather than a second audience.
+        if self.slack is None or delivered:
+            return delivered
         channel = self.sessions.get_channel(parent_key)
         thread_ts = self.sessions.get_thread(parent_key)
         if not channel and self._owner_id:
@@ -2583,7 +2630,9 @@ class GatewayOrchestrator:
             thread_ts = None  # a thread_ts from another channel is invalid in a DM
         if not channel:
             logger.warning("Cron %s: no channel resolved for subagent response", parent_key)
-            return False
+            # Not False: the channel leg above may already have delivered, and
+            # reporting a drop would let the caller log one that did not happen.
+            return delivered
         # render [OPTIONS: ...] tags as interactive buttons, matching
         # the interactive-handler / subagent-completion / dashboard-mirror paths.
         # Extracted from the raw text: the tag is a plain-text marker, so pulling
@@ -2679,8 +2728,9 @@ class GatewayOrchestrator:
         text: str,
         *,
         resolved_link: tuple[ChannelLink, bool] | None = None,
+        caller: str = "subagent",
     ) -> bool:
-        """Deliver a subagent-completion reply to a non-Slack channel conversation.
+        """Deliver unattended output to the non-Slack channel conversation behind a session.
 
         The transport leg of completion routing: resolves the conversation
         behind *parent_key*, vets the egress through the shared governed
@@ -2694,6 +2744,11 @@ class GatewayOrchestrator:
         ``resolved_link`` lets the caller pass a target snapshotted BEFORE an
         injection retry loop — a timeout-path ``sessions.reset()`` evicts the
         in-memory origin link, so resolving only here would lose it.
+
+        ``caller`` names the producer on the SEL trail and in the logs. Two
+        surfaces share this leg (subagent completions and cron runs), and an
+        allow-list decision recorded against the wrong one is an audit trail
+        that points at a principal which never made the send.
 
         Returns True when the reply reached the channel; False degrades the
         caller to dashboard-notification-only. Never raises: a delivery
@@ -2714,7 +2769,9 @@ class GatewayOrchestrator:
                 _resolve_channel_target, self.dashboard_state, parent_key, link
             )
         except Exception:
-            logger.exception("Subagent reply: channel target resolution failed for %s", parent_key)
+            logger.exception(
+                "%s reply: channel target resolution failed for %s", caller, parent_key
+            )
             return False
         if target is None:
             return False
@@ -2729,16 +2786,14 @@ class GatewayOrchestrator:
                 # (learned conversation on Teams, DM-channel creation on
                 # Discord, identity on Telegram) — or None when the peer has
                 # no reachable conversation, which fails closed here.
-                dm_target = await transport.resolve_configured_target(
-                    f"user:{resolved.channel_id}"
-                )
+                dm_target = await transport.resolve_configured_target(f"user:{resolved.channel_id}")
                 # Audit the allow-list decision (allowed/denied) BEFORE
                 # branching, matching chat_mirror's configured-target resolve:
                 # a peer the resolver rejects is an authorization outcome and
                 # must land in the SEL trail, not just degrade silently.
                 sel().log_api_access(
-                    caller="subagent",
-                    operation="subagent.reply_target_resolve",
+                    caller=caller,
+                    operation=f"{caller}.reply_target_resolve",
                     outcome="allowed" if dm_target else "denied",
                     source="gateway",
                     resources=f"{parent_key} -> {link.channel_type}:user:{resolved.channel_id}",
@@ -2750,32 +2805,157 @@ class GatewayOrchestrator:
             # extra credential/token regexes apply, then split on the
             # channel's max message length, mirroring the cross-surface
             # mirror leg.
-            safe_text = redact_via_context(text)
-            parts = chunk_text(safe_text, transport.capabilities.max_message_chars)
+            #
+            # Wrapped in the DISPLAY-form floor, because this is the chokepoint
+            # every proactive channel egress passes (cron results, cron failure
+            # and crash alerts, subagent completions) and NONE of them passes a
+            # renderer -- the renderers are where a turn gets that floor. A
+            # literal-only scan here let a markdown-collapse credential
+            # (`AKIA**...**`, which the client renders whole) reach the channel,
+            # and every caller inherits the gap rather than each one carrying it.
+            safe_text, _ = redact_for_display(text, redact_via_context)
+            # Fence-safe, not fixed-width: a blind slice through a code block
+            # leaves part two with no opener, so every line in it reads as prose
+            # and a channel's dialect converter rewrites the `**`, `#` and `- `
+            # INSIDE the code. A sub-agent's diff or log dump is exactly that
+            # shape. The shared splitter seals each chunk with a synthetic closer
+            # and reopens the next with the original opener line.
+            parts = split_markdown_safe(safe_text, transport.capabilities.max_message_chars)
             for part in parts:
-                await transport.send_message(conversation_id, part, thread_id=resolved.thread_id)
+                # A transport signals a refused or exhausted send with an EMPTY
+                # message id rather than an exception (`send_message` ends in
+                # `str(mid or "")`), so "nothing raised" is not delivery. This
+                # return value is load-bearing: cron stands its Slack fallback
+                # down and advances its dedup hash on a True, so a false success
+                # loses the result on every surface at once. Stopping on the first
+                # empty id also avoids leaving an orphaned tail from a message
+                # whose head never landed.
+                if not await transport.send_message(
+                    conversation_id, part, thread_id=resolved.thread_id
+                ):
+                    logger.warning(
+                        "%s reply: %s returned no message id for %s; treating as undelivered",
+                        caller,
+                        link.channel_type,
+                        parent_key,
+                    )
+                    return False
         except Exception:
             logger.warning(
-                "Subagent reply: %s delivery failed for %s",
+                "%s reply: %s delivery failed for %s",
+                caller,
                 link.channel_type,
                 parent_key,
                 exc_info=True,
             )
             return False
         logger.info(
-            "Subagent reply → %s:%s (%d part(s))",
+            "%s reply → %s:%s (%d part(s))",
+            caller,
             link.channel_type,
             conversation_id,
             len(parts),
         )
         return True
 
+    def _cron_origin_key(self, parent_key: str) -> str:
+        """The session key the cron job behind *parent_key* was created from.
+
+        ``parent_key`` is ``cron:{job_id}`` or ``cron:{job_id}:{run_id}``, so the
+        job id is the second colon-separated segment in both spellings. A cron
+        key of its own carries no channel namespace, so it can never name the
+        surface the job belongs to; the creating session's key can, which is why
+        the job records it.
+
+        Returns ``""`` when no job is known or its origin is unusable. The field
+        round-trips through ``cron.json`` without coercion, so a hand-edited or
+        corrupt store can hand back a non-string, and an origin that is not a
+        session key must degrade to "no channel" rather than raise on a
+        delivery path.
+        """
+        if not parent_key.startswith("cron:") or self.cron_svc is None:
+            return ""
+        parts = parent_key.split(":", 2)
+        if len(parts) < 2:
+            return ""
+        job = self.cron_svc.get_job(parts[1])
+        origin = job.session_key if job else ""
+        return origin if isinstance(origin, str) else ""
+
+    async def _deliver_cron_to_channel(self, origin_key: str, text: str, *, actor_key: str) -> bool:
+        """Deliver cron output to the non-Slack channel that owns *origin_key*.
+
+        A job belongs to the conversation that scheduled it, so an unattended
+        run reaches the surface its owner actually watches instead of Slack
+        alone. The send itself reuses the shared transport leg, which already
+        redacts through the canonical egress shim (credentials AND exfiltration
+        URLs, so a second pass here would only double-scrub) and chunks to the
+        transport's own message ceiling.
+
+        Two profiles govern one send, tightest-wins. ``_deliver_channel_reply``
+        vets *origin_key*, whose surface is the DESTINATION conversation, so this
+        vets *actor_key* (``cron:{job_id}``) as well: cron is the unattended
+        surface an operator restricts hardest, and evaluating only the
+        destination would let a cron-surface ``channels`` denial stop applying
+        the moment cron routed through a channel it does not itself own. Both
+        gates are the same audited, fail-closed seam, so a denial at either end
+        refuses the send and lands on the SEL trail.
+
+        Returns False for a Slack, dashboard, or unresolvable origin: those keep
+        the Slack leg and the dashboard bell as their delivery, which is every job
+        an install carries today. When it DOES deliver, it is the only leg: the
+        callers stand their Slack leg down, because one run notifying one operator
+        twice is how notifications become noise. An explicit ``job.channel`` is a
+        destination the user pinned and takes precedence over both.
+        """
+        if not origin_key or not text.strip():
+            return False
+        resolved = self._channel_reply_link(origin_key)
+        if resolved is None:
+            return False
+        channel_type = resolved[0].channel_type
+        try:
+            # Off-loop: resolving the active profile walks the profile directory
+            # (iterdir + stat, with a possible reload), unbounded on slow or
+            # networked storage.
+            decision = await asyncio.to_thread(
+                vet_and_audit,
+                "channels",
+                channel_type,
+                session_key=actor_key,
+                tool_name="cron.channel_delivery",
+                # An egress on a network surface, so a degraded evaluation must
+                # DENY rather than degrade-to-permit.
+                fail_closed=True,
+            )
+        except Exception:
+            # Fail closed on the way out too: an unusable answer from a gate is
+            # not permission, and cron has no operator to ask.
+            logger.exception(
+                "Cron %s: governance evaluation failed for %s; refusing delivery",
+                actor_key,
+                channel_type,
+            )
+            return False
+        # Default False, not True: a Decision without ``permitted`` is an
+        # unusable answer from a gate, and must not read as permission.
+        if not getattr(decision, "permitted", False):
+            logger.info(
+                "Cron %s: delivery to %s denied by the cron surface's policy",
+                actor_key,
+                channel_type,
+            )
+            return False
+        return await self._deliver_channel_reply(
+            origin_key, text, resolved_link=resolved, caller="cron"
+        )
+
     def _cron_job_is_silent(self, parent_key: str) -> bool:
         """Return True if *parent_key* maps to a cron job marked silent.
 
         ``_deliver_cron_response`` routes a cron
-        session's post-subagent-completion turn to Slack, gated on
-        ``info.silent`` — the *sub-agent's* flag. That flag is never set from
+        session's post-subagent-completion turn to its channel and to Slack,
+        gated on ``info.silent``, the *sub-agent's* flag. That flag is never set from
         the parent cron's ``silent`` setting (``spawn`` defaults it False and
         the spawn queue tuple doesn't carry it), so a silent cron's subagent
         completions still reached Slack. The cron job's own ``silent`` flag is
@@ -2948,12 +3128,54 @@ class GatewayOrchestrator:
                     logger.debug(
                         "Dashboard notify failed in cron run-failure alert path", exc_info=True
                     )
+                # Name the machine for the same reason the message path does: a
+                # laptop and a cloud desktop can both run Kiro Crew, and the
+                # alert is the only place the user learns which one failed. Read
+                # once, ahead of both delivery legs, so they cannot disagree.
+                host = socket.gethostname().split(".")[0]
                 slack_failed = False  # real delivery exceptions only
-                if self.slack:
-                    # Name the machine for the same reason the message path does:
-                    # a laptop and a cloud desktop can both run Kiro Crew, and the
-                    # DM is the only place the user learns which one failed.
-                    host = socket.gethostname().split(".")[0]
+                # A configured Slack is not a delivered Slack. The one-surface
+                # rule skips the owner DM when the originating channel already
+                # heard, no channel may resolve at all, and the post can raise --
+                # so the audit trail has to name what LANDED, not what exists.
+                # `self.slack` as the predicate makes every Discord-only alert
+                # read as a Slack egress, which is the one question this record
+                # is kept to answer.
+                slack_delivered = False
+                # The channel that scheduled the job hears about its failures
+                # too. Plain text: the mrkdwn escaping and code fence below are a
+                # Slack rendering concern, and no other transport parses them, so
+                # a shared string would show `&lt;` and stray backticks there.
+                # `label` and `text` are already scrubbed above, and the
+                # transport leg redacts again at its own egress.
+                channel_delivered = False
+                # A pinned `job.channel` wins here exactly as it does on the
+                # result leg. Without this guard the channel leg runs anyway,
+                # reports a delivery, and stands the Slack leg down -- so the
+                # alert lands on the origin conversation and NOT on the
+                # destination the user named, which is the one place they asked to
+                # be told. The comment on the crash leg below claimed this
+                # behaviour before either leg implemented it.
+                if not job.channel:
+                    try:
+                        channel_delivered = await self._deliver_cron_to_channel(
+                            job.session_key,
+                            f"⏰ Cron: {label} {mark} {headline} on {host}\n{text}",
+                            actor_key=f"cron:{job.id}",
+                        )
+                    except Exception:
+                        # Every caller of this alert is inside an ``except``
+                        # whose exception is the real story; a failed alert must
+                        # not replace it.
+                        logger.warning(
+                            "Cron '%s': channel run-failure alert delivery failed",
+                            job.name,
+                            exc_info=True,
+                        )
+                # Same one-surface rule as the result delivery: when the
+                # channel that scheduled the job already heard about the failure,
+                # the Slack owner DM would be a second alert for one event.
+                if self.slack and not channel_delivered:
                     # Slack PARSES entity markup in a message's text, and both
                     # halves of this one are attacker-shaped: the job name is
                     # user-authored and the reason carries subprocess output. A job
@@ -2980,6 +3202,7 @@ class GatewayOrchestrator:
                             )
                         if channel:
                             await self.slack.post_message(channel, msg)
+                            slack_delivered = True
                         else:
                             logger.warning(
                                 "Cron '%s': no channel resolved for run-failure alert", job.name
@@ -2994,25 +3217,28 @@ class GatewayOrchestrator:
                 # Advance dedup only once the reason actually reached someone.
                 # "No channel available" counts as delivered (the bell rang), the
                 # same skip-vs-failure split the message path draws — otherwise a
-                # Slack-less install re-notifies the dashboard on every fire.
-                if not slack_failed:
+                # Slack-less install re-notifies the dashboard on every fire. A
+                # confirmed channel delivery counts for the same reason: the
+                # reason reached the user even when the Slack leg threw.
+                if channel_delivered or not slack_failed:
                     job.last_failure_hash = fh
                     job.last_failure_at = time.time()
                 try:
+                    # Name every surface the alert actually left on, so the trail
+                    # does not read "none" for a run answered on Discord.
+                    surfaces = ["slack"] if slack_delivered else []
+                    if channel_delivered:
+                        surfaces.append(channel_namespace_of(job.session_key))
                     sel().log_tool_invocation(
                         session_key=f"cron:{job.id}",
                         tool_name="cron_run_failure_alert",
                         outcome="denied" if denied else "alerted",
-                        downstream_service="slack" if self.slack else "none",
+                        downstream_service=",".join(surfaces) or "none",
                     )
                 except Exception:
-                    logger.debug(
-                        "SEL logging failed in cron run-failure alert path", exc_info=True
-                    )
+                    logger.debug("SEL logging failed in cron run-failure alert path", exc_info=True)
             except Exception:
-                logger.warning(
-                    "Cron '%s': run-failure alert failed", job.name, exc_info=True
-                )
+                logger.warning("Cron '%s': run-failure alert failed", job.name, exc_info=True)
 
         async def _cron_callback(job: CronJob) -> str | None:
             # True once ANY prompt has been handed to the provider this
@@ -3557,9 +3783,7 @@ class GatewayOrchestrator:
                     # busy for the whole budget so this never ran a line.  The
                     # distinct text is what makes the next saturation legible
                     # instead of looking like N scripts that each overran.
-                    logger.warning(
-                        "Script cron '%s' never got a worker slot: %s", job.name, exc
-                    )
+                    logger.warning("Script cron '%s' never got a worker slot: %s", job.name, exc)
                     job.clear_carried_result()
                     job.last_error = str(exc)
                     job.last_status = "error"
@@ -3929,7 +4153,9 @@ class GatewayOrchestrator:
                                 # model_source, which reports what actually ran.
                                 "" if _seq_downgraded else (job.model or ""),
                                 _turn_usage,
-                                provider=(self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"),
+                                provider=(
+                                    self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
+                                ),
                                 surface="cron",
                                 agent=read_effective_agent(client) or agent or "",
                                 context_used=_used,
@@ -3938,9 +4164,7 @@ class GatewayOrchestrator:
                                 model_source=client,
                             )
                         except Exception:
-                            logger.debug(
-                                "usage row (cron seq) persist failed", exc_info=True
-                            )
+                            logger.debug("usage row (cron seq) persist failed", exc_info=True)
                     finally:
                         if _acq:
                             self.sessions.release(agent_session_key)
@@ -4131,7 +4355,9 @@ class GatewayOrchestrator:
                             and self.dashboard_state.has_slot(f"cron-{job.id}")
                         ):
                             inject_cron_result_to_dashboard(
-                                self.dashboard_state, job, result_text,
+                                self.dashboard_state,
+                                job,
+                                result_text,
                                 context_reading=_ctx_reading,
                             )
                         return result_text
@@ -4153,7 +4379,9 @@ class GatewayOrchestrator:
                         and self.dashboard_state.has_slot(f"cron-{job.id}")
                     ):
                         inject_cron_result_to_dashboard(
-                            self.dashboard_state, job, result_text,
+                            self.dashboard_state,
+                            job,
+                            result_text,
                             context_reading=_ctx_reading,
                         )
                     return result_text
@@ -4182,7 +4410,10 @@ class GatewayOrchestrator:
                             else []
                         )
                         inject_cron_result_to_dashboard(
-                            self.dashboard_state, job, result_text, history=history,
+                            self.dashboard_state,
+                            job,
+                            result_text,
+                            history=history,
                             context_reading=_ctx_reading,
                         )
                     redacted_for_dash, _ = redact_exfiltration_urls(result_text)
@@ -4209,7 +4440,42 @@ class GatewayOrchestrator:
                         redacted_for_dash,
                         meta=notify_meta,
                     )
-                if self.slack:
+                # A job belongs to ONE surface: the conversation that scheduled
+                # it. Delivering to both would notify an operator twice for one
+                # run, which is how notifications become noise people stop
+                # reading. So the channel leg is attempted FIRST and Slack stands
+                # down only on a CONFIRMED delivery: a predicate saying a channel
+                # *would* take it is not the same claim, and standing Slack down
+                # on that loses the result outright when the channel send is
+                # refused by governance or fails on the wire. An explicit
+                # `job.channel` is a destination the user pinned, so it wins over
+                # both. Every job that exists today has no channel origin, so
+                # this is inert for current installs.
+                channel_delivered = False
+                if not job.channel:
+                    try:
+                        channel_delivered = await self._deliver_cron_to_channel(
+                            job.session_key, result_text, actor_key=session_key
+                        )
+                    except Exception:
+                        # The job SUCCEEDED. Letting a delivery error reach the
+                        # outer handler would record a failure and march the job
+                        # toward auto-pause on a messaging fault. Slack still
+                        # runs below, because nothing was delivered here.
+                        logger.error(
+                            "Cron job '%s': channel delivery failed (job succeeded)",
+                            job.name,
+                            exc_info=True,
+                        )
+                if channel_delivered:
+                    # Same dedup contract as the Slack leg: the hash advances
+                    # once the result reached someone. Without this a Slack-less
+                    # install never advances it, so the suppression branch can
+                    # never fire and an unchanged result is re-delivered forever.
+                    job.last_posted_hash = rh
+                    job.consecutive_dupes = 0
+                    job.last_posted_at = time.time()
+                if self.slack and not channel_delivered:
                     try:
                         # Retry only open_dm (transient Slack API errors).
                         # Delivery (post_blocks/post_message) is NOT retried to avoid duplicates.
@@ -4342,9 +4608,7 @@ class GatewayOrchestrator:
                                     self.sessions.release(session_key)
                                     _acquired = False
                             except Exception:
-                                logger.debug(
-                                    "release before transient retry failed", exc_info=True
-                                )
+                                logger.debug("release before transient retry failed", exc_info=True)
                             await asyncio.sleep(_delay)
                             return await _cron_callback(job)
                         finally:
@@ -4490,7 +4754,40 @@ class GatewayOrchestrator:
                 # and counted toward auto-pause above — we just skip
                 # user-facing noise.
                 slack_failed = False  # track real delivery exceptions only
-                if self.slack and not job.silent:
+                # Same reason as the run-failure path: the audit names the
+                # surface the alert LEFT ON, and a silent job or an unresolved
+                # channel means Slack was never one of them.
+                slack_delivered = False
+                # One surface per event, matching the result and run-failure
+                # legs: when the conversation that scheduled the job will hear
+                # about the crash, the Slack owner DM is a second alert for one
+                # failure. An explicit `job.channel` is a destination the user
+                # pinned and still wins.
+                # The channel that scheduled the job hears about its crashes too.
+                # Plain text rather than `fail_msg`: that string is mrkdwn, and no
+                # other transport parses it. `exc_summary` is already scrubbed
+                # above and the transport leg redacts again at its own egress.
+                # Placed before record_failure() for the same reason the Slack
+                # leg is: every await in this handler must precede the counter, so
+                # a cancellation mid-alert cannot leave the run counted twice.
+                channel_delivered = False
+                if not job.silent and not job.channel:
+                    try:
+                        channel_delivered = await self._deliver_cron_to_channel(
+                            job.session_key,
+                            f"⏰ Cron: {job.name} ❌ Job failed on {host}\n"
+                            f"{exc_summary[:_CRON_FAILURE_DETAIL_CAP]}",
+                            actor_key=session_key,
+                        )
+                    except Exception:
+                        # This handler re-raises the run's own exception below; a
+                        # failed alert must not replace it.
+                        logger.error(
+                            "Cron job '%s': channel failure-notification delivery failed",
+                            job.name,
+                            exc_info=True,
+                        )
+                if self.slack and not job.silent and not channel_delivered:
 
                     try:
                         channel = job.channel
@@ -4501,6 +4798,7 @@ class GatewayOrchestrator:
                         if channel:
                             # fail_msg already redacted at construction above.
                             await self.slack.post_message(channel, fail_msg)
+                            slack_delivered = True
                         else:
                             logger.warning(
                                 "Cron '%s': no channel resolved for error notification", job.name
@@ -4536,21 +4834,24 @@ class GatewayOrchestrator:
                 # advances — otherwise every identical failure re-notifies the
                 # dashboard, which is what dedup is supposed to prevent. Only the
                 # dedup fields are gated here; the failure count was already
-                # recorded above.
-                if not slack_failed:
+                # recorded above. A confirmed channel delivery also advances it:
+                # the reason reached the user even when the Slack leg threw.
+                if channel_delivered or not slack_failed:
                     job.last_failure_hash = fh
                     job.last_failure_at = time.time()
                     # SEL logging is best-effort — never mask the original
                     # exception if audit logging itself fails.
                     try:
-
+                        # Name every surface the alert actually left on, so the
+                        # trail does not read "none" for a crash sent to Discord.
+                        surfaces = ["slack"] if slack_delivered else []
+                        if channel_delivered:
+                            surfaces.append(channel_namespace_of(job.session_key))
                         sel().log_tool_invocation(
                             session_key=f"cron:{job.id}",
                             tool_name="cron_failure_alert",
                             outcome="suppressed" if job.silent else "alerted",
-                            downstream_service=(
-                                "slack" if (self.slack and not job.silent) else "none"
-                            ),
+                            downstream_service=",".join(surfaces) or "none",
                         )
                     except Exception:
                         logger.debug(
@@ -4566,8 +4867,7 @@ class GatewayOrchestrator:
                     # queued behind the concurrency/stagger gate, or
                     # mid-injection — _subagent_done will reset after the last one.
                     has_pending = bool(
-                        self.subagent_mgr
-                        and self.subagent_mgr.has_pending_work_for(session_key)
+                        self.subagent_mgr and self.subagent_mgr.has_pending_work_for(session_key)
                     )
                     has_injecting = self._cron_injecting.get(session_key, 0) > 0
                     if has_pending or has_injecting:
@@ -4815,7 +5115,7 @@ class GatewayOrchestrator:
             if self.autonudge_svc:
                 await self.autonudge_svc.remove(loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         # Fail closed: an unattended turn MUST run under the HookManager
         # PreToolUse governance gate (mirrors cron's default approval path).
@@ -4996,7 +5296,7 @@ class GatewayOrchestrator:
         if sessions is not None and sessions.is_busy(key):
             logger.info("AutoNudge skip: discord session %s busy (loop %s)", key, loop.id)
             return False
-        msg_body = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg_body = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg_body}"
         try:
             conversation_id = await transport.resolve_conversation(user_id)
@@ -5087,7 +5387,7 @@ class GatewayOrchestrator:
                 loop.slot_key,
                 loop.id,
             )
-        msg = render_nudge_message(loop.message, loop.stop_sentinel_path)
+        msg = await compose_nudge_body(loop.message, loop.stop_sentinel_path, loop.slot_key)
         tagged = f"[auto-nudge cycle {loop.cycle_count + 1}]\n{msg}"
         from kiro_crew.dashboard.chat import (
             _run_chat,  # circular import: gateway -> dashboard.chat -> gateway (chat dispatch references GatewayOrchestrator)
@@ -6375,8 +6675,7 @@ class GatewayOrchestrator:
                                     if not _injection_slot._subagents_inline_collected:
                                         _injection_slot._pending_synthesis = False
                                     logger.info(
-                                        "Subagent %s: skipping queue "
-                                        "(already collected inline)",
+                                        "Subagent %s: skipping queue " "(already collected inline)",
                                         info.id,
                                     )
                                     return
@@ -6787,11 +7086,11 @@ class GatewayOrchestrator:
                     cron_response, _ = redact_credentials(cron_response)
                     body = f"{body}\n\n{cron_response}"
                     logger.info("Subagent %s → cron session %s", info.id, parent_key)
-                    # also deliver the synthesized response to Slack.
-                    # honor the parent cron job's silent flag too —
+                    # also deliver the synthesized response to the job's own
+                    # surfaces. honor the parent cron job's silent flag too:
                     # info.silent is never set from the cron's silent setting for
                     # spawn_run sub-agents, so a silent cron would otherwise still
-                    # post every subagent-completion turn to Slack.
+                    # post every subagent-completion turn.
                     try:
                         await self._deliver_cron_response(
                             parent_key,
@@ -6800,7 +7099,7 @@ class GatewayOrchestrator:
                         )
                     except Exception:
                         logger.exception(
-                            "Subagent %s: failed to deliver cron response to Slack",
+                            "Subagent %s: failed to deliver cron response",
                             info.id,
                         )
                 # Reset only when no subagents running or QUEUED AND no
@@ -6869,11 +7168,7 @@ class GatewayOrchestrator:
             """Resolve slot from spawn request_id (spawn:{agent_id})."""
             agent_id = request_id.removeprefix("spawn:")
             info = self.subagent_mgr.get(agent_id) if self.subagent_mgr is not None else None
-            slot = (
-                _event_slot(info.parent_session_key)
-                if info and info.parent_session_key
-                else ""
-            )
+            slot = _event_slot(info.parent_session_key) if info and info.parent_session_key else ""
             logger.info(
                 "_spawn_slot_resolver: rid=%s agent_id=%s info=%s slot=%s",
                 request_id,
@@ -7840,9 +8135,7 @@ class GatewayOrchestrator:
         try:
             from kiro_crew.platform.update_provider import resolve_provider
 
-            provider = await asyncio.get_running_loop().run_in_executor(
-                None, resolve_provider
-            )
+            provider = await asyncio.get_running_loop().run_in_executor(None, resolve_provider)
         except Exception:
             # ONLY resolution is tolerated here. If reading the policy fails we
             # cannot know an operator selected a provider, so the built-in
@@ -7942,9 +8235,7 @@ class GatewayOrchestrator:
                 min_version(),
             )
             if self.dashboard_state:
-                self.dashboard_state.push_update_progress(
-                    "pulling", "Applying mandatory update…"
-                )
+                self.dashboard_state.push_update_progress("pulling", "Applying mandatory update…")
             success = await provider.apply()
             if success:
                 await self._restart_after_update()
@@ -7966,9 +8257,7 @@ class GatewayOrchestrator:
             if cfg.auto_update:
                 logger.info("Auto-update enabled — applying update via provider")
                 if self.dashboard_state:
-                    self.dashboard_state.push_update_progress(
-                        "pulling", "Downloading update…"
-                    )
+                    self.dashboard_state.push_update_progress("pulling", "Downloading update…")
                 success = await provider.apply()
                 if success:
                     await self._restart_after_update()
@@ -8579,9 +8868,7 @@ class GatewayOrchestrator:
             return
 
         if self.dashboard_state:
-            self.dashboard_state.push_update_progress(
-                "pulling", "Downloading update from CDN…"
-            )
+            self.dashboard_state.push_update_progress("pulling", "Downloading update from CDN…")
 
         logger.info("Auto-update (wheel): running installer")
         # Resolve sh through the trusted system dirs, not the gateway's PATH
@@ -8636,9 +8923,7 @@ class GatewayOrchestrator:
             # Bounded: the installer's stdout is chatter and only a capped
             # stderr is logged, so a verbose CDN script cannot exhaust the
             # gateway's memory buffering it.
-            stdout, stderr = await _read_bounded_output(
-                proc, timeout=300, want_stdout=False
-            )
+            stdout, stderr = await _read_bounded_output(proc, timeout=300, want_stdout=False)
         except asyncio.CancelledError:
             # Shutdown (SIGTERM) cancels this task. Without this branch the
             # installer keeps mutating the installation after the gateway exits,
@@ -8691,8 +8976,7 @@ class GatewayOrchestrator:
             if self.dashboard_state:
                 self.dashboard_state.push_update_progress(
                     "failed",
-                    f"Installer failed (exit {proc.returncode}) — "
-                    "run manually: kirocrew update",
+                    f"Installer failed (exit {proc.returncode}) — " "run manually: kirocrew update",
                 )
             return
 
@@ -8931,9 +9215,7 @@ class GatewayOrchestrator:
 
             if self._dashboard_port:
                 _marker_task = asyncio.create_task(
-                    asyncio.to_thread(
-                        self._write_marker_worker, run_marker, self._dashboard_port
-                    )
+                    asyncio.to_thread(self._write_marker_worker, run_marker, self._dashboard_port)
                 )
                 self._marker_write_task = _marker_task
                 self._background_tasks.add(_marker_task)
@@ -9061,9 +9343,7 @@ class GatewayOrchestrator:
 
                 # Auto-open dashboard — skip on headless remote sessions
                 _is_ssh = bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_CLIENT"))
-                _has_display = bool(
-                    os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
-                )
+                _has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
                 _skip_open = _is_ssh and not _has_display and sys.platform != "darwin"
                 if self._no_open or not self._cfg.dashboard.auto_open_browser:
                     pass  # suppressed via --no-open flag or config
@@ -9195,9 +9475,7 @@ class GatewayOrchestrator:
             logger.debug("Gateway run-marker clear skipped", exc_info=True)
 
         try:
-            await asyncio.wait_for(
-                self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS
-            )
+            await asyncio.wait_for(self._shutdown(), timeout=GRACEFUL_SHUTDOWN_SECS)
         except (asyncio.TimeoutError, Exception):
             logger.warning("Graceful shutdown timed out — force exiting")
 
@@ -9252,15 +9530,21 @@ class GatewayOrchestrator:
             descriptors = builtin_channel_descriptors()
         boot = registry.bootable(descriptors)
         enabled = {
-            d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False))
-            for d in boot
+            d.channel_type: bool(getattr(self, f"_{d.channel_type}_enabled", False)) for d in boot
         }
+        # The enabled-only gate below never calls a factory whose flag is
+        # False — for a disabled and an enabled-but-uncredentialed channel
+        # alike — so a factory-level skip-reason log can never be reached.
+        # Say WHY WeCom is being skipped here, at the decision point (issue
+        # #304). Runs after KIROCREW_READY, outside the boot-path window.
+        warn_if_wecom_uncredentialed(
+            self._cfg.wecom.enabled, self._wecom_bot_id, self._wecom_secret
+        )
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
             maintenance_executor(),
             lambda: {
-                m: (_channel_transport_permitted(m) if enabled[m] else False)
-                for m in enabled
+                m: (_channel_transport_permitted(m) if enabled[m] else False) for m in enabled
             },
         )
         self._channel_handles = await registry.start_channels(self, descriptors, permitted)
@@ -9323,9 +9607,7 @@ async def run_gateway(
                     "aggregate cgroup ceiling apply failed", exc_info=True
                 )
 
-        _SLICE_LIMITS_TASK = asyncio.create_task(
-            _apply_slice_limits(), name="agents-slice-limits"
-        )
+        _SLICE_LIMITS_TASK = asyncio.create_task(_apply_slice_limits(), name="agents-slice-limits")
 
     # ── Agents-dir janitor (fire-and-forget) ──
     # Sweep aged orphaned atomic-write temps + stale backups from the shared
@@ -9360,9 +9642,7 @@ async def run_gateway(
                     "agents-dir janitor sweep failed at boot", exc_info=True
                 )
 
-        _AGENTS_JANITOR_TASK = asyncio.create_task(
-            _run_agents_janitor(), name="agents-dir-janitor"
-        )
+        _AGENTS_JANITOR_TASK = asyncio.create_task(_run_agents_janitor(), name="agents-dir-janitor")
 
     # ── Agent scratch sweep (fire-and-forget, boot + hourly) ──
     # Reclaim per-process agent scratch dirs whose owner process is dead
@@ -9387,9 +9667,7 @@ async def run_gateway(
                 try:
                     await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
                 except Exception:
-                    logging.getLogger(__name__).debug(
-                        "agent-scratch sweep failed", exc_info=True
-                    )
+                    logging.getLogger(__name__).debug("agent-scratch sweep failed", exc_info=True)
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"

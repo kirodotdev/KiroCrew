@@ -99,11 +99,10 @@ Both directions are safe on every row, simultaneously:
   claimed. Rows 4/5 resolve to ``E``, which by construction contains only pairs
   this pass wrote. Rows 7/8/9 claim nothing. And on every row invariant 3 still
   requires the whole triple to match, so an edited alias is never claimed.
-* **Never permanently strands a generated alias.** Rows 4/5 -- the boundary that
-  previously left an alias emitted but unrecorded forever -- now resolve to
-  ``E``, so the interrupted transaction is RECONCILED by the next pass rather
-  than abandoned. Rows 2/3 leave the spec unchanged, so there is nothing to
-  strand. Row 1 fails closed for the same reason.
+* **Never permanently strands a generated alias.** Rows 4/5 resolve to ``E``, so
+  an interrupted transaction is RECONCILED by the next pass rather than
+  abandoned. Rows 2/3 leave the spec unchanged, so there is nothing to strand.
+  Row 1 fails closed for the same reason.
 
 Rows 7 and 9 are where a generated pair does become permanently the user's:
 losing the record file outright, or losing the spec generation the record
@@ -321,7 +320,7 @@ def load_claimed(fingerprint: str) -> frozenset[EmittedAlias]:
         return frozenset()
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         logger.debug("Ignoring malformed Connections alias record", exc_info=True)
         return frozenset()
     if not isinstance(data, dict) or data.get("version") != _RECORD_VERSION:

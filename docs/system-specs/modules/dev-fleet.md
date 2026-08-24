@@ -168,14 +168,30 @@ new-commits (unmerged follow-up work after the PR landed).
 `prune-run` accepts a batch of names and processes them **concurrently** rather than one
 at a time. The design separates the two cost classes:
 
-- **Expensive per-item phases run in parallel.** The fresh `_prunable` re-verdict (which
-  makes `gh`/`git` network calls) and pod shutdown run under an `asyncio.Semaphore(4)`, so
-  a batch is bounded by the slowest ~4 items at a time instead of the sum of all of them.
+- **Expensive per-item phases are concurrency-bounded.** The fresh `_prunable`
+  re-verdict (which makes `gh`/`git` network calls) runs under an
+  `asyncio.Semaphore(4)`, so a batch is bounded by the slowest ~4 items at a time
+  instead of the sum of all of them. Pod shutdown remains inside the make-live
+  exclusion window because removal must continuously protect the target from the
+  final live/staged re-check through deletion.
 - **Git mutations are serialized.** The `git worktree remove` + branch `update-ref -d` for
   every removal — including the single-worktree remove handler and the auto-prune reaper —
   run behind one shared `asyncio.Lock` (`_GIT_MUTATION_LOCK`), because they mutate the
   shared main-repo `.git` state (worktree admin dir + `packed-refs`). Concurrent git
   mutations would otherwise race on those lock files.
+- **Lock order: `_wt_lock(name)` → `_MAKE_LIVE_LOCK` → `_GIT_MUTATION_LOCK`.**
+  This order must never be reversed. Every removal first acquires the worktree lock,
+  then acquires the make-live lock before the live/staged protection re-check and holds
+  it through deletion. A concurrent rebase cannot claim the checkout after removal's
+  initial fail-fast check, and a concurrent `/make-live` cannot stage the target between
+  the protected re-check and `git worktree remove`. Forced prune delegates to the same
+  internal removal path rather than pre-acquiring either lock.
+- **Rebase gate.** `_worktree_remove` refuses immediately if `_wt_lock(name)` is already
+  held, then acquires and holds that lock through deletion. The unlocked check and
+  acquisition are adjacent with no intervening await, so acquiring a free `asyncio.Lock`
+  does not yield an interleaving point. Rebase holds the same lock across fetch, rebase,
+  and abort; deletion can therefore neither begin during a rebase nor race one that starts
+  after the initial check.
 
 **Failure isolation:** each item is driven to a terminal state independently — one item
 failing (a `gh` timeout, a stuck pod, or an unexpected exception) never aborts the rest of

@@ -527,12 +527,9 @@ export function useSceneInteraction(
           value={draft}
           onChange={e => setDraft(e.target.value)}
           {...ime.bindComposition()}
-          onFocus={() => ime.reset()}
           onKeyDown={e => {
             if (e.key !== 'Enter' || e.shiftKey) return
-            // Rule 1: single-line input — the guard alone is enough here.
-            if (ime.isComposing(e)) return
-            e.preventDefault(); sendToAgent(threadView.agent, draft)
+            if (ime.claimEnter(e)) sendToAgent(threadView.agent, draft)
           }}
           placeholder={sourceFor(threadView.agent)?.running ? i18nT('hooks.useSceneInteraction.steer_this_agent') : i18nT('hooks.useSceneInteraction.message_this_agent')}
           aria-label={i18nT('hooks.useSceneInteraction.message', { name: threadView.agent.name })}

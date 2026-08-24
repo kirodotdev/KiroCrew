@@ -327,10 +327,16 @@ Format, which the `[0.2.0]` section is the reference for:
 ## The gate before you commit
 
 ```bash
-python3 scripts/check_black_formatting.py && isort src/kiro_crew test
+python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
 python -m pytest
 ```
+
+**On macOS, add `--platform linux` to mypy.** CI type-checks on Linux, and
+typeshed guards `os.listxattr` / `getxattr` / `setxattr` behind
+`sys.platform == "linux"` even though macOS has them — so a local run reports 4
+errors in files you did not touch, and it MISSES Linux-only errors CI fails on.
+`mypy --platform linux src/kiro_crew` is the parity invocation.
 
 **Do not run bare `black src/kiro_crew test`.** 1,420 files are not black-clean
 yet, so it reformats ~95,800 lines on top of whatever you changed and buries your
@@ -437,7 +443,7 @@ Kiro Crew runs on macOS, Linux (x86_64 and ARM), and Windows (native). `fcntl`,
 | Process RSS (live) / peak RSS / CPU | `proc_rss_bytes()` / `proc_peak_rss_bytes()` / `proc_cpu_seconds()` | `resource.getrusage` (`ru_maxrss` is a high-water mark, never a live reading, and its unit is KiB on Linux but bytes on macOS) |
 | Available host memory | `host_available_mib()` (0 = unknown, never 0 = no memory) | `/proc/meminfo` directly (Linux-only, so the bound built on it silently vanishes on macOS and Windows) |
 | FD soft limit | `raise_nofile_soft_limit(n)` | `resource.setrlimit` |
-| Port to PID | `find_listening_pids(port)` / `listening_pid_tool_available()` | `lsof` directly |
+| Port to PID | `find_listening_pids(port)` / `listening_pid_tool_available()`; `find_port_listeners(port)` when ownership must be scoped to the local address actually probed | `lsof` directly |
 | Spawn a system tool (`ps`, `lsof`, `netstat`, `taskkill`) | `trusted_system_bin(name)`, treating `None` as "unavailable" | a bare argv name (resolved through a `PATH` that can lead with same-uid-writable dirs) |
 | strftime no-pad | `strftime(dt, "%-I")` | bare `dt.strftime("%-I")` (`ValueError` on Windows) |
 

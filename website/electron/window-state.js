@@ -98,11 +98,25 @@ function sanitizeWindowState(saved, opts = {}) {
  * as the literal window size — only the size to return to when fullscreen is
  * exited. The fullscreen state is stored as a separate flag.
  *
+ * `transientFullScreen` marks a fullscreen the APP raised on a page's behalf
+ * (html-fullscreen.js, driving the window from a `<video>`'s fullscreen button)
+ * rather than one the user chose. That state must not reach disk: a quit or
+ * crash mid-video would otherwise persist `fullScreen: true` and relaunch into a
+ * fullscreen Space the user never asked for — the restore path this module's
+ * header describes as the "blacked out" failure. The user's own preference is
+ * unchanged by a video, so the flag is recorded as false.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.transientFullScreen] - current fullscreen is app-raised
  * @returns {{x:number,y:number,width:number,height:number,fullScreen:boolean}|null}
  */
-function captureWindowState(win) {
+function captureWindowState(win, opts = {}) {
   if (!win || (typeof win.isDestroyed === "function" && win.isDestroyed())) return null;
-  const fullScreen = typeof win.isFullScreen === "function" ? win.isFullScreen() : false;
+  const fullScreen = opts.transientFullScreen
+    ? false
+    : typeof win.isFullScreen === "function"
+      ? win.isFullScreen()
+      : false;
   const alwaysOnTop = typeof win.isAlwaysOnTop === "function" ? win.isAlwaysOnTop() : false;
   const b =
     (typeof win.getNormalBounds === "function"

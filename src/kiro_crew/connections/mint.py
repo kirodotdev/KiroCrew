@@ -64,6 +64,7 @@ from kiro_crew import hooks as _hooks
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.agent_files import AGENT_FILENAME, OWNED_KIRO_AGENT_FILES
 from kiro_crew.config.loader import data_home
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.security import oauth_url_contains_credential
 from kiro_crew.sel import sel
@@ -118,7 +119,7 @@ class MintState(TypedDict, total=False):
 
 
 _mints: dict[str, MintState] = {}
-_mints_lock = asyncio.Lock()
+_mints_lock = LoopBoundLock()
 
 
 def _new_mint_token() -> str:

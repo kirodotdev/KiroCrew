@@ -284,170 +284,191 @@ async def ingest_attachments(
     lim = limits or IngestLimits()
     out = IngestResult()
 
-    for att in attachments[: lim.max_attachments]:
-        kind = classify(att.mimetype, att.name, audio_mimetypes)
+    # A CANCELLATION mid-batch (gateway shutdown) must not orphan the files
+    # already written. ``except Exception`` inside the loop deliberately keeps one
+    # bad attachment from losing the message, but it does not catch
+    # ``CancelledError`` -- so ``out`` was discarded with its completed temp paths
+    # still on disk, and for an encrypting channel those are the user's DECRYPTED
+    # bytes. The caller owns cleanup on the success path; this owns it on the one
+    # path where the caller never receives the result.
+    try:
+        for att in attachments[: lim.max_attachments]:
+            kind = classify(att.mimetype, att.name, audio_mimetypes)
 
-        if kind == AUDIO and not handle_audio:
-            continue  # transcribed upstream
+            if kind == AUDIO and not handle_audio:
+                continue  # transcribed upstream
 
-        if not att.url:
-            out.rejections.append(f"[Attachment {att.name} — no download URL]")
-            _audit(source, f"{source}.attachment_skip", "skipped", att.name, "no url")
-            continue
+            if not att.url:
+                out.rejections.append(f"[Attachment {att.name} — no download URL]")
+                _audit(source, f"{source}.attachment_skip", "skipped", att.name, "no url")
+                continue
 
-        if kind == VIDEO:
-            out.rejections.append(
-                f"[Attachment {att.name} — video is not supported; "
-                "send a screenshot or a text summary instead]"
-            )
-            _audit(source, f"{source}.attachment_skip", "skipped", att.name, "video unsupported")
-            continue
-
-        if kind == OTHER:
-            out.rejections.append(
-                f"[Attached file: {att.name} ({att.mimetype or 'unknown type'}, "
-                f"{att.size} bytes) — unsupported type]"
-            )
-            _audit(
-                source,
-                f"{source}.attachment_skip",
-                "skipped",
-                att.name,
-                f"unsupported mimetype: {att.mimetype}",
-            )
-            continue
-
-        cap = {
-            IMAGE: lim.max_image_bytes,
-            TEXT: lim.max_text_bytes,
-            DOCUMENT: lim.max_document_bytes,
-            AUDIO: lim.max_audio_bytes,
-        }[kind]
-
-        # Pre-download check on channel-reported size. Cheap, but advisory only:
-        # the value is attacker-influenced and defaults to 0 when absent, which
-        # is exactly how Slack's cap could be bypassed. The post-download check
-        # below is the one that actually holds.
-        if att.size and att.size > cap:
-            out.rejections.append(
-                f"[Attachment {att.name} ({att.size} bytes) — too large, limit {cap}]"
-            )
-            _audit(source, f"{source}.attachment_skip", "skipped", att.name, f"too large: {att.size}")
-            continue
-
-        try:
-            dest = await _fetch(download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1]))
-        except Exception:
-            logger.exception("%s: failed to download attachment %s", source, att.name)
-            out.rejections.append(f"[Attachment {att.name} — download failed]")
-            _audit(source, f"{source}.attachment_download", "error", att.name, "download_failed")
-            continue
-
-        try:
-            # Authoritative size check: metadata may have lied or been absent.
-            actual = os.path.getsize(dest)
-            if actual > cap:
+            if kind == VIDEO:
                 out.rejections.append(
-                    f"[Attachment {att.name} ({actual} bytes) — too large, limit {cap}]"
+                    f"[Attachment {att.name} — video is not supported; "
+                    "send a screenshot or a text summary instead]"
+                )
+                _audit(
+                    source, f"{source}.attachment_skip", "skipped", att.name, "video unsupported"
+                )
+                continue
+
+            if kind == OTHER:
+                out.rejections.append(
+                    f"[Attached file: {att.name} ({att.mimetype or 'unknown type'}, "
+                    f"{att.size} bytes) — unsupported type]"
                 )
                 _audit(
                     source,
                     f"{source}.attachment_skip",
                     "skipped",
                     att.name,
-                    f"too large after download: {actual}",
+                    f"unsupported mimetype: {att.mimetype}",
                 )
                 continue
 
-            if kind == IMAGE:
-                # Offloaded: opens and reads the file header.
-                actual_mime = await asyncio.to_thread(sniff_image_mime, dest)
-                if actual_mime is None:
+            cap = {
+                IMAGE: lim.max_image_bytes,
+                TEXT: lim.max_text_bytes,
+                DOCUMENT: lim.max_document_bytes,
+                AUDIO: lim.max_audio_bytes,
+            }[kind]
+
+            # Pre-download check on channel-reported size. Cheap, but advisory only:
+            # the value is attacker-influenced and defaults to 0 when absent, which
+            # is exactly how Slack's cap could be bypassed. The post-download check
+            # below is the one that actually holds.
+            if att.size and att.size > cap:
+                out.rejections.append(
+                    f"[Attachment {att.name} ({att.size} bytes) — too large, limit {cap}]"
+                )
+                _audit(
+                    source,
+                    f"{source}.attachment_skip",
+                    "skipped",
+                    att.name,
+                    f"too large: {att.size}",
+                )
+                continue
+
+            try:
+                dest = await _fetch(
+                    download, att.url, safe_suffix(att.suffix_hint or att.name.rsplit(".", 1)[-1])
+                )
+            except Exception:
+                logger.exception("%s: failed to download attachment %s", source, att.name)
+                out.rejections.append(f"[Attachment {att.name} — download failed]")
+                _audit(
+                    source, f"{source}.attachment_download", "error", att.name, "download_failed"
+                )
+                continue
+
+            try:
+                # Authoritative size check: metadata may have lied or been absent.
+                actual = os.path.getsize(dest)
+                if actual > cap:
                     out.rejections.append(
-                        f"[Attachment {att.name} — not a readable image "
-                        f"(declared {att.mimetype or 'unknown'})]"
+                        f"[Attachment {att.name} ({actual} bytes) — too large, limit {cap}]"
                     )
                     _audit(
                         source,
                         f"{source}.attachment_skip",
                         "skipped",
                         att.name,
-                        "content_signature_mismatch",
+                        f"too large after download: {actual}",
                     )
                     continue
-                # Rename to the TRUE type's suffix: the ACP encoder derives
-                # mimeType from the suffix, so a mislabelled file would otherwise
-                # travel with wrong metadata. REPLACE the declared suffix rather
-                # than appending, so the name does not claim two types at once.
-                want = _MIME_SUFFIX.get(actual_mime, "")
-                if want and os.path.splitext(dest)[1].lower() != want:
-                    renamed = os.path.splitext(dest)[0] + want
+
+                if kind == IMAGE:
+                    # Offloaded: opens and reads the file header.
+                    actual_mime = await asyncio.to_thread(sniff_image_mime, dest)
+                    if actual_mime is None:
+                        out.rejections.append(
+                            f"[Attachment {att.name} — not a readable image "
+                            f"(declared {att.mimetype or 'unknown'})]"
+                        )
+                        _audit(
+                            source,
+                            f"{source}.attachment_skip",
+                            "skipped",
+                            att.name,
+                            "content_signature_mismatch",
+                        )
+                        continue
+                    # Rename to the TRUE type's suffix: the ACP encoder derives
+                    # mimeType from the suffix, so a mislabelled file would otherwise
+                    # travel with wrong metadata. REPLACE the declared suffix rather
+                    # than appending, so the name does not claim two types at once.
+                    want = _MIME_SUFFIX.get(actual_mime, "")
+                    if want and os.path.splitext(dest)[1].lower() != want:
+                        renamed = os.path.splitext(dest)[0] + want
+                        try:
+                            os.replace(dest, renamed)
+                            dest = renamed
+                        except OSError:
+                            logger.debug("%s: could not retype %s", source, dest, exc_info=True)
+                    out.image_paths.append(dest)
+                    dest = ""  # ownership transferred to the caller
+                    _audit(source, f"{source}.attachment_download", "success", att.name)
+
+                elif kind == AUDIO:
+                    out.audio_paths.append(dest)
+                    dest = ""
+                    _audit(source, f"{source}.attachment_download", "success", att.name)
+
+                elif kind == TEXT:
+                    # Offloaded for the same reason as the DOCUMENT branch below:
+                    # this reads file CONTENT (up to max_text_bytes) on the gateway
+                    # event loop. Leaving plain text inline while offloading PDF
+                    # parsing would be an arbitrary split -- both are blocking reads.
+                    body = await asyncio.to_thread(_read_text_file, dest, lim.max_text_inject)
+                    out.text_blocks.append(f"[File: {att.name}]\n{body}\n[End of file]")
+                    _audit(source, f"{source}.attachment_download", "success", att.name)
+
+                else:  # DOCUMENT
+                    # Parsing a PDF/docx is synchronous CPU work on inputs up to
+                    # max_document_bytes. This runs inside the gateway's event loop
+                    # task (Socket Mode -> _route_message -> process_slack_files),
+                    # so doing it inline stalls EVERY other session's streaming for
+                    # the duration. Offload to a worker thread.
+                    #
+                    # Deliberately asyncio.to_thread rather than subprocess_executor():
+                    # that pool is reserved for subprocess/PTY teardown and orphan
+                    # reaping, and its own docstring notes those workers must stay
+                    # free to recover from a wedged kernel resource. Parking a slow
+                    # document parse there would undermine that isolation.
+                    raw = await asyncio.to_thread(
+                        extract_text, dest, mimetype=att.mimetype, filename=att.name
+                    )
+                    if not raw:
+                        out.rejections.append(
+                            f"[Attached document: {att.name} — could not extract text]"
+                        )
+                        _audit(
+                            source,
+                            f"{source}.attachment_parse",
+                            "error",
+                            att.name,
+                            "no_text_extracted",
+                        )
+                        continue
+                    body = _clean_text(raw, lim.max_text_inject)
+                    out.text_blocks.append(f"[Document: {att.name}]\n{body}\n[End of document]")
+                    _audit(source, f"{source}.attachment_download", "success", att.name)
+            except Exception:
+                logger.exception("%s: failed to process attachment %s", source, att.name)
+                out.rejections.append(f"[Attachment {att.name} — could not be processed]")
+                _audit(source, f"{source}.attachment_parse", "error", att.name, "process_failed")
+            finally:
+                # Anything not handed to the caller is deleted here.
+                if dest:
                     try:
-                        os.replace(dest, renamed)
-                        dest = renamed
+                        os.unlink(dest)
                     except OSError:
-                        logger.debug("%s: could not retype %s", source, dest, exc_info=True)
-                out.image_paths.append(dest)
-                dest = ""  # ownership transferred to the caller
-                _audit(source, f"{source}.attachment_download", "success", att.name)
-
-            elif kind == AUDIO:
-                out.audio_paths.append(dest)
-                dest = ""
-                _audit(source, f"{source}.attachment_download", "success", att.name)
-
-            elif kind == TEXT:
-                # Offloaded for the same reason as the DOCUMENT branch below:
-                # this reads file CONTENT (up to max_text_bytes) on the gateway
-                # event loop. Leaving plain text inline while offloading PDF
-                # parsing would be an arbitrary split -- both are blocking reads.
-                body = await asyncio.to_thread(
-                    _read_text_file, dest, lim.max_text_inject
-                )
-                out.text_blocks.append(f"[File: {att.name}]\n{body}\n[End of file]")
-                _audit(source, f"{source}.attachment_download", "success", att.name)
-
-            else:  # DOCUMENT
-                # Parsing a PDF/docx is synchronous CPU work on inputs up to
-                # max_document_bytes. This runs inside the gateway's event loop
-                # task (Socket Mode -> _route_message -> process_slack_files),
-                # so doing it inline stalls EVERY other session's streaming for
-                # the duration. Offload to a worker thread.
-                #
-                # Deliberately asyncio.to_thread rather than subprocess_executor():
-                # that pool is reserved for subprocess/PTY teardown and orphan
-                # reaping, and its own docstring notes those workers must stay
-                # free to recover from a wedged kernel resource. Parking a slow
-                # document parse there would undermine that isolation.
-                raw = await asyncio.to_thread(
-                    extract_text, dest, mimetype=att.mimetype, filename=att.name
-                )
-                if not raw:
-                    out.rejections.append(
-                        f"[Attached document: {att.name} — could not extract text]"
-                    )
-                    _audit(
-                        source,
-                        f"{source}.attachment_parse",
-                        "error",
-                        att.name,
-                        "no_text_extracted",
-                    )
-                    continue
-                body = _clean_text(raw, lim.max_text_inject)
-                out.text_blocks.append(f"[Document: {att.name}]\n{body}\n[End of document]")
-                _audit(source, f"{source}.attachment_download", "success", att.name)
-        except Exception:
-            logger.exception("%s: failed to process attachment %s", source, att.name)
-            out.rejections.append(f"[Attachment {att.name} — could not be processed]")
-            _audit(source, f"{source}.attachment_parse", "error", att.name, "process_failed")
-        finally:
-            # Anything not handed to the caller is deleted here.
-            if dest:
-                try:
-                    os.unlink(dest)
-                except OSError:
-                    pass
+                        pass
+    except BaseException:
+        await cleanup_offloaded(out.temp_paths)
+        raise
 
     if len(attachments) > lim.max_attachments:
         dropped = len(attachments) - lim.max_attachments
@@ -465,6 +486,45 @@ def cleanup(paths: list[str]) -> None:
             os.unlink(p)
         except OSError:
             pass
+
+
+async def cleanup_offloaded(paths: list[str]) -> None:
+    """Delete *paths* without blocking the loop, on a path that is already failing.
+
+    ``os.unlink`` is a blocking syscall and TMPDIR is not always local (a
+    network- or FUSE-backed temp dir makes each unlink a round trip), so the
+    deletes go to a worker thread like every other cleanup on this path.
+
+    Submitting the work is what makes the deletion durable, not awaiting it:
+    the callers are ``except BaseException`` handlers, so a second cancellation
+    can interrupt this await — but the thread is already queued and the
+    executor still runs it, including through ``shutdown_default_executor``.
+
+    A ``CancelledError`` from the await is therefore NOT a reason to delete
+    inline: ``to_thread`` submits to the executor before it awaits, so by the time
+    cancellation can be observed the worker already owns the deletion. Cleaning up
+    again here would both repeat the work and put the blocking syscalls back on the
+    loop, on the very path (a cancel arriving during shutdown) where the stall
+    would be worst.
+
+    ``RuntimeError`` is the opposite case and the only one that falls back: the
+    loop refused the work outright (already closed, executor shut down), so no
+    worker owns it. Blocking a loop that is finished costs nothing, whereas
+    skipping the delete would leave a user's DECRYPTED attachment readable on disk
+    — the whole reason these handlers exist.
+
+    Both return normally rather than re-raising: the caller is about to ``raise``
+    the exception it was already handling, and surfacing this one instead would
+    replace the real reason the turn ended.
+    """
+    if not paths:
+        return
+    try:
+        await asyncio.to_thread(cleanup, paths)
+    except asyncio.CancelledError:
+        pass
+    except RuntimeError:
+        cleanup(paths)
 
 
 async def transcribe_audio_attachments(result: IngestResult, source: str) -> IngestResult:

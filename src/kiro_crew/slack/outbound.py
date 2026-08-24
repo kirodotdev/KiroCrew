@@ -28,12 +28,12 @@ within one process by construction.
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.slack.format import build_options_selected_blocks, replace_options_blocks
 from kiro_crew.slack.retry import is_retryable_slack_error
 
@@ -64,7 +64,10 @@ class PostedOptions:
 
 
 _MAX_EDIT_LOCKS = 512
-_EDIT_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
+# LoopBoundLock, not asyncio.Lock (#4800): the registry is a module global, so
+# a value created on one event loop would otherwise be handed to a later loop
+# for the same key and raise RuntimeError on acquire.
+_EDIT_LOCKS: dict[tuple[str, str], LoopBoundLock] = {}
 _ANSWERED: dict[tuple[str, str], bool] = {}
 # Interested parties per edit-lock key: holders plus coroutines waiting to hold.
 _LOCK_USERS: dict[tuple[str, str], int] = {}
@@ -263,7 +266,7 @@ def options_edit_lock(channel: str, ts: str) -> "_OptionsEditLock":
     key = (channel, ts)
     lock = _EDIT_LOCKS.get(key)
     if lock is None:
-        lock = _EDIT_LOCKS[key] = asyncio.Lock()
+        lock = _EDIT_LOCKS[key] = LoopBoundLock()
     _prune_edit_locks(key)
     return _OptionsEditLock(key, lock)
 
@@ -300,7 +303,7 @@ class _OptionsEditLock:
 
     __slots__ = ("_key", "_lock")
 
-    def __init__(self, key: tuple[str, str], lock: asyncio.Lock) -> None:
+    def __init__(self, key: tuple[str, str], lock: LoopBoundLock) -> None:
         self._key = key
         self._lock = lock
 

@@ -22,6 +22,7 @@ import {
 import { api } from '../mochiApi'
 import type { SpritePrefillInput } from './SpriteImporter'
 import { i18nT } from '../../../../i18n/t'
+import { useImeGuard } from '../../../../hooks/useImeGuard'
 
 interface Props {
   /** A pet was obtained and measured; take over with the mapping step. */
@@ -79,6 +80,7 @@ function measure(uri: string): Promise<{ width: number; height: number }> {
 }
 
 export const PetdexImporter: React.FC<Props> = ({ onReady, onUseFile, onCancel }) => {
+  const ime = useImeGuard()
   const [slug, setSlug] = useState('')
   const [installed, setInstalled] = useState<PetdexInstalled[]>([])
   const [busy, setBusy] = useState<string | null>(null)
@@ -137,7 +139,7 @@ export const PetdexImporter: React.FC<Props> = ({ onReady, onUseFile, onCancel }
               value={slug}
               placeholder={i18nT('apps.mochi.petdex.name_placeholder')}
               onChange={(e) => setSlug(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitSlug() }}
+              {...ime.bindEnter({ onEnter: submitSlug })}
               disabled={busy !== null}
             />
             <button

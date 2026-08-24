@@ -167,3 +167,54 @@ class TestIsDeniedForwarding:
 
         authority = PolicyAuthority(overlay=_AddOverlay())
         assert authority.is_denied("please launch_missiles now", denied_regexes=[]) is not None
+
+
+class TestSynthesizedTargetOverlayFloor:
+    """The ADD-only overlay keeps its command semantics for a synthesized target.
+
+    An overlay pattern is opaque enterprise policy, and one restricting a filesystem
+    SCOPE is spelled as bare path text, so it is evaluated through the unscoped
+    ``is_denied`` rather than travelling into the synthesized tier.
+    """
+
+    TARGET = "file-search path=/mnt/forbidden-share max_depth=3"
+
+    class _ScopeOverlay:
+        def extra_deny_patterns(self):
+            return ("*forbidden-share*",)
+
+    def test_a_path_only_overlay_pattern_still_denies_a_search(self) -> None:
+        authority = PolicyAuthority(overlay=self._ScopeOverlay())
+        assert authority.is_denied_synthesized_target(self.TARGET) is not None
+
+    def test_the_overlay_applies_with_no_participating_patterns(self) -> None:
+        # Its ADD-only property: nothing the operator does or omits reaches the overlay.
+        authority = PolicyAuthority(overlay=self._ScopeOverlay())
+        assert authority.is_denied_synthesized_target(self.TARGET, []) is not None
+
+    def test_an_unrelated_overlay_does_not_reinstate_the_collision(self) -> None:
+        # The overlay pass must forward an EMPTY regex tier, not `None`: `None` fails
+        # closed to every built-in, which would evaluate the whole shipped catalogue
+        # against the synthesized target and undo the tier.
+        class _UnrelatedOverlay:
+            def extra_deny_patterns(self):
+                return ("*launch_missiles*",)
+
+        authority = PolicyAuthority(overlay=_UnrelatedOverlay())
+        effective = list(
+            security.compute_effective_denied(security.BUILTIN_DENIED_RULES, (), False, (), ())
+        )
+        assert "mkfs.*" in effective  # premise
+        assert authority.is_denied_synthesized_target("file-search path=/srv/mkfs-tests") is None
+
+    def test_the_boot_guard_rejects_overriding_the_synthesized_decision(self) -> None:
+        # `is_denied` is not the only decision path; a subclass always-allowing every
+        # file-search call must not pass boot either.
+        class _WeakeningAuthority(PolicyAuthority):
+            def is_denied_synthesized_target(  # type: ignore[override]
+                self, target, patterns=None, *, extra_patterns=None, reason_notes=None
+            ):
+                return None
+
+        with pytest.raises(PlatformCompositionError):
+            assert_security_floor(_WeakeningAuthority())

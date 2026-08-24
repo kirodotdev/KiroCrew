@@ -2028,3 +2028,204 @@ async def test_load_missing_file_sets_empty(tmp_path, monkeypatch):
     ]
     state.load_chat_pins()
     assert state._chat_pins == []
+
+
+# ── Broadcast (pins_changed) ──
+
+# Helper: inject a MagicMock for broadcast_ws_owners so tests can assert calls.
+
+
+def _make_state_with_broadcast_spy(tmp_path):
+    """_make_state() variant that replaces broadcast_ws_owners with a MagicMock."""
+    state = _make_state(tmp_path)
+    state.broadcast_ws_owners = MagicMock()
+    return state
+
+
+@pytest.mark.asyncio
+async def test_broadcast_fires_after_create_pin(tmp_path):
+    """broadcast_ws_owners is called with pins_changed and the correct slot_key
+    after a successful pin creation."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-create",
+                "mid": "m-bc-create1",
+                "message_ts": "2026-01-01T00:00:00Z",
+                "role": "user",
+                "preview": "broadcast test",
+            },
+        )
+        assert resp.status == 201
+    state.broadcast_ws_owners.assert_called_once_with(
+        "pins_changed", {"slot_key": "slot-bcast-create"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_broadcast_fires_after_delete_by_id(tmp_path):
+    """broadcast_ws_owners is called with pins_changed after a successful delete-by-id."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        create_resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-del-id",
+                "mid": "m-bc-del-id1",
+                "message_ts": "ts-1",
+                "role": "user",
+                "preview": "to delete",
+            },
+        )
+        assert create_resp.status == 201
+        pin = await create_resp.json()
+        state.broadcast_ws_owners.reset_mock()
+
+        del_resp = await client.delete(f"/api/chat/pins/{pin['id']}")
+        assert del_resp.status == 200
+    state.broadcast_ws_owners.assert_called_once_with(
+        "pins_changed", {"slot_key": "slot-bcast-del-id"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_broadcast_fires_after_delete_by_query(tmp_path):
+    """broadcast_ws_owners is called with pins_changed after a successful delete-by-query."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        create_resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-del-q",
+                "mid": "m-bc-del-q1",
+                "message_ts": "ts-2",
+                "role": "assistant",
+                "preview": "to delete by query",
+            },
+        )
+        assert create_resp.status == 201
+        pin = await create_resp.json()
+        state.broadcast_ws_owners.reset_mock()
+
+        del_resp = await client.delete(
+            f"/api/chat/pins/by-query?slot=slot-bcast-del-q&mid={pin['mid']}"
+        )
+        assert del_resp.status == 200
+    state.broadcast_ws_owners.assert_called_once_with(
+        "pins_changed", {"slot_key": "slot-bcast-del-q"}
+    )
+
+
+@pytest.mark.asyncio
+async def test_broadcast_does_not_fire_on_create_persist_failure(tmp_path, monkeypatch):
+    """broadcast_ws_owners must NOT be called when persistence fails on create
+    (rollback path — the in-memory state was reverted)."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        monkeypatch.setattr(state, "save_chat_pins", _raise_os_error)
+        resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-fail-c",
+                "mid": "m-bc-fail-c1",
+                "message_ts": "ts-3",
+                "role": "user",
+                "preview": "should fail",
+            },
+        )
+        assert resp.status == 500
+    state.broadcast_ws_owners.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_does_not_fire_on_delete_persist_failure(tmp_path, monkeypatch):
+    """broadcast_ws_owners must NOT be called when persistence fails on delete-by-id
+    (rollback path — the pin was re-inserted)."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        create_resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-fail-d",
+                "mid": "m-bc-fail-d1",
+                "message_ts": "ts-4",
+                "role": "user",
+                "preview": "persist fail delete",
+            },
+        )
+        assert create_resp.status == 201
+        pin = await create_resp.json()
+        state.broadcast_ws_owners.reset_mock()
+
+        monkeypatch.setattr(state, "save_chat_pins", _raise_os_error)
+        del_resp = await client.delete(f"/api/chat/pins/{pin['id']}")
+        assert del_resp.status == 500
+    state.broadcast_ws_owners.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_does_not_fire_on_query_delete_persist_failure(tmp_path, monkeypatch):
+    """broadcast_ws_owners must NOT be called when persistence fails on delete-by-query
+    (rollback path — the pin was re-inserted)."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        create_resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-bcast-fail-q",
+                "mid": "m-bc-fail-q1",
+                "message_ts": "ts-5",
+                "role": "assistant",
+                "preview": "persist fail query",
+            },
+        )
+        assert create_resp.status == 201
+        pin = await create_resp.json()
+        state.broadcast_ws_owners.reset_mock()
+
+        monkeypatch.setattr(state, "save_chat_pins", _raise_os_error)
+        del_resp = await client.delete(
+            f"/api/chat/pins/by-query?slot=slot-bcast-fail-q&mid={pin['mid']}"
+        )
+        assert del_resp.status == 500
+    state.broadcast_ws_owners.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_does_not_fire_on_validation_failure(tmp_path):
+    """broadcast_ws_owners must NOT be called when the request is rejected for
+    validation reasons (missing required fields, etc.)."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        # Missing both slot_key and mid
+        resp = await client.post("/api/chat/pins", json={"preview": "oops"})
+        assert resp.status == 400
+    state.broadcast_ws_owners.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_broadcast_payload_contains_only_slot_key(tmp_path):
+    """The broadcast payload must contain slot_key and nothing else (no pin
+    content) so no sensitive material crosses the WebSocket to any listener."""
+    state = _make_state_with_broadcast_spy(tmp_path)
+    async with _client(tmp_path, state=state) as client:
+        resp = await client.post(
+            "/api/chat/pins",
+            json={
+                "slot_key": "slot-payload-check",
+                "mid": "m-payload-chk1",
+                "message_ts": "ts-pc",
+                "role": "user",
+                "preview": "SECRET content must not appear in broadcast",
+            },
+        )
+        assert resp.status == 201
+    call_args = state.broadcast_ws_owners.call_args
+    assert call_args is not None
+    msg_type, payload = call_args[0]
+    assert msg_type == "pins_changed"
+    assert set(payload.keys()) == {"slot_key"}
+    assert "preview" not in payload
+    assert "content" not in payload

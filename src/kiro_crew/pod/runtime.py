@@ -36,6 +36,7 @@ from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import PodConfig
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Pod names become systemd instance names and path segments; keep them strict.
 _NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,60}$")
@@ -168,8 +169,8 @@ def _git_worktrees(ref: Path) -> dict[str, Path]:
         cp = subprocess.run(
             ["git", "-C", str(ref), "worktree", "list", "--porcelain"],
             capture_output=True,
-            text=True,
             timeout=10,
+            **UTF8_TEXT,
         )
     except (OSError, subprocess.SubprocessError):
         return {}
@@ -950,15 +951,50 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Seed sanitization — deny-by-default. A seeded pod must NEVER be able to grab the
-# real Slack identity, so we only ever return a config with tunnel DISABLED.
-# Anything that prevents us from positively guaranteeing that (missing file, bad
-# JSON) returns None → the caller skips the seed and the pod boots blank.
+# Seed sanitization — deny-by-default. A seeded pod must NEVER be able to grab a
+# live messaging identity, so we only ever return a config with the tunnel and
+# every self-activating channel DISABLED. Anything that prevents us from positively
+# guaranteeing that (missing file, bad JSON) returns None → the caller skips the
+# seed and the pod boots blank.
 # --------------------------------------------------------------------------- #
+
+# Config sections a sanitized seed boots with ``enabled=False``. Deny-by-default:
+# every channel carrying a config-level ``enabled`` is listed, because that flag is
+# the only thing between a seed cloned from the real config (the intended
+# ``--seed ~/.kiro/crew`` workflow) and a pod that answers real people as the
+# operator's bot. The channel's credential is not a second gate — Telegram,
+# Discord, Webex and Weixin read their token straight out of the seeded
+# config.json; iMessage needs no credential at all, since its transport is the
+# operator's own signed-in Messages.app; and Teams keeps its App ID in config.json
+# while ``MICROSOFT_APP_PASSWORD`` reaches the pod through the inherited env.
+# Slack is deliberately absent: it has no config-level enable, being gated purely
+# on credentials that ``build_pod_env`` scrubs.
+#
+# ``test_pod.py`` pins this tuple against ``channels.builtin_channel_descriptors()``
+# so a channel added to the roster cannot reach a pod ungated.
+SEED_DISABLED_SECTIONS: tuple[str, ...] = (
+    "tunnel",
+    "wecom",
+    "telegram",
+    "discord",
+    "webex",
+    "teams",
+    "weixin",
+    "imessage",
+    # WhatsApp is the sharpest case on this list: its transport is the operator's
+    # OWN account, paired as a linked device, so a seeded pod booting it live would
+    # send from the operator's real number using a credential that is not an env
+    # var this env can scrub (the session store lives under the data home).
+    "whatsapp",
+    "feishu",
+)
+
+
 def sanitized_seed_config(seed_dir: Path) -> dict | None:
-    """Read ``<seed_dir>/config.json`` and return it with ``tunnel.enabled``
-    forced to False, or None if it can't be safely sanitized (no file / bad JSON
-    / sensitive path). Never copies any other state (DB / sessions / crons)."""
+    """Read ``<seed_dir>/config.json`` and return it with ``enabled`` forced to
+    False on every ``SEED_DISABLED_SECTIONS`` section, or None if it can't be
+    safely sanitized (no file / bad JSON / sensitive path). Never copies any other
+    state (DB / sessions / crons)."""
     # ``--seed`` is a user-supplied path: refuse to read from a sensitive /
     # credential location before touching the file. Resolve first so a symlink or
     # ".." can't smuggle past the guard.
@@ -977,16 +1013,10 @@ def sanitized_seed_config(seed_dir: Path) -> dict | None:
         return None
     if not isinstance(data, dict):
         return None
-    # Deny-by-default: force OFF every messaging channel that can self-activate
-    # from config.json — not just the tunnel. A seed cloned from a real config
-    # (the intended ``--seed ~/.kiro/crew`` workflow) would otherwise boot live
-    # Telegram / WeCom bots answering real users. Overwrite any non-dict section
-    # value too, so the enabled=False guarantee can't be skipped by a falsy value.
-    # (Slack has no config-level enable — it is credential-gated, and those creds
-    # are scrubbed from the pod env by build_pod_env.) iMessage matters most
-    # here: it needs no credential at all, so a pod that inherited enabled=true
-    # would drive the operator's real Messages.app and reply to real people.
-    for section in ("tunnel", "telegram", "wecom", "imessage"):
+    # Force OFF every self-activating section (SEED_DISABLED_SECTIONS carries the
+    # roster and the reasoning). Overwrite a non-dict section value too, so the
+    # enabled=False guarantee can't be skipped by a falsy value.
+    for section in SEED_DISABLED_SECTIONS:
         if not isinstance(data.get(section), dict):
             data[section] = {}
         data[section]["enabled"] = False
@@ -997,13 +1027,19 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
     """Construct the isolated gateway environment for a pod.
 
     Scrubs messaging-identity creds so the pod can't inherit and re-use the live
-    plane's Slack / WeCom / Telegram identity via the systemd --user manager env:
-    ``SLACK_*``, ``WECOM_*`` (WECOM_BOT_ID / WECOM_SECRET), and non-AWS ``*_TOKEN``
-    (covers ``TELEGRAM_BOT_TOKEN``). ``AWS_*`` is kept on purpose (pods run agent
-    turns), and the ``_TOKEN`` scrub deliberately EXCLUDES ``AWS_`` so
-    ``AWS_SESSION_TOKEN`` (temp creds) survives intact — scrubbing it would leave
-    half a credential and break every AWS call. Config-level channel enables are
-    additionally forced off by ``sanitized_seed_config`` (defense-in-depth).
+    plane's Slack / WeCom / Telegram / Teams / Feishu identity via the systemd
+    --user manager env: ``SLACK_*``, ``WECOM_*`` (WECOM_BOT_ID / WECOM_SECRET),
+    ``MICROSOFT_APP_*``, ``FEISHU_*`` and non-AWS ``*_TOKEN`` (covers
+    ``TELEGRAM_BOT_TOKEN``). Teams and Feishu each need their own prefix because
+    none of ``MICROSOFT_APP_ID`` / ``MICROSOFT_APP_PASSWORD`` /
+    ``MICROSOFT_APP_TENANT_ID`` / ``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` ends
+    in ``_TOKEN``, so the generic suffix rule that catches every other channel's
+    bot credential passes the Azure Bot secret and the Feishu app secret straight
+    through. ``AWS_*`` is kept on purpose (pods run agent turns), and the
+    ``_TOKEN`` scrub deliberately EXCLUDES ``AWS_`` so ``AWS_SESSION_TOKEN`` (temp
+    creds) survives intact — scrubbing it would leave half a credential and break
+    every AWS call. Config-level channel enables are additionally forced off by
+    ``sanitized_seed_config`` (defense-in-depth).
     """
     env = {
         **os.environ,
@@ -1052,6 +1088,8 @@ def build_pod_env(cfg: PodConfig, home_dir: Path, port: int, checkout: Path) -> 
         for k in env
         if k.startswith("SLACK_")
         or k.startswith("WECOM_")
+        or k.startswith("MICROSOFT_APP_")
+        or k.startswith("FEISHU_")
         or (k.endswith("_TOKEN") and not k.startswith("AWS_"))
     ]:
         env.pop(key, None)

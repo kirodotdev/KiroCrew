@@ -48,6 +48,7 @@ from kiro_crew.github_runner import (
 )
 from kiro_crew.github_runner import strict_provider_bins as _strict_provider_bins
 from kiro_crew.github_runner import validate_provider_executable as _validate_provider_executable
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.sandbox import create_subprocess_limited, sandboxed_spawn_argv
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -146,7 +147,7 @@ _PROVIDER_AUTH_ENV_KEYS = {
 }
 # url -> (stored_at, serialized_size_bytes, normalized_payload)
 _CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
-_CACHE_LOCK = asyncio.Lock()
+_CACHE_LOCK = LoopBoundLock()
 _FULL_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _FULL_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _FULL_FETCH_GENERATIONS: dict[str, int] = {}
@@ -158,7 +159,7 @@ _CHECKS_FETCH_INFLIGHT: dict[str, asyncio.Task[list[dict[str, Any]]]] = {}
 # nothing about. No generation map is needed -- this phase never mutates an
 # issue, so there is no post-mutation write to order against.
 _ISSUE_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
-_ISSUE_CACHE_LOCK = asyncio.Lock()
+_ISSUE_CACHE_LOCK = LoopBoundLock()
 _ISSUE_FETCH_INFLIGHT: dict[str, asyncio.Task[dict[str, Any]]] = {}
 _ISSUE_FETCH_TASKS: dict[str, set[asyncio.Task[dict[str, Any]]]] = {}
 _DIRECT_FETCH_RESERVATIONS: dict[asyncio.Task[Any], int] = {}
@@ -320,7 +321,7 @@ _gitlab_hosts_loaded_at = 0.0
 # parse result (per-slot sidebar source links) fold this into their cache key so
 # a later allowlist load invalidates decisions made against the cold snapshot.
 _gitlab_hosts_generation = 0
-_gitlab_hosts_lock = asyncio.Lock()
+_gitlab_hosts_lock = LoopBoundLock()
 
 
 def gitlab_hosts_generation() -> int:
@@ -2498,7 +2499,7 @@ async def _fetch_jira_issue(ref: SourceRef) -> dict[str, Any]:
         raise SourceProviderError(
             f"Could not reach Jira at {ref.host}: {type(exc).__name__}"
         ) from exc
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise SourceProviderError(
             f"Jira returned an unparseable response for {issue_key}."
         ) from exc
@@ -4092,6 +4093,52 @@ async def _github_dismiss_review(ref: SourceRef, review_id: str) -> bool:
 
 _LOCAL_DASHBOARD_OWNER_SUBJECTS = frozenset({"local-app", "local-startup"})
 
+# The one owner-gate denial that gets a machine-readable label of its own. A
+# token subject is fixed at mint time as ``owner_id or <bootstrap subject>``,
+# and every refresh re-mints from the INCOMING subject, so a session signed in
+# before ``KIROCREW_OWNER_ID`` was configured carries `local-app` /
+# `local-startup` for its whole life. Once an owner exists, the gate denies
+# that subject — correctly — but a generic ``403 forbidden`` gives the user no
+# way to tell "sign in again" apart from any other authorization failure.
+STALE_OWNER_SESSION_CODE = "stale_session_reauth"
+
+
+def stale_owner_session_response(request: web.Request) -> web.Response | None:
+    """The distinct denial label for a signed pre-owner bootstrap session.
+
+    Called strictly AFTER an owner-gate deny decision has been made: it never
+    grants, widens, or re-orders access — it only chooses the response body for
+    a request that is already refused. Returns the ``401 stale_session_reauth``
+    body when the denied caller is a SIGNED dashboard-user bootstrap subject
+    while an owner is configured, and ``None`` for every other denied caller,
+    who keeps the call site's existing generic response. The discriminator is
+    reserved for already-authenticated callers on purpose: an unsigned, absent,
+    or app-token caller must not learn which denial class it hit.
+
+    401 rather than 403 because re-authentication is the remedy — the caller's
+    credential is stale, not merely under-privileged. Only a fresh sign-in (a
+    newly minted token, whose subject is derived from the now-configured owner)
+    clears it; a token refresh cannot, since refresh preserves the subject.
+    """
+    caller = str(request.get("user") or "")
+    if request.get("app") != "":
+        # App tokens keep their generic denial, and an absent app claim means
+        # the middleware never authenticated this caller as a dashboard user.
+        return None
+    if caller not in _LOCAL_DASHBOARD_OWNER_SUBJECTS:
+        return None
+    state = request.app["state"]
+    owner_id = str(getattr(state, "owner_id", "") or "")
+    if not owner_id:
+        return None
+    return web.json_response(
+        {
+            "error": "this session predates the configured owner; sign in again",
+            "code": STALE_OWNER_SESSION_CODE,
+        },
+        status=401,
+    )
+
 
 def is_owner_dashboard_request(request: web.Request) -> bool:
     """Return whether request has a configured or implicit local owner identity."""
@@ -4154,6 +4201,11 @@ def _authorize_owner_request(
         return web.json_response({"error": "forbidden"}, status=403)
     if caller != owner_id:
         _audit_source_api(request, operation, "denied", "non_owner")
+        # Deny decision made above; the helper only relabels the response for a
+        # signed pre-owner bootstrap subject. Every other caller stays generic.
+        stale = stale_owner_session_response(request)
+        if stale is not None:
+            return stale
         return web.json_response({"error": "forbidden"}, status=403)
     return None
 

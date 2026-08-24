@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
@@ -438,6 +439,7 @@ class TestInferSource:
         ("telegram:456", "telegram"),
         ("wecom:c1", "wecom"),
         ("weixin:c1", "weixin"),
+        ("feishu:c1", "feishu"),
         ("webex:c1", "webex"),
         ("teams:c1", "teams"),
         ("slack:C08:thread", "slack"),
@@ -533,6 +535,57 @@ class TestHmacKeyManagementExtras:
         log = SecurityEventLog(base_dir=tmp_path, sync=True)
         assert (tmp_path / "trust" / "sel_hmac.key").exists()
         assert log._hmac_key
+
+    def test_lockdown_failure_is_fail_soft(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A restrict_to_owner failure must not crash SecurityEventLog init.
+
+        The chmod test above only exercises the POSIX arm of
+        ``restrict_to_owner``; on Windows it runs icacls instead, so this
+        variant injects the failure at ``restrict_to_owner`` itself — the seam
+        ``atomic_write`` calls on every platform — pinning that
+        ``restrict_on_error="warn"`` keeps key creation fail-soft.
+        """
+        def _refuse(_target):
+            raise OSError("icacls failed")
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _refuse)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+        assert (tmp_path / "trust" / "sel_hmac.key").exists()
+        assert log._hmac_key
+
+    def test_key_lockdown_precedes_content(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh HMAC key must never exist in a file that has not been
+        locked down yet.
+
+        atomic_write(restrict_to_owner=True) applies the lockdown to the TEMP
+        file before the key bytes reach it (the previous post-rename lockdown
+        left a brand-new key readable under the inherited DACL on Windows for
+        the write window, issue #5285). Asserted by measuring the file's SIZE
+        at lockdown time — zero means no key byte existed yet.
+        """
+        from kiro_crew import platform_compat
+
+        trust_dir = tmp_path / "trust"
+        calls: list[tuple[Path, int]] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            p = Path(str(target))
+            if p.is_file() and p.parent == trust_dir:
+                calls.append((p, os.stat(p).st_size))
+            return real_restrict(target)
+
+        monkeypatch.setattr("kiro_crew.platform_compat.restrict_to_owner", _measuring)
+        log = SecurityEventLog(base_dir=tmp_path, sync=True)
+
+        assert log._hmac_key
+        assert calls, "premise: the key lockdown ran at all"
+        _, size = calls[0]
+        assert size == 0, f"the key file already held {size} bytes at lockdown time"
 
     def test_singleton_init_is_idempotent(self, tmp_path: Path) -> None:
         a = SecurityEventLog(base_dir=tmp_path, sync=True)
@@ -2067,6 +2120,249 @@ class TestRotationIsSerializedAcrossProcesses:
         assert log._last_hash == fresh_tip, "kept a chain tip from a closed segment"
 
 
+class TestSegmentDirIsPinnedOnRead:
+    """The segment DIRECTORY is pinned for the duration of a read (#4999).
+
+    #4998 validated the descriptor of each file the readers open, which closes
+    the FINAL path component; the directory itself was still walked BY NAME.
+    A ``security_events.d`` replaced with a link (planted before this release,
+    or swapped while a read is in flight) therefore redirected enumeration —
+    and every per-file open — into another tree, whose segment-shaped REGULAR
+    files pass every per-file check, because they are regular files. The read
+    paths now pin the directory itself first and refuse a linked one, so a
+    swapped dir fails closed instead of feeding another tree's files to
+    ``recent()`` / ``verify_integrity()``. The rotation-time repair
+    (``_ensure_segment_dir``) remains the write-side guard, and the live log
+    is unchanged: its writer follows an operator's symlink, so its readers
+    must too.
+    """
+
+    def test_a_swapped_segment_dir_is_not_read_through(self, sel_dir, small_segments):
+        """A linked ``security_events.d`` must fail closed, not follow.
+
+        The observable is ``verify_integrity()``'s totals: without the pin, the
+        decoy's unsigned lines inflate ``total`` while ``valid`` stays flat —
+        the false tamper alarm of #4999 — so ``total == valid`` here is exactly
+        the property that must hold. Built with ``symlink_or_junction`` so the
+        same attack runs on Windows junctions, which need no elevation.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        segment_dir = sel_dir / "security_events.d"
+        decoy = sel_dir / "decoy.d"
+        decoy.mkdir()
+        (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
+            '{"planted": true}\n' * 3, encoding="utf-8"
+        )
+        os.rename(segment_dir, sel_dir / "aside.d")
+        platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
+
+        total, valid = log.verify_integrity()
+        assert total == valid, (
+            f"a swapped segment dir surfaced {total - valid} decoy lines as "
+            "audit history (false tamper alarm)"
+        )
+        live_lines = (
+            (sel_dir / "security_events.jsonl")
+            .read_text(encoding="utf-8")
+            .strip()
+            .splitlines()
+        )
+        assert total == len(live_lines), "records beyond the live log were counted"
+        # The swap is itself tampering, so the detailed result must not call
+        # this run verifiable over the live log alone (#5051 review).
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False
+        assert "refused" in result.reason
+
+    def test_a_refusal_is_not_reclassified_by_a_later_repair(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """The refusal verdict must come from pin time, not a re-stat.
+
+        A linked segment dir is refused, and rotation's repair concurrently
+        removes the link before verify classifies the outcome: re-deriving
+        the answer from the path would now see a real directory again and
+        report the run verifiable while the rotated history went unchecked.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        segment_dir = sel_dir / "security_events.d"
+        decoy = sel_dir / "decoy.d"
+        decoy.mkdir()
+        os.rename(segment_dir, sel_dir / "aside.d")
+        platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
+
+        real_open = sel_mod._open_segment_dir
+
+        def repairing_open(path):
+            pin, absent = real_open(path)
+            if pin is None and not absent and not segment_dir.exists():
+                # The repair races in behind the refusal: the real directory
+                # is back by the time verify would have re-stat'ed the path.
+                # The exists() guard makes the race idempotent — the repair
+                # fires exactly once, whatever later pin attempt arrives.
+                os.rename(sel_dir / "aside.d", segment_dir)
+            return pin, absent
+
+        monkeypatch.setattr(sel_mod, "_open_segment_dir", repairing_open)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False, (
+            "a concurrent repair reclassified the refusal as verifiable"
+        )
+
+    def test_a_fresh_install_stays_verifiable(self, sel_dir):
+        """No segment dir yet is not tampering — nothing to vouch for."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 3)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is True
+        assert result.reason == ""
+        assert result.total == result.valid
+
+    def test_a_healthy_rotation_is_verifiable(self, sel_dir, small_segments):
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is True
+        assert result.reason == ""
+        assert result.total == result.valid
+
+    @pytest.mark.skipif(os.name == "nt", reason="the fd branch that opens the dir is POSIX-only")
+    def test_a_dir_vanishing_after_lstat_is_a_refusal(self, sel_dir, small_segments, monkeypatch):
+        """Vanishing BETWEEN the lstat and the pin is interference, not absence.
+
+        Fresh-install silence belongs to the directory that was NEVER there;
+        one that was seen by lstat and then disappears before the open
+        cannot be used to let the rotated history read as unverifiable-but-
+        absent.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        real_open = os.open
+
+        def vanishing_open(path, *args, **kwargs):
+            if getattr(path, "name", str(path)).endswith("security_events.d"):
+                raise FileNotFoundError(errno.ENOENT, "gone", str(path))
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(sel_mod.os, "open", vanishing_open)
+        result = log.verify_integrity(detailed=True)
+        assert (
+            result.history_verifiable is False
+        ), "a directory that vanished after lstat read as absent"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX file-mode semantics")
+    def test_an_unreadable_segment_dir_is_not_verifiable(self, sel_dir, small_segments):
+        """A real directory the pin could not open is still unchecked history.
+
+        Permissions changed under us, or the platform refused the open for
+        any other reason: the rotated segments were skipped either way, and
+        reporting the run as intact over the live log alone is the false
+        negative the third outcome exists to prevent.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segment_dir = sel_dir / "security_events.d"
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        before = segment_dir.stat().st_mode
+        segment_dir.chmod(0o000)
+        try:
+            result = log.verify_integrity(detailed=True)
+        finally:
+            segment_dir.chmod(before)
+        assert result.history_verifiable is False
+        assert "refused" in result.reason
+
+    def test_a_mid_verification_swap_is_not_verifiable(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """A directory replaced mid-run leaves totals from the pinned tree,
+        but the tree on disk no longer is it — the detail must say so."""
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        monkeypatch.setattr(sel_mod._SegmentDirPin, "matches", lambda self, path: False)
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False
+        assert "replaced during verification" in result.reason
+
+    @pytest.mark.skipif(os.name == "nt", reason="dir-fd pinning is POSIX-only")
+    def test_enumeration_is_immune_to_a_swapped_path_with_the_pin_alive(
+        self, sel_dir, small_segments
+    ):
+        """POSIX: the walk goes through the pinned descriptor.
+
+        Swapping the PATH (to a decoy link, and back again — the ABA shape:
+        plant the decoy mid-read, restore the real directory before any
+        recheck) cannot redirect, empty, or confuse the enumeration, because
+        it reads RELATIVE to the fd. Every real name must survive.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segment_dir = sel_dir / "security_events.d"
+        real_names = {p.name for p in log._segments_oldest_first()}
+        assert real_names, "precondition: rotation happened"
+        pin, absent = sel_mod._open_segment_dir(segment_dir)
+        assert pin is not None, "the real segment dir must pin"
+        assert absent is False, "a real segment dir is not absence"
+        assert pin.fd is not None, "POSIX must pin by descriptor, not identity"
+        try:
+            decoy = sel_dir / "decoy.d"
+            decoy.mkdir()
+            (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
+                "", encoding="utf-8"
+            )
+            os.rename(segment_dir, sel_dir / "aside.d")
+            (sel_dir / "security_events.d").symlink_to(decoy)
+            names = {p.name for p in log._segments_oldest_first(pin=pin)}
+            assert names == real_names, (
+                "enumeration leaked names through a swapped path"
+            )
+            fd = sel_mod._open_segment(segment_dir / sorted(real_names)[0], pin=pin)
+            assert fd is not None, "the pinned descriptor refused a real segment after the swap"
+            os.close(fd)
+        finally:
+            pin.close()
+
+    @pytest.mark.skipif(
+        os.name == "nt", reason="identity pins are the Windows-only degenerate form"
+    )
+    def test_an_identity_pin_fails_closed_on_a_mid_read_swap(
+        self, sel_dir, small_segments, monkeypatch
+    ):
+        """Without directory descriptors the walk is by name, so a swap that
+        survives the post-walk identity revalidation must fail closed — the
+        identity the read pinned is not the identity the path names anymore.
+
+        Forces the identity branch the way Windows takes it naturally: the
+        platform gate claims no descriptors, and the pin carries only an
+        identity.
+        """
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        _fill(log, 200)
+        segment_dir = sel_dir / "security_events.d"
+        assert log._segments_oldest_first(), "precondition: rotation happened"
+        decoy = sel_dir / "decoy.d"
+        decoy.mkdir()
+        (decoy / "security_events-000042-20260821T000000Z.jsonl").write_text(
+            "", encoding="utf-8"
+        )
+        pin = sel_mod._SegmentDirPin(fd=None, identity=(0, 0))
+        monkeypatch.setattr(sel_mod, "_open_segment_dir", lambda path: (pin, False))
+        os.rename(segment_dir, sel_dir / "aside.d")
+        platform_compat.symlink_or_junction(str(decoy), str(segment_dir))
+        assert log._segments_oldest_first(pin=pin) == [], (
+            "enumeration surfaced names through a swapped segment dir"
+        )
+        result = log.verify_integrity(detailed=True)
+        assert result.history_verifiable is False
+
+
 class TestAppendValidatesTheFileByFd:
     """A lock-free append must notice a rotation that lands under it.
 
@@ -2556,7 +2852,12 @@ class TestBackwardReadBufferIsBounded:
         assert yielded == [], "an unterminated file yielded a line"
         # Admission must simply fail, not blow up.
         assert log._segment_is_signed_by_us(planted) is False
-        assert planted not in list(log._read_sources_newest_first())
+        pin, _absent = sel_mod._open_segment_dir(segment_dir)
+        assert pin is not None, "the real segment dir must pin"
+        try:
+            assert planted not in list(log._read_sources_newest_first(pin=pin))
+        finally:
+            pin.close()
 
     def test_a_normal_log_is_read_completely(self, sel_dir, small_segments):
         """The cap must not truncate ordinary records."""
@@ -3028,7 +3329,12 @@ class TestSegmentOpensValidateTheDescriptor:
 
         listed = log._segments_oldest_first()
         assert newest in listed, "the real newest segment was displaced by its alias"
-        order = list(log._read_sources_newest_first())
+        alias_pin, _absent = sel_mod._open_segment_dir(sel_dir / "security_events.d")
+        assert alias_pin is not None, "the real segment dir must pin"
+        try:
+            order = list(log._read_sources_newest_first(pin=alias_pin))
+        finally:
+            alias_pin.close()
         assert newest in order, "the real newest segment vanished from the read order"
         assert order.index(newest) < order.index(alias), (
             "the alias outranked the real newest segment in newest-first reads"
@@ -3403,3 +3709,295 @@ class TestTimeWindowRead:
         log = SecurityEventLog(base_dir=sel_dir, sync=True)
         _fill(log, 5)
         assert log.recent(limit=0) == []
+
+
+def _shutdown_writer(log: SecurityEventLog) -> None:
+    """Deterministically stop *log*'s background writer inside the test.
+
+    An async SecurityEventLog binds its directory into a daemon writer thread;
+    without an explicit shutdown the thread outlives the test while holding a
+    reference to a deleted per-test tmp_path. Flush, send the shutdown
+    sentinel, and join so nothing survives teardown.
+    """
+    log.flush()
+    log._queue.put(None)
+    writer = log._writer
+    if writer is not None:
+        writer.join(timeout=5)
+
+
+class TestMetadataRedaction:
+    """The writer redacts caller-supplied metadata values before persistence.
+
+    The acceptance is "never reaches disk": every assertion here reads the raw
+    on-disk JSONL back, not a mock. The token is assembled from parts so this
+    test file itself never contains a credential-shaped literal.
+    """
+
+    AKIA_TOKEN = "AKIA" + "IOSFODNN7EXAMPLE"
+    EXFIL_URL = "https://attacker.example/upload/" + "AKIA" + "IOSFODNN7EXAMPLE"
+
+    def _disk_text(self, sel_dir: Path) -> str:
+        return (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
+
+    def test_credential_in_metadata_never_reaches_disk(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="discover_skills",
+            outcome="success",
+            metadata={"query": f"find {self.AKIA_TOKEN} docs", "result_count": "3"},
+        )
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        data = json.loads(raw.strip())
+        assert "[REDACTED: credential]" in data["metadata"]["query"]
+        # Non-secret values pass through untouched.
+        assert data["metadata"]["result_count"] == "3"
+
+    def test_exfiltration_url_in_metadata_never_reaches_disk(self, log, sel_dir):
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="discover_mcp_servers",
+            outcome="success",
+            metadata={"query": self.EXFIL_URL},
+        )
+        raw = self._disk_text(sel_dir)
+        assert self.EXFIL_URL not in raw
+        assert self.AKIA_TOKEN not in raw
+
+    def test_nested_metadata_values_are_redacted(self, log, sel_dir):
+        log.log(_make_event(
+            event_id="nested1",
+            metadata={
+                "outer": {"inner": self.AKIA_TOKEN},
+                "items": [self.AKIA_TOKEN, 7, None],
+            },
+        ))
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        data = json.loads(raw.strip())
+        # Keys and non-string values are untouched.
+        assert "outer" in data["metadata"] and "inner" in data["metadata"]["outer"]
+        assert data["metadata"]["items"][1] == 7
+        assert data["metadata"]["items"][2] is None
+
+    def test_caller_metadata_dict_is_not_mutated(self, log):
+        caller_metadata = {"query": self.AKIA_TOKEN, "nested": {"k": self.AKIA_TOKEN}}
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="discover_skills",
+            outcome="success",
+            metadata=caller_metadata,
+        )
+        assert caller_metadata["query"] == self.AKIA_TOKEN
+        assert caller_metadata["nested"]["k"] == self.AKIA_TOKEN
+
+    def test_redacted_events_chain_verifies(self, log):
+        """The HMAC chain signs the redacted bytes, so verify stays green."""
+        for i in range(3):
+            log.log(_make_event(
+                event_id=f"chain{i}",
+                metadata={"query": f"{self.AKIA_TOKEN} #{i}"},
+            ))
+        total, valid = log.verify_integrity()
+        assert total == 3
+        assert valid == 3
+
+    def test_async_writer_path_redacts(self, tmp_path: Path) -> None:
+        """The production background-writer path redacts too, not just sync."""
+        log = SecurityEventLog(base_dir=tmp_path)  # async (default)
+        try:
+            log.log_tool_invocation(
+                session_key="dashboard:slot1",
+                tool_name="discover_skills",
+                outcome="success",
+                metadata={"query": self.AKIA_TOKEN},
+            )
+            log.flush()
+            raw = (tmp_path / "security_events.jsonl").read_text(encoding="utf-8")
+            assert self.AKIA_TOKEN not in raw
+        finally:
+            _shutdown_writer(log)
+
+    def test_events_without_metadata_are_untouched(self, log, sel_dir):
+        log.log(_make_event(event_id="plain1"))
+        data = json.loads(self._disk_text(sel_dir).strip())
+        assert data["metadata"] == {}
+
+    def test_namedtuple_metadata_value_does_not_cost_the_event(self, log, sel_dir):
+        """A sequence subclass with a different constructor (json-legal today)
+        must not raise out of the walker; it degrades to a plain array."""
+        from collections import namedtuple
+
+        point = namedtuple("point", ["x", "y"])
+        log.log(_make_event(
+            event_id="nt1",
+            metadata={"pos": point(self.AKIA_TOKEN, 2)},
+        ))
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        data = json.loads(raw.strip())
+        assert data["metadata"]["pos"][1] == 2
+
+    def test_redaction_failure_persists_placeholder_not_raw(self, log, sel_dir):
+        """Fail-closed containment: if the redactor raises, the event lands
+        with placeholder metadata and the raw text never reaches disk."""
+        with patch(
+            "kiro_crew.sel._redacted_metadata_copy",
+            side_effect=RuntimeError("simulated redactor failure"),
+        ):
+            log.log(_make_event(
+                event_id="rf1",
+                metadata={"query": self.AKIA_TOKEN},
+            ))
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        data = json.loads(raw.strip())
+        assert data["metadata"] == {"redaction_error": "RuntimeError"}
+
+    def test_redaction_failure_does_not_drop_batch_siblings(self, tmp_path: Path) -> None:
+        """One pathological metadata value must not cost unrelated events
+        queued in the same writer batch."""
+        log = SecurityEventLog(base_dir=tmp_path)  # async: events batch together
+
+        def _flaky(metadata: dict) -> dict:
+            if "poison" in metadata:
+                raise RuntimeError("simulated redactor failure")
+            return {k: v for k, v in metadata.items()}
+
+        try:
+            with patch("kiro_crew.sel._redacted_metadata_copy", side_effect=_flaky):
+                log.log(_make_event(event_id="ok1", metadata={"query": "fine"}))
+                log.log(_make_event(event_id="bad1", metadata={"poison": "x"}))
+                log.log(_make_event(event_id="ok2", metadata={"query": "also fine"}))
+                log.flush()
+        finally:
+            _shutdown_writer(log)
+        lines = (tmp_path / "security_events.jsonl").read_text(encoding="utf-8").splitlines()
+        ids = [json.loads(ln)["event_id"] for ln in lines if ln.strip()]
+        assert ids == ["ok1", "bad1", "ok2"]
+
+    def test_forward_callback_uses_shared_walker_on_namedtuple(self, log):
+        """The forward path shares the walker, so a namedtuple degrades to a
+        plain array there too instead of raising."""
+        from collections import namedtuple
+
+        received: list[dict] = []
+        log.set_forward_callback(received.append)
+        point = namedtuple("point", ["x", "y"])
+        log.log(_make_event(event_id="fw1", metadata={"pos": point(self.AKIA_TOKEN, 2)}))
+        assert len(received) == 1
+        assert received[0]["metadata"]["pos"][1] == 2
+        assert self.AKIA_TOKEN not in json.dumps(received[0])
+
+    def test_error_and_resources_fields_never_reach_disk_raw(self, log, sel_dir):
+        """Top-level free-form strings get the same write-time pass: an
+        exception message quoting a credential must not persist raw."""
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="execute_bash",
+            outcome="failed",
+            resources=f"curl -H 'X-Key: {self.AKIA_TOKEN}'",
+            error=f"RuntimeError: auth failed for {self.AKIA_TOKEN}",
+        )
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        data = json.loads(raw.strip())
+        assert "[REDACTED: credential]" in data["resources"]
+        assert "[REDACTED: credential]" in data["error"]
+        # The plain parts of the strings survive.
+        assert data["error"].startswith("RuntimeError: auth failed for ")
+
+    def test_identity_fields_stay_verbatim(self, log, sel_dir):
+        """Identity-shaped fields are constrained vocabularies, not free text —
+        the writer must not rewrite them."""
+        log.log(_make_event(
+            event_id="ident1",
+            caller_identity="dashboard:slot-AKIA-not-a-key",
+            downstream_service="kirocrew-core",
+        ))
+        data = json.loads(self._disk_text(sel_dir).strip())
+        assert data["caller_identity"] == "dashboard:slot-AKIA-not-a-key"
+        assert data["downstream_service"] == "kirocrew-core"
+
+    def test_lowercased_aws_key_never_reaches_disk(self, log, sel_dir):
+        """SEL callers may normalize case before logging (the file-search
+        handler lowercases its query); a lowercased key is trivially
+        reversible, so the write-time pass must catch it case-insensitively."""
+        lowered = self.AKIA_TOKEN.lower()
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="file_search",
+            outcome="allowed",
+            resources=f"q={lowered} kinds=all",
+            metadata={"query": lowered},
+        )
+        raw = self._disk_text(sel_dir)
+        assert lowered not in raw
+        data = json.loads(raw.strip())
+        assert "[REDACTED: credential]" in data["resources"]
+        assert "[REDACTED: credential]" in data["metadata"]["query"]
+
+    def test_anycase_pass_leaves_ordinary_words_alone(self, log, sel_dir):
+        """The case-insensitive net is bounded: prose containing 'akia' or
+        'asia' inside longer tokens must not be rewritten."""
+        text = "asian markets akiary search results for East Asia region"
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="file_search",
+            outcome="allowed",
+            resources=text,
+            metadata={"query": text},
+        )
+        data = json.loads(self._disk_text(sel_dir).strip())
+        assert data["resources"] == text
+        assert data["metadata"]["query"] == text
+
+    def test_credential_straddling_the_truncation_boundary_is_gone(self, log, sel_dir):
+        """The log_* helpers clip free-form text to _MAX_ARG_LEN. Clipping FIRST
+        would cut a credential in half and leave a prefix that no full-token
+        grammar matches, so redaction must run on the whole string BEFORE the
+        clip. Place the key so the clip lands mid-token."""
+        from kiro_crew.sel import _MAX_ARG_LEN
+
+        # Key starts 10 chars before the clip point, so a clip-first order would
+        # keep its first 10 characters and drop the rest.
+        prefix = "q=" + ("x" * (_MAX_ARG_LEN - 12))
+        resources = prefix + self.AKIA_TOKEN + " kinds=all"
+        assert len(prefix) < _MAX_ARG_LEN < len(prefix) + len(self.AKIA_TOKEN)
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name="file_search",
+            outcome="allowed",
+            resources=resources,
+            error=resources,
+        )
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        # No partial prefix of the key survives either.
+        assert self.AKIA_TOKEN[:10] not in raw
+        data = json.loads(raw.strip())
+        # The replacement marker is longer than the token it replaces, so the
+        # clip can cut the MARKER — harmless, and proof the order is right: a
+        # marker fragment sits where the credential's first characters would be
+        # under a clip-first order.
+        assert "[REDACTED" in data["resources"]
+        assert "[REDACTED" in data["error"]
+        # The clip is still enforced.
+        assert len(data["resources"]) <= _MAX_ARG_LEN
+        assert len(data["error"]) <= _MAX_ARG_LEN
+
+    def test_api_access_helper_also_redacts_before_clipping(self, log, sel_dir):
+        from kiro_crew.sel import _MAX_ARG_LEN
+
+        prefix = "path=" + ("y" * (_MAX_ARG_LEN - 15))
+        log.log_api_access(
+            caller="token:abc",
+            operation="GET /api/file-search",
+            outcome="allowed",
+            resources=prefix + self.AKIA_TOKEN,
+        )
+        raw = self._disk_text(sel_dir)
+        assert self.AKIA_TOKEN not in raw
+        assert self.AKIA_TOKEN[:10] not in raw
+        assert len(json.loads(raw.strip())["resources"]) <= _MAX_ARG_LEN

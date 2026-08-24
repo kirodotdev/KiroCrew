@@ -184,6 +184,44 @@ describe('ChannelPage — message list', () => {
       .toHaveBeenCalledWith('ch1', 'a1', 'approved'))
   })
 
+  // The channel approval message carries no tool command (the card is titled
+  // with the agent's role) and the approve endpoint accepts only
+  // approved/rejected/trust, so the command-scoped tiers must not be offered
+  // on this surface (#4421).
+  it('offers only the plain trust action on a channel approval — no command-scoped tiers', async () => {
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed: **execute_bash**\n```\nrm -rf build\n```',
+      })],
+    })])
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    const items = screen.getAllByRole('menuitem')
+    expect(items).toHaveLength(1)
+    expect(items[0].textContent).toContain('Trust all tools in this channel — persists across restarts')
+    // Neither tier may describe the role string the card is titled with.
+    expect(items.some(b => b.textContent?.includes('Researcher'))).toBe(false)
+  })
+
+  it('posts the plain trust decision — one the channel backend accepts', async () => {
+    mockApi([channelOf({
+      messages: [message({
+        msg_type: 'approval',
+        content: '⚠️ Approval needed:\n```\nrm -rf build\n```',
+      })],
+    })])
+    await renderPage()
+    await userEvent.click(screen.getByRole('button', { name: /Trust/ }))
+    await userEvent.click(screen.getByText('Trust all tools in this channel — persists across restarts'))
+    await waitFor(() => expect(vi.mocked(api).channelApproveAgent)
+      .toHaveBeenCalledWith('ch1', 'a1', 'trust'))
+    // trust_command / trust_base must never reach the API from this surface.
+    for (const call of vi.mocked(api).channelApproveAgent.mock.calls) {
+      expect(['approved', 'rejected', 'trust']).toContain(call[2])
+    }
+  })
+
   it('renders a reply-count button for a message that has a thread', async () => {
     mockApi([channelOf({ messages: [message({ reply_count: 2 })] })])
     await renderPage()

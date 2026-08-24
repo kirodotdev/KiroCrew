@@ -235,6 +235,12 @@ ssh -N  -L 7779:localhost:7779 user@your-host.example.com   # foreground, no she
 ssh -fN -L 7779:localhost:7779 user@your-host.example.com   # background
 ```
 
+Pass `-C` to enable SSH transport compression. A hand-rolled tunnel gets no
+compression by default, while Kiro Crew's own tunnel manager turns it on for
+exactly this traffic (`src/kiro_crew/instances/ssh_tunnel_manager.py`): the
+forwarded stream carries the dashboard SPA bundle plus all API/WS payloads,
+which are highly compressible, and the gateway does not gzip at the HTTP layer.
+
 To get the tunnel on every connection, add to your local `~/.ssh/config`:
 
 ```

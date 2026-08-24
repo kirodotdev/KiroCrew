@@ -25,7 +25,7 @@ const { entries, skipped } = extractAll(settingsDir)
 // which takes ALL of settings search down with no error anywhere. That happened
 // once; this makes it loud instead. Raise the floor only alongside a real
 // increase in settings count.
-const FLOOR = 40
+const FLOOR = 90
 if (entries.length < FLOOR) {
   console.error(
     \`Refusing to write registry: extracted only \${entries.length} entries \` +

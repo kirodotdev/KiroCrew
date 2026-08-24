@@ -797,3 +797,58 @@ class TestOptionsRendering:
             assert data["delivered_to"] == "slack"
             slack.post_message.assert_called_once()
             slack.post_blocks.assert_called_once()
+
+
+class TestProactiveBodyMeetsTheDisplayFloor:
+    """A proactive body is posted AS WRITTEN, so it needs the display-form floor.
+
+    Every turn egress runs `redact_for_display`, which scans the form the client
+    RENDERS as well as the literal bytes: neither `AKIA**<rest>**` nor
+    `[AKIA](https://x)<rest>` matches a credential pattern as written, yet the
+    reader is shown an intact key. This path passes no renderer -- the handler
+    hands `text` straight to the channel -- so a literal-only scan here is the one
+    hole in that floor, and it is reachable by anything that can call the endpoint.
+    """
+
+    #: Split by emphasis markers the client renders away. The literal string is
+    #: not a credential; what the reader sees is.
+    _COLLAPSING = "AKIA**IOSFODNN7EXAMPLE**"
+
+    @pytest.mark.asyncio
+    async def test_a_markdown_collapse_credential_is_not_posted(self, mock_sel):
+        slack = MagicMock()
+        slack.post_message = AsyncMock(return_value="1712793600.000001")
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=True):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": f"key {self._COLLAPSING}", "channel": "C0123ABC456"},
+                )
+                assert resp.status == 200
+
+        posted = slack.post_message.call_args.args[1]
+        # Neither the literal form nor the form Slack renders may carry the key.
+        assert "AKIAIOSFODNN7EXAMPLE" not in posted.replace("*", "")
+        assert self._COLLAPSING not in posted
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_body_is_left_exactly_as_written(self, mock_sel):
+        """The floor must not reformat a message that carries no credential."""
+        slack = MagicMock()
+        slack.post_message = AsyncMock(return_value="1712793600.000001")
+        state = _mock_state(slack_client=slack, owner_id="U_OWNER")
+        app = _make_app(state)
+        body = "Deploy **finished** in `2m` — see [the run](https://example.com/r/1)."
+
+        with patch("kiro_crew.slack.handler.is_tracked_channel", return_value=True):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": body, "channel": "C0123ABC456"},
+                )
+                assert resp.status == 200
+
+        assert slack.post_message.call_args.args[1] == body

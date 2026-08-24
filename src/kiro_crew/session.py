@@ -840,6 +840,24 @@ def unlink_queued_temp_paths(kwargs: dict) -> None:
             pass
 
 
+def _unlink_session_queue(session: "_Session") -> None:
+    """Unlink temp files for every entry still queued on a popped session.
+
+    Every teardown path that pops a whole ``_Session`` out of ``_sessions``
+    (stale-provider eviction, ``reset``, RSS recycle, ``remove``,
+    ``remove_if_unclaimed``, ``destroy``, ``discard_conversation``,
+    ``drain_all_providers``) discards ``session.queue`` along with it.
+    Anything still sitting there never reaches ``_dispatch_queued``'s own
+    cleanup — that only runs for an entry that actually gets dispatched —
+    so this is the one place responsible for unlinking the images behind a
+    whole-session teardown, the same way ``cancel_queued``/``clear_queue``/
+    ``dequeue``'s cancelled-skip already do for a live session's own
+    piecemeal discards.
+    """
+    for _, _, kwargs in session.queue:
+        unlink_queued_temp_paths(kwargs)
+
+
 class SessionManager:
     """Thread-keyed LLM provider pool with warm session pre-spawning."""
 
@@ -1578,6 +1596,7 @@ class SessionManager:
                 del self._sessions[key]
                 dead = sess.provider
         if dead is not None:
+            await asyncio.to_thread(_unlink_session_queue, sess)
             try:
                 await dead.shutdown()
             except Exception:
@@ -2559,6 +2578,7 @@ class SessionManager:
         # cold-starts a context-free duplicate (thread split).
         key = self._fold_key(key)
         stale_provider = None
+        stale_session: "_Session | None" = None
         _claimed: "_Session | None" = None
         try:
             async with self._lock:
@@ -2614,6 +2634,7 @@ class SessionManager:
                                 "Session %s has dead provider — removing stale entry", key
                             )
                             stale_provider = sess.provider
+                            stale_session = sess
                             del self._sessions[key]
                             # Preserve session_map entry: the kiro-cli session
                             # files survive on disk, enabling lossless resume
@@ -2661,6 +2682,8 @@ class SessionManager:
             # Kill orphaned child processes (MCP servers, kiro-cli-chat)
             # outside the lock — shutdown() may involve signals/waitpid.
             if stale_provider is not None:
+                if stale_session is not None:
+                    await asyncio.to_thread(_unlink_session_queue, stale_session)
                 try:
                     await stale_provider.shutdown()
                 except Exception:
@@ -3245,6 +3268,7 @@ class SessionManager:
             # Same tick as the pop — see the docstring.
             self._session_map.clear_sid(key)
         if session:
+            await asyncio.to_thread(_unlink_session_queue, session)
             # Capture PID and child tree before shutdown clears them
             client = getattr(session.provider, "_client", None)
             raw_pid = getattr(client, "_pid", None) if client else None
@@ -3330,6 +3354,12 @@ class SessionManager:
         """Check context usage and fire background compaction at the
         configured ``autocompact_pct`` threshold.
 
+        Whether compaction may run is decided by
+        :meth:`_compaction_gate_decision`, consumed via
+        :meth:`_trigger_compaction` (which commits and schedules the
+        attempt); this method only tracks prompt counts and logs the usage
+        arms for declined readings.
+
         Falls back to prompt-count compaction if metadata never reports %.
         Returns context usage percentage immediately — never blocks.
         """
@@ -3341,58 +3371,24 @@ class SessionManager:
         if session:
             session.prompt_count += 1
 
-        # Settle a deferred compaction verdict on the first CONFIRMED reading
-        # after the attempt (see _settle_compact_cooldown). Runs BEFORE the
-        # trigger decision below so an ineffective compaction's cooldown
-        # suppresses the immediate re-trigger in this very call. Deliberately
-        # damping-only: this reading includes the following turn's own growth,
-        # so it cannot distinguish a failed compaction from a successful one
-        # regrown by a large turn — safe to damp on, never safe to reset on
-        # (the promoted #4686 escalation fires only on immediately-measured
-        # verdicts inside _compact_session).
-        baseline = self._compact_pending_verdict.get(key)
-        if baseline is not None and not _context_pct_is_unknown(provider):
-            del self._compact_pending_verdict[key]
-            self._judge_compact_effect(key, baseline, pct)
+        decline = self._trigger_compaction(key, f"context at {pct:.0f}%", pct, provider)
 
-        # Warn one margin below the configured action point. Guarded as > 0 so a
-        # very low configured threshold cannot push the warn level negative and
-        # make the warning arm swallow the ordinary info arm below it.
-        _warn_at = self._cfg.session.autocompact_pct - CONTEXT_WARN_MARGIN_PCT
-
-        # CC per_session handles its own compaction natively — skip KiroCrew's
-        _is_cc_persistent = (
-            ClaudeCodeProvider is not None
-            and isinstance(provider, ClaudeCodeProvider)
-            and provider.connection_mode == "per_session"
-        )
-        if _is_cc_persistent:
+        if decline == "cc_managed":
             if pct > 0:
                 logger.info("Session %s context at %.0f%% (CC-managed)", key, pct)
-        elif pct >= self._cfg.session.autocompact_pct:
-            # Defensive twin of the rekey-time reset (#2932): compaction is
-            # destructive-ish (it rewrites the conversation), so it must never
-            # fire on a percentage that no telemetry has confirmed for the
-            # CURRENT session binding. Today every path that raises context_pct
-            # also calls note_pct_reported(), so this gate is unreachable in
-            # production — it exists so a future handoff/reset path that
-            # preserves a stale pct while leaving it flagged unknown degrades
-            # to a skipped compaction instead of compacting an empty session.
-            # Fail-quiet on doubles: providers without the probe read as
-            # "confirmed" (unchanged behavior).
-            if _context_pct_is_unknown(provider):
-                logger.info(
-                    "Session %s context %.0f%% is unconfirmed for this session — "
-                    "skipping compaction until telemetry reports",
-                    key,
-                    pct,
-                )
-            else:
-                self._trigger_compaction(key, f"context at {pct:.0f}%", pct)
-        elif _warn_at > 0 and pct >= _warn_at:
-            logger.warning("Session %s context at %.0f%%", key, pct)
-        elif pct > 0:
-            logger.info("Session %s context at %.0f%%", key, pct)
+        elif decline == "below_threshold":
+            # Warn one margin below the configured action point. Guarded as
+            # > 0 so a very low configured threshold cannot push the warn
+            # level negative and make the warning arm swallow the ordinary
+            # info arm below it.
+            _warn_at = self._cfg.session.autocompact_pct - CONTEXT_WARN_MARGIN_PCT
+            if _warn_at > 0 and pct >= _warn_at:
+                logger.warning("Session %s context at %.0f%%", key, pct)
+            elif pct > 0:
+                logger.info("Session %s context at %.0f%%", key, pct)
+        # The remaining declines (unconfirmed / in_progress / cooldown) are
+        # logged by the gate ladder itself; a None decline means the attempt
+        # was committed and logged by _trigger_compaction.
         return pct
 
     async def compact_if_needed(self, key: str) -> str:
@@ -3400,11 +3396,10 @@ class SessionManager:
 
         For callers that must not start their next turn while a compaction is
         pending — the task runner checks context BETWEEN turns and needs the
-        attempt finished before it feeds the next prompt (#4686). Runs the
-        same trigger decision and the same gates as ``check_context_usage`` →
-        ``_trigger_compaction`` (pending-verdict settle, CC-managed skip,
-        threshold, unconfirmed-pct guard, ``_compacting`` dedup, failure/
-        ineffective cooldown — in that order), then AWAITS
+        attempt finished before it feeds the next prompt (#4686). Whether the
+        attempt may start is decided by :meth:`_compaction_gate_decision` —
+        the same ladder, in the same order, that ``check_context_usage`` →
+        ``_trigger_compaction`` consumes — after which this seam AWAITS
         ``_compact_session`` instead of scheduling it, so the caller inherits
         the turn-semaphore exclusion, the post-compaction verification, and
         skills reinjection without reaching into private helpers.
@@ -3416,16 +3411,10 @@ class SessionManager:
           immediately-measured verdict was ineffective-and-still-critical,
           and the promoted post-compaction escalation reset the session —
           AWAITED, so the caller's next turn cold-starts on a fresh process.
-        - ``"cc_managed"``: CC ``per_session`` compacts natively — skipped
-          (checked before the threshold, so a CC session below threshold
-          also reports this, mirroring ``check_context_usage``).
-        - ``"below_threshold"``: usage below ``session.autocompact_pct``.
-        - ``"unconfirmed"``: over threshold but no telemetry has confirmed the
-          reading for the current session binding (same defensive gate as
-          ``check_context_usage`` — never compact on an unproven number).
-        - ``"in_progress"``: another trigger is already compacting this key;
-          the concurrent attempt is collapsed, not queued.
-        - ``"cooldown"``: a failed/ineffective attempt armed the cooldown.
+        - ``"cc_managed"`` / ``"below_threshold"`` / ``"unconfirmed"`` /
+          ``"in_progress"`` / ``"cooldown"``: gate declines, verbatim from
+          :meth:`_compaction_gate_decision` — see its docstring for what
+          each gate protects and why the order is what it is.
         - ``"ok"`` / ``"busy"`` / ``"recycled"`` / ``"failed"``: terminal
           outcomes of the awaited attempt (see ``_compact_session``). A
           ``"busy"`` decline means a turn holds the semaphore — the caller
@@ -3439,49 +3428,11 @@ class SessionManager:
         provider = session.provider
         pct = provider.context_usage_pct()
 
-        # Settle a deferred compaction verdict on a confirmed reading, exactly
-        # as check_context_usage does, so an ineffective prior attempt arms
-        # its cooldown before the trigger decision below. Damping-only for
-        # the same reason as there: a deferred reading includes later turn
-        # growth and cannot prove the compaction failed — the promoted #4686
-        # escalation fires only on immediately-measured verdicts inside
-        # _compact_session (this call's own attempt reports it as "reset").
-        baseline = self._compact_pending_verdict.get(key)
-        if baseline is not None and not _context_pct_is_unknown(provider):
-            del self._compact_pending_verdict[key]
-            self._judge_compact_effect(key, baseline, pct)
-
-        # CC per_session handles its own compaction natively — skip Kiro
-        # Crew's (same guard as check_context_usage).
-        if (
-            ClaudeCodeProvider is not None
-            and isinstance(provider, ClaudeCodeProvider)
-            and provider.connection_mode == "per_session"
-        ):
-            return "cc_managed"
-        if pct < self._cfg.session.autocompact_pct:
-            return "below_threshold"
-        if _context_pct_is_unknown(provider):
-            logger.info(
-                "Session %s context %.0f%% is unconfirmed for this session — "
-                "skipping compaction until telemetry reports",
-                key,
-                pct,
-            )
-            return "unconfirmed"
-        if key in self._compacting:
-            logger.info("Session %s compaction already in progress", key)
-            return "in_progress"
-        cooldown_until = self._compact_cooldown_until.get(key, 0.0)
-        if cooldown_until > time.monotonic():
-            logger.info(
-                "Session %s compaction skipped — cooldown active for %.0fs more",
-                key,
-                cooldown_until - time.monotonic(),
-            )
-            return "cooldown"
+        decline = self._compaction_gate_decision(key, provider, pct)
+        if decline is not None:
+            return decline
         logger.warning("Session %s compacting — context at %.0f%% (awaited)", key, pct)
-        # No await between the membership check above and this add, so the
+        # No await between the ladder's membership check and this add, so the
         # dedup handshake with _trigger_compaction stays atomic on the loop.
         self._compacting.add(key)
         return await self._compact_session(key, pct)
@@ -3535,37 +3486,119 @@ class SessionManager:
             logger.warning("Recycle callback already registered; replacing existing handler")
         self._on_recycled = cb
 
-    def _trigger_compaction(self, key: str, reason: str, pct: float) -> None:
-        """Schedule a background compact task for *key*, gated by two checks.
+    def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
+        """THE place that decides whether a compaction attempt may start.
 
-        - ``_compacting`` set: dedup concurrent triggers; an in-flight
-          compaction blocks new triggers until it completes.
-        - ``_compact_cooldown_until``: after a failed OR ineffective compact,
-          suppress re-triggers until the cooldown elapses.
+        Both entry points consume this ladder — ``check_context_usage`` via
+        :meth:`_trigger_compaction` (which schedules the attempt) and
+        :meth:`compact_if_needed` (which awaits it) — so a gate added here
+        reaches both paths by construction; gate-order parity between the
+        paths is pinned by ``test_task_runner_compaction.py``. Returns the
+        decline reason, or ``None`` to proceed. *pct* is the reading the
+        caller observed on *provider*; the ladder never re-reads it.
 
-        The actual work runs in a fire-and-forget task so the caller's
-        response path is never blocked.
+        The gates run in this order, and the order is behavior:
+
+        1. Pending-verdict settle — a side effect, never declines. The first
+           CONFIRMED reading after a deferred attempt settles its verdict
+           (see ``_settle_compact_cooldown``) and MUST run before the
+           cooldown gate below, so an ineffective prior attempt suppresses
+           the immediate re-trigger within this very call. Deliberately
+           damping-only: a deferred reading includes the following turn's
+           own growth and cannot distinguish a failed compaction from a
+           successful one regrown by a large turn — safe to damp on, never
+           safe to reset on (the promoted #4686 escalation fires only on
+           immediately-measured verdicts inside ``_compact_session``).
+        2. ``"cc_managed"`` — CC ``per_session`` compacts natively; checked
+           before the threshold, so a CC session below threshold also
+           declines here.
+        3. ``"below_threshold"`` — *pct* below ``session.autocompact_pct``.
+        4. ``"unconfirmed"`` — over threshold but no telemetry has confirmed
+           the reading for the CURRENT session binding; defensive twin of
+           the rekey-time reset (#2932). Compaction is destructive-ish (it
+           rewrites the conversation), so it must never fire on an unproven
+           percentage. Today every path that raises context_pct also calls
+           note_pct_reported(), so this gate is unreachable in production —
+           it exists so a future handoff/reset path that preserves a stale
+           pct while leaving it flagged unknown degrades to a skipped
+           compaction instead of compacting an empty session. Fail-quiet on
+           doubles: providers without the probe read as "confirmed".
+        5. ``"in_progress"`` — the ``_compacting`` dedup, CHECK only. The
+           caller commits with ``_compacting.add(key)`` itself, synchronously
+           after a ``None`` return: committing here would leak a stale entry
+           whenever the cooldown gate below declines, and committing at the
+           call site keeps the check-then-add handshake atomic on the event
+           loop (this method never awaits).
+        6. ``"cooldown"`` — a failed or ineffective attempt armed
+           ``_compact_cooldown_until``; re-triggers are suppressed until it
+           elapses so a broken or ineffective ``/compact`` does not fire on
+           every subsequent turn.
+
+        The declining gates that log (unconfirmed / in_progress / cooldown)
+        log here, identically for both entry points; the silent declines
+        (cc_managed / below_threshold) are logged, where at all, by the
+        entry-point arms that own them.
         """
+        baseline = self._compact_pending_verdict.get(key)
+        if baseline is not None and not _context_pct_is_unknown(provider):
+            del self._compact_pending_verdict[key]
+            self._judge_compact_effect(key, baseline, pct)
+
+        if (
+            ClaudeCodeProvider is not None
+            and isinstance(provider, ClaudeCodeProvider)
+            and provider.connection_mode == "per_session"
+        ):
+            return "cc_managed"
+        if pct < self._cfg.session.autocompact_pct:
+            return "below_threshold"
+        if _context_pct_is_unknown(provider):
+            logger.info(
+                "Session %s context %.0f%% is unconfirmed for this session — "
+                "skipping compaction until telemetry reports",
+                key,
+                pct,
+            )
+            return "unconfirmed"
         if key in self._compacting:
             logger.info("Session %s compaction already in progress", key)
-            return
+            return "in_progress"
         cooldown_until = self._compact_cooldown_until.get(key, 0.0)
         if cooldown_until > time.monotonic():
-            # Last compact failed or made no progress. Skip until the cooldown
-            # elapses so a broken or ineffective /compact does not fire on
-            # every subsequent turn. Log at INFO — the original outcome was
-            # already logged at exception/warning level.
+            # The original failure/ineffectiveness was already logged at
+            # exception/warning level — the skip logs at INFO.
             logger.info(
                 "Session %s compaction skipped — cooldown active for %.0fs more",
                 key,
                 cooldown_until - time.monotonic(),
             )
-            return
+            return "cooldown"
+        return None
+
+    def _trigger_compaction(
+        self, key: str, reason: str, pct: float, provider: LLMProvider
+    ) -> str | None:
+        """Schedule a background compact task for *key* when the gates allow.
+
+        The decision is :meth:`_compaction_gate_decision` — the same ladder
+        the awaited ``compact_if_needed`` seam consumes — evaluated against
+        the *provider* the caller observed *pct* on. A decline returns the
+        reason (the ladder has already logged the declines that log) so
+        ``check_context_usage`` keeps its usage-log arms; on ``None`` the
+        attempt is committed and the actual work runs in a fire-and-forget
+        task, so the caller's response path is never blocked.
+        """
+        decline = self._compaction_gate_decision(key, provider, pct)
+        if decline is not None:
+            return decline
         logger.warning("Session %s compacting — %s", key, reason)
+        # No await between the ladder's membership check and this add, so the
+        # dedup handshake with compact_if_needed stays atomic on the loop.
         self._compacting.add(key)
         t = asyncio.create_task(self._compact_session(key, pct))
         self._background_tasks.add(t)
         t.add_done_callback(self._background_tasks.discard)
+        return None
 
     async def _compact_session(self, key: str, pct: float) -> str:
         """Compact a session that hit the context threshold.
@@ -3696,6 +3729,9 @@ class SessionManager:
                 popped = None
                 if self._sessions.get(key) is session:
                     popped = self._sessions.pop(key, None)
+            # popped is session by identity when non-None (see pop-by-identity
+            # above), but session's queue is abandoned in either branch below.
+            await asyncio.to_thread(_unlink_session_queue, session)
             if popped is None:
                 # A racing cold-start already replaced the entry — the map
                 # now points at a fresh, healthy session. Reap OUR old
@@ -3845,8 +3881,8 @@ class SessionManager:
         the async compaction caller must then AWAIT the promoted reset
         escalation before reporting its outcome (#4686). A deferred verdict
         returns ``False``; it settles at the next confirmed reading in
-        ``check_context_usage`` / ``compact_if_needed``, which own their own
-        escalation.
+        :meth:`_compaction_gate_decision`, the gate ladder shared by
+        ``check_context_usage`` and ``compact_if_needed``.
 
         Re-reads ``context_usage_pct()`` and compares it with *pct_before* (the
         reading that triggered the attempt). A completed compaction that freed
@@ -3867,11 +3903,12 @@ class SessionManager:
           compaction would compute a zero drop and be damped by mistake.
 
         Both defer: the trigger pct is stashed in ``_compact_pending_verdict``
-        and ``check_context_usage`` settles it at the first CONFIRMED reading
-        (that reading includes the following turn's own growth, so a very
-        large turn can under-measure the drop and arm one spurious cooldown —
-        bounded at ``_COMPACT_FAILURE_COOLDOWN_SECS``). Any cooldown already
-        running is left to expire on its own while a verdict is pending.
+        and :meth:`_compaction_gate_decision` settles it at the first
+        CONFIRMED reading (that reading includes the following turn's own
+        growth, so a very large turn can under-measure the drop and arm one
+        spurious cooldown — bounded at ``_COMPACT_FAILURE_COOLDOWN_SECS``).
+        Any cooldown already running is left to expire on its own while a
+        verdict is pending.
 
         The compaction callback still fires ``success=True`` for an
         ineffective attempt: the compaction genuinely completed and rewrote
@@ -3911,15 +3948,15 @@ class SessionManager:
         IMMEDIATELY-MEASURED settle (``_settle_compact_cooldown`` called
         right after the attempt, inside ``_compact_session``) may act on that
         ``True`` by awaiting :meth:`_reset_still_critical`: the deferred
-        settle sites (turn-end ``check_context_usage`` and the
-        ``compact_if_needed`` pre-check) deliberately IGNORE it, because
-        their reading includes the following turn's own growth and cannot
-        distinguish a failed compaction from a successful one regrown by a
-        large turn — damping on that ambiguity is safe, destroying a valid
-        conversation on it is not. The cooldown is armed either way, so a
-        declined or deferred escalation stays damped and the still-critical
-        session re-attempts the whole compact-and-escalate cycle at its next
-        threshold crossing.
+        settle site (:meth:`_compaction_gate_decision`, shared by turn-end
+        ``check_context_usage`` and the ``compact_if_needed`` pre-check)
+        deliberately IGNORES it, because a deferred reading includes the
+        following turn's own growth and cannot distinguish a failed
+        compaction from a successful one regrown by a large turn — damping
+        on that ambiguity is safe, destroying a valid conversation on it is
+        not. The cooldown is armed either way, so a declined or deferred
+        escalation stays damped and the still-critical session re-attempts
+        the whole compact-and-escalate cycle at its next threshold crossing.
         """
         if pct_before - pct_after < _COMPACT_MIN_EFFECT_PCT_POINTS:
             self._compact_cooldown_until[key] = time.monotonic() + _COMPACT_FAILURE_COOLDOWN_SECS
@@ -4047,6 +4084,7 @@ class SessionManager:
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
+            await asyncio.to_thread(_unlink_session_queue, session)
             await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (the
             # get_subagent_runtime fallback path). shutdown() covers the common
@@ -4364,6 +4402,7 @@ class SessionManager:
             self._compact_cooldown_until.pop(key, None)
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+        await asyncio.to_thread(_unlink_session_queue, session)
         await session.provider.shutdown()
         await self.release_subagent_runtime(key)
         logger.info("Removed unclaimed speculative session (map preserved): %s", key)
@@ -4382,6 +4421,7 @@ class SessionManager:
             self._compact_pending_verdict.pop(key, None)
         try:
             if session:
+                await asyncio.to_thread(_unlink_session_queue, session)
                 await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (see remove()).
             await self.release_subagent_runtime(key)
@@ -4410,6 +4450,7 @@ class SessionManager:
             self._compact_pending_verdict.pop(key, None)
         try:
             if session:
+                await asyncio.to_thread(_unlink_session_queue, session)
                 await session.provider.shutdown()
             # Reap any companion subagent runtime keyed by this parent (see remove()).
             await self.release_subagent_runtime(key)
@@ -5455,12 +5496,19 @@ class SessionManager:
     async def drain_all_providers(self) -> list:
         """Pop all sessions and return their providers. Thread-safe."""
         providers = []
+        popped: list["_Session"] = []
         async with self._lock:
             keys = list(self._sessions.keys())
             for key in keys:
                 sess = self._sessions.pop(key, None)
                 if sess:
                     providers.append(sess.provider)
+                    popped.append(sess)
+        # Unlink off the lock: a bulk drain (every gateway shutdown/restart)
+        # can pop many sessions at once, and os.unlink is blocking I/O that
+        # would otherwise stall every other coroutine waiting on self._lock.
+        for sess in popped:
+            await asyncio.to_thread(_unlink_session_queue, sess)
         return providers
 
     async def drain_warm_pool(self) -> list:

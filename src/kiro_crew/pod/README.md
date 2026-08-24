@@ -113,9 +113,12 @@ that can't collide with a developer's live pods — used by the test suite.
 
 - A pod runs its own `KIROCREW_HOME` and binds `127.0.0.1` only; it never touches
   the shared `~/.kiro/crew` data and refuses the live port.
-- Every pod's `config.json` forces `tunnel.enabled=false`, and the booted env
-  scrubs `SLACK_*` + non-AWS `*_TOKEN`, so a pod can never grab the live Slack
-  identity. Pod HOME is `0700`; `config.json` is `0600`.
+- Every pod's `config.json` forces `enabled=false` on the tunnel and on every
+  channel that carries a config-level enable (`runtime.SEED_DISABLED_SECTIONS`),
+  and the booted env scrubs `SLACK_*`, `WECOM_*`, `MICROSOFT_APP_*` and non-AWS
+  `*_TOKEN`, so a pod can never grab a live messaging identity — not even a
+  seeded one, which is the point: `--seed ~/.kiro/crew` clones the real config.
+  Pod HOME is `0700`; `config.json` is `0600`.
 
 ## Platform
 

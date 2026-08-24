@@ -375,6 +375,12 @@ async def handle_message_transport(
             show_thinking=show_thinking,
             decider=decider,
             user_id=user_id,
+            # The restricted-session ceiling on shipping local bytes, the same
+            # signal that denies artifact registration: a conversation the user
+            # marked temporary or incognito must not upload files into a Slack
+            # channel, where they persist for everyone who can read it. Defaulting
+            # this True while nothing passed it meant the ceiling did not exist.
+            uploads_allowed=not _is_slack_restricted(session_key),
         )
         await renderer.on_turn_start()
 
@@ -421,6 +427,14 @@ async def handle_message_transport(
             session_key, agent=_agent, channel_id=channel
         )
         _acquired = True
+        # Authorize the outbound-image root, which only exists once the provider
+        # does. Unauthorized, `_upload_root` stays empty and `_uploads_enabled()`
+        # is permanently False, so the whole extract-and-upload path is dead while
+        # `files_outbound=True` advertises it: an agent that writes
+        # `![chart](/tmp/chart.png)` ships the raw path as text. The root is the
+        # provider's own resolved cwd, which is what bounds extraction to files
+        # the session may read. Mirrors the Discord dispatcher.
+        renderer.authorize_upload_root(client.cwd)
         # Expire AGAIN, now that the turn is serialized. The pass above (just
         # before the turn machinery) runs before `get_or_create` waits its turn,
         # so two messages arriving together both clear the control while it is

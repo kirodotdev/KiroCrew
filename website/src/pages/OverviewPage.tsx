@@ -9,6 +9,7 @@ import { Card, CardTitle, StatCard } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { getOverviewStatCards } from './overviewStatCards'
+import { getOverviewPanel } from './overviewPanel'
 import { MemoryTab, UsageTab } from './overview'
 import { useProvider } from '../providers'
 import type { NormalizedUsage } from '../providers'
@@ -170,6 +171,11 @@ export default function OverviewPage() {
     return <DrillIn title={i18nT('pages.overviewPage.usage')} onBack={() => setView(null)}><UsageTab /></DrillIn>
   }
 
+  // Resolved once per render, and bound to a capitalized local so JSX treats it
+  // as a component rather than an intrinsic element.
+  const overviewPanel = getOverviewPanel()
+  const OverviewPanelComp = overviewPanel?.component
+
   return (
     <>
       {/* Health hero. Status only — Overview edits no config, so it hosts no
@@ -220,6 +226,19 @@ export default function OverviewPage() {
         <UsageSummaryCard onOpen={() => setView('usage')} />
         <MemorySummaryCard onOpen={() => setView('memory')} />
       </div>
+
+      {/* Extension slot: the single downstream-owned panel for the region below
+          the summary cards. One surface, one owner — a second registration
+          fails loud at the seam rather than negotiating layout here. Absent in
+          the stock build, and isolated so a throwing panel takes only itself
+          down, not the whole Overview. */}
+      {overviewPanel && OverviewPanelComp ? (
+        <ErrorBoundary scope={`overview-panel:${overviewPanel.id}`} fallback={null}>
+          <div className="mt-6">
+            <OverviewPanelComp />
+          </div>
+        </ErrorBoundary>
+      ) : null}
     </>
   )
 }

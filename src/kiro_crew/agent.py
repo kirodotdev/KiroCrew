@@ -2264,7 +2264,7 @@ def _load_existing_config(
     """
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError, ValueError):
+    except (OSError, ValueError):
         config = None
     if not isinstance(config, dict):
         return build_agent_config(gated_off=gated_off), True
@@ -2591,7 +2591,7 @@ def migrate_agent_specs() -> int:
     for spec_path in sorted(kiro_agents_dir_path().glob("*.json")):
         try:
             data = json.loads(spec_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError, ValueError):
+        except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
@@ -2721,7 +2721,7 @@ def agent_spec_path(name: str) -> Path | None:
             continue
         try:
             data = _read_spec_capped(spec_path)
-        except (json.JSONDecodeError, OSError, ValueError):
+        except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
@@ -2794,7 +2794,7 @@ def reset_agent_model(name: str) -> tuple[Path, str]:
         )
     try:
         data = _read_spec_capped(spec_path)
-    except (json.JSONDecodeError, OSError, ValueError) as exc:
+    except (OSError, ValueError) as exc:
         raise FileNotFoundError(f"could not read agent spec {spec_path}: {exc}") from exc
     if not isinstance(data, dict):
         raise FileNotFoundError(f"agent spec {spec_path} is not readable as a JSON object")
@@ -3205,7 +3205,7 @@ def _durable_tool_aliases(path: Path) -> tuple[bool, object]:
         return (False, None)
     try:
         on_disk = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return (True, None)
     return (True, on_disk.get("toolAliases") if isinstance(on_disk, dict) else None)
 

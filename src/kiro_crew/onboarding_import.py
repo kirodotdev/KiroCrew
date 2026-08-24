@@ -1009,7 +1009,7 @@ def _read_json(
         return None
     try:
         return _parse_json5(text) if json5 else json.loads(text)
-    except (json.JSONDecodeError, ValueError, RecursionError):
+    except (ValueError, RecursionError):
         scan.diagnostic(category, "invalid_config")
         return None
 

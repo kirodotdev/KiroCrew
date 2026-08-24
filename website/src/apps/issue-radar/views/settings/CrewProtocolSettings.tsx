@@ -55,6 +55,7 @@ import {
   type CrewSettings, type CrewSettingsPatch, type CrewSettingsResponse, type RepoRef,
 } from '../../api'
 import { repoScopeKey } from '../../lib/links'
+import { useImeGuard } from '../../../../hooks/useImeGuard'
 
 /** The free-text fields. Both commit the same way — trim, refuse a blank, send
  *  one key — so they share one renderer and one branch in `commit`. */
@@ -84,6 +85,8 @@ export default function CrewProtocolSettings({
    *  tell a real edit from a no-op. */
   settings: CrewSettings | undefined
 }) {
+  // One instance covers every field render; the binding's focus/blur reset makes sharing safe.
+  const ime = useImeGuard()
   const { t } = useTranslation()
   const queryClient = useQueryClient()
   const scope = repoScopeKey(repoRef)
@@ -327,8 +330,7 @@ export default function CrewProtocolSettings({
             aria-invalid={message ? true : undefined}
             aria-describedby={message ? errorId : undefined}
             onChange={(e) => edit(field, e.target.value)}
-            onBlur={() => commit(field)}
-            onKeyDown={(e) => { if (e.key === 'Enter') commit(field) }}
+            {...ime.bindEnter({ onEnter: () => commit(field), onBlur: () => commit(field) })}
             disabled={!settings}
             className="max-w-[140px] flex-none"
             data-testid={testId}
@@ -364,8 +366,7 @@ export default function CrewProtocolSettings({
           aria-invalid={message ? true : undefined}
           aria-describedby={message ? errorId : undefined}
           onChange={(e) => edit(field, e.target.value)}
-          onBlur={() => commit(field)}
-          onKeyDown={(e) => { if (e.key === 'Enter') commit(field) }}
+          {...ime.bindEnter({ onEnter: () => commit(field), onBlur: () => commit(field) })}
           disabled={!settings}
           className={`w-full${mono ? ' font-mono' : ''}`}
           data-testid={testId}

@@ -138,9 +138,8 @@ def service_environment(home: str) -> "dict[str, str]":
         env["KIROCREW_KIRO_BIN"] = os.path.abspath(kiro_bin)
     # KIROCREW_PORT is the ONLY input DASHBOARD_PORT reads, so a service that
     # cannot carry it can only ever bind the default 5476 — broken by
-    # construction on a host where that port is already taken, which includes
-    # every host running Kiro Crew's own instance tunnel (it pins
-    # local_port == remote_port). Propagated the same way KIROCREW_KIRO_BIN is:
+    # construction on a host where that port is already taken. Propagated the
+    # same way KIROCREW_KIRO_BIN is:
     # captured from the installer's environment, so
     # `KIROCREW_PORT=5477 kirocrew service install` bakes 5477 into the unit.
     #

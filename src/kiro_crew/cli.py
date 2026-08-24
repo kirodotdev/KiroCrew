@@ -1112,6 +1112,15 @@ Examples:
         ),
     )
     setup_parser.add_argument(
+        "--whatsapp",
+        action="store_true",
+        help=(
+            "Also run the guided WhatsApp setup: report the optional 'whatsapp' "
+            "extra and the pairing state, then enable the channel; ignored with "
+            "--agent-only"
+        ),
+    )
+    setup_parser.add_argument(
         "--electron-only",
         action="store_true",
         help="Only install the Kiro Crew desktop app (macOS), skip other setup",
@@ -1567,7 +1576,15 @@ Examples:
     pod_cleanup = pod_sub.add_parser("_cleanup")
     pod_cleanup.add_argument("name")
 
-    cli_help.add_command(sub, "update")
+    update_parser = cli_help.add_command(sub, "update")
+    update_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Discard local commits when a git checkout has diverged from its "
+            "upstream (git installs only)"
+        ),
+    )
 
     # stop
     stop_parser = cli_help.add_command(sub, "stop")
@@ -2337,6 +2354,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
             electron_only=getattr(args, "electron_only", False),
             clean=getattr(args, "clean", False),
             slack=getattr(args, "slack", False),
+            whatsapp=getattr(args, "whatsapp", False),
         )
     elif args.command == "doctor":
         _doctor(platform_boot_error=_platform_boot_error, bundle=getattr(args, "bundle", False))
@@ -2427,7 +2445,7 @@ The dashboard port is set with the KIROCREW_PORT env var, not a config key.
     elif args.command == "update":
         from kiro_crew.cli_server import _update
 
-        _update()
+        _update(force=args.force)
     elif args.command == "stop":
         from kiro_crew.cli_server import _stop
 

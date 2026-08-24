@@ -756,6 +756,51 @@ class TestStateFilePermissions:
             _save_state(TipsState())
             assert (st_file.stat().st_mode & 0o777) == 0o600
 
+    def test_lockdown_precedes_content(self, tmp_path: Path, monkeypatch) -> None:
+        """The memory-derived payload must never exist in a file that has not
+        been locked down yet.
+
+        On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
+        ``restrict_to_owner`` is the only protection; applying it after the
+        rename left the state readable under the inherited ACL for the write
+        window (issue #5285). Asserted by measuring the file's SIZE at lockdown
+        time — zero means no payload byte existed yet. A post-write stat passes
+        on the buggy ordering too, so it would not be a regression test.
+        """
+        from kiro_crew import platform_compat
+
+        sizes: list[int] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring_restrict(target):
+            sizes.append(Path(target).stat().st_size)
+            return real_restrict(target)
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            _save_state(TipsState(tips=[{"id": "x", "why": "references user projects"}]))
+
+        assert sizes, "premise: the lockdown ran at all"
+        assert sizes[0] == 0, (
+            f"the file already held payload bytes when it was locked down: {sizes[0]} bytes"
+        )
+
+    def test_a_failed_lockdown_still_persists_the_state(self, tmp_path: Path, monkeypatch) -> None:
+        """``restrict_on_error="warn"`` keeps this site's established policy: a
+        lockdown failure must not break tips persistence, but it must be
+        visible (the helper logs it)."""
+        from kiro_crew import platform_compat
+
+        def _refuse(_target):
+            raise OSError("read-only ACL store")
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _refuse)
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            _save_state(TipsState(dismissed_docs=["a.md"]))
+            st_file = tmp_path / "tips_state.json"
+            assert st_file.is_file(), "warn policy must keep the write"
+            assert json.loads(st_file.read_text())["dismissed_docs"] == ["a.md"]
+
 
 class TestTipFieldAllowlist:
     """Codex round-12 (HIGH): unknown/extra LLM fields must never survive parse.

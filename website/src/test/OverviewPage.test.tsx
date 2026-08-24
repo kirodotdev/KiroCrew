@@ -114,4 +114,22 @@ describe('OverviewPage — mission control', () => {
     renderWithProviders(<OverviewPage />, { store: statusStore() })
     expect(screen.queryByRole('button', { name: /Restart/i })).not.toBeInTheDocument()
   })
+
+  // The region below the summary cards is empty in the stock build, and the
+  // panel seam is only worth anything if the page actually READS it — a
+  // registry nothing renders is the failure this asserts against.
+  it('renders nothing in the lower panel region until a panel is registered', () => {
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.queryByTestId('edition-panel')).not.toBeInTheDocument()
+  })
+
+  it('renders a registered lower panel', async () => {
+    const { registerOverviewPanel } = await import('../pages/overviewPanel')
+    registerOverviewPanel({
+      id: 'test:lower-panel',
+      component: () => <div data-testid="edition-panel">registered</div>,
+    })
+    renderWithProviders(<OverviewPage />, { store: statusStore() })
+    expect(screen.getByTestId('edition-panel')).toBeInTheDocument()
+  })
 })

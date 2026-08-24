@@ -17,6 +17,7 @@ import {
   useCallback,
   type ReactNode,
 } from 'react'
+import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -407,6 +408,11 @@ function createScopedApi(allowedPaths: string[], appName: string): AppApi {
     const res = await fetch(safePath, init)
     if (!res.ok) {
       const text = await res.text().catch(() => res.statusText)
+      // A stale pre-owner session denial raises the dashboard's re-auth prompt
+      // (installed by api/client); in a document without it — the vendored
+      // iframe copy of this SDK — detection is a no-op and the throw below is
+      // unchanged either way.
+      noteStaleOwnerResponse(res.status, text)
       throw new Error(`API ${res.status}: ${text}`)
     }
     // An empty-body response is not JSON — res.json() would throw a SyntaxError

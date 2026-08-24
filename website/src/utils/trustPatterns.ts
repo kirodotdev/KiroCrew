@@ -54,9 +54,10 @@ export function baseCommandLabel(baseCommand: string): string {
  * Keeping the tail also matters on touch, where the `title` tooltip callers
  * attach never fires, so the label is the whole basis for an exact-string grant.
  *
- * Must stay byte-identical to the mochi copy in
- * `website/src/apps/mochi/src/shared/trustPatterns.ts` — a divergent budget OR a
- * divergent algorithm is this same defect in a new place.
+ * This is the ONLY implementation. Every surface (the dashboard's TrustDropdown,
+ * mochi's approval card via its `src/shared/trustPatterns.ts` re-export) imports
+ * it from here — a second copy is how a budget or algorithm change lands on one
+ * surface and not the other, which is this same defect in a new place.
  */
 
 /** Pull a head cut back off a lone high surrogate, so slicing never emits half a
@@ -72,7 +73,12 @@ function snapTailOffSurrogate(cmd: string, start: number): number {
   return code >= 0xdc00 && code <= 0xdfff ? start + 1 : start
 }
 
-export function truncateCommandLabel(cmd: string, max = 64): string {
+// The 256 ceiling is deliberate: label containers on both surfaces wrap or
+// width-cap, so truncation no longer earns layout — it only guards the menu
+// against pathological commands (a base64 blob, a megabyte one-liner) blowing
+// out the popup. Truncation is KEPT for that reason; ordinary long commands
+// (a `gh api …/contents/` path is ~100 chars) now render in full.
+export function truncateCommandLabel(cmd: string, max = 256): string {
   if (cmd.length <= max) return cmd
   // One char of the budget goes to the ellipsis; the tail gets a third of the
   // rest, which is enough for a filename plus a short flag without starving the

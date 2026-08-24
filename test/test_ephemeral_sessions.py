@@ -30,7 +30,14 @@ def _make_state(tmp_path, **kwargs):
     state = DashboardState(
         sessions=sessions,
         crons=MagicMock(list_jobs=MagicMock(return_value=[]), status=MagicMock(return_value={})),
-        lessons=MagicMock(load_all=MagicMock(return_value=[])),
+        # ``save_or_enrich`` returns one of inserted / enriched / unchanged, and the
+        # lessons route echoes that word in its response body -- so the mock has to
+        # answer with a real one rather than a MagicMock, which is not serializable.
+        # Same fixture shape as ``test_api_input_validation.py``.
+        lessons=MagicMock(
+            load_all=MagicMock(return_value=[]),
+            save_or_enrich=MagicMock(return_value="inserted"),
+        ),
         start_time=0.0,
         conversation_log=ConversationLog(base_dir=tmp_path),
         **kwargs,

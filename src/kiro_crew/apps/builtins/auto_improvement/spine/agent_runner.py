@@ -43,6 +43,7 @@ from kiro_crew.config import KiroCrewConfig
 from kiro_crew.hooks import TOOL_DENY, HookManager, hooks_config_from_config_dict
 from kiro_crew.platform_compat import SIGKILL, kill_process_tree
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 from .git_safety import GIT_SAFE_CONFIG, require_pinned
 
@@ -1788,7 +1789,7 @@ def author_bug_fix(
     st = subprocess.run(
         ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, "status", "--porcelain"],
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
     )
     if not st.stdout.strip():
         return False
@@ -1942,6 +1943,6 @@ def author_perf_fix(
     st = subprocess.run(
         ["git", "-C", str(worktree), *_GIT_SAFE_CONFIG, "status", "--porcelain"],
         capture_output=True,
-        text=True,
+        **UTF8_TEXT,
     )
     return bool(st.stdout.strip())

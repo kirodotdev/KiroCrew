@@ -5,9 +5,11 @@ import { api, type WeixinConfigSave } from '../../api/client'
 import { WeixinLogo } from '../../components/WeixinLogo'
 import SimpleSelect from '../../components/SimpleSelect'
 import { SettingsInput, SettingsToggle } from '../../components/settings'
+import { useChannelFolderSave } from '../../hooks/useChannelFolderSave'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+import { useImeGuard } from '../../hooks/useImeGuard'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "WeChat"
 const SETUP_GUIDE =
@@ -17,10 +19,6 @@ const SETUP_GUIDE =
 const POLL_MS = 1500
 /** Give up on an unscanned QR after this long (Tencent expires them anyway). */
 const QR_TTL_MS = 5 * 60 * 1000
-/** How long the folder-name "Saved" confirmation stays up — the same duration
- *  the explicit-save channel panels show theirs, so the affordance reads as one
- *  behavior across Settings. */
-const SAVED_MS = 6000
 
 type Phase = 'idle' | 'starting' | 'waiting' | 'scanned' | 'confirmed' | 'expired' | 'error'
 
@@ -33,6 +31,7 @@ type Phase = 'idle' | 'starting' | 'waiting' | 'scanned' | 'confirmed' | 'expire
  * the bot credential itself.
  */
 export function WeixinPanel() {
+  const ime = useImeGuard()
   const qc = useQueryClient()
   const { data, isError } = useQuery({
     queryKey: ['weixin-config'],
@@ -45,41 +44,6 @@ export function WeixinPanel() {
   const [errMsg, setErrMsg] = useState('')
   const [sessionId, setSessionId] = useState('')
   const deadlineRef = useRef(0)
-  // The last folder name the SERVER accepted, kept apart from the editable draft
-  // below because the two have different truth conditions: a draft may hold a
-  // value the server rejected (that text is deliberately preserved so the user
-  // can correct it), while re-enabling the setting must persist a name that is
-  // known good. Re-enabling therefore reads THIS, never the draft.
-  const acceptedName = useRef('')
-  // A folder NAME must not fire a save per keystroke on a panel that saves on
-  // change, so it is held locally and committed on blur / Enter.
-  const [folderName, setFolderName] = useState('')
-  useEffect(() => {
-    // Tracked only while the server HAS a name: switching the setting off
-    // persists "", and treating that as the accepted name would discard a custom
-    // folder on every off/on round trip.
-    if (data?.session_folder) {
-      acceptedName.current = data.session_folder
-      setFolderName(data.session_folder)
-    }
-  }, [data?.session_folder])
-  // Whether the folder field is showing. Distinct from "a name is saved": the
-  // toggle reveals the field without persisting anything, so this cannot be
-  // derived from the server value alone. Re-seeded from the server so an
-  // external edit (or a save that cleared the name) is reflected.
-  const [folderOn, setFolderOn] = useState(false)
-  useEffect(() => {
-    setFolderOn(!!data?.session_folder)
-  }, [data?.session_folder])
-  const [saveError, setSaveError] = useState('')
-  // Transient confirmation that a folder-NAME commit landed. This panel has no
-  // Save button, so without it a rename (blur / Enter) succeeds invisibly — the
-  // explicit-save panels get the same feedback from their "Saved." check. Scoped
-  // to the name field only: the toggle already confirms itself by flipping.
-  const [folderSaved, setFolderSaved] = useState(false)
-  const folderSavedTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => () => clearTimeout(folderSavedTimer.current), [])
-
   // Server state goes through React Query, including the QR scan poll: the
   // status endpoint is polled via refetchInterval while a login session is open
   // and stops as soon as the flow reaches a terminal phase, so there is no
@@ -181,66 +145,25 @@ export function WeixinPanel() {
   // error nor paint "Saved." next to it — both would assert the failed draft
   // was stored.
   //
-  // Only folder-bearing patches advance the sequence. Clicking any other
-  // control is what BLURS the name field, so "rename, then click the DM-policy
-  // picker" lands both saves in one gesture — if that click's save took the
-  // ticket, the rename's rejection would always arrive superseded and the
-  // field would silently keep a name the server refused. An orthogonal save's
-  // own feedback is never stale by this measure, so it bypasses the check.
-  const saveSeq = useRef(0)
-  // Which control owns the error currently on screen. The success-path clear
-  // must be ownership-aware: the rename's rejection races the orthogonal
-  // control's own save (two concurrent requests, no ordering guarantee), and
-  // an unconditional clear lets whichever success lands last erase a folder
-  // rejection it has no claim over. A folder save may always clear (it owns
-  // the slot); an orthogonal success may clear only an error it could have
-  // produced.
-  const folderError = useRef(false)
-  const save = (
-    patch: Partial<WeixinConfigSave>,
-    onRevert?: () => void,
-    onSaved?: () => void,
-  ) => {
-    const touchesFolder = 'session_folder' in patch
-    const seq = touchesFolder ? ++saveSeq.current : saveSeq.current
-    const latest = () => !touchesFolder || seq === saveSeq.current
-    void saveConfig
-      .mutateAsync(patch)
-      .then(() => {
-        // A committed save is the second authority on what the server holds, and
-        // it must be recorded here rather than left to the refetch: the query
-        // does not retry, so a refetch that fails leaves `data` stale, the seed
-        // effect never fires, and a later off/on would persist the superseded
-        // name over a rename the server had already accepted.
-        //
-        // An empty value is skipped on purpose — "" is how the backend encodes
-        // the setting being OFF, not a folder name, and forgetting the name at
-        // that point is exactly the loss `acceptedName` exists to prevent.
-        // Recorded even for a superseded call: any name the server accepted is a
-        // legitimate known-good fallback for re-enabling.
-        const next = patch.session_folder
-        if (typeof next === 'string' && next) acceptedName.current = next
-        if (!latest()) return
-        if (touchesFolder || !folderError.current) {
-          setSaveError('')
-          folderError.current = false
-        }
-        onSaved?.()
-      })
-      .catch((e: unknown) => {
-        if (latest()) {
-          // Without this the folder-name validation (rejects "/", "\", control
-          // characters, over-long names) rejects the value server-side while the
-          // input keeps the typed text and the user is told nothing.
-          setSaveError(e instanceof Error && e.message ? e.message : String(e))
-          folderError.current = touchesFolder
-          // A "Saved" check from an earlier commit must not sit next to a fresh
-          // error — the pair reads as the failed value having been saved.
-          setFolderSaved(false)
-        }
-        onRevert?.()
-      })
-  }
+  // Folder field + save sequencing live in a shared hook: WeChat's and
+  // WhatsApp's panels are the two QR-paired channels and carried
+  // byte-identical copies of this. See useChannelFolderSave for the three
+  // invariants (accepted-vs-draft name, folder-only sequencing, and
+  // ownership-aware error clearing).
+  const {
+    folderOn,
+    folderName,
+    setFolderName,
+    folderSaved,
+    saveError,
+    toggleFolder,
+    commitFolderName,
+    save,
+  } = useChannelFolderSave<WeixinConfigSave>({
+    serverFolder: data?.session_folder,
+    defaultName: CHANNEL_NAME,
+    mutate: patch => saveConfig.mutateAsync(patch),
+  })
 
   const connected = !!data?.connected
   const credentialSet = !!data?.credential_set
@@ -442,25 +365,7 @@ export function WeixinPanel() {
           description={i18nT('pages.settings.botChannelPanel.file_sessions_in_folder_desc', { channel: CHANNEL_NAME })}
           checked={folderOn}
           disabled={readOnly}
-          onChange={on => {
-            setFolderOn(on)
-            // A toggle supersedes any in-flight rename (its own save() call
-            // advances the sequence); clearing the flag here keeps a
-            // still-armed "Saved." from surviving the field's unmount and
-            // repainting on the next turn-on — a false confirmation, since the
-            // last completed write by then is the off-patch that cleared the
-            // name.
-            clearTimeout(folderSavedTimer.current)
-            setFolderSaved(false)
-            // Enabling persists the last accepted name — never the draft, which
-            // can hold a value the server rejected. Reusing a rejected draft
-            // makes every enable attempt fail while the field it lives in is
-            // hidden, leaving no way to correct it. Resetting the draft to the
-            // same value keeps the revealed field showing what was persisted.
-            const next = on ? acceptedName.current || CHANNEL_NAME : ''
-            if (on) setFolderName(next)
-            save({ session_folder: next }, () => setFolderOn(!!data?.session_folder))
-          }}
+          onChange={toggleFolder}
         />
         {folderOn && (
           <div className="mt-4">
@@ -471,15 +376,14 @@ export function WeixinPanel() {
               disabled={readOnly}
               placeholder={CHANNEL_NAME}
               onChange={setFolderName}
-              onBlur={() =>
-                save({ session_folder: folderName.trim() || CHANNEL_NAME }, undefined, () => {
-                  clearTimeout(folderSavedTimer.current)
-                  setFolderSaved(true)
-                  folderSavedTimer.current = setTimeout(() => setFolderSaved(false), SAVED_MS)
-                })
-              }
+              {...ime.bindComposition({
+                onBlur: commitFolderName,
+              })}
               onKeyDown={e => {
-                if (e.key === 'Enter') e.currentTarget.blur()
+                if (e.key !== 'Enter') return
+                // Early-return BEFORE the blur: a committing IME Enter must not commit.
+                if (ime.isComposing(e)) return
+                e.currentTarget.blur()
               }}
             />
             {folderSaved && (

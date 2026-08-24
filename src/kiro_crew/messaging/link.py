@@ -52,6 +52,7 @@ CHANNEL_SESSION_NAMESPACES: tuple[str, ...] = (
     "teams",
     "weixin",
     "imessage",
+    "feishu",
     "unified",
 )
 
@@ -508,6 +509,63 @@ def release_conversation_location(
     if cleared == 1:
         return "✅ Unlinked.", swept
     return "This conversation wasn't linked.", swept
+
+
+def rebind_conversation_location(
+    sessions: Any,
+    *,
+    key: str,
+    location: ChannelLink,
+    unlink_command: str,
+) -> str:
+    """Re-bind a conversation as its own mirror LOCATION and shape the link reply.
+
+    The in-channel ``/link``, and the exact counterpart of
+    :func:`release_conversation_location`: that one frees the location and returns
+    the unlink reply, this one claims it and returns the link reply. Mirroring is
+    automatic (:func:`bind_origin_mirror` re-asserts it on every turn), so this is
+    the WITHDRAWAL of a previous unlink rather than the only way to turn it on --
+    which makes clearing the opt-out the load-bearing half, since rebinding
+    without it is undone by the next automatic bind check.
+
+    *location* must be the channel's single definition of "this conversation", the
+    same value handed to :func:`bind_origin_mirror` and
+    :func:`release_conversation_location`, because the release matches an occupied
+    location by VALUE. *unlink_command* is how the channel spells its own unlink
+    in chat (``/unlink``, ``` `!unlink` ```), the only per-channel part of the
+    reply.
+
+    One write for the whole sequence: each of these mutations would otherwise
+    rewrite the entire session map, stalling the event loop three times for what
+    is one user-visible action.
+
+    **The claim goes FIRST inside the batch.** ``batched_save`` writes on the way
+    out even when the block raises, so a refusal raised after the opt-out
+    withdrawal would PERSIST that withdrawal for a link that never happened --
+    silently turning mirroring back on. ``set_mirror_link`` refuses before it
+    mutates anything, so ordering it first leaves the batch clean and nothing is
+    written.
+
+    Raises ``ConversationOwnershipConflict`` (by that type, from
+    ``session_map``) when an inbound-committed occupant holds the location. It is
+    deliberately NOT caught here: a channel whose transport declares
+    ``supports_session_resume`` has a conversation-specific instruction to give
+    the user, and a channel that cannot reach the state should not carry a
+    handler for it.
+    """
+    with sessions.batched_save():
+        sessions.set_mirror_link(key, location, reason=UNBIND_REASON_ORIGIN_REBIND)
+        sessions.set_mirror_opt_out(key, False)
+        # Drop any pre-unification row so a stale binding cannot outlive the
+        # rebind (reads prefer the channel key, but a leftover row would still
+        # answer a clear).
+        sessions.clear_mirror_link(
+            legacy_dashboard_mirror_key(key), reason=UNBIND_REASON_ORIGIN_REBIND
+        )
+    return (
+        "✅ Linked. Replies from the dashboard for this conversation will also "
+        f"show up here. Send {unlink_command} to stop."
+    )
 
 
 def _is_unrouted_slack_placeholder(link: ChannelLink) -> bool:

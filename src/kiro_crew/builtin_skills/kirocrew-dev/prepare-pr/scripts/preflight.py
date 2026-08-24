@@ -26,7 +26,7 @@ def run(args):
     Never raises - a missing executable is reported as rc 127.
     """
     try:
-        p = subprocess.run(args, capture_output=True, text=True, errors="replace")
+        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)

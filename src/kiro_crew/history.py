@@ -3993,7 +3993,7 @@ class ConversationLog:
                     continue
                 try:
                     data = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
                 if not isinstance(data, dict) or data.get("_type") == "metadata":
                     continue
@@ -4134,7 +4134,7 @@ class ConversationLog:
                     for _, line in zip(range(5), f):
                         try:
                             d = json.loads(line.strip())
-                        except (json.JSONDecodeError, ValueError):
+                        except ValueError:
                             continue
                         if d.get("_type") == "metadata" and is_incognito_transcript(
                             d.get("memory_mode")
@@ -5485,7 +5485,7 @@ class ConversationLog:
                     continue
                 try:
                     normalized = json.dumps(json.loads(ln), sort_keys=True)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     dropped.append(ln)  # corrupted line → archive it
                     continue
                 if normalized not in kept_serialized:

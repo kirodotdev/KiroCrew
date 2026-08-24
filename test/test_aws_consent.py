@@ -150,6 +150,139 @@ class TestGrantIsOnTheKeystoneFloor:
         mode = stat.S_IMODE(os.stat(aws_consent_path()).st_mode)
         assert mode == 0o600
 
+    def test_write_lockdown_precedes_content(self, home, monkeypatch):
+        """The authorization record must never exist in a file that has not
+        been locked down yet.
+
+        On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
+        ``restrict_to_owner`` is the only protection; applying it after the
+        rename left the record readable under the inherited ACL for the write
+        window (issue #5285). Asserted by measuring the file's SIZE at lockdown
+        time — zero means no payload byte existed yet. A post-write stat passes
+        on the buggy ordering too, so it would not be a regression test.
+        """
+        from kiro_crew import platform_compat
+
+        sizes: list[int] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring_restrict(target):
+            sizes.append(os.stat(target).st_size)
+            return real_restrict(target)
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+
+        _grant()
+
+        assert sizes, "premise: the lockdown ran at all"
+        assert (
+            sizes[0] == 0
+        ), f"the file already held payload bytes when it was locked down: {sizes[0]} bytes"
+
+    def test_sidecar_preservation_lockdown_precedes_content(self, home, monkeypatch):
+        """The corrupt-store sidecar carries whatever the old store held, so its
+        write gets the same lockdown-before-content ordering (issue #5285)."""
+        from kiro_crew import platform_compat
+        from kiro_crew.config.loader import aws_consent_path
+
+        aws_consent_path().write_text("not json{", encoding="utf-8")
+        sizes: list[int] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring_restrict(target):
+            sizes.append(os.stat(target).st_size)
+            return real_restrict(target)
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _measuring_restrict)
+
+        _grant()
+
+        # One lockdown for the preserved sidecar, then one for the new store,
+        # in that order — both applied while their file was still empty. Later
+        # calls belong to the SEL audit trail ``record_grant`` appends to (an
+        # already-converted, out-of-scope consumer), so only the first two are
+        # this site's.
+        assert len(sizes) >= 2, f"expected sidecar + store lockdowns: {sizes}"
+        assert sizes[:2] == [
+            0,
+            0,
+        ], f"a file already held payload bytes when it was locked down: {sizes[:2]}"
+
+    def test_a_failed_lockdown_refuses_and_leaves_no_store(self, home, monkeypatch):
+        """The fail-loud policy survives the conversion: a record that cannot be
+        locked down is refused (the OSError propagates), and — starting from an
+        empty home — no consent store at ANY permission exists afterwards, which
+        the read side treats as "no consent"."""
+        from kiro_crew import platform_compat
+        from kiro_crew.config.loader import aws_consent_path
+
+        def _refuse(_target):
+            raise OSError("cannot resolve the invoking user's SID")
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _refuse)
+
+        with pytest.raises(OSError):
+            _grant()
+
+        assert not aws_consent_path().exists(), "an unprotectable store was left behind"
+        assert aws_consent.read_grant(aws_consent.SERVICE_POLLY) is None
+
+    def test_a_failed_lockdown_preserves_the_previous_store(self, home, monkeypatch):
+        """A failed NEW write must not destroy the PREVIOUS, healthy store.
+
+        Every failure inside ``atomic_write`` happens before the rename, so the
+        final path still holds the last successfully written (and locked-down)
+        record. Both pre-push reviews flagged the alternative — an unlink on any
+        OSError — as data loss: one transient failure would have wiped every
+        recorded authorization. The empty-home test above cannot see that
+        destruction, so this variant seeds a real grant first.
+        """
+        from kiro_crew import platform_compat
+        from kiro_crew.config.loader import aws_consent_path
+
+        _grant()  # a healthy, locked-down store exists
+        before = aws_consent_path().read_bytes()
+
+        def _refuse(_target):
+            raise OSError("cannot resolve the invoking user's SID")
+
+        monkeypatch.setattr(platform_compat, "restrict_to_owner", _refuse)
+
+        with pytest.raises(OSError):
+            _grant(aws_consent.SERVICE_TRANSCRIBE)
+
+        assert aws_consent_path().read_bytes() == before, "the previous store was altered"
+        assert (
+            aws_consent.read_grant(aws_consent.SERVICE_POLLY) is not None
+        ), "a failed new grant destroyed the previously recorded authorization"
+
+    def test_a_failed_payload_write_preserves_the_previous_store(self, home, monkeypatch):
+        """Same property for an ordinary write failure (disk full while creating
+        the temp file), which never even reaches the lockdown: the OSError
+        propagates and the previous store survives byte-identical."""
+        import tempfile
+
+        from kiro_crew.config.loader import aws_consent_path
+
+        _grant()  # a healthy, locked-down store exists
+        before = aws_consent_path().read_bytes()
+
+        def _no_space(*_a, **_kw):
+            raise OSError("no space left on device")
+
+        monkeypatch.setattr(tempfile, "mkstemp", _no_space)
+
+        with pytest.raises(OSError):
+            _grant(aws_consent.SERVICE_TRANSCRIBE)
+
+        # No undo needed: the assertions below only READ (Path.read_bytes /
+        # read_grant), which never calls tempfile.mkstemp — and undo would also
+        # revert the home fixture's KIROCREW_HOME (same monkeypatch instance).
+        assert aws_consent_path().read_bytes() == before, "the previous store was altered"
+        assert (
+            aws_consent.read_grant(aws_consent.SERVICE_POLLY) is not None
+        ), "a transient write failure destroyed the previously recorded authorization"
+
 
 class TestGate:
     def test_no_grant_refuses(self, home):

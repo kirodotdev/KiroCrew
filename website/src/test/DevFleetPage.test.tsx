@@ -1729,3 +1729,125 @@ describe('DevFleetPage restart handshake', () => {
     }
   }, 12000)
 })
+
+// ─── Issue #5294: synchronous per-worktree in-flight guard ────────────────────
+// The Provision button's busy state lives in React prov[] state.  setState is
+// async: the button only becomes disabled after the next render commit.  A rapid
+// double-click fires BOTH onClick handlers in the same render turn, so the second
+// click sees prov.status===undefined (unchanged) and fires a second POST.
+//
+// The fix: provInFlightRef is checked and set SYNCHRONOUSLY before the first
+// await, so the second invocation is blocked regardless of React render timing.
+//
+// These tests verify the invariants at the component level by invoking the
+// handler twice in one render turn (fireEvent × 2 with no await between them).
+describe('provision singleflight guard (issue #5294)', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  const FLEET_UNPROV = {
+    worktrees: [
+      { name: 'main', is_main: true, running: false, has_dist: true, behind: 0 },
+      { name: 'unprov', is_main: false, running: false, has_dist: false, behind: 0 },
+    ],
+  }
+
+  it('regression: only one POST is sent for two rapid clicks (proves guard works)', async () => {
+    // Two fireEvent.click calls with no render between them (same render turn)
+    // simulate the rapid double-click scenario described in issue #5294.
+    // The synchronous guard in provInFlightRef blocks the second invocation
+    // before the first async handler's `await` returns — only ONE POST reaches
+    // the backend regardless of how fast the user clicks.
+    // IMPORTANT: this test proves the fix is effective; see the comment in the
+    // production code for why React setState alone cannot block the second click.
+    let provisionPosts = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_UNPROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) {
+        provisionPosts++
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-sf-' + provisionPosts }), { status: 200 }))
+      }
+      // run poll stays running forever so the first provision is still in-flight
+      if (u.includes('/run?id=')) return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: [] }), { status: 200 }))
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    const btn = screen.getByText('Provision')
+    // Rapid double-click: both clicks in the same render turn (no await between).
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+    // Wait for async work to settle.
+    await waitFor(() => expect(provisionPosts).toBeGreaterThan(0), { timeout: 4000 })
+    // The synchronous guard blocks the second click — exactly one POST sent.
+    expect(provisionPosts).toBe(1)
+  }, 10000)
+
+  it('guard is released after a failure so the user can retry provisioning', async () => {
+    // After a failed provision the user dismisses the error and clicks Provision
+    // again.  The guard must be cleared in the finally block so this retry can
+    // proceed rather than being silently blocked.
+    let posts = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) return Promise.resolve(new Response(JSON.stringify(FLEET_UNPROV), { status: 200 }))
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) {
+        posts++
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-retry-' + posts }), { status: 200 }))
+      }
+      if (u.includes('/run?id=run-retry-1')) {
+        // First run fails immediately.
+        return Promise.resolve(new Response(JSON.stringify({ status: 'done', exit_code: 1, output: ['npm ERR! failed'] }), { status: 200 }))
+      }
+      if (u.includes('/run?id=run-retry-2')) {
+        // Second run stays running (we only care that the POST went out).
+        return Promise.resolve(new Response(JSON.stringify({ status: 'running', output: [] }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // First click — provision fails.
+    fireEvent.click(screen.getByText('Provision'))
+    await waitFor(() => expect(screen.getByLabelText('Dismiss provision status')).toBeInTheDocument(), { timeout: 6000 })
+    // Dismiss the failure stepper.
+    fireEvent.click(screen.getByLabelText('Dismiss provision status'))
+    await waitFor(() => expect(screen.getByText('Provision')).toBeInTheDocument(), { timeout: 3000 })
+    // Retry — must succeed (guard was released in finally).
+    fireEvent.click(screen.getByText('Provision'))
+    await waitFor(() => expect(posts).toBe(2), { timeout: 4000 })
+  }, 20000)
+
+  it('guard cleans up cleanly after a successful provision so a subsequent provision can be started', async () => {
+    // After a successful run the stepper auto-clears and the row shows Provision
+    // again.  A click on that restored button must not be silently blocked by a
+    // stale guard entry.
+    let posts = 0
+    vi.spyOn(globalThis, 'fetch').mockImplementation((url) => {
+      const u = typeof url === 'string' ? url : (url as Request).url
+      if (u.includes('/fleet')) {
+        // After success, fleet still shows has_dist:false so Provision is re-shown.
+        return Promise.resolve(new Response(JSON.stringify(FLEET_UNPROV), { status: 200 }))
+      }
+      if (u.includes('/disk')) return Promise.resolve(new Response(JSON.stringify({ total_mb: 51200 }), { status: 200 }))
+      if (u.includes('/pod/provision')) {
+        posts++
+        return Promise.resolve(new Response(JSON.stringify({ ok: true, run_id: 'run-ok-' + posts }), { status: 200 }))
+      }
+      if (u.includes('/run?id=')) {
+        return Promise.resolve(new Response(JSON.stringify({ status: 'done', exit_code: 0, output: ['done'] }), { status: 200 }))
+      }
+      return Promise.resolve(new Response('{}', { status: 200 }))
+    })
+    renderWithProviders(<DevFleetPage />, { route: '/dev-fleet' })
+    await waitFor(() => expect(screen.getByText('unprov')).toBeInTheDocument())
+    // First provision succeeds and clears.
+    fireEvent.click(screen.getByText('Provision'))
+    await waitFor(() => expect(screen.getByText('Provision')).toBeInTheDocument(), { timeout: 6000 })
+    // Second provision — must not be silently swallowed.
+    fireEvent.click(screen.getByText('Provision'))
+    await waitFor(() => expect(posts).toBe(2), { timeout: 4000 })
+  }, 20000)
+})

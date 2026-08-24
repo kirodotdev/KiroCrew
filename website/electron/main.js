@@ -20,7 +20,8 @@ const { createTokenRetryHandler } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { exitImmersiveModes } = require("./blocking-prompt");
-const { hideToTray } = require("./hide-to-tray");
+const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
+const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
 const { createDisplayMediaHandler } = require("./display-media");
 const { applyFocusModeChrome } = require("./focus-chrome");
@@ -281,6 +282,9 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
+      // Relaunching the app is a request for the window back; it must win over
+      // a hide still deferred to the fullscreen exit (see hide-to-tray.js).
+      cancelPendingTrayHide(mainWindow);
       if (mainWindow.isMinimized()) mainWindow.restore();
       mainWindow.show();
       mainWindow.focus();
@@ -1451,8 +1455,40 @@ function setupWindowContents(win, backendUrl) {
     if (win.isDestroyed() || view.webContents.isDestroyed()) return;
     view.webContents.send("fullscreen-changed", win.isFullScreen());
   };
-  win.on("enter-full-screen", () => { updateViewBounds(); sendFullScreen(); });
-  win.on("leave-full-screen", () => { updateViewBounds(); sendFullScreen(); });
+  // Fullscreen transitions fire before the window finishes reflowing, so the
+  // synchronous updateViewBounds() in the handlers below can read a pre-reflow
+  // content rect — the same stale-getContentBounds hazard the did-finish-load
+  // settle pass below documents. Observed on Linux, where the in-window menu
+  // bar's ~28px is reclaimed only after `leave-full-screen`, leaving the view
+  // taller than the window and clipping bottom-anchored rows until some other
+  // resize. Keep the synchronous call (already correct where reflow is
+  // immediate) and follow it with bounded deferred recomputes so the settled
+  // bounds win: a quick pass for the common fast reflow and a late backstop
+  // matching the startup settle delay for slow window managers. Re-reading
+  // bounds on an already-correct window is a no-op, so this runs on every
+  // platform rather than behind a process.platform gate. updateViewBounds()
+  // itself no-ops on a destroyed window; the timers are also cleared on
+  // "closed" so nothing fires into a torn-down window.
+  let fullscreenSettleTimers = [];
+  const scheduleFullscreenSettle = () => {
+    for (const t of fullscreenSettleTimers) clearTimeout(t);
+    fullscreenSettleTimers = [250, 1500].map((ms) => setTimeout(updateViewBounds, ms));
+  };
+  win.on("closed", () => { for (const t of fullscreenSettleTimers) clearTimeout(t); });
+  win.on("enter-full-screen", () => { updateViewBounds(); sendFullScreen(); scheduleFullscreenSettle(); });
+  win.on("leave-full-screen", () => { updateViewBounds(); sendFullScreen(); scheduleFullscreenSettle(); });
+  // DOM fullscreen (an inline <video>'s fullscreen button, the media viewer) is
+  // a SEPARATE pair of events from the two above, raised on the WebContents
+  // rather than the window. Without this bridge the element goes :fullscreen
+  // inside a WebContentsView still clamped to the un-fullscreened window, so
+  // nothing visibly happens. `enter-full-screen` above then re-runs
+  // updateViewBounds() so the view grows into the new content rect.
+  //
+  // Parked on the window (same pattern as _mcBrowserPanels) because
+  // persistMainWindowState() must ask whether the CURRENT fullscreen is one the
+  // bridge raised: a video's fullscreen is not a window preference and must not
+  // be what a quit mid-playback relaunches into.
+  win._mcHtmlFullScreen = attachHtmlFullScreen({ win, webContents: view.webContents });
   // The initial updateViewBounds() above runs before win.show() and before the
   // dashboard finishes loading, so getContentBounds() can return a pre-layout
   // size — leaving the WebContentsView mis-sized (content overflows / gets cut
@@ -2081,7 +2117,13 @@ function syncLinuxMaximizeState(win, view) {
 // menu's Keep on Top toggle can trigger a save. No-op while mainWindow is
 // absent/destroyed (captureWindowState returns null).
 function persistMainWindowState() {
-  const s = captureWindowState(mainWindow);
+  const s = captureWindowState(mainWindow, {
+    // A fullscreen the DOM-fullscreen bridge raised for a `<video>` is the app's
+    // doing, not the user's preference, so it must never be the state we relaunch
+    // into after a quit or crash mid-playback. The bridge is the only thing that
+    // knows which transitions are its own.
+    transientFullScreen: mainWindow?._mcHtmlFullScreen?.raisedWindow() === true,
+  });
   if (s) store.set("windowState", s);
 }
 
@@ -2277,6 +2319,13 @@ function createWindow() {
 }
 
 function createTray() {
+  // A tray gesture asking for the window back must first disarm any hide that
+  // hideToTray() deferred to the fullscreen exit, or the show is undone moments
+  // later when the exit completes (see hide-to-tray.js CANCELLATION).
+  const showFromTray = () => {
+    cancelPendingTrayHide(mainWindow);
+    mainWindow?.show();
+  };
   // Nightly ships its own icon (night-sky variant) so the menu-bar presence
   // matches the Dock identity; app.name was set channel-aware at boot.
   const nightly = identityFamily(app.getVersion()) === "nightly";
@@ -2314,7 +2363,7 @@ function createTray() {
   // tabs were removed with the single-surface shell redesign).
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: `Show ${app.name}`, click: () => mainWindow?.show() },
+      { label: `Show ${app.name}`, click: showFromTray },
       { type: "separator" },
       { label: "New Connection Window…", click: () => openNewConnectionWindow() },
       { type: "separator" },
@@ -2323,7 +2372,7 @@ function createTray() {
       { label: "Quit", click: () => { isQuitting = true; app.quit(); } },
     ])
   );
-  tray.on("click", () => mainWindow?.show());
+  tray.on("click", showFromTray);
 }
 
 // ── Remote host settings ──
@@ -3145,6 +3194,9 @@ async function showLoadingThenConnect(win, backendUrl = BACKEND_URL) {
 
 async function openNewConnectionWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  // Reachable from the tray menu during the deferred fullscreen-exit hide; the
+  // pending hide would otherwise take the parent away from under the modal.
+  cancelPendingTrayHide(mainWindow);
   mainWindow.show();
 
   const css = await getModalCSS();
@@ -3444,6 +3496,9 @@ app.whenReady().then(async () => {
   const openSettingsPage = (tab) => {
     const win = focusedDashboardWindow();
     if (!win) return;
+    // The window may be mid deferred-hide (still visible, still focusable);
+    // opening settings on it is a request to keep it, not lose it 2s later.
+    cancelPendingTrayHide(win);
     if (win.isMinimized()) win.restore();
     win.show();
     win.focus();
@@ -3930,6 +3985,7 @@ app.whenReady().then(async () => {
         });
         n.on("click", () => {
           if (mainWindow && !mainWindow.isDestroyed()) {
+            cancelPendingTrayHide(mainWindow);
             if (mainWindow.isMinimized()) mainWindow.restore();
             mainWindow.show();
             mainWindow.focus();
@@ -4023,6 +4079,12 @@ app.whenReady().then(async () => {
   }
 
   app.on("activate", () => {
+    // An activate landing while hideToTray() is still waiting out the
+    // fullscreen-exit animation must win over the pending hide: the window is
+    // still visible at this point, so the isVisible() guard below would skip
+    // the show and the deferred hide would then take the window away — the
+    // user clicked the Dock icon and watched the window vanish.
+    cancelPendingTrayHide(mainWindow);
     if (!mainWindow?.isVisible()) mainWindow?.show();
   });
 });

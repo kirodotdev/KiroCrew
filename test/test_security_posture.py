@@ -592,6 +592,8 @@ class TestOmissionDetection:
             "telegram:1": "telegram",
             "wecom:1": "wecom",
             "weixin:1": "weixin",
+            "whatsapp:1": "whatsapp",
+            "feishu:1": "feishu",
             "webex:1": "webex",
             "teams:1": "teams",
             "imessage:1": "imessage",

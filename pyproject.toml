@@ -50,6 +50,16 @@ dev = [
     # than opt-in-by-accident -- is a separate, user-visible call and is
     # deliberately not made here.
     "jsonschema==4.26.0",
+    # Same shape as jsonschema above, and the same reason. PyJWT ships in the
+    # optional `teams` extra, which CI never installs, so `test_teams_client.py`'s
+    # module-level `pytest.importorskip("jwt")` silently skipped the WHOLE file --
+    # every test of the inbound Bot Framework token gate (signature, audience,
+    # issuer, expiry, the serviceUrl-claim binding, replay drop, in-flight
+    # shedding). That is the channel's entire trust boundary, and a skip scores as
+    # a pass, so the gate looked covered while nothing exercised it. Declared here
+    # so those tests actually run; the runtime dependency stays optional, because
+    # a user who does not enable Teams should not carry a crypto library.
+    "PyJWT[crypto]==2.13.0",
 ]
 
 [tool.black]
@@ -100,5 +110,12 @@ exclude = ['/_vendor/']
 # diskcache depending on invocation — suppress both spellings.
 module = ["kiro_crew._vendor.*", "llama_cpp", "llama_cpp.*", "diskcache"]
 ignore_errors = true
+follow_imports = "skip"
+
+[[tool.mypy.overrides]]
+# neonize is the optional [whatsapp] extra; CI runs mypy without it installed,
+# so its imports must resolve the same way (Any) on machines that DO have it.
+module = ["neonize", "neonize.*"]
+ignore_missing_imports = true
 follow_imports = "skip"
 

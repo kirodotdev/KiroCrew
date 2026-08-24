@@ -236,7 +236,6 @@ function QuestionCard({ questions, onSubmit, onDismiss, busy = false, onDraftCha
                     setSelections(prev => ({ ...prev, [qIdx]: new Set() }))
                   }}
                   {...ime.bindComposition()}
-                  onFocus={() => ime.reset()}
                   onKeyDown={e => {
                     if (e.key !== 'Enter') return
                     // Rule 1: single-line input; the readiness test stays outside.

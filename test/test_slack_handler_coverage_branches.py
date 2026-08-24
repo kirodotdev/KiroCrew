@@ -96,10 +96,10 @@ def _clean_state():
 
     def _reset() -> None:
         h._titled_threads.clear()
-        # The auto-title lock is a module global created inside whichever event
-        # loop ran first. Reusing one across loops deadlocks, so drop it and let
-        # each test's loop build its own.
-        h._auto_title_lock = None
+        # The auto-title lock is a module-global LoopBoundLock that rebinds per
+        # loop on its own (#4800); swap in a fresh one anyway so a permit held
+        # by a crashed test cannot leak into the next.
+        h._auto_title_lock = h.LoopBoundLock()
         h._thread_agents.clear()
         h._thread_projects.clear()
         h._hydrated_sessions.clear()

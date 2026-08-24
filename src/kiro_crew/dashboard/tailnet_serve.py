@@ -294,7 +294,7 @@ def serve_state(port: int) -> ServeState:
         )
     try:
         doc = json.loads(out or "")
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         # An empty document is what a node with no serve config returns, and that
         # is a genuine "nothing configured" rather than an unknown. Anything else
         # unparseable is unknown.

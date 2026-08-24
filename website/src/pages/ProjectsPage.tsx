@@ -18,6 +18,7 @@ import {
 } from './projectsLayout'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 // Module-level so the resize hook's memoised resolver isn't invalidated every render.
@@ -51,6 +52,7 @@ function TextInputPanel({ text, setText, rows, placeholder, accept, onUpload, on
 }
 
 export default function ProjectsPage() {
+  const ime = useImeGuard()
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
   const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -557,7 +559,13 @@ export default function ProjectsPage() {
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} onBlur={() => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); else if (e.key === 'Escape') setEditingName(false) }} />
+                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-none min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { api.renameTaskRun(selectedRun.task_id, v).then(load).catch(() => {}) }; setEditingName(false) } })} onKeyDown={e => {
+                  if (e.key === 'Enter') {
+                    // Early-return BEFORE the blur: a committing IME Enter must not commit.
+                    if (ime.isComposing(e)) return
+                    ;(e.target as HTMLInputElement).blur()
+                  } else if (e.key === 'Escape') setEditingName(false)
+                }} />
               ) : (
                 <span
                   role="button"

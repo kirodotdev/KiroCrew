@@ -165,7 +165,10 @@ all, so the spec is byte-for-byte unchanged there. Pinned by
 `test_computer_use_registration.py::TestDataHomePin`.
 
 **Session identity.** The shim resolves it with
-`mcp_core._resolve_session_key_strict()` — the env `KIROCREW_SESSION_KEY`, else
+`mcp_core._resolve_session_key_strict()` — the gateway-injected per-call caller
+block first (the shim advertises `kirocrew.caller-identity`, so gatewayd injects
+one whenever it can name the caller — the only source that holds on a pooled
+backend serving many sessions), else the env `KIROCREW_SESSION_KEY`, else
 `KIROCREW_HOST_PID` plus the HMAC sidecar signed with the keystone-protected
 `sel_hmac.key`. It is used for the audit record and for the live-view relay's
 attribution, **not** as an authorization input: an unresolved key does not refuse the
@@ -195,8 +198,13 @@ sessions observing the same window overwrote each other's element indices — an
 one's own `verify_fingerprint` still passed, because both trees describe the same
 window, so the wrong-target action had nothing reporting it. kiro-cli spawns one shim
 per session, so the shim's own pid separates the namespaces exactly as far as the
-sessions are genuinely separate. Read at call time rather than captured at import, so
-a forked child cannot inherit its parent's string and re-alias with it.
+sessions are genuinely separate — in the 1:1 shim topology. On a POOLED backend one
+process serves many sessions, so the pid separates only what the injected caller
+block does not already name: co-tenants gatewayd CAN name get real per-session keys,
+and the residual — two or more co-tenants it cannot name sharing one
+`unresolved:<pid>` namespace — is tracked as #5322. Read at call time rather than
+captured at import, so a forked child cannot inherit its parent's string and
+re-alias with it.
 
 The prefix is deliberate: this is a namespace separator, not attribution, and an audit
 reader must not mistake a pid for a resolved identity. And it is a namespacing fix

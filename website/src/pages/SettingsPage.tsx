@@ -24,6 +24,7 @@ import { ComputerUsePanel } from './settings/ComputerUsePanel'
 import { WebhooksPanel } from './settings/WebhooksPanel'
 import { PrivacyPanel } from './settings/PrivacyPanel'
 import { SecretsPanel } from './settings/SecretsPanel'
+import SettingsSearch from './settings/SettingsSearch'
 
 import { i18nT } from '../i18n/t'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
@@ -138,6 +139,7 @@ export default function SettingsPage() {
       // Keyed apart from the main window: an embedded pane has a different tab
       // roster (no Instances), so the two must not restore each other's tab.
       rememberKey={embedded ? 'settings-embedded' : 'settings'}
+      headerRight={<SettingsSearch />}
       footer={<span className="text-[12px] text-muted">{i18nT('pages.settingsPage.kirocrew_v')}{version}</span>}
     >
       {tab => <>

@@ -318,3 +318,94 @@ class TestCronAddPersistenceOwner:
         assert job.agent_id == ""
         assert job.command == ""
         assert job.script == ""
+
+
+class TestCronRemoveAudit:
+    """Single-job ``cron_remove`` must be SEL-audited like its neighbours.
+
+    ``cron.create`` / ``cron.update`` / ``cron.trigger`` and the plural
+    ``cron_remove_all`` all leave audit records; a single delete without one
+    makes a deliberate removal indistinguishable from data loss in the trail.
+    """
+
+    @pytest.fixture()
+    def sel_events(self, monkeypatch):
+        events: list[dict] = []
+
+        class _FakeSel:
+            def log_api_access(self, **kw):
+                events.append(kw)
+
+            def log_tool_invocation(self, **kw):
+                events.append(kw)
+
+        import kiro_crew.mcp_cron as mcp_cron_mod
+
+        monkeypatch.setattr(mcp_cron_mod, "sel", lambda: _FakeSel())
+        return events
+
+    def test_cron_remove_emits_sel_audit(self, monkeypatch, tmp_path, sel_events):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+
+        job_name = f"audit-rm-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner("cron_add", {"name": job_name, "message": "hello", "every": 120})
+        assert "Added job" in result
+
+        from kiro_crew.cron import CronService
+
+        jobs = [j for j in CronService(base_dir=tmp_path).list_jobs() if j.name == job_name]
+        assert len(jobs) == 1
+        jid = jobs[0].id
+
+        result = _call_tool_inner("cron_remove", {"job_id": jid})
+        assert result == f"Removed job: {jid}"
+
+        removes = [e for e in sel_events if e.get("operation") == "cron.remove"]
+        assert len(removes) == 1
+        assert removes[0]["caller"] == "mcp"
+        assert removes[0]["outcome"] == "allowed"
+        assert removes[0]["source"] == "mcp"
+        assert f"job_id={jid}" in removes[0]["resources"]
+
+    def test_cron_remove_missing_job_is_not_audited_as_removed(
+        self, monkeypatch, tmp_path, sel_events
+    ):
+        # An unknown id never reaches the store mutation: the ownership gate
+        # answers its anti-enumeration refusal first, so no cron.remove event
+        # (with any outcome) may claim a delete that did not happen.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+
+        result = _call_tool_inner("cron_remove", {"job_id": "no-such-job"})
+        assert "Removed job" not in result
+
+        removes = [e for e in sel_events if e.get("operation") == "cron.remove"]
+        assert not [e for e in removes if e.get("outcome") == "allowed"]
+
+    def test_cron_remove_succeeds_when_audit_raises(self, monkeypatch, tmp_path):
+        # The first sel() of a process constructs the log and can raise; the
+        # job is already removed by then, so the tool must still report the
+        # completed delete instead of surfacing an error.
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
+
+        job_name = f"audit-raise-{uuid.uuid4().hex[:8]}"
+        result = _call_tool_inner("cron_add", {"name": job_name, "message": "hello", "every": 120})
+        assert "Added job" in result
+
+        from kiro_crew.cron import CronService
+
+        jobs = [j for j in CronService(base_dir=tmp_path).list_jobs() if j.name == job_name]
+        assert len(jobs) == 1
+        jid = jobs[0].id
+
+        import kiro_crew.mcp_cron as mcp_cron_mod
+
+        def _raising_sel():
+            raise RuntimeError("SEL trust root unavailable")
+
+        monkeypatch.setattr(mcp_cron_mod, "sel", _raising_sel)
+        result = _call_tool_inner("cron_remove", {"job_id": jid})
+        assert result == f"Removed job: {jid}"
+        assert not [j for j in CronService(base_dir=tmp_path).list_jobs() if j.id == jid]

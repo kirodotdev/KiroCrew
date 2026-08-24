@@ -126,10 +126,8 @@ function EditInput({ initial, onCommit, onCancel }: {
         onKeyDown={e => {
           e.stopPropagation()
           if (e.key === 'Enter' && !e.shiftKey) {
-            // Rule 1: single-line input — decline the IME's committing Enter,
-            // nothing else. The commit's own emptiness check stays in commit().
-            if (ime.isComposing(e)) return
-            e.preventDefault(); commit()
+            // The commit's own emptiness check stays in commit().
+            if (ime.claimEnter(e)) commit()
           } else if (e.key === 'Escape') { e.preventDefault(); ime.reset(); cancel() }
         }}
         {...ime.bindComposition({ onBlur: commit })}

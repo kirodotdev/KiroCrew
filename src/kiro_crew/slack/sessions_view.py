@@ -199,7 +199,7 @@ def _collect_recent_sessions(
         for line in lines:
             try:
                 d = json.loads(line.strip())
-            except (ValueError, json.JSONDecodeError):
+            except ValueError:
                 continue
             if d.get("_type") == "metadata":
                 title = d.get("title") or title

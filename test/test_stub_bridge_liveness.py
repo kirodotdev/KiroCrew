@@ -142,7 +142,7 @@ async def test_slow_call_not_killed_when_pongs_arrive() -> None:
                 if isinstance(msg, dict) and msg.get("type") == _BRIDGE_PING_TYPE:
                     pong = json.dumps({"type": _BRIDGE_PONG_TYPE}) + "\n"
                     self._feed.feed_data(pong.encode())
-            except (json.JSONDecodeError, ValueError):
+            except ValueError:
                 pass
 
         async def drain(self) -> None:
@@ -351,7 +351,7 @@ def _safe_json_get_type(data: bytes) -> str:
         msg = json.loads(data)
         if isinstance(msg, dict):
             return msg.get("type", "")
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         pass
     return ""
 

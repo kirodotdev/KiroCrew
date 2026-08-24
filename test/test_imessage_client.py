@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -16,13 +17,21 @@ import pytest
 from kiro_crew.imessage import client as client_mod
 from kiro_crew.imessage.client import (
     DEDUPE_WINDOW,
+    ECHO_TTL_S,
+    ECHO_WINDOW,
     WATCH_BUFFER_LIMIT,
     IMessageClient,
+    _echo_key,
     normalize_handle,
     parse_inbound,
     redact_handle,
 )
 from kiro_crew.imessage.rpc import RpcError, RpcTransportError
+from kiro_crew.imessage.transport import IMessageTransport
+
+#: The handle every fixture message comes from, and the one the self-chat tests
+#: put on the allowlist -- in that case it is the user's OWN handle.
+OWNER = "+15551234567"
 
 #: A realistic bridge readiness snapshot for a DEFAULT install: the injected
 #: helper is absent (bridge.ready false) yet typing and read are still listed,
@@ -851,6 +860,431 @@ class TestLifecycle:
         await imc.close()
         await imc._on_notification("watch.overflow", {"resume_after_rowid": 5})
         assert imc._resubscribe_task is None
+
+
+class TestOwnEchoLedger:
+    """The self-chat guard of issue #5246.
+
+    In a self-chat the allow-listed handle is the identity the agent sends as, so
+    ``is_from_me`` is the only thing separating the user's words from the agent's
+    -- and the bridge writes it asynchronously (its 500ms watch debounce exists so
+    a correction can land first) and documents ``sender`` as empty for some
+    self-sent messages. These pin the one signal the client fully owns: a record
+    of what it sent.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_sent_body_coming_back_is_recognised_as_our_own(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        imc = await _client(tmp_path)
+        await imc.send("+1 (555) 123-4567", "on it")
+        # Same body, same handle written differently, and the platform calling it
+        # inbound -- which is exactly the shape that produced the loop.
+        echoed = parse_inbound(_message(guid="OTHER", text="on it", is_from_me=False))
+        assert echoed is not None
+        assert imc.is_own_echo(echoed) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_sent_guid_is_recognised_even_if_the_body_differs(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # `guid` is best-effort in the bridge's contract, so it is a second key
+        # rather than the mechanism -- but a guid this client sent can never
+        # legitimately arrive as user input, so it has no false positive.
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [{"ok": True, "id": 9, "guid": "SENT-GUID"}]
+        assert await imc.send(OWNER, "on it") == "SENT-GUID"
+        surprising = parse_inbound(_message(guid="SENT-GUID", text="not what we sent"))
+        assert surprising is not None
+        assert imc.is_own_echo(surprising) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_match_is_consumed_so_a_genuine_repeat_gets_through(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # Consume-once is what keeps the guard from swallowing a conversation:
+        # the echo is suppressed, and the user deliberately saying the same words
+        # afterwards is ordinary input.
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "on it")
+        echoed = parse_inbound(_message(guid="A", text="on it"))
+        repeat = parse_inbound(_message(guid="B", text="on it"))
+        assert echoed is not None and repeat is not None
+        assert imc.is_own_echo(echoed) is True
+        assert imc.is_own_echo(repeat) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_guid_match_does_not_leave_the_body_live(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # A sent message is recognisable by GUID and by body. While those were
+        # two independent entries, matching on the GUID left the body entry
+        # alive, and the user's genuine repeat of those words inside the TTL was
+        # then silently discarded -- no reply, no error (local GPT review of
+        # b19990c9). One record per send is what makes that unreachable.
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [{"ok": True, "id": 9, "guid": "SENT-GUID"}]
+        await imc.send(OWNER, "on it")
+        echoed = parse_inbound(_message(guid="SENT-GUID", text="on it"))
+        genuine = parse_inbound(_message(guid="LATER", text="on it"))
+        assert echoed is not None and genuine is not None
+        assert imc.is_own_echo(echoed) is True
+        assert imc.is_own_echo(genuine) is False, "the body alias outlived the GUID match"
+        assert imc._own_sends == []
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_body_match_does_not_leave_the_guid_live(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The mirror image, which the narrow fix for the above would have left
+        # open: consume on the body, and the GUID of that same send must go too.
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [{"ok": True, "id": 9, "guid": "SENT-GUID"}]
+        await imc.send(OWNER, "on it")
+        echoed = parse_inbound(_message(guid="", text="on it"))
+        assert echoed is not None
+        assert imc.is_own_echo(echoed) is True
+        assert imc._own_sends == []
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_definitively_rejected_send_leaves_no_record_behind(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # Rejected at validation, so nothing was delivered and nothing can echo.
+        # Keeping the record would have the undelivered body suppress a genuine
+        # message carrying those words for the rest of the TTL (local Opus
+        # review of b19990c9).
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [RpcError(-32602, "invalid params")]
+        with pytest.raises(RpcError):
+            await imc.send(OWNER, "on it")
+        assert imc._own_sends == []
+        undelivered = parse_inbound(_message(text="on it"))
+        assert undelivered is not None
+        assert imc.is_own_echo(undelivered) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_failure_keeps_the_guard_and_extends_it(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The opposite failure mode of the cleanup above, and the one that
+        # matters more (server GPT review of 20febaeb): the bridge documents
+        # -32001 as "may have completed or remains in flight", so the message may
+        # still be delivered and echo after this call failed. Dropping the record
+        # there reopens the loop.
+        #
+        # The clock advances INSIDE the call, which is what a call that times out
+        # actually does. The record is taken before the call, so by the time the
+        # failure is handled its original expiry has passed -- advancing the clock
+        # AROUND the call instead would make the refresh a no-op and this
+        # assertion vacuous, which is how the first version of this test passed
+        # against a mutation that deleted the refresh.
+        clock = [1000.0]
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock[0])
+        imc = await _client(tmp_path)
+
+        async def slow_failing_send(method: str, params: dict[str, Any], **_kw: Any) -> Any:
+            if method == "send":
+                clock[0] += ECHO_TTL_S + 5  # the call outlived the window
+                raise RpcError(
+                    -32001,
+                    "delivery uncertain",
+                    {"retry_safe": False, "disposition": "may_have_completed"},
+                )
+            return {"ok": True}
+
+        imc._call = slow_failing_send  # type: ignore[method-assign]
+        with pytest.raises(RpcError):
+            await imc.send(OWNER, "on it")
+        assert imc._own_sends != [], "an unproven failure must keep the guard"
+        # A late delivery, past the expiry the record was originally given.
+        late_echo = parse_inbound(_message(text="on it"))
+        assert late_echo is not None
+        assert imc.is_own_echo(late_echo) is True
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_or_dead_bridge_keeps_the_guard(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # A transport failure proves nothing about what the bridge did with a
+        # request already written to its stdin, so it is treated as delivered.
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [RpcTransportError("bridge stopped answering")]
+        with pytest.raises(RpcTransportError):
+            await imc.send(OWNER, "on it")
+        assert imc._own_sends != []
+        echoed = parse_inbound(_message(text="on it"))
+        assert echoed is not None
+        assert imc.is_own_echo(echoed) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_bridge_proven_not_started_send_is_forgotten(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The bridge's own disposition is the authority when it gives one.
+        imc = await _client(tmp_path)
+        peers[0].replies["send"] = [
+            RpcError(-32001, "not dispatched", {"retry_safe": True, "disposition": "not_started"})
+        ]
+        with pytest.raises(RpcError):
+            await imc.send(OWNER, "on it")
+        assert imc._own_sends == []
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_an_exact_repeat_inside_the_window_is_suppressed_on_purpose(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The accepted cost, pinned so it is not "fixed" by accident. In an
+        # ORDINARY chat the echo is dropped by is_from_me before the ledger is
+        # consulted, so the record lives its full TTL and a user who sends the
+        # agent's exact words back inside it is read as that echo.
+        #
+        # The obvious repair -- let the is_from_me copy consume the record -- is
+        # what must NOT be done: in a self-chat that copy may arrive alongside the
+        # unattributed echo, and spending the record on it reopens the loop. A
+        # bounded silent drop is the deliberate trade against an unbounded one.
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "on it")
+        attributed = parse_inbound(_message(text="on it", is_from_me=True))
+        assert attributed is not None
+        assert imc._own_sends != [], "the record must outlive the attributed copy"
+        repeat = parse_inbound(_message(text="on it"))
+        assert repeat is not None
+        assert imc.is_own_echo(repeat) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_slow_send_does_not_outlive_its_own_guard(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Third finding in this span, and the one the optional expiry exists for
+        # (local GPT review of 8091b0e9). `_call` waits up to 30s and the TTL is
+        # 30s, so with a pre-computed expiry a send that reached its timeout left
+        # a record already eligible for pruning at the moment its echo arrived --
+        # and the echo was answered, restoring the loop. An in-flight record has
+        # no expiry at all, so there is nothing to prune.
+        clock = [1000.0]
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock[0])
+        imc = await _client(tmp_path)
+        verdicts: list[bool] = []
+
+        async def slow_send(method: str, params: dict[str, Any], **_kw: Any) -> Any:
+            if method == "send":
+                # The call outlives the whole TTL, then the echo lands while it
+                # is still awaiting a result.
+                clock[0] += ECHO_TTL_S * 3
+                mid_flight = parse_inbound(_message(text="on it"))
+                assert mid_flight is not None
+                verdicts.append(imc.is_own_echo(mid_flight))
+            return {"ok": True}
+
+        imc._call = slow_send  # type: ignore[method-assign]
+        await imc.send(OWNER, "on it")
+        assert verdicts == [True], "the guard expired while its own send was in flight"
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_clock_starts_when_the_send_resolves_not_when_it_began(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The corollary: a send that took a long time still gets a full window
+        # afterwards, measured from its outcome rather than from its start.
+        clock = [1000.0]
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock[0])
+        imc = await _client(tmp_path)
+
+        async def slow_send(method: str, params: dict[str, Any], **_kw: Any) -> Any:
+            if method == "send":
+                clock[0] += ECHO_TTL_S * 3
+            return {"ok": True}
+
+        imc._call = slow_send  # type: ignore[method-assign]
+        await imc.send(OWNER, "on it")
+        clock[0] += ECHO_TTL_S - 1  # inside the window, counted from the outcome
+        echoed = parse_inbound(_message(text="on it"))
+        assert echoed is not None
+        assert imc.is_own_echo(echoed) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_eviction_never_drops_an_unresolved_record(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # Fourth finding in this span (local GPT review of 1582c06f1), and the one
+        # the two lanes disagreed on: eviction deleted from the front regardless of
+        # state, so an unresolved record could be evicted and its echo answered --
+        # while `is_own_echo` was carefully skipping exactly those records. The
+        # input needs many sends outstanding at once, which this channel does not
+        # do today, but the invariant is held rather than argued: unresolved
+        # records are removed ONLY by their own resolution.
+        imc = await _client(tmp_path)
+        peers[0].default_result = {"ok": True}
+        in_flight = imc._remember_own_send(_echo_key(OWNER, "unresolved reply"))
+        assert in_flight.expires_at is None
+        for i in range(ECHO_WINDOW + 20):
+            await imc.send(OWNER, f"chunk {i}")
+        assert in_flight in imc._own_sends, "the in-flight guard was evicted"
+        echo = parse_inbound(_message(text="unresolved reply"))
+        assert echo is not None
+        assert imc.is_own_echo(echo) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_resolved_records_are_still_bounded(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The other half: exempting in-flight records must not stop the cap from
+        # bounding the resolved ones, or a long conversation grows the list.
+        imc = await _client(tmp_path)
+        peers[0].default_result = {"ok": True}
+        for i in range(ECHO_WINDOW + 40):
+            await imc.send(OWNER, f"chunk {i}")
+        assert len(imc._own_sends) <= ECHO_WINDOW
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_every_suppression_is_logged_not_only_the_first(
+        self, tmp_path: Path, peers: list[StubPeer], caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # The drop is silent to the USER by construction -- replying would be the
+        # loop -- so the log is the only signal it happened. Design Review flagged
+        # that only the first suppression per handle was recorded, which leaves a
+        # later drop indistinguishable from a message that never arrived.
+        imc = await _client(tmp_path)
+        peers[0].default_result = {"ok": True}
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.imessage.client"):
+            for i in range(3):
+                await imc.send(OWNER, "same words")
+                echo = parse_inbound(_message(guid=f"E{i}", text="same words"))
+                assert echo is not None
+                assert imc.is_own_echo(echo) is True
+        suppressed = [r for r in caplog.records if "echo" in r.getMessage()]
+        assert len(suppressed) == 3, "a later suppression left no signal at all"
+        # The loud one fires once; the rest stay at debug so a long conversation
+        # does not write a warning per outbound message.
+        assert sum(1 for r in suppressed if r.levelno == logging.WARNING) == 1
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_body_key_is_scoped_to_the_handle_it_was_sent_to(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        imc = await _client(tmp_path)
+        await imc.send("+15559876543", "on it")
+        from_someone_else = parse_inbound(_message(sender=OWNER, text="on it"))
+        assert from_someone_else is not None
+        assert imc.is_own_echo(from_someone_else) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_an_entry_older_than_the_ttl_no_longer_suppresses(
+        self, tmp_path: Path, peers: list[StubPeer], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The TTL is the exposure of the body key's false positive, so it has to
+        # actually expire rather than pin the text forever.
+        clock = [1000.0]
+        monkeypatch.setattr(client_mod.time, "monotonic", lambda: clock[0])
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "on it")
+        clock[0] += ECHO_TTL_S + 1
+        stale = parse_inbound(_message(text="on it"))
+        assert stale is not None
+        assert imc.is_own_echo(stale) is False
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_composed_and_decomposed_body_compare_equal(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The body makes a round trip through Messages and back out of the
+        # database; a normalization difference on one accented character would
+        # silently reopen the loop.
+        imc = await _client(tmp_path)
+        await imc.send(OWNER, "caf\u00e9 ready")
+        decomposed = parse_inbound(_message(text="cafe\u0301 ready"))
+        assert decomposed is not None
+        assert imc.is_own_echo(decomposed) is True
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_ledger_is_bounded(self, tmp_path: Path, peers: list[StubPeer]) -> None:
+        # A long answer is delivered as many sends, so the ledger must not grow
+        # with the conversation.
+        imc = await _client(tmp_path)
+        peers[0].default_result = {"ok": True}
+        for i in range(ECHO_WINDOW + 40):
+            await imc.send(OWNER, f"chunk {i}")
+        assert len(imc._own_sends) <= ECHO_WINDOW
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_the_body_is_remembered_before_the_send_returns(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The watch can emit the row for this message while `send` is still
+        # awaiting its result, and an echo that arrives before it is remembered
+        # is an echo that gets answered. Recording after the call would leave
+        # that window open, so the test pins the ordering rather than the state.
+        seen: list[bool] = []
+
+        async def slow_send(method: str, params: dict[str, Any], **_kw: Any) -> Any:
+            if method == "send":
+                mid_flight = parse_inbound(_message(text="on it"))
+                assert mid_flight is not None
+                seen.append(imc.is_own_echo(mid_flight))
+            return {"ok": True}
+
+        imc = await _client(tmp_path)
+        imc._call = slow_send  # type: ignore[method-assign]
+        await imc.send(OWNER, "on it")
+        assert seen == [True]
+        await imc.close()
+
+    @pytest.mark.asyncio
+    async def test_a_self_chat_reply_does_not_come_back_as_a_new_turn(
+        self, tmp_path: Path, peers: list[StubPeer]
+    ) -> None:
+        # The whole loop, end to end, through the real transport: the user's own
+        # handle is the allowlist, the agent answers, and the answer arrives back
+        # on the watch as an ordinary inbound row. Before the ledger this second
+        # row started another turn, and that turn's reply started another.
+        dispatched: list[Any] = []
+
+        async def dispatch(inbound: Any) -> None:
+            dispatched.append(inbound)
+
+        imc = IMessageClient(cursor_path=tmp_path / "cursor.json")
+        transport = IMessageTransport(imc, allowed_handles=[OWNER], dispatch=dispatch)
+        imc.set_message_handler(transport.receive)
+        await imc.start()
+
+        await peers[0].notify(
+            "message", {"subscription": 1, "message": _message(id=1, guid="IN", text="hi")}
+        )
+        assert len(dispatched) == 1
+
+        peers[0].replies["send"] = [{"ok": True, "id": 2, "guid": "OUT"}]
+        await transport.send_message(OWNER, "hello back")
+        # The delivered copy: our own words, our own handle, and NOT attributed
+        # to us by the platform.
+        await peers[0].notify(
+            "message",
+            {
+                "subscription": 1,
+                "message": _message(id=3, guid="ECHO", text="hello back", is_from_me=False),
+            },
+        )
+        assert len(dispatched) == 1, "the agent's own reply started another turn"
+        await imc.close()
 
 
 async def _until(predicate: object, timeout: float = 2.0) -> None:

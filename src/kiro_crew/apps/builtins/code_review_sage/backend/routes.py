@@ -29,7 +29,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import sys
 import threading
 import time
@@ -43,6 +42,8 @@ from aiohttp import web
 
 from kiro_crew import hooks, model_registry
 from kiro_crew.apps.manager import is_app_enabled
+from kiro_crew.atomic_write import atomic_write
+from kiro_crew.loop_lock import LoopBoundLock
 
 logger = logging.getLogger("kirocrew.app.code-review-sage")
 
@@ -75,19 +76,21 @@ from sage_lib import (  # noqa: E402,E501
 # per-change detail.
 _RUNS: list[dict[str, Any]] = []
 _RUNS_MAX = 25
-_LOCK = asyncio.Lock()
+_LOCK = LoopBoundLock()
 # Guards the claim/dedup step below. Runs themselves are NOT serialized: each run
 # owns a private ``data/runs/<run_id>/`` subtree (results + report), so several
 # reviews can be in flight at once. What still needs mutual exclusion is the
 # moment a run decides WHICH changes it owns.
 # Serializes whole runs. Workers hand results back through a directory shared
 # ACROSS runs, so overlapping runs would mean two writers to one path.
-_RUN_LOCK = asyncio.Lock()
+# LoopBoundLock excludes within one loop only; all run starters are route
+# handlers on the app's single gateway loop, so every contender shares it.
+_RUN_LOCK = LoopBoundLock()
 
 # Serialises "start a consolidation" against "delete this namespace". Both are
 # short critical sections; holding one lock across each removes the interleaving
 # rather than trying to place checks around the awaits.
-_NS_OPS_LOCK = asyncio.Lock()
+_NS_OPS_LOCK = LoopBoundLock()
 # reviewed-key -> run_id for every change a LIVE run has claimed. Two runs must
 # never review and post to the same PR concurrently: the old whole-run lock
 # prevented that by refusing to overlap at all; this claim registry gets the same
@@ -145,15 +148,37 @@ def _runs_file() -> Path:
     return store.data_dir() / "runs.json"
 
 
-def _save_runs() -> None:
-    """Atomically persist the run registry (0600). Never raises."""
+def _write_runs(payload: str) -> None:
+    """Blocking half of :func:`_save_runs` — never call this on the event loop.
+
+    The owner-only lockdown spawns ``icacls`` on Windows, so this whole function
+    is a blocking syscall sequence and belongs in a worker thread (the same
+    reason ``_write_review_section`` and ``store.remove_run_dir`` are offloaded).
+    """
+    f = _runs_file()
+    f.parent.mkdir(parents=True, exist_ok=True)
+    # The shared helper already does everything this write needs, and does one
+    # thing the hand-rolled version did not: it replaces through
+    # ``replace_with_retry``, so a transient Windows sharing violation does not
+    # silently lose the save (the defect class tracked in #4701 / #4898). It also
+    # picks a random mkstemp name, applies the owner-only lockdown to the temp
+    # BEFORE the payload lands, and refuses to follow a planted parent link --
+    # the three properties the review worker's writable tree requires, since it
+    # is prompt-injectable and shares this directory.
+    atomic_write(f, payload, restrict_to_owner=True)
+
+
+async def _save_runs() -> None:
+    """Atomically persist the run registry (owner-only). Never raises.
+
+    The registry is serialized HERE, on the loop, so the payload is a consistent
+    snapshot taken under whatever lock the caller holds; only the file write and
+    the lockdown are offloaded. Serializing inside the thread instead would let
+    ``_RUNS`` mutate mid-iteration.
+    """
     try:
-        f = _runs_file()
-        f.parent.mkdir(parents=True, exist_ok=True)
-        tmp = f.with_name(f.name + ".tmp")
-        tmp.write_text(json.dumps(_RUNS, indent=2), encoding="utf-8")
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, f)
+        payload = json.dumps(_RUNS, indent=2)
+        await asyncio.to_thread(_write_runs, payload)
     except Exception:  # pragma: no cover - defensive
         logger.warning("failed to persist runs.json", exc_info=True)
 
@@ -236,7 +261,7 @@ async def _record(run: dict) -> None:
             else:
                 evicted.append(str(r.get("run_id") or ""))
         _RUNS[:] = keep
-        _save_runs()
+        await _save_runs()
     for run_id in evicted:
         if run_id:
             await asyncio.to_thread(store.remove_run_dir, run_id)
@@ -493,7 +518,7 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
             _release_claims(run)
         _CANCELLED.discard(run_id)
         async with _LOCK:
-            _save_runs()
+            await _save_runs()
         await _notify_finished(run)
 
 
@@ -913,7 +938,7 @@ async def _handle_run_cancel(request: web.Request) -> web.Response:
                 {"code": "run_not_running", "error": f"run is {run.get('status')}, not running"}, status=409)
         _CANCELLED.add(run_id)
         run["cancel_requested_at"] = _now()
-        _save_runs()
+        await _save_runs()
     return web.json_response({
         "ok": True, "run_id": run_id, "status": "cancelling",
         "message": "queued changes dropped; a review already in progress will finish",
@@ -944,7 +969,7 @@ async def _handle_run_delete(request: web.Request) -> web.Response:
                           "it to finish"},
                 status=409)
         _RUNS.remove(run)
-        _save_runs()
+        await _save_runs()
     await asyncio.to_thread(store.remove_run_dir, run_id)
     return web.json_response({"ok": True, "run_id": run_id})
 
@@ -1025,7 +1050,7 @@ async def _post_comments_bg(run_id: str, run: dict,
                 rec = by_cid.get(str(r.get("change_id")))
                 if rec is not None:
                     review_driver.apply_post_outcome(rec, r)
-            _save_runs()
+            await _save_runs()
         # Indexing is what stops the re-review; do it on the retry path too, and
         # only after the records above reflect what actually landed.
         await asyncio.to_thread(_record_reviewed, run)
@@ -1035,7 +1060,7 @@ async def _post_comments_bg(run_id: str, run: dict,
         async with _LOCK:
             run["posting"] = False
             run["post_error"] = str(e)
-            _save_runs()
+            await _save_runs()
     finally:
         # Same contract as a review's claims: release on EVERY terminal path, or
         # the change stays unreviewable until the gateway restarts.
@@ -1171,7 +1196,7 @@ async def _handle_run_post(request: web.Request) -> web.Response:
                 _INFLIGHT[_stage_key(cid)] = run_id
         run["posting"] = True
         run["post_error"] = None
-        _save_runs()
+        await _save_runs()
 
     # Keep a strong ref like the review path does, so the poster cannot be
     # garbage-collected mid-flight and leave `posting` set with nothing to clear
@@ -1289,7 +1314,7 @@ async def _handle_run_archive(request: web.Request) -> web.Response:
         run = _find_run(run_id)
         if run is not None:
             run["report_slug"] = slug
-        _save_runs()
+        await _save_runs()
     return web.json_response({"ok": True, "run_id": run_id, "report_slug": slug,
                               "created": True})
 
@@ -1581,10 +1606,9 @@ def _write_review_section(patch: dict) -> dict:
         review["max_concurrent"] = max(1, min(mc, review_pool.MAX_CONCURRENT_CEIL))
 
     cfg["review"] = review
-    tmp = cfg_path.with_name(cfg_path.name + ".tmp")
-    tmp.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, cfg_path)
+    # Same helper, same reasons as ``_write_runs`` -- including the retrying
+    # replace this write also lacked.
+    atomic_write(cfg_path, json.dumps(cfg, indent=2), restrict_to_owner=True)
     return review
 
 

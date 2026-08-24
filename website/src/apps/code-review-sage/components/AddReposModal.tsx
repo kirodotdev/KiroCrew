@@ -30,6 +30,7 @@ import { relativeAge } from '../lib/format'
 
 import { useDialogFocusTrap } from '../../../hooks/useDialogFocusTrap'
 import { i18nT } from '../../../i18n/t'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 
 /** One selectable repo row, shared by both lists. */
 function RepoRow({
@@ -111,6 +112,7 @@ function GhNotice({ message }: { message?: string }) {
 }
 
 export default function AddReposModal({ onClose }: { onClose: () => void }) {
+  const ime = useImeGuard()
   const {
     pinnedRepos, pinRepo, pinRepoUrl, pinError, unpinRepo,
     recent, recentLoading, recentError,
@@ -211,7 +213,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
                 <input
                   value={manual}
                   onChange={(e) => setManual(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === 'Enter') submitManual() }}
+                  {...ime.bindEnter({ onEnter: submitManual })}
                   aria-label={i18nT('apps.codeReviewSage.components.addReposModal.repository_or_pull_request_url_or_owner_repo')}
                   placeholder={i18nT('apps.codeReviewSage.components.addReposModal.owner_repo_a_repo_url_or_paste_a_pull_request_li')}
                   className="flex-1 min-w-0 bg-transparent border-0 py-2 text-[13px] font-mono text-text outline-none"

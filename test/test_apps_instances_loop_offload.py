@@ -74,9 +74,6 @@ class _RecordingRegistry:
     def set_last_active(self, instance_id: str) -> None:
         self.write_threads.append(threading.current_thread())
 
-    def set_was_connected(self, instance_id: str, value: bool) -> None:
-        self.write_threads.append(threading.current_thread())
-
 
 # ---------------------------------------------------------------------------
 # Behavior: the walk / write happens on a worker thread, not the loop thread
@@ -179,11 +176,13 @@ async def test_mark_recovered_registry_write_off_the_loop_thread() -> None:
     loop_thread = threading.current_thread()
     registry = _RecordingRegistry()
     mgr = SshTunnelManager(registry)  # type: ignore[arg-type]
-    mgr._tunnels["some-instance"] = SimpleNamespace()  # type: ignore[assignment]
+    # The double carries a pid: _mark_recovered persists the rebuilt child's
+    # forwarder_pid alongside was_connected in its single hint write.
+    mgr._tunnels["some-instance"] = SimpleNamespace(pid=4321)  # type: ignore[assignment]
 
     await mgr._mark_recovered("some-instance")
 
-    assert registry.write_threads, "set_was_connected never happened"
+    assert registry.write_threads, "the recovery hint write never happened"
     assert all(t is not loop_thread for t in registry.write_threads)
 
 
@@ -210,10 +209,10 @@ class _BlockingRegistry(_RecordingRegistry):
         self.release = threading.Event()
         self.completed = False
 
-    def set_was_connected(self, instance_id: str, value: bool) -> None:
+    def update(self, instance_id: str, **changes: object) -> Any:
         self.release.wait(timeout=10)
         self.completed = True
-        super().set_was_connected(instance_id, value)
+        return super().update(instance_id, **changes)
 
 
 @pytest.mark.asyncio
@@ -224,7 +223,7 @@ async def test_cancelled_persist_waits_for_the_worker_write() -> None:
     late write race a subsequent locked write (e.g. a disconnect's reset)."""
     registry = _BlockingRegistry()
     mgr = SshTunnelManager(registry)  # type: ignore[arg-type]
-    mgr._tunnels["inst"] = SimpleNamespace()  # type: ignore[assignment]
+    mgr._tunnels["inst"] = SimpleNamespace(pid=4321)  # type: ignore[assignment]
 
     task = asyncio.create_task(mgr._mark_recovered("inst"))
     await asyncio.sleep(0.05)  # the worker write is submitted and blocked
@@ -351,7 +350,6 @@ def test_no_direct_registry_write_in_async_frames() -> None:
     write_methods = {
         "update",
         "set_last_active",
-        "set_was_connected",
         "remove",
         "get",
         "list",
@@ -386,7 +384,6 @@ def test_no_direct_registry_call_in_instances_handler_async_frames() -> None:
         "update",
         "remove",
         "set_last_active",
-        "set_was_connected",
     }
     offenders: list[str] = []
     for owner, call in _calls_in_async_frames(_module_tree(handlers_instances_mod)):

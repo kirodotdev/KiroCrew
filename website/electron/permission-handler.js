@@ -52,6 +52,29 @@
 "use strict";
 
 /**
+ * The permission name Electron uses for DOM fullscreen.
+ *
+ * Electron routes a DOM `element.requestFullscreen()` through the permission
+ * handlers as `permission === "fullscreen"`. Because the rules below grant
+ * nothing but `media`, every fullscreen request from the dashboard was answered
+ * `callback(false)` — so the fullscreen button on an inline `<video>` (a file
+ * card, the media viewer) did nothing at all when clicked, with no error
+ * surfaced anywhere the user could see it.
+ *
+ * It is DISPLAY-only: it claims no OS resource and has no macOS TCC leg, which
+ * is why it is answered before the media path rather than folded into it. The
+ * trust gate is unchanged — an untrusted page in the embedded browser view is
+ * still refused, because a third-party page owning the whole screen can repaint
+ * it as a convincing fake of this app.
+ *
+ * Deliberately a single named constant rather than an allowlist container: the
+ * sibling capabilities routed through the same handler (`pointerLock`,
+ * `keyboardLock`) have no consumer in this product, and widening a permission
+ * set without one is how a security default quietly erodes.
+ */
+const FULLSCREEN_PERMISSION = "fullscreen";
+
+/**
  * True when the request belongs to the app's own dashboard.
  *
  * Checks TWO sources because neither is always present:
@@ -203,6 +226,19 @@ function createPermissionRequestHandler(deps = {}) {
     // origin as the app — so browsing to `http://localhost:<anything>` would
     // otherwise inherit the dashboard's microphone grant. A page never gets a
     // capability just for being served from loopback.
+    //
+    // Display-only capabilities are answered HERE, before the media rule: they
+    // need the same trust gate but none of the macOS TCC machinery below, and
+    // letting one fall through would put a fullscreen click behind a microphone
+    // prompt. Logged unconditionally on refusal rather than via
+    // isNoteworthyDenial: this branch only runs on a real request (a user
+    // gesture), never on Chromium's per-navigation re-checks, so it cannot
+    // become console noise.
+    if (permission === FULLSCREEN_PERMISSION) {
+      const allowed = !isUntrusted(wc) && originOk(wc, origin);
+      if (!allowed) audit("request", permission, wc, origin, details);
+      return callback(allowed);
+    }
     const granted =
       !isUntrusted(wc) &&
       permission === "media" &&
@@ -281,6 +317,14 @@ function createPermissionCheckHandler(deps = {}) {
     // unavailable — but a check alone grants no capability, and the REQUEST
     // handler (which does the actual granting) is always frame-originated and
     // therefore always has a webContents to match.
+    //
+    // The fullscreen branch mirrors the request handler's for the reason in this
+    // module's header: a check that disagrees with the async grant is exactly
+    // what made permissions.query() report one verdict while the real request
+    // took another.
+    if (permission === FULLSCREEN_PERMISSION) {
+      return !isUntrusted(wc) && originOk(wc, origin);
+    }
     const granted =
       !isUntrusted(wc) &&
       permission === "media" &&

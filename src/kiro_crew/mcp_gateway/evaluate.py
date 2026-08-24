@@ -23,6 +23,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.mcp_discovery import PROBE_MAX_CONCURRENCY
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
 from kiro_crew.mcp_gateway.preflight import PreflightResult, preflight
@@ -64,7 +65,7 @@ _PROBE_FAN_OUT = PROBE_MAX_CONCURRENCY
 #: firing while a measurement pass is in flight is the normal case rather than the
 #: unlucky one. One lock per process is enough because the file has a single writer
 #: — this evaluator — and every caller reaches it through here.
-_PASS_LOCK = asyncio.Lock()
+_PASS_LOCK = LoopBoundLock()
 
 
 def _assert_off_loop(what: str) -> None:

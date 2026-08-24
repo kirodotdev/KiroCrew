@@ -575,6 +575,19 @@ class TestRemoveIfUnclaimed:
         assert mgr.get_origin_link("dashboard:1") is None
         sess.provider.shutdown.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_an_unclaimed_session_unlinks_its_queued_temp_files(
+        self, mgr, tmp_path
+    ) -> None:
+        img = tmp_path / "img.png"
+        img.write_bytes(b"fake")
+        sess = _register(mgr, "dashboard:1", is_new=True)
+        sess.queue.append(("ts1", "queued", {"image_temp_paths": [str(img)]}))
+
+        assert await mgr.remove_if_unclaimed("dashboard:1") is True
+
+        assert not img.exists()
+
 
 class TestRecycleHeartbeat:
     @pytest.mark.asyncio

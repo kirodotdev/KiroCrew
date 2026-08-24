@@ -123,7 +123,11 @@ export const ALWAYS_LATIN = [
   'AWS', 'Discord', 'Docker', 'Git', 'GitHub', 'GitLab', 'JSON', 'Kiro', 'Kiro Crew',
   'KiroCrew',
   'MCP', 'Markdown', 'Node.js', 'OAuth', 'Playwright', 'Python', 'Slack',
-  'TypeScript', 'YAML', 'iMessage', 'npm',
+  'Telegram', 'TypeScript', 'Webex', 'WhatsApp', 'YAML', 'iMessage', 'npm',
+  // `WeCom` and `WeChat` are deliberately ABSENT despite rendering from the same
+  // `CHANNELS[].name` field: zh-CN localizes them (企业微信, 微信), so they are not
+  // Latin in every language and their leak on `settings-channels` is a real defect
+  // rather than an exemption to grant.
   // language endonyms from SUPPORTED_LANGUAGES
   'English', 'Espanol', 'Español', 'Francais', 'Français', 'Portugues', 'Português',
   'Deutsch', 'Italiano', 'Pseudolocale',
@@ -325,10 +329,11 @@ export function scanDocument(opts) {
    * the COMPUTED family, not the class list: `.msg-content pre` sets the font in
    * `index.css`, where no `font-mono` token appears.
    */
+  const OPAQUE_SELECTOR = 'code, pre, kbd, samp, [data-i18n-opaque]'
+  const monoFont = el => /mono/i.test(getComputedStyle(el).fontFamily || '')
   const isOpaque = el => {
-    if (el.closest('code, pre, kbd, samp, [data-i18n-opaque]')) return true
-    const fam = getComputedStyle(el).fontFamily || ''
-    return /mono/i.test(fam)
+    if (el.closest(OPAQUE_SELECTOR)) return true
+    return monoFont(el)
   }
 
   /**
@@ -421,10 +426,29 @@ export function scanDocument(opts) {
     return d.startsWith('inline') || inlineTags.has(node.tagName)
   }
 
+  /**
+   * Whether an element's SUBTREE holds opaque content the run walk must not join
+   * through. Tag/attribute opacity is one `querySelector`; the computed-mono
+   * half of the `isOpaque` contract is not selector-expressible, so it is
+   * probed per descendant — memoized per element, and inline wrappers are
+   * small, so the probe stays cheap next to the loop's own per-element style
+   * reads.
+   */
+  const opaqueWithin = new WeakMap()
+  const containsOpaque = el => {
+    let v = opaqueWithin.get(el)
+    if (v === undefined) {
+      v = !!el.querySelector(OPAQUE_SELECTOR) || [...el.querySelectorAll('*')].some(monoFont)
+      opaqueWithin.set(el, v)
+    }
+    return v
+  }
+
   for (const el of document.body.querySelectorAll('*')) {
     if (!visible(el) || inVirtualList(el) || isOpaque(el)) continue
 
-    // Group DIRECT children into maximal inline runs; a block child ends the run.
+    // Group DIRECT children into maximal inline runs; a block child ends the
+    // run, an opaque child is skipped without ending it.
     let run = []
     const flush = () => {
       if (!run.length) return
@@ -452,6 +476,19 @@ export function scanDocument(opts) {
       }
     }
     for (const node of el.childNodes) {
+      // An opaque child (kbd/code/samp/[data-i18n-opaque]/mono — the same
+      // subtrees the element loop skips), or an inline wrapper with opaque
+      // content INSIDE it (a keycap container span), is exempt data, not
+      // prose. Joining through it — the run is built from `textContent` —
+      // would charge that Latin (keycaps, inline code) to the surrounding
+      // run, un-exempting it. So it is SKIPPED, and deliberately without
+      // flushing: the prose on either side stays ONE run, so a sentence
+      // spliced from several catalog keys around a keycap or code term still
+      // raises the multi-unit fragment signal (a real reorder defect —
+      // flushing here would let it pass). No prose is lost: a skipped wrapper
+      // is itself visited by the element loop, where its own text forms runs;
+      // a fully opaque subtree is skipped there by design.
+      if (node.nodeType === 1 && (isOpaque(node) || containsOpaque(node))) continue
       if (isInline(node)) run.push(node)
       else flush()
     }

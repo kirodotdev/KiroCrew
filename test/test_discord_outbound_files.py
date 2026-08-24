@@ -418,3 +418,100 @@ async def _done(value: Any) -> Any:
 
 async def _noop_sleep(_seconds: float) -> None:
     return None
+
+
+class TestDisplayRedactionIsAFloor:
+    """Display-form redaction runs on every send, not only the upload path.
+
+    ``TurnDriver`` redacts the LITERAL form of every chunk upstream. The display
+    pass exists for the credential that is invisible until Discord renders the
+    markdown away, so gating it on the upload path left a restricted session, an
+    unset upload root, and every length rotation sending model text that only the
+    literal-form redactor had seen.
+    """
+
+    #: A credential split by Markdown that Discord strips when it renders. The
+    #: literal bytes carry ``**``, so a literal-form scan does not match; the
+    #: rendered form is one contiguous key.
+    SPLIT_SECRET = "AKIA**IOSFODNN7**EXAMPLE"
+
+    @pytest.mark.asyncio
+    async def test_a_restricted_session_still_gets_the_display_pass(self) -> None:
+        cli = await _turn(f"here it is {self.SPLIT_SECRET}", uploads_allowed=False)
+        body = cli.final_text()
+        assert "IOSFODNN7" not in body, body
+
+    @pytest.mark.asyncio
+    async def test_no_upload_root_still_gets_the_display_pass(self) -> None:
+        cli = await _turn(f"here it is {self.SPLIT_SECRET}", upload_root="")
+        assert "IOSFODNN7" not in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_a_channel_without_files_outbound_still_gets_the_display_pass(self) -> None:
+        caps = replace(DISCORD_CAPABILITIES, files_outbound=False)
+        cli = await _turn(f"here it is {self.SPLIT_SECRET}", capabilities=caps)
+        assert "IOSFODNN7" not in cli.final_text()
+
+    @pytest.mark.asyncio
+    async def test_a_length_rotated_segment_still_gets_the_display_pass(self) -> None:
+        """Length seals pass ``extract_uploads=False``, which was the widest of
+        the ungated routes: it is reached on any reply long enough to rotate."""
+        r, cli = _renderer()
+        await r.on_text_chunk("y" * (r._limit() + 50) + f"\n\n{self.SPLIT_SECRET}\n")
+        await r.on_done()
+        assert all("IOSFODNN7" not in text for text in _bodies(cli))
+
+    @pytest.mark.asyncio
+    async def test_mentions_are_defanged_on_an_ungated_send_too(self) -> None:
+        cli = await _turn("ping @everyone now", uploads_allowed=False)
+        # The text survives; only the ping is broken (the zero-width space is the
+        # renderer's half, `allowed_mentions` is the transport's).
+        assert "@​everyone" in cli.final_text()
+
+
+class TestDeliveryAccountingCountsEverySink:
+    """`delivery_failed` answers "the user saw NOTHING", so every sink must report.
+
+    The dispatcher records a turn's outcome from what the provider produced, which
+    says nothing about whether anything arrived; `delivery_failed` is the
+    observable that separates them, and a cron turn acts on it (it re-alerts over
+    Slack and refuses to advance its dedup hash). So a sink that delivers without
+    reporting turns a success into a duplicate alert, and a sink that fails
+    without reporting turns a silent turn into a recorded success.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_markup_recovery_that_lands_is_not_a_failed_delivery(self, tmp_path: Path) -> None:
+        """The upload failed and the seal with it, but the recovery post arrived."""
+        path, (r, cli) = _png(tmp_path), _renderer()
+        cli.edit_ok, cli.fail_uploads = False, True
+        await r.on_text_chunk(f"Here it is.\n\n![Revenue]({path})")
+        await r.on_done()
+        assert cli.uploads, "premise: the upload was attempted"
+        assert [t for t, _ in cli.sent], "premise: the recovery post went out"
+        assert r.delivery_failed is False
+
+    @pytest.mark.asyncio
+    async def test_a_recovery_that_also_fails_is_a_failed_delivery(self, tmp_path: Path) -> None:
+        path, (r, cli) = _png(tmp_path), _renderer()
+        cli.edit_ok, cli.fail_uploads, cli.fail_sends = False, True, True
+        await r.on_text_chunk(f"Here it is.\n\n![Revenue]({path})")
+        await r.on_done()
+        assert r.delivery_failed is True
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_that_fails_is_a_failed_delivery(self) -> None:
+        """An empty-bodied turn's placeholder IS the whole delivery."""
+        r, cli = _renderer()
+        cli.fail_sends = True
+        await r.on_text_chunk("   ")
+        await r.on_done()
+        assert [t for t, _ in cli.sent], "premise: a placeholder was attempted"
+        assert r.delivery_failed is True
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_that_lands_is_not_a_failed_delivery(self) -> None:
+        r, cli = _renderer()
+        await r.on_text_chunk("   ")
+        await r.on_done()
+        assert r.delivery_failed is False

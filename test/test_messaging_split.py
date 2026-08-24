@@ -12,7 +12,17 @@ from dataclasses import dataclass
 
 import pytest
 
-from kiro_crew.messaging.split import _Fence, _safe_cut, split_markdown_safe
+from kiro_crew.messaging.split import (
+    FENCE_BODY,
+    FENCE_CLOSE,
+    FENCE_OPEN,
+    FENCE_OUTSIDE,
+    _Fence,
+    _safe_cut,
+    iter_fence_lines,
+    iter_fence_spans,
+    split_markdown_safe,
+)
 
 # A line that opens or closes a fence. Used to strip fence scaffolding out of a
 # reassembled split: the reopen duplicates the opener and the seal adds a
@@ -1301,3 +1311,78 @@ def test_the_oracle_accounts_for_every_split_in_the_small_space(limit):
                 f"limit={limit} reserve={reserve} text={text!r}\n"
                 f"chunks={chunks!r}\nproblem: {problem}"
             )
+
+
+class TestIterFenceLines:
+    """``iter_fence_lines`` is the per-LINE view of the same fence machine.
+
+    It exists for the one question spans cannot answer -- which lines are the
+    delimiters -- so a channel whose markup has a single code marker can rewrite
+    those while leaving the body byte-exact. Every case below is one a
+    channel-local backtick counter got wrong.
+    """
+
+    def _roles(self, text: str) -> list[tuple[str, str]]:
+        return list(iter_fence_lines(text))
+
+    def test_plain_text_is_all_outside(self) -> None:
+        assert self._roles("a\nb") == [("a", FENCE_OUTSIDE), ("b", FENCE_OUTSIDE)]
+
+    def test_open_body_close_are_distinguished(self) -> None:
+        assert self._roles("```py\nx\n```") == [
+            ("```py", FENCE_OPEN),
+            ("x", FENCE_BODY),
+            ("```", FENCE_CLOSE),
+        ]
+
+    def test_a_shorter_run_inside_a_longer_fence_is_body(self) -> None:
+        """Fence content is opaque: only a run of the SAME character at least as
+        long as the opener closes it, so the ``` line here is code.
+        """
+        roles = self._roles("````md\n```\nx\n```\n````")
+        assert [r for _, r in roles] == [
+            FENCE_OPEN,
+            FENCE_BODY,
+            FENCE_BODY,
+            FENCE_BODY,
+            FENCE_CLOSE,
+        ]
+
+    def test_tilde_fences_are_recognised(self) -> None:
+        roles = self._roles("~~~\n~~struck~~\n~~~")
+        assert [r for _, r in roles] == [FENCE_OPEN, FENCE_BODY, FENCE_CLOSE]
+
+    def test_a_backtick_fence_is_not_closed_by_a_tilde_run(self) -> None:
+        """Mismatched characters do not close each other."""
+        roles = self._roles("```\n~~~\nstill code")
+        assert [r for _, r in roles] == [FENCE_OPEN, FENCE_BODY, FENCE_BODY]
+
+    def test_an_unclosed_fence_yields_no_close_role(self) -> None:
+        """How a caller detects an unterminated block: it owns what to append."""
+        roles = self._roles("```\ncode")
+        assert [r for _, r in roles] == [FENCE_OPEN, FENCE_BODY]
+
+    def test_lines_lose_only_their_terminator(self) -> None:
+        """CRLF input keeps its content; only the line ending is stripped, so a
+        caller can rejoin without inventing or losing characters.
+        """
+        assert self._roles("a\r\nb\n") == [("a", FENCE_OUTSIDE), ("b", FENCE_OUTSIDE)]
+
+    def test_indented_delimiters_up_to_three_spaces_count(self) -> None:
+        roles = self._roles("   ```py\nx\n   ```")
+        assert [r for _, r in roles] == [FENCE_OPEN, FENCE_BODY, FENCE_CLOSE]
+
+    def test_roles_agree_with_iter_fence_spans(self) -> None:
+        """The two views drive one machine, so they must never disagree about
+        which characters are inside a fence.
+        """
+        text = "intro\n````md\n```\nnested\n```\n````\nafter\n~~~\ntail"
+        spans = list(iter_fence_spans(text))
+        inside = {i for s, e in spans for i in range(s, e)}
+        pos = 0
+        for line, role in iter_fence_lines(text):
+            # Re-derive this line's start offset the way the text is laid out.
+            start = text.index(line, pos) if line else pos
+            pos = start + len(line)
+            expected_inside = role != FENCE_OUTSIDE
+            assert (start in inside) is expected_inside, (line, role)

@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
-import { Download, Image as ImageIcon, ImageOff } from 'lucide-react'
+import { Download, Image as ImageIcon, ImageOff, RotateCw } from 'lucide-react'
 import { useTheme } from '../hooks/useTheme'
+import { useSandboxDoc } from '../hooks/useSandboxDoc'
 import { useCommentBridge, type IframeSelection } from '../hooks/useCommentBridge'
 import { InlineCommentOverlay } from './InlineCommentOverlay'
 import { sanitizeCssValue } from '../lib/cssSanitize'
@@ -173,20 +174,17 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
     () => artifact.content ? buildSrcdoc({ html: artifact.content, themeVars, mode: theme, enableComments: true }) : null,
     [artifact.content, themeVars, theme],
   )
-  const [blobUrl, setBlobUrl] = useState<string | null>(null)
+  // One shared hook rather than this effect in four components: the previous
+  // document survives both an in-flight and a failed re-mint, and `failed`
+  // clears when a retry starts. See hooks/useSandboxDoc.ts for why each rule
+  // exists.
+  const { url: blobUrl, failed, retry } = useSandboxDoc(srcdoc)
+  // Reset on every new document: a re-mint (theme change, retry) navigates the
+  // frame again, so the previous load must not keep the new one visible early.
+  const [frameLoaded, setFrameLoaded] = useState(false)
   useEffect(() => {
-    // Clear the stale blob URL when srcdoc goes falsy (e.g. artifact.content
-    // empties while the panel is open); the cleanup below revokes the old URL,
-    // so leaving blobUrl set would point the iframe at a dead blob.
-    if (!srcdoc) {
-      setBlobUrl(null)
-      return
-    }
-    const blob = new Blob([srcdoc], { type: 'text/html;charset=utf-8' })
-    const url = URL.createObjectURL(blob)
-    setBlobUrl(url)
-    return () => URL.revokeObjectURL(url)
-  }, [srcdoc])
+    setFrameLoaded(false)
+  }, [blobUrl])
   // Bridge: push anchored highlights into the iframe, surface in-iframe text
   // selections (-> popover) and highlight clicks (-> flash the sidebar row).
   const { scrollToAnchor, onIframeLoad } = useCommentBridge({
@@ -200,19 +198,67 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
     // ArtifactBodyNative); otherwise the hardcoded minHeight forces 480px and
     // overflows the panel's flex container. Falls back to the 480 default
     // merged with the full-page reading-width previewStyle (max-width).
-    <div className="rounded-xl border border-border bg-card overflow-hidden" style={heightStyle ?? { minHeight: 480, ...previewStyle }}>
+    <div className="relative rounded-xl border border-border bg-card overflow-hidden" style={heightStyle ?? { minHeight: 480, ...previewStyle }}>
+      {/* Two shapes for the same notice, because the two situations read very
+          differently. With a document still showing, the notice OVERLAYS it: a
+          failed re-mint must not displace what the user is reading, and the
+          wrapper is a fixed height with overflow-hidden so a notice in the flow
+          would push the document down and clip its bottom edge. With no document
+          at all, the same overlay is a thin strip along the top of a 480px empty
+          box, which reads as a broken page rather than a failed load — so it
+          centres instead. */}
+      {failed && (
+        <div
+          className={
+            blobUrl
+              ? 'absolute top-0 left-0 right-0 z-10 px-6 py-3 flex items-center gap-3 text-text bg-bg-elevated/95 border-b border-border'
+              : 'absolute inset-0 z-10 flex items-center justify-center gap-3 text-text'
+          }
+        >
+          <span>{i18nT('components.artifactBody.could_not_render')}</span>
+          <button type="button" className="btn btn-sm" onClick={retry}>
+            <RotateCw className="lucide-inline" />
+            {i18nT('components.artifactBody.retry')}
+          </button>
+        </div>
+      )}
       {blobUrl ? (
-        <iframe
-          ref={iframeRef}
-          src={blobUrl}
-          onLoad={onIframeLoad}
-          sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
-          className="w-full border-none bg-card"
-          style={heightStyle ?? { height: 'calc(100vh - 240px)', minHeight: 480 }}
-          title={i18nT('components.artifactBody.artifact', { slug })}
-        />
+        <>
+          {/* The frame is TRANSPARENT until its document reports load, with a
+              themed panel underneath. Swapping the placeholder for the iframe the
+              moment the URL arrives shows the browser's own canvas for the length
+              of the document fetch — and some engines paint that canvas WHITE
+              regardless of this element's background, which reads as a flash on
+              every open. WidgetFrame already fades in on load for this reason;
+              this is the same guard on the artifact frame. */}
+          {!frameLoaded && (
+            <div aria-hidden className="absolute inset-0 bg-card" />
+          )}
+          <iframe
+            ref={iframeRef}
+            src={blobUrl}
+            onLoad={() => {
+              setFrameLoaded(true)
+              onIframeLoad?.()
+            }}
+            sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+            className="w-full border-none bg-card"
+            style={{
+              ...(heightStyle ?? { height: 'calc(100vh - 240px)', minHeight: 480 }),
+              // `color-scheme` is cheap insurance on top: it tells the engine
+              // which base canvas to paint for the embedded document before that
+              // document's own CSS is parsed.
+              colorScheme: theme,
+              opacity: frameLoaded ? 1 : 0,
+              transition: 'opacity .12s ease',
+            }}
+            title={i18nT('components.artifactBody.artifact', { slug })}
+          />
+        </>
       ) : (
-        <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
+        !failed && (
+          <div className="p-6 text-muted">{i18nT('components.artifactBody.rendering')}</div>
+        )
       )}
     </div>
   )

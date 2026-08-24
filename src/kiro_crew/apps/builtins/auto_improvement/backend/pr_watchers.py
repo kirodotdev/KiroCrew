@@ -60,6 +60,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from kiro_crew.subprocess_utf8 import UTF8_TEXT
+
 from ..spine.git_safety import GIT_SAFE_CONFIG, require_pinned
 from . import pr_checks, store
 
@@ -151,6 +153,7 @@ def _git(*args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
         ["git", *_GIT_SAFE_CONFIG, *args],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         errors="replace",
         timeout=timeout,
     )
@@ -163,7 +166,7 @@ def _gh(*args: str, timeout: float = 60.0) -> subprocess.CompletedProcess[str]:
     :func:`is_watchable_pr`), so no caller-controlled string reaches argv[0].
     """
     try:
-        return subprocess.run(["gh", *args], capture_output=True, text=True, timeout=timeout)
+        return subprocess.run(["gh", *args], capture_output=True, timeout=timeout, **UTF8_TEXT)
     except (OSError, subprocess.SubprocessError) as exc:
         # gh absent / timed out: synthesize a failure so callers need no try block.
         return subprocess.CompletedProcess(

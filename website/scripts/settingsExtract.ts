@@ -26,7 +26,8 @@
 
 import * as fs from 'fs'
 import * as path from 'path'
-import type { SettingEntry, SettingPrimitiveType } from '../src/components/commandPalette/settingsTypes'
+import { SETTINGS_MANUAL } from '../src/components/commandPalette/settingsManual'
+import type { ManualSettingEntry, SettingEntry, SettingPrimitiveType } from '../src/components/commandPalette/settingsTypes'
 
 export type { SettingEntry, SettingPrimitiveType }
 
@@ -85,11 +86,18 @@ export function __resetCatalogCache(): void {
  *
  *  Entries may carry `params` — extra query params the deep link needs for
  *  the panel to actually mount (the Channels tab is a list-detail view, so
- *  its panels need `channel=<key>`). BotChannelPanel.tsx is intentionally
- *  UNMAPPED: its labels render for four different channels (Discord,
- *  Telegram, Webex, WeCom), so a registry entry would be ambiguous — there
- *  is no single `channel` value to attach. */
-type PanelTarget = string | { tab: string; params: Record<string, string> }
+ *  its panels need `channel=<key>`).
+ *
+ *  A panel may also map to SEVERAL targets. BotChannelPanel.tsx renders the
+ *  same labels for multiple channels, so it emits one entry per channel per
+ *  primitive. Each target's `labelSuffix` is appended to the label — and
+ *  therefore the id — of entries that carry a labelKey, keeping the four
+ *  otherwise-identical search results distinguishable. A literal-label entry
+ *  keeps its label untouched: highlighting matches the RENDERED text via
+ *  `data-setting-label`, and only a labelKey entry re-resolves the
+ *  un-suffixed catalog string at highlight time (useSettingHighlight). */
+type PanelTargetSingle = string | { tab: string; params: Record<string, string>; labelSuffix?: string }
+type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
 
 const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
@@ -101,6 +109,7 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'InstancesPanel.tsx': 'instances',
   'SecurityPanel.tsx': 'security',
   'NotificationsPanel.tsx': 'notifications',
+  'ShortcutsPanel.tsx': 'shortcuts',
   // Added upstream (auto-skill generation) without a mapping here, so its two
   // settings were absent from command-palette search. Registered while
   // converting this file for i18n.
@@ -109,7 +118,28 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // `telemetry.enabled` resolves to a deep link into the control rather than a
   // CLI command the user has to paste.
   'PrivacyPanel.tsx': 'privacy',
-  'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' } },
+  // Every per-channel panel (standalone or fan-out) carries a labelSuffix:
+  // it disambiguates same-label rows across channels ("Folder name (Teams)")
+  // AND makes the derived ids order-stable — occurrence-numbered ids
+  // (`channels.folder-name-2`) silently re-target a different channel's row
+  // whenever a panel is added earlier in file order.
+  'SlackPanel.tsx': { tab: 'channels', params: { channel: 'slack' }, labelSuffix: 'Slack' },
+  'WebexPanel.tsx': { tab: 'channels', params: { channel: 'webex' }, labelSuffix: 'Webex' },
+  // Standalone per-channel panels, mounted by ChannelsPanel behind their
+  // channel= key exactly like WebexPanel.
+  'TeamsPanel.tsx': { tab: 'channels', params: { channel: 'teams' }, labelSuffix: 'Teams' },
+  'WeixinPanel.tsx': { tab: 'channels', params: { channel: 'weixin' }, labelSuffix: 'WeChat' },
+  'IMessagePanel.tsx': { tab: 'channels', params: { channel: 'imessage' }, labelSuffix: 'iMessage' },
+  // The shared bot-token panel: one source file whose labels render for the
+  // channels that mount it, so each extracted primitive fans out into one
+  // entry per channel. Webex is deliberately absent: ChannelsPanel routes
+  // channel=webex to the standalone WebexPanel (mapped above), so a webex
+  // fan-out entry would deep-link to controls that panel never renders.
+  'BotChannelPanel.tsx': [
+    { tab: 'channels', params: { channel: 'discord' }, labelSuffix: 'Discord' },
+    { tab: 'channels', params: { channel: 'telegram' }, labelSuffix: 'Telegram' },
+    { tab: 'channels', params: { channel: 'wecom' }, labelSuffix: 'WeCom' },
+  ],
   'DeveloperPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',
   'SttSettings.tsx': 'voice',
@@ -249,10 +279,9 @@ export function extractFromSource(
   source: string,
   fileName: string,
 ): { entries: SettingEntry[]; skipped: number } {
-  const target = PANEL_TAB_MAP[path.basename(fileName)]
-  if (!target) return { entries: [], skipped: 0 }
-  const tab = typeof target === 'string' ? target : target.tab
-  const params = typeof target === 'string' ? undefined : target.params
+  const mapped = PANEL_TAB_MAP[path.basename(fileName)]
+  if (!mapped) return { entries: [], skipped: 0 }
+  const targets = Array.isArray(mapped) ? mapped : [mapped]
 
   const entries: SettingEntry[] = []
   let skipped = 0
@@ -284,17 +313,29 @@ export function extractFromSource(
       const labelKey = extractTranslationKeyProp(props, 'label')
       const description = extractStringProp(props, 'description')
       const configKey = extractStringProp(props, 'configKey')
-      entries.push({
-        id: '',
-        label,
-        ...(labelKey ? { labelKey } : {}),
-        description: description || undefined,
-        tab,
-        type: PRIMITIVE_MAP[primitiveName],
-        occurrence: 1,
-        ...(params ? { params } : {}),
-        ...(configKey ? { configKey } : {}),
-      })
+      for (const target of targets) {
+        const tab = typeof target === 'string' ? target : target.tab
+        const params = typeof target === 'string' ? undefined : target.params
+        const suffix = typeof target === 'string' ? undefined : target.labelSuffix
+        // Suffix only labelKey entries: highlighting resolves labelKey to the
+        // rendered (un-suffixed) label, so DOM lookup still works. A literal
+        // label IS the rendered text and must stay byte-identical. The raw
+        // suffix rides along as `labelSuffix` so a localized display can
+        // re-append it to the resolved (un-suffixed) catalog string.
+        const displayLabel = suffix && labelKey ? `${label} (${suffix})` : label
+        entries.push({
+          id: '',
+          label: displayLabel,
+          ...(labelKey ? { labelKey } : {}),
+          ...(suffix && labelKey ? { labelSuffix: suffix } : {}),
+          description: description || undefined,
+          tab,
+          type: PRIMITIVE_MAP[primitiveName],
+          occurrence: 1,
+          ...(params ? { params } : {}),
+          ...(configKey ? { configKey } : {}),
+        })
+      }
     }
   }
 
@@ -330,10 +371,67 @@ export function extractAll(settingsDir: string): { entries: SettingEntry[]; skip
     entry.occurrence = count
   }
 
+  // Manual entries merge AFTER id assignment so an override can address a
+  // generated entry by its final id, and hand-assigned ids never participate
+  // in the dedup counters above.
+  allEntries = mergeManualEntries(allEntries, SETTINGS_MANUAL)
+
   // Sort deterministically
   allEntries.sort((a, b) => a.tab.localeCompare(b.tab) || a.label.localeCompare(b.label))
 
   return { entries: allEntries, skipped: totalSkipped }
+}
+
+/**
+ * Merge hand-curated entries (settingsManual.ts) into the generated list.
+ *
+ * A manual entry whose id equals a generated id REPLACES that entry — the
+ * escape hatch for attaching deep-link params the file-level PANEL_TAB_MAP
+ * cannot scope (e.g. SecurityPanel's `?section=` sub-selection). Any other
+ * manual entry is appended. Callers sort afterwards, so order here is
+ * irrelevant to the final registry.
+ *
+ * Validation throws at generation time rather than shipping a broken registry:
+ * a duplicate manual id would silently shadow one of the two entries, and an
+ * unresolvable labelKey would make deep-link highlighting query the DOM for a
+ * label no locale ever renders.
+ */
+export function mergeManualEntries(generated: SettingEntry[], manual: ManualSettingEntry[]): SettingEntry[] {
+  const seen = new Set<string>()
+  const cat = getEnCatalog()
+  const resolved: SettingEntry[] = []
+  for (const m of manual) {
+    if (seen.has(m.id)) {
+      throw new Error(`settingsManual: duplicate manual entry id '${m.id}' — every manual entry needs a unique id`)
+    }
+    seen.add(m.id)
+    if (cat[m.labelKey] === undefined) {
+      throw new Error(
+        `settingsManual: labelKey '${m.labelKey}' (entry '${m.id}') does not resolve in the English catalogs — use a key that exists in en.json/en.manual.json`,
+      )
+    }
+    if (m.descriptionKey && cat[m.descriptionKey] === undefined) {
+      throw new Error(
+        `settingsManual: descriptionKey '${m.descriptionKey}' (entry '${m.id}') does not resolve in the English catalogs — use a key that exists in en.json/en.manual.json`,
+      )
+    }
+    // Manual entries are key-only (the i18n gate forbids English prose
+    // literals in hand-written source); materialize the English strings here
+    // so the generated registry stays a plain-English search corpus.
+    const { descriptionKey, ...rest } = m
+    resolved.push({
+      ...rest,
+      label: cat[m.labelKey],
+      ...(descriptionKey ? { description: cat[descriptionKey] } : {}),
+    })
+  }
+  const byId = new Map(resolved.map(m => [m.id, m]))
+  const generatedIds = new Set(generated.map(g => g.id))
+  const merged = generated.map(g => byId.get(g.id) ?? g)
+  for (const m of resolved) {
+    if (!generatedIds.has(m.id)) merged.push(m)
+  }
+  return merged
 }
 
 /**

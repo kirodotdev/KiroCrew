@@ -25,6 +25,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 _STATE = _ROOT / "src/kiro_crew/dashboard/state.py"
 _CARD = _ROOT / "website/src/pages/chat/RecoveryCard.tsx"
 _EN = _ROOT / "website/src/i18n/locales/en.json"
+_SECURITY = _ROOT / "src/kiro_crew/security.py"
+_DENY_UTIL = _ROOT / "website/src/utils/denyReason.ts"
 
 #: ``NAME = "[Something — automatic recovery]"`` at module level in state.py.
 _PREFIX_DECL = re.compile(
@@ -33,6 +35,15 @@ _PREFIX_DECL = re.compile(
 )
 #: A ``['kind', '[Marker]'],`` row of the card's PREFIXES table.
 _CARD_ROW = re.compile(r"\[\s*'(?P<kind>[a-z_]+)'\s*,\s*'(?P<value>\[[^']+\])'\s*\]")
+
+
+#: TS/JS comments -- block (incl. the ``/** */`` doc form) and line.
+_TS_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.DOTALL)
+
+
+def _code_only(src: str) -> str:
+    """*src* with comments removed, so a guard counts declarations not prose."""
+    return _TS_COMMENT.sub("", src)
 
 
 def _state_prefixes() -> dict[str, str]:
@@ -117,3 +128,43 @@ def test_new_card_labels_are_in_the_english_catalog(key: str) -> None:
     """The card resolves its labels through i18n; a missing key renders the key."""
     catalog = json.loads(_EN.read_text(encoding="utf-8"))
     assert key in catalog["pages"]["chat"]["recoveryCard"]
+
+
+def test_deny_marker_has_exactly_one_frontend_copy_and_it_matches_python() -> None:
+    """``DENY_REASON_PREFIX`` is a wire value; the frontend must carry it verbatim, once.
+
+    Three readers key on this string -- ``RecoveryCard`` extracts the pattern with an
+    end-anchored per-line match, ``denyReason.ts`` slices the reason out of the blocked
+    row, and the test suite's ``_denied_by`` partitions on it -- so a change on the
+    Python side that the frontend does not follow silently stops every deny reason from
+    being found, with nothing going red.
+
+    The PREFIXES-table guard above does NOT cover this literal (it parses only that
+    table), which is why it needs its own check. Asserting a single copy is the other
+    half: a second declaration is free to drift from the first while the first keeps
+    matching, so the failure would surface as a card that still renders beside a
+    suppression that silently stopped working.
+    """
+    py = _SECURITY.read_text(encoding="utf-8")
+    decl = re.search(r'^DENY_REASON_PREFIX = "(?P<value>[^"]+)"', py, re.MULTILINE)
+    assert decl, "security.py no longer declares DENY_REASON_PREFIX -- regex drift"
+    # The trailing space is a joiner, not part of the marker the frontend matches.
+    marker = decl.group("value").rstrip()
+
+    util = _DENY_UTIL.read_text(encoding="utf-8")
+    assert marker in util, (
+        f"denyReason.ts does not carry the Python marker {marker!r}; every deny reason "
+        "would fall back to the localized placeholder and name no rule"
+    )
+
+    # Counted across BOTH frontend readers, and over CODE only: the prose in a doc
+    # comment explaining the wire format is not a second declaration, and forbidding
+    # it would push the explanation out of the file that needs it most. RecoveryCard
+    # must build its matcher from the exported source rather than re-declaring.
+    card = _CARD.read_text(encoding="utf-8")
+    copies = _code_only(util).count(marker) + _code_only(card).count(marker)
+    assert copies == 1, (
+        f"the wire marker {marker!r} is declared {copies} times in code across "
+        "denyReason.ts and RecoveryCard.tsx; it must be declared exactly once and "
+        "shared, or one copy can drift while the other keeps matching"
+    )

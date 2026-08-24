@@ -10,6 +10,12 @@ gateway.
 
 The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction +
 tool-approval ladder + SEL audit) via the dispatcher -- no hand-rolled loop.
+
+``warn_if_wecom_uncredentialed`` is the diagnostic companion: the channel
+registry's enabled-only gate never calls the factory when ``_wecom_enabled``
+is False, so ``_start_channel_transports`` logs the enabled-but-uncredentialed
+skip reason through this helper at the start decision point, after
+``KIROCREW_READY`` (issue #304).
 """
 
 from __future__ import annotations
@@ -52,12 +58,50 @@ def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
     return out
 
 
+def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
+    """Log WHY WeCom will not start when enabled but missing credentials.
+
+    ``_wecom_enabled`` is computed as ``cfg.wecom.enabled AND bot_id AND
+    secret`` (see GatewayOrchestrator), which collapses "channel disabled" and
+    "channel enabled but uncredentialed" into one boolean -- and the channel
+    registry's enabled-only gate then skips :func:`maybe_start_wecom` entirely
+    for BOTH states, so no code inside the factory can ever report the
+    difference. This helper is therefore called by
+    ``_start_channel_transports`` at the start decision point (after
+    ``KIROCREW_READY``, off the boot-path window), from the raw ingredients
+    the collapsed flag was computed from. When the operator enabled WeCom but
+    a credential is absent it
+    emits exactly one WARNING (visible at the default log level) naming the
+    missing credential NAME(s), never values; when the channel is disabled, or
+    fully credentialed, it stays completely silent.
+    """
+    if not cfg_enabled or (bot_id and secret):
+        return
+    missing = " and ".join(
+        name for name, value in (("WECOM_BOT_ID", bot_id), ("WECOM_SECRET", secret)) if not value
+    )
+    # The rule keys on the word "credential" in the format string; the call
+    # logs only the MISSING credential variable name(s) ("WECOM_BOT_ID",
+    # "WECOM_SECRET") and a static remediation hint — no credential value is
+    # in scope here, and the tests pin that present values never appear.
+    logger.warning(  # nosemgrep: python-logger-credential-disclosure
+        "wecom: enabled but not credentialed (missing %s) — skipping. "
+        "Set the missing credential(s) in the dashboard WeCom settings.",
+        missing,
+    )
+
+
 async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None":
     """Start the WeCom channel if enabled + credentialed; else no-op.
 
     Returns the running client (so the gateway can ``close()`` it on shutdown)
     or None. The transport + dispatcher stay alive via the client's handler
     references.
+
+    The enabled-but-uncredentialed diagnostic does NOT live here: the channel
+    registry only calls this factory when ``_wecom_enabled`` is already true,
+    so the skip reason is logged by :func:`warn_if_wecom_uncredentialed` from
+    ``_start_channel_transports`` instead.
     """
     if not getattr(orch, "_wecom_enabled", False):
         return None
@@ -124,8 +168,6 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
     except Exception as exc:
         if orch.dashboard_state is not None:
             orch.dashboard_state.wecom_connected = False
-            orch.dashboard_state.wecom_connect_error = (
-                f"{type(exc).__name__}: {exc}"[:120]
-            )
+            orch.dashboard_state.wecom_connect_error = f"{type(exc).__name__}: {exc}"[:120]
         logger.exception("Failed to start WeCom channel; continuing without it.")
         return None

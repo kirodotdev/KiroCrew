@@ -585,7 +585,7 @@ describe('ToolCallLine auto-denied detection', () => {
   // the visible 🔧 pill's tool_call_id when a security-policy deny rule or
   // hook blocks a call. The pill must find that sibling and render amber
   // (warn) instead of the green success state.
-  it('renders warn tone and a standard blocked message when a 🚫 sibling shares the tool_call_id', () => {
+  it('renders warn tone and the deny reason when a 🚫 sibling shares the tool_call_id', () => {
     const pill = toolMsg({ meta: { tool_call_id: 'tc_deny' } })
     const denySibling: ChatMessage = {
       role: 'tool',
@@ -604,11 +604,20 @@ describe('ToolCallLine auto-denied detection', () => {
     // Amber slash icon, not the green success dot
     expect(container.querySelector('.text-warn')).toBeTruthy()
     expect(container.querySelector('.text-ok')).toBeFalsy()
-    // Expanded output shows the standard blocked message — the 🚫 sibling's
-    // content is a redacted title (often just "shell"), not a usable reason —
-    // and never kiro-cli's misleading boilerplate.
+    // The expanded output names WHICH rule fired, taken from the 🚫 sibling's
+    // content — a bare "blocked" line leaves the user unable to tell a policy
+    // deny from any other failure. kiro-cli's misleading boilerplate ("User
+    // denied tool execution", which attributes a host decision to the person)
+    // must never surface.
     fireEvent.click(screen.getByRole('button', { name: /show details/i }))
-    expect(screen.getByText('Blocked by security policy')).toBeTruthy()
+    // The rule is named, WITHOUT the English wire marker: the localized sentence
+    // leads, so repeating "Blocked by security policy:" would hand a non-English
+    // reader untranslated text in front of their own.
+    expect(screen.getByText(/deny rule/)).toBeTruthy()
+    expect(screen.queryByText(/Blocked by security policy:/)).toBeFalsy()
+    // The localized lead is present, so the reader is told what happened in their
+    // own language even when the detail is a raw pattern.
+    expect(screen.getByText(/blocked the call|blocked by security policy/i)).toBeTruthy()
     expect(screen.queryByText('User denied tool execution')).toBeFalsy()
   })
 

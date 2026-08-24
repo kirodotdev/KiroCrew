@@ -145,6 +145,36 @@ class TestEnvPermissions:
 
         assert env_file.stat().st_mode & 0o777 == 0o600
 
+    def test_env_permission_repair_is_posix_only(self, tmp_path: object, monkeypatch) -> None:
+        """On Windows the chmod is a silent no-op for ACLs, and the real
+        lockdown (platform_compat.restrict_to_owner) spawns icacls — a
+        blocking subprocess this loop-reachable reader must never run. The
+        repair must not even attempt a chmod there: Windows enforcement lives
+        where the file is written (setup wizard, dashboard credential
+        writers), all off the loop."""
+        from pathlib import Path
+
+        from kiro_crew.config import loader as loader_mod
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        tmp = Path(str(tmp_path))
+        env_file = tmp / ".env"
+        # A recognised key: an unknown key would land permanently in the
+        # module-global warned-keys set, a residue no fixture resets.
+        env_file.write_text("SLACK_BOT_TOKEN=xoxb-test\n")
+        env_file.chmod(0o644)
+
+        monkeypatch.setattr(loader_mod.platform_compat, "IS_POSIX", False)
+        chmods: list[int] = []
+        monkeypatch.setattr(Path, "chmod", lambda self, mode, **_kw: chmods.append(mode))
+
+        with patch("kiro_crew.config.loader.env_path", return_value=env_file):
+            cfg = KiroCrewConfig.__new__(KiroCrewConfig)
+            creds = cfg.load_credentials()
+
+        assert chmods == []
+        assert creds.get("SLACK_BOT_TOKEN") == "xoxb-test"  # reading still works
+
 
 class TestSelForwardCallback:
     """Tests for SEL forward callback (7b7feebd)."""
@@ -434,6 +464,8 @@ class TestLoadCredentialsEnvPropagation:
             "MICROSOFT_APP_PASSWORD",
             "MICROSOFT_APP_TENANT_ID",
             "WEIXIN_TOKEN",
+            "FEISHU_APP_ID",
+            "FEISHU_APP_SECRET",
             "JIRA_API_TOKEN",
             "KIRO_API_KEY",
         )

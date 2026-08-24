@@ -776,25 +776,18 @@ def _project_identity_database(source: Path, destination: Path) -> bool:
 
 
 def _atomic_write_secret_bytes(path: Path, content: bytes) -> None:
-    """Atomically stage one bounded Kiro identity file with owner-only mode."""
+    """Atomically stage one bounded Kiro identity file, owner-only from birth.
 
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as stream:
-            fd = -1
-            platform_compat.fchmod_safe(stream.fileno(), 0o600)
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        platform_compat.restrict_to_owner(str(path))
-    except Exception:
-        if fd >= 0:
-            os.close(fd)
-        with contextlib.suppress(OSError):
-            os.unlink(temporary)
-        raise
+    ``restrict_to_owner=True`` locks the temp file down BEFORE the identity
+    bytes reach it — the previous post-rename lockdown left them readable
+    under the inherited DACL on Windows for the write window, and a lockdown
+    failure after the rename left the published file unprotected (issue
+    #5285). The default ``restrict_on_error="raise"`` keeps this fail-loud:
+    every failure now happens before the final path is touched, so an
+    unprotectable identity file never exists there at all.
+    """
+
+    atomic_write(path, content, fsync=True, restrict_to_owner=True)
 
 
 def kiro_identity_store_path(
@@ -982,7 +975,7 @@ def _identity_claims(key: str, value: object) -> list[str]:
 
     try:
         blob = json.loads(value if isinstance(value, (str, bytes)) else str(value))
-    except (json.JSONDecodeError, ValueError, TypeError):
+    except (ValueError, TypeError):
         return []
     if not isinstance(blob, dict):
         return []
@@ -2914,13 +2907,17 @@ class KiroPrerequisiteService:
     def _mark_setup_complete(self) -> None:
         if self._initial_setup_complete:
             return
+        # restrict_to_owner=True locks the temp file down before the content
+        # reaches it and implies 0o600, replacing the previous mode= plus
+        # post-rename restrict_to_owner pair, whose lockdown landed only after
+        # the marker was already published under the inherited DACL on Windows
+        # (issue #5285).
         atomic_write(
             self._setup_marker,
             "complete\n",
             fsync=True,
-            mode=0o600,
+            restrict_to_owner=True,
         )
-        platform_compat.restrict_to_owner(str(self._setup_marker))
         self._initial_setup_complete = True
 
     async def _set_terminal_audit(

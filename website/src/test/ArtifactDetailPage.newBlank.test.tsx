@@ -24,6 +24,14 @@ import { markJustCreatedBlank, __resetJustCreatedBlank } from '../lib/blankHando
 import { beginArtifactWrite, __resetArtifactWrites } from '../lib/artifactWrites'
 import type { Artifact } from '../types'
 
+// The sandboxed frame mints its document URL through the api client. The
+// automock resolves every method to `undefined`, which the component cannot
+// await — without this stub the frame throws instead of rendering.
+beforeEach(() => {
+  vi.mocked(api.sandboxDocUrl).mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+})
+
+
 vi.mock('../api/client')
 vi.mock('../pages/ChatPage', () => ({
   default: () => <div data-testid="chat-page" />,

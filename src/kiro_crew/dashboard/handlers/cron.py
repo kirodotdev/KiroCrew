@@ -27,6 +27,7 @@ from kiro_crew.executors import discovery_executor
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
@@ -305,6 +306,25 @@ async def api_cron_delete(request: web.Request) -> web.Response:
         ok = await state.crons.remove_job_async(job_id)
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
+    # SEL audit: a destructive single delete must record who/what/when + the
+    # affected job and outcome, mirroring cron.batch_delete below. Written
+    # immediately after the store mutation settles — before history cleanup —
+    # so a history-store failure cannot lose the record of a completed delete.
+    # Best-effort (batched append that swallows write failures), and the call
+    # itself is exception-contained: the first sel() of a process CONSTRUCTS
+    # the log (trust-dir creation, HMAC key validation) and can raise, and by
+    # this point the job is already deleted — a completed delete must never be
+    # reported as a failure because the audit trail is unavailable.
+    try:
+        _sel().log_api_access(
+            caller="dashboard",
+            operation="cron.remove",
+            outcome="ok" if ok else "not_found",
+            source="api_cron_delete",
+            resources=f"job_id={job_id}",
+        )
+    except Exception:
+        logger.warning("SEL audit for cron delete failed (job %s)", job_id, exc_info=True)
     if ok:
         await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
@@ -1095,7 +1115,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # for a lesson that was actually saved (and re-saved on every retry).
         # Writing first, then sweeping in the background, keeps the slow LLM call
         # off the request path.
-        wrote = await asyncio.to_thread(
+        result = await asyncio.to_thread(
             vs.write_lesson,
             rule,
             category,
@@ -1105,16 +1125,19 @@ async def api_lessons_create(request: web.Request) -> web.Response:
             rule_emb_generation,
             repo_scope,
         )
-        # Sweep ONLY when the lesson actually landed. write_lesson returns False
-        # for a value its preflight refuses (reachable now that ``negative`` is
-        # forwarded here at all -- this call site passed a literal None before) and
-        # for a dedup refusal. The return value used to be discarded, so a refused
-        # write still ran the sweep below, and _resolve_and_supersede would
-        # delete_semantic an older contradicted lesson whose "replacement" was never
-        # stored -- destroying a lesson on a request that persisted nothing, under
-        # HTTP 200. Superseding on the authority of a write that did not happen is
-        # wrong for BOTH False cases, so gate on the result rather than the cause.
-        if wrote:
+        # Sweep ONLY when the lesson actually landed. The write declines for a value
+        # its preflight refuses (reachable now that ``negative`` is forwarded here at
+        # all -- this call site passed a literal None before) and for a dedup refusal.
+        # The result used to be discarded, so a refused write still ran the sweep
+        # below, and _resolve_and_supersede would delete_semantic an older
+        # contradicted lesson whose "replacement" was never stored -- destroying a
+        # lesson on a request that persisted nothing, under HTTP 200. Superseding on
+        # the authority of a write that did not happen is wrong for every declining
+        # outcome, so gate on ``wrote`` rather than on the cause.
+        outcome = result.outcome.value
+        reason = result.reason
+        stored = result.stored
+        if result.wrote:
             candidates = await asyncio.to_thread(
                 vs.find_contradiction_candidates, rule, 0.4, 0.85, rule_emb, repo_scope
             )
@@ -1144,9 +1167,39 @@ async def api_lessons_create(request: web.Request) -> web.Response:
         # NOT-clause has to attach it rather than be skipped as a duplicate.
         # Off the loop because it reads the file and rewrites it whole -- the
         # same reason dashboard/ws.py offloads load_all.
-        await asyncio.to_thread(store.save_or_enrich, lesson)
+        #
+        # This store answers with the same three words the vector store's outcome uses
+        # (inserted / enriched / unchanged) and validates no content, so it has no
+        # refusing outcome to report. Its value is echoed as-is: ``state.lessons`` is a
+        # real ``LessonStore`` at every construction site, and its ``save_or_enrich``
+        # is annotated ``-> str`` with three string-literal returns, so there is
+        # nothing here for a filter to catch. ``test_lesson_write_outcome`` pins
+        # LessonWriteOutcome's wire values against those three words, so the two
+        # stores cannot drift apart in silence.
+        outcome = await asyncio.to_thread(store.save_or_enrich, lesson)
+        reason = None
+        stored = True
+    # Refreshed unconditionally, and deliberately so. An earlier revision of this
+    # change gated the push on the write having landed, which is wrong: a DECLINING
+    # outcome can still have mutated the store. ``write_lesson``'s second pass
+    # DELETES a row it supersedes and keeps scanning, so with a containment chain
+    # (A inside R inside B) whose rows are visited A-first -- and the scan order is
+    # effectively random, since get_lessons orders by md5 key -- A is removed and the
+    # call then returns ``deduped`` for B. The store changed while ``wrote`` is False,
+    # so gating on it left connected dashboards showing a lesson that is gone.
+    # Reporting mutation separately would buy nothing over refreshing always: an extra
+    # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
+    # deleted data.
     state.push_refresh("lessons")
-    return web.json_response({"ok": True})
+    # ``ok`` answers the question the caller actually asked -- is the lesson I
+    # submitted in the store -- so it stays true for a no-op re-submit (it is stored,
+    # there was simply nothing to write) and turns false when a dedup rule or
+    # validation kept it out. It used to be an unconditional true, which told the
+    # caller its lesson was saved even when the store had refused the value; the
+    # ``learn_add`` tool and the CLI both reported "Saved" on that response.
+    # ``outcome`` and ``reason`` are additive, so a client that only reads ``ok``
+    # keeps working.
+    return web.json_response({"ok": stored, "outcome": outcome, "reason": reason})
 
 
 async def api_lessons_delete(request: web.Request) -> web.Response:
@@ -1297,19 +1350,13 @@ async def api_crons(request: web.Request) -> web.Response:
 # Serializes all cron-folder mutations (create/rename/delete) so concurrent
 # requests cannot race on the in-memory list + disk persist cycle. The lock is
 # created lazily and re-created if the running event loop changes (Python 3.10
-# binds a Lock to the loop it first waits on) — mirrors _get_config_lock in
-# agents.py.
-_cron_folders_lock: asyncio.Lock | None = None
-_cron_folders_lock_loop: asyncio.AbstractEventLoop | None = None
+# binds a Lock to the loop it first waits on) — loop-bound via the shared
+# LoopBoundLock (#4800).
+_cron_folders_lock = LoopBoundLock()
 
 
-def _get_cron_folders_lock() -> asyncio.Lock:
-    """Return a cron-folders lock bound to the current event loop."""
-    global _cron_folders_lock, _cron_folders_lock_loop
-    loop = asyncio.get_running_loop()
-    if _cron_folders_lock is None or _cron_folders_lock_loop is not loop:
-        _cron_folders_lock = asyncio.Lock()
-        _cron_folders_lock_loop = loop
+def _get_cron_folders_lock() -> LoopBoundLock:
+    """Return the cron-folders lock (loop-bound; rebinds per running loop)."""
     return _cron_folders_lock
 
 

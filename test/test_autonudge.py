@@ -2139,3 +2139,173 @@ class TestPersistenceIsOffLoopAndOrdered:
             pass
 
         assert order == ["write-start", "write-done"], order
+
+
+class TestATimerOutlivesItsEventLoop:
+    """The service is a process-global singleton, so its timers outlive the loop that
+    created them whenever one loop replaces another — the gateway's own shutdown, and
+    every test that drives a handler after an earlier test's loop closed.
+
+    ``Task.cancel`` schedules through ``loop.call_soon``, so cancelling such a task raises
+    ``RuntimeError: Event loop is closed``. That escaped ``remove``/``remove_sync`` and the
+    dashboard handler above it answered **500** — which is how a leak in one test file
+    surfaced as a failure in ``test_dashboard_chat.py``'s ``TestCloseBroadcastDurability``,
+    with no production-code change and nothing in that file to blame.
+    """
+
+    @staticmethod
+    def _timer_on_a_closed_loop(svc: AutoNudgeService, loop_id: str = "L1") -> asyncio.Task:
+        """A real pending timer task whose event loop has been closed.
+
+        Built on a worker THREAD because a second loop cannot be driven from inside the
+        test's own running one. Reproduces the leak's end state exactly — a live Task
+        object in ``_timers`` that no loop will ever run again — rather than faking it with
+        a double, so the test would still catch the bug if the guard were written against
+        the wrong condition.
+        """
+        made: dict[str, asyncio.Task] = {}
+
+        def _own_loop() -> None:
+            done_loop = asyncio.new_event_loop()
+
+            async def _arm() -> asyncio.Task:
+                async def _sleeper() -> None:
+                    await asyncio.sleep(3600)
+
+                task = asyncio.create_task(_sleeper())
+                await asyncio.sleep(0)  # reach the await: pending, not done
+                return task
+
+            try:
+                made["task"] = done_loop.run_until_complete(_arm())
+            finally:
+                done_loop.close()
+
+        thread = threading.Thread(target=_own_loop)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "the helper thread must have finished"
+        task = made["task"]
+        svc._timers[loop_id] = task
+        assert not task.done(), "the task must still be pending for this to mean anything"
+        assert task.get_loop().is_closed()
+        return task
+
+    @staticmethod
+    async def _await_cancelled(task: asyncio.Task, *, ticks: int = 50) -> None:
+        """Yield until *task* reports cancelled, then assert it.
+
+        `cancel()` only SCHEDULES the cancellation, so the flag is not set on the
+        calling tick. Polled rather than read after a single `sleep(0)` because the
+        number of ticks it takes is an implementation detail — and `Task.cancelling()`,
+        which would read the request directly, is Python 3.11+ while this repo supports
+        >= 3.10 (CI runs a 3.10 shard). Keeps the assertion; only the waiting is
+        generous.
+        """
+        for _ in range(ticks):
+            if task.cancelled():
+                return
+            await asyncio.sleep(0)
+        assert task.cancelled(), "the live timer was never cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancelling_it_drops_it_instead_of_raising(self, svc) -> None:
+        task = self._timer_on_a_closed_loop(svc)
+
+        svc._cancel_timer("L1")  # must not raise RuntimeError("Event loop is closed")
+
+        assert "L1" not in svc._timers, "the dead timer is retired from the map either way"
+        assert not task.cancelled(), "cancelling on a closed loop is a no-op, not a cancel"
+
+    @pytest.mark.asyncio
+    async def test_remove_sync_still_completes(self, svc) -> None:
+        """The caller that actually broke: `remove_sync` reaches `_cancel_timer`."""
+        loop = await svc.add("slot-1", "ping", idle_secs=60)
+        self._timer_on_a_closed_loop(svc, loop.id)
+
+        svc.remove_sync(loop.id, persist=False)
+
+        assert loop.id not in svc._loops
+        assert loop.id not in svc._timers
+
+    @pytest.mark.asyncio
+    async def test_stop_shuts_down_with_one_dead_timer_among_live_ones(self, svc) -> None:
+        """Shutdown is the likeliest moment for this, so `stop` must survive the mix."""
+
+        async def _live() -> None:
+            await asyncio.sleep(3600)
+
+        live = asyncio.create_task(_live())
+        await asyncio.sleep(0)
+        svc._timers["live"] = live
+        dead = self._timer_on_a_closed_loop(svc, "dead")
+
+        svc.stop()
+
+        assert svc._timers == {}
+        await self._await_cancelled(live)  # a live timer is still cancelled
+        assert not dead.cancelled()
+        assert _an._INSTANCE is not svc
+
+    def test_stop_works_with_no_running_loop_at_all(self, svc) -> None:
+        """`stop()` is reached from SYNCHRONOUS callers, and that is not an edge case.
+
+        The gateway's shutdown path and every test teardown call it with no loop running,
+        where ``asyncio.current_task()`` raises ``RuntimeError: no running event loop``
+        rather than answering None. Deliberately a sync test, because making it async would
+        provide the very running loop whose absence is the point.
+
+        The timer has to be PENDING ON AN OPEN LOOP for this to mean anything: a task on a
+        closed loop is dropped before the current-task question is ever asked, so it would
+        pass either way. This is the shape the approval-stall suite's teardown actually
+        hits.
+        """
+        made: dict[str, asyncio.Task] = {}
+        open_loop: dict[str, asyncio.AbstractEventLoop] = {}
+
+        def _own_loop() -> None:
+            loop = asyncio.new_event_loop()
+            open_loop["loop"] = loop
+
+            async def _arm() -> asyncio.Task:
+                async def _sleeper() -> None:
+                    await asyncio.sleep(3600)
+
+                task = asyncio.create_task(_sleeper())
+                await asyncio.sleep(0)
+                return task
+
+            # run_until_complete RETURNS without closing, so the loop stays open and the
+            # task stays pending -- open but not running, exactly like a gateway loop at
+            # the moment a synchronous shutdown hook fires.
+            made["task"] = loop.run_until_complete(_arm())
+
+        thread = threading.Thread(target=_own_loop)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        task = made["task"]
+        assert not task.done() and not task.get_loop().is_closed()
+        svc._timers["live"] = task
+
+        try:
+            svc.stop()  # must not raise RuntimeError("no running event loop")
+        finally:
+            open_loop["loop"].close()
+
+        assert svc._timers == {}
+
+    @pytest.mark.asyncio
+    async def test_a_live_timer_is_still_cancelled(self, svc) -> None:
+        """The guard must not have turned every cancel into a no-op."""
+
+        async def _live() -> None:
+            await asyncio.sleep(3600)
+
+        task = asyncio.create_task(_live())
+        await asyncio.sleep(0)
+        svc._timers["L1"] = task
+
+        svc._cancel_timer("L1")
+
+        await self._await_cancelled(task)

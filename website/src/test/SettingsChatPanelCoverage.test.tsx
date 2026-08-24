@@ -523,13 +523,26 @@ describe('ChatPanel — per-role models', () => {
   )
 
   it('labels the unset role model as the provider default', async () => {
+    // Deliberately NOT the chat row's 'Default (auto)': a role on auto lets the
+    // provider pick and never inherits agent.model (RoleModels.resolve_model),
+    // so sharing that label claimed an inheritance that does not exist.
     wrap()
     const opts = await openSelect('Background Model')
     expect(opts.map(o => o.textContent)).toEqual([
-      'Default (auto)',
+      'Auto (provider picks)',
       'claude-opus-4.8',
       'claude-haiku-4.5',
     ])
+  })
+
+  it('keeps the chat row on its own "Default (auto)" spelling', async () => {
+    // The two spellings are the whole point of the split — if the role label
+    // ever leaks into the chat picker, the panel is back to implying that
+    // per-role work inherits the global default.
+    wrap()
+    const opts = await openSelect('Default Model')
+    expect(opts.map(o => o.textContent)).toContain('Default (auto)')
+    expect(opts.map(o => o.textContent)).not.toContain('Auto (provider picks)')
   })
 
   it('keeps a pinned role model selectable when the backend stops listing it', async () => {

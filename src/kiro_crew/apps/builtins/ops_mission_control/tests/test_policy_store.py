@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +25,10 @@ from kiro_crew import platform_compat
 class _HomeIsolated(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp())
+        # addCleanup on the line after mkdtemp: unittest skips tearDown when
+        # setUp raises, so an rmtree there leaks the directory on every setUp
+        # failure.
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self._prev = os.environ.get("KIROCREW_HOME")
         os.environ["KIROCREW_HOME"] = str(self.tmp)
 
@@ -32,7 +37,6 @@ class _HomeIsolated(unittest.TestCase):
             os.environ.pop("KIROCREW_HOME", None)
         else:
             os.environ["KIROCREW_HOME"] = self._prev
-        shutil.rmtree(self.tmp, ignore_errors=True)
 
 
 class TestTheCeilingIsOnTheKeystoneFloor(_HomeIsolated):
@@ -647,3 +651,98 @@ class TestConcurrentWritesCannotRestoreAStaleCeiling(unittest.TestCase):
                         source,
                         f"{writer.__name__} delegates but also touches the file directly",
                     )
+
+
+class TestPolicyLockdownOrdering(_HomeIsolated):
+    """The ceiling's write must never publish a file it has not protected.
+
+    Ports the previous-store-survival recipe from
+    ``test/test_aws_consent.py::TestGrantIsOnTheKeystoneFloor``: every failure
+    inside ``atomic_write`` happens BEFORE the rename, so a transient lockdown
+    or write failure can no longer reach — let alone delete — the previous,
+    healthy ceiling (the old post-publish ``restrict_to_owner`` + unlink-on-
+    OSError shape silently reset the operator's autonomy policy on one icacls
+    failure).
+    """
+
+    def test_write_lockdown_precedes_content(self):
+        """Measured by the file's SIZE at lockdown time — zero means no policy
+        byte existed yet. A post-write stat passes on the buggy ordering too,
+        so it would not be a regression test."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import (
+            models,
+            policy_store,
+        )
+
+        sizes: list[int] = []
+        real_restrict = platform_compat.restrict_to_owner
+
+        def _measuring(target):
+            sizes.append(os.stat(target).st_size)
+            return real_restrict(target)
+
+        with mock.patch("kiro_crew.platform_compat.restrict_to_owner", _measuring):
+            policy_store.set_mode(models.MODE_OBSERVE)
+
+        self.assertTrue(sizes, "premise: the lockdown ran at all")
+        self.assertEqual(
+            sizes[0], 0,
+            f"the file already held payload bytes when it was locked down: {sizes[0]} bytes",
+        )
+
+    def test_a_failed_lockdown_preserves_the_previous_ceiling(self):
+        from kiro_crew.apps.builtins.ops_mission_control.backend import (
+            models,
+            policy_store,
+        )
+
+        policy_store.set_mode(models.MODE_OBSERVE)
+        before = policy_store.policy_path().read_bytes()
+
+        def _refuse(_target):
+            raise OSError("cannot resolve the invoking user's SID")
+
+        with mock.patch("kiro_crew.platform_compat.restrict_to_owner", _refuse):
+            with self.assertRaises(OSError):
+                policy_store.set_mode(models.MODE_ACT)
+
+        self.assertEqual(
+            policy_store.policy_path().read_bytes(), before,
+            "the previous ceiling was altered",
+        )
+        self.assertEqual(
+            policy_store.read_mode("unset"), models.MODE_OBSERVE,
+            "a failed new write destroyed the previously recorded ceiling",
+        )
+
+    def test_a_failed_payload_write_preserves_the_previous_ceiling(self):
+        """Same property for an ordinary write failure (disk full creating the
+        temp file), which never even reaches the lockdown."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import (
+            models,
+            policy_store,
+        )
+
+        policy_store.set_mode(models.MODE_OBSERVE)
+        before = policy_store.policy_path().read_bytes()
+
+        def _no_space(*_a, **_kw):
+            raise OSError("no space left on device")
+
+        # Scope the failure to atomic_write's own tempfile binding — patching
+        # the shared stdlib module attribute would hand a spurious ENOSPC to
+        # every other mkstemp caller alive in this worker.
+        with mock.patch(
+            "kiro_crew.atomic_write.tempfile", types.SimpleNamespace(mkstemp=_no_space)
+        ):
+            with self.assertRaises(OSError):
+                policy_store.set_mode(models.MODE_ACT)
+
+        self.assertEqual(
+            policy_store.policy_path().read_bytes(), before,
+            "the previous ceiling was altered",
+        )
+        self.assertEqual(
+            policy_store.read_mode("unset"), models.MODE_OBSERVE,
+            "a transient write failure destroyed the previously recorded ceiling",
+        )

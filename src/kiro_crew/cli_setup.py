@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
 from kiro_crew.conductor_skill import generate_conductor_skill
 from kiro_crew.config import KiroCrewConfig
@@ -244,10 +245,17 @@ def _setup(
     electron_only: bool = False,
     clean: bool = False,
     slack: bool = False,
+    whatsapp: bool = False,
 ) -> None:
     """Install agent config and optionally configure credentials."""
     try:
-        _setup_impl(agent_only=agent_only, electron_only=electron_only, clean=clean, slack=slack)
+        _setup_impl(
+            agent_only=agent_only,
+            electron_only=electron_only,
+            clean=clean,
+            slack=slack,
+            whatsapp=whatsapp,
+        )
     except _SetupAborted as exc:
         # A closed/piped stdin mid-wizard. One clean line instead of a stack
         # trace at whichever prompt hit it first — every guarded prompt raises,
@@ -262,6 +270,7 @@ def _setup_impl(
     electron_only: bool = False,
     clean: bool = False,
     slack: bool = False,
+    whatsapp: bool = False,
 ) -> None:
     from kiro_crew.agent import install_agent  # circular import: agent imports cli
     from kiro_crew.cli import _project_dir_file  # circular import: cli -> cli_setup -> cli
@@ -335,33 +344,39 @@ def _setup_impl(
 
     if agent_only:
         # --agent-only returns before the channel steps below, so an explicit
-        # --slack has nothing to act on. Say so instead of dropping it silently.
-        if slack:
+        # channel flag has nothing to act on. Say so instead of dropping it
+        # silently, and name each flag the caller actually passed.
+        requested = (("--slack", slack), ("--whatsapp", whatsapp))
+        for flag in [name for name, on in requested if on]:
             print(
-                "\n  ⚠️  --slack is ignored with --agent-only. Run "
-                "'kirocrew setup --slack' for the guided Slack setup."
+                f"\n  ⚠️  {flag} is ignored with --agent-only. Run "
+                f"'kirocrew setup {flag}' for its guided setup."
             )
         print("\n👻 Done! Try: kirocrew gateway")
         return
 
     # 3. Messaging channels (optional, configured after setup by default).
-    #    Slack prompts run only on explicit opt-in (`kirocrew setup --slack`);
-    #    the dashboard and CLI need no channel credentials, and every channel
-    #    (Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat, iMessage)
-    #    can be
-    #    connected later from the dashboard or its setup guide.
-    if slack:
-        _setup_slack_tokens()
+    #    Channel prompts run only on explicit opt-in (`kirocrew setup --slack`,
+    #    `kirocrew setup --whatsapp`); the dashboard and CLI need no channel
+    #    credentials, and every channel (Slack, Discord, Telegram, Teams, Webex,
+    #    WeCom, WeChat, WhatsApp, iMessage) can be connected later from the
+    #    dashboard or its setup guide.
+    if slack or whatsapp:
+        if slack:
+            _setup_slack_tokens()
 
-        # 3b. Slash command name (Slack-only concept)
-        _setup_slash_command()
+            # 3b. Slash command name (Slack-only concept)
+            _setup_slash_command()
+        if whatsapp:
+            _setup_whatsapp()
     else:
         print("── Messaging Channels ──\n")
         print("  The dashboard works without any messaging credentials.")
         print("  Connect Slack, Discord, Telegram, Teams, Webex, WeCom, WeChat,")
-        print("  or iMessage (macOS only)")
+        print("  WhatsApp, or iMessage (macOS only)")
         print("  later from the dashboard (Settings → Channels) or run")
-        print("  'kirocrew setup --slack' for the guided Slack setup.\n")
+        print("  'kirocrew setup --slack' or 'kirocrew setup --whatsapp' for a")
+        print("  guided setup.\n")
 
     # 4. Timezone
     _setup_timezone()
@@ -498,9 +513,102 @@ def _setup_slack_tokens() -> None:
 
     cred_path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{k}={v}" for k, v in existing.items()]
-    cred_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    cred_path.chmod(0o600)
+    # atomic_write with restrict_to_owner, not write_text + chmod(0o600): a
+    # bare chmod is a silent no-op for Windows ACLs, and applying any lockdown
+    # only AFTER the tokens are on disk leaves them readable through the
+    # directory's inherited DACL in the failure window. The helper locks its
+    # unique temp file down before any content reaches it and renames only on
+    # success, so the tokens never exist under a wider mode and a failure
+    # leaves the previous .env untouched. restrict_on_error="warn" matches the
+    # .env doctrine (enforce the lockdown, log a warning if it fails) and the
+    # dashboard credential writers: an ACL-refusing host still completes the
+    # wizard instead of aborting after the user typed their tokens.
+    atomic_write(
+        cred_path,
+        "\n".join(lines) + "\n",
+        restrict_to_owner=True,
+        restrict_on_error="warn",
+    )
     print(f"  ✅ Credentials saved to {cred_path}\n")
+
+
+def _setup_whatsapp() -> None:
+    """Guided WhatsApp opt-in: report the prerequisites, then enable the channel.
+
+    There is no token to collect: WhatsApp pairs as a linked device on the
+    operator's own account, and pairing is a QR scan served by the RUNNING gateway.
+    So this step's whole job is the three things an operator cannot discover from
+    anywhere else: that automating a personal account carries a ban risk, whether
+    the optional wheel the channel needs is installed, and that enabling the
+    channel is a config flag separate from pairing it.
+
+    ``neonize_available()`` is a ``find_spec`` check, so nothing here imports
+    neonize or opens the session store: the wizard reports on the credential's
+    path, never through it.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.whatsapp.client import (
+        MISSING_EXTRA_HINT,
+        default_db_path,
+        neonize_available,
+    )
+
+    print("── WhatsApp ──\n")
+    print("  WhatsApp links as a device on your OWN account. There is no bot")
+    print("  identity, so the agent sends as you.")
+    print("  Automating a personal account is against WhatsApp's Terms of Service")
+    print("  and carries a small risk of the linked number being banned. Keep")
+    print("  volumes personal-scale.\n")
+
+    if neonize_available():
+        print("  ✅ The 'whatsapp' dependency extra is installed")
+    else:
+        print("  ⚠️  The 'whatsapp' extra is NOT installed, so the channel cannot start")
+        print(f"     {MISSING_EXTRA_HINT}")
+
+    store = default_db_path(data_home())
+    if store.exists():
+        print(f"  ✅ A paired session store already exists: {store}")
+    else:
+        print("  ℹ️  Not paired yet. Pairing is a QR scan from the dashboard:")
+        print("     Settings → Channels → WhatsApp, with the gateway running.")
+    print()
+
+    answer = _input_or_skip("  Enable the WhatsApp channel? [y/N]: ")
+    if not answer or answer.lower() not in ("y", "yes"):
+        print("  ⏭  Left disabled. Enable it later from Settings → Channels.\n")
+        return
+
+    cfg_file = config_path()
+    cfg: dict = {}
+    if cfg_file.exists():
+        try:
+            loaded = json.loads(cfg_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"  ⚠️  Could not read {cfg_file}: {exc}\n")
+            return
+        # A top-level non-object is not something this step may repair: writing our
+        # own object over it would destroy whatever the operator meant. Mirrors
+        # _setup_sandbox_consent.
+        if not isinstance(loaded, dict):
+            print(f"  ⚠️  {cfg_file} does not contain a JSON object; skipping.\n")
+            return
+        cfg = loaded
+    if not isinstance(cfg.get("whatsapp"), dict):
+        if "whatsapp" in cfg:
+            print("  ⚠️  'whatsapp' section is not an object; leaving config untouched.\n")
+            return
+        cfg["whatsapp"] = {}
+    cfg["whatsapp"]["enabled"] = True
+    try:
+        write_config_atomically(cfg_file, cfg)
+    except OSError as exc:
+        print(f"  ⚠️  Could not write {cfg_file}: {exc}")
+        print("     Nothing was enabled. Enable it from Settings → Channels instead.\n")
+        return
+    print("  ✅ Recorded: whatsapp.enabled = true")
+    print("     Next: start the gateway, then scan the QR from")
+    print("     Settings → Channels → WhatsApp.\n")
 
 
 _CUSTOM_DOMAIN = "kirocrew.localhost"

@@ -39,13 +39,14 @@ vi.mock('../api/client', () => ({
     chatSlotModel: vi.fn().mockResolvedValue({ ok: true, model: 'claude-sonnet-5' }),
     workspaces: vi.fn().mockResolvedValue({ workspaces: [] }),
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
-    chatSlotAgent: vi.fn().mockResolvedValue(undefined),
+    // The agent switch also names the re-resolved workspace binding.
+    chatSlotAgent: vi.fn().mockResolvedValue({ ok: true, agent: 'writer', workspace: 'writing-ws' }),
   },
   SEARCH_MIN_CHARS: 2,
 }))
 vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: false, transcribing: false, toggle: vi.fn() }), voiceInputSupported: false }))
 vi.mock('../hooks/useBranding', () => ({ useBranding: () => ({ botName: 'Test', avatar: '' }) }))
-vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'default' }], defaultAgent: 'default' }) }))
+vi.mock('../hooks/useAgents', () => ({ useAgents: () => ({ agents: [{ name: 'default' }, { name: 'writer' }], defaultAgent: 'default' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span> }))
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 
@@ -63,7 +64,7 @@ function makeStore(slotKey: string) {
     preloadedState: {
       dashboard: {
         status: null, connected: true,
-        slots: [{ key: slotKey, messages: 0, running: false, mode: '', model: 'claude-opus-5', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
+        slots: [{ key: slotKey, messages: 0, running: false, mode: '', agent: 'default', model: 'claude-opus-5', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined }],
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
@@ -119,5 +120,35 @@ describe('ChatPane — model switch updates the pane label without a slot-list r
 
     await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalled())
     expect(store.getState().dashboard.slots.find(s => s.key === 'pane-2')?.model).toBe('claude-opus-5')
+  })
+
+  it('agent pick writes agent AND workspace to the store on API success (#5120)', async () => {
+    const { store } = renderPane('pane-3')
+    const chip = await waitFor(() => screen.getByTitle('Agent: default'))
+    const slotsFetchesBeforePick = vi.mocked(api.chatSlots).mock.calls.length
+    await act(async () => { fireEvent.click(chip) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /writer/ }))
+    await act(async () => { fireEvent.click(option) })
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalledWith('pane-3', 'writer'))
+    // The write mirrors exactly what the response names: the stored agent
+    // plus the re-resolved workspace binding, as one pair — and it happens
+    // without a slot-list refetch (no websocket exists in this harness).
+    const slot = () => store.getState().dashboard.slots.find(s => s.key === 'pane-3')
+    await waitFor(() => expect(slot()?.agent).toBe('writer'))
+    expect(slot()?.workspace).toBe('writing-ws')
+    expect(vi.mocked(api.chatSlots).mock.calls.length).toBe(slotsFetchesBeforePick)
+  })
+
+  it('keeps the pre-switch agent when the agent switch fails (#5120)', async () => {
+    vi.mocked(api.chatSlotAgent).mockRejectedValueOnce(new Error('boom'))
+    const { store } = renderPane('pane-4')
+    const chip = await waitFor(() => screen.getByTitle('Agent: default'))
+    await act(async () => { fireEvent.click(chip) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /writer/ }))
+    await act(async () => { fireEvent.click(option) })
+
+    await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalled())
+    expect(store.getState().dashboard.slots.find(s => s.key === 'pane-4')?.agent).toBe('default')
   })
 })

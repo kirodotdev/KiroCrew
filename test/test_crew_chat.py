@@ -193,21 +193,24 @@ class TestWindowsReplaceWindow:
     """
 
     @staticmethod
-    def _emulate_windows_replace(monkeypatch, target: str) -> tuple[set[str], threading.Event]:
-        """Make `target` unopenable while its write is in flight, as Windows does.
+    def _emulate_windows_replace(monkeypatch, *targets: str) -> tuple[set[str], threading.Event]:
+        """Make each of `targets` unopenable while its write is in flight, as Windows does.
 
-        The write parks on the returned gate instead of sleeping, so the window
+        The writes park on the returned gate instead of sleeping, so the window
         is open for as long as the test needs rather than for a guessed number of
         milliseconds — a timing-based window would make this test itself flaky.
         The gate has a timeout so a regression cannot hang CI.
         """
+        assert targets, "arm at least one target, or the emulator is silently inert"
+        tmp_names = {f".{t}.tmp": t for t in targets}
         inflight: set[str] = set()
         gate = threading.Event()
         real_write_text, real_replace, real_read_text, real_read_bytes = (
             Path.write_text, Path.replace, Path.read_text, Path.read_bytes)
 
         def write_text(self, data, *a, **k):          # type: ignore[no-untyped-def]
-            if self.name == f".{target}.tmp":
+            target = tmp_names.get(self.name)
+            if target is not None:
                 inflight.add(str(self.parent / target))
                 gate.wait(timeout=10.0)
             return real_write_text(self, data, *a, **k)
@@ -246,8 +249,9 @@ class TestWindowsReplaceWindow:
         # `ingest` awaits `queue.json` by name and nothing else: `_reconcile`
         # hands `topics.json` and `forwards.json` to the executor and never waits.
         # So a durability assertion may read the queue and must not read the
-        # other two, which may still be mid-replace.
-        inflight, gate = self._emulate_windows_replace(monkeypatch, "topics.json")
+        # other two, which may still be mid-replace — arm the window on both.
+        inflight, gate = self._emulate_windows_replace(
+            monkeypatch, "topics.json", "forwards.json")
         orch, slot = _orch(), _slot(key="winrace")
         shown: list[list[str]] = []
         control: list[str] = []
@@ -259,7 +263,7 @@ class TestWindowsReplaceWindow:
             # Positive control, in the same window: the three-file read this
             # assertion used to do DOES fail here, so a pass above is the fix
             # working and not an emulator that never armed.
-            assert inflight, "the topics.json write is not in flight — window missed"
+            assert inflight, "no unawaited write is in flight — window missed"
             try:
                 CrewStore("winrace")
             except RuntimeError as exc:
@@ -281,8 +285,54 @@ class TestWindowsReplaceWindow:
 
         assert shown == [["do the thing"]], \
             f"queue row was not readable while topics.json was mid-replace: {shown}"
-        assert control and "topics.json" in control[0], \
+        assert control and any(n in control[0] for n in ("topics.json", "forwards.json")), \
             "building a whole store did NOT fail in the window — the emulator is inert"
+
+    @pytest.mark.asyncio
+    async def test_the_durable_forwards_read_does_not_touch_unawaited_files(
+            self, monkeypatch) -> None:            # type: ignore[no-untyped-def]
+        # The closed-slot completion path awaits EVERY pending write before its
+        # assertion point (`await st.wait_writes()` in `on_subagent_done`), so
+        # today even a whole-store read there happens to be safe — no product
+        # path can open this window. But the only write that path PROMISES is
+        # its own forward: if the barrier ever narrows to name that write
+        # (the `CrewStore.wait_for` shape, already the majority in
+        # `crew_chat.py`), a reader widened back to `CrewStore(...)` is the
+        # #4142 race again, visible only as an intermittent red Windows shard.
+        # So the window is opened here in the harness instead: `forwards.json`
+        # durable and awaited — the same ordering the product path keeps — and
+        # the two files nothing there promises parked mid-replace.
+        inflight, gate = self._emulate_windows_replace(
+            monkeypatch, "topics.json", "queue.json")
+        st = CrewStore("winrace")
+        st.add_forward("the result body")
+        await st.wait_writes()      # the product's promise: the forward is on disk
+        try:
+            # One save touches all three files: the queue and topics writes
+            # park in their replace windows; the forwards write lands.
+            st.add_topic("t1", "r1", "the topic", "m1")
+            want = {str(st.dir / "queue.json"), str(st.dir / "topics.json")}
+            for _ in range(500):        # poll — a fixed sleep would flake
+                seen = set(inflight)    # snapshot: workers still mutate the set
+                if want <= seen:
+                    break
+                await asyncio.sleep(0.01)
+            assert want <= seen, f"window missed — in flight: {seen}"
+            # The property: a forwards assertion is answerable from
+            # `forwards.json` alone, whatever state the unpromised files are in.
+            assert any("the result body" in f["body"] for f in _durable_forwards("winrace"))
+            # Positive control, in the same window: the whole-store read this
+            # helper exists to avoid DOES fail here — on an UNPROMISED file, so
+            # the pass above is the single-file read working and not an
+            # emulator that never armed.
+            with pytest.raises(RuntimeError, match=r"queue\.json|topics\.json"):
+                CrewStore("winrace")
+        finally:
+            # Release the parked writes AND join them, for the same reason the
+            # queue test does: an executor thread left straddling this
+            # monkeypatch teardown surfaces its failure in whatever runs next.
+            gate.set()
+            await st.wait_writes()
 
 
 # ── ingest ──

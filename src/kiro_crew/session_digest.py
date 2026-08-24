@@ -113,7 +113,7 @@ def _scan_transcript(path: Path) -> tuple[str, int]:
                     continue
                 try:
                     record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     # Malformed line: skip, don't lose the rest
                     logger.debug("digest: skipping malformed line in %s", path)
                     continue
@@ -155,7 +155,7 @@ def _scan_cli_log(path: Path) -> tuple[int, int]:
                     continue
                 try:
                     record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
 
                 if not isinstance(record, dict):
@@ -193,7 +193,7 @@ def _first_message_from_cli(path: Path) -> str:
                     continue
                 try:
                     record = json.loads(line)
-                except (json.JSONDecodeError, ValueError):
+                except ValueError:
                     continue
 
                 if not isinstance(record, dict):

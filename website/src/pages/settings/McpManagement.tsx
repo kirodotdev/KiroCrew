@@ -113,17 +113,63 @@ const REASON_LABEL_KEY: Record<string, string> = {
 }
 
 /**
+ * The states a row can be in, as a closed set.
+ *
+ * Deliberately NOT the i18n keys. Every reader other than the label itself asks
+ * "is this row shared" or "was it declined", and comparing against a catalog key
+ * makes that question depend on a string that lives in 13 JSON files: rename the
+ * key and `!== 'pages.mcpManagement.state_shared'` quietly becomes "never shared",
+ * which silently drops the accent colour, the sharing-without-support warning and
+ * the assessment count with nothing for `tsc` to catch. This PR renamed one of
+ * these keys once already. A discriminant makes the same mistake a type error.
+ */
+type McpRowState = 'no_stub' | 'direct_env' | 'shared' | 'stub' | 'direct'
+
+const STATE_LABEL_KEY: Record<McpRowState, string> = {
+  no_stub: 'pages.mcpManagement.state_no_stub',
+  direct_env: 'pages.mcpManagement.state_direct_env',
+  shared: 'pages.mcpManagement.state_shared',
+  stub: 'pages.mcpManagement.state_stub',
+  direct: 'pages.mcpManagement.state_direct',
+}
+
+/**
  * What the server is running as, as ONE function used by both sub-views.
  *
  * The assessment table has to name the current state to be able to show it
  * disagreeing with the verdict, and two copies of this mapping would be free to
  * drift into saying different things about the same row.
+ *
+ * This is the SOLE derivation of a row's state. The chip's text, the chip's
+ * colour, the per-row note and the sharing-without-support warning all read its
+ * answer instead of recomputing their own, because a second spelling of any of
+ * these states is the defect this change exists to remove: one copy gets corrected
+ * and the other keeps saying `shared`.
  */
-function stateLabelKey(s: McpManagedServer, sharingOn: boolean): string {
-  if (!s.can_stub) return 'pages.mcpManagement.state_no_stub'
-  if (s.stub && sharingOn) return 'pages.mcpManagement.state_shared'
-  if (s.stub) return 'pages.mcpManagement.state_stub'
-  return 'pages.mcpManagement.state_direct'
+function rowState(s: McpManagedServer, sharingOn: boolean): McpRowState {
+  if (!s.can_stub) return 'no_stub'
+  // The rewriter's decision outranks allowlist membership and the global switch,
+  // but only for a row the operator opted IN, because that is the only row whose
+  // state would otherwise be reported as shared.
+  //
+  // The state is `direct`, not a fourth thing: on this branch the rewriter passes
+  // the ORIGINAL spec through and never reaches `_build_stub_entry`, so no stub is
+  // created and the session launches the server itself -- which is what `direct`
+  // means everywhere else on this page. `(env)` marks WHY an opted-in server ended
+  // up there, and is the only part that is new.
+  //
+  // Scoped to the ENV obstacle on purpose: the rewriter also declines when it
+  // cannot resolve the command, and the row payload carries no signal for that, so
+  // such a row still reads `shared`. Naming it here would be a claim this data
+  // cannot support -- it belongs with the backend-computed-state follow-up.
+  //
+  // A row the operator did NOT opt in reads plain `direct`: there the field is
+  // forward-looking ("stubbing this would still not pool it"), which the batch
+  // action uses as a skip reason, and nothing has been declined yet to explain.
+  if (s.stub && s.pooling_blocked_by_env === true) return 'direct_env'
+  if (s.stub && sharingOn) return 'shared'
+  if (s.stub) return 'stub'
+  return 'direct'
 }
 
 /** Evidence tiers that argue AGAINST sharing, as opposed to merely not endorsing it.
@@ -151,9 +197,18 @@ const CONTRARY_STRENGTHS = new Set(['refuted', 'disqualified'])
  *     only coloured signal on the page.
  *
  * Both of those are quiet. What speaks is `refuted` or `disqualified`.
+ *
+ * A row the rewriter declined to stub is not sharing at all, so it cannot be
+ * sharing-without-support however damning its evidence is. That exclusion is not
+ * spelled here: this asks `rowState` whether the row's state IS `shared`,
+ * because a second spelling of "is sharing right now" is the same mistake as the
+ * colour that used to disagree with the label -- one copy gets a new state added
+ * to it and the other does not. Reading the label fixes both readers at once: the
+ * warning icon on the row and the count the assessment view sends the operator
+ * over to find.
  */
 function sharedWithoutSupport(s: McpManagedServer, sharingOn: boolean): boolean {
-  if (!(s.stub && sharingOn)) return false
+  if (rowState(s, sharingOn) !== 'shared') return false
   const rec = s.recommendation
   if (!rec) return false
   return CONTRARY_STRENGTHS.has(rec.strength)
@@ -310,7 +365,7 @@ function AssessmentRow({
       <td className="px-4 py-3 align-top text-right">
         <span
           className={[
-            'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px]',
+            'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-[11px]',
             unsupported
               ? 'border border-[var(--danger)] text-[var(--danger)]'
               : 'border border-[var(--border)] text-[var(--muted)]',
@@ -321,7 +376,7 @@ function AssessmentRow({
               to a screen reader because the row's Assessment cell already states
               the verdict in words. */}
           {unsupported && <AlertTriangle size={11} aria-hidden="true" />}
-          {i18nT(stateLabelKey(server, sharingOn))}
+          {i18nT(STATE_LABEL_KEY[rowState(server, sharingOn)])}
         </span>
       </td>
     </tr>
@@ -569,6 +624,13 @@ function AssessmentView({
             rows reads as a broken feature rather than a conservative one. */}
         <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
           {i18nT('pages.mcpManagement.assessment.legend')}
+        </div>
+        {/* This view renders the same state chips through the same derivation, so a
+            term defined only under the OTHER tab is undecodable to the operator
+            auditing sharing here -- which is this fix's whole audience. ONE key,
+            rendered wherever the chip can appear, in its own block on both tabs. */}
+        <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
+          {i18nT('pages.mcpManagement.state_direct_env_legend')}
         </div>
       </section>
     </div>
@@ -1124,6 +1186,10 @@ export function McpManagement() {
               <th className="w-[34%] px-4 pb-2.5 pt-3.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
                 {i18nT('pages.mcpManagement.col_used_by')}
               </th>
+              {/* Column widths are unchanged from before this PR. An earlier
+                  revision widened STATE to hold a full cause sentence; that
+                  sentence now lives once, in the legend, so the table needs no
+                  extra room and no data-dependent reflow. */}
               <th className="w-[16%] px-4 pb-2.5 pt-3.5 text-left text-[11px] font-semibold uppercase tracking-wider text-[var(--muted)]">
                 {i18nT('pages.mcpManagement.col_state')}
               </th>
@@ -1134,7 +1200,16 @@ export function McpManagement() {
           </thead>
           <tbody>
             {servers.map(s => {
-              const shared = s.stub && !!status?.enabled
+              // `rowState` is the ONE derivation of this row's state, and the
+              // colour and the reason line read its answer rather than recomputing
+              // it. Deriving them separately is what produced this defect -- the
+              // text can be corrected while the colour still says `shared`, and an
+              // operator scanning the column by colour reads the old answer every
+              // visit -- so a second spelling of "is shared" here would rebuild the
+              // divergence one state later.
+              const state = rowState(s, !!status?.enabled)
+              const shared = state === 'shared'
+              const directEnv = state === 'direct_env'
               // The assessment view's warning sends the operator here, so the
               // rows it counted have to be findable without memorising names.
               const flagged = sharedWithoutSupport(s, !!status?.enabled)
@@ -1154,7 +1229,11 @@ export function McpManagement() {
                   <td className="px-4 py-3">
                     <span
                       className={[
-                        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 font-mono text-[11px]',
+                        // A state is a term, not a sentence: breaking `not shared
+                        // (env)` across two ragged lines reads as a broken badge
+                        // beside the single-line `shared` and `direct` pills, and
+                        // every shipped locale is longer than the English.
+                        'inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 font-mono text-[11px]',
                         flagged
                           ? 'border border-[var(--danger)] text-[var(--danger)]'
                           : shared
@@ -1163,8 +1242,25 @@ export function McpManagement() {
                       ].join(' ')}
                     >
                       {flagged && <AlertTriangle size={11} aria-hidden="true" />}
-                      {i18nT(stateLabelKey(s, !!status?.enabled))}
+                      {i18nT(STATE_LABEL_KEY[state])}
                     </span>
+                    {/* Only on a row the operator opted in, and it carries ONLY what
+                        the legend cannot: that the opt-in on the lit toggle beside it
+                        survives. The cause is defined once, in the legend -- keeping
+                        a copy of it here made the row and the legend two catalogs
+                        that must agree about one state in 13 locales, which is a
+                        drift surface for the very defect this change removes.
+                        What no legend can do is reach the operator BEFORE they
+                        resolve the contradiction themselves: STUB is lit, the state
+                        says no stub, and switching the toggle off throws away an
+                        opt-in that the rewriter will honour as soon as the env
+                        obstacle clears. On a row that was never opted in there is
+                        nothing to have been declined. */}
+                    {directEnv && (
+                      <span className="mt-1 block text-[11px] leading-snug text-[var(--muted)]">
+                        {i18nT('pages.mcpManagement.state_direct_env_reason')}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Switch
@@ -1202,6 +1298,16 @@ export function McpManagement() {
         </table>
         <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
           {i18nT('pages.mcpManagement.legend')}
+        </div>
+        {/* Its OWN block, not a second string inside the paragraph above. Two
+            catalog values sharing one text run is a reordering defect in any
+            language whose clause order differs -- the repo's render gate calls it
+            `fragment/multi-unit` and AGENTS.md says merge, not join. Kept separate
+            rather than merged INTO the paragraph because that paragraph must stay
+            byte-identical to its base value in 13 locales; as its own block the new
+            term is also findable by scanning. */}
+        <div className="border-t border-[var(--border)] px-4 py-3 text-[12.5px] leading-relaxed text-[var(--muted)]">
+          {i18nT('pages.mcpManagement.state_direct_env_legend')}
         </div>
       </section>
         </>

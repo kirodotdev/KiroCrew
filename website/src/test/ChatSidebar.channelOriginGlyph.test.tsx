@@ -156,8 +156,8 @@ describe('hasChannelBrandIcon', () => {
       expect(hasChannelBrandIcon(ch)).toBe(true)
     }
     // Both fall through to the Link2 default, which callers must not mistake for
-    // a brand mark: `whatsapp` has no asset yet, `unified` never will.
-    expect(hasChannelBrandIcon('whatsapp')).toBe(false)
+    // a brand mark: `unified` never will.
+    expect(hasChannelBrandIcon('whatsapp')).toBe(true)
     expect(hasChannelBrandIcon('unified')).toBe(false)
     expect(hasChannelBrandIcon('')).toBe(false)
   })

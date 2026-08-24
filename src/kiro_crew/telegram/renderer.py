@@ -27,11 +27,18 @@ import asyncio
 import html
 import logging
 import re
+import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.constants import OPTIONS_RE_TRAILER, split_trailing_protocol_suffix
-from kiro_crew.messaging.renderer import Renderer, apply_options_cap
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    _default_redactor,
+    apply_options_cap,
+    new_approval_nonce,
+)
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.telegram.client import TELEGRAM_RICH_MAX_CHARS
 
@@ -148,6 +155,17 @@ def _strip_hr(text: str) -> str:
     return out.strip()
 
 
+def _display_safe(text: str) -> str:
+    """Redact *text* against the form Telegram will RENDER (blocking; offloaded).
+
+    Markup the platform renders away can reassemble a credential the driver's
+    byte-level scan saw as broken, so the check belongs at each display sink rather
+    than only on the stream.
+    """
+    safe, _ = redact_for_display(text or "", _default_redactor)
+    return safe
+
+
 def build_inline_keyboard(options: list[str]) -> dict | None:
     """Build an InlineKeyboardMarkup from ``[OPTIONS:]`` labels.
 
@@ -155,13 +173,20 @@ def build_inline_keyboard(options: list[str]) -> dict | None:
     64 BYTES, so a multi-byte (CJK/emoji) label there could overflow and make
     the whole send fail. The label is recovered from the button text at
     callback time. Two buttons per row (mobile friendly).
+
+    A label is MODEL-authored text that Telegram renders, so it is a display sink
+    like the answer body: the driver's byte-level scan can see a credential as
+    broken that the rendered button shows whole. Scanned HERE because this is the
+    one place both callers pass through. Bounded work by construction -- at most
+    ``max_buttons`` labels of at most 64 chars -- so it stays on the loop.
     """
     if not options:
         return None
     buttons: list[list[dict]] = []
     row: list[dict] = []
     for i, opt in enumerate(options):
-        row.append({"text": opt[:64], "callback_data": f"opt:{i}"})
+        safe, _ = redact_for_display(opt[:64], _default_redactor)
+        row.append({"text": safe, "callback_data": f"opt:{i}"})
         if len(row) == 2:
             buttons.append(row)
             row = []
@@ -650,6 +675,10 @@ class TelegramApprovalDecider:
     """
 
     _REGISTRY: dict[str, "asyncio.Future[bool]"] = {}
+    #: registry key -> the nonce minted for the buttons now showing. A press whose
+    #: nonce does not match is refused, which is what stops a button from a previous
+    #: run answering a live prompt that reuses its request id.
+    _NONCES: dict[str, str] = {}
 
     def __init__(self, *, session_key: str) -> None:
         self._session_key = session_key
@@ -657,6 +686,11 @@ class TelegramApprovalDecider:
     @staticmethod
     def key(session_key: str, request_id: str | int) -> str:
         return f"{session_key}:{request_id}"
+
+    @classmethod
+    def arm(cls, key: str, nonce: str) -> None:
+        """Record the nonce for the buttons the renderer is about to post."""
+        cls._NONCES[key] = nonce
 
     async def __call__(self, event: Any) -> bool:
         k = self.key(self._session_key, getattr(event, "request_id", ""))
@@ -668,10 +702,21 @@ class TelegramApprovalDecider:
             return False  # deny-by-default on timeout
         finally:
             TelegramApprovalDecider._REGISTRY.pop(k, None)
+            # Retire the nonce with the prompt: a button whose window closed must
+            # not become live again if the request id is later reused.
+            TelegramApprovalDecider._NONCES.pop(k, None)
 
     @classmethod
-    def resolve_global(cls, key: str, approved: bool) -> bool:
-        """Resolve a pending approval by key. Returns True iff one was waiting."""
+    def resolve_global(cls, key: str, approved: bool, *, nonce: str = "") -> bool:
+        """Resolve a pending approval by key. Returns True iff one was waiting.
+
+        Fails CLOSED on the nonce: an unarmed prompt and a mismatched press both
+        resolve nothing, so the only path to a decision is a live prompt whose
+        buttons this process minted.
+        """
+        expected = cls._NONCES.get(key)
+        if not expected or not nonce or not secrets.compare_digest(nonce, expected):
+            return False
         fut = cls._REGISTRY.get(key)
         if fut is not None and not fut.done():
             fut.set_result(bool(approved))
@@ -1097,21 +1142,41 @@ class TelegramRenderer(Renderer):
         self._tool = self._last_tool
         await self._stream_live(force=True)
 
-    async def on_prompt_choice(self, options: list[dict[str, Any]], request_id: str | int) -> None:
+    async def on_prompt_choice(
+        self,
+        options: list[dict[str, Any]],
+        request_id: str | int,
+        tool_title: str = "",
+        tool_purpose: str = "",
+    ) -> None:
         # Approve/Deny as a SEPARATE message so ongoing streaming edits to the
-        # answer bubble don't clobber the buttons. callback_data stays well
-        # under Telegram's 64-byte cap (a:<request_id>:<1|0>); the callback
-        # handler resolves the decider Future by reconstructing the key.
+        # answer bubble don't clobber the buttons.
+        #
+        # callback_data is ``a:<request_id>:<nonce>:<1|0>`` and stays well under
+        # Telegram's 64-byte cap. The NONCE is load-bearing: ACP request ids restart
+        # at 1 in every provider process, so a button still sitting in a Telegram
+        # chat from a previous run names an id that is live again for a DIFFERENT
+        # tool, and pressing it would approve that one. Minted per prompt and
+        # compared on resolve, exactly as Discord and Teams do.
         rid = str(request_id)
+        nonce = new_approval_nonce()
+        TelegramApprovalDecider.arm(TelegramApprovalDecider.key(self._session_key, rid), nonce)
         keyboard = {
             "inline_keyboard": [
                 [
-                    {"text": "✅ Approve", "callback_data": f"a:{rid}:1"},
-                    {"text": "🚫 Deny", "callback_data": f"a:{rid}:0"},
+                    {"text": "✅ Approve", "callback_data": f"a:{rid}:{nonce}:1"},
+                    {"text": "🚫 Deny", "callback_data": f"a:{rid}:{nonce}:0"},
                 ]
             ]
         }
-        tool = self._last_tool or "this tool"
+        # The tool title is LLM-authored and lands in a markdown-rendered body, so
+        # it goes through the same display-form scan as the answer -- off-loop,
+        # because the scan is a full credential/exfil pass.
+        # The request's OWN title first: `_last_tool` is the last tool_call seen
+        # and is never cleared, so it names the previous tool for any permission
+        # that arrives without one of its own. Either source is LLM-authored, so
+        # the display-form scan above applies to both.
+        tool = await asyncio.to_thread(_display_safe, tool_title or self._last_tool or "this tool")
         await self._client.send_message(
             self._chat_id,
             f"🔐 Approve `{tool}`?",

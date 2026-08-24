@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 import threading
 import time
@@ -7096,3 +7097,67 @@ class TestMandatoryUpdateOnWheelInstall:
 
         await orch._check_for_updates()
         apply_called.assert_awaited_once()
+
+
+# ─── WeCom skip-reason warning on the PRODUCTION start path (issue #304) ─────
+
+
+class TestWeComSkipReasonAtTransportStart:
+    """The enabled-but-uncredentialed WARNING must fire on the real start path.
+
+    The channel registry's enabled-only gate never calls ``maybe_start_wecom``
+    when ``_wecom_enabled`` is False — for a disabled AND for an
+    enabled-but-uncredentialed channel alike — so a factory-level log can never
+    be reached in production. The skip reason is therefore logged by
+    ``_start_channel_transports`` at the decision point, which runs AFTER
+    ``KIROCREW_READY`` (outside the boot-path window). These pin that wiring;
+    the helper's message contract is pinned in ``test_wecom_gateway.py``.
+
+    Every scenario here keeps ``_wecom_enabled`` False (and all other channels
+    config-off), so the registry starts nothing and no network is touched.
+    """
+
+    def _build(self, *, wecom_enabled: bool, creds: dict[str, str]) -> GatewayOrchestrator:
+        cfg = KiroCrewConfig()
+        cfg.wecom.enabled = wecom_enabled
+        with patch.object(cfg, "load_credentials", return_value=creds):
+            return GatewayOrchestrator(cfg)
+
+    def _wecom_records(self, caplog) -> list[logging.LogRecord]:
+        return [r for r in caplog.records if r.name == "kiro_crew.wecom.gateway"]
+
+    @pytest.mark.asyncio
+    async def test_enabled_without_credentials_warns_at_default_level(self, caplog) -> None:
+        orch = self._build(wecom_enabled=True, creds={"KIROCREW_OWNER_ID": "U_OWNER"})
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
+            await orch._start_channel_transports()
+        records = self._wecom_records(caplog)
+        assert len(records) == 1
+        assert records[0].levelno == logging.WARNING
+        msg = records[0].getMessage()
+        assert "WECOM_BOT_ID" in msg
+        assert "WECOM_SECRET" in msg
+
+    @pytest.mark.asyncio
+    async def test_a_partial_configuration_names_only_the_missing_credential(
+        self, caplog
+    ) -> None:
+        orch = self._build(
+            wecom_enabled=True,
+            creds={"KIROCREW_OWNER_ID": "U_OWNER", "WECOM_BOT_ID": "bot-1"},
+        )
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
+            await orch._start_channel_transports()
+        records = self._wecom_records(caplog)
+        assert len(records) == 1
+        msg = records[0].getMessage()
+        assert "WECOM_SECRET" in msg
+        assert "WECOM_BOT_ID" not in msg
+        assert "bot-1" not in msg
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_channel_is_completely_silent(self, caplog) -> None:
+        orch = self._build(wecom_enabled=False, creds={"KIROCREW_OWNER_ID": "U_OWNER"})
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wecom.gateway"):
+            await orch._start_channel_transports()
+        assert self._wecom_records(caplog) == []

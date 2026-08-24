@@ -12,12 +12,15 @@ from __future__ import annotations
 import asyncio
 import os
 import threading
+import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 import pytest
 
+import kiro_crew.discord.transport_dispatch as td_mod
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
     EVENT_COMPLETE,
@@ -36,6 +39,8 @@ from kiro_crew.discord.client import (
     _find_button_label,
 )
 from kiro_crew.discord.commands import (
+    COMMAND_SPEC,
+    application_command_payload,
     parse_command,
     parse_mid_turn_override,
 )
@@ -122,6 +127,8 @@ class FakeClient(MultipartFake):
         self.edits: list[tuple[str, str, Any]] = []
         self.component_edits: list[tuple[str, Any]] = []
         self.acked: list[str] = []
+        #: (interaction_id, text, ephemeral) per interaction callback response.
+        self.responses: list[tuple[str, str, bool]] = []
         self.reactions: list[tuple[str, str]] = []
         self.thread_channels: set[str] = set()
         self.created_threads: list[tuple[str, str, str]] = []
@@ -129,6 +136,9 @@ class FakeClient(MultipartFake):
         self.attachment_downloads: list[str] = []
         self.uploads: list[tuple[str, list[Any]]] = []
         self.edit_ok = True
+        #: When set, every send returns None, which is what the real client does
+        #: for a revoked token or a dead network.
+        self.fail_sends = False
         self.fail_uploads = False
         self.raise_uploads = False
         self._mid = 100
@@ -155,6 +165,8 @@ class FakeClient(MultipartFake):
         await asyncio.sleep(0)  # yield like a real network await (exposes races)
         self._mid += 1
         self.sent.append((text, components))
+        if self.fail_sends:
+            return None
         return str(self._mid)
 
     async def edit_message(
@@ -176,6 +188,18 @@ class FakeClient(MultipartFake):
 
     async def ack_component_interaction(self, interaction_id: str, interaction_token: str) -> None:
         self.acked.append(interaction_id)
+
+    async def respond_interaction(
+        self,
+        interaction_id: str,
+        interaction_token: str,
+        text: str,
+        *,
+        ephemeral: bool = True,
+        components: Any = None,
+    ) -> bool:
+        self.responses.append((interaction_id, text, ephemeral))
+        return True
 
     async def add_reaction(self, channel_id: str, message_id: str, emoji: str) -> None:
         self.reactions.append((message_id, emoji))
@@ -225,6 +249,14 @@ class FakeProvider:
         self.steered: list = []
         self.cancelled = 0
         self.active_turn = True
+        self.models: list[dict[str, str]] = []
+        self.set_models: list[str] = []
+        # ``!model`` reaches ``provider.client.set_model``, mirroring the real
+        # AcpProvider's shape.
+        self.client = SimpleNamespace(set_model=self._set_model)
+
+    async def _set_model(self, model_id: str) -> None:
+        self.set_models.append(model_id)
 
     def has_active_turn(self) -> bool:
         return self.active_turn
@@ -257,6 +289,13 @@ class FakeProvider:
     async def reject_tool(self, request_id: Any) -> None:
         return None
 
+    def available_models(self) -> list[dict[str, str]]:
+        """What this session's backend advertised. Empty unless a test sets it,
+        which is the real cold-start shape: nothing is advertised before a
+        ``session/new``, and the picker must say so rather than offer an empty
+        list."""
+        return list(self.models)
+
 
 class FakeSessions:
     async def aflush(self) -> None:  # in-memory double: already durable
@@ -270,6 +309,8 @@ class FakeSessions:
         self.successes: list[str] = []
         self.failures: list[str] = []
         self.last_agent: Any = None
+        self.last_model: Any = None
+        self.last_provider: Any = None
         self.raise_on_get = raise_on_get
         self._busy = False
         self._has = True
@@ -295,11 +336,17 @@ class FakeSessions:
     def is_mirror_paused(self, key: str, *, origin: bool = False) -> bool:
         return (key, origin) in self.paused_deliveries
 
-    async def get_or_create(self, key: str, *, agent: Any = None, channel_id: Any = None) -> Any:
+    async def get_or_create(
+        self, key: str, *, agent: Any = None, channel_id: Any = None, model: Any = None
+    ) -> Any:
         self.last_agent = agent
+        self.last_model = model
         if self.raise_on_get:
             raise RuntimeError("cold-start failed")
-        return FakeProvider(), True, False
+        # Recorded so a test can assert the dispatcher handed THIS provider on,
+        # rather than merely handing on something.
+        self.last_provider = FakeProvider()
+        return self.last_provider, True, False
 
     async def set_channel(self, key: str, channel: str) -> None:
         return None
@@ -461,6 +508,38 @@ def _cfg(soft: int = 80, default_agent: str = "", dm_scope: str = "per-channel-p
             daily_reset_hour=-1,
             queue_mode="steer",
         ),
+        # Empty url is the shape a default install actually has.
+        dashboard=SimpleNamespace(url=""),
+    )
+
+
+def _inbound_with_id(text: str, *, message_id: str, **kw: Any) -> InboundMessage:
+    """An inbound message carrying Discord's raw message id, which is what the
+    steer-ack reaction and the phase ladder both key on."""
+    return DiscordInboundMessage(
+        channel_type="discord",
+        user_id=kw.pop("user_id", "u1"),
+        conversation_id=kw.pop("conversation_id", "c1"),
+        text=text,
+        thread_id=kw.pop("thread_id", None),
+        message_id=message_id,
+    )
+
+
+def _inbound(
+    text: str,
+    *,
+    user_id: str = "u1",
+    conversation_id: str = "c1",
+    thread_id: str | None = None,
+) -> InboundMessage:
+    """A normalized Discord inbound message, as the transport would hand it over."""
+    return InboundMessage(
+        channel_type="discord",
+        user_id=user_id,
+        conversation_id=conversation_id,
+        text=text,
+        thread_id=thread_id,
     )
 
 
@@ -990,6 +1069,10 @@ class TestStripSteering:
         out = _strip_steering("body text [STEERING steer-ab12: still stream")
         assert "STEERING" not in out
         assert out.startswith("body text")
+
+    def test_an_unclosed_marker_cannot_span_table_rows(self) -> None:
+        text = "[STEERING steer-deadbeef |\n| --- | --- |"
+        assert _strip_steering(text) == text
 
 
 class TestFindButtonLabel:
@@ -1554,7 +1637,10 @@ class TestRenderer:
         await r.on_text_chunk("Hello ")
         await r.on_text_chunk("world")
         await r.on_done()
-        assert cli.final_text() == "Hello world"
+        assert cli.final_text().startswith("Hello world")
+        # The turn footer is its own trailing subtext line, so the answer is a
+        # prefix of the message rather than the whole of it.
+        assert "\n\n-# Finished in " in cli.final_text()
 
     @pytest.mark.asyncio
     async def test_options_become_buttons_and_never_stream(self) -> None:
@@ -1626,7 +1712,11 @@ class TestRenderer:
         await r.on_done()
         final = cli.final_text()
         assert final.count("```") % 2 == 0  # balanced -> no stray backticks
-        assert final.startswith("```") and final.rstrip().endswith("```")
+        # The fence must CLOSE, which the balance check above already proves;
+        # the message no longer ENDS on the closer because the turn footer is
+        # appended as a trailing subtext line after it.
+        assert final.startswith("```")
+        assert final.split("-# Finished in ")[0].rstrip().endswith("```")
         assert "y = 2" in final.split("```")[1]  # post-rotation code stays inside
 
     @pytest.mark.asyncio
@@ -1808,9 +1898,40 @@ class TestRenderer:
         assert len(ids) == 2
         assert ids[0].startswith("a:req9:") and ids[0].endswith(":1")
         assert ids[1].startswith("a:req9:") and ids[1].endswith(":0")
+        from kiro_crew.messaging.renderer import new_approval_nonce
+
         nonce = ids[0].split(":")[2]
-        assert len(nonce) == 16  # 8 random bytes hex
+        # Length is the shared minter's, not a Discord-local literal: three channels
+        # mint approval nonces and a per-channel copy is how one gets a weaker one.
+        assert len(nonce) == len(new_approval_nonce()) > 10
         DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req9"), None)
+
+    @pytest.mark.asyncio
+    async def test_prompt_names_the_tool_the_request_is_about(self) -> None:
+        """`_last_tool` is never cleared, so it names the PREVIOUS tool.
+
+        A permission that arrives without its own titled tool_call would otherwise
+        ask the operator to approve something other than what is about to run.
+        """
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_prompt_choice([], request_id="req1", tool_title="execute_bash")
+        text, _ = cli.sent[-1]
+        assert "execute_bash" in text
+        assert "fs_read" not in text
+        DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req1"), None)
+
+    @pytest.mark.asyncio
+    async def test_prompt_falls_back_to_the_last_tool_without_a_title(self) -> None:
+        """Non-vacuity: the fallback still runs when the event carried no name."""
+        r, cli = self._renderer()
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_prompt_choice([], request_id="req2")
+        text, _ = cli.sent[-1]
+        assert "fs_read" in text
+        DiscordApprovalDecider._NONCES.pop(DiscordApprovalDecider.key("sk", "req2"), None)
 
     @pytest.mark.asyncio
     async def test_steer_marker_rotates_message_with_chip(self) -> None:
@@ -1829,7 +1950,8 @@ class TestRenderer:
         await r.on_turn_start()
         await r.on_text_chunk("partial")
         await r.close()
-        assert cli.final_text() == "partial"
+        assert cli.final_text().startswith("partial")
+        assert "\n\n-# Finished in " in cli.final_text()
 
     @pytest.mark.asyncio
     async def test_no_rotation_steer_summary_chip(self) -> None:
@@ -2928,3 +3050,558 @@ class TestContextThresholdNotices:
         await d._maybe_notice("chan1", "scope1", "key", object())
 
         assert cli.sent == []
+
+
+class TestSlashAndReplyCommands:
+    """The ``!`` text surface and the registered ``/`` surface share handlers.
+
+    The point of these tests is that a command cannot exist on one surface and
+    not the other, and that the slash surface answers its own interaction
+    ephemerally rather than posting to the channel.
+    """
+
+    def _cmd(
+        self, name: str, options: dict[str, str] | None = None, guild: str = ""
+    ) -> DiscordInteraction:
+        return DiscordInteraction(
+            interaction_id="i9",
+            interaction_token="tok",
+            channel_id="c1",
+            user_id="u1",
+            message_id="",
+            guild_id=guild,
+            kind=2,
+            command_name=name,
+            options=options or {},
+        )
+
+    @pytest.mark.asyncio
+    async def test_status_reports_over_the_text_surface(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(_inbound("!status"))
+        assert cli.sent, "status must reply"
+        body = cli.sent[-1][0]
+        assert "uptime" in body and "YOLO" in body
+
+    @pytest.mark.asyncio
+    async def test_status_over_slash_answers_the_interaction_ephemerally(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._cmd("status"))
+        # The reply rides the interaction callback, NOT a channel message: an
+        # ephemeral answer is the whole reason the slash surface exists here.
+        assert cli.sent == []
+        assert len(cli.responses) == 1
+        interaction_id, body, ephemeral = cli.responses[0]
+        assert interaction_id == "i9" and ephemeral is True and "uptime" in body
+
+    @pytest.mark.asyncio
+    async def test_a_slash_command_is_never_pre_acked_as_a_component(self) -> None:
+        """DEFERRED_UPDATE_MESSAGE is component-only, and the first response is
+        the command's only route — spending it on an ack would strand the reply."""
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._cmd("status"))
+        assert cli.acked == []
+
+    @pytest.mark.asyncio
+    async def test_help_comes_from_the_shared_catalogue_on_both_surfaces(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(_inbound("!help"))
+        text_card = cli.sent[-1][0]
+        await d.on_interaction(self._cmd("help"))
+        slash_card = cli.responses[-1][1]
+        assert text_card == slash_card
+        # Every catalogued command appears, so the card cannot drift from the
+        # registered menu.
+        for name, _desc in COMMAND_SPEC:
+            assert name in text_card
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_slash_command_does_not_reach_the_model(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        await d.on_interaction(self._cmd("nope"))
+        # It replays through the text path, where an unrecognized `!nope` is
+        # ordinary text; what must NOT happen is a silent drop with no reply.
+        assert cli.responses, "the interaction must be answered either way"
+
+
+class TestModelPicker:
+    @pytest.mark.asyncio
+    async def test_no_advertised_models_says_so_instead_of_posting_empty_buttons(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.handle_message(_inbound("!model"))
+        assert "No model list available yet" in cli.sent[-1][0]
+        assert cli.sent[-1][1] is None
+
+    @pytest.mark.asyncio
+    async def test_picker_posts_buttons_and_a_press_applies_the_choice(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.handle_message(_inbound("!model"))
+        _text, components = cli.sent[-1]
+        ids = [b["custom_id"] for row in components for b in row["components"]]
+        # Index-keyed, never the model id: a custom_id is capped at 100 chars and
+        # Discord replays old ones indefinitely.
+        assert ids == ["m:0", "m:1"]
+
+        message_id = "101"
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="c1",
+                user_id="u1",
+                message_id=message_id,
+                custom_id="m:1",
+            )
+        )
+        assert d._model_pref[d._scope_id("u1", "")] == "m-fast"
+        # One edit carries the outcome AND retires the buttons.
+        last_id, body, components = cli.edits[-1]
+        assert last_id == message_id and components == [] and "m-fast" in body
+        # The live session was switched in place, not merely recorded.
+        assert sess._gp.set_models == ["m-fast"]
+
+    @pytest.mark.asyncio
+    async def test_a_second_press_is_refused_rather_than_applied_twice(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.handle_message(_inbound("!model"))
+        press = DiscordInteraction(
+            interaction_id="i1",
+            interaction_token="tok",
+            channel_id="c1",
+            user_id="u1",
+            message_id="101",
+            custom_id="m:1",
+        )
+        await d.on_interaction(press)
+        await d.on_interaction(press)
+        assert "no longer active" in cli.edits[-1][1]
+
+    @pytest.mark.asyncio
+    async def test_an_expired_picker_is_refused_and_names_no_model(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.handle_message(_inbound("!model"))
+        for picker in d._model_pickers.values():
+            picker.created_at -= td_mod._MODEL_PICKER_TTL_SECS + 1
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="c1",
+                user_id="u1",
+                message_id="101",
+                custom_id="m:1",
+            )
+        )
+        assert "no longer active" in cli.edits[-1][1]
+        assert d._model_pref == {}
+
+    @pytest.mark.asyncio
+    async def test_an_out_of_range_or_unparseable_index_is_refused(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        for bad in ("m:99", "m:notanint", "m:-1"):
+            await d.handle_message(_inbound("!model"))
+            await d.on_interaction(
+                DiscordInteraction(
+                    interaction_id="i1",
+                    interaction_token="tok",
+                    channel_id="c1",
+                    user_id="u1",
+                    message_id=cli.sent[-1] and str(100 + len(cli.sent)),
+                    custom_id=bad,
+                )
+            )
+            assert d._model_pref == {}, bad
+
+    @pytest.mark.asyncio
+    async def test_the_picked_model_reaches_the_next_cold_start(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.handle_message(_inbound("!model"))
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="c1",
+                user_id="u1",
+                message_id="101",
+                custom_id="m:1",
+            )
+        )
+        await d.handle_message(_inbound("hello"))
+        assert sess.last_model == "m-fast"
+
+    @pytest.mark.asyncio
+    async def test_pickers_are_pruned_so_a_press_less_model_cannot_grow_forever(self) -> None:
+        d, _cli, _sess = _dispatcher({"u1"})
+        for i in range(td_mod._MODEL_PICKER_MAX + 10):
+            d._model_pickers[f"c1:{i}"] = td_mod._ModelPicker(
+                scope_id="s",
+                channel_id="c1",
+                message_id=str(i),
+                created_at=time.time(),
+                choices=(("", "Auto"),),
+            )
+        d._prune_model_pickers(time.time())
+        assert len(d._model_pickers) == td_mod._MODEL_PICKER_MAX
+
+
+class TestCommandSurfaceParity:
+    """Every catalogued command must actually do something on BOTH surfaces.
+
+    This is the drift guard the two-surface design needs: adding a row to
+    ``COMMAND_SPEC`` publishes it to Discord's menu, so a row with no handler
+    ships a visible command that silently does nothing. Walking the catalogue
+    rather than a hand-written list is the point, since the hand-written list is
+    what goes stale.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [name for name, _desc in COMMAND_SPEC])
+    async def test_every_catalogued_command_is_answered_over_slash(self, name: str) -> None:
+        d, cli, _sess = _dispatcher({"u1"})
+        with (
+            mock.patch("kiro_crew.dashboard.token_auth.generate_token", return_value="TKN"),
+            mock.patch.object(td_mod, "safety_override") as so,
+            mock.patch.object(td_mod, "describe_grant_lifetime", return_value="30m"),
+        ):
+            so.return_value.is_active.return_value = False
+            await d.on_interaction(
+                DiscordInteraction(
+                    interaction_id="i1",
+                    interaction_token="tok",
+                    channel_id="c1",
+                    user_id="u1",
+                    message_id="",
+                    kind=2,
+                    command_name=name,
+                )
+            )
+        # Either the interaction itself was answered, or it was acknowledged and
+        # replayed onto the text path which then replied. Silence is the failure.
+        assert cli.responses or cli.sent, name
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("name", [name for name, _desc in COMMAND_SPEC])
+    async def test_every_catalogued_command_resolves_on_both_prefixes(self, name: str) -> None:
+        assert parse_command(f"!{name}") == name
+        assert parse_command(f"/{name}") == name
+
+    def test_the_registered_payload_covers_exactly_the_catalogue(self) -> None:
+        assert [row["name"] for row in application_command_payload()] == [
+            name for name, _desc in COMMAND_SPEC
+        ]
+
+
+class TestRenderTogglesAreWiredPerTurn:
+    """The dispatcher must actually FEED the render toggles to the renderer.
+
+    A constructor argument with a default is inert until something passes it, and
+    both defaults happen to be the shipped values, so a missing wire looks exactly
+    like a working feature until an operator changes the setting.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_dispatcher_reads_the_toggles_fresh_for_each_turn(self) -> None:
+        d, _cli, _sess = _dispatcher({"u1"})
+        seen: list[tuple[bool, bool]] = []
+        real = td_mod.DiscordRenderer
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            seen.append((kwargs["reactions_enabled"], kwargs["show_thinking"]))
+            return real(*args, **kwargs)
+
+        # The dispatcher also reads `DiscordRenderer.channel_type` as a CLASS
+        # attribute for the mute check, so the stand-in has to carry it.
+        _spy.channel_type = real.channel_type  # type: ignore[attr-defined]
+
+        with (
+            mock.patch.object(td_mod, "DiscordRenderer", _spy),
+            mock.patch("kiro_crew.config.loader.KiroCrewConfig.load") as load,
+        ):
+            load.return_value = SimpleNamespace(
+                discord=SimpleNamespace(reactions_enabled=False, show_thinking=True)
+            )
+            await d.handle_message(_inbound("hi"))
+        # Read per TURN, not off the boot config, so the dashboard toggle takes
+        # effect on the next message instead of the next restart.
+        assert seen == [(False, True)]
+
+    def test_an_unreadable_config_keeps_the_shipped_defaults(self) -> None:
+        """Neither toggle is a security control, so a failed load must not fail
+        the turn: reactions stay on (the loud default) and reasoning stays off
+        (the quiet one)."""
+        d, _cli, _sess = _dispatcher({"u1"})
+        with mock.patch("kiro_crew.config.loader.KiroCrewConfig.load", side_effect=OSError):
+            assert d._render_config() == (True, False)
+
+
+class TestUndeliveredTurnIsNotASuccess:
+    @pytest.mark.asyncio
+    async def test_a_turn_whose_every_send_failed_records_a_failure(self) -> None:
+        """The provider answering says nothing about the user hearing it. A
+        revoked token or a dead network fails every send while the turn still
+        returns its text, and filing that as a success hides the outage behind a
+        healthy success rate."""
+        d, cli, sess = _dispatcher({"u1"})
+        cli.edit_ok = False
+        cli.fail_sends = True
+        await d.handle_message(_inbound("hi"))
+        assert sess.failures and not sess.successes
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_turn_still_records_a_success(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        await d.handle_message(_inbound("hi"))
+        assert sess.successes and not sess.failures
+
+
+class TestGuildCommandRefusalsAreVisible:
+    """A refused command must SAY so; Discord's own error is not a message.
+
+    An interaction the bot never answers renders as a red "The application did
+    not respond" with no reason, which reads as the bot being broken rather than
+    as a rule. Every refusal on the command path therefore answers ephemerally,
+    which discloses nothing to the rest of a shared channel.
+    """
+
+    def _cmd(self, *, guild: str = "", channel: str = "c1") -> DiscordInteraction:
+        return DiscordInteraction(
+            interaction_id="i1",
+            interaction_token="tok",
+            channel_id=channel,
+            user_id="u1",
+            message_id="",
+            guild_id=guild,
+            kind=2,
+            command_name="status",
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_command_in_an_unapproved_guild_channel_is_told_why(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        await d.on_interaction(self._cmd(guild="g1", channel="shared"))
+        assert len(cli.responses) == 1
+        _iid, body, ephemeral = cli.responses[0]
+        assert ephemeral is True
+        assert "approved thread" in body and "DM" in body
+
+    @pytest.mark.asyncio
+    async def test_a_governance_denied_command_is_told_why_without_naming_policy(self) -> None:
+        d, cli, _ = _dispatcher({"u1"})
+        with mock.patch.object(td_mod, "channel_inbound_permitted", return_value=False):
+            await d.on_interaction(self._cmd())
+        assert len(cli.responses) == 1
+        _iid, body, ephemeral = cli.responses[0]
+        assert ephemeral is True and "disabled by policy" in body
+        # The profile's CONTENTS are the operator's ceiling, not the user's to read.
+        assert "profile" not in body.lower() and "scope" not in body.lower()
+
+    @pytest.mark.asyncio
+    async def test_an_unauthorized_user_gets_nothing_at_all(self) -> None:
+        """Deny-by-default stays SILENT for an unknown user: an unauthorized
+        sender must learn nothing about what they reached."""
+        d, cli, _ = _dispatcher({"someone-else"})
+        await d.on_interaction(self._cmd())
+        assert cli.responses == [] and cli.sent == []
+
+    @pytest.mark.asyncio
+    async def test_an_approved_thread_still_answers_the_command(self) -> None:
+        d, cli, _ = _dispatcher({"u1"}, allowed_threads={"t1"})
+        cli.thread_channels.add("t1")
+        await d.on_interaction(self._cmd(guild="g1", channel="t1"))
+        assert len(cli.responses) == 1
+        assert "uptime" in cli.responses[0][1]
+
+
+class TestRendererIsFullyWired:
+    """The renderer's optional arguments are inert until something passes them.
+
+    Both of these defaults are the shipped value, so a missing wire looks exactly
+    like a working feature from the outside: the ladder simply never arms and the
+    footer simply has no context chip. Only a test that observes the ARGUMENT
+    catches it.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_inbound_message_id_arms_the_phase_ladder(self) -> None:
+        d, _cli, _sess = _dispatcher({"u1"})
+        seen: list[str] = []
+        real = td_mod.DiscordRenderer
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs["react_message_id"])
+            return real(*args, **kwargs)
+
+        _spy.channel_type = real.channel_type  # type: ignore[attr-defined]
+        with mock.patch.object(td_mod, "DiscordRenderer", _spy):
+            await d.handle_message(_inbound_with_id("hi", message_id="m42"))
+        # The phase emoji goes on the user's OWN message, so the ladder cannot
+        # arm without its id.
+        assert seen == ["m42"]
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_inbound_message_arms_nothing(self) -> None:
+        """A synthetic turn (an option press, an AutoNudge fire) has no message
+        to react to, so the ladder must stay down rather than react to nothing."""
+        d, _cli, _sess = _dispatcher({"u1"})
+        seen: list[str] = []
+        real = td_mod.DiscordRenderer
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs["react_message_id"])
+            return real(*args, **kwargs)
+
+        _spy.channel_type = real.channel_type  # type: ignore[attr-defined]
+        with mock.patch.object(td_mod, "DiscordRenderer", _spy):
+            await d.handle_message(_inbound("hi"))
+        assert seen == [""]
+
+    @pytest.mark.asyncio
+    async def test_the_session_provider_is_bound_as_the_context_source(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        bound: list[Any] = []
+        real = td_mod.DiscordRenderer
+
+        def _spy(*args: Any, **kwargs: Any) -> Any:
+            renderer = real(*args, **kwargs)
+            original = renderer.bind_context_source
+
+            def _record(provider: Any) -> None:
+                bound.append(provider)
+                original(provider)
+
+            renderer.bind_context_source = _record  # type: ignore[method-assign]
+            return renderer
+
+        _spy.channel_type = real.channel_type  # type: ignore[attr-defined]
+        with mock.patch.object(td_mod, "DiscordRenderer", _spy):
+            await d.handle_message(_inbound("hi"))
+        # Unbound, the turn footer's context chip cannot render at all.
+        assert bound == [sess.last_provider]
+
+
+class TestOptionChoiceIsNeverACommand:
+    @pytest.mark.asyncio
+    async def test_a_model_authored_option_label_cannot_execute_a_command(self) -> None:
+        """An option label is chosen by the MODEL; the press only says which one
+        the user picked. Interpreting it would put a destructive command one tap
+        away -- `!new` discards the conversation the user was mid-way through."""
+        d, cli, sess = _dispatcher({"u1"})
+        before = d._session_key("u1")
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="c1",
+                user_id="u1",
+                message_id="m1",
+                custom_id="opt:0",
+                label="!new",
+            )
+        )
+        # `!new` rotates the generation suffix, so an unchanged session key is
+        # positive proof the label never executed.
+        assert d._session_key("u1") == before
+        # And the turn DID run: a command returns before the session is acquired,
+        # so a provider having been reached is what proves the label was treated
+        # as chat text. Asserting on the posted text alone cannot distinguish
+        # them, because this path echoes the chosen label either way.
+        assert sess.last_provider is not None
+        assert any("Answer" in text for text, _c in cli.sent) or any(
+            "Answer" in text for _mid, text, _c in cli.edits
+        )
+
+
+class TestReviewFindingRegressions:
+    """Guards for the four findings the PR review raised."""
+
+    @pytest.mark.asyncio
+    async def test_an_ambiguous_allowlist_gets_no_owner_dm(self) -> None:
+        """With no owner field and several allow-listed users, picking the first
+        would send private agent output to the wrong human."""
+        from kiro_crew.dashboard.handlers.messaging import _owner_dm_target
+
+        def _t(tid: str, available: bool = True) -> Any:
+            return SimpleNamespace(target_id=tid, available=available)
+
+        one = SimpleNamespace(configured_targets=lambda: [_t("user:1")])
+        many = SimpleNamespace(configured_targets=lambda: [_t("user:1"), _t("user:2")])
+        assert _owner_dm_target(one) == "user:1"
+        assert _owner_dm_target(many) == ""
+        # A thread is a wider audience than a DM and never counts as one.
+        threads = SimpleNamespace(configured_targets=lambda: [_t("thread:9"), _t("user:1")])
+        assert _owner_dm_target(threads) == "user:1"
+
+    @pytest.mark.asyncio
+    async def test_guild_slash_model_refuses_rather_than_posting_the_list(self) -> None:
+        """The slash surface promises a private reply, and the picker cannot be
+        one: its buttons need an editable channel message."""
+        d, cli, sess = _dispatcher({"u1"}, allowed_threads={"t1"})
+        cli.thread_channels.add("t1")
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="t1",
+                user_id="u1",
+                message_id="",
+                guild_id="g1",
+                kind=2,
+                command_name="model",
+            )
+        )
+        assert len(cli.responses) == 1 and cli.responses[0][2] is True
+        assert "cannot be private here" in cli.responses[0][1]
+        # Nothing was posted to the thread, so no model list leaked.
+        assert cli.sent == []
+
+    @pytest.mark.asyncio
+    async def test_a_dm_slash_model_still_posts_the_picker(self) -> None:
+        d, cli, sess = _dispatcher({"u1"})
+        sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]
+        await d.on_interaction(
+            DiscordInteraction(
+                interaction_id="i1",
+                interaction_token="tok",
+                channel_id="c1",
+                user_id="u1",
+                message_id="",
+                kind=2,
+                command_name="model",
+            )
+        )
+        assert any(components for _text, components in cli.sent)
+
+    def test_the_install_url_grants_thread_creation(self) -> None:
+        """`auto_thread` promotes a channel message into a NEW public thread, so
+        an install without this bit answers nothing in an allowed channel."""
+        from kiro_crew.discord.install_url import (
+            PERM_CREATE_PUBLIC_THREADS,
+            THREAD_PERMISSIONS,
+        )
+
+        assert THREAD_PERMISSIONS & PERM_CREATE_PUBLIC_THREADS
+
+
+class TestPerTurnConfigReadIsOffLoop:
+    @pytest.mark.asyncio
+    async def test_the_render_config_read_is_offloaded(self) -> None:
+        """The per-turn read is a real config.json read plus schema validation, so
+        on the gateway's single loop it stalls every other chat and heartbeat task.
+        Reading fresh is the point, so it can only be moved, not cached away."""
+        d, _cli, _sess = _dispatcher({"u1"})
+        offloaded: list[Any] = []
+        real = asyncio.to_thread
+
+        async def _spy(fn: Any, *a: Any, **kw: Any) -> Any:
+            offloaded.append(getattr(fn, "__name__", ""))
+            return await real(fn, *a, **kw)
+
+        with mock.patch.object(td_mod.asyncio, "to_thread", _spy):
+            await d.handle_message(_inbound("hi"))
+        assert "_render_config" in offloaded

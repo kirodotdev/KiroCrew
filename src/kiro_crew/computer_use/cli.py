@@ -465,7 +465,7 @@ def _coerce(raw: str) -> Any:
     """
     try:
         value = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
+    except ValueError:
         return raw
     if isinstance(value, (bool, int, float)) and not isinstance(value, str):
         return value

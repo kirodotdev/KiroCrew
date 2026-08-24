@@ -22,6 +22,7 @@ import struct
 import threading
 from collections import OrderedDict
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from fnmatch import fnmatch
@@ -115,6 +116,96 @@ class SemanticRejectCode(str, Enum):
     VALUE_EMPTY = "value_empty"
     INJECTION = "injection_blocked"
     CONFLICT = "conflict_skip"
+
+
+class LessonWriteOutcome(str, Enum):
+    """What a lesson write actually DID, for callers that must tell the cases apart.
+
+    ``write_lesson`` used to return a bare ``bool`` whose ``False`` meant several
+    unrelated things: validation refused the value, a dedup rule claimed the write,
+    the submit was a genuine no-op, or a bare re-submit deliberately kept the stored
+    NOT-clause. The first two mean "your lesson did not land"; the last two mean
+    "your lesson is fine, there was nothing to do". A caller that cannot tell them
+    apart has to guess, and the CLI guessed wrong -- it read every ``False`` as "the
+    vector store did not take it" and wrote a second record into ``lessons.jsonl``.
+
+    The vocabulary matches :meth:`kiro_crew.learn.LessonStore.save_or_enrich`, which
+    already returns ``inserted``/``enriched``/``unchanged``, so the two stores now
+    describe the same events with the same words.
+    """
+
+    INSERTED = "inserted"
+    ENRICHED = "enriched"
+    UNCHANGED = "unchanged"
+    DEDUPED = "deduped"
+    REFUSED = "refused"
+
+
+# The two outcomes that changed the store. UNCHANGED is deliberately NOT here: the
+# lesson IS stored as submitted, but nothing was written, so a caller asking "did I
+# need to do something" gets no, while a caller asking "is my lesson stored" reads
+# ``stored`` below.
+_LESSON_WROTE_OUTCOMES = frozenset({LessonWriteOutcome.INSERTED, LessonWriteOutcome.ENRICHED})
+
+
+@dataclass(frozen=True)
+class LessonWriteResult:
+    """A lesson write's outcome plus the short reason code behind it.
+
+    ``reason`` names WHICH rule produced the outcome -- a
+    :class:`SemanticRejectCode` value for ``REFUSED``, the dedup rule's name for
+    ``DEDUPED``, and ``kept_stored_clause`` for the one ``UNCHANGED`` case that is
+    not a byte-identical re-submit. It is ``None`` when the outcome says everything
+    there is to say. Surfaces that report back to a human or a model (the CLI, the
+    ``/api/lessons`` response, the ``learn_add`` tool result) need the reason; the
+    ones that only branch on success do not.
+
+    **Truthiness is deliberate, and it is the reason this replaced the old ``bool``
+    outright instead of shipping beside it.** ``write_lesson`` used to answer
+    ``True``/``False``, and three callers plus ~55 assertions read that answer with a
+    bare ``if``/``assert``. Returning any ordinary object would have made every one of
+    them unconditionally true -- silently, since a bare ``if`` on a truthy value is not
+    a type error and mypy cannot flag it. :meth:`__bool__` closes exactly that hole by
+    giving this type the OLD answer: ``bool(result)`` is ``wrote``, byte-for-byte the
+    predicate those callers were already written against. So there is one method, one
+    name, and nothing to migrate to -- a caller that needs the detail reads
+    :attr:`outcome`, and a caller that only needs "did this write something" keeps
+    using the truth value it always used.
+    """
+
+    outcome: LessonWriteOutcome
+    reason: str | None = None
+
+    def __bool__(self) -> bool:
+        """``wrote`` -- the exact predicate the old ``bool`` return answered.
+
+        Preserving it is the whole point: see the class docstring. Do NOT redefine
+        this as ``stored``, which would quietly turn a no-op re-submit into a write
+        for every caller that branches on the truth value.
+
+        Removing it does NOT redden the wide assertion surface, which is exactly why
+        it is easy to lose: without it a result object is truthy by default, so every
+        positive ``assert store.write_lesson(...)`` keeps passing while asserting
+        nothing at all. Only the negative assertions and the dedicated tests in
+        ``TestWriteLessonTruthValueIsTheOldBool`` catch its absence -- verified by
+        deleting this method, which left 160 tests green and reddened 5.
+        """
+        return self.wrote
+
+    @property
+    def wrote(self) -> bool:
+        """The store changed -- a row was inserted, or an existing row enriched."""
+        return self.outcome in _LESSON_WROTE_OUTCOMES
+
+    @property
+    def stored(self) -> bool:
+        """The lesson is in the store as submitted -- written now, or already there.
+
+        Distinct from :attr:`wrote` (and from the truth value): a no-op re-submit did
+        not write anything, yet the caller's lesson is stored, so telling them it
+        failed would be false.
+        """
+        return self.outcome is LessonWriteOutcome.UNCHANGED or self.wrote
 
 
 _AUDITABLE_REJECT_CODES = {
@@ -751,9 +842,90 @@ class VectorMemoryStore:
         # grows past _LAST_ACCESSED_CACHE_MAX.
         self._last_accessed_touch: dict[str, float] = {}
 
+    def _secret_bearing_files(self) -> tuple[Path, ...]:
+        """Every file beside the DB that carries the user's memories.
+
+        All of them, not just the DB, because on Windows the owner-only DIRECTORY is
+        not sufficient for a file that already exists: **Bypass Traverse Checking** is
+        granted to Everyone by default, so a permissive DACL on the file itself stays
+        reachable even inside a tightened directory. The directory governs what SQLite
+        and FAISS create from now on; this list is what repairs an existing install.
+
+        - ``-wal`` / ``-shm``: a COMMITTED row lives in the ``-wal`` until a
+          checkpoint moves it. Same suffix set ``memory.py`` uses to drop a corrupt
+          index.
+        - ``memory.faiss`` / ``memory.ids.json``: the embedding index and its
+          id map, written with no lockdown of their own.
+
+        Not exhaustive for the data home as a whole -- ``memory.py``'s FTS index
+        (``memory_index.db``) and its sidecars carry the same secrets and are not
+        this class's to open. Tracked separately rather than reached across a module
+        boundary from here.
+        """
+        return (
+            Path(f"{self._db_path}-wal"),
+            Path(f"{self._db_path}-shm"),
+            self._faiss_path,
+            self._faiss_path.with_suffix(".ids.json"),
+        )
+
+    def _restrict_memory_files(self) -> None:
+        """Make every memory-bearing file that exists owner-only.
+
+        Called TWICE by :meth:`init` -- once before the connect and once after -- and
+        the ordering is the point of the first call. The owner-only directory does not
+        cover a file that already EXISTS on Windows, because Bypass Traverse Checking
+        is granted to Everyone by default, so a permissive DACL on the file itself
+        stays reachable inside a tightened directory. Restricting before
+        ``sqlite3.connect`` means the migrations do not run against a file another
+        local user can still write; restricting again after covers whatever SQLite
+        just created.
+
+        Missing files are skipped BY AN EXISTENCE CHECK, not by catching the failure:
+        on Windows ``restrict_to_owner`` shells out, so a missing path raises plain
+        ``OSError`` (icacls exits non-zero) rather than ``FileNotFoundError``, which
+        only ever comes from the POSIX ``os.chmod``. Catching alone would spawn up to
+        five futile ``icacls`` processes on a clean init and log a false "may be
+        readable by other users" warning for each, twice per init. The race between
+        the check and the call is benign: a file that appears in between is created by
+        SQLite or FAISS inside the already-tightened directory, so it inherits
+        owner-only access on both platforms and the next init covers it regardless.
+
+        Any other failure warns rather than raising -- memory being unavailable is a
+        supported degraded state, and ``restrict_to_owner`` documents this
+        warn-and-continue handler as its caller contract.
+        """
+        for path in (self._db_path, *self._secret_bearing_files()):
+            if not path.exists():
+                continue  # SQLite and FAISS create theirs on demand
+            try:
+                platform_compat.restrict_to_owner(path)
+            except OSError:
+                logger.warning(
+                    "Cannot restrict %s to owner; it may be readable by other users",
+                    path,
+                    exc_info=True,
+                )
+
     def init(self) -> None:
         """Create DB, apply migrations, set permissions."""
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+        # Owner-only lockdown, in two halves. This directory call covers everything
+        # SQLite and FAISS create from here on -- inheritable on Windows, because
+        # `make_owner_only_dir` routes through `restrict_dir_to_owner`. The per-file
+        # pass below repairs what already EXISTS, which a tightened parent cannot do:
+        # Windows grants *Bypass Traverse Checking* to Everyone by default, so a
+        # pre-lockdown file stays reachable through it. Full reasoning -- the sidecar
+        # file set, the every-init rationale, the Windows icacls cost, the fail-soft
+        # contract -- lives in docs/guides/windows-install.md, "The memory store".
+        #
+        # SCOPE: with the default `db_path` this directory IS the data home
+        # (`config_dir()`), so a memory init tightens the whole home. That is wider
+        # than this class and the only place in the tree that does it -- named here
+        # rather than left to be discovered.
+        platform_compat.make_owner_only_dir(self._db_path.parent)
+        # BEFORE the connect so the migrations do not run against a file another
+        # local user can still write; repeated after it to cover what SQLite created.
+        self._restrict_memory_files()
         self._db = sqlite3.connect(
             str(self._db_path), check_same_thread=False, isolation_level=None
         )
@@ -791,9 +963,22 @@ class VectorMemoryStore:
                 self._db.commit()
                 logger.info("Applied memory schema migration v%s", ver)
 
-        # Set file permissions (owner-only). chmod_safe already logs+swallows
-        # OSError internally and is a no-op on Windows, so no wrapper needed.
-        platform_compat.chmod_safe(self._db_path, 0o600)
+        # Second pass, after the connect: covers what SQLite has just created. Runs
+        # on EVERY init, not only when init created the files -- an existing DB is
+        # exactly the one that may have lost its protection since (restored backup,
+        # home migration, manual edit, or an install predating this lockdown).
+        # ``restrict_to_owner`` rather than ``chmod_safe``, which is a documented
+        # no-op on Windows. Cost, file set and fail-soft contract:
+        # docs/guides/windows-install.md, "The memory store".
+        #
+        # CALLER CONTRACT: an async caller must offload this. The Windows path shells
+        # out to icacls, so calling ``init()`` directly on an event loop freezes it
+        # for seconds. All async callers now offload: ``eval.runner``,
+        # ``slack.gateway`` and ``cli_server._run_task`` via ``asyncio.to_thread``
+        # (#5389); ``dashboard/handlers/memory.py``'s standalone fallback routes
+        # through ``_get_vector_store_async``, which offloads the init-bearing
+        # path (#5221).
+        self._restrict_memory_files()
 
         # Load persisted FAISS index (or rebuild from SQLite embeddings)
         try:
@@ -2293,8 +2478,16 @@ class VectorMemoryStore:
         rule_emb: list[float] | None = None,
         rule_emb_generation: int | None = None,
         repo_scope: str | None = None,
-    ) -> bool:
+    ) -> LessonWriteResult:
         """Write a lesson as a semantic entry with key lesson.<hash>.
+
+        Returns which outcome occurred (see :class:`LessonWriteOutcome`) rather than a
+        bare ``bool``, whose ``False`` conflated "validation refused this", "a dedup
+        rule claimed it", "it is already stored exactly as submitted" and "your bare
+        re-submit kept the stored clause" -- four facts a caller cannot act on without
+        telling them apart. The result's TRUTH VALUE is still the old predicate (see
+        :class:`LessonWriteResult`), so a caller that only needs "did this write
+        something" keeps using ``if store.write_lesson(...)`` unchanged.
 
         Deduplicates against existing lessons:
         - Substring match: if existing contains new (or vice versa), longer wins
@@ -2348,7 +2541,7 @@ class VectorMemoryStore:
         # the schema, which already rejects the same shapes.
         if repo_scope is not None and isinstance(repo_scope, str) and repo_scope.strip():
             if not scope_is_admissible(repo_scope):
-                return False
+                return LessonWriteResult(LessonWriteOutcome.REFUSED, "scope_inadmissible")
         repo_scope = canonical_scope(repo_scope)
         # The category is now part of the stored value, so an unusable one would be
         # scanned by validate_semantic and could REJECT the whole lesson -- turning a
@@ -2411,7 +2604,7 @@ class VectorMemoryStore:
         if preflight is not None:
             code, message = preflight
             logger.info("Lesson rejected before dedup (%s): %s", code, message)
-            return False
+            return LessonWriteResult(LessonWriteOutcome.REFUSED, code.value)
 
         def _flush_backfills() -> None:
             if pending_backfills:
@@ -2433,7 +2626,7 @@ class VectorMemoryStore:
         # TWO PASSES, and the order is load-bearing.
         #
         # Pass 1 resolves THIS lesson. Pass 2 runs the generic dedup rules, and those
-        # can `return False` on an UNRELATED row -- a superset whose text contains our
+        # can claim the write on an UNRELATED row -- a superset whose text contains our
         # rule. get_lessons() orders by md5 key, so whether such a row is scanned
         # before ours is effectively random, and doing both in one loop made the
         # outcome depend on that order: an unrelated superset seen first discarded an
@@ -2536,7 +2729,7 @@ class VectorMemoryStore:
                     existing["key"],
                 )
                 _flush_backfills()
-                return False
+                return LessonWriteResult(LessonWriteOutcome.UNCHANGED, "kept_stored_clause")
             if fields is not None:
                 # Mapping row: a re-submit that changes nothing the fields express
                 # is a no-op. Category is effectively WRITE-ONCE here: it is not
@@ -2546,7 +2739,7 @@ class VectorMemoryStore:
                 # never stored a category for anything to have depended on.
                 if negative == stored_negative:
                     _flush_backfills()
-                    return False
+                    return LessonWriteResult(LessonWriteOutcome.UNCHANGED)
                 stored_category = decoded.get("category")
                 enriched: dict[str, object] = {
                     "rule": stored_rule,
@@ -2570,13 +2763,14 @@ class VectorMemoryStore:
                 target_text = base if not negative else f"{base}{_LESSON_NEGATIVE_SEP}{negative}"
                 if target_text == existing_val:
                     _flush_backfills()
-                    return False
+                    return LessonWriteResult(LessonWriteOutcome.UNCHANGED)
                 target = {"rule": base, "category": category, "negative": negative}
             # The preflight above validated the value built from the SUBMITTED rule;
             # this one differs, so validate what is actually written.
-            if self.validate_semantic(existing["key"], target, confidence, source):
+            enrich_reject = self.validate_semantic(existing["key"], target, confidence, source)
+            if enrich_reject is not None:
                 _flush_backfills()
-                return False
+                return LessonWriteResult(LessonWriteOutcome.REFUSED, enrich_reject[0].value)
             # Write back under the EXISTING key -- a case-variant would otherwise
             # insert a second row for the same lesson under a different md5. The
             # shared tail below does the write.
@@ -2598,7 +2792,7 @@ class VectorMemoryStore:
             if rule_lower in existing_lower:
                 logger.info("Lesson dedup: %r already covered by %r", rule[:60], existing["key"])
                 _flush_backfills()
-                return False
+                return LessonWriteResult(LessonWriteOutcome.DEDUPED, "substring_covered")
             if existing_lower in rule_lower:
                 self.delete_semantic(existing["key"], source)
                 continue
@@ -2662,12 +2856,16 @@ class VectorMemoryStore:
                             self.delete_semantic(existing["key"], source)
                         else:
                             _flush_backfills()
-                            return False
+                            return LessonWriteResult(
+                                LessonWriteOutcome.DEDUPED, "semantic_similarity"
+                            )
 
         _flush_backfills()
 
         err = self.set_semantic(key, value, confidence, source)
-        if err is None and rule_emb:
+        if err is not None:
+            return LessonWriteResult(LessonWriteOutcome.REFUSED, err[0].value)
+        if rule_emb:
             emb_blob = struct.pack(f"{len(rule_emb)}f", *rule_emb)
             with self._db_lock:
                 if self._space_generation != lesson_embed_generation:
@@ -2681,7 +2879,14 @@ class VectorMemoryStore:
                         (emb_blob, key),
                     )
                     self.db.commit()
-        return err is None
+        # ``matched`` is pass 1's verdict: it rewrote an EXISTING row under that row's
+        # own key to attach a clause, which is an enrichment. Every other route here
+        # wrote a new row under the submitted rule's key -- including the ones that
+        # superseded an older row first, since the caller's lesson did not exist under
+        # this key before. Same two words the JSONL store uses for the same events.
+        return LessonWriteResult(
+            LessonWriteOutcome.ENRICHED if matched else LessonWriteOutcome.INSERTED
+        )
 
     @staticmethod
     def _lesson_keywords(text: str) -> set[str]:

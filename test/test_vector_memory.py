@@ -640,11 +640,253 @@ class TestSchemaInit:
     def test_file_permissions(self, tmp_path: Path) -> None:
         import stat
 
+        from kiro_crew import platform_compat
+
         db_path = tmp_path / "mem.db"
         store = VectorMemoryStore(db_path=db_path)
         store.init()
-        mode = stat.S_IMODE(db_path.stat().st_mode)
-        assert mode == 0o600
+        # NTFS reports 0o666 for any file regardless of its DACL, so the mode
+        # assertion is meaningful only on POSIX. The routing assertion below is
+        # what covers Windows.
+        if platform_compat.IS_POSIX:
+            assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    def test_creation_routes_through_restrict_to_owner(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The lockdown must go through ``restrict_to_owner``, on every platform.
+
+        ``chmod_safe`` is a no-op on Windows, so a regression back to it would leave
+        the user's memories and embeddings under the DACL the file inherits — and no
+        mode assertion can catch that, because NTFS has no mode bits to read. This
+        asserts the call, which is observable everywhere.
+        """
+        from kiro_crew import vector_memory as vm
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        db_path = tmp_path / "mem.db"
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+        # The main DB, plus whatever else legitimately routes through this helper.
+        # Asserted as a set of ALLOWED paths rather than an exact list, because the
+        # membership is not fixed: the WAL sidecars may or may not exist yet on a
+        # fresh create. The parent DIRECTORY is listed but no longer expected on
+        # either platform -- `make_owner_only_dir` routes it through
+        # `restrict_dir_to_owner`, the directory twin, so it does not reach this
+        # helper at all. Kept in the set as a harmless superset entry so the
+        # assertion stays green if that routing changes back.
+        allowed = {
+            str(db_path),
+            f"{db_path}-wal",
+            f"{db_path}-shm",
+            str(db_path.parent / "memory.faiss"),
+            str(db_path.parent / "memory.ids.json"),
+            str(db_path.parent),
+        }
+        assert str(db_path) in seen, seen
+        assert set(seen) <= allowed, set(seen) - allowed
+
+    def test_the_directory_is_owner_only_so_wal_sidecars_inherit_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Locking the .db file alone does not protect the memories.
+
+        ``journal_mode=WAL`` makes SQLite create ``memory.db-wal`` and
+        ``memory.db-shm``, and a COMMITTED row lives in the ``-wal`` until a
+        checkpoint moves it. SQLite creates and destroys those files throughout the
+        DB's life, at moments no caller can hook, so the directory they inherit
+        access from is the only place it can be settled once. Without this, a
+        readable parent directory leaves committed memories readable on Windows even
+        though the .db file itself is locked down.
+        """
+        from kiro_crew import vector_memory as vm
+
+        dirs: list[str] = []
+        real = vm.platform_compat.make_owner_only_dir
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "make_owner_only_dir",
+            lambda p: (dirs.append(str(p)), real(p))[1],
+        )
+        db_path = tmp_path / "nested" / "mem.db"
+
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+
+        assert dirs == [str(db_path.parent)], dirs
+
+    def test_an_existing_wal_sidecar_is_repaired_on_open(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The directory fixes new sidecars; this fixes the ones already there.
+
+        A ``-wal`` created before the directory was tightened keeps the access it was
+        born with, and it can hold committed rows indefinitely if no checkpoint has
+        run -- so an existing install is not repaired by the directory alone.
+        """
+        from kiro_crew import vector_memory as vm
+
+        db_path = tmp_path / "mem.db"
+        first = VectorMemoryStore(db_path=db_path)
+        first.init()
+        # CLOSED before the sidecar is touched: Windows refuses a write to a file
+        # another handle holds open, and SQLite keeps -wal open for the life of the
+        # connection. Closing is also what the scenario describes -- an install whose
+        # sidecar was left behind by an earlier process.
+        first.close()
+        wal = Path(f"{db_path}-wal")
+        wal.write_bytes(b"pretend committed rows")
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        second = VectorMemoryStore(db_path=db_path)
+        try:
+            second.init()
+        finally:
+            second.close()
+
+        assert str(wal) in seen, seen
+
+    def test_the_faiss_index_is_repaired_too(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The embedding index carries the same secrets as the DB.
+
+        And the owner-only directory does not cover it on Windows: Bypass Traverse
+        Checking is granted to Everyone by default, so a permissive DACL on a file
+        that already exists stays reachable inside a tightened directory. An install
+        whose FAISS index predates the lockdown is therefore only fixed by naming the
+        file.
+        """
+        from kiro_crew import vector_memory as vm
+
+        db_path = tmp_path / "mem.db"
+        faiss = tmp_path / "memory.faiss"
+        faiss.write_bytes(b"pretend embeddings")
+
+        seen: list[str] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append(str(p)), real(p))[1],
+        )
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()
+
+        assert str(faiss) in seen, seen
+
+    def test_an_existing_db_is_restricted_before_the_migrations_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ordering, not just coverage: the migrations must not run on a writable file.
+
+        An existing DB may still carry a writable inherited DACL. If the lockdown only
+        happened at the end of ``init()``, every schema migration would run against a
+        file another local user could concurrently write.
+        """
+        from kiro_crew import vector_memory as vm
+
+        db_path = tmp_path / "mem.db"
+        first = VectorMemoryStore(db_path=db_path)
+        first.init()
+        first.close()
+
+        events: list[str] = []
+        real_restrict = vm.platform_compat.restrict_to_owner
+        real_connect = vm.sqlite3.connect
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (events.append(f"restrict:{Path(p).name}"), real_restrict(p))[1],
+        )
+        monkeypatch.setattr(
+            vm.sqlite3,
+            "connect",
+            lambda *a, **k: (events.append("connect"), real_connect(*a, **k))[1],
+        )
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()
+
+        assert "connect" in events, events
+        restricted_db_before = events.index("restrict:mem.db") < events.index("connect")
+        assert restricted_db_before, events
+
+    def test_relaxed_mode_is_retightened_on_reopen(self, tmp_path: Path) -> None:
+        """A DB whose mode was widened after creation is locked down again.
+
+        Covers the POSIX arm of the every-init re-tighten: a home migration or a
+        restored backup can land ``memory.db`` group-readable, and only re-applying
+        the lockdown on open closes it.
+        """
+        import stat
+
+        from kiro_crew import platform_compat
+
+        if not platform_compat.IS_POSIX:
+            pytest.skip("POSIX mode bits")
+        db_path = tmp_path / "mem.db"
+        VectorMemoryStore(db_path=db_path).init()
+        db_path.chmod(0o644)
+        VectorMemoryStore(db_path=db_path).init()
+        assert stat.S_IMODE(db_path.stat().st_mode) == 0o600
+
+    def test_absent_sidecars_are_never_handed_to_the_helper(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A file that does not exist is skipped by a check, not by catching.
+
+        On Windows ``restrict_to_owner`` shells out, so a missing path raises plain
+        ``OSError`` (icacls exits non-zero) rather than ``FileNotFoundError`` -- which
+        only ever comes from the POSIX ``os.chmod``. Catching alone therefore spawned
+        a futile ``icacls`` per absent file and logged a false "may be readable by
+        other users" warning for each, twice per init. Asserting on what reaches the
+        helper pins the check itself, which is observable on both platforms; a mode or
+        DACL assertion could not distinguish the two implementations.
+        """
+        from kiro_crew import vector_memory as vm
+
+        # Existence is recorded AT CALL TIME, not after init: the pass runs twice and
+        # ``close()`` checkpoints the ``-wal``/``-shm`` away, so a sidecar that existed
+        # when the helper saw it is legitimately gone by the end of the test.
+        seen: list[tuple[str, bool]] = []
+        real = vm.platform_compat.restrict_to_owner
+        monkeypatch.setattr(
+            vm.platform_compat,
+            "restrict_to_owner",
+            lambda p: (seen.append((str(p), Path(p).exists())), real(p))[1],
+        )
+        db_path = tmp_path / "mem.db"
+        store = VectorMemoryStore(db_path=db_path)
+        try:
+            store.init()
+        finally:
+            store.close()  # an open handle blocks tmp_path teardown on Windows
+        assert seen, "the lockdown pass never ran"
+        assert [p for p, existed in seen if not existed] == []
 
     def test_idempotent_init(self, tmp_path: Path) -> None:
         store = VectorMemoryStore(db_path=tmp_path / "mem.db")
@@ -2427,7 +2669,7 @@ class TestSharedConnectionLockDiscipline:
         assert store.set_semantic("project.notes.findings_doc", "v2 final", 0.9, "consolidation") is None
 
         # Remaining writers: lessons (incl. embedding backfill), deletes, rotation.
-        assert store.write_lesson("prefer explicit transactions over implicit ones") is True
+        assert store.write_lesson("prefer explicit transactions over implicit ones").wrote is True
         store.delete_semantic("project.notes.findings_doc", "user_explicit")
         rows = store.get_episodic_list(limit=1)
         if rows:
@@ -2681,6 +2923,161 @@ class TestDbLockGuard:
         assert "(S.sneaky.inner)" in flagged
         assert "(S.raw)" in flagged
         assert "S.good" not in flagged
+
+
+class TestAsyncInitOffloadGuard:
+    """AST guard for the #5206 caller contract: an ``async def`` must never
+    call ``VectorMemoryStore.init()`` inline — the Windows path shells out to
+    icacls, so an inline call freezes the event loop for seconds. Async
+    callers offload via ``asyncio.to_thread`` / ``run_in_executor`` (which
+    take the callable UNCALLED, so they never trip this guard).
+
+    The contract was prose-only and drifted three times before #5389 closed
+    the last inline caller; this test makes the next drift a CI failure
+    instead of a code-review catch. Same shape as ``TestDbLockGuard``,
+    including the seeded-violation self-test that keeps the guard armed.
+    """
+
+    @classmethod
+    def _find_inline_async_inits(cls, tree, where: str = "") -> list[str]:
+        """Return a violation per direct ``<store>.init()`` call whose nearest
+        enclosing function is ``async def``, where ``<store>`` is a name or
+        ``self.<attr>`` assigned from ``VectorMemoryStore(...)`` in the same
+        module. Shared by the real guard and its self-test below."""
+        import ast
+
+        def _is_store_ctor(node: object) -> bool:
+            return isinstance(node, ast.Call) and (
+                (isinstance(node.func, ast.Name) and node.func.id == "VectorMemoryStore")
+                or (
+                    isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "VectorMemoryStore"
+                )
+            )
+
+        # Pass 1: collect module-local bindings created from the constructor.
+        store_names: set = set()
+        store_attrs: set = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if value is not None and _is_store_ctor(value):
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            store_names.add(target.id)
+                        elif isinstance(target, ast.Attribute) and isinstance(
+                            target.value, ast.Name
+                        ):
+                            store_attrs.add(target.attr)
+
+        # Pass 2: flag direct .init() calls on those bindings inside async defs.
+        violations: list[str] = []
+
+        class Visitor(ast.NodeVisitor):
+            def __init__(self) -> None:
+                self.name_stack: list = []
+                self.async_stack: list = []
+
+            def visit_ClassDef(self, node) -> None:
+                self.name_stack.append(node.name)
+                self.generic_visit(node)
+                self.name_stack.pop()
+
+            def _visit_func(self, node, is_async: bool) -> None:
+                self.name_stack.append(node.name)
+                self.async_stack.append(is_async)
+                self.generic_visit(node)
+                self.async_stack.pop()
+                self.name_stack.pop()
+
+            def visit_FunctionDef(self, node) -> None:
+                self._visit_func(node, is_async=False)
+
+            def visit_AsyncFunctionDef(self, node) -> None:
+                self._visit_func(node, is_async=True)
+
+            def visit_Call(self, node: ast.Call) -> None:
+                func = node.func
+                if (
+                    isinstance(func, ast.Attribute)
+                    and func.attr == "init"
+                    and self.async_stack
+                    and self.async_stack[-1]
+                ):
+                    receiver = func.value
+                    hit = (
+                        isinstance(receiver, ast.Name) and receiver.id in store_names
+                    ) or (
+                        isinstance(receiver, ast.Attribute)
+                        and receiver.attr in store_attrs
+                        and isinstance(receiver.value, ast.Name)
+                    )
+                    if hit:
+                        loc = ".".join(self.name_stack) or "<module>"
+                        violations.append(
+                            f"{where}line {node.lineno} ({loc}): VectorMemoryStore.init() "
+                            "called inline in an async function — offload it via "
+                            "`await asyncio.to_thread(<store>.init)` (caller contract, "
+                            "vector_memory.py init docs, #5206/#5389)"
+                        )
+                self.generic_visit(node)
+
+        Visitor().visit(tree)
+        return violations
+
+    def test_no_async_function_calls_init_inline(self) -> None:
+        import ast
+        import inspect
+        from pathlib import Path as _Path
+
+        import kiro_crew
+
+        pkg_root = _Path(inspect.getfile(kiro_crew)).parent
+        violations: list = []
+        for py in sorted(pkg_root.rglob("*.py")):
+            tree = ast.parse(py.read_text(encoding="utf-8"))
+            rel = py.relative_to(pkg_root.parent)
+            violations.extend(self._find_inline_async_inits(tree, where=f"{rel}:"))
+        assert not violations, "inline async VectorMemoryStore.init() call(s):\n" + "\n".join(
+            violations
+        )
+
+    def test_guard_catches_a_seeded_violation(self) -> None:
+        """The guard must fail on a seeded inline call and stay quiet on the
+        offloaded / sync forms — otherwise a refactor that breaks its binding
+        or async tracking would silently disarm it."""
+        import ast
+
+        seeded = ast.parse(
+            "store = VectorMemoryStore()\n"
+            "class S:\n"
+            "    def __init__(self):\n"
+            "        self.vm = VectorMemoryStore()\n"
+            "    async def bad(self):\n"
+            "        store.init()\n"
+            "    async def bad_attr(self):\n"
+            "        self.vm.init()\n"
+            "    async def good(self):\n"
+            "        await asyncio.to_thread(store.init)\n"
+            "    def sync_ok(self):\n"
+            "        store.init()\n"
+            "    async def outer(self):\n"
+            "        def helper():\n"
+            "            store.init()\n"
+            "        await asyncio.to_thread(helper)\n"
+        )
+        violations = self._find_inline_async_inits(seeded)
+        # `bad` and `bad_attr` call init inline on the loop; `good` passes the
+        # callable uncalled; `sync_ok` is a sync function; `helper` is a sync
+        # function that runs at call time (inside to_thread).
+        assert len(violations) == 2
+        flagged = "\n".join(violations)
+        assert "(S.bad)" in flagged
+        assert "(S.bad_attr)" in flagged
+        assert "S.good" not in flagged
+        assert "S.sync_ok" not in flagged
+        assert "S.outer" not in flagged
 
 
 @pytest.mark.xdist_group("vector_memory_concurrency")
@@ -3053,7 +3450,7 @@ class TestSemanticWriteTimeEmbedding:
         store.embed_fn = embed
 
         rule = "always drink coffee before reviews"
-        assert store.write_lesson(rule) is True
+        assert store.write_lesson(rule).wrote is True
         lessons = store.get_lessons()
         assert len(lessons) == 1
         blob = lessons[0]["embedding"]

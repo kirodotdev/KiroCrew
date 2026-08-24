@@ -26,11 +26,18 @@ interface SearchBarProps {
   onQueryChange: (value: string) => void
   onKeyDown: (e: React.KeyboardEvent) => void
   onClear: () => void
+  /** Extra props spread onto the input — the modals pass `ime.bindComposition()`
+   *  from `useImeGuard` so their Enter-to-install guard can track composition.
+   *  Deliberately narrowed to the binding's own keys: a wider type would let a
+   *  future caller pass `onKeyDown` (e.g. a stray `bindEnter`) and silently
+   *  shadow this component's arrow/Enter logic by JSX last-one-wins — a
+   *  cross-component hazard the source ratchet cannot see. */
+  inputProps?: Pick<React.InputHTMLAttributes<HTMLInputElement>, 'onFocus' | 'onBlur' | 'onCompositionStart' | 'onCompositionEnd'>
 }
 
 export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
   function DiscoverySearchBar(
-    { idPrefix, subject, query, debouncedQuery, providers, resultCount, isLoading, hasResults, activeDescendant, onQueryChange, onKeyDown, onClear },
+    { idPrefix, subject, query, debouncedQuery, providers, resultCount, isLoading, hasResults, activeDescendant, onQueryChange, onKeyDown, onClear, inputProps },
     inputRef
   ) {
     return (
@@ -48,6 +55,7 @@ export const DiscoverySearchBar = forwardRef<HTMLInputElement, SearchBarProps>(
             value={query}
             onChange={e => onQueryChange(e.target.value)}
             onKeyDown={onKeyDown}
+            {...inputProps}
             placeholder={i18nT('components.discoverySearchBar.search_across_providers', { subject })}
             className="w-full pl-9 pr-9 py-2 rounded-md border border-border bg-bg text-text text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
             autoFocus

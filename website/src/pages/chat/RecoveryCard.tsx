@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import { DENY_REASON_MARKER } from '../../utils/denyReason'
 import { useRowDisclosure } from './rowDisclosure'
 
 /**
@@ -20,6 +21,7 @@ import { useRowDisclosure } from './rowDisclosure'
  */
 export type RecoveryKind =
   | 'refusal'
+  | 'tool_blocked'
   | 'stalled'
   | 'tool_stall'
   | 'connection'
@@ -50,6 +52,12 @@ export type RecoveryKind =
  */
 const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['refusal', '[Tool refusal — automatic recovery]'],
+  // A policy block whose reason was steered into the RUNNING turn, so no
+  // continuation was needed. Display-only: the row exists so the block is
+  // visible as this card rather than only as a generic "Steered" chip, which
+  // reads as though the person had steered the turn. Not a recovery — nothing
+  // was interrupted and nothing was re-sent — so its copy says neither.
+  ['tool_blocked', '[Tool blocked — reason sent to the agent]'],
   ['stalled', '[Stalled turn — automatic recovery]'],
   ['tool_stall', '[Tool stall — automatic recovery]'],
   ['connection', '[Connection lost — automatic recovery]'],
@@ -81,8 +89,14 @@ const PREFIXES: ReadonlyArray<[RecoveryKind, string]> = [
   ['synthesis', '[SYSTEM] Sub-agent synthesis:'],
 ]
 
-/** `Blocked by security policy: <pattern>` — the deny pattern that fired. */
-const POLICY_RE = /Blocked by security policy:\s*(.+?)\s*$/gm
+/**
+ * `Blocked by security policy: <pattern>` — the deny pattern that fired.
+ *
+ * Built from the single exported marker rather than re-declaring the literal:
+ * this is a wire value compared byte-for-byte against `security.py`, and a second
+ * copy would let one half drift while the other kept matching.
+ */
+const POLICY_RE = new RegExp(`${DENY_REASON_MARKER.source}\\s*(.+?)\\s*$`, 'gm')
 /** A blocked-item bullet in the refusal body (`  - <tool>: <reason>`). */
 const BULLET_RE = /^\s*-\s+\S/
 
@@ -239,19 +253,35 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
   const patterns = new Set<string>()
   for (const m of body.matchAll(POLICY_RE)) patterns.add(m[1])
   const distinct = [...patterns]
+  const chip =
+    distinct.length === 1
+      ? distinct[0]
+      : distinct.length > 1
+        ? i18nT('pages.chat.recoveryCard.n_patterns', { count: distinct.length })
+        : ''
+  const title =
+    blocked > 1
+      ? i18nT('pages.chat.recoveryCard.n_tool_calls_blocked', { count: blocked })
+      : i18nT('pages.chat.recoveryCard.tool_call_blocked')
+  // Same EVENT as `refusal` — a policy blocked a call — so it shares the title
+  // and the pattern chip. Only the second half differs: nothing was interrupted
+  // and no continuation was sent, because the reason went to the agent inside
+  // the turn that was already running. Saying "continuation sent" here would
+  // describe a turn that never happened.
+  if (kind === 'tool_blocked') {
+    return {
+      kind,
+      title,
+      detail: i18nT('pages.chat.recoveryCard.safety_policy_told_in_turn'),
+      chip,
+      body,
+    }
+  }
   return {
     kind,
-    title:
-      blocked > 1
-        ? i18nT('pages.chat.recoveryCard.n_tool_calls_blocked', { count: blocked })
-        : i18nT('pages.chat.recoveryCard.tool_call_blocked'),
+    title,
     detail: i18nT('pages.chat.recoveryCard.safety_policy_continuing'),
-    chip:
-      distinct.length === 1
-        ? distinct[0]
-        : distinct.length > 1
-          ? i18nT('pages.chat.recoveryCard.n_patterns', { count: distinct.length })
-          : '',
+    chip,
     body,
   }
 }

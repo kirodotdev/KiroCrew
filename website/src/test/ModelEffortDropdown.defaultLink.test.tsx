@@ -1,10 +1,21 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { configureStore } from '@reduxjs/toolkit'
 import React from 'react'
 import ModelEffortDropdown from '../components/ModelEffortDropdown'
+import chatReducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
+import notificationsReducer from '../store/notificationsSlice'
+import { api } from '../api/client'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+
+// The nested ReasoningEffortDropdown persists slider picks over the wire
+// (#5120); none of these tests touch the slider, but the stub keeps an
+// accidental future interaction from hitting a real fetch.
+vi.spyOn(api, 'chatSlotReasoningEffort').mockResolvedValue({ ok: true } as never)
 
 /**
  * The in-session model picker carries two footer rows: an in-place "set as
@@ -34,19 +45,26 @@ const baseProps = {
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  // The nested ReasoningEffortDropdown persists picks into the slot store
+  // (#5120), so the tree needs the redux context even where a test never
+  // touches the effort footer. A per-render store (not the app singleton)
+  // keeps one test's persist from leaking into the next.
+  const store = configureStore({
+    reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+  })
+  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 describe('ModelEffortDropdown — global fallback link', () => {
   it('is absent when the call site passes no handler', () => {
     wrap(<ModelEffortDropdown {...baseProps} />)
-    expect(screen.queryByText(/Global fallback for new sessions/)).toBeNull()
+    expect(screen.queryByText(/Global default for new sessions/)).toBeNull()
   })
 
   it('renders and fires when a handler is supplied', () => {
     const onSetDefault = vi.fn()
     wrap(<ModelEffortDropdown {...baseProps} onSetDefault={onSetDefault} />)
-    const link = screen.getByText(/Global fallback for new sessions/)
+    const link = screen.getByText(/Global default for new sessions/)
     fireEvent.click(link)
     expect(onSetDefault).toHaveBeenCalledTimes(1)
   })
@@ -54,7 +72,7 @@ describe('ModelEffortDropdown — global fallback link', () => {
   it('coexists with the reasoning-effort footer', () => {
     wrap(<ModelEffortDropdown {...baseProps} hasEffort onSetDefault={vi.fn()} />)
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
-    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
 
@@ -112,7 +130,7 @@ describe('ModelEffortDropdown — per-agent default row', () => {
     )
     expect(screen.getByText('Reasoning')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Set as default model for oncall' })).toBeInTheDocument()
-    expect(screen.getByText(/Global fallback for new sessions/)).toBeInTheDocument()
+    expect(screen.getByText(/Global default for new sessions/)).toBeInTheDocument()
   })
 })
 
@@ -143,7 +161,7 @@ describe('ModelEffortDropdown — effort footer value', () => {
 
 describe('SETTINGS_DEFAULT_MODEL_ID', () => {
   it('resolves to a real entry in the generated settings registry', () => {
-    // Registry ids derive from the setting's LABEL. If the fallback-model row
+    // Registry ids derive from the setting's LABEL. If the default-model row
     // is renamed without regenerating/updating this constant, the deep link
     // silently loses its highlight — fail here instead.
     const entry = SETTINGS_REGISTRY.find(e => e.id === SETTINGS_DEFAULT_MODEL_ID)

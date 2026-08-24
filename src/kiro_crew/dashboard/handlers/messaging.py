@@ -13,6 +13,7 @@ from typing import Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.browser.command_bus import (
     DEFAULT_COMMAND_TIMEOUT_MS,
     DEFAULT_DRAIN_WAIT_MS,
@@ -41,17 +42,21 @@ from kiro_crew.dashboard.chat_utils import (
     slack_options_owner_key,
 )
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
-from kiro_crew.dashboard.origin import is_direct_local_request
+from kiro_crew.dashboard.origin import is_direct_local_request, is_proxied_request
 from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
     DashboardState,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
+from kiro_crew.messaging.display_safety import redact_for_display
+from kiro_crew.messaging.link import SLACK_NAMESPACE, ChannelLink
+from kiro_crew.messaging.renderer import chunk_text, format_overflow
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.slack.format import build_options_blocks, extract_options
@@ -219,14 +224,10 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     task = str(body.get("task", "") or "").strip()
     if not task:
-        return web.json_response(
-            {"error": "task is required", "code": "task_required"}, status=400
-        )
+        return web.json_response({"error": "task is required", "code": "task_required"}, status=400)
     parent_session = str(body.get("parent_session", "") or "")
     agent = str(body.get("agent", "") or "")
     model = str(body.get("model", "") or "")
@@ -259,19 +260,11 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         )
     if info.done and info.error:
         if info.error.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_busy"}, status=409
-            )
+            return web.json_response({"error": info.error, "code": "conversation_busy"}, status=409)
         if info.error.startswith("conversation_gone"):
-            return web.json_response(
-                {"error": info.error, "code": "conversation_gone"}, status=404
-            )
-        return web.json_response(
-            {"error": info.error, "code": "spawn_rejected"}, status=400
-        )
-    return web.json_response(
-        {"id": info.id, "conversation": conv_id, "status": "spawned"}
-    )
+            return web.json_response({"error": info.error, "code": "conversation_gone"}, status=404)
+        return web.json_response({"error": info.error, "code": "spawn_rejected"}, status=400)
+    return web.json_response({"id": info.id, "conversation": conv_id, "status": "spawned"})
 
 
 async def api_spawn_steer(request: web.Request) -> web.Response:
@@ -291,9 +284,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON", "code": "invalid_json"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     message = str(body.get("message", "") or "").strip()
     if not message:
         return web.json_response(
@@ -311,13 +302,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
         ok, detail = await state.subagents.steer_run(agent_id, message)
     if not ok:
         if detail == "not_found":
-            return web.json_response(
-                {"error": detail, "code": "not_found"}, status=404
-            )
+            return web.json_response({"error": detail, "code": "not_found"}, status=404)
         if detail.startswith("not_running"):
-            return web.json_response(
-                {"error": detail, "code": "not_running"}, status=409
-            )
+            return web.json_response({"error": detail, "code": "not_running"}, status=409)
         if detail.startswith("session_starting"):
             # Transient: the run is alive but its session has not registered
             # yet (#1113). 503 + Retry-After tells clients to retry, unlike
@@ -327,9 +314,7 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
                 status=503,
                 headers={"Retry-After": "5"},
             )
-        return web.json_response(
-            {"error": detail, "code": "steer_failed"}, status=502
-        )
+        return web.json_response({"error": detail, "code": "steer_failed"}, status=502)
     return web.json_response(
         {"id": agent_id, "status": "follow_up_queued" if mode == "follow_up" else "steered"}
     )
@@ -351,12 +336,8 @@ async def api_spawn_release(request: web.Request) -> web.Response:
     ok, detail = state.subagents.release_conversation(conv_id)
     if not ok:
         if detail.startswith("conversation_busy"):
-            return web.json_response(
-                {"error": detail, "code": "conversation_busy"}, status=409
-            )
-        return web.json_response(
-            {"error": detail, "code": "conversation_gone"}, status=404
-        )
+            return web.json_response({"error": detail, "code": "conversation_busy"}, status=409)
+        return web.json_response({"error": detail, "code": "conversation_gone"}, status=404)
     return web.json_response({"conversation": conv_id, "status": "released"})
 
 
@@ -414,7 +395,9 @@ async def api_spawn_mark_collected(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
     ids = body.get("ids")
     if not ids or not isinstance(ids, list):
-        return web.json_response({"error": "'ids' array required", "code": "ids_required"}, status=400)
+        return web.json_response(
+            {"error": "'ids' array required", "code": "ids_required"}, status=400
+        )
     parent_session = str(body.get("parent_session", "") or "")
     slot_name = dashboard_slot_key(parent_session)
     if not slot_name:
@@ -1064,6 +1047,17 @@ _MAX_BLOCKS = 50  # Slack Block Kit limit
 _MAX_WALK_DEPTH = 10  # defense-in-depth against deeply nested LLM output
 
 
+def _redact_all(value: str) -> str:
+    """Both outbound redactors as one callable, in the canonical order.
+
+    ``redact_for_display`` re-runs its redactor over each normalised form, so it
+    needs the pair behind a single call rather than two sequential passes.
+    """
+    value, _ = redact_exfiltration_urls(value)
+    value, _ = redact_credentials(value)
+    return value
+
+
 def _sanitize_blocks(
     blocks: list[dict],
     *redactors: Any,
@@ -1129,8 +1123,189 @@ def _resolve_session_target(
     return slot_key, job.name
 
 
+#: ``session`` values on ``/api/send-message`` that name a delivery MODE rather
+#: than a chat channel. Any other value is looked up in the registered channel
+#: transports, so a channel becomes reachable here by registering its transport
+#: instead of by editing this module. Slack is reserved because it is delivered
+#: by its own client, which is not in ``channel_transports``.
+_RESERVED_SESSION_TARGETS = frozenset({"origin", SLACK_NAMESPACE})
+
+#: The shape every registered ``channel_type`` has. A ``session`` value that does
+#: not match is not looked up as a channel at all: the value is agent-authored and
+#: reaches an error body and the SEL ``resources`` field, so bounding its length
+#: and alphabet here keeps an unrecognized value from carrying newlines or
+#: kilobytes into the audit trail. It still degrades to the dashboard
+#: notification, which is what an unknown ``session`` has always done.
+_CHANNEL_TYPE_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
+
+#: The ``configured_targets()`` prefix every transport gives a DIRECT
+#: conversation (``user:<identity>``). A ``thread:`` or room target is a
+#: different audience and is never the owner's DM.
+_DM_TARGET_PREFIX = "user:"
+
+#: Request fields that only exist in Slack's protocol. Combined with a channel
+#: ``session`` they are refused rather than dropped: a caller that asked for a
+#: threaded reply or a named Slack channel cannot observe the drop, and would
+#: read a private DM as a successful post to a shared channel.
+_SLACK_ONLY_BODY_FIELDS = (
+    "channel",
+    "user",
+    "blocks",
+    "thread_ts",
+    "reply_broadcast",
+    "unfurl_links",
+    "unfurl_media",
+)
+
+
+def _owner_dm_target(transport: Any) -> str:
+    """The configured owner-DM target id on *transport*, or ``""``.
+
+    ``configured_targets()`` is the channel-neutral allowlist the dashboard's own
+    target picker reads, so a proactive DM can only be addressed at something the
+    user configured for that channel. Two entries are skipped: a target the
+    transport marks unavailable (WeCom may only reply to an inbound message), and
+    a thread or room target, which is a wider audience than a DM.
+
+    No channel carries a separate "owner" field the way Slack's ``owner_id`` does,
+    so an owner can only be inferred, and this REFUSES to infer one from an
+    ambiguous list: a target is returned only when the channel advertises exactly
+    ONE available direct target. Picking the first of several would send private
+    agent output to whichever allow-listed person happened to sort first, which is
+    the wrong human rather than a smaller audience, and fanning out to all of them
+    would deliver a message the agent decided to send once N times. With no single
+    answer the caller degrades to the dashboard notification, which reaches the
+    operator without guessing who they are.
+    """
+    try:
+        targets = list(transport.configured_targets())
+    except Exception:
+        logger.warning("send_message: could not enumerate channel targets", exc_info=True)
+        return ""
+    direct = [
+        str(getattr(target, "target_id", "") or "")
+        for target in targets
+        if str(getattr(target, "target_id", "") or "").startswith(_DM_TARGET_PREFIX)
+        and getattr(target, "available", False)
+    ]
+    if len(direct) == 1:
+        return direct[0]
+    if direct:
+        logger.info(
+            "send_message: %d configured DM targets and no owner field, so no single "
+            "recipient can be inferred; degrading to the dashboard notification",
+            len(direct),
+        )
+    return ""
+
+
+async def _deliver_channel_dm(
+    state: DashboardState, channel_type: str, text: str, *, caller_session: str
+) -> tuple[bool, str, str]:
+    """Deliver *text* as a DM on *channel_type*. Returns ``(sent, code, detail)``.
+
+    Channel-neutral by construction: the transport is looked up by name, the
+    destination comes from its own configured-target allowlist, and delivery runs
+    through the shared cross-surface send ladder
+    (``chat_runner._resolve_channel_target``), the same fail-closed, SEL-audited
+    ``channels`` governance gate the mirror-link endpoint passes. A channel added
+    later needs no code here.
+
+    An empty *code* with ``sent=False`` is the SOFT miss: the channel is not
+    connected, or the user configured no reachable DM target. It degrades to the
+    dashboard notification the caller already got, exactly as an absent Slack
+    client does. A non-empty *code* is a refusal or a failed delivery, and the
+    caller must answer non-2xx: reporting success for a message the user will
+    never see is the failure this contract exists to prevent.
+    """
+    transport = state.get_channel_transport(channel_type)
+    if transport is None:
+        logger.info("send_message: channel %s is not connected", channel_type)
+        return False, "", ""
+    target_id = _owner_dm_target(transport)
+    if not target_id:
+        logger.info("send_message: channel %s advertises no DM target", channel_type)
+        return False, "", ""
+    # Imported here, not at module scope: chat_runner imports from
+    # kiro_crew.dashboard.handlers, so a top-level import closes that cycle. Only
+    # this one is deferred -- `HOST_SESSION_KEY` is a constant and is imported at
+    # module scope, where the top-level-imports rule wants it.
+    from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+
+    # A cron carries its own validated session key; an out-of-band send owns no
+    # session, and the host sentinel is what operators bind host-side governance
+    # to (an empty key classifies as unknown and matches no profile at all).
+    session_key = caller_session or HOST_SESSION_KEY
+    # Vet BEFORE resolving the target: resolution is itself a visible side effect
+    # on some channels (Discord opens a DM channel over REST), so a denied
+    # channel must never reach it. Offloaded because the governance evaluation
+    # reads profile files.
+    governed = await asyncio.to_thread(
+        _resolve_channel_target,
+        state,
+        session_key,
+        ChannelLink(channel_type=channel_type, channel_id=target_id),
+    )
+    if governed is None:
+        return False, "channel_not_permitted", f"{channel_type} is not permitted"
+    _, live_transport = governed
+    try:
+        resolved = await live_transport.resolve_configured_target(target_id)
+    except Exception as exc:
+        logger.exception("send_message: %s target resolution failed", channel_type)
+        return False, "channel_delivery_failed", str(exc)
+    if resolved is None:
+        # The advertised target stopped resolving between enumeration and use
+        # (revoked from the allow-list, or no longer a private thread). Refuse
+        # rather than fall back to a wider audience.
+        return False, "channel_delivery_failed", f"{channel_type} DM target is unavailable"
+    conversation_id, thread_id = resolved
+    # Chunked at the transport's own declared ceiling, as a mirrored turn is:
+    # Discord rejects a message over its cap outright, so an unchunked long
+    # report would arrive as a delivery failure instead of a message. At least one
+    # unit always comes back, because the route rejects an empty body. One
+    # governance decision covers the whole send -- this is a single message the
+    # transport happens to split, not the sequence of independent egress actions
+    # the mirror backfill re-vets per unit.
+    # The display-form floor again, at the egress rather than only at the caller
+    # that happens to exist today. `api_send_message` already applies it, so this
+    # is a second application on that path and costs nothing (the redactors are
+    # idempotent); what it buys is that a future caller of this helper cannot
+    # reach a channel without it. This egress passes no renderer, and a renderer
+    # is where a turn gets that floor.
+    text, _ = redact_for_display(text, _redact_all)
+    units = chunk_text(text, live_transport.capabilities.max_message_chars)
+    try:
+        for unit in units:
+            # A transport reports a refused or exhausted send by returning an
+            # EMPTY message id, not by raising: `send_message` ends in
+            # `str(mid or "")`. So "no exception" is not delivery, and treating it
+            # as such is a silent loss with consequences downstream, because cron
+            # stands its Slack fallback down and advances its dedup hash on a
+            # confirmed delivery. Fail on the first empty id rather than pressing
+            # on: the remaining chunks of a message whose head never landed would
+            # arrive as an orphaned fragment.
+            if not await live_transport.send_message(conversation_id, unit, thread_id=thread_id):
+                logger.warning(
+                    "send_message: %s returned no message id; treating as undelivered",
+                    channel_type,
+                )
+                return False, "channel_delivery_failed", "the channel returned no message id"
+    except Exception as exc:
+        logger.exception("send_message: %s delivery failed", channel_type)
+        return False, "channel_delivery_failed", str(exc)
+    return True, "", ""
+
+
 async def api_send_message(request: web.Request) -> web.Response:
-    """POST /api/send-message — send a message to Slack and/or dashboard."""
+    """POST /api/send-message — send a message to a chat surface and/or dashboard.
+
+    ``session`` picks the surface: ``"origin"`` injects into the dashboard session
+    that spawned the calling cron, ``"slack"`` adds a Slack DM, and any other
+    value names a registered channel transport (``"discord"``) and delivers a DM
+    to that channel's configured owner. The Slack-only options are refused, not
+    ignored, when combined with a channel session (see ``_SLACK_ONLY_BODY_FIELDS``).
+    """
     from kiro_crew.security import redact_credentials, redact_exfiltration_urls  # noqa: F811
     from kiro_crew.slack.handler import is_allowed_user, is_tracked_channel  # noqa: F811
     from kiro_crew.validation import USER_ID_RE  # noqa: F811
@@ -1176,6 +1351,31 @@ async def api_send_message(request: web.Request) -> web.Response:
     if target_channel and target_user:
         return web.json_response({"error": "specify channel or user, not both"}, status=400)
 
+    # A ``session`` naming a channel transport takes the routing over, so a
+    # Slack-only option travelling with it has no destination. Refuse here,
+    # before any delivery, rather than posting a message whose thread/layout/
+    # audience request was silently discarded.
+    raw_session = body.get("session")
+    session_name = raw_session if isinstance(raw_session, str) else ""
+    channel_target = (
+        session_name
+        if session_name not in _RESERVED_SESSION_TARGETS and _CHANNEL_TYPE_RE.match(session_name)
+        else ""
+    )
+    if channel_target:
+        slack_only = [f for f in _SLACK_ONLY_BODY_FIELDS if body.get(f) is not None]
+        if slack_only:
+            return web.json_response(
+                {
+                    "error": (
+                        f"session '{channel_target}' does not accept the Slack-only "
+                        f"field(s): {', '.join(slack_only)}"
+                    ),
+                    "code": "slack_only_field_with_channel_session",
+                },
+                status=400,
+            )
+
     # Validate format first, then redact (#2)
     if target_channel and not CHANNEL_ID_RE.match(target_channel):
         return web.json_response({"error": "invalid channel ID format"}, status=400)
@@ -1191,11 +1391,15 @@ async def api_send_message(request: web.Request) -> web.Response:
         target_user, _ = redact_credentials(target_user)
 
     # Sanitize LLM-generated content before any external surface.
-    # This covers all downstream paths (session injection, fallback, Slack).
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    title, _ = redact_exfiltration_urls(title)
-    title, _ = redact_credentials(title)
+    # This covers all downstream paths (session injection, fallback, Slack,
+    # and every channel transport), which is why the DISPLAY-form floor belongs
+    # here rather than at each delivery site: a proactive body is posted as-is by
+    # the channel legs below, so the literal-form scan alone let a
+    # markdown-collapse credential (`AKIA**IOSFODNN7EXAMPLE**`, which the client
+    # renders whole) through on a path that never passes a renderer -- the one
+    # place every turn egress applies this floor.
+    text, _ = redact_for_display(text, _redact_all)
+    title, _ = redact_for_display(title, _redact_all)
     if blocks:
         blocks = _sanitize_blocks(blocks, redact_exfiltration_urls, redact_credentials)
 
@@ -1246,10 +1450,15 @@ async def api_send_message(request: web.Request) -> web.Response:
     sent_slack = False
     slack_ts: str | None = None
     sent_session = False
-    target_session = body.get("session")
+    # A channel target is not a session-injection target: _resolve_session_target
+    # accepts only "origin", and the delivery below keys off channel_target.
+    target_session = "" if channel_target else session_name
     job_name = None
     slack_attempted = False
     slack_error = ""
+    sent_channel = False
+    channel_code = ""
+    channel_detail = ""
     try:
         # ───────────────────────────────────────────────────────────────────
         # send_message delivery contract
@@ -1296,11 +1505,13 @@ async def api_send_message(request: web.Request) -> web.Response:
         # routing from notification-only to owner Slack DM — a malformed or
         # injected value must not abuse that upgrade.
         is_cron_caller = bool(CRON_SESSION_RE.match(caller_session))
-        send_to_slack = (
+        # A channel session takes the routing over, INCLUDING the cron default:
+        # a cron asking for a Discord DM did not ask for a Slack one as well.
+        send_to_slack = not channel_target and (
             target_session == "slack" or bool(target_channel) or bool(target_user) or is_cron_caller
         )
         if target_session == "slack":
-            target_session = None
+            target_session = ""
         if target_session:
             slot_key, job_name = _resolve_session_target(state, target_session, caller_session)
             if slot_key:
@@ -1377,6 +1588,23 @@ async def api_send_message(request: web.Request) -> web.Response:
                 title = f"⏰ {safe_name}"
                 text += "\n\n_(session closed — delivered as notification)_"
             state.notify("agent", title, text)
+            if channel_target:
+                # No widget on this path, so a parsed [OPTIONS:] trailer is
+                # re-attached as a numbered list rather than dropped: the user
+                # still learns the choices exist and can answer by typing one.
+                channel_text = f"{text}\n\n{format_overflow(options, 0)}" if options else text
+                sent_channel, channel_code, channel_detail = await _deliver_channel_dm(
+                    state,
+                    channel_target,
+                    channel_text,
+                    # Only a well-formed cron key is trusted as a governance
+                    # identity; anything else is an out-of-band host action.
+                    caller_session=caller_session if is_cron_caller else "",
+                )
+            # A separate ``if``, not an ``elif``: ``send_to_slack`` is the single
+            # predicate that decides Slack delivery, so it must be false when a
+            # channel session took the routing over rather than merely
+            # unreachable behind another branch.
             if send_to_slack and state.slack_client:
                 try:
                     if target_channel:
@@ -1477,25 +1705,49 @@ async def api_send_message(request: web.Request) -> web.Response:
                 base_res = f"target_channel={target_channel} target_user={target_user}"
             elif sent_session:
                 base_res = "session=origin"
+            elif channel_target:
+                base_res = f"channel_type={channel_target}"
             else:
                 base_res = "fallback=owner_dm"
             if sent_session:
                 downstream_service = "session"
             elif sent_slack:
                 downstream_service = "slack"
+            elif sent_channel:
+                downstream_service = channel_target
             else:
                 downstream_service = "dashboard"
+            # A refused or failed channel delivery is an error for the same
+            # reason a failed Slack post is: the caller asked for that surface.
+            # channel_code is empty when the channel was merely absent, which is
+            # the documented degradation to a notification, not a failure.
+            failed = (slack_attempted and not sent_slack) or bool(channel_code)
             _sel().log_tool_invocation(
                 session_key="dashboard",
                 tool_name="send_message",
-                outcome=(
-                    "completed" if sent_slack or sent_session or not slack_attempted else "error"
-                ),
+                outcome="error" if failed else "completed",
                 downstream_service=downstream_service,
                 resources=base_res + thread_hint,
+                error=channel_code,
             )
         except Exception:
             logger.warning("SEL logging failed for send_message", exc_info=True)
+    if channel_code:
+        safe_detail, _ = redact_credentials(channel_detail)
+        safe_detail, _ = redact_exfiltration_urls(safe_detail)
+        detail = f"{channel_target} delivery failed: {safe_detail}"
+        # Both responses are spelled out inline, with a literal status and a
+        # literal body, rather than sharing a hoisted dict or computing the
+        # status. `test_error_code_contract` ratchets BOTH of those shapes for the
+        # same reason: a computed status and a body a static scan cannot read are
+        # each a way to slip an uncoded error response past the gate, so the one
+        # form that stays checkable is the verbose one. A governance refusal is
+        # the caller's own permission problem; anything else is downstream.
+        if channel_code == "channel_not_permitted":
+            return web.json_response(
+                {"ok": False, "error": detail, "code": channel_code}, status=403
+            )
+        return web.json_response({"ok": False, "error": detail, "code": channel_code}, status=502)
     if slack_attempted and not sent_slack:
         safe_error, _ = redact_credentials(slack_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
@@ -1510,6 +1762,10 @@ async def api_send_message(request: web.Request) -> web.Response:
         delivered_to = "session"
     elif sent_slack:
         delivered_to = "slack"
+    elif sent_channel:
+        # The channel type itself, so a caller reads WHICH surface took the
+        # message and a channel added later needs no new vocabulary here.
+        delivered_to = channel_target
     else:
         delivered_to = "notification"
     resp_body: dict[str, Any] = {
@@ -1867,9 +2123,7 @@ async def api_slack_profile(request: web.Request) -> web.Response:
     return web.json_response({"profile": profile})
 
 
-def _deny_non_owner_browser_request(
-    request: web.Request, operation: str
-) -> web.Response | None:
+def _deny_non_owner_browser_request(request: web.Request, operation: str) -> web.Response | None:
     """Require the dashboard owner on browser MUTATION endpoints. 403 or None.
 
     The caller must be the configured owner (``is_owner_dashboard_request``):
@@ -1897,6 +2151,7 @@ def _deny_non_owner_browser_request(
     # module's sibling, so a top-level import would close a cycle.
     from kiro_crew.dashboard.handlers.source_providers import (
         is_owner_dashboard_request,
+        stale_owner_session_response,
     )
 
     if is_owner_dashboard_request(request):
@@ -1931,9 +2186,13 @@ def _deny_non_owner_browser_request(
         resources=request.path,
         error="browser mutations require the dashboard owner",
     )
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
     return web.json_response(
-        {"error": "dashboard user required",
-         "code": "dashboard_user_required"},
+        {"error": "dashboard user required", "code": "dashboard_user_required"},
         status=403,
     )
 
@@ -2039,7 +2298,9 @@ async def api_browser_command(request: web.Request) -> web.Response:
     if not isinstance(session_key, str) or not session_key:
         # No addressable panel -> answer like the no-panel case (503) so the tool
         # falls back to playwright-cli rather than surfacing a hard error.
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+        return web.json_response(
+            {"error": "no-native-panel", "code": "no_native_panel"}, status=503
+        )
     bus = get_command_bus()
     logger.debug("browser-cmdbus: submit op=%s session=%s", op, session_key)
     try:
@@ -2049,7 +2310,9 @@ async def api_browser_command(request: web.Request) -> web.Response:
             "browser-cmdbus: no native panel registered for session=%s -> 503 (client falls back to playwright-cli)",
             session_key,
         )
-        return web.json_response({"error": "no-native-panel", "code": "no_native_panel"}, status=503)
+        return web.json_response(
+            {"error": "no-native-panel", "code": "no_native_panel"}, status=503
+        )
     except QueueFullError:
         return web.json_response({"error": "queue-full", "code": "queue_full"}, status=429)
     except asyncio.TimeoutError:
@@ -2149,7 +2412,9 @@ async def api_browser_command_result(request: web.Request) -> web.Response:
     bus = get_command_bus()
     matched = await bus.complete(command_id, ok, result=result, error=error)
     if not matched:
-        return web.json_response({"error": "unknown-command", "code": "unknown_command"}, status=404)
+        return web.json_response(
+            {"error": "unknown-command", "code": "unknown_command"}, status=404
+        )
     return web.json_response({"ok": True})
 
 
@@ -2262,9 +2527,7 @@ async def api_browser_engine_install(request: web.Request) -> web.Response:
     # keeps an unknown value out of the background task entirely, so the operator
     # gets a 400 instead of an error they have to go re-read the status to find.
     if engine not in browser_cli_install.BROWSER_ENGINES:
-        return web.json_response(
-            {"error": "unknown engine", "code": "unknown_engine"}, status=400
-        )
+        return web.json_response({"error": "unknown engine", "code": "unknown_engine"}, status=400)
     task = getattr(state, "_browser_install_task", None)
     if task and not task.done():
         # 409, NOT a folded success. Folding is right for the CLI install, which
@@ -2396,15 +2659,18 @@ def _clean_id_list(raw: object, is_valid: Callable[[str], bool], label: str) -> 
 def _write_env_updates(updates: dict[str, str | None]) -> None:
     """Update select keys in config_dir/.env, preserving comments and order.
 
-    A value of ``None`` deletes the key; new keys are appended. The write is
-    atomic (0600 temp file in the same dir, then rename) so a crash can never
-    truncate .env and lose other credentials, and there is no world-readable
-    window between create and chmod.
+    A value of ``None`` deletes the key; new keys are appended. The write goes
+    through :func:`kiro_crew.atomic_write.atomic_write` with
+    ``restrict_to_owner=True``, which locks the unique temp file down to its
+    owner BEFORE any content byte is written: POSIX mode bits protect nothing
+    on Windows (``fchmod_safe`` is a documented no-op there), so a lockdown
+    applied after the write would leave the tokens readable under the
+    directory-inherited DACL for the whole write — and indefinitely if the
+    lockdown fails. ``restrict_on_error="warn"`` keeps this writer's contract:
+    a host where the lockdown cannot be applied must not abort a token save
+    that already succeeded.
     """
-    import tempfile  # noqa: F811
-
     from kiro_crew.config.loader import env_path  # noqa: F811
-    from kiro_crew.platform_compat import fchmod_safe, restrict_to_owner
 
     ep = env_path()
     lines = ep.read_text(encoding="utf-8").splitlines() if ep.exists() else []
@@ -2425,30 +2691,8 @@ def _write_env_updates(updates: dict[str, str | None]) -> None:
     for k, new_val in updates.items():
         if k not in seen and new_val:
             out.append(f"{k}={new_val}")
-    ep.parent.mkdir(parents=True, exist_ok=True)
     content = "\n".join(out) + ("\n" if out else "")
-    # mkstemp creates the file with mode 0600 and O_EXCL; rename is atomic on
-    # the same filesystem. fchmod is belt-and-suspenders in case of odd umask.
-    fd, tmp_name = tempfile.mkstemp(dir=str(ep.parent), prefix=".env.", suffix=".tmp")
-    try:
-        # Portable perms: os.fchmod is POSIX-only (absent on Windows, where a
-        # raw call would raise AttributeError and 500 every token save).
-        # fchmod_safe applies 0600 on POSIX and no-ops on Windows;
-        # restrict_to_owner then locks the completed file down on both.
-        fchmod_safe(fd, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(content)
-        os.replace(tmp_name, ep)
-        try:
-            restrict_to_owner(ep)
-        except OSError:
-            logger.warning("could not restrict .env permissions", exc_info=True)
-    except BaseException:
-        try:
-            os.unlink(tmp_name)
-        except OSError:
-            pass
-        raise
+    atomic_write(ep, content, restrict_to_owner=True, restrict_on_error="warn")
 
 
 async def api_slack_manifest(request: web.Request) -> web.Response:
@@ -2694,7 +2938,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 
     # ── Phase 2: commit. All validation passed, so writes are safe. ──
     if env_updates:
-        _write_env_updates(env_updates)
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
         # Keep the live process environment in sync with the new .env state.
         # load_credentials() lets os.environ win over .env, so without this a
         # replaced/cleared token would keep being reported as installed by GET
@@ -2718,9 +2964,11 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "slack", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "slack",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
 
     _sel().log_api_access(
         caller=caller,
@@ -2742,6 +2990,30 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     )
 
 
+def _threshold_pct_rejection(body: dict[str, Any], key: str) -> tuple[str, str] | None:
+    """``(code, message)`` when *body[key]* is present and not a valid percentage.
+
+    ``None`` when the key is absent or the value is in range. One home for the check
+    across every channel that exposes context-window nudge thresholds, because
+    ``isinstance(True, int)`` is True in Python: each site has to exclude bool
+    explicitly or a JSON ``true`` reads as 1%, and a per-channel copy of that subtlety
+    is a per-channel chance to omit it. The bounds come from the config loader, so a
+    value this accepts is one the loader will not silently clamp.
+    """
+    if key not in body:
+        return None
+    from kiro_crew.config.loader import THRESHOLD_PCT_MAX, THRESHOLD_PCT_MIN
+
+    pct = body.get(key)
+    if isinstance(pct, int) and not isinstance(pct, bool):
+        if THRESHOLD_PCT_MIN <= pct <= THRESHOLD_PCT_MAX:
+            return None
+    return (
+        f"{key}_invalid",
+        f"{key} must be an integer between {THRESHOLD_PCT_MIN} and {THRESHOLD_PCT_MAX}",
+    )
+
+
 # ── Discord configuration API ──
 # The bot token lives in config_dir/.env as DISCORD_BOT_TOKEN (0600), with
 # config.json's discord.bot_token as a legacy fallback. Non-secret config
@@ -2749,6 +3021,10 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
 # in config.json under
 # the "discord" key. GET returns a masked preview + presence boolean; raw
 # token values are write-only (reset at the Developer Portal if ever needed).
+
+#: Discord fields the dispatcher re-reads per turn, so changing one takes
+#: effect on the next message rather than at the next restart.
+_DISCORD_LIVE_FIELDS = frozenset({"reactions_enabled", "show_thinking"})
 
 #: Loose shape check for Discord bot tokens: three dot-separated base64url
 #: segments (e.g. "MTA5...aBc.GhIjKl.MnOpQrStUvWxYz0123456789_-").
@@ -2815,6 +3091,8 @@ async def api_discord_config_get(request: web.Request) -> web.Response:
             "allowed_thread_ids": [str(t) for t in dc.allowed_thread_ids],
             "allowed_channel_ids": [str(c) for c in dc.allowed_channel_ids],
             "auto_thread": bool(dc.auto_thread),
+            "reactions_enabled": bool(dc.reactions_enabled),
+            "show_thinking": bool(dc.show_thinking),
             "soft_threshold_pct": int(dc.soft_threshold_pct),
             "session_folder": dc.session_folder,
         }
@@ -2851,7 +3129,7 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="discord.config.update",
@@ -2859,7 +3137,14 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -2982,13 +3267,27 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             staged["auto_thread"] = val
             applied.append("auto_thread")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(dc_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
+
+    # Both render toggles are read per turn by the dispatcher, not at boot, so a
+    # change takes effect on the next message. `_DISCORD_LIVE_FIELDS` below keeps
+    # `restart_required` honest about that; promising a restart the user does not
+    # need is how a settings page trains people to restart for everything.
+    for toggle in ("reactions_enabled", "show_thinking"):
+        if toggle in body:
+            val = body.get(toggle)
+            if not isinstance(val, bool):
+                return _deny(f"{toggle} must be a boolean")
+            if val != bool(dc_cfg.get(toggle, toggle == "reactions_enabled")):
+                staged[toggle] = val
+                applied.append(toggle)
 
     if "session_folder" in body:
         try:
@@ -2998,6 +3297,20 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         if new_folder != str(dc_cfg.get("session_folder", "") or ""):
             staged["session_folder"] = new_folder
             applied.append("session_folder")
+
+    # Whenever the .env token is set or cleared, also drop the legacy
+    # config.json ``discord.bot_token`` fallback. The gateway (and GET above)
+    # fall back to that field when .env is empty, so leaving it behind would
+    # resurrect a removed credential on the next restart — an explicit clear
+    # must actually revoke access, and a replacement must not shadow-keep the
+    # old token. It also sits in agent-readable ``config.json``, so the copy is
+    # worth strictly less than the .env one it shadows. Staged here (write
+    # happens only in Phase 2), matching the Telegram and Webex saves.
+    legacy_token_removed = False
+    if CRED_DISCORD_BOT_TOKEN in env_updates and dc_cfg.get("bot_token"):
+        dc_cfg.pop("bot_token", None)
+        legacy_token_removed = True
+        applied.append("legacy_bot_token_removed")
 
     # ── Phase 1.5: verify a newly pasted token against Discord before storing.
     # A token Discord rejects fails the save right here, where the user can
@@ -3014,20 +3327,19 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
             if dc_err:
                 return _deny(f"bot_token rejected by Discord ({dc_err})")
 
-    # ── Phase 2: commit. All validation passed, so writes are safe. ──
-    if env_updates:
-        _write_env_updates(env_updates)
-        # Keep the live process environment in sync with the new .env state
-        # (load_credentials() lets os.environ win over .env — see the Slack
-        # save handler for the full rationale).
-        for key, new_val in env_updates.items():
-            if new_val is None:
-                os.environ.pop(key, None)
-            else:
-                os.environ[key] = new_val
-    if staged:
+    # ── Phase 2: commit. All validation passed, so writes are safe. Order
+    # matters for crash safety: config.json — which carries the legacy
+    # ``bot_token`` fallback removal — is persisted FIRST, so there is no
+    # failure window in which .env was already cleared but the legacy fallback
+    # survives to silently resurrect the revoked credential on restart. The
+    # inverse failure mode (config written, then a crash before the .env
+    # update) is benign and visible: the .env token remains exactly as GET
+    # reports it, and re-running the save completes the operation. ──
+    if staged or legacy_token_removed:
         dc_cfg.update(staged)
-        _atomic_json_write(path, data)
+        # Off-loop: the atomic write (temp file + fsync + replace) must not
+        # block the gateway event loop.
+        await asyncio.to_thread(_atomic_json_write, path, data)
 
     # Create the configured session folder now, on this user-initiated save,
     # so the reconcile path never has to write the folder store. Best-effort:
@@ -3037,9 +3349,23 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "discord", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "discord",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
+    if env_updates:
+        # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+        # which must not block the event loop.
+        await asyncio.to_thread(_write_env_updates, env_updates)
+        # Keep the live process environment in sync with the new .env state
+        # (load_credentials() lets os.environ win over .env — see the Slack
+        # save handler for the full rationale).
+        for key, new_val in env_updates.items():
+            if new_val is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = new_val
 
     _sel().log_api_access(
         caller=caller,
@@ -3048,13 +3374,14 @@ async def _discord_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
-    # All Discord fields are boot-read: token/enabled/allowlist are consumed
-    # in the orchestrator's constructor and the dispatcher is built at boot.
+    # Token, enabled and the allow-lists are boot-read: they are consumed in the
+    # orchestrator's constructor and the dispatcher is built at boot. The two
+    # render toggles are not, because the dispatcher re-reads them per turn.
     return web.json_response(
         {
             "ok": True,
             "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            or bool(staged.keys() - LIVE_RELOAD_FIELDS - _DISCORD_LIVE_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3166,7 +3493,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="telegram.config.update",
@@ -3174,7 +3501,14 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -3256,10 +3590,11 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_user_ids"] = new_ids
             applied.append("allowed_user_ids")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(tg_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
@@ -3354,9 +3689,11 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "telegram", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "telegram",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -3382,8 +3719,7 @@ async def _telegram_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -3452,15 +3788,93 @@ async def api_teams_activity(request: web.Request) -> web.Response:
     ``TeamsClient.on_activity`` built by ``maybe_start_teams`` once credentials
     are present. Until then (channel disabled/uncredentialed) we return 503.
 
-    This route is exempt from the dashboard cookie gate for POST only (see
-    token_auth ``_BYPASS_EXACT_METHODS``); the delegated handler performs Bot
-    Framework JWT validation itself before doing anything with the payload.
+    This route is exempt from the dashboard cookie gate and from the CSRF Origin
+    check, for POST only (``token_auth._BYPASS_EXACT_METHODS`` /
+    ``CSRF_EXEMPT_EXACT_METHODS``); the delegated handler performs Bot Framework
+    JWT validation itself before doing anything with the payload. Both
+    exemptions make this the one route in the product an unauthenticated caller
+    can reach, so the two hardening steps below run before delegating.
     """
+    # Deferred imports: Teams is an optional, default-off channel, and importing
+    # its client also probes for the optional PyJWT. Neither belongs on the
+    # gateway boot path, which imports this module.
+    from kiro_crew import webhooks  # noqa: F811
+    from kiro_crew.teams.client import (  # noqa: F811
+        TEAMS_ACTIVITY_REQUEST_KEY,
+        TEAMS_MAX_ACTIVITY_BYTES,
+    )
+
     state: DashboardState = request.app["state"]
     handler = getattr(state, "teams_on_activity", None)
     if handler is None:
         return web.Response(status=503, text="Teams channel not enabled")
-    return await handler(request)
+
+    # Failed-auth throttle, the same per-source abuse damper /api/hooks/agent
+    # uses. An anonymous POST here is free to the sender but not to us: an
+    # unknown JWT ``kid`` sends the validator to the Bot Framework JWKS endpoint,
+    # so a flood buys a remote fetch plus an audit write per request. Slowed
+    # rather than answered at line rate; the real boundary remains the JWT.
+    #
+    # 429 rather than the 200 the in-flight shed uses: a rate limit is exactly
+    # what the Connector's retry-with-backoff is for.
+    #
+    # SKIPPED when a proxy terminated the connection, and that is the whole point
+    # of the check rather than a convenience. ``request.remote`` is then the
+    # proxy's address for EVERY caller, so the real Connector and an anonymous
+    # flood share one counter -- and in two of the three topologies
+    # ``docs/teams-integration.md`` documents (a reverse proxy, a dev tunnel) that
+    # is the normal deployment. Throttling there converts ~10 bogus POSTs into a
+    # 300s outage for the channel, renewably, because a 429 is never an accepted
+    # activity and so never clears the count. Trusting a forwarded header instead
+    # would make a spoofable field the identity, which is its own decision;
+    # bounding only the direct-bind topology is the honest half.
+    source = request.remote or "unknown"
+    throttled_source = "" if is_proxied_request(request) else source
+    if throttled_source and webhooks.auth_throttle_blocked(throttled_source):
+        # Off the loop: the first ``sel()`` of a process CONSTRUCTS the log
+        # (trust-dir creation, key validation, an icacls subprocess on Windows),
+        # and this route can be the first request a fresh gateway ever serves.
+        await asyncio.to_thread(
+            lambda: _sel().log_api_access(
+                caller=source,
+                operation="teams.activity",
+                outcome="denied",
+                source="teams",
+                error="auth failures throttled",
+            )
+        )
+        return web.json_response(
+            {"error": "too many failed attempts", "code": "auth_throttled"}, status=429
+        )
+
+    # Bounded body read. It happens HERE, not in the client, for two reasons: the
+    # cap is a property of the exposed route, and ``teams/client.py`` keeps its
+    # no-dashboard-imports property. ``on_activity`` reads the parsed dict from
+    # the request mapping, so the body is parsed exactly once and never past the
+    # cap.
+    body, cap_error = await read_bounded_json(request, max_bytes=TEAMS_MAX_ACTIVITY_BYTES)
+    if cap_error is not None and cap_error.status == 413:
+        return cap_error
+    if body is not None:
+        request[TEAMS_ACTIVITY_REQUEST_KEY] = body
+    # A body that is not a JSON object is deliberately NOT answered here. The
+    # ordering guarantee is that the token check precedes any verdict derived
+    # from body CONTENT, so the stash is left unset and ``on_activity`` answers
+    # 400 after its JWT gate. An over-cap body is different: refusing on SIZE
+    # reveals nothing about the payload and must happen before any buffering.
+
+    response = await handler(request)
+    # 401 is ``on_activity``'s only authentication refusal (invalid or
+    # unverifiable bearer); anything it accepts clears the source, exactly as the
+    # hooks webhook does after a valid token authenticates. Bookkeeping is skipped
+    # for a proxied request for the same reason the check above is: the counter
+    # would be shared across every caller.
+    if throttled_source:
+        if response.status == 401:
+            webhooks.record_auth_failure(throttled_source)
+        elif response.status < 400:
+            webhooks.record_auth_success(throttled_source)
+    return response
 
 
 async def api_teams_config_get(request: web.Request) -> web.Response:
@@ -3468,13 +3882,23 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
     from kiro_crew.config.loader import (  # noqa: F811
         CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
+        CRED_MICROSOFT_APP_TENANT_ID,
         KiroCrewConfig,
     )
 
+    # Deferred for the same reason as in api_teams_activity: importing the client
+    # probes for the optional PyJWT, which must not happen on the boot path.
+    from kiro_crew.teams.client import HAS_JWT  # noqa: F811
+
     cfg = KiroCrewConfig.load()
     creds = cfg.load_credentials()
-    app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or cfg.teams.app_id
-    app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or cfg.teams.app_password
+    tc = cfg.teams
+    # Credential resolution mirrors the boot path (slack/gateway.py) exactly: the
+    # env credential wins over config.json for all three values, so the panel
+    # reports the identity the channel will actually run as.
+    app_id = creds.get(CRED_MICROSOFT_APP_ID, "") or tc.app_id
+    app_password = creds.get(CRED_MICROSOFT_APP_PASSWORD, "") or tc.app_password
+    tenant_id = creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or tc.tenant_id
     state: DashboardState = request.app["state"]
     return web.json_response(
         {
@@ -3483,15 +3907,28 @@ async def api_teams_config_get(request: web.Request) -> web.Response:
             "connected": bool(getattr(state, "teams_connected", False)),
             "connect_error": str(getattr(state, "teams_connect_error", ""))[:120],
             "configured": bool(
-                app_id and app_password and cfg.teams.enabled and cfg.teams.allowed_emails
+                app_id and app_password and tc.enabled and tc.allowed_emails
             ),
             "read_only": not is_direct_local_request(request),
             "app_id_set": bool(app_id),
+            # Presence only, deliberately with no masked preview: an Azure client
+            # secret carries no vendor prefix, so the shared prefix-preserving
+            # mask (_mask_secret keeps everything before the first "-") would
+            # reveal real secret bytes rather than a type marker.
             "app_password_set": bool(app_password),
-            "enabled": cfg.teams.enabled,
-            "tenant_id": cfg.teams.tenant_id,
-            "allowed_emails": list(cfg.teams.allowed_emails),
-            "session_folder": cfg.teams.session_folder,
+            # PyJWT ships in the optional `kirocrew[teams]` extra and the channel
+            # REFUSES to start without it (teams/gateway.py), because inbound JWT
+            # validation is impossible. Reported so an operator sees the reason
+            # instead of a channel that silently never starts.
+            "jwt_available": bool(HAS_JWT),
+            "enabled": tc.enabled,
+            # Non-secret: blank means a multi-tenant bot, a value means
+            # single-tenant. The operator needs it to tell those apart.
+            "tenant_id": tenant_id,
+            "allowed_emails": list(tc.allowed_emails),
+            "soft_threshold_pct": int(tc.soft_threshold_pct),
+            "hard_threshold_pct": int(tc.hard_threshold_pct),
+            "session_folder": tc.session_folder,
         }
     )
 
@@ -3506,24 +3943,89 @@ def _is_valid_teams_principal(v: str) -> bool:
     return not any(ch.isspace() for ch in v)
 
 
+#: Azure AD OAuth error codes that mean "these credentials are wrong" rather than
+#: "Azure is having trouble". Anything else is treated as unverifiable.
+_TEAMS_CREDENTIAL_REJECT_STATUSES = frozenset({400, 401, 403})
+
+
+async def _validate_teams_app_credentials(
+    app_id: str, app_password: str, tenant_id: str
+) -> str | None:
+    """Check Azure Bot app credentials against Azure AD before they are stored.
+
+    The client-credentials token exchange is the same call ``TeamsClient.connect``
+    makes to prime its outbound token, so it is both the cheapest credential check
+    available and exactly the one the channel performs at boot. Returns ``None``
+    when Azure issues a token, or a short error code (``invalid_client``,
+    ``unauthorized_client``, …) when it refuses the credentials. Azure-side
+    trouble (5xx/429) and network failures propagate to the caller, which treats
+    them as "unverifiable" rather than invalid — saves must not be blocked by
+    being offline. Mirrors ``_validate_webex_token`` / ``_validate_discord_token``.
+
+    Only the OAuth ``error`` code is surfaced, never ``error_description``: the
+    description carries tenant ids, app ids, and a correlation id, none of which
+    belong in a dashboard error string.
+    """
+    import aiohttp  # noqa: F811
+
+    from kiro_crew.teams.client import (  # noqa: F811
+        _TOKEN_SCOPE,
+        _TOKEN_URL_TMPL,
+        TEAMS_MULTITENANT_AUTHORITY,
+    )
+
+    # A blank tenant_id means a multi-tenant bot, whose token is issued by the Bot
+    # Framework authority rather than a directory tenant. The default comes from
+    # teams.client so the pre-store check and the running channel cannot disagree
+    # about which authority a blank tenant means.
+    authority = tenant_id.strip() or TEAMS_MULTITENANT_AUTHORITY
+    timeout = aiohttp.ClientTimeout(total=_TOKEN_VERIFY_TIMEOUT)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.post(
+            _TOKEN_URL_TMPL.format(tenant=authority),
+            data={
+                "grant_type": "client_credentials",
+                "client_id": app_id,
+                "client_secret": app_password,
+                "scope": _TOKEN_SCOPE,
+            },
+        ) as resp:
+            if 200 <= resp.status < 300:
+                return None
+            if resp.status in _TEAMS_CREDENTIAL_REJECT_STATUSES:
+                desc = ""
+                try:
+                    data = await resp.json(content_type=None)
+                    if isinstance(data, dict):
+                        desc = str(data.get("error", "") or "")
+                except Exception:
+                    pass
+                return (desc or f"HTTP {resp.status}")[:60]
+            raise RuntimeError(f"teams credential verify http {resp.status}")
+
+
 async def api_teams_config_save(request: web.Request) -> web.Response:
     """PUT /api/teams/config — persist the Teams secret (.env) + config (json).
 
     The app password (secret) is written ONLY to config_dir/.env
     (``MICROSOFT_APP_PASSWORD``, 0600); non-secret config (enabled, app_id,
-    tenant_id, allowed_emails) lives in config.json under the "teams" key.
-    Remote sessions are read-only. The whole channel config is read at gateway
-    startup, so every change returns ``restart_required``.
+    tenant_id, allowed_emails, thresholds) lives in config.json under the "teams"
+    key. Remote sessions are read-only. Every field except ``session_folder`` is
+    read at gateway startup, so an actual change returns ``restart_required``.
     """
     from kiro_crew.agent import _atomic_json_write  # noqa: F811
     from kiro_crew.config.loader import (  # noqa: F811
+        CRED_MICROSOFT_APP_ID,
         CRED_MICROSOFT_APP_PASSWORD,
+        CRED_MICROSOFT_APP_TENANT_ID,
+        KiroCrewConfig,
+        _threshold_pct,
         config_path,
     )
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _audit_denial(msg: str) -> None:
         _sel().log_api_access(
             caller=caller,
             operation="teams.config.update",
@@ -3531,7 +4033,21 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
+
+    def _deny(msg: str, status: int = 400) -> web.Response:
+        _audit_denial(msg)
         return web.json_response({"error": msg}, status=status)
+
+    def _reject(code: str, msg: str) -> web.Response:
+        """Reject with a machine-readable ``code``; ``msg`` is advisory prose.
+
+        A sibling of ``_deny`` rather than an extra parameter on it: the status is
+        a literal here so the error-code contract gate can see the response, and
+        the dashboard renders ``error`` verbatim into a localized UI, so prose
+        alone would be untranslatable by construction (RFC 9457 3.1.3).
+        """
+        _audit_denial(msg)
+        return web.json_response({"error": msg, "code": code}, status=400)
 
     # Remote sessions are read-only: a remote/tunneled session cannot alter
     # channel access or plant the Azure Bot secret.
@@ -3588,11 +4104,77 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             return _deny(str(exc))
         staged["allowed_emails"] = new_ids
 
+    # Context-window nudge thresholds, on the shared validator.
+    for pct_key in ("soft_threshold_pct", "hard_threshold_pct"):
+        bad_pct = _threshold_pct_rejection(body, pct_key)
+        if bad_pct is not None:
+            return _reject(*bad_pct)
+        if pct_key in body:
+            staged[pct_key] = int(body[pct_key])
+
     if "session_folder" in body:
         try:
             staged["session_folder"] = clean_session_folder(body.get("session_folder"))
         except ValueError as exc:
             return _deny(str(exc))
+
+    # ── Phase 1.5: verify the app credentials against Azure AD before storing.
+    # Runs whenever any part of the credential triple changes: a mistyped App ID
+    # or tenant is as fatal as a bad secret, and all three are checked by the one
+    # token exchange. Rejection fails the save here, where the operator can act on
+    # it, and writes nothing. A network failure is NOT a rejection — the save
+    # proceeds with a warning so being offline never blocks config (mirrors the
+    # Webex and Discord saves).
+    #
+    # The fallbacks come from a config snapshot taken OUTSIDE the config lock and
+    # are advisory only: they decide what to verify, never what to write. The
+    # authoritative read-modify-write is still Phase 2 under the lock. Resolution
+    # order mirrors the boot path (slack/gateway.py) — the env credential wins —
+    # so the check exercises the credentials the channel will actually use.
+    verify_warning = ""
+    #: The exact (app_id, password, tenant) Azure accepted, or None when nothing was
+    #: verified. Re-confirmed under the config lock before anything is written.
+    verified_triple: tuple[str, str, str] | None = None
+    credential_touched = (
+        CRED_MICROSOFT_APP_PASSWORD in env_updates
+        or "app_id" in staged
+        or "tenant_id" in staged
+    )
+    if credential_touched:
+        # Both reads touch the filesystem (config.json, then .env), so they go to a
+        # thread rather than stalling the gateway loop on a save.
+        current_cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        current_creds = await asyncio.to_thread(current_cfg.load_credentials)
+        eff_password = env_updates.get(
+            CRED_MICROSOFT_APP_PASSWORD,
+            current_creds.get(CRED_MICROSOFT_APP_PASSWORD, "")
+            or current_cfg.teams.app_password,
+        )
+        eff_app_id = current_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
+            staged.get("app_id", current_cfg.teams.app_id)
+        )
+        eff_tenant = current_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
+            staged.get("tenant_id", current_cfg.teams.tenant_id)
+        )
+        # Nothing to verify while half the pair is missing (e.g. the operator is
+        # clearing the secret, or is filling the form in two saves).
+        if eff_app_id and eff_password:
+            try:
+                teams_err = await _validate_teams_app_credentials(
+                    eff_app_id, eff_password, eff_tenant
+                )
+            except Exception:
+                verify_warning = (
+                    "Azure was unreachable, so the credentials were saved "
+                    "without verification."
+                )
+            else:
+                if teams_err:
+                    return _reject(
+                        "credentials_rejected",
+                        f"credentials rejected by Azure ({teams_err})",
+                    )
+                verified_triple = (eff_app_id, eff_password, eff_tenant)
 
     # ── Phase 2: commit under the repo-wide config lock (read fresh, merge only
     # the teams section, write atomic) so a concurrent save is never clobbered.
@@ -3609,12 +4191,74 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             data["teams"] = {}
         teams_cfg = data["teams"]
 
+        if verified_triple is not None:
+            # Re-derive the effective triple under the lock and refuse if what is about
+            # to be STORED is not what Azure accepted. Optimistic, deliberately: the
+            # verification is a network round trip and the config lock serializes EVERY
+            # writer in the process, so holding it across that call would stall unrelated
+            # saves and a hung endpoint would wedge them until the timeout. Verifying
+            # outside and confirming inside costs one extra .env read and keeps the
+            # invariant that nothing unverified is stored.
+            #
+            # The race it closes: two concurrent saves, one changing the app id and one
+            # the secret. Each verifies a triple containing the OTHER's old value and
+            # passes; the serialized commits then merge into a stored triple neither one
+            # checked, and the channel is dead at the next restart with a green "Saved."
+            # ``load_credentials`` reads only ``.env`` plus the environment (it never
+            # touches ``self``), so this is a .env read and not a second config load --
+            # and it goes to a thread because it touches the filesystem.
+            fresh_creds = await asyncio.to_thread(current_cfg.load_credentials)
+            now_password = env_updates.get(
+                CRED_MICROSOFT_APP_PASSWORD,
+                fresh_creds.get(CRED_MICROSOFT_APP_PASSWORD, "")
+                or str(teams_cfg.get("app_password", "")),
+            )
+            now_app_id = fresh_creds.get(CRED_MICROSOFT_APP_ID, "") or str(
+                staged.get("app_id", teams_cfg.get("app_id", ""))
+            )
+            now_tenant = fresh_creds.get(CRED_MICROSOFT_APP_TENANT_ID, "") or str(
+                staged.get("tenant_id", teams_cfg.get("tenant_id", ""))
+            )
+            if (now_app_id, now_password, now_tenant) != verified_triple:
+                return _reject(
+                    "config_changed",
+                    "the Teams credentials changed while these were being verified; "
+                    "nothing was saved — reload and try again",
+                )
+
+        # Threshold ordering is checked against the EFFECTIVE pair (the staged
+        # value, else what is stored, else the shipped default), because a request
+        # may send only one half. Still commit-last: nothing is written yet.
+        # Stored values go through the loader's own coercion so a hand-edited
+        # config.json is read here exactly as the next load will read it.
+        eff_soft = _threshold_pct(
+            staged.get("soft_threshold_pct", teams_cfg.get("soft_threshold_pct")), 80
+        )
+        eff_hard = _threshold_pct(
+            staged.get("hard_threshold_pct", teams_cfg.get("hard_threshold_pct")), 95
+        )
+        if eff_hard < eff_soft:
+            # The loader would silently pull soft down to hard
+            # (_normalize_threshold_pair), so an inverted pair is not a crash but
+            # is never what the operator meant: the soft nudge would be
+            # unreachable. Refuse it here instead of storing a value that reads
+            # back different.
+            return _reject(
+                "threshold_pct_inverted",
+                "hard_threshold_pct must be >= soft_threshold_pct",
+            )
+
         changes: dict[str, object] = {}
         if "enabled" in staged and staged["enabled"] != bool(teams_cfg.get("enabled", False)):
             changes["enabled"] = staged["enabled"]
         for str_key in ("app_id", "tenant_id"):
             if str_key in staged and staged[str_key] != teams_cfg.get(str_key, ""):
                 changes[str_key] = staged[str_key]
+        for pct_key, pct_default in (("soft_threshold_pct", 80), ("hard_threshold_pct", 95)):
+            if pct_key in staged and staged[pct_key] != _threshold_pct(
+                teams_cfg.get(pct_key), pct_default
+            ):
+                changes[pct_key] = staged[pct_key]
         if "allowed_emails" in staged and staged["allowed_emails"] != teams_cfg.get(
             "allowed_emails", []
         ):
@@ -3642,7 +4286,9 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "teams", _folder_name,
+                    _state,
+                    "teams",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
         if env_updates:
@@ -3667,7 +4313,7 @@ async def api_teams_config_save(request: web.Request) -> web.Response:
             "ok": True,
             "restart_required": bool(env_updates)
             or bool(set(applied) - LIVE_RELOAD_FIELDS),
-            "verify_warning": "",
+            "verify_warning": verify_warning,
         }
     )
 
@@ -3853,11 +4499,15 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "webex", _folder_name,
+                    _state,
+                    "webex",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
         if env_updates:
-            _write_env_updates(env_updates)
+            # Off-loop: on Windows the owner-only lockdown shells out to icacls,
+            # which must not block the event loop.
+            await asyncio.to_thread(_write_env_updates, env_updates)
             # Keep the live process environment in sync (see the Slack save path).
             for key, new_val in env_updates.items():
                 if new_val is None:
@@ -3876,8 +4526,7 @@ async def api_webex_config_save(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(set(applied) - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(set(applied) - LIVE_RELOAD_FIELDS),
             "verify_warning": verify_warning,
         }
     )
@@ -4004,9 +4653,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
     if not is_direct_local_request(request):
         message = "read-only from remote sessions (local machine only)"
         _audit_denial(message)
-        return web.json_response(
-            {"error": message, "code": "remote_read_only"}, status=403
-        )
+        return web.json_response({"error": message, "code": "remote_read_only"}, status=403)
 
     try:
         body = await request.json()
@@ -4067,9 +4714,7 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
         except Exception:
             message = "config.json is corrupt"
             _audit_denial(message)
-            return web.json_response(
-                {"error": message, "code": "config_corrupt"}, status=500
-            )
+            return web.json_response({"error": message, "code": "config_corrupt"}, status=500)
         if not isinstance(data.get("imessage"), dict):
             data["imessage"] = {}
         imessage_cfg = data["imessage"]
@@ -4104,7 +4749,9 @@ async def api_imessage_config_save(request: web.Request) -> web.Response:
             _state = request.app.get("state")
             if _state is not None:
                 await ensure_channel_folder(
-                    _state, "imessage", _folder_name,
+                    _state,
+                    "imessage",
+                    _folder_name,
                     relabel="session_folder" in changes,
                 )
 
@@ -4232,7 +4879,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
 
     caller = request.get("user", "dashboard")
 
-    def _deny(msg: str, status: int = 400) -> web.Response:
+    def _deny(msg: str, status: int = 400, *, code: str = "") -> web.Response:
         _sel().log_api_access(
             caller=caller,
             operation="wecom.config.update",
@@ -4240,7 +4887,14 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             source="dashboard",
             error=msg,
         )
-        return web.json_response({"error": msg}, status=status)
+        # ``code`` is optional: most rejections in this handler are prose-only, and a
+        # machine-readable code is added per field as one is retrofitted. The dashboard
+        # renders ``error`` verbatim into a localized UI, so prose alone is
+        # untranslatable by construction (RFC 9457 3.1.3).
+        payload: dict[str, Any] = {"error": msg}
+        if code:
+            payload["code"] = code
+        return web.json_response(payload, status=status)
 
     # Remote sessions are read-only: config writes are accepted only from the
     # machine running the gateway, so a remote or tunneled session (even with
@@ -4351,10 +5005,11 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
             staged["allowed_users"] = new_users
             applied.append("allowed_users")
 
+    bad_pct = _threshold_pct_rejection(body, "soft_threshold_pct")
+    if bad_pct is not None:
+        return _deny(bad_pct[1], code=bad_pct[0])
     if "soft_threshold_pct" in body:
-        pct = body.get("soft_threshold_pct")
-        if not isinstance(pct, int) or isinstance(pct, bool) or not (1 <= pct <= 100):
-            return _deny("soft_threshold_pct must be an integer between 1 and 100")
+        pct = int(body["soft_threshold_pct"])
         if pct != int(wc_cfg.get("soft_threshold_pct", 80)):
             staged["soft_threshold_pct"] = pct
             applied.append("soft_threshold_pct")
@@ -4388,9 +5043,11 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
         _state = request.app.get("state")
         if _state is not None:
             await ensure_channel_folder(
-                    _state, "wecom", _folder_name,
-                    relabel="session_folder" in staged,
-                )
+                _state,
+                "wecom",
+                _folder_name,
+                relabel="session_folder" in staged,
+            )
     if env_updates:
         # Off-loop: on Windows the owner-only lockdown shells out to icacls,
         # which must not block the event loop.
@@ -4415,8 +5072,7 @@ async def _wecom_config_save_locked(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(env_updates)
-            or bool(staged.keys() - LIVE_RELOAD_FIELDS),
+            "restart_required": bool(env_updates) or bool(staged.keys() - LIVE_RELOAD_FIELDS),
             "verify_warning": "",
         }
     )

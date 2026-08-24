@@ -5,7 +5,7 @@ import Clickable from '../components/Clickable'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useAppDispatch } from '../store'
 import { createSlot } from '../store/chatSlice'
-import { api } from '../api/client'
+import { api, type WebhookTokenEntry } from '../api/client'
 import { useProvider } from '../providers'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { Btn, SendBtn, Input, Badge, SearchInput, PageHeader, EmptyState } from '../components/ui'
@@ -19,10 +19,11 @@ import { FOCUSABLE } from '../hooks/useDialogFocusTrap'
 import SimpleSelect from '../components/SimpleSelect'
 import CrewAvatar from '../components/CrewAvatar'
 import CrewWakeSection from '../components/CrewWakeSection'
+import CrewWebhookSection from '../components/CrewWebhookSection'
 import CrewEditorRail from '../components/crew/CrewEditorRail'
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
 import { useCrewEditorSections, type CrewPaneKey } from '../components/crew/crewEditorSections'
-import { wakesCrew, crewWakeQueryKey } from '../components/crew/wakesCrew'
+import { wakesCrew, crewWakeQueryKey, crewWebhooksQueryKey, webhookBoundToCrew, webhookCanCallIn } from '../components/crew/wakesCrew'
 import type { CronJob } from '../types'
 import type { KiroCrewAgent } from '../components/AgentSelector'
 import { SourceBadge } from '../components/SourceBadge'
@@ -834,6 +835,22 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     [wakeQuery.data, editing, defaultAgent],
   )
 
+  /** Same one-fetch rule for webhooks: the rail badge, the overview node and
+   *  the webhook pane all read this single cached entry. */
+  const webhooksQuery = useQuery({
+    queryKey: crewWebhooksQueryKey,
+    queryFn: () => api.webhooks(),
+    enabled: !!editing,
+  })
+  const boundWebhookTokens = useMemo(
+    () => (webhooksQuery.data?.tokens || []).filter(
+      (t: WebhookTokenEntry) => webhookBoundToCrew(t, editing)),
+    [webhooksQuery.data, editing],
+  )
+  const boundWebhooks = boundWebhookTokens.length
+  const activeWebhooks = boundWebhookTokens.filter(
+    (t: WebhookTokenEntry) => webhookCanCallIn(t, webhooksQuery.data?.switch_on !== false)).length
+
   /** Keywords the orchestrator can match, counted the way the field is authored:
    *  comma-separated, blanks ignored, so a trailing comma is not a keyword. */
   const routingWords = triggers.split(',').map(s => s.trim()).filter(Boolean).length
@@ -860,6 +877,9 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     sharesStorage: collidingCrews.length > 0,
     canDelete: !!editing && editing !== defaultAgent,
     schedulesUnknown: wakeQuery.isError,
+    webhookTokens: boundWebhooks,
+    webhookTokensActive: activeWebhooks,
+    webhooksUnknown: webhooksQuery.isError,
     dirtyPanes,
   })
   const panelId = `crew-editor-pane-${editing || 'new'}`
@@ -1126,6 +1146,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       sharingCrews={collidingCrews.length}
                       workspaceShared={sharingWorkspace.length > 0}
                       memoryShared={sharingMemoryStore.length > 0}
+                      webhookTokens={boundWebhooks}
+                      webhooksUnknown={webhooksQuery.isError}
                     />
                   )}
 
@@ -1177,6 +1199,8 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                   {pane === 'schedules' && (
                     <CrewWakeSection crew={editing} isDefaultCrew={editing === defaultAgent} />
                   )}
+
+                  {pane === 'webhook' && <CrewWebhookSection crew={editing} />}
 
                   {pane === 'routing' && <TriggersField value={triggers} onChange={setTriggers} />}
 

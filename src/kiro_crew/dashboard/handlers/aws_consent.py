@@ -32,6 +32,7 @@ from aiohttp import web
 from kiro_crew import aws_consent
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
+    stale_owner_session_response,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,11 @@ def _deny_non_owner(request: web.Request, operation: str) -> web.Response | None
     aws_consent.audit_decision(
         "*", outcome="denied", detail=f"{operation}: non-owner caller refused"
     )
+    # Deny decision made above; only the response label changes for a signed
+    # pre-owner bootstrap subject (see stale_owner_session_response).
+    stale = stale_owner_session_response(request)
+    if stale is not None:
+        return stale
     return web.json_response(
         {"error": "dashboard owner required", "code": _CODE_OWNER_REQUIRED}, status=403
     )

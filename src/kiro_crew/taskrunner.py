@@ -1517,7 +1517,7 @@ class TaskRunner:
             return
         try:
             items = json.loads(raw)
-        except (json.JSONDecodeError, ValueError, OSError) as exc:
+        except (ValueError, OSError) as exc:
             # Never silently discard run state on a corrupt/truncated file:
             # surface the corruption loudly and preserve the bad file as a
             # sidecar for recovery instead of returning an empty registry.

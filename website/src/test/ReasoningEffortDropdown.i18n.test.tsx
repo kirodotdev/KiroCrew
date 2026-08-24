@@ -12,16 +12,28 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
+import { configureStore } from '@reduxjs/toolkit'
 import React from 'react'
 
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
 import { api } from '../api/client'
+import chatReducer from '../store/chatSlice'
+import dashboardReducer from '../store/dashboardSlice'
+import notificationsReducer from '../store/notificationsSlice'
 // `/all` for the Chinese catalog: `../i18n` registers English only.
 import { i18next } from '../i18n/all'
 
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  // The dropdown persists picks into the slot store (#5120), so the tree
+  // needs the redux context even though these tests only read labels. A
+  // per-render store (not the app singleton) keeps one test's persist from
+  // leaking into the next.
+  const store = configureStore({
+    reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
+  })
+  return render(<Provider store={store}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 const baseProps = { slot: 'dashboard:1', onClose: vi.fn(), embedded: true }

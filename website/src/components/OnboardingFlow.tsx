@@ -12,6 +12,7 @@ import { capRoleOther, clampRoleOther } from '../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
  * tour. It is the LAST of the three first-run chapters: Import setup runs first,
@@ -137,6 +138,7 @@ export default function OnboardingFlow({
   // onComplete when the host does not distinguish the two.
   onSkipAll?: () => void
 }) {
+  const ime = useImeGuard()
   const navigate = useNavigate()
   const {
     colorTheme,
@@ -629,14 +631,9 @@ export default function OnboardingFlow({
               // truncates mid-surrogate-pair.
               setRoleOther(capRoleOther(e.target.value))
             }}
-            onKeyDown={e => {
-              // Enter in a single-field reveal should advance, not submit the
-              // dialog's first button.
-              if (e.key === 'Enter') {
-                e.preventDefault()
-                if (!savingProfile) void next()
-              }
-            }}
+            // Enter in a single-field reveal should advance, not submit the
+            // dialog's first button (claimEnter consumes the accepted key).
+            {...ime.bindEnter({ onEnter: () => { if (!savingProfile) void next() } })}
             placeholder={i18nT('components.onboardingFlow.e_g_solutions_architect_sre_founder')}
             aria-label={i18nT('components.onboardingFlow.describe_your_role')}
             className="mt-2 w-full rounded-lg border border-border bg-transparent px-3 py-2 text-[13px] text-text placeholder:text-muted focus-visible:border-accent focus:outline-none disabled:opacity-60"

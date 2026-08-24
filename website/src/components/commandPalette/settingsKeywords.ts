@@ -17,7 +17,7 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   'display.interface': ['chat mode', 'cli mode', 'bubbles', 'terminal'],
 
   // Chat
-  'chat.fallback-model': ['model', 'llm', 'opus', 'sonnet', 'haiku', 'gpt', 'default model', 'fallback model', 'switch model', 'which model'],
+  'chat.default-model': ['model', 'llm', 'opus', 'sonnet', 'haiku', 'gpt', 'default model', 'fallback model', 'switch model', 'which model'],
   'chat.default-reasoning-effort': ['reasoning', 'thinking', 'effort', 'thinking depth', 'xhigh', 'reasoning effort'],
   'chat.auto-compact-threshold': ['context window', 'compaction', 'memory', 'conversation length'],
   'chat.show-timestamps': ['time', 'clock', 'message time'],
@@ -40,6 +40,12 @@ export const SETTINGS_KEYWORDS: Record<string, string[]> = {
   // Computer use
   'computer-use.enable-computer-use': ['accessibility', 'desktop', 'click', 'keyboard', 'screenshot', 'a11y', 'automation', 'gui'],
   'computer-use.attach-screenshots': ['screen capture', 'screenshot', 'pixels', 'window image'],
+
+  // Security (manual entries — settingsManual.ts)
+  'security.how-long-auto-approve-stays-on': ['yolo', 'auto-approve', 'auto approve', 'skip permissions', 'dangerously skip permissions', 'permissions', 'ttl', 'duration', 'expiry', 'until shutdown'],
+  'security.trust-this-machine-s-tailnet-name': ['lan', 'network', 'remote', 'expose', 'tailscale', 'origin'],
+  'security.denied-commands': ['deny', 'denylist', 'blocklist', 'blocked commands', 'command rules'],
+  'security.trust-every-third-party-app': ['apps', 'third party', 'auto approve apps', 'trust'],
 
   // General navigation
   'chat.split-view-session-grid': ['split pane', 'multi session', 'grid view'],

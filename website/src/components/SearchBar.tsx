@@ -5,6 +5,7 @@ import { platformShortcut } from '../utils/platform'
 import { SEARCH_LISTBOX_ID, searchOptionId } from './SearchResultsList'
 
 import { i18nT } from '../i18n/t'
+import { useImeGuard } from '../hooks/useImeGuard'
 interface SearchBarProps {
   term: string
   setTerm: (t: string) => void
@@ -23,6 +24,7 @@ interface SearchBarProps {
 }
 
 export default function SearchBar({ term, setTerm, matches, currentIdx, next, prev, close, caseSensitive, toggleCaseSensitive, focusNonce, goTo, docked }: SearchBarProps) {
+  const ime = useImeGuard()
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => { inputRef.current?.focus() }, [])
@@ -38,7 +40,8 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
-      e.preventDefault()
+      // Only the Enter path is claimed — arrow/Home/End navigation stays untouched.
+      if (!ime.claimEnter(e)) return
       if (e.shiftKey) prev()
       else next()
     }
@@ -93,9 +96,18 @@ export default function SearchBar({ term, setTerm, matches, currentIdx, next, pr
         aria-activedescendant={matches.length > 0 ? searchOptionId(currentIdx) : undefined}
         value={term}
         onChange={e => setTerm(e.target.value)}
+        {...ime.bindComposition()}
         onKeyDown={handleKeyDown}
         aria-label={i18nT('components.searchBar.find_in_chat')}
         placeholder={i18nT('components.searchBar.find_in_chat_2')}
+        /* focus-cue-ok: undocked, the cue is on the WRAPPER — the pill above
+           carries `focus-within:border-accent` (same structure as IssueList's
+           search box), and a ring on the bare input would nest two outlines.
+           Docked, the bar is the search panel's title, summoned by the user and
+           autofocused, with the caret as the in-place cue; it has carried no
+           outline since it shipped, and this change only rewired the
+           composition/Enter handling, so restyling the docked header is out of
+           its scope. */
         className={`bg-transparent border-none outline-none text-text placeholder:text-muted text-[13px] ${docked ? 'flex-1 min-w-0' : 'w-[180px]'}`}
       />
       <button

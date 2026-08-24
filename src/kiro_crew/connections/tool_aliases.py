@@ -258,9 +258,12 @@ def _parse_tool_refs(tools: Iterable[object]) -> tuple[bool, dict[str, set[str] 
         if not tool or tool == _SERVER_WILDCARD:
             per_server[server] = None
             continue
-        if per_server.get(server, set()) is None:
-            continue
-        per_server.setdefault(server, set()).add(tool)  # type: ignore[union-attr]
+        # ``setdefault`` returns the existing value untouched, so a server already
+        # resolved to whole-server exposure (``None``) is left that way: a narrower
+        # per-tool ref adds nothing to what a whole-server ref already mounts.
+        named = per_server.setdefault(server, set())
+        if named is not None:
+            named.add(tool)
     return global_all, per_server
 
 

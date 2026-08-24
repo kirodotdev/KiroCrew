@@ -208,8 +208,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   const resolveApprovalNote = useCallback((n: Notification, action: 'approve' | 'reject') => {
     api.resolveApproval(n.approval_id || n.ts, action)
       .then(() => { dispatch(deleteNotification(n.ts)) })
-      // eslint-disable-next-line no-console -- intentional failure diagnostic;
-      // the row stays in the feed and remains retryable (detail panel too).
+      // Intentional failure diagnostic; the row stays in the feed and remains
+      // retryable (detail panel too).
+      // eslint-disable-next-line no-console
       .catch(err => { console.error(`Inline ${action} failed`, err) })
   }, [dispatch])
 

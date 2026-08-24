@@ -29,6 +29,7 @@ import { providerTerms, isGitlab } from '../lib/links'
 import type { PrDetailData, PullRequest, RepoRef } from '../api'
 
 import { i18nT } from '../../../i18n/t'
+import { useImeGuard } from '../../../hooks/useImeGuard'
 
 /** Which composer is open, if any. `null` means the bar is showing its buttons. */
 type Composer = 'approve' | 'request_changes' | 'comment' | null
@@ -86,6 +87,7 @@ export default function PrActionsBar({
    * says why instead of offering buttons that fail. */
   canWrite: boolean
 }) {
+  const ime = useImeGuard()
   const terms = providerTerms(repoRef)
   const actions = usePrActions(repoRef, pull.number)
   const [composer, setComposer] = useState<Composer>(null)
@@ -255,11 +257,12 @@ export default function PrActionsBar({
           ref={textRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          {...ime.bindComposition<HTMLTextAreaElement>()}
           onKeyDown={(e) => {
             if (e.key === 'Escape') { e.preventDefault(); closeComposer() }
             // Cmd/Ctrl+Enter submits, matching the chat composer. A bare Enter
             // stays a newline: these bodies are prose, often multi-line.
-            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); submitComposer() }
+            if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { if (ime.claimEnter(e)) submitComposer() }
           }}
           placeholder={copy.placeholder}
           aria-label={copy.title}
