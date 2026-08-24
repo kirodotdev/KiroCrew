@@ -1368,12 +1368,23 @@ def drop_tagging_suggestions(
 #   v1: {schema, fetched_at, edges:[{blocked, blocker, source}], nodes:{...}}
 DEPS_CACHE_SCHEMA = 1
 
-# How long a synced dependency graph is served before /deps refetches it. The
-# graph moves only when a dependency is added/removed or a blocker's lifecycle
-# changes — far slower than the issue list — and a rebuild costs N native +
-# N timeline reads for the open backlog, so a generous TTL keeps that cost off
-# the hot path. Same "plain TTL, not a probe-gated poll" reasoning as the labels
-# cache: a probe here would cost as much as the refetch it guards.
+# How long a synced dependency graph is served before it is considered stale.
+#
+# This constant has TWO consumers with DIFFERENT needs, which is why it stays at
+# ten minutes even though the /deps route alone would be happy with hours:
+#
+#   * the /deps route, which since serve-stale-revalidate-behind no longer blocks
+#     a request on an expired cache (it returns the stale graph and refreshes in
+#     the background), so for the route this TTL governs how often a BACKGROUND
+#     rebuild fires and a long value would be harmless;
+#   * crew_runtime._read_or_refresh_deps, the sweep that feeds SIG_DEP_UNBLOCKED.
+#     For the sweep this TTL IS the freshness horizon on which a crew waiting for
+#     its blocker to merge gets woken, so raising it directly delays that wake.
+#
+# Serve-stale already removes the ~11s stall a user could hit here, so there is
+# nothing left to buy by stretching it -- and the cost would land on the sweep,
+# not on the route that wanted it. Decoupling the two horizons (a long refresh
+# interval for the route, a short one for the sweep) is a separate change.
 DEPS_CACHE_TTL_SEC = 600.0
 
 # Edge provenance. A native edge is one GitHub itself records via the
