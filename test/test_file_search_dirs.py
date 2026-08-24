@@ -47,11 +47,17 @@ def _populate(tmp_path):
     (nested / "leaf.py").write_text("z")
     # An empty directory: proof dirs are walked, not derived from file paths.
     (tmp_path / "widgetsempty").mkdir()
-    # Excluded: dot-prefixed and skip-listed dirs
+    # A dot-prefixed dir IS offered as a candidate (issue #5677): it must not be
+    # descended into, but the directory itself is a valid @-mention target.
     (tmp_path / ".widgetshidden").mkdir()
+    # Skip-listed dirs stay excluded from both descent and results -- including
+    # the dot-prefixed skip-listed ones (.git, .cache, .venv), which the shared
+    # _SKIP_DIRS names explicitly now that candidacy no longer filters on a dot.
     nm = tmp_path / "node_modules"
     nm.mkdir()
     (nm / "widgetsdep").mkdir()
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".cache").mkdir()
 
 
 def _scorer(q, name, rel):
@@ -112,15 +118,49 @@ class TestFileIndexDirs:
             idx.stop()
 
     @pytest.mark.asyncio
-    async def test_index_excludes_hidden_and_skip_dirs(self, tmp_path):
+    async def test_index_offers_dot_dirs_but_not_skip_dirs(self, tmp_path):
+        """Dot-prefixed dirs ARE candidates (#5677); skip-listed dirs are not."""
         _populate(tmp_path)
         idx = FileIndex(str(tmp_path))
         await idx.start()
         try:
             names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
-            assert ".widgetshidden" not in names
-            assert "widgetsdep" not in names
-            assert "node_modules" not in names
+            assert ".widgetshidden" in names, "dot-prefixed dir must be offered as a candidate"
+            assert "widgetsdep" not in names, "a dir inside node_modules is never descended into"
+            assert "node_modules" not in names, "skip-listed dir must stay excluded from results"
+        finally:
+            idx.stop()
+
+    @pytest.mark.asyncio
+    async def test_index_dot_skip_dirs_are_not_offered(self, tmp_path):
+        """A dot-prefixed SKIP-listed dir (.git, .cache) is never a candidate.
+
+        Regression for #5677 review: candidacy no longer filters on a leading
+        dot, so the shared _SKIP_DIRS must name .git/.cache/.venv explicitly --
+        otherwise the indexed fast path would start offering them.
+        """
+        _populate(tmp_path)
+        idx = FileIndex(str(tmp_path))
+        await idx.start()
+        try:
+            for q in ("git", "cache"):
+                names = {r["name"] for r in idx.search(q, _scorer, 50, "dirs")}
+                assert f".{q}" not in names, f".{q} must never be offered as a candidate"
+        finally:
+            idx.stop()
+
+    @pytest.mark.asyncio
+    async def test_index_does_not_descend_into_dot_dirs(self, tmp_path):
+        """A dot-dir is offered, but its CONTENTS are never walked."""
+        hidden = tmp_path / ".secretcfg"
+        hidden.mkdir()
+        (hidden / "widgetsinside").mkdir()
+        idx = FileIndex(str(tmp_path))
+        await idx.start()
+        try:
+            names = {r["name"] for r in idx.search("widgets", _scorer, 50, "dirs")}
+            assert ".secretcfg" not in names, "does not match query, not expected here"
+            assert "widgetsinside" not in names, "must not descend into a dot-dir"
         finally:
             idx.stop()
 
@@ -228,15 +268,33 @@ class TestApiFileSearchDirs:
             assert kinds == {"dir", "file"}
 
     @pytest.mark.asyncio
-    async def test_walk_fallback_excludes_hidden_and_skip_dirs(self, tmp_path, mock_sel):
+    async def test_walk_fallback_offers_dot_dirs_but_not_skip_dirs(self, tmp_path, mock_sel):
+        """The walk fallback offers dot-dirs (#5677) but never skip-listed dirs."""
         _populate(tmp_path)
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(
                 f"/api/file-search?q=widgets&kinds=dirs&project={tmp_path}"
             )
             names = {r["name"] for r in (await resp.json())["results"]}
-            assert ".widgetshidden" not in names
-            assert "widgetsdep" not in names
+            assert ".widgetshidden" in names, "dot-prefixed dir must be offered as a candidate"
+            assert "widgetsdep" not in names, "a dir inside node_modules is never descended into"
+            assert "node_modules" not in names, "skip-listed dir must stay excluded from results"
+
+    @pytest.mark.asyncio
+    async def test_walk_fallback_dot_skip_dirs_are_not_offered(self, tmp_path, mock_sel):
+        """The walk fallback never offers a dot-prefixed skip-listed dir.
+
+        Same source of truth as the fast path (shared _SKIP_DIRS), so the two
+        paths of this endpoint agree on .git/.cache/.venv -- the #5677 review gap.
+        """
+        _populate(tmp_path)
+        async with TestClient(TestServer(_make_app())) as client:
+            for q in ("git", "cache"):
+                resp = await client.get(
+                    f"/api/file-search?q={q}&kinds=dirs&project={tmp_path}"
+                )
+                names = {r["name"] for r in (await resp.json())["results"]}
+                assert f".{q}" not in names, f".{q} must never be offered by the fallback"
 
     @pytest.mark.asyncio
     async def test_index_fast_path_forwards_kinds(self, tmp_path, mock_sel):

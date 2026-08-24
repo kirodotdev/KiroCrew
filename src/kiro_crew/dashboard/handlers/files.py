@@ -30,6 +30,7 @@ from aiohttp.multipart import BodyPartReader
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.hooks import safe_read_prefix
 from kiro_crew.messaging.link import is_channel_session_key
@@ -2353,11 +2354,13 @@ async def api_file_search(request: web.Request) -> web.Response:
             return web.json_response({"results": trimmed, "root": safe_roots[0]})
 
     # Fallback: walk filesystem per request
-    # Dot-prefixed dirs (.kirocrew, .kiro, .aim) excluded by startswith(".") guard below.
-    skip_dirs = {
-        ".git", "node_modules", "__pycache__", ".cache", ".venv", "venv",
-        "dist", "build", "env", "out", "target",
-    }
+    # Dot-prefixed FILES stay excluded (startswith(".") guard in _collect).
+    # Dot-prefixed DIRECTORIES (.github, .kiro, .claude) ARE offered as
+    # candidates; only skip_dirs below are dropped from both descent and results.
+    # skip_dirs is the SAME shared set the indexed fast path uses (imported from
+    # file_index), so the two paths of this endpoint cannot diverge on which
+    # directories are suppressed -- see #5677.
+    skip_dirs = _WALK_SKIP_DIRS
 
     max_scan = _WALK_MAX_SCAN_SCOPED if scoped else _WALK_MAX_SCAN_UNSCOPED
     max_collect = max_results * 10  # collect enough candidates for good scoring, then stop
@@ -2432,17 +2435,32 @@ async def api_file_search(request: web.Request) -> web.Response:
                 # Bounds the traversal; the per-kind counters stop advancing once
                 # their kind is done.
                 dirs_visited += 1
-                pruned = [
-                    d for d in dirnames
-                    if not d.startswith(".") and d not in skip_dirs
-                ]
-                dirnames[:] = pruned if scoped else platform_compat.tcc_prune_walk_dirs(
-                    root_dir, dirpath, pruned
-                )
+                # A dot-prefixed directory (.github, .kiro, .claude) should be
+                # OFFERED as a candidate even though we must not DESCEND into it.
+                # These were previously conflated: ``dirnames`` was pruned in
+                # place (dropping dot-dirs) before _collect saw it.
+                #
+                # Build the candidate list (offered AND stat'd) first, then
+                # derive the narrower descent list from it. Both drop skip_dirs
+                # (.git, node_modules, ...). On an UNSCOPED root the TCC-gated
+                # folders (Downloads, Desktop, Library, ... from a $HOME root on
+                # macOS) must also be dropped from candidates -- merely offering
+                # one means os.stat-ing it, which pops a consent modal; a scoped
+                # root is deliberate and is never TCC-pruned, matching the
+                # descent rule below. Only the leading-dot rule differs: a dot-
+                # dir is a valid candidate but is removed from the descent list.
+                base_dirs = [d for d in dirnames if d not in skip_dirs]
+                if scoped:
+                    candidate_dirs = base_dirs
+                else:
+                    candidate_dirs = platform_compat.tcc_prune_walk_dirs(
+                        root_dir, dirpath, base_dirs
+                    )
+                dirnames[:] = [d for d in candidate_dirs if not d.startswith(".")]
                 # Files first: under a tight scan budget the file candidates are
                 # the ones that survive.
                 _collect("file", dirpath, filenames, root_dir)
-                _collect("dir", dirpath, dirnames, root_dir)
+                _collect("dir", dirpath, candidate_dirs, root_dir)
                 if _full():
                     break
         return found["file"] + found["dir"]
