@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.snapshot import restore_main, snapshot_main
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -279,6 +280,45 @@ class TestRestoreReplace:
         ]
         assert backups
         assert (backups[0] / "workspace/local_only.md").is_file()
+
+    @requires_symlinks
+    def test_replace_swaps_nothing_when_a_tree_backup_refuses(self, env, monkeypatch):
+        """Ordering ratchet for issue #2844, failure mode 3.
+
+        The ENTIRE rollback set must exist before the first core-file swap. A
+        tree backup can refuse through its fatal skip reporter (a symlink in
+        the live tree is the injectable case), and that refusal must arrive
+        with every live core file untouched -- the old ordering swapped the
+        databases first, so the abort left mixed state (new databases, old
+        trees) behind an incomplete rollback set.
+        """
+        _, _, tarball, tmp_path = env
+        existing = tmp_path / "existing2844"
+        _setup_fake_kirocrew(existing)
+        # Make the live core files byte-distinguishable from the snapshot's, so
+        # "unchanged" below cannot pass by the two sides being identical.
+        conn = sqlite3.connect(str(existing / "memory.db"))
+        conn.execute(
+            "INSERT INTO semantic_memory"
+            " (key, value_json, confidence, source, created_at, updated_at)"
+            " VALUES ('local.only', '\"survivor\"', 0.9, 'test', '2026-01-02', '2026-01-02')"
+        )
+        conn.commit()
+        conn.close()
+        (existing / "crons.json").write_text('{"version": 2, "jobs": []}')
+        # A symlink inside the live workspace is an entry the pinned backup walk
+        # skips, and the backup pass reports skips through fatal_skip_reporter,
+        # which refuses the whole replace.
+        os.symlink(str(existing / "workspace/doc.md"), str(existing / "workspace/alias.md"))
+        before_db = (existing / "memory.db").read_bytes()
+        before_crons = (existing / "crons.json").read_bytes()
+        monkeypatch.setenv("KIROCREW_HOME", str(existing))
+
+        ret = restore_main([str(tarball), "--mode", "replace", "--force"])
+
+        assert ret == 1
+        assert (existing / "memory.db").read_bytes() == before_db
+        assert (existing / "crons.json").read_bytes() == before_crons
 
 
 class TestRestoreMerge:

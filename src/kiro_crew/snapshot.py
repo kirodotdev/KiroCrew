@@ -1122,8 +1122,10 @@ def _lock_down_restored(path: Path, component: str) -> None:
 def _backup_tree_or_refuse(src: Path, dst: Path, *, allow_unpinned: bool = False) -> None:
     """Back a live tree up, and refuse the replace if the backup is not complete.
 
-    Replace mode's next step is ``rmtree`` on the live tree, so a file the backup pass
-    SKIPPED is a file the restore is about to delete with no copy anywhere. The staging
+    Replace mode later runs ``rmtree`` on the live tree, so a file the backup pass
+    SKIPPED is a file the restore is about to delete with no copy anywhere -- and the
+    call site is deliberately hoisted ahead of every live mutation, so a refusal
+    arrives while nothing has been swapped yet (#2844). The staging
     walk legitimately skips a hardlink alias, a symlink and a non-regular file -- which
     is right when producing an archive and catastrophic here, because the skip is
     followed by a delete rather than by an omission.
@@ -1151,6 +1153,25 @@ def _do_replace(
     backup.mkdir(exist_ok=True)
     print("🔄 Replace mode — backing up current state...")
 
+    # The ENTIRE rollback set is completed before the first live mutation. A tree
+    # backup can refuse (its fatal skip reporter raises on an entry it cannot
+    # copy, e.g. a hardlink alias or a symlink), and refusing is only safe
+    # while nothing has been swapped yet: the previous ordering ran the core-file
+    # swap loop first, so a tree-backup refusal aborted with the new databases
+    # live and the old trees live -- mixed state, with a rollback set missing the
+    # very trees the abort was protecting. Same
+    # complete-validation-before-first-mutation ordering the unsafe-root check
+    # already follows, applied to the rollback copy (issue #2844, failure mode 3).
+    if _want(components, "workspace"):
+        for dirname in ("workspace", "plan_memory"):
+            d = mc / dirname
+            if d.is_dir():
+                _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
+    if _want(components, "skills"):
+        sk = mc / "skills"
+        if sk.is_dir():
+            _backup_tree_or_refuse(sk, backup / "skills", allow_unpinned=allow_unpinned)
+
     for comp in ("memory", "crons", "config", "notifications", "security"):
         if _want(components, comp):
             _backup_and_copy(mc, backup, snap, comp, allow_unpinned=allow_unpinned)
@@ -1159,8 +1180,6 @@ def _do_replace(
     if _want(components, "workspace"):
         for dirname in ("workspace", "plan_memory"):
             d = mc / dirname
-            if d.is_dir():
-                _backup_tree_or_refuse(d, backup / dirname, allow_unpinned=allow_unpinned)
             sd = snap / dirname
             if sd.is_dir():
                 if d.is_dir():
@@ -1183,8 +1202,6 @@ def _do_replace(
 
     if _want(components, "skills"):
         sk = mc / "skills"
-        if sk.is_dir():
-            _backup_tree_or_refuse(sk, backup / "skills", allow_unpinned=allow_unpinned)
         snap_sk = snap / "skills"
         if snap_sk.is_dir():
             if sk.is_dir():
