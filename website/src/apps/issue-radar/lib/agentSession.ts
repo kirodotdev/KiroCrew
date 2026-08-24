@@ -27,6 +27,7 @@ import { useNavigate } from 'react-router-dom'
 import { useAppDispatch } from '../../../store'
 import { createSlot, switchSlot, deleteSlot } from '../../../store/chatSlice'
 import { api } from '../../../api/client'
+import { readSendReceipt } from '../../../utils/sendDelivery'
 import { issueRadarApi, type InvestigationRecord, type ItemKind, RepoRef } from '../api'
 
 /** One folder per connected repo groups all its sessions. */
@@ -140,11 +141,24 @@ export function useAgentSession(): UseAgentSession {
         const seedInFlight = api.sendChat(prompt, slot.key)
         createdSlotKey = null
         const seeded = await seedInFlight
-        if (seeded && typeof seeded === 'object' && 'ok' in seeded && !(seeded as Response).ok) {
-          // Rejected outright, so nothing is running: the empty slot is safe (and
-          // wrong) to remove.
-          await dispatch(deleteSlot(slot.key)).unwrap().catch(() => {})
-          throw new Error(`could not seed the session (HTTP ${(seeded as Response).status})`)
+        // A REFUSAL, not merely a non-2xx: `/api/chat` also declines inside a 200
+        // by answering `{ok:false}`, and a status-only check passed that as a
+        // success -- recording and navigating to exactly the empty session this
+        // guard exists to prevent. `readSendReceipt` owns that distinction for
+        // every send site. An UNREADABLE 2xx receipt deliberately does NOT land
+        // here: the request was accepted, so the seed may be running, and
+        // deleting the slot would cancel real work over a mangled reply.
+        if (seeded && typeof seeded === 'object' && 'ok' in seeded) {
+          const { body, outcome } = await readSendReceipt(seeded as Response)
+          if (outcome === 'refused') {
+            // Rejected outright, so nothing is running: the empty slot is safe
+            // (and wrong) to remove.
+            await dispatch(deleteSlot(slot.key)).unwrap().catch(() => {})
+            const reason = typeof body.error === 'string' && body.error
+              ? body.error
+              : `HTTP ${(seeded as Response).status}`
+            throw new Error(`could not seed the session (${reason})`)
+          }
         }
         const res = await issueRadarApi.saveInvestigation(repoRef, number, {
           slot_key: slot.key,

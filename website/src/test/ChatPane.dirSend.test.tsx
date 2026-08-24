@@ -1,13 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { ReactNode } from 'react'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { setQuestionCard } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -306,6 +306,24 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     await waitFor(() => expect((box as HTMLTextAreaElement).value).toBe('refused at the guard'))
   })
 
+  it('says nothing when a 2xx receipt will not parse, and keeps the composer clear (#4217)', async () => {
+    // A truncated or proxy-mangled body on an ACCEPTED post is not a refusal:
+    // the request got through and the turn may be streaming. The pane treats it
+    // exactly as it treats the 10s abort below — no error row, and the payload
+    // stays out of the composer so a retry cannot duplicate a delivered turn.
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, json: () => Promise.reject(new Error('unexpected end of JSON input')),
+    })
+    const { store } = renderPane('pane-unreadable')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    fireEvent.change(box, { target: { value: 'maybe it landed' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    expect(errorsIn(store, 'pane-unreadable')).toHaveLength(0)
+    expect((box as HTMLTextAreaElement).value).toBe('')
+  })
+
   it('falls back to the generic string when the transport rejects', async () => {
     ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('offline'))
     const { store } = renderPane('pane-generic')
@@ -316,6 +334,32 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     // No response means no server reason, so the connectivity copy is correct here.
     await waitFor(() => expect(errorsIn(store, 'pane-generic')).toHaveLength(1))
     expect(errorsIn(store, 'pane-generic')[0].content.trim().length).toBeGreaterThan(0)
+  })
+
+  it('reports a REFUSED question-card answer instead of losing it (#4217)', async () => {
+    // The card clears the instant the user submits, so this is the one send in
+    // the pane whose payload nothing else carries. A 200 answering `{ok:false}`
+    // used to pass a status-only check as a success: the answer vanished and the
+    // agent kept waiting, with nothing on screen saying either.
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: true, json: () => Promise.resolve({ ok: false, error: 'slot is stopping' }),
+    })
+    const { store } = renderPane('pane-ask')
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'pane-ask',
+        card_id: 'delivery-1',
+        questions: [{ question: 'Pick a trust model', options: [{ label: 'Public only' }] }],
+      }))
+    })
+    fireEvent.click(await screen.findByText('Public only'))
+    fireEvent.click(screen.getByText('Submit'))
+
+    await waitFor(() => expect(errorsIn(store, 'pane-ask')).toHaveLength(1))
+    expect(errorsIn(store, 'pane-ask')[0].content).toBe('slot is stopping')
+    // ...and the answer comes back so it can be sent again.
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    await waitFor(() => expect(box.value).toBe('Public only'))
   })
 
   it('passes an abort signal so a hung send cannot sit silent', async () => {

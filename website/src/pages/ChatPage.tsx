@@ -34,7 +34,7 @@ import {
   requestSlotReveal,
   mcpAppKey,
 } from '../store/chatSlice'
-import { confirmedDelivered } from '../utils/sendDelivery'
+import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { addNotification, removeNotificationByTs } from '../store/notificationsSlice'
 import { onTerminalReady, sendToTerminalSession } from '../utils/terminalRegistry'
 import { addTab as addDockTerminal } from '../hooks/useBottomTerminal'
@@ -156,7 +156,7 @@ import { detectPreviewUrl, previewFeedDecision } from '../utils/detectPreviewUrl
 import { fileLandingSlot } from '../utils/uploadRouting'
 import ChatSidebar, { SIDEBAR_MIN, SIDEBAR_MAX } from './ChatSidebar'
 import { toSlug, resolveMsgIndex } from '../utils/shareUrl'
-import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
+import { DRAFT_SAVE_DEBOUNCE_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts as persistDrafts, setDraft } from '../utils/chatDrafts'
 import { loadFileDrafts, saveFileDrafts as persistFileDrafts, setFileDraft } from '../utils/chatFileDrafts'
 import { loadPasteDrafts, savePasteDrafts as persistPasteDrafts, setPasteDraft } from '../utils/chatPasteDrafts'
 import { loadSessionRefDrafts, saveSessionRefDrafts as persistSessionRefDrafts, setSessionRefDraft } from '../utils/chatSessionRefDrafts'
@@ -4134,24 +4134,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         )
         const restoredPastes = [...keepPastes, ...carriedPastes]
         const keepText = onScreen ? inputRef.current : (uiSlot ? drafts.current[uiSlot] ?? '' : '')
-        // Don't append a payload the composer already holds: a synchronously
-        // rejected create can land before React flushes the clear, and the user may
-        // have typed AROUND the payload during a slow one (superset case). The match
-        // must be whitespace-delimited, not a bare substring — payload "test" inside
-        // a newer draft "latest" is a different message, and treating it as already
-        // restored would drop it.
-        // Dedupe ONLY on exact equality. A whitespace-delimited occurrence is not
-        // proof the payload was already restored — a draft like "please run tests
-        // first" contains the distinct payload "run tests" — and treating it as
-        // restored drops the message. Equality still covers the case this guard
-        // exists for (a synchronously rejected create landing before React flushes
-        // the clear), and errs toward a visible duplicate rather than silent loss.
-        const alreadyRestored = keepText.trim() === payload.trim()
-        const restoredText = !keepText.trim()
-          ? payload
-          : alreadyRestored
-            ? keepText
-            : `${keepText.replace(/\s+$/, '')}\n\n${payload}`
+        // Keep whatever the user typed while the create was in flight and append
+        // the payload after it, without duplicating one the composer already
+        // holds — a synchronously rejected create can land before React flushes
+        // the clear. `mergeRecoveredDraft` owns that rule for every recovery
+        // site, including the send-failure path further down.
+        const restoredText = mergeRecoveredDraft(keepText, payload)
         if (onScreen && uiSlot) {
           setInput(restoredText); setPasteBlocks(restoredPastes); setPendingFiles(restoredFiles); setPendingSessions(restoredRefs)
           // clearPending() above already consumed the knowledge selection, so a
@@ -4323,15 +4311,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         new Set(keepPastes.map(b => b.seq)),
       )
       const pastesBack = [...keepPastes, ...carriedPastes]
-      // Joined rather than interpolated: the blank line between the kept draft and
-      // the recovered payload is message structure, not copy, and keeping it out of
-      // a template literal keeps this line off the i18n gate honestly rather than
-      // by exemption (same treatment as appendSessionRefLinks).
-      const textBack = !keepText.trim()
-        ? carriedText
-        : keepText.trim() === carriedText.trim()
-          ? keepText
-          : [keepText.replace(/\s+$/, ''), carriedText].join('\n\n')
+      // Same merge rule as the create-failure path above, and the separator lives
+      // in `mergeRecoveredDraft` rather than in a template literal here: the blank
+      // line between the kept draft and the recovered payload is message
+      // structure, not copy, so it stays off the i18n gate honestly rather than by
+      // exemption (same treatment as appendSessionRefLinks).
+      const textBack = mergeRecoveredDraft(keepText, carriedText)
       setDraft(drafts.current, slot, textBack)
       setPasteDraft(pasteDrafts.current, slot, pastesBack)
       setSessionRefDraft(sessionRefDrafts.current, slot, refsBack)
@@ -4343,14 +4328,22 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     try {
       const r = await api.sendChat(llmTxt, slot ?? undefined, colorThemeRef.current, controller.signal, metaPayload, steerNow)
       clearTimeout(timeout)
-      const body = await r.json().catch(() => ({}))
-      if (!body.queued && !body.ok) {
+      const { body, outcome } = await readSendReceipt(r)
+      // An UNKNOWN outcome — a 2xx whose body would not parse — reaches neither
+      // arm below and is the point of routing through `readSendReceipt`. The
+      // request was accepted and only its answer is mangled, so this send sits
+      // where the abort in the catch below sits: it may have started a turn that
+      // is streaming right now. Reporting a refusal there would hand the payload
+      // back and invite a retry that duplicates a delivered turn, so an unknown
+      // takes no action rather than asserting a refusal it cannot prove.
+      if (outcome === 'refused') {
         dispatch(setSlotRunning(false))
-        dispatch(appendMessage({ role: 'error', content: body.error || i18nT('pages.chatPage.send_failed'), cls: '' }))
+        const reason = typeof body.error === 'string' ? body.error : ''
+        dispatch(appendMessage({ role: 'error', content: reason || i18nT('pages.chatPage.send_failed'), cls: '' }))
         // The server explicitly accepted neither (`ok` nor `queued`), so nothing
         // was sent — recovering the composer cannot duplicate a delivered turn.
         restoreComposerAfterFailedSend()
-      } else if (steerNow && _busy && !body.queued && !body.steered) {
+      } else if (outcome === 'accepted' && steerNow && _busy && !body.queued && !body.steered) {
         // A steer-flagged send the server neither queued nor injected: it
         // started a turn, so no `queue_push` or `steer_push` echo is coming and
         // the busy rule above left the text with nothing to represent it.

@@ -24,7 +24,8 @@ import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
-import { confirmedDelivered } from '../utils/sendDelivery'
+import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
+import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -300,21 +301,36 @@ export default function ChatPane({
    *  the user can type a fresh message in that window, so neither payload may
    *  overwrite the other — preferring the newer one silently discards the message
    *  the error row is telling them to retry, preferring the older one loses work
-   *  they just did. Identical text is not duplicated, and attachments merge as a
-   *  set union so a file re-picked mid-flight is not double-attached. Joined
-   *  rather than interpolated: the blank line is message structure, not copy.
-   *
-   *  Shared by both recovery sites in this pane (a failed `doSend` and a failed
-   *  question-card fallback) so the pane has ONE spelling of it. */
+   *  they just did. `mergeRecoveredDraft` owns that rule for every recovery site
+   *  in the app, this pane's two included (a failed `doSend` and a failed
+   *  question-card fallback); attachments merge here as a set union so a file
+   *  re-picked mid-flight is not double-attached. */
   const restoreIntoComposer = useCallback((text: string, files: string[] = []) => {
-    setInput(prev => {
-      const keep = prev.replace(/\s+$/, '')
-      if (!keep.trim()) return text
-      if (keep.trim() === text.trim()) return prev
-      return [keep, text].join('\n\n')
-    })
+    setInput(prev => mergeRecoveredDraft(prev, text))
     if (files.length) setPendingFiles(prev => [...prev, ...files.filter(f => !prev.includes(f))])
   }, [])
+
+  /** Say, in the transcript that owns the message, that it never went out.
+   *
+   *  Addressed to the slot the message belongs to rather than the active one —
+   *  the user can switch panes while a POST is in flight. `reason` is the
+   *  server's own explanation when there is one (a 409 "slot agent mismatch" is
+   *  actionable; "check your connection" is not); it is absent on the
+   *  transport-reject path, where there is no body to quote.
+   *
+   *  Component-scoped so BOTH failure sites in this pane speak: the composer's
+   *  own send, and the question-card fallback, whose answer is destroyed
+   *  outright by a swallowed failure because the card is already gone. */
+  const reportSendFailure = useCallback((reason?: string) => {
+    dispatch(appendSlotMessage({
+      slot: slotKey,
+      message: {
+        role: 'error',
+        content: reason || (i18nT('pages.chatPage.send_failed') as string),
+        cls: '',
+      },
+    }))
+  }, [dispatch, slotKey])
 
   const doSend = useCallback(() => {
     const text = input.trim()
@@ -362,22 +378,9 @@ export default function ChatPane({
     // reported nothing at all: the composer had already cleared and a rejected
     // fetch was swallowed by `.catch(() => undefined)`, so an undelivered
     // message stayed on screen looking sent. `ChatPage` has always appended an
-    // error row and handed the text back; the pane now does the same, addressed
-    // to the slot that OWNS the message rather than the active one — the user
-    // can switch panes while the POST is in flight.
-    //
-    // `reason` is the server's own explanation when there is one (a 409 "slot
-    // agent mismatch" is actionable; "check your connection" is not). Absent on
-    // the transport-reject path, where no body exists.
+    // error row and handed the text back; the pane now does the same.
     const reportFailedSend = (reason?: string) => {
-      dispatch(appendSlotMessage({
-        slot: slotKey,
-        message: {
-          role: 'error',
-          content: reason || (i18nT('pages.chatPage.send_failed') as string),
-          cls: '',
-        },
-      }))
+      reportSendFailure(reason)
       restoreIntoComposer(text, files)
     }
     // Same 10s abort `ChatPage.send` uses. Without it a HUNG (not refused) POST
@@ -390,10 +393,23 @@ export default function ChatPane({
     api.sendChat(llm, slotKey, undefined, controller.signal, meta)
       .then(async (r) => {
         clearTimeout(timeout)
-        const body = await r.json().catch(() => ({}))
-        // The server accepted neither `ok` nor `queued`, so nothing was sent.
-        // Reported before the card logic below, which only runs on acceptance.
-        if (!body.ok && !body.queued) { reportFailedSend(body.error as string | undefined); return }
+        const { body, outcome } = await readSendReceipt(r)
+        // The server accepted neither `ok` nor `queued` (or refused with a status
+        // and no readable body), so nothing was sent. Reported before the card
+        // logic below, which only runs on acceptance.
+        if (outcome === 'refused') {
+          reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+          return
+        }
+        // NO READABLE RECEIPT on a 2xx: the request was accepted and only its
+        // ANSWER is mangled, so this send is in exactly the state an abort leaves
+        // one — it may well have started a turn, whose output arrives over the
+        // socket. The catch below already refuses to report an abort as a failure
+        // because handing the payload back invites a retry that duplicates a
+        // delivered turn, side effects included; the same is true here, so an
+        // unknown takes no action either way rather than claiming a refusal it
+        // cannot prove.
+        if (outcome === 'unknown') return
         // A `queued` acceptance with no wire text is not an acceptance at all.
         // `chat_handlers` queues `if message:` but returns `{ok, queued}`
         // unconditionally, so an attachment-only send that raced the slot into
@@ -427,7 +443,7 @@ export default function ChatPane({
         if (e instanceof DOMException && e.name === 'AbortError') return
         reportFailedSend()
       })
-  }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer])
+  }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
 
   const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])
   const onCancelQueued = useCallback((queueId: string) => {
@@ -583,21 +599,33 @@ export default function ChatPane({
             full window. */}
         <PendingQuestionCard
           slotKey={slotKey}
-          /* doSend() reads the composer state, so the fallback sends directly.
-             `sendChat` returns the raw Response, so a non-OK status RESOLVES
-             rather than rejecting — both have to be checked. The card is already
-             cleared by the time this runs, so a swallowed failure would destroy
-             the user's answer outright; on any failure it goes back into the
-             composer through the same recovery `doSend` uses. */
+          /* doSend() reads the composer state, so the fallback sends directly,
+             and `sendChat` returns the raw Response — a refusal RESOLVES here
+             rather than rejecting, so the receipt has to be read. The card is
+             already cleared by the time this runs, which makes this the one send
+             in the pane whose payload nothing else carries: a failure it did not
+             report would destroy the user's answer outright AND leave the agent
+             waiting with nothing on screen saying so. Every refusal therefore
+             gets an error row and the answer back, through the same recovery
+             `doSend` uses. */
           onFallbackSend={(text) => {
+            const fail = (reason?: string) => { reportSendFailure(reason); restoreIntoComposer(text) }
             api
               .sendChat(text, slotKey)
-              .then((res) => {
-                if (!res || !res.ok) throw new Error(`send failed (${res?.status ?? 'no response'})`)
+              .then(async (res) => {
+                if (!res) { fail(); return }
+                // The RECEIPT, not the status alone: a 200 answering `{ok:false}`
+                // is a refusal too, and a status-only check let it pass as a
+                // success. An unreadable 2xx stays silent, as it always has here
+                // and as the composer's own send now does — the request was
+                // accepted, so the answer may well have landed, and handing it
+                // back would invite a second answer to a question already gone.
+                const { body, outcome } = await readSendReceipt(res)
+                if (outcome === 'refused') fail(typeof body.error === 'string' ? body.error : undefined)
               })
-              .catch(() => {
-                restoreIntoComposer(text)
-              })
+              // No body to quote on a transport reject, so the shared
+              // connectivity copy stands rather than a raw fetch message.
+              .catch(() => fail())
           }}
         />
 
