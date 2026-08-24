@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!-- Evidence harness parent: embeds the pane page from a DIFFERENT loopback
+     port (cross-origin, mirroring InstancesViewport's tunnel iframes).
+     ?mode=before  -> allow="microphone" only (the pre-fix attribute set)
+     ?mode=after   -> allow="microphone; fullscreen" + allowfullscreen -->
+<html>
+<head><meta charset="utf-8"><style>
+  body { margin: 0; font: 13px system-ui; background: #f5f5f5; padding: 12px; }
+  h3 { margin: 0 0 8px; }
+  iframe { width: 540px; height: 340px; border: 1px solid #ccc; background: #fff; }
+</style></head>
+<body>
+  <h3 id="label"></h3>
+  <iframe id="pane"></iframe>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const mode = params.get('mode') || 'after';
+    // The pane server's port arrives via query param from the capture script.
+    // Parse it to a NUMBER and rebuild the origin from a constant prefix, so
+    // no user-provided string ever flows into the frame URL — the value can
+    // only address a loopback port on the local harness server.
+    const m = /^http:\/\/127\.0\.0\.1:(\d{1,5})$/.exec(params.get('pane') || '');
+    const panePort = m ? parseInt(m[1], 10) : 0;
+    const frame = document.getElementById('pane');
+    if (mode === 'before') {
+      frame.setAttribute('allow', 'microphone');
+      document.getElementById('label').textContent =
+        'BEFORE: allow="microphone" (fullscreen not delegated)';
+    } else {
+      frame.setAttribute('allow', 'microphone; fullscreen');
+      frame.setAttribute('allowfullscreen', '');
+      document.getElementById('label').textContent =
+        'AFTER: allow="microphone; fullscreen" + allowfullscreen';
+    }
+    if (panePort > 0 && panePort <= 65535) {
+      frame.src = 'http://127.0.0.1:' + panePort + '/instances-iframe-fullscreen-pane.html';
+    } else {
+      document.getElementById('label').textContent = 'ERROR: invalid pane origin';
+    }
+  </script>
+</body>
+</html>
