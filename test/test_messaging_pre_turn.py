@@ -197,6 +197,31 @@ _SRC = pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: Listing them here would assert a migration that has not happened.
 _PRE_TURN_CHANNELS = ("webex", "imessage")
 
+#: Rostered channels deliberately NOT on the shared helper. telegram, discord,
+#: teams and slack carry extra pre-turn work between the busy check and
+#: rotation; weixin and wecom run the same kind of steps from their
+#: ``handle_message`` with their own busy checks (wecom additionally clears
+#: attachments there and ingests media before rotating); whatsapp and feishu
+#: hand-roll the sequence in their dispatchers, and although whatsapp's busy
+#: handling mirrors webex's closely enough that migration looks mechanical,
+#: it is still a behaviour change -- so folding any of them into the helper
+#: is a separate, reviewed change. Both ratchet directions read this one set:
+#: joining it (a rostered channel must be accounted for) and leaving it (a
+#: migrated channel must be pruned) are each an explicit decision.
+_EXEMPT_CHANNELS = frozenset(
+    {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp", "feishu"}
+)
+
+
+def _calls_pre_turn_helper(path: pathlib.Path) -> bool:
+    """A call on a code line marks a migration; a comment merely naming the
+    helper (say, to explain why a channel deliberately avoids it) does not."""
+    return any(
+        "resolve_pre_turn(" in line
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
 
 class TestPreTurnRatchet:
     @pytest.mark.parametrize("channel", _PRE_TURN_CHANNELS)
@@ -232,34 +257,42 @@ class TestPreTurnRatchet:
         """
         from kiro_crew.channels import builtin_channel_descriptors
 
-        # weixin and wecom are exempt for the same reason as the big four:
-        # their handle_message runs extra pre-turn steps with their own busy
-        # checks (wecom additionally clears attachments there and ingests
-        # media before rotating), so folding them into the helper is a
-        # behaviour change that needs its own review, not a rider here.
-        # whatsapp is exempt on the same basis: its dispatcher runs its own
-        # pre-turn sequence with its own busy check (is_busy -> _handle_busy,
-        # then maybe_rotate). Unlike weixin/wecom there is no structural
-        # obstacle -- its _handle_busy mirrors webex's, so migration looks
-        # mechanical -- but it is still a behaviour change that gets its own
-        # review, not a rider in a main-red unblock (#5448).
-        # feishu is exempt on the same basis as whatsapp: transport_dispatch
-        # runs its own is_busy -> _handle_busy (with a busy re-check) ->
-        # maybe_rotate sequence, so migrating it to the shared helper is a
-        # separately-reviewable behaviour change, not a rider in a main-red
-        # unblock (#5483).
-        exempt = {
-            "telegram",
-            "discord",
-            "teams",
-            "slack",
-            "weixin",
-            "wecom",
-            "whatsapp",
-            "feishu",
-        }
         rostered = {d.channel_type for d in builtin_channel_descriptors()}
-        unaccounted = rostered - set(_PRE_TURN_CHANNELS) - exempt
+        unrostered = _EXEMPT_CHANNELS - rostered
+        assert not unrostered, (
+            "exempt entries naming channels no longer in the roster "
+            f"(prune them from _EXEMPT_CHANNELS): {sorted(unrostered)}"
+        )
+        unaccounted = rostered - set(_PRE_TURN_CHANNELS) - _EXEMPT_CHANNELS
         assert not unaccounted, (
             "channels neither using messaging.pre_turn nor listed exempt: " f"{sorted(unaccounted)}"
+        )
+
+    def test_exempt_channels_have_not_graduated(self) -> None:
+        """The reverse direction: an exempt entry asserts the channel still
+        hand-rolls its pre-turn sequence. Once any module in the channel's
+        package calls the shared helper, the entry is stale, and with nothing
+        forcing removal the set would silently accrete entries that no longer
+        describe anything. The channels host their pre-turn logic in different
+        modules (weixin and wecom drive it from ``handle_message``, slack's
+        busy check lives in its gateway), so the scan covers the whole package
+        rather than assuming one dispatch filename. The scan anchors on the
+        package directory matching the channel type, so that mapping is
+        asserted first: a renamed package must fail loudly here instead of
+        reading as never-migrated forever.
+        """
+        missing = {c for c in _EXEMPT_CHANNELS if not (_SRC / c).is_dir()}
+        assert not missing, (
+            "exempt channels without a package dir under src/kiro_crew "
+            f"(the graduation scan cannot see them): {sorted(missing)}"
+        )
+        graduated = {
+            channel
+            for channel in _EXEMPT_CHANNELS
+            if any(_calls_pre_turn_helper(path) for path in (_SRC / channel).rglob("*.py"))
+        }
+        assert not graduated, (
+            "channels in the exempt list already call resolve_pre_turn -- prune "
+            "them from _EXEMPT_CHANNELS (a migrated channel belongs in "
+            f"_PRE_TURN_CHANNELS instead): {sorted(graduated)}"
         )
