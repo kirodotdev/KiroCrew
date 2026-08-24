@@ -261,33 +261,106 @@ class _Hist:
         self._groups: dict[tuple[float, ...], dict[str, Any]] = {}
 
     def add(self, dp: dict[str, Any], outcome: str = "") -> None:
-        bc = dp.get("bucket_counts") or []
-        try:
-            key = tuple(float(b) for b in (dp.get("explicit_bounds") or []))
-        except (TypeError, ValueError):
+        # INVARIANT: the WHOLE data point is validated before the FIRST group
+        # mutation, so a rejected point never half-lands and nothing invalid
+        # can enter durable group state. Shards are external input and
+        # Python's json accepts Infinity/NaN literals plus arbitrary-precision
+        # integers, so every read routes through the _finite/_finite_int
+        # chokepoints with the scalar branch's contract: value-poisoned
+        # fields (bounds, count, sum, bucket counts) skip the whole point;
+        # optional stats (min/max) degrade per-stat; a bucket list whose
+        # length disagrees with its bounds degrades to no-buckets (the point
+        # still counts); a garbage timestamp sorts oldest. Validation covers three
+        # classes: VALUE (finite, exact -- ints never roundtrip through
+        # float), STRUCTURE (containers are lists; a bucket list only merges
+        # when it has exactly len(bounds)+1 entries, so group buckets always
+        # match their bounds signature), and ACCUMULATION (the prospective sum must
+        # stay finite -- two individually finite 1e308 sums must not emit an
+        # Infinity literal downstream).
+        bounds_raw = dp.get("explicit_bounds")
+        bc_raw = dp.get("bucket_counts")
+        if bounds_raw is None:
+            bounds_raw = []
+        if bc_raw is None:
+            bc_raw = []
+        if not isinstance(bounds_raw, (list, tuple)) or not isinstance(bc_raw, (list, tuple)):
+            # Any non-list container is garbage and skips the point: a truthy
+            # one (e.g. "explicit_bounds": 5) would raise TypeError at the
+            # for-loop, and a falsy one (false, 0, "") must not silently read
+            # as "absent" and corrupt the group's shape. Only a genuinely
+            # missing/null key defaults to empty.
             return
+        bounds_f: list[float] = []
+        for b in bounds_raw:
+            fb = _finite(b)
+            if fb is None:
+                return
+            if bounds_f and not math.isfinite(fb - bounds_f[-1]):
+                # Derived values must stay finite too: two individually
+                # finite bounds like -1e308 and 1e308 subtract to inf inside
+                # _pct_from_buckets' interpolation (hi - lo) and the API
+                # would emit an Infinity literal. Same class as the
+                # accumulated-sum guard below.
+                return
+            bounds_f.append(fb)
+        key = tuple(bounds_f)
+        n_raw = dp.get("count", 0)
+        n = _finite_int(0 if n_raw is None else n_raw)
+        if n is None:
+            return
+        # Uniform defaulting rule for every field in this method: ONLY a
+        # missing or null key takes the default; any other value must survive
+        # validation on its own ("" or false substituting 0 would let a
+        # malformed point silently skew the mean).
+        sum_raw = dp.get("sum", 0.0)
+        fsum = _finite(0.0 if sum_raw is None else sum_raw)
+        if fsum is None:
+            return
+        bc_f: list[int] = []
+        for v in bc_raw:
+            fv = _finite_int(v)
+            if fv is None:
+                return
+            bc_f.append(fv)
+        # A histogram point's bucket_counts has one more entry than its
+        # bounds (the trailing +Inf bucket). A mismatched length cannot merge
+        # into this bounds generation's shape (it would poison the group's
+        # buckets and crash the percentile interpolation with IndexError),
+        # but it is a merge-compatibility problem, not value poisoning: the
+        # point's independently-validated scalars are still truthful, so the
+        # disagreeing bucket list is DROPPED and the point still counts --
+        # the same degrade path as a count-only point (no bucket_counts at
+        # all), which stays legal. Pinned upstream by
+        # test_telemetry_handlers_cov80.py (count keeps accumulating).
+        if bc_f and len(bc_f) != len(bounds_f) + 1:
+            bc_f = []
         g = self._groups.get(key)
+        # Prospective-accumulation check BEFORE mutation: adding a finite sum
+        # to a finite accumulator can still overflow to inf.
+        acc_sum = (float(g["sum"]) if g is not None else 0.0) + fsum
+        if not math.isfinite(acc_sum):
+            return
         if g is None:
             g = {
                 "count": 0,
                 "sum": 0.0,
                 "min": None,
                 "max": None,
-                "buckets": [0] * len(bc) if bc else [],
+                "buckets": [0] * len(bc_f) if bc_f else [],
                 "bounds": list(key),
                 "outcomes": {},
                 "newest_ns": 0,
             }
             self._groups[key] = g
-        try:
-            ns = int(dp.get("time_unix_nano") or 0)
-        except (TypeError, ValueError):
+        ts_raw = dp.get("time_unix_nano")
+        ns = _finite_int(0 if ts_raw is None else ts_raw)
+        if ns is None:
+            # Ordering-only field: garbage degrades to oldest, never skips.
             ns = 0
         if ns > int(g["newest_ns"]):
             g["newest_ns"] = ns
-        n = int(dp.get("count", 0) or 0)
         g["count"] += n
-        g["sum"] += float(dp.get("sum", 0.0) or 0.0)
+        g["sum"] = acc_sum
         if outcome:
             # Outcome tallies MUST be grouped too. Scoping only the buckets and
             # count would leave the outcome breakdown summing across generations
@@ -295,20 +368,20 @@ class _Hist:
             # an outcome bar totalling more than N, and a fault rate computed
             # over a different population than the latency next to it.
             g["outcomes"][outcome] = g["outcomes"].get(outcome, 0) + n
-        mn, mx = dp.get("min"), dp.get("max")
+        mn, mx = _finite(dp.get("min")), _finite(dp.get("max"))
         if mn is not None:
             g["min"] = mn if g["min"] is None else min(g["min"], mn)
         if mx is not None:
             g["max"] = mx if g["max"] is None else max(g["max"], mx)
-        if bc:
+        if bc_f:
             if not g["buckets"]:
-                g["buckets"] = [0] * len(bc)
-            # Same bounds signature implies same bucket length; the guard only
-            # defends against a malformed shard mixing lengths under one bounds
-            # list, which would otherwise raise IndexError.
-            if len(bc) == len(g["buckets"]):
-                for j, v in enumerate(bc):
-                    g["buckets"][j] += int(v or 0)
+                g["buckets"] = [0] * len(bc_f)
+            # Same bounds signature implies same bucket length (enforced per
+            # point above), so this always holds; kept as cheap defense in
+            # depth against a group built by older state.
+            if len(bc_f) == len(g["buckets"]):
+                for j, v in enumerate(bc_f):
+                    g["buckets"][j] += v
 
     def _dominant(self) -> dict[str, Any] | None:
         """The generation holding the newest sample.
@@ -406,7 +479,8 @@ class _Hist:
 def _finite(raw: Any) -> float | None:
     """Coerce a shard scalar to a finite float, or None.
 
-    THE single entry point for scalar reads in ``_aggregate``. Shards are
+    THE single entry point for untrusted shard reads — the scalar branch in
+    ``_aggregate`` and every field ``_Hist.add`` consumes. Shards are
     external input and Python's ``json`` accepts ``Infinity``/``NaN``
     literals, so a bare ``float(...)`` admits values that poison sums and an
     ``int(float(...))`` timestamp conversion raises ``OverflowError`` — four
@@ -415,11 +489,52 @@ def _finite(raw: Any) -> float | None:
     """
     try:
         v = float(raw)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: json accepts arbitrary-precision integers, and
+        # float(10**400) overflows rather than returning inf.
         return None
     if not math.isfinite(v):
         return None
     return v
+
+
+# OTel histogram count fields are uint64 on the wire; anything beyond this
+# scale is garbage, and the bound keeps accumulated counts far below float
+# range so downstream stats (float division in ``stats()``) cannot overflow.
+_INT_BOUND = 2**63
+
+
+def _finite_int(raw: Any) -> int | None:
+    """Coerce a shard integer field (count, bucket count, ns) EXACTLY, or None.
+
+    Integer inputs never roundtrip through float -- ``int(float(2**53 + 1))``
+    silently rounds to 2**53 and the API would emit corrupted counts.
+    Booleans (JSON ``true``/``false``) are garbage in an integer field, a
+    negative value is invalid for uint64-wire counts, and a fractional value
+    would silently truncate -- all three reject rather than coerce. Values
+    beyond the uint64-scale bound are rejected either way.
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        i = raw
+    elif isinstance(raw, str):
+        # protobuf JSON encodes uint64/int64 as STRINGS; parse them exactly
+        # ("9007199254740993" through float would round to ...992). A
+        # non-integer string falls through to the float path (e.g. "3.0").
+        try:
+            i = int(raw)
+        except ValueError:
+            f = _finite(raw)
+            if f is None or not f.is_integer():
+                return None
+            i = int(f)
+    else:
+        f = _finite(raw)
+        if f is None or not f.is_integer():
+            return None
+        i = int(f)
+    return i if 0 <= i <= _INT_BOUND else None
 
 
 def _day_of(dp: dict[str, Any], fallback: str) -> str:
@@ -765,9 +880,11 @@ def _aggregate(shard_paths: list[Path]) -> dict[str, Any]:
             # sample per attribute set.
             is_sum = "aggregation_temporality" in data or "is_monotonic" in data
             try:
-                # OTel JSON: DELTA=1, CUMULATIVE=2.
+                # OTel JSON: DELTA=1, CUMULATIVE=2. Same chokepoint contract
+                # as _finite: json accepts Infinity literals, and int(inf)
+                # raises OverflowError, not ValueError.
                 cumulative = int(data.get("aggregation_temporality") or 0) == 2
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 cumulative = False
             key = ",".join(f"{k}={attrs[k]}" for k in sorted(attrs)) if attrs else ""
             if is_sum and cumulative:
