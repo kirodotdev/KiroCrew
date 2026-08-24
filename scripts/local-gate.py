@@ -57,6 +57,16 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _SELECTOR = _REPO_ROOT / "scripts" / "ci-surface-tests.py"
 
+# The selector's stdout becomes argv for pytest and vitest, so it is validated
+# with the SAME helper `run_scoped_tests.py` uses rather than a second copy of
+# the rule -- two spellings of one admission check drift, and this one would
+# drift silently because nothing here would fail when it did.
+sys.path.insert(0, str(_REPO_ROOT / "scripts"))
+from run_scoped_tests import (  # noqa: E402  (path set immediately above)
+    SelectionUntrustworthy,
+    validated_targets,
+)
+
 # Bucket rules -- MUST mirror ci.yml's `changes` job filters. test_local_gate.py
 # pins this against the workflow file so drift fails a test instead of shipping.
 _FRONTEND_PREFIXES = ("website/",)
@@ -215,13 +225,22 @@ def build_plan(args: argparse.Namespace) -> Plan:
             _backend_full(plan)
             _frontend_full(plan)
             return plan
+        try:
+            must_run = validated_targets(must_run, _REPO_ROOT)
+        except SelectionUntrustworthy as exc:
+            plan = Plan(f"selector target refused -- full gate (fail-open): {exc}")
+            _backend_full(plan)
+            _frontend_full(plan)
+            return plan
         plan = Plan(f"frontend-only diff -- full frontend + {len(must_run)} backend guard file(s)")
         _frontend_full(plan)
         if must_run:
             plan.add(
                 "backend (cross-surface guards)",
+                # `--` ends option parsing, matching `run_scoped_tests.backend_argv`.
+                # Belt and braces: `validated_targets` already refuses a leading `-`.
                 [sys.executable, "-m", "pytest", "-q", "-n", "auto", "--dist", "loadgroup",
-                 *must_run],
+                 "--", *must_run],
                 _REPO_ROOT,
             )
         return plan
@@ -238,11 +257,22 @@ def build_plan(args: argparse.Namespace) -> Plan:
     # CI's frontend-test scope step does.
     vitest_targets = [p for p in must_run if not p.startswith("website/electron/")]
     vitest_rel = [p.removeprefix("website/") for p in vitest_targets]
+    try:
+        vitest_rel = validated_targets(vitest_rel, _REPO_ROOT / "website")
+    except SelectionUntrustworthy as exc:
+        plan = Plan(f"selector target refused -- full gate (fail-open): {exc}")
+        _backend_full(plan)
+        _frontend_full(plan)
+        return plan
     plan = Plan(f"backend-only diff -- full backend + {len(vitest_rel)} frontend guard spec(s)")
     _backend_full(plan)
     if vitest_rel:
         plan.add(
             "frontend (cross-surface guards)",
+            # Deliberately NO `--` here: `vitest run -- <paths>` stops treating the
+            # positionals as filters and runs the whole suite, which would report a
+            # narrow scope while running everything. `run_scoped_tests.frontend_argv`
+            # carries the measurement; `validated_targets` is the real protection.
             ["npx", "vitest", "run", *vitest_rel],
             _REPO_ROOT / "website",
         )
