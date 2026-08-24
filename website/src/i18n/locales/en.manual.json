@@ -1348,6 +1348,13 @@
       "terminal": "Terminal"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "Send a message, or tap the mic for voice",
+      "release_to_transcribe": "Release to transcribe",
+      "hold_to_talk": "Hold to talk",
+      "release_to_cancel": "Release to cancel",
+      "slide_up_to_cancel": "Slide up to cancel",
+      "switch_to_keyboard": "Switch to keyboard",
+      "switch_to_voice": "Switch to voice",
       "drop_to_attach": "Drop to attach",
       "agent": "Agent: {{name}}",
       "approve_sub_agent": "Approve sub-agent: {{name}}",
@@ -1387,7 +1394,9 @@
       "voice_input": "Voice input",
       "queue": "Queue",
       "queue_run_after_the_current_work_finishes_desc": "Run after the current work finishes",
-      "steer_act_on_this_right_away_desc": "Act on this right away"
+      "steer_act_on_this_right_away_desc": "Act on this right away",
+      "finishing": "Finishing…",
+      "keep_holding_to_record": "Keep holding to record"
     },
     "chatPane": {
       "earlier_messages_load_failed": "Couldn't load earlier messages. Scroll to the top of the session to try again.",

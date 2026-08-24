@@ -4943,6 +4943,13 @@
       "more_actions": "আরও অ্যাকশন"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "বার্তা পাঠান, বা ভয়েসের জন্য মাইকে ট্যাপ করুন",
+      "release_to_transcribe": "লেখায় রূপান্তরে ছেড়ে দিন",
+      "hold_to_talk": "বলতে চেপে ধরুন",
+      "release_to_cancel": "বাতিল করতে ছেড়ে দিন",
+      "slide_up_to_cancel": "বাতিল করতে উপরে সোয়াইপ করুন",
+      "switch_to_keyboard": "কীবোর্ডে যান",
+      "switch_to_voice": "ভয়েসে যান",
       "drop_to_attach": "ছেড়ে সংযুক্ত করুন",
       "add_files_options": "ফাইল ও অপশন যোগ করুন",
       "agent": "এজেন্ট: {{name}}",
@@ -5032,7 +5039,9 @@
       "upload_file": "ফাইল আপলোড করুন",
       "use_a_skill": "একটি স্কিল ব্যবহার করুন",
       "used": "ব্যবহৃত",
-      "voice_input": "ভয়েস ইনপুট"
+      "voice_input": "ভয়েস ইনপুট",
+      "finishing": "সম্পন্ন হচ্ছে…",
+      "keep_holding_to_record": "রেকর্ড করতে চেপে ধরে রাখুন"
     },
     "chatPane": {
       "agent_list": "এজেন্ট তালিকা",

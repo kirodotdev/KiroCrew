@@ -4869,6 +4869,13 @@
       "more_actions": "その他の操作"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "メッセージを送信、またはマイクをタップして音声入力",
+      "release_to_transcribe": "離して文字起こし",
+      "hold_to_talk": "押して話す",
+      "release_to_cancel": "離してキャンセル",
+      "slide_up_to_cancel": "上にスワイプでキャンセル",
+      "switch_to_keyboard": "キーボードに切り替え",
+      "switch_to_voice": "音声に切り替え",
       "drop_to_attach": "ドロップして添付",
       "add_files_options": "ファイルとオプションを追加",
       "agent": "エージェント：{{name}}",
@@ -4958,7 +4965,9 @@
       "upload_file": "ファイルをアップロード",
       "use_a_skill": "スキルを使用",
       "used": "使用済み",
-      "voice_input": "音声入力"
+      "voice_input": "音声入力",
+      "finishing": "処理中…",
+      "keep_holding_to_record": "押したままで録音"
     },
     "chatPane": {
       "agent_list": "エージェントリスト",

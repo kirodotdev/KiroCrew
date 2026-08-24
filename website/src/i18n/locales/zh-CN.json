@@ -4869,6 +4869,13 @@
       "more_actions": "更多操作"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "发消息，或点麦克风用语音",
+      "release_to_transcribe": "松手转文字",
+      "hold_to_talk": "按住说话",
+      "release_to_cancel": "松手取消",
+      "slide_up_to_cancel": "上滑取消",
+      "switch_to_keyboard": "切换到键盘",
+      "switch_to_voice": "切换到语音",
       "drop_to_attach": "松开即可附加",
       "add_files_options": "添加文件与选项",
       "agent": "代理：{{name}}",
@@ -4958,7 +4965,9 @@
       "upload_file": "上传文件",
       "use_a_skill": "使用技能",
       "used": "已用",
-      "voice_input": "语音输入"
+      "voice_input": "语音输入",
+      "finishing": "收尾中…",
+      "keep_holding_to_record": "按住才能录音"
     },
     "chatPane": {
       "agent_list": "代理列表",

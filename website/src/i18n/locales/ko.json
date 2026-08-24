@@ -4869,6 +4869,13 @@
       "more_actions": "추가 작업"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "메시지를 보내거나 마이크를 눌러 음성 사용",
+      "release_to_transcribe": "놓으면 텍스트 변환",
+      "hold_to_talk": "눌러서 말하기",
+      "release_to_cancel": "놓으면 취소",
+      "slide_up_to_cancel": "위로 밀어 취소",
+      "switch_to_keyboard": "키보드로 전환",
+      "switch_to_voice": "음성으로 전환",
       "drop_to_attach": "놓아서 첨부",
       "add_files_options": "파일 및 옵션 추가",
       "agent": "에이전트: {{name}}",
@@ -4958,7 +4965,9 @@
       "upload_file": "파일 업로드",
       "use_a_skill": "스킬 사용",
       "used": "사용됨",
-      "voice_input": "음성 입력"
+      "voice_input": "음성 입력",
+      "finishing": "마무리 중…",
+      "keep_holding_to_record": "누른 상태로 녹음"
     },
     "chatPane": {
       "agent_list": "에이전트 목록",

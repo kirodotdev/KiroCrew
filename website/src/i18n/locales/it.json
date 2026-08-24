@@ -5017,6 +5017,13 @@
       "more_actions": "Altre azioni"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "Invia un messaggio o tocca il microfono per la voce",
+      "release_to_transcribe": "Rilascia per trascrivere",
+      "hold_to_talk": "Tieni premuto per parlare",
+      "release_to_cancel": "Rilascia per annullare",
+      "slide_up_to_cancel": "Scorri verso l'alto per annullare",
+      "switch_to_keyboard": "Passa alla tastiera",
+      "switch_to_voice": "Passa alla voce",
       "drop_to_attach": "Rilascia per allegare",
       "add_files_options": "Aggiungi file e opzioni",
       "agent": "Agente: {{name}}",
@@ -5106,7 +5113,9 @@
       "upload_file": "Carica file",
       "use_a_skill": "Usa una skill",
       "used": "Utilizzato",
-      "voice_input": "Input vocale"
+      "voice_input": "Input vocale",
+      "finishing": "Completamento…",
+      "keep_holding_to_record": "Tieni premuto per registrare"
     },
     "chatPane": {
       "agent_list": "Elenco degli agenti",

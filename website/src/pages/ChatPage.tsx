@@ -7395,6 +7395,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onDragLeave={dropTargetProps.onDragLeave}
               voiceRecording={voiceOwned && voice.recording}
               voiceTranscribing={voiceOwned && voice.transcribing}
+              /* Ungated: `startVoice` refuses on `voice.transcribing` outright,
+                 so the voice controls have to read the same global fact. */
+              voiceTranscribeActive={voice.transcribing}
               voiceError={voice.error}
               voiceLevel={voiceOwned ? voice.level : 0}
               voiceDeviceLabel={voiceOwned ? voice.deviceLabel : ''}
@@ -7411,6 +7414,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               onVoiceToggle={voiceInputSupported ? toggleVoice : undefined}
               onVoiceCancel={voiceInputSupported ? cancelVoice : undefined}
               onVoicePrewarm={voiceInputSupported ? voice.prewarm : undefined}
+              onVoiceStart={voiceInputSupported ? startVoice : undefined}
+              onVoiceStop={voiceInputSupported ? stopVoice : undefined}
+              voiceCaptureActive={voice.recording}
               agentName={currentSlot?.agent || 'default'}
               agentSource={installedAgents.find(a => a.name === (currentSlot?.agent || 'default'))?.source}
               modelName={shownModel}

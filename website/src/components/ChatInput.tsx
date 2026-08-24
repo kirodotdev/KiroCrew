@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, useId, memo } from 'react'
-import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
+import { ArrowUpFromLine, ArrowUp, Loader2, RotateCw, Plus, Crop, Bot, Mic, Keyboard, Square, BookOpen, X, ClipboardList, CheckCircle, Ban, Sparkles, Target, Lock, Folder, FolderOpen, FileText } from 'lucide-react'
 import CopyBranchButton from './CopyBranchButton'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -27,6 +27,8 @@ import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { Btn } from './ui'
+import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
 import BusySendButton, { useBusySendMode } from './BusySendButton'
 import { isScreenSnipSupported } from '../hooks/useScreenSnip'
@@ -136,6 +138,13 @@ const FILE_PREVIEW_H_RESIZED = 101
 const SESSION_REF_STRIP_H = 43
 const INPUT_DRAG_MAX_RATIO = 0.5
 const INPUT_HEIGHT_LS_KEY = 'mc-input-height'
+/**
+ * Whether the composer is in hold-to-talk mode (`'1'`) — the WeChat-style swap
+ * where the textarea is replaced by a hold target. Persisted because using voice
+ * is a habit rather than a per-message choice: someone who dictates does it all
+ * day, and resetting to the keyboard on every mount taxes exactly them.
+ */
+const VOICE_MODE_LS_KEY = 'mc-voice-mode'
 
 // Prompt undo/redo tuning. The chat textarea is a controlled component, so any
 // programmatic value reset (send-clear, ↑/↓ history recall, prompt optimize)
@@ -296,11 +305,49 @@ interface ChatInputProps {
   /** True when a device switch applies to the live capture, not the next one. */
   voiceDeviceSwitchIsLive?: boolean
   voiceTranscribing?: boolean
+  /**
+   * "Is a transcription in flight ANYWHERE" — ungated by session ownership, the
+   * same distinction `voiceCaptureActive` draws for capture.
+   *
+   * `voiceTranscribing` is gated (`owned && transcribing`), but the refusal it
+   * has to predict is global: `startVoice` returns early on `voice.transcribing`
+   * outright, because the mic is one shared device. Gating it meant that while
+   * another session's transcript was still landing, THIS composer's voice
+   * controls looked live, invited a press, and captured nothing.
+   *
+   * Only the voice affordances read this. The composer's own text behaviour
+   * (focus, Enter-to-send) stays on the gated flag — another slot transcribing
+   * is no reason to stop this one from typing and sending.
+   */
+  voiceTranscribeActive?: boolean
   onVoiceToggle?: () => void
   /** Cancel (discard) an in-progress dictation without transcribing — Esc. */
   onVoiceCancel?: () => void
   /** Pre-warm the mic on pointer-down so recording starts instantly on click. */
   onVoicePrewarm?: () => void
+  /** Begin capture. Distinct from `onVoiceToggle` because the hold-to-talk
+   *  gesture must open and close a session on separate edges of one press —
+   *  a toggle cannot express "the finger went down" on its own. */
+  onVoiceStart?: () => Promise<void> | void
+  /** End capture AND transcribe — the commit half of the hold gesture. */
+  onVoiceStop?: () => void
+  /**
+   * Is capture in flight AT ALL — ungated by session ownership, unlike
+   * `voiceRecording`.
+   *
+   * The two are not interchangeable and the difference loses speech. Streaming
+   * STT flips its own `recording` true the moment the worklet is wired and PCM is
+   * buffering, but `useVoiceInput` assigns `sessionOwner` only AFTER the server
+   * handshake resolves — so for the length of that handshake real audio exists
+   * while `voiceRecording` (which is `owned && recording`) still reads false. The
+   * gesture's commit veto asks "did capture begin?", and answering it with the
+   * ownership-gated flag made a release inside that window take the discard
+   * branch and drop what the user had just said.
+   *
+   * Use this ONLY for that question. Anything presentational keeps
+   * `voiceRecording`, so one slot never renders another slot's capture.
+   */
+  voiceCaptureActive?: boolean
   /** Mic error (null = none), live input level [0,1], active device label, and error-dismiss. */
   voiceError?: string | null
   voiceLevel?: number
@@ -626,6 +673,9 @@ function FilePreviewStrip({ files, dirs = NO_DIRS, resizedInfo, onRemove, onRemo
 
 /** Stable no-op so an unwired embedder does not remount the picker each render. */
 const noopSelectDevice = () => {}
+/** Zero-arg stand-in for an absent voice control. Separate from
+ *  `noopSelectDevice`, whose one parameter makes it unassignable to `() => void`. */
+const noopVoiceControl = () => {}
 
 function ChatInput({
   aboveComposer,
@@ -655,9 +705,13 @@ function ChatInput({
   onSelectVoiceDevice,
   voiceDeviceSwitchIsLive = false,
   voiceTranscribing = false,
+  voiceTranscribeActive,
   onVoiceToggle,
   onVoiceCancel,
   onVoicePrewarm,
+  onVoiceStart,
+  onVoiceStop,
+  voiceCaptureActive,
   voiceError = null,
   voiceLevel = 0,
   voiceDeviceLabel = '',
@@ -2226,6 +2280,208 @@ function ChatInput({
   // it — otherwise the extra row eats into the textarea.
   const hasResizedFile = pendingFiles.some(p => IMG_EXT.test(p) && !!resizedInfo?.[p])
   const hasSessionRefs = pendingSessions.length > 0
+  /** True when the composer holds something a send would carry.
+   *
+   *  Hoisted because the hold-to-talk gate has to agree with the send button, and
+   *  an inline fifth copy is how that agreement rots. It replaces exactly ONE
+   *  inline spelling (the mid-turn split-send branch); the resume and idle-send
+   *  branches keep theirs, because they ask a DIFFERENT question — they include
+   *  `hasSessionRefs` and this deliberately does not.
+   *
+   *  That exclusion is the point, not an oversight: a session ref is an
+   *  attachment, not text to read back and edit, so dictating while one is
+   *  pending is a normal thing to want and hold mode stays available for it. A
+   *  refs-only composer therefore keeps the hold bar while the send button is
+   *  live, which is correct for both. */
+  const composerHasDraft = !!value.trim() || pendingFiles.length > 0
+  /**
+   * Hold-to-talk mode: the textarea is swapped for a press-and-hold target and
+   * the mic button becomes the switch between the two.
+   *
+   * TOUCH ONLY, and that means the POINTER CLASS — not the width. Desktop already
+   * has keyboard push-to-talk (`usePushToTalk`), so a pointer-hold mode there
+   * would be a second way to do one thing, and this gesture exists precisely
+   * because a thumb has no Esc key to discard with. A narrowed desktop window is
+   * still a mouse: including `isMobile` here handed it the mode switch and took
+   * away click-to-record, which is the opposite of an addition. `directFilePicker`
+   * above pairs the two predicates because a native file dialog genuinely is a
+   * width call; this one is not, so it gates on the pointer alone.
+   *
+   * Resolved inline rather than through a second coarse-pointer subscription: the
+   * pointer class does not change under a mounted composer.
+   */
+  const voiceModeAvailable = !!onVoiceStart && !!onVoiceStop && !!onVoiceCancel && isTouchDevice()
+  const [voiceModePref, setVoiceModePref] = useState(() => localStorage.getItem(VOICE_MODE_LS_KEY) === '1')
+  /**
+   * A draft SUSPENDS hold mode instead of exiting it, so the preference survives.
+   *
+   * This is the state every finished dictation lands in: the transcript arrives
+   * in `value`, and reading, fixing and sending it are all things a hold target
+   * cannot do. Suspending hands the textarea back for exactly as long as there is
+   * something in it, then returns the hold bar without the user re-choosing it.
+   *
+   * `voiceRecording` OVERRIDES the draft check, and that clause is load-bearing
+   * rather than defensive. Under streaming STT the transcript does not wait for
+   * the release — `onPartial` writes each hypothesis into the composer WHILE the
+   * finger is still down. Suspending on that draft would unmount the hold target
+   * mid-gesture, and unmounting it takes the pointer listeners with it: the
+   * release and the slide-up would both land on nothing while capture kept
+   * running, stranding an open microphone under a button that no longer exists.
+   * A draft may only reclaim the textarea once no capture is in flight.
+   */
+  /** "Is capture in flight at all" — see the `voiceCaptureActive` prop doc. Falls
+   *  back to the gated flag so the prop stays optional for other callers. */
+  const captureInFlight = voiceCaptureActive ?? voiceRecording
+  /** "Is a transcription in flight at all" — see the `voiceTranscribeActive` prop
+   *  doc. Falls back to the gated flag so the prop stays optional. */
+  const transcribeInFlight = voiceTranscribeActive ?? voiceTranscribing
+  /** State, not a ref: the hold target mounts only once hold mode is on, and the
+   *  gesture hook can only bind its listeners when that arrival is observable.
+   *  Declared above `voiceHoldMode` because that predicate reads it — see there. */
+  const [holdTarget, setHoldTarget] = useState<HTMLButtonElement | null>(null)
+  /*
+   * A draft suspends hold mode, EXCEPT while the gesture's own capture is still
+   * running — otherwise a transcript landing in the composer would unmount the
+   * bar from under the finger that is still holding it.
+   *
+   * `holdTarget !== null` is what distinguishes the gesture's capture from any
+   * other, and it has to be asked: `captureInFlight` alone also matches capture
+   * started from the mic-as-record-button, which is the ONLY dictation route a
+   * draft leaves open. That capture would then promote a draft composer into
+   * hold mode, where the bar renders `settling` (disabled) and the mic renders a
+   * disabled mode switch — an open microphone with nothing on screen that can
+   * stop it. The bar only exists while hold mode is already on, so its target is
+   * the memory of which route opened this capture, and it survives into the
+   * render that observes `captureInFlight` because unmounting it is what clears
+   * it.
+   */
+  const voiceHoldMode = voiceModeAvailable && voiceModePref
+    && (!composerHasDraft || (captureInFlight && holdTarget !== null))
+  const touchVoice = useMemo(
+    () => ({
+      recording: captureInFlight,
+      start: onVoiceStart ?? noopVoiceControl,
+      stop: onVoiceStop ?? noopVoiceControl,
+      cancel: onVoiceCancel ?? noopVoiceControl,
+    }),
+    [captureInFlight, onVoiceStart, onVoiceStop, onVoiceCancel],
+  )
+  const touchPtt = useTouchPushToTalk(touchVoice, {
+    target: holdTarget,
+    disabled: !voiceHoldMode || disabled || transcribeInFlight || optimizing,
+  })
+  /**
+   * True when the mic press changes MODE rather than starting a recording.
+   *
+   * ONE predicate for the label, the icon, the action and the disabled state. It
+   * is written as a single value because deriving them separately is how a control
+   * comes to say one thing and do another: with `!composerHasDraft` alone, a
+   * streaming partial landing mid-capture made the label read "Switch to keyboard"
+   * (which keys off `voiceHoldMode`, still true because capture overrides the
+   * draft) while the click ran `onVoiceToggle` and stopped the recording.
+   *
+   * `voiceHoldMode ||` is the fix and it is not redundant: hold mode being ON is
+   * itself proof there is a mode to switch out of, draft or no draft. The
+   * `!composerHasDraft` half covers the other direction — an empty composer with
+   * the preference off, where the switch is how voice gets turned on.
+   */
+  const micIsModeSwitch = voiceModeAvailable && (voiceHoldMode || !composerHasDraft)
+  /**
+   * Capture is winding DOWN: the gesture is over but the transport has not let go.
+   *
+   * Streaming `stop()` keeps `recording` true until its socket is cleaned up, and
+   * `transcribeInFlight` is still false through that drain — so the bar fell back to
+   * "Hold to talk" while enabled, and the next press hit the hook's
+   * existing-recording branch and STOPPED the phantom session instead of opening a
+   * new one. The user's next utterance was simply not captured.
+   *
+   * Derived from `touchPtt.bar` and used only for the label and the button's
+   * `disabled` — deliberately NOT fed back into the hook's own `disabled`, which
+   * would be circular. It does not need to be: a disabled <button> dispatches no
+   * pointer events, so the gesture cannot start from a bar that is switched off.
+   */
+  const voiceSettling = voiceHoldMode && touchPtt.bar === 'settling'
+  const toggleVoiceMode = useCallback(() => {
+    setVoiceModePref(prev => {
+      const next = !prev
+      safeSetItem(VOICE_MODE_LS_KEY, next ? '1' : '0')
+      return next
+    })
+  }, [])
+  /**
+   * One label for the mic button, which is two different controls depending on
+   * the device: a mode SWITCH on touch, the record toggle everywhere else.
+   *
+   * The draft case is spelled out rather than left as a bare greyed button —
+   * "why can I not press this" is otherwise unanswerable, and the answer (there
+   * is unsent text in the composer) is something the user can act on.
+   */
+  // Branches on `micIsModeSwitch` FIRST, so the label can only ever describe the
+  // job the click actually performs. Reading `voiceHoldMode` first was what let the
+  // two diverge — and a transcription elsewhere must not relabel a control whose
+  // only job here is handing the keyboard back.
+  const micLabel = micIsModeSwitch
+    ? voiceHoldMode
+      ? i18nT('components.chatInput.switch_to_keyboard')
+      : i18nT('components.chatInput.switch_to_voice')
+    : transcribeInFlight
+      ? i18nT('components.chatInput.transcribing')
+      // Not a switch: it records. Same two labels the desktop mic has always had.
+      : voiceRecording
+        ? i18nT('components.chatInput.stop_recording')
+        : i18nT('components.chatInput.voice_input')
+  /**
+   * What the hold bar says, which must describe what the NEXT press or release
+   * ACTUALLY does. Two of these were wrong for the same reason — the WeChat
+   * gesture this copies sends on release, and the labels borrowed its promises
+   * without borrowing its behaviour:
+   *
+   * - Releasing does NOT send. `stopVoice` sets `sttEndpointDisarmedRef` on
+   *   purpose, so a manual stop cannot become an unrequested send; the transcript
+   *   arrives as a composer draft. A user trusting "Release to send" would release,
+   *   pocket the phone, and never notice the message was still sitting there — a
+   *   silent failure on a chat surface's core action. It says `Release to
+   *   transcribe`, which is what release does.
+   * - While transcribing, the bar is disabled and used to still read "Hold to
+   *   talk", so the dead control explained nothing.
+   */
+  const holdBarLabel = transcribeInFlight
+    ? i18nT('components.chatInput.transcribing')
+    : touchPtt.bar === 'settling'
+      // NOT "Transcribing": the drain has not handed anything to the transcriber
+      // yet. Saying so would claim work that has not started — the same overclaim
+      // this bar has already been corrected for twice.
+      ? i18nT('components.chatInput.finishing')
+      : touchPtt.bar === 'armed-cancel'
+        ? i18nT('components.chatInput.release_to_cancel')
+        : touchPtt.bar === 'holding'
+          ? i18nT('components.chatInput.release_to_transcribe')
+          : touchPtt.bar === 'tap-too-short'
+            ? i18nT('components.chatInput.keep_holding_to_record')
+            : i18nT('components.chatInput.hold_to_talk')
+  /**
+   * Discovery hint for the mic switch, shown only where the switch exists and
+   * only while it is reachable.
+   *
+   * Deliberately ranked BELOW `continuePlaceholder` and below a caller-supplied
+   * `placeholder`: the resume hint is about a broken turn and outranks a feature
+   * tour, and a caller that named its own placeholder means it.
+   *
+   * It names where the mic LEADS, not an action to perform. Two earlier wordings
+   * were both wrong for the same reason — a two-step affordance does not fit in one
+   * line, and compressing it produced a promise the tap does not keep:
+   *
+   * - "hold to talk" named a gesture with no target in keyboard mode (the textarea
+   *   cannot be one, since a long press there opens the iOS selection loupe).
+   * - "tap the mic to talk" was worse: the tap runs `toggleVoiceMode` and starts no
+   *   capture, so anyone who tapped and spoke was not recorded at all.
+   *
+   * So it promises only what the tap delivers — voice becomes available — and the
+   * hold bar that appears teaches the gesture where the gesture actually exists.
+   */
+  const voiceModePlaceholder = voiceModeAvailable && !voiceHoldMode && !composerHasDraft && !placeholder
+    ? i18nT('components.chatInput.send_a_message_or_tap_the_mic_for_voice')
+    : ''
   /** Combined height of every strip currently stacked above the textarea. The
    *  manual-resize floor and the transient height adjustment below both work off
    *  this total, so adding a strip can never leave one of them counting only
@@ -2609,14 +2865,36 @@ function ChatInput({
         <SessionRefStrip refs={pendingSessions} onRemove={onRemoveSessionRef} />
         <FilePreviewStrip files={pendingFiles} dirs={pendingDirs} resizedInfo={resizedInfo} onRemove={onRemoveFile} onRemoveDir={onRemoveDir} />
 
+        {/* Cancel cue for the hold gesture. Rendered above the dictation panel so
+            the drop zone is genuinely UP from the thumb, and only while a press is
+            live — a permanent hint would be noise in a composer used mostly for
+            typing. `aria-live` announces the arm/disarm flip, which is the only
+            feedback a screen-reader user gets for a gesture with no focus change. */}
+        {voiceHoldMode && touchPtt.phase !== 'idle' && (
+          <div
+            data-testid="hold-cancel-cue"
+            aria-live="polite"
+            className={`flex items-center justify-center gap-1.5 py-1.5 text-[11.5px] font-medium transition-colors ${
+              touchPtt.armedCancel ? 'bg-danger text-danger-fg' : 'text-muted border-b border-dashed border-border-strong'
+            }`}
+          >
+            {touchPtt.armedCancel ? (
+              <><X size={12} className="shrink-0" />{i18nT('components.chatInput.release_to_cancel')}</>
+            ) : (
+              <><ArrowUp size={12} className="shrink-0" />{i18nT('components.chatInput.slide_up_to_cancel')}</>
+            )}
+          </div>
+        )}
+
+
         {showDictation ? (
-          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} />
+          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode} />
         ) : (
           <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
         )}
 
         {optimizing && <span className="absolute inset-0 flex items-start px-4 pt-3 text-sm text-white font-medium pointer-events-none z-10 bg-black/60 rounded-2xl"><Sparkles size={14} className="inline mr-1 text-yellow-400" /> {i18nT('components.chatInput.optimizing_prompt')}</span>}
-        <div className={`relative ${showDictation ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
+        <div className={`relative ${showDictation || voiceHoldMode ? 'sr-only' : ''} ${manualHeight !== null ? 'flex-1 min-h-0 flex flex-col' : ''}`}>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
         <textarea
           ref={inputRef}
@@ -2626,7 +2904,7 @@ function ChatInput({
           data-composer-typo
           className={/* focus-cue-ok: the cue is the composer shell's focus-within border-accent brightening; a second ring on the textarea would double-paint one control. */ `relative w-full bg-transparent border-none ${INPUT_TYPO} text-text outline-none min-h-[44px] max-h-[50vh] placeholder:text-muted resize-none ${manualHeight !== null ? 'flex-1' : ''} ${disabled ? 'opacity-40 pointer-events-none' : ''} ${optimizing ? 'opacity-30' : ''}`}
           style={manualHeight !== null ? { height: '100%' } : undefined}
-          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || resolvedPlaceholder}
+          placeholder={!connected ? i18nT('components.chatInput.gateway_offline_message_will_not_send') : disabledProp ? i18nT('components.chatInput.stopping') : voiceRecording ? i18nT('components.chatInput.recording_click_mic_to_stop') : voiceTranscribing ? i18nT('components.chatInput.transcribing_please_wait') : continuePlaceholder || voiceModePlaceholder || resolvedPlaceholder}
           readOnly={optimizing}
           rows={1}
           value={value}
@@ -2671,6 +2949,40 @@ function ChatInput({
         />
         {pasteBlocks.length > 0 && <PasteHoverLayer ref={hoverRef} value={value} blocks={pasteBlocks} mirrorRef={mirrorRef} onActivePanelChange={setPastePreviewPanelId} />}
         </div>
+
+        {/* The hold target. A real <button>, not the textarea: a long press on a
+            text field opens iOS's selection loupe and swallows the pointermoves the
+            cancel gesture is measured from, so "hold the input box" cannot be built
+            on the input box. `touch-action:none` stops the page claiming the drag as
+            a scroll, and the two -webkit rules stop the long-press callout.
+            `flex-1` mirrors the textarea so a manually-resized composer does not
+            fight the persisted height. */}
+        {voiceHoldMode && (
+          <div className={`flex px-2.5 pt-2 pb-0.5 ${manualHeight !== null ? 'flex-1 min-h-0' : ''}`}>
+            <Btn
+              type="button"
+              ref={setHoldTarget}
+              data-testid="hold-to-talk"
+              style={{ touchAction: 'none', WebkitUserSelect: 'none', WebkitTouchCallout: 'none' }}
+              // `flex-1` inside a flex row, NOT `flex` on its own: a <button> sizes
+              // to fit-content even as a block-level flex container (UA form-control
+              // sizing), so a bare display swap leaves a small pill where the whole
+              // point is a target a thumb can hit without aiming.
+              className={`flex-1 min-h-[44px] justify-center rounded-xl font-semibold select-none ${
+                touchPtt.bar === 'armed-cancel'
+                  ? 'border-dashed border-danger bg-danger-subtle text-danger'
+                  : touchPtt.bar === 'holding'
+                    ? 'border-accent bg-accent text-accent-fg'
+                    : 'border-border-strong bg-card text-text-strong'
+              }`}
+              disabled={disabled || transcribeInFlight || optimizing || voiceSettling}
+              aria-label={holdBarLabel}
+            >
+              <Mic size={15} className="shrink-0" />
+              {holdBarLabel}
+            </Btn>
+          </div>
+        )}
 
         {/* Bottom icon row */}
         <div className="flex items-center justify-between px-2.5 pb-2 pt-0.5">
@@ -2825,16 +3137,39 @@ function ChatInput({
           <div className="flex items-center gap-1 shrink-0">
             {onVoiceToggle && (
               <button
+                type="button"
                 className={`w-8 h-8 rounded-lg flex items-center justify-center cursor-pointer transition-all border-none ${
-                  voiceRecording ? 'bg-danger-subtle text-danger animate-pulse' : voiceTranscribing ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
+                  voiceRecording ? 'bg-danger-subtle text-danger animate-pulse' : (!micIsModeSwitch && transcribeInFlight) ? 'bg-accent-subtle text-accent' : voiceHoldMode ? 'bg-accent-subtle text-accent' : 'text-muted hover:text-text hover:bg-bg-hover bg-transparent'
                 } disabled:opacity-30`}
-                onClick={onVoiceToggle}
-                onPointerDown={onVoicePrewarm}
-                disabled={disabled || voiceTranscribing || optimizing}
-                aria-label={voiceRecording ? i18nT('components.chatInput.stop_recording') : voiceTranscribing ? i18nT('components.chatInput.transcribing') : i18nT('components.chatInput.voice_input')}
-                title={voiceRecording ? i18nT('components.chatInput.stop_recording') : voiceTranscribing ? i18nT('components.chatInput.transcribing') : i18nT('components.chatInput.voice_input')}
+                // The mic does whichever voice thing is AVAILABLE right now, which is
+                // what keeps it from becoming a dead control. On an empty composer
+                // that is the mode switch. With a draft, hold mode is suspended
+                // anyway (a hold bar cannot show text you need to read and edit),
+                // so the mic reverts to the job it had before this feature: tap to
+                // dictate, transcript spliced in at the caret.
+                //
+                // Without that second branch the switch was disabled on every draft,
+                // on every coarse-pointer device — including for someone who never
+                // opened hold mode — and since the mic is the only voice entry point
+                // on touch, dictating onto existing text became impossible. Speak,
+                // glance, speak again is how a long message actually gets composed
+                // on a phone, so losing it is not a cost of the new mode; it would
+                // have been an unconditional regression in the old one.
+                onClick={micIsModeSwitch ? toggleVoiceMode : onVoiceToggle}
+                // Prewarm only when the press will actually record. On the switch it
+                // would acquire the mic for a press that changes layout, and in hold
+                // mode the gesture's own pointerdown opens capture earlier anyway.
+                onPointerDown={micIsModeSwitch ? undefined : onVoicePrewarm}
+                /* A foreign transcription blocks STARTING a capture, so it gates the
+                   mic only while the mic is the record button. As a MODE SWITCH the
+                   click starts nothing — it hands the keyboard back — and disabling
+                   it there strands the user in voice mode, unable to type or send
+                   until unrelated work in another session finishes. */
+                disabled={disabled || optimizing || (micIsModeSwitch ? captureInFlight : transcribeInFlight)}
+                aria-label={micLabel}
+                title={micLabel}
               >
-                {voiceTranscribing ? <Loader2 size={18} className="animate-spin" /> : <Mic size={18} />}
+                {!micIsModeSwitch && transcribeInFlight ? <Loader2 size={18} className="animate-spin" /> : voiceHoldMode ? <Keyboard size={18} /> : <Mic size={18} />}
               </button>
             )}
             {/* The busy branch is reachable with EITHER a stop affordance or a
@@ -2890,7 +3225,7 @@ function ChatInput({
               // unreachable before session refs existed, since an empty composer
               // mid-turn rendered the stop button instead. A bare ref therefore
               // waits for the turn to end and rides the idle send button.
-              value.trim() || pendingFiles.length ? (
+              composerHasDraft ? (
                 canSteer && onSteer ? (
                   <BusySendButton
                     mode={busySendMode}

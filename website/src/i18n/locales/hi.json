@@ -4943,6 +4943,13 @@
       "more_actions": "और कार्रवाइयां"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "संदेश भेजें, या वॉइस के लिए माइक टैप करें",
+      "release_to_transcribe": "लिखने के लिए छोड़ें",
+      "hold_to_talk": "बोलने के लिए दबाए रखें",
+      "release_to_cancel": "रद्द करने के लिए छोड़ें",
+      "slide_up_to_cancel": "रद्द करने के लिए ऊपर स्वाइप करें",
+      "switch_to_keyboard": "कीबोर्ड पर जाएँ",
+      "switch_to_voice": "वॉइस पर जाएँ",
       "drop_to_attach": "छोड़कर अटैच करें",
       "add_files_options": "फ़ाइलें और विकल्प जोड़ें",
       "agent": "एजेंट: {{name}}",
@@ -5032,7 +5039,9 @@
       "upload_file": "फ़ाइल अपलोड करें",
       "use_a_skill": "स्किल का उपयोग करें",
       "used": "उपयोग",
-      "voice_input": "वॉइस इनपुट"
+      "voice_input": "वॉइस इनपुट",
+      "finishing": "पूरा हो रहा है…",
+      "keep_holding_to_record": "रिकॉर्ड करने के लिए दबाए रखें"
     },
     "chatPane": {
       "agent_list": "एजेंट सूची",

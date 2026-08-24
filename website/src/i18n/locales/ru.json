@@ -5091,6 +5091,13 @@
       "more_actions": "Другие действия"
     },
     "chatInput": {
+      "send_a_message_or_tap_the_mic_for_voice": "Отправьте сообщение или нажмите микрофон для голоса",
+      "release_to_transcribe": "Отпустите для расшифровки",
+      "hold_to_talk": "Удерживайте, чтобы говорить",
+      "release_to_cancel": "Отпустите, чтобы отменить",
+      "slide_up_to_cancel": "Свайп вверх для отмены",
+      "switch_to_keyboard": "Переключить на клавиатуру",
+      "switch_to_voice": "Переключить на голос",
       "drop_to_attach": "Отпустите, чтобы прикрепить",
       "add_files_options": "Добавить файлы и параметры",
       "agent": "Агент: {{name}}",
@@ -5180,7 +5187,9 @@
       "upload_file": "Загрузить файл",
       "use_a_skill": "Использовать навык",
       "used": "Использовано",
-      "voice_input": "Голосовой ввод"
+      "voice_input": "Голосовой ввод",
+      "finishing": "Завершение…",
+      "keep_holding_to_record": "Удерживайте, чтобы записать"
     },
     "chatPane": {
       "agent_list": "Список агентов",
