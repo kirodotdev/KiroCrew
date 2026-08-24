@@ -187,7 +187,6 @@ KNOWN_UNCONVERTED: dict[str, tuple[str, str]] = {
     #
     # #5285's six sites were here until main converted them mid-review; the
     # shrink-only rule below is what forced this list to follow.
-    "src/kiro_crew/snapshot.py::_backup_and_copy": ("#5346", "mc / f"),
     "src/kiro_crew/snapshot.py::_do_merge": ("#5346", "d"),
     "src/kiro_crew/sel.py::_append_lines_locked": ("#5346", "self._path"),
     # Surfaced once _mode_of learned the symbolic spelling: writes a config that
