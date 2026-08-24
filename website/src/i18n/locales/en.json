@@ -5214,9 +5214,6 @@
         "resolving": "Resolving…",
         "resolving_2": "resolving...",
         "resources": "Resources",
-        "trusted": "Trusted",
-        "trusted_base": "Trusted base",
-        "trusted_command": "Trusted command",
         "waiting_for_output": "Waiting for output…",
         "waiting_to_start_queued_behind_the_concurrency_l": "waiting to start — queued behind the concurrency limit"
       },

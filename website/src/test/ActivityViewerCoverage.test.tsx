@@ -18,10 +18,6 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
-// The approval entry's tiered trust control is a Radix dropdown, which never
-// opens under the test DOM; the repo's shared mock renders the menu inline.
-vi.mock('@radix-ui/react-dropdown-menu', async () => await import('./__mocks__/@radix-ui/react-dropdown-menu'))
-
 vi.mock('../api/client', () => ({
   api: {
     spawnStatus: vi.fn().mockResolvedValue({ result: '' }),
@@ -480,16 +476,20 @@ describe('ActivityViewer — spawn approval entries', () => {
     expect(screen.getByRole('button', { name: /Reject/ })).toBeInTheDocument()
   })
 
-  it('grants trust for the command through the dropdown', async () => {
+  it('offers only Approve / Reject and never reports a trust grant (#5400)', async () => {
     renderPanel(<ActivityViewer {...baseProps} view="subagents" toolLog={[pending]} />)
-    fireEvent.click(screen.getByText('Trust'))
 
-    const [trustThisCommand] = screen.getAllByRole('menuitem')
-    expect(trustThisCommand).toHaveTextContent('git push origin feature')
-    fireEvent.click(trustThisCommand)
+    // Spawn approvals resolve through the one-shot resolveApproval endpoint,
+    // which has no trust verb — offering trust tiers here would overstate the
+    // grant, because the next identical call prompts again (#5400).
+    const actionButtons = screen.getAllByRole('button', { name: /Approve|Reject|Trust/ })
+    expect(actionButtons.map(b => b.textContent)).toEqual([expect.stringContaining('Approve'), expect.stringContaining('Reject')])
+    expect(screen.queryByText('Trust')).not.toBeInTheDocument()
 
+    fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
     await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-9', 'approve'))
-    expect(await screen.findByText('Trusted command')).toBeInTheDocument()
+    expect(await screen.findByText('Approved')).toBeInTheDocument()
+    expect(screen.queryByText(/Trusted/)).not.toBeInTheDocument()
   })
 
   it('shows an already-resolved approval with no actions left', () => {
