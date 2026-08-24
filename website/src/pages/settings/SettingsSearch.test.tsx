@@ -55,13 +55,17 @@ describe('SettingsSearch', () => {
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument()
   })
 
-  it('carries an entry\u2019s own params into the deep link', () => {
+  it('carries an entry\u2019s own params into the deep link — translated to the canonical sub', () => {
     setup()
     fireEvent.change(input(), { target: { value: 'auto-approve stays on' } })
     fireEvent.mouseDown(screen.getByText('How long auto-approve stays on'))
     const params = new URLSearchParams(screen.getByTestId('params').textContent ?? '')
     expect(params.get('tab')).toBe('security')
-    expect(params.get('section')).toBe('approval')
+    // The registry entry carries the legacy `section` key; settingsRoute
+    // rewrites it to the canonical second-level param, so the navigation
+    // shell's level test sees the drill-in (one back bar, not two).
+    expect(params.get('sub')).toBe('approval')
+    expect(params.get('section')).toBeNull()
     expect(params.get('highlight')).toBe('security.how-long-auto-approve-stays-on')
   })
 

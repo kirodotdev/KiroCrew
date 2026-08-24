@@ -135,10 +135,12 @@ describe('createSettingsProvider — search', () => {
     expect(hit).toBeDefined()
     hit!.onActivate()
     const url = spy.mock.calls[0][0] as string
-    // Without channel=slack the Channels tab defaults elsewhere (or shows the
-    // bare list) and the highlight silently no-ops on an unmounted panel.
+    // Without the second-level param the Channels tab defaults elsewhere (or
+    // shows the bare list) and the highlight silently no-ops on an unmounted
+    // panel. The registry's legacy `channel` key is translated to the
+    // canonical `sub` at the settingsRoute write path.
     expect(url).toContain('tab=channels')
-    expect(url).toContain('channel=slack')
+    expect(url).toContain('sub=slack')
     expect(url).toContain('highlight=')
   })
 

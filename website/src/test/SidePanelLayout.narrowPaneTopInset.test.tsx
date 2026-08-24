@@ -62,28 +62,26 @@ function topInsets(el: HTMLElement): string[] {
 describe('SidePanelLayout — the narrow pane clears the tab strip border', () => {
   beforeEach(() => { mobile.value = false })
 
-  it('insets the pane from the strip border on a phone', () => {
+  it('insets the pane under the detail header on a phone', () => {
     mobile.value = true
-    renderPage()
-    expect(topInsets(screen.getByTestId('side-panel-pane'))).toEqual(['pt-3'])
+    renderPage({ url: '/page?tab=form' })
+    expect(topInsets(screen.getByTestId('side-panel-pane'))).toEqual(['pt-1'])
   })
 
   it('keeps the inset when the tab is contained rather than page-scrolled', () => {
     mobile.value = true
-    renderPage({ fixedContent: true })
-    expect(topInsets(screen.getByTestId('side-panel-pane'))).toEqual(['pt-3'])
+    renderPage({ url: '/page?tab=form', fixedContent: true })
+    expect(topInsets(screen.getByTestId('side-panel-pane'))).toEqual(['pt-1'])
   })
 
-  it('pairs the inset with the border it clears', () => {
+  it('pairs the inset with the detail header that spaces it', () => {
+    // The mobile detail view carries the tab's own header, whose pb-2 owns
+    // most of the gap; the pane's pt-1 only tops it up. Assert the token, not
+    // mere presence — the pairing is the contract.
     mobile.value = true
-    renderPage()
-    // The strip block sits beside the SCROLLING COLUMN, not beside the pane —
-    // the pane is that column's only child on this branch. The inset only reads
-    // as deliberate because the block above draws a line.
-    const strip = screen.getByTestId('side-panel-pane').parentElement!.previousElementSibling
-    // Token equality, not substring: `toContain('border-b')` also matches inside
-    // the neighbouring `border-border`, which makes the assertion vacuous.
-    expect(String(strip?.className).split(/\s+/)).toContain('border-b')
+    renderPage({ url: '/page?tab=form' })
+    const header = screen.getByTestId('mobile-detail-header')
+    expect(header.className.split(/\s+/)).toContain('pb-2')
   })
 
   it('leaves the desktop pane flush, since the header already spaces it', () => {

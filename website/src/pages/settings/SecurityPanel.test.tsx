@@ -1443,7 +1443,7 @@ describe('SecurityPanel — inspector rail', () => {
     expect(screen.queryByText('30 credential paths')).not.toBeInTheDocument()
     // ...and the choice is a deep link, so the section survives a reload and can
     // be targeted by a command-palette result.
-    expect(screen.getByTestId('search')).toHaveTextContent('section=rules')
+    expect(screen.getByTestId('search')).toHaveTextContent('sub=rules')
   })
 
   it('an unreadable third-party-apps value gets NO rail summary, rather than reading "Off"', async () => {

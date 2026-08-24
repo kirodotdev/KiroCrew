@@ -1,9 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react'
-import { useSearchParams } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, ArrowLeft, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
+import { ShieldCheck, ShieldAlert, Lock, Eye, EyeOff, FileWarning, Terminal, Globe, Fingerprint, KeyRound, ScanLine, Layers, AlertTriangle, CheckCircle2, Circle, Clock, ExternalLink, ChevronRight, ChevronDown, Plus, Trash2, Gavel, Building2, Gauge, ToggleRight, MessageSquare, ListChecks, Boxes, BookOpen, Network, Copy, Check, Package } from 'lucide-react'
 import { useAppSelector } from '../../store'
-import { useContainerWidth } from '../../hooks/useContainerWidth'
+import { SettingsSubNav } from '../../components/SettingsSubNav'
 import { useImeGuard } from '../../hooks/useImeGuard'
 import { Badge, Btn, Input, Toggle, Checkbox } from '../../components/ui'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
@@ -2035,11 +2034,6 @@ const SECURITY_SECTIONS: readonly SecuritySectionDef[] = [
   { key: 'docs', icon: <BookOpen size={15} />, group: 'reference' },
 ]
 
-/** Below this container width the rail and the detail pane stack: the rail
- *  becomes the whole view and choosing a section replaces it (with a back
- *  link), the same responsive contract ChannelsPanel uses. */
-const TWO_PANE_MIN_WIDTH = 760
-
 /** One rail row. `summary` is a live, FACTUAL value (a count, an on/off) — never
  *  a verdict: a rail that renders its own "OK" is a security claim made by the
  *  navigation, and it would keep claiming it while the underlying read failed.
@@ -2075,55 +2069,7 @@ function fmtRailExpiry(expiry: Date, now: Date = new Date()): string {
     : fmtDateFields(expiry, { weekday: 'short', hour: 'numeric', minute: '2-digit' })
 }
 
-function SectionRow({ section, active, summary, onSelect, twoPane }: {
-  section: SecuritySectionDef
-  active: boolean
-  summary?: string
-  onSelect: () => void
-  twoPane: boolean
-}) {
-  const label = i18nT(SECTION_LABEL_KEY[section.key])
-  return (
-    <button
-      type="button"
-      role="option"
-      aria-selected={active}
-      onClick={onSelect}
-      // The longest label still ellipsizes in the most verbose locales, so the
-      // full string stays reachable on hover rather than being lost.
-      title={label}
-      className={`flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-left cursor-pointer border-none transition-colors ${
-        active ? 'bg-accent-subtle text-accent' : 'bg-transparent text-muted hover:text-text hover:bg-bg-hover'
-      }`}
-    >
-      <span className={`w-4 h-4 shrink-0 flex items-center justify-center ${active ? 'text-accent' : 'text-muted'}`}>
-        {section.icon}
-      </span>
-      <span className="flex-1 min-w-0">
-        {/* Wraps to two lines rather than truncating. The rail is a fixed 248px
-            and the longest label ("Defense-in-Depth Architecture") inflates to
-            52 characters under the pseudolocale, which truncated at 1.36x —
-            over the render gate's 1.35x budget, and a real problem in any
-            verbose locale, not just en-XA. Widening the rail would only move
-            the boundary; not truncating removes it. `title` stays for the
-            pathological case. */}
-        <span className="block text-[13px] font-medium line-clamp-2">{label}</span>
-        {summary && (
-          <span className="block text-[11px] text-muted tabular-nums truncate mt-px">{summary}</span>
-        )}
-      </span>
-      {!twoPane && <ChevronRight size={14} className="text-muted shrink-0" />}
-    </button>
-  )
-}
-
 export function SecurityPanel() {
-  const [params, setParams] = useSearchParams()
-  const [containerRef, width] = useContainerWidth<HTMLDivElement>()
-  // null width = first paint before measurement; assume wide to avoid flashing
-  // the narrow layout on desktop.
-  const twoPane = width === null || width >= TWO_PANE_MIN_WIDTH
-
   // Held HERE, not in the rules pane: picking another rail section unmounts that
   // pane, and a half-typed deny pattern living in its local state would be
   // silently discarded. The 137-row rule table still unmounts — only the draft
@@ -2132,30 +2078,6 @@ export function SecurityPanel() {
   // Lifted for the same reason as denyDraft: the rules section unmounts on rail
   // navigation, which would discard a half-typed note.
   const [denyNoteDraft, setDenyNoteDraft] = useState('')
-
-  const rawSection = params.get('section')
-  const selectedKey = SECURITY_SECTIONS.some(s => s.key === rawSection)
-    ? (rawSection as SecuritySectionKey)
-    : null
-  // Wide mode always shows a detail pane; default to the first section.
-  const effectiveKey = selectedKey ?? (twoPane ? SECURITY_SECTIONS[0].key : null)
-
-  const setSection = (key: SecuritySectionKey | null) => setParams(prev => {
-    const next = new URLSearchParams(prev)
-    if (key) next.set('section', key)
-    else next.delete('section')
-    return next
-  }, { replace: true })
-
-  // Canonicalize the wide-mode implicit selection into the URL, so shrinking
-  // below the breakpoint does not silently drop the shown pane back to the bare
-  // rail. Gated on a REAL measurement: the pre-measurement paint optimistically
-  // renders wide, and writing `section=posture` before the ResizeObserver
-  // reports would make a fresh narrow visit open a section instead of the rail.
-  useEffect(() => {
-    if (width !== null && twoPane && !selectedKey) setSection(SECURITY_SECTIONS[0].key)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [width, twoPane, selectedKey])
 
   // Rail summaries. Both reads are shared cache entries with the sections that
   // own them, so the rail adds no extra request.
@@ -2173,51 +2095,35 @@ export function SecurityPanel() {
     switch (key) {
       case 'approval':
         // An active grant outranks the configured duration: it is the state that
-        // is currently weakening the install, so it is what the rail reports.
-        //
-        // It reports WHEN THE GRANT ENDS, not that it exists. Returning the
-        // section's own label here made the row read "YOLO (auto-approve)" twice
-        // — once as the label, once as a muted 11px echo underneath — spending
-        // the rail's most important row on a duplicate instead of the one fact a
-        // reader needs. The expiry is already in `status`; the card below shows
-        // the same values in full sentences.
+        // is currently weakening the install, so it is what the rail reports —
+        // WHEN THE GRANT ENDS, not that it exists.
         if (status?.yolo) {
           if (status.yolo_until_shutdown) return i18nT('pages.settings.securityPanel.rail_until_restart')
           // Parse before formatting, and fall back to the bare "active" string
-          // when the timestamp will not parse. `fmtRailExpiry` would otherwise
-          // be handed an invalid Date and render an em-dash placeholder, which
-          // would put "Until —" on a row asserting that a grant is live —
-          // announcing a weakened install while withholding the one fact that
-          // makes the claim actionable. The backend sends ISO-or-empty today,
-          // so this is a guard against the field's shape changing.
+          // when the timestamp will not parse: "Until —" on a row asserting a
+          // live grant would announce a weakened install while withholding the
+          // one fact that makes the claim actionable.
           const expiry = toDate(status.yolo_expires_at)
           return expiry
             ? i18nT('pages.settings.securityPanel.rail_until_time', { time: fmtRailExpiry(expiry) })
             : i18nT('pages.settings.securityPanel.rail_active')
         }
         // `== null`, NOT `=== undefined`: `dashboard.status` is typed
-        // `StatusData | null` and initialises to `null`, so an `undefined` check
-        // never fires and the rail would claim the safe "Interactive" on every
-        // fresh load — before any status payload has arrived, on an install where
-        // auto-approve may well be active. Same rule the apps case follows, where
-        // React Query genuinely yields `undefined`: an unread state is reported as
-        // no summary, never as the reassuring one.
+        // `StatusData | null` and initialises to `null`. An unread state is
+        // reported as no summary, never as the reassuring one.
         return status == null ? undefined : i18nT('pages.settings.securityPanel.interactive')
       case 'rules':
         return dc ? String(dc.builtins.filter(r => r.enabled).length) : undefined
       case 'tailnet':
-        // An unread state gets no summary, never the reassuring one — the same
-        // rule the apps case follows. The label is the server-owned `state`, so
-        // the rail cannot disagree with the card it navigates to.
+        // An unread state gets no summary, never the reassuring one. The label
+        // is the server-owned `state`, so the rail cannot disagree with the
+        // card it navigates to.
         if (tailnetError || tailnet === undefined) return undefined
         return i18nT(TAILNET_STATE_KEY[tailnet.state])
       case 'apps':
         // An UNREADABLE value is not "off" — mirror the card's own handling and
         // render no summary rather than asserting a state we could not read.
         if (cfgError || cfg === undefined) return undefined
-        // Names what the gate DOES rather than "On"/"Off": a bare "On" is a
-        // connector word with nothing for a translator to work from, and the
-        // verb reads better against a blanket admission control.
         return cfg.agent?.apps_allow_third_party === true
           ? i18nT('pages.settings.securityPanel.state_allowed')
           : i18nT('pages.settings.securityPanel.state_blocked')
@@ -2228,103 +2134,70 @@ export function SecurityPanel() {
     }
   }
 
-  // Grouped as listbox > group > option. The group headers used to be
-  // `aria-hidden`, which handed screen-reader users seven flat options and threw
-  // away the yours-vs-enforced split the rail exists to convey; `role="group"`
-  // with the header as its accessible name is the ARIA-valid way to keep it,
-  // since a listbox may contain groups but not arbitrary children.
-  const groupedSections = SECURITY_SECTIONS.reduce<{ group: SecuritySectionGroup; items: SecuritySectionDef[] }[]>(
-    (acc, section) => {
-      const last = acc[acc.length - 1]
-      if (last && last.group === section.group) last.items.push(section)
-      else acc.push({ group: section.group, items: [section] })
-      return acc
-    },
-    [],
-  )
+  const items = SECURITY_SECTIONS.map(section => {
+    const summary = summaryFor(section.key)
+    return {
+      key: section.key,
+      label: i18nT(SECTION_LABEL_KEY[section.key]),
+      icon: section.icon,
+      group: i18nT(SECTION_GROUP_KEY[section.group]),
+      summary: summary ? (
+        <span className="block text-[11px] text-muted tabular-nums truncate mt-px">{summary}</span>
+      ) : undefined,
+    }
+  })
 
-  const rail = (
-    // No aria-label on the wrapper: the listbox inside already carries this name,
-    // and naming both makes a screen reader announce it twice.
-    <nav className={twoPane ? 'w-[248px] shrink-0' : 'w-full'}>
-      <div className="flex flex-col gap-0.5" role="listbox" aria-label={i18nT('pages.settings.securityPanel.security_sections')}>
-        {groupedSections.map(({ group, items }) => (
-          <div key={group} role="group" aria-label={i18nT(SECTION_GROUP_KEY[group])}>
-            <div className="text-[11px] text-muted uppercase tracking-wider font-medium px-2.5 pt-2.5 pb-1 select-none">
-              {i18nT(SECTION_GROUP_KEY[group])}
-            </div>
-            {items.map(section => (
-              <SectionRow
-                key={section.key}
-                section={section}
-                active={twoPane && section.key === effectiveKey}
-                summary={summaryFor(section.key)}
-                onSelect={() => setSection(section.key)}
-                twoPane={twoPane}
-              />
-            ))}
-          </div>
-        ))}
-      </div>
-    </nav>
-  )
-
-  return (
-    <div ref={containerRef}>
-      {/* ── Data Classification Warning ──
-       *  Outside the rail on purpose. It is an instruction about what to type
-       *  into the product, not a section of the security model, and a notice you
-       *  can navigate away from is a notice most readers never see. */}
-      <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
-        <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
-        <div>
-          <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
-          <div className="text-[12px] text-muted mt-1 leading-relaxed">
-            {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
-          </div>
-        </div>
-      </div>
-
-      {/* Both responsive modes render the same child slots in the same order
-          (rail?, back-link?, pane wrapper) so React reconciles the pane by
-          position and a width transition never remounts it — remounting would
-          discard an unsaved custom deny pattern mid-type. Only changing the
-          selected section remounts, which is intended. */}
-      <div className={twoPane ? 'flex gap-6 items-start' : 'flex flex-col'}>
-        {(twoPane || !effectiveKey) && rail}
-        {!twoPane && effectiveKey && (
-          <button
-            type="button"
-            onClick={() => setSection(null)}
-            className="flex items-center gap-1.5 self-start text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
-          >
-            <ArrowLeft size={14} />
-            {i18nT('pages.settings.securityPanel.security_sections')}
-          </button>
-        )}
-        <div className={twoPane ? 'flex-1 min-w-0' : 'w-full'}>
-          {effectiveKey === 'posture' && <PostureSection />}
-          {effectiveKey === 'approval' && (
-            <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
-              <YoloDurationCard />
-            </SettingsSection>
-          )}
-          {effectiveKey === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} noteDraft={denyNoteDraft} onNoteDraftChange={setDenyNoteDraft} />}
-          {effectiveKey === 'tailnet' && (
-            <SettingsSection title={i18nT('pages.settings.securityPanel.tailnet_section')}>
-              <TailnetOriginCard />
-            </SettingsSection>
-          )}
-          {effectiveKey === 'apps' && (
-            <SettingsSection title={i18nT('pages.settings.securityPanel.third_party_apps_section')}>
-              <ThirdPartyAppsCard />
-            </SettingsSection>
-          )}
-          {effectiveKey === 'layers' && <LayersSection />}
-          {effectiveKey === 'governance' && <GovernancePolicyViewer />}
-          {effectiveKey === 'docs' && <DocsSection />}
+  const banner = (
+    // ── Data Classification Warning ──
+    // In the SubNav banner slot on purpose: it is an instruction about what to
+    // type into the product, not a section of the security model, and a notice
+    // you can navigate away from is a notice most readers never see.
+    <div className="mb-5 bg-bg-elevated border rounded-lg p-4 flex items-start gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--warn) 45%, transparent)' }}>
+      <AlertTriangle size={18} className="text-warn shrink-0 mt-0.5" />
+      <div>
+        <div className="text-[13px] font-semibold text-text-strong">{i18nT('pages.settings.securityPanel.data_classification_notice')}</div>
+        <div className="text-[12px] text-muted mt-1 leading-relaxed">
+          {i18nT('pages.settings.securityPanel.do_not_enter_highly_sensitive_or_restricted_data')}
         </div>
       </div>
     </div>
+  )
+
+  return (
+    <SettingsSubNav
+      items={items}
+      railWidth={248}
+      listLabel={i18nT('pages.settings.securityPanel.security_sections')}
+      backLabel={i18nT('settings.tabs.security.label')}
+      banner={banner}
+    >
+      {active => {
+        const key = active as SecuritySectionKey | null
+        return (
+          <>
+            {key === 'posture' && <PostureSection />}
+            {key === 'approval' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.yolo_auto_approve')}>
+                <YoloDurationCard />
+              </SettingsSection>
+            )}
+            {key === 'rules' && <DeniedCommandsSection draft={denyDraft} onDraftChange={setDenyDraft} noteDraft={denyNoteDraft} onNoteDraftChange={setDenyNoteDraft} />}
+            {key === 'tailnet' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.tailnet_section')}>
+                <TailnetOriginCard />
+              </SettingsSection>
+            )}
+            {key === 'apps' && (
+              <SettingsSection title={i18nT('pages.settings.securityPanel.third_party_apps_section')}>
+                <ThirdPartyAppsCard />
+              </SettingsSection>
+            )}
+            {key === 'layers' && <LayersSection />}
+            {key === 'governance' && <GovernancePolicyViewer />}
+            {key === 'docs' && <DocsSection />}
+          </>
+        )
+      }}
+    </SettingsSubNav>
   )
 }

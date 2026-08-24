@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Search } from 'lucide-react'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
@@ -8,6 +8,7 @@ import { settingsSubtitle } from '../../components/commandPalette/settingsTabLab
 import type { SettingEntry } from '../../components/commandPalette/settingsTypes'
 import { makeScoreThenNameComparator } from '../../utils/fuzzyMatch'
 import { useListKeyboardNav } from '../../hooks/useListKeyboardNav'
+import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -111,6 +112,13 @@ export default function SettingsSearch() {
     return () => document.removeEventListener('mousedown', handler)
   }, [open, close])
 
+  // In the mobile root list's floating bottom capsule the host owns the
+  // chrome (border, blur, capsule shape), so the input goes full-width and
+  // borderless — and the results panel opens UPWARD: anchored to the bottom
+  // of the screen, a downward panel would be off-screen.
+  const dock = useContext(SidePanelDockContext)
+  const floating = dock === 'bottom-float'
+
   return (
     <div ref={rootRef} className="relative shrink-0">
       <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted pointer-events-none" />
@@ -128,14 +136,18 @@ export default function SettingsSearch() {
         // Choosing a row never blurs: rows activate on mousedown and
         // preventDefault, so a genuine blur means focus left the widget.
         onBlur={close}
-        className="w-44 sm:w-56 bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-none focus-visible:border-accent"
+        className={floating
+          ? 'w-full bg-transparent border-none rounded-full pl-8 pr-4 py-2.5 text-[14px] text-text placeholder:text-muted focus:outline-none'
+          : 'w-44 sm:w-56 bg-bg-elevated border border-border rounded-lg pl-8 pr-3 py-1.5 text-[13px] text-text placeholder:text-muted focus:outline-none focus-visible:border-accent'}
       />
       {open && (
         <div
           id={LISTBOX_ID}
           role="listbox"
           aria-label={i18nT('pages.settingsPage.search.aria_label')}
-          className="absolute right-0 top-full mt-1 w-80 max-w-[calc(100vw-2rem)] max-h-80 overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1"
+          className={`absolute right-0 max-h-80 overflow-y-auto bg-card border border-border rounded-lg shadow-lg z-50 py-1 ${floating
+            ? 'bottom-full mb-2 left-0 w-full'
+            : 'top-full mt-1 w-80 max-w-[calc(100vw-2rem)]'}`}
         >
           {results.length === 0 ? (
             <div className="px-3 py-3 text-[12px] text-muted">{i18nT('pages.settingsPage.search.no_results')}</div>
