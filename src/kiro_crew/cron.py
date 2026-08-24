@@ -1994,26 +1994,87 @@ class CronService:
                 return job
         return None
 
-    def remove_job(self, job_id: str) -> bool:
+    def remove_job(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
         """Remove a job by ID.
+
+        ``actor`` and ``source`` are required so every caller-requested
+        removal is attributable at this mutation seam. Automated one-shot
+        callers additionally provide ``one_shot_path`` to retain their
+        distinct audit outcome and path discriminator.
 
         Raises :class:`CronStoreBusy` on lock contention; see
         :meth:`remove_job_async` for the event-loop-safe variant.
         """
         ok = self._remove_job_locked(job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
         if ok:
             self._arm_timer()
         return ok
 
-    async def remove_job_async(self, job_id: str) -> bool:
+    async def remove_job_async(
+        self,
+        job_id: str,
+        *,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> bool:
         """Event-loop-safe :meth:`remove_job`: the lock+save runs off the loop.
 
         Raises :class:`CronStoreBusy` (retryable) on sustained contention.
         """
         ok = await asyncio.to_thread(self._remove_job_locked, job_id)
+        self._audit_requested_removal(
+            job_id,
+            removed=ok,
+            actor=actor,
+            source=source,
+            one_shot_path=one_shot_path,
+        )
         if ok:
             self._arm_timer()
         return ok
+
+    def _audit_requested_removal(
+        self,
+        job_id: str,
+        *,
+        removed: bool,
+        actor: str,
+        source: str,
+        one_shot_path: str | None = None,
+    ) -> None:
+        """Audit one removal after persistence and outside the store lock."""
+        if one_shot_path is not None:
+            if removed:
+                self.audit_one_shot_removal(job_id, one_shot_path)
+            return
+        resources = f"job_id={job_id}"
+        if not removed:
+            resources += " reason=not_found"
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.remove",
+                outcome="allowed" if removed else "not_found",
+                source=source,
+                resources=resources,
+            )
+        except Exception:
+            logger.warning("SEL audit for cron removal failed (job %s)", job_id, exc_info=True)
 
     def defer_removal(self, job_id: str) -> None:
         """Queue a one-shot job for removal on the next timer tick.
@@ -2164,8 +2225,13 @@ class CronService:
                 logger.info("Removed %d cron job(s) in batch", len(targets))
         return removed, missing
 
-    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    async def remove_jobs(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         """Remove many jobs under ONE lock/reload/save, off the event loop.
+
+        ``actor`` and ``source`` are required so the completed batch is
+        audited here after persistence, outside the store lock.
 
         Returns ``(removed_ids, missing_ids)`` preserving input order. Looping
         :meth:`remove_job` per id would pay the file-lock + reload +
@@ -2175,12 +2241,39 @@ class CronService:
         runs in a worker thread; only ``_arm_timer`` (asyncio.create_task)
         runs back on the loop, and only when something was actually removed.
         """
-        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, list(job_ids))
+        requested = list(job_ids)
+        removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+        self._audit_requested_batch_removal(
+            requested, removed, missing, actor=actor, source=source
+        )
         if removed:
             self._arm_timer()
         return removed, missing
 
-    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    def _audit_requested_batch_removal(
+        self,
+        requested: list[str],
+        removed: list[str],
+        missing: list[str],
+        *,
+        actor: str,
+        source: str,
+    ) -> None:
+        """Audit one caller-requested batch after persistence and off-lock."""
+        try:
+            sel.sel().log_api_access(
+                caller=actor,
+                operation="cron.batch_delete",
+                outcome="ok" if removed else "failed",
+                source=source,
+                resources=f"requested={requested} deleted={removed} failed={missing}",
+            )
+        except Exception:
+            logger.warning("SEL audit for cron batch removal failed", exc_info=True)
+
+    def remove_jobs_sync(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         """Synchronous sibling of :meth:`remove_jobs` — ONE atomic locked batch.
 
         Removes every id in ``job_ids`` under a SINGLE :meth:`_remove_jobs_locked`
@@ -2193,7 +2286,11 @@ class CronService:
         facade (the ``_file_lock`` loop-safety guard rejects it on a running
         loop). On the loop use :meth:`remove_jobs`.
         """
-        removed, missing = self._remove_jobs_locked(list(job_ids))
+        requested = list(job_ids)
+        removed, missing = self._remove_jobs_locked(requested)
+        self._audit_requested_batch_removal(
+            requested, removed, missing, actor=actor, source=source
+        )
         if removed:
             self._arm_timer()
         return removed, missing

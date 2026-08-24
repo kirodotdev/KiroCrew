@@ -1097,24 +1097,7 @@ def _cron(args: argparse.Namespace) -> None:
             print(f"Job not found: {args.job_id}")
 
     elif action == "remove":
-        removed = svc.remove_job(args.job_id)
-        # SEL audit: single delete records the affected job and outcome, same
-        # shape as cron.add/cron.update above. Exception-contained: the first
-        # sel() of a process constructs the log and can raise, and the job is
-        # already removed — a completed delete must not exit as a crash
-        # because the audit trail is unavailable.
-        try:
-            sel().log_api_access(
-                caller="cli",
-                operation="cron.remove",
-                outcome="allowed" if removed else "not_found",
-                source="cli",
-                resources=(
-                    f"job_id={args.job_id}" if removed else f"job_id={args.job_id} reason=not_found"
-                ),
-            )
-        except Exception as e:
-            print(f"Warning: audit log write failed: {e}", file=sys.stderr)
+        removed = svc.remove_job(args.job_id, actor="cli", source="cli")
         if removed:
             print(f"Removed job: {args.job_id}")
         else:

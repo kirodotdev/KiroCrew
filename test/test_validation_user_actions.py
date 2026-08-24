@@ -496,9 +496,12 @@ class TestMcpCronUserActions:
             job.id = "x"
             job.session_key = ""
             svc.list_jobs.return_value = [job]
-            svc.remove_job.return_value = True
+            svc.remove_jobs_sync.return_value = (["x"], [])
             result = self._simulate_tool_call("cron_remove_all", {})
         assert "Removed 1" in result
+        svc.remove_jobs_sync.assert_called_once_with(
+            ["x"], actor="mcp", source="mcp"
+        )
 
 
 # ── JSON-RPC Envelope: simulate kiro-cli protocol ──

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -339,9 +340,11 @@ class TestCronRemoveAudit:
             def log_tool_invocation(self, **kw):
                 events.append(kw)
 
+        import kiro_crew.cron as cron_mod
         import kiro_crew.mcp_cron as mcp_cron_mod
 
         monkeypatch.setattr(mcp_cron_mod, "sel", lambda: _FakeSel())
+        monkeypatch.setattr(cron_mod, "sel", SimpleNamespace(sel=lambda: _FakeSel()))
         return events
 
     def test_cron_remove_emits_sel_audit(self, monkeypatch, tmp_path, sel_events):
@@ -400,12 +403,14 @@ class TestCronRemoveAudit:
         assert len(jobs) == 1
         jid = jobs[0].id
 
+        import kiro_crew.cron as cron_mod
         import kiro_crew.mcp_cron as mcp_cron_mod
 
         def _raising_sel():
             raise RuntimeError("SEL trust root unavailable")
 
         monkeypatch.setattr(mcp_cron_mod, "sel", _raising_sel)
+        monkeypatch.setattr(cron_mod, "sel", SimpleNamespace(sel=_raising_sel))
         result = _call_tool_inner("cron_remove", {"job_id": jid})
         assert result == f"Removed job: {jid}"
         assert not [j for j in CronService(base_dir=tmp_path).list_jobs() if j.id == jid]

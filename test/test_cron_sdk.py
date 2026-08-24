@@ -81,17 +81,19 @@ class MockCronService:
             return list(self._jobs)
         return [j for j in self._jobs if j.enabled]
 
-    def remove_job(self, job_id: str) -> bool:
+    def remove_job(self, job_id: str, *, actor: str, source: str) -> bool:
         for i, j in enumerate(self._jobs):
             if j.id == job_id:
                 self._jobs.pop(i)
                 return True
         return False
 
-    async def remove_job_async(self, job_id: str) -> bool:
-        return self.remove_job(job_id)
+    async def remove_job_async(self, job_id: str, *, actor: str, source: str) -> bool:
+        return self.remove_job(job_id, actor=actor, source=source)
 
-    def remove_jobs_sync(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
+    def remove_jobs_sync(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
         removed: list[str] = []
         missing: list[str] = []
         present = {j.id for j in self._jobs}
@@ -102,8 +104,10 @@ class MockCronService:
             self._jobs = [j for j in self._jobs if j.id not in targets]
         return removed, missing
 
-    async def remove_jobs(self, job_ids: list[str]) -> tuple[list[str], list[str]]:
-        return self.remove_jobs_sync(list(job_ids))
+    async def remove_jobs(
+        self, job_ids: list[str], *, actor: str, source: str
+    ) -> tuple[list[str], list[str]]:
+        return self.remove_jobs_sync(list(job_ids), actor=actor, source=source)
 
     def remove_jobs_by_owner_sync(self, owner_prefix: str) -> list[str]:
         removed = [

@@ -365,7 +365,11 @@ class CronSDK:
         """
         self._assert_owned(job_id, "cron_remove_job")
         result = _run_sync_mutator(
-            self._cron.remove_job, job_id, _api="remove_job"
+            self._cron.remove_job,
+            job_id,
+            _api="remove_job",
+            actor=self._owner_prefix,
+            source="cron_sdk",
         )
         self._audit_remove(job_id)
         return result
@@ -374,7 +378,9 @@ class CronSDK:
         """Event-loop-native :meth:`remove_job` (routes through
         ``CronService.remove_job_async``)."""
         self._assert_owned(job_id, "cron_remove_job")
-        result = await self._cron.remove_job_async(job_id)
+        result = await self._cron.remove_job_async(
+            job_id, actor=self._owner_prefix, source="cron_sdk"
+        )
         self._audit_remove(job_id)
         return result
 
