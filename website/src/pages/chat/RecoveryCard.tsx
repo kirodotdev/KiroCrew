@@ -270,10 +270,18 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
   // `tool_blocked` carries its DENY CAUSE on the marker line, the way
   // `hook_halted` carries `#<depth>`. Read here rather than in that branch so the
   // generic marker slice stays the single place the first line is parsed.
-  const markerCause = raw
-    .slice(prefix.length)
-    .split('\n', 1)[0]
-    .trim()
+  const afterMarker = raw.slice(prefix.length)
+  const markerNewline = afterMarker.indexOf('\n')
+  const markerCause = (
+    markerNewline === -1 ? afterMarker : afterMarker.slice(0, markerNewline)
+  ).trim()
+  // The cause is a WIRE token (`policy`, `invalid_name`, `hook_error`), consumed
+  // above to pick the summary wording. It must not also survive as the first
+  // line of the expanded body, where it reads as machine noise above the host
+  // notice -- `hook_halted` strips its own marker line for the same reason.
+  // Rows written before the cause was added carry an empty marker line, and
+  // this drops that instead, which is what the generic `.trim()` did for them.
+  const blockedBody = markerNewline === -1 ? '' : afterMarker.slice(markerNewline + 1).trim()
   const patterns = new Set<string>()
   for (const m of body.matchAll(POLICY_RE)) patterns.add(m[1])
   const distinct = [...patterns]
@@ -305,7 +313,7 @@ export function parseRecoveryMessage(content: string): ParsedRecovery | null {
       // the policy wording, matching the backend's own cause default.
       detail: i18nT(TOOL_BLOCKED_DETAIL[markerCause] ?? TOOL_BLOCKED_DETAIL.policy),
       chip,
-      body,
+      body: blockedBody,
     }
   }
   return {

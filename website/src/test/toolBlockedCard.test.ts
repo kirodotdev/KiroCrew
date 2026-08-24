@@ -23,6 +23,33 @@ describe('the in-band tool-blocked card', () => {
     expect(parsed?.title).not.toContain('[Tool blocked')
   })
 
+  // The gateway writes `f"{PREFIX} {cause}\n{notice}"` (chat_runner.py), so the
+  // cause token rides the MARKER line. It is read for the summary wording and
+  // must not also appear as the body's first line.
+  it.each(['policy', 'invalid_name', 'hook_error'])(
+    'never leaves the %s wire token at the top of the expanded body',
+    cause => {
+      const parsed = parseRecoveryMessage(`${PREFIX} ${cause}\n${BODY}`)
+      expect(parsed?.body.startsWith(cause)).toBe(false)
+      expect(parsed?.body).toBe(BODY.trim())
+    }
+  )
+
+  it('still keys the summary on the cause it stripped', () => {
+    // Stripping the line must not cost the wording it selects -- the two read
+    // the same marker line, so a fix that dropped it too early would silently
+    // fall back to the policy default for all three causes.
+    const invalid = parseRecoveryMessage(`${PREFIX} invalid_name\n${BODY}`)
+    const policy = parseRecoveryMessage(`${PREFIX} policy\n${BODY}`)
+    expect(invalid?.detail).not.toBe(policy?.detail)
+  })
+
+  it('keeps a pre-cause row readable', () => {
+    // Rows written before the cause was added are `PREFIX\n<notice>`: an empty
+    // marker line. Dropping it is what the old generic trim already did.
+    expect(parseRecoveryMessage(`${PREFIX}\n${BODY}`)?.body).toBe(BODY.trim())
+  })
+
   it('reuses the deny-pattern chip', () => {
     // The card already knew how to pull a pattern out of a refusal body; the
     // in-band notice carries the same marker, so the chip comes for free.
