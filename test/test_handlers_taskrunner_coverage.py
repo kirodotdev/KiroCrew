@@ -294,6 +294,34 @@ class TestStart:
         )
         assert resp.status == 400
         assert _body(resp)["error"] == "cannot start"
+        assert list(runner._work_dir.glob("TASK_*.md")) == []
+
+    @pytest.mark.asyncio
+    async def test_runner_exception_keeps_caller_owned_spec(self, tmp_path: Path) -> None:
+        spec = tmp_path / "TASK.md"
+        spec.write_text("# caller owned", encoding="utf-8")
+        runner = _runner(tmp_path)
+        runner.start_background = AsyncMock(side_effect=RuntimeError("cannot start"))
+
+        resp = await api_taskrunner_start(
+            _request(_state(runner), json_body={"spec": str(spec)})
+        )
+
+        assert resp.status == 400
+        assert spec.read_text(encoding="utf-8") == "# caller owned"
+
+    @pytest.mark.asyncio
+    async def test_cleanup_failure_keeps_original_start_error(self, tmp_path: Path) -> None:
+        runner = _runner(tmp_path)
+        runner.start_background = AsyncMock(side_effect=RuntimeError("cannot start"))
+
+        with patch.object(Path, "unlink", side_effect=OSError("locked")):
+            resp = await api_taskrunner_start(
+                _request(_state(runner), json_body={"spec": "__inline__:# t"})
+            )
+
+        assert resp.status == 400
+        assert _body(resp)["error"] == "cannot start"
 
 
 # ── cancel / pause / delete / rename ──

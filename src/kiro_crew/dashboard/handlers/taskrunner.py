@@ -139,6 +139,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
     spec_path = body.get("spec", "")
     if not spec_path:
         return web.json_response({"error": "spec path required"}, status=400)
+    inline_spec_path: Path | None = None
 
     # Validate non-inline paths against traversal, then forward the *validated*
     # resolved path (not the raw input) to the sink below so the guard and the
@@ -162,6 +163,7 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
         fpath = Path(work_dir) / fname
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")
+        inline_spec_path = fpath
         spec_path = str(fpath)
 
     try:
@@ -180,6 +182,15 @@ async def api_taskrunner_start(request: web.Request) -> web.Response:
             auto_approve=auto_approve,
         )
     except Exception as exc:
+        if inline_spec_path is not None:
+            try:
+                await asyncio.to_thread(inline_spec_path.unlink, missing_ok=True)
+            except Exception as cleanup_exc:
+                logger.warning(
+                    "Failed to clean rejected inline task spec %s: %s",
+                    inline_spec_path,
+                    cleanup_exc,
+                )
         return web.json_response({"error": str(exc)}, status=400)
     return web.json_response({"ok": True, "spec": spec_path, "task_id": task_id})
 
