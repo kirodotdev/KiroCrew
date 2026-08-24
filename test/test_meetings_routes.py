@@ -188,9 +188,7 @@ class TestConfigRoutes:
     @pytest.mark.asyncio
     async def test_put_config_drops_default_preset_that_does_not_exist(self, app):
         async with client_for(app) as client:
-            resp = await client.put(
-                f"{BASE}/config", json={"config": {"default_preset": "ghost"}}
-            )
+            resp = await client.put(f"{BASE}/config", json={"config": {"default_preset": "ghost"}})
             assert (await resp.json())["config"]["default_preset"] == ""
 
     @pytest.mark.asyncio
@@ -240,9 +238,7 @@ class TestDictionaryRoutes:
 
     @pytest.mark.asyncio
     async def test_reload_reports_count(self, app, root: Path):
-        store.dictionary_path(root).write_text(
-            '[[term]]\ncorrect = "X"\naliases = ["ex"]\n'
-        )
+        store.dictionary_path(root).write_text('[[term]]\ncorrect = "X"\naliases = ["ex"]\n')
         async with client_for(app) as client:
             resp = await client.post(f"{BASE}/dictionary/reload")
             assert (await resp.json())["count"] == 1
@@ -252,9 +248,7 @@ class TestMeetingLifecycleRoutes:
     @pytest.mark.asyncio
     async def test_init_creates_the_folder_and_files(self, app, root: Path):
         async with client_for(app) as client:
-            resp = await client.post(
-                f"{BASE}/meetings/standup/init", json={"title": "My Standup"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/init", json={"title": "My Standup"})
             assert resp.status == 200
         mdir = store.meeting_dir("standup", root)
         assert (mdir / k.SESSION_META_FILE).is_file()
@@ -272,9 +266,53 @@ class TestMeetingLifecycleRoutes:
 
     @pytest.mark.asyncio
     async def test_init_rejects_a_traversal_id(self, app):
+        """400, and it is worth saying WHICH of the two barriers answers.
+
+        ``safe_meeting_id`` refuses this before ``contain`` ever sees it — the id is
+        not ``[A-Za-z0-9._-]``, so it never becomes a path segment at all. That makes
+        400 the right status here: the request is malformed, not forbidden.
+
+        This assertion used to read ``in (400, 403, 404)``, and that looseness is how
+        a real bug survived: ``contain``'s own violation carries 403 and was being
+        reported as 400, and no HTTP-level test could tell. The pair is now split —
+        this one pins 400, and ``TestContainmentIsReportedAsForbidden`` pins 403.
+        """
         async with client_for(app) as client:
             resp = await client.post(f"{BASE}/meetings/..%2F..%2Fetc/init", json={})
-            assert resp.status in (400, 403, 404)
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "invalid_path"
+
+    @pytest.mark.asyncio
+    async def test_a_symlinked_meeting_dir_is_403_not_400(self, app, root: Path, tmp_path: Path):
+        """The regression test for the bug the loose assertion above was hiding.
+
+        ``contain`` is the SECOND barrier, and the one that fires here: the id
+        ``standup`` is perfectly legal, so ``safe_meeting_id`` passes it, and the
+        violation only appears once ``resolve()`` follows a symlink planted inside the
+        data dir and lands outside the root. That is the realistic reachable case —
+        traversal in the id itself never gets this far.
+
+        It carries 403 (``MeetingsPathError(status=403)``), but ``error_response`` had
+        no ``FORBIDDEN`` branch, so every containment violation answered **400** for as
+        long as this app has existed. A containment violation reported as "bad request"
+        reads like a typo the caller can fix by retrying, when in fact the server just
+        refused to leave its own data directory.
+
+        Asserted at the HTTP boundary on purpose: ``test_meetings_store.py``'s
+        ``test_outside_root_raises_403`` already proves the exception carries 403, and
+        that test passed throughout — the status was lost in the route layer, which is
+        the only place this can be caught.
+        """
+        outside = tmp_path / "elsewhere"
+        outside.mkdir()
+        planted = store.meetings_root(root) / "standup"
+        planted.parent.mkdir(parents=True, exist_ok=True)
+        planted.symlink_to(outside, target_is_directory=True)
+
+        async with client_for(app) as client:
+            resp = await client.get(f"{BASE}/meetings/standup")
+            assert resp.status == 403, "a containment violation must not read as 400"
+            assert (await resp.json())["code"] == "invalid_path"
 
     @pytest.mark.asyncio
     async def test_init_accepts_a_colon_id(self, app, root: Path):
@@ -326,24 +364,22 @@ class TestMeetingLifecycleRoutes:
         async with client_for(app) as client:
             await _start(client)
             fake_sessions.calls.clear()
-            resp = await client.post(
-                f"{BASE}/meetings/standup/start", json={"restart": True}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/start", json={"restart": True})
             assert resp.status == 200
         messages = [msg for _k, _a, msg in fake_sessions.calls]
         assert messages, "a restart dispatched nothing at all"
         # Every agent is told where to write...
-        assert any("OUTPUT_FILE:" in msg for msg in messages), (
-            "a restarted meeting's agents were never given their OUTPUT_FILE"
-        )
+        assert any(
+            "OUTPUT_FILE:" in msg for msg in messages
+        ), "a restarted meeting's agents were never given their OUTPUT_FILE"
         # ...and the notice still goes out, AFTER the instructions it qualifies.
         assert any(k.SYSTEM_MEETING_RESTARTED in msg for msg in messages)
         first_notice = next(
             i for i, msg in enumerate(messages) if k.SYSTEM_MEETING_RESTARTED in msg
         )
-        assert any("OUTPUT_FILE:" in msg for msg in messages[:first_notice]), (
-            "the restart notice must follow the init messages it refers to"
-        )
+        assert any(
+            "OUTPUT_FILE:" in msg for msg in messages[:first_notice]
+        ), "the restart notice must follow the init messages it refers to"
 
     @pytest.mark.asyncio
     async def test_start_redacts_the_title(self, app, root: Path, fake_sessions):
@@ -362,9 +398,7 @@ class TestMeetingLifecycleRoutes:
         async with client_for(app) as client:
             await _start(client)
             for state in (k.STATUS_PAUSED, k.STATUS_ACTIVE, k.STATUS_REVIEWING):
-                resp = await client.post(
-                    f"{BASE}/meetings/standup/status", json={"status": state}
-                )
+                resp = await client.post(f"{BASE}/meetings/standup/status", json={"status": state})
                 assert resp.status == 200
                 assert (await resp.json())["status"] == state
 
@@ -372,9 +406,7 @@ class TestMeetingLifecycleRoutes:
     async def test_status_rejects_an_unknown_state(self, app, fake_sessions):
         async with client_for(app) as client:
             await _start(client)
-            resp = await client.post(
-                f"{BASE}/meetings/standup/status", json={"status": "banana"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/status", json={"status": "banana"})
             assert resp.status == 400
 
     @pytest.mark.asyncio
@@ -466,9 +498,7 @@ class TestMeetingLifecycleRoutes:
             assert (await resp.json())["code"] == "meeting_not_found"
 
     @pytest.mark.asyncio
-    async def test_delete_waits_for_in_flight_initialization(
-        self, app, root: Path, monkeypatch
-    ):
+    async def test_delete_waits_for_in_flight_initialization(self, app, root: Path, monkeypatch):
         from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle
 
         class ObservedLock:
@@ -514,9 +544,7 @@ class TestMeetingLifecycleRoutes:
         assert not store.meeting_dir("standup", root).exists()
 
     @pytest.mark.asyncio
-    async def test_delete_waits_for_in_flight_agent_toggle(
-        self, app, root: Path, monkeypatch
-    ):
+    async def test_delete_waits_for_in_flight_agent_toggle(self, app, root: Path, monkeypatch):
         from kiro_crew.apps.builtins.meetings.backend.routes import agents, meeting_lifecycle
 
         class ObservedLock:
@@ -673,13 +701,15 @@ class TestMeetingLifecycleRoutes:
         marker = "AKIAIOSFODNN7EXAMPLE"
         store.write_tasks(
             "standup",
-            [{
-                "id": f"t-{marker}",
-                "description": f"rotate {marker}",
-                "assignee": marker,
-                "context": marker,
-                "labels": [marker],
-            }],
+            [
+                {
+                    "id": f"t-{marker}",
+                    "description": f"rotate {marker}",
+                    "assignee": marker,
+                    "context": marker,
+                    "labels": [marker],
+                }
+            ],
             root,
         )
         async with client_for(app) as client:
@@ -696,9 +726,9 @@ class TestMeetingLifecycleRoutes:
     @pytest.mark.parametrize(
         ("labels", "expected"),
         [
-            (1, []),                    # not iterable -> used to raise TypeError
-            ("urgent", []),             # iterable, but per-CHARACTER -> junk labels
-            ({"a": 1}, []),             # iterable over keys
+            (1, []),  # not iterable -> used to raise TypeError
+            ("urgent", []),  # iterable, but per-CHARACTER -> junk labels
+            ({"a": 1}, []),  # iterable over keys
             (None, []),
             (["a", 2, "b"], ["a", "b"]),  # a real list still keeps its strings
         ],
@@ -790,9 +820,7 @@ class TestAttachmentRoutes:
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
             assert (
-                await client.post(
-                    f"{BASE}/meetings/standup/attachments", json={"action": "nuke"}
-                )
+                await client.post(f"{BASE}/meetings/standup/attachments", json={"action": "nuke"})
             ).status == 400
             assert (
                 await client.post(
@@ -838,18 +866,14 @@ class TestAgentRoutes:
             remaining = (await resp.json())["agents_enabled"]
         # The one we turned off is gone; the other default survives.
         assert "sketch-artist" not in remaining
-        assert "note-taker" in remaining, (
-            "disabling one default agent must not disable the rest"
-        )
+        assert "note-taker" in remaining, "disabling one default agent must not disable the rest"
 
     @pytest.mark.asyncio
     async def test_an_explicit_empty_roster_is_preserved(self, app):
         """Turning everything off is a real state, not a value to re-seed."""
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            await client.post(
-                f"{BASE}/meetings/standup/start", json={"agents_enabled": []}
-            )
+            await client.post(f"{BASE}/meetings/standup/start", json={"agents_enabled": []})
             resp = await client.post(
                 f"{BASE}/meetings/standup/agents",
                 json={"agent_id": "note-taker", "enable": True},
@@ -861,9 +885,7 @@ class TestAgentRoutes:
     def _default_output_names(self, root: Path) -> set[str]:
         """Output filenames the default roster would seed."""
         config = store.read_config(root)
-        return {
-            store.agent_output_filename(a) for a in sess.get_enabled_agents(config, None)
-        }
+        return {store.agent_output_filename(a) for a in sess.get_enabled_agents(config, None)}
 
     @pytest.mark.asyncio
     async def test_init_preserves_an_explicit_empty_roster(self, app, root):
@@ -879,15 +901,13 @@ class TestAgentRoutes:
         assert expected_defaults, "fixture config must define at least one default agent"
 
         async with client_for(app) as client:
-            resp = await client.post(
-                f"{BASE}/meetings/standup/init", json={"agents_enabled": []}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/init", json={"agents_enabled": []})
             assert resp.status == 200
 
         seeded = {p.name for p in store.meeting_dir("standup", root).iterdir() if p.is_file()}
-        assert not (seeded & expected_defaults), (
-            "an explicitly empty roster must seed no agent output files"
-        )
+        assert not (
+            seeded & expected_defaults
+        ), "an explicitly empty roster must seed no agent output files"
 
     @pytest.mark.asyncio
     async def test_init_without_a_roster_still_seeds_the_defaults(self, app, root):
@@ -914,9 +934,7 @@ class TestAgentRoutes:
         """
         async with client_for(app) as client:
             await _start(client)
-            resp = await client.post(
-                f"{BASE}/meetings/standup/status", json={"status": "idle"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/status", json={"status": "idle"})
             assert resp.status == 409
             body = await resp.json()
             assert body["code"] == "invalid_transition"
@@ -928,9 +946,7 @@ class TestAgentRoutes:
     async def test_a_legal_transition_still_works(self, app, fake_sessions):
         async with client_for(app) as client:
             await _start(client)
-            resp = await client.post(
-                f"{BASE}/meetings/standup/status", json={"status": "paused"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/status", json={"status": "paused"})
             assert resp.status == 200
 
     @pytest.mark.asyncio
@@ -938,9 +954,7 @@ class TestAgentRoutes:
         """An idempotent retry of a request whose response was lost must not fail."""
         async with client_for(app) as client:
             await _start(client)
-            resp = await client.post(
-                f"{BASE}/meetings/standup/status", json={"status": "active"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/status", json={"status": "active"})
             assert resp.status == 200
 
     def test_the_server_and_client_transition_tables_agree(self):
@@ -953,9 +967,7 @@ class TestAgentRoutes:
         """
         import re
 
-        source = (
-            _REPO_ROOT / "website/src/apps/meetings/hooks/useMeetingSession.ts"
-        ).read_text()
+        source = (_REPO_ROOT / "website/src/apps/meetings/hooks/useMeetingSession.ts").read_text()
         block = re.search(
             r"ALLOWED_TRANSITIONS: Record<MeetingStatus, MeetingStatus\[\]> = \{(.*?)\n\}",
             source,
@@ -1020,9 +1032,7 @@ class TestAgentRoutes:
                 params={"cursor": transcript_body["next_cursor"]},
             )
             page_body = await page.json()
-            assert [segment["text"] for segment in page_body["segments"]] == [
-                "second line"
-            ]
+            assert [segment["text"] for segment in page_body["segments"]] == ["second line"]
             assert page_body["next_cursor"] > transcript_body["next_cursor"]
 
     @pytest.mark.asyncio
@@ -1105,6 +1115,10 @@ class TestAgentRoutes:
                 assert release_append.wait(timeout=5)
                 return real_append(*args, **kwargs)
 
+            # The dispatch transaction lives in `_common.dispatch_admission`, which
+            # reads its own module global; the lifecycle handlers read their
+            # from-imported binding. Patch both so contention is observable.
+            monkeypatch.setattr(_common, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(agents, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(meeting_lifecycle, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(store, "append_transcript", blocked_append)
@@ -1114,9 +1128,7 @@ class TestAgentRoutes:
             )
             assert await asyncio.to_thread(append_entered.wait, 5)
 
-            stop_request = asyncio.create_task(
-                client.post(f"{BASE}/meetings/standup/stop")
-            )
+            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
             await asyncio.wait_for(observed_lock.waiter.wait(), timeout=5)
             release_append.set()
 
@@ -1163,6 +1175,10 @@ class TestAgentRoutes:
                 assert release_append.wait(timeout=5)
                 return real_append(*args, **kwargs)
 
+            # The dispatch transaction lives in `_common.dispatch_admission`, which
+            # reads its own module global; the lifecycle handlers read their
+            # from-imported binding. Patch both so contention is observable.
+            monkeypatch.setattr(_common, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(agents, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(meeting_lifecycle, "DISPATCH_LOCK", observed_lock)
             monkeypatch.setattr(store, "append_transcript", blocked_append)
@@ -1200,9 +1216,7 @@ class TestAgentRoutes:
                 await release_flush.wait()
 
             monkeypatch.setattr(session, "flush_all", slow_flush)
-            stop_request = asyncio.create_task(
-                client.post(f"{BASE}/meetings/standup/stop")
-            )
+            stop_request = asyncio.create_task(client.post(f"{BASE}/meetings/standup/stop"))
             await asyncio.wait_for(flush_entered.wait(), timeout=5)
 
             dispatch = await asyncio.wait_for(
@@ -1241,18 +1255,14 @@ class TestAgentRoutes:
     @pytest.mark.asyncio
     async def test_dispatch_without_an_active_meeting_is_409(self, app):
         async with client_for(app) as client:
-            resp = await client.post(
-                f"{BASE}/meetings/standup/dispatch", json={"text": "hello"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "hello"})
             assert resp.status == 409
 
     @pytest.mark.asyncio
     async def test_dispatch_requires_text(self, app, fake_sessions):
         async with client_for(app) as client:
             await _start(client)
-            assert (
-                await client.post(f"{BASE}/meetings/standup/dispatch", json={})
-            ).status == 400
+            assert (await client.post(f"{BASE}/meetings/standup/dispatch", json={})).status == 400
 
     @pytest.mark.asyncio
     async def test_dispatch_on_an_expired_session_is_410(self, app, fake_sessions):
@@ -1349,9 +1359,7 @@ class TestAgentRoutes:
     async def test_toggle_unknown_agent_is_404(self, app, fake_sessions):
         async with client_for(app) as client:
             await _start(client)
-            resp = await client.post(
-                f"{BASE}/meetings/standup/agents", json={"agent_id": "ghost"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/agents", json={"agent_id": "ghost"})
             assert resp.status == 404
 
     @pytest.mark.asyncio
@@ -1416,18 +1424,14 @@ class TestTaskRoutes:
             updated = (await resp.json())["task"]
             assert updated["assignee"] == "Bob" and updated["priority"] == "low"
 
-            resp = await client.delete(
-                f"{BASE}/meetings/standup/tasks", json={"id": task_id}
-            )
+            resp = await client.delete(f"{BASE}/meetings/standup/tasks", json={"id": task_id})
             assert (await resp.json())["tasks"] == []
 
     @pytest.mark.asyncio
     async def test_add_requires_a_description(self, app):
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            assert (
-                await client.post(f"{BASE}/meetings/standup/tasks", json={})
-            ).status == 400
+            assert (await client.post(f"{BASE}/meetings/standup/tasks", json={})).status == 400
 
     @pytest.mark.asyncio
     async def test_add_normalizes_an_invalid_priority(self, app):
@@ -1516,9 +1520,7 @@ class TestTaskRoutes:
         task could be marked filed without a provider ever being called."""
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            resp = await client.post(
-                f"{BASE}/meetings/standup/tasks", json={"description": "d"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/tasks", json={"description": "d"})
             task_id = (await resp.json())["task"]["id"]
             resp = await client.post(
                 f"{BASE}/meetings/standup/tasks/review",
@@ -1535,9 +1537,7 @@ class TestTaskRoutes:
                 json={"description": "ship the seam", "assignee": "Alice"},
             )
             task_id = (await resp.json())["task"]["id"]
-            resp = await client.post(
-                f"{BASE}/meetings/standup/tasks/file", json={"id": task_id}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/tasks/file", json={"id": task_id})
             assert resp.status == 200
             body = await resp.json()
             assert body["ref"]["provider"] == k.TASK_PROVIDER_LOCAL
@@ -1550,9 +1550,7 @@ class TestTaskRoutes:
     async def test_file_unknown_task_is_404(self, app):
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            resp = await client.post(
-                f"{BASE}/meetings/standup/tasks/file", json={"id": "ghost"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/tasks/file", json={"id": "ghost"})
             assert resp.status == 404
 
     @pytest.mark.asyncio
@@ -1572,25 +1570,18 @@ class TestTaskRoutes:
                 raise RuntimeError("tracker down")
 
         monkeypatch.setattr(
-            "kiro_crew.apps.builtins.meetings.backend.routes.tasks."
-            "taskprov.get_task_provider",
+            "kiro_crew.apps.builtins.meetings.backend.routes.tasks." "taskprov.get_task_provider",
             lambda *_a, **_kw: Failing(),
         )
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/standup/init", json={})
-            resp = await client.post(
-                f"{BASE}/meetings/standup/tasks", json={"description": "d"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/tasks", json={"description": "d"})
             task_id = (await resp.json())["task"]["id"]
-            resp = await client.post(
-                f"{BASE}/meetings/standup/tasks/file", json={"id": task_id}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/tasks/file", json={"id": task_id})
             assert resp.status == 502
             assert (await resp.json())["ok"] is False
         # The task must NOT be marked pushed when nothing was filed.
-        assert store.read_tasks("standup", root)["tasks"][0]["review_status"] == (
-            k.REVIEW_PENDING
-        )
+        assert store.read_tasks("standup", root)["tasks"][0]["review_status"] == (k.REVIEW_PENDING)
 
     @pytest.mark.asyncio
     async def test_task_providers_endpoint(self, app):
@@ -1835,15 +1826,15 @@ class TestAgentAndPresetSanitizers:
     @pytest.mark.parametrize(
         "ref",
         [
-            "../escape",          # traversal
-            "/absolute/agent",    # absolute
-            ".hidden",            # leading dot
-            "has space",          # illegal char
+            "../escape",  # traversal
+            "/absolute/agent",  # absolute
+            ".hidden",  # leading dot
+            "has space",  # illegal char
             "semi;colon",
-            "x" * 300,            # over the length cap
+            "x" * 300,  # over the length cap
             "",
             None,
-            123,                  # not a string at all
+            123,  # not a string at all
         ],
     )
     def test_an_unsafe_agent_ref_is_dropped(self, ref):
@@ -2042,6 +2033,7 @@ class TestNoStoreCallRunsOnTheEventLoop:
         from kiro_crew.apps.builtins.meetings.backend import calendar_poller, calendar_sync
         from kiro_crew.apps.builtins.meetings.backend.routes import (
             agents,
+            audio_import,
             calendar,
             meeting_lifecycle,
             settings,
@@ -2050,7 +2042,16 @@ class TestNoStoreCallRunsOnTheEventLoop:
 
         # The poller is not a route, but a periodic task is exactly as
         # loop-reachable as a handler, so it is held to the same rule.
-        return [agents, calendar, meeting_lifecycle, settings, tasks, calendar_sync, calendar_poller]
+        return [
+            agents,
+            audio_import,
+            calendar,
+            meeting_lifecycle,
+            settings,
+            tasks,
+            calendar_sync,
+            calendar_poller,
+        ]
 
     def _inline_blocking_calls(self, module) -> list[str]:
         """`file:line handler -> callee()` for every blocking call in an `async def`.
@@ -2079,9 +2080,9 @@ class TestNoStoreCallRunsOnTheEventLoop:
                 owner = callee.value
                 if not isinstance(owner, ast.Name):
                     continue
-                blocking = (
-                    owner.id == "store" and callee.attr in self._BLOCKING_STORE_FNS
-                ) or (owner.id == "sess" and callee.attr in self._BLOCKING_DOMAIN_FNS)
+                blocking = (owner.id == "store" and callee.attr in self._BLOCKING_STORE_FNS) or (
+                    owner.id == "sess" and callee.attr in self._BLOCKING_DOMAIN_FNS
+                )
                 if blocking:
                     offenders.append(
                         f"{module.__name__}:{node.lineno} "
@@ -2201,9 +2202,7 @@ class TestTaskWritesAreSerialized:
 
         def archive(index: int) -> None:
             barrier.wait()  # maximize overlap on the read-modify-write
-            task_routes._set_review_state(
-                meeting_id, f"t{index}", k.REVIEW_ARCHIVED, root
-            )
+            task_routes._set_review_state(meeting_id, f"t{index}", k.REVIEW_ARCHIVED, root)
 
         with futures.ThreadPoolExecutor(max_workers=count) as pool:
             list(pool.map(archive, range(count)))
@@ -2309,12 +2308,12 @@ class TestTaskWritesAreSerialized:
         for module in sorted(backend.rglob("*.py")):
             tree = ast.parse(module.read_text(encoding="utf-8"))
             functions = [
-                n for n in ast.walk(tree)
-                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+                n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
             ]
             for fn in functions:
                 writes = [
-                    n for n in ast.walk(fn)
+                    n
+                    for n in ast.walk(fn)
                     if isinstance(n, ast.Call)
                     and isinstance(n.func, ast.Attribute)
                     and n.func.attr == "write_meeting_meta"
@@ -2336,13 +2335,10 @@ class TestTaskWritesAreSerialized:
                 if not holds and not fn.name.endswith("_locked"):
                     offenders.append(f"{module.relative_to(backend)}::{fn.name}")
 
-        assert checked >= 6, (
-            f"only {checked} metadata writers found — the scan is probably broken"
-        )
+        assert checked >= 6, f"only {checked} metadata writers found — the scan is probably broken"
         assert not offenders, (
             "these write meeting metadata without holding store.meta_transaction(), "
-            "so a concurrent request can silently discard their update: "
-            + ", ".join(offenders)
+            "so a concurrent request can silently discard their update: " + ", ".join(offenders)
         )
 
     def test_concurrent_metadata_updates_all_survive(self, root: Path) -> None:
@@ -2376,9 +2372,12 @@ class TestTaskWritesAreSerialized:
             else:
                 lifecycle._apply_attachments(
                     meeting_id,
-                    {"action": "add", "attachments": [
-                        {"type": "url", "url": f"https://example.test/{index}"},
-                    ]},
+                    {
+                        "action": "add",
+                        "attachments": [
+                            {"type": "url", "url": f"https://example.test/{index}"},
+                        ],
+                    },
                     root,
                 )
 
@@ -2389,9 +2388,7 @@ class TestTaskWritesAreSerialized:
         muted = set(meta.get("muted_agents") or [])
         urls = {a.get("url") for a in (meta.get("attachments") or [])}
         assert muted == {f"agent-{i}" for i in range(count) if i % 2}
-        assert urls == {
-            f"https://example.test/{i}" for i in range(count) if i % 2 == 0
-        }
+        assert urls == {f"https://example.test/{i}" for i in range(count) if i % 2 == 0}
 
     def test_concurrent_agent_toggles_all_survive(self, root: Path) -> None:
         """Recomputing the roster inside the lock, not writing a stale list.
@@ -2416,17 +2413,13 @@ class TestTaskWritesAreSerialized:
 
         def toggle(index: int) -> None:
             barrier.wait()
-            agent_routes._commit_toggle(
-                meeting_id, f"agent-{index}", True, "", [], root
-            )
+            agent_routes._commit_toggle(meeting_id, f"agent-{index}", True, "", [], root)
 
         with futures.ThreadPoolExecutor(max_workers=count) as pool:
             list(pool.map(toggle, range(count)))
 
         meta = meetings_store.read_meeting_meta(meeting_id, root) or {}
-        assert set(meta.get("agents_enabled") or []) == {
-            f"agent-{i}" for i in range(count)
-        }
+        assert set(meta.get("agents_enabled") or []) == {f"agent-{i}" for i in range(count)}
 
     def test_concurrent_dictionary_edits_all_survive(self, root: Path) -> None:
         """One thread HOP is not one critical section.
@@ -2606,9 +2599,7 @@ class TestTeardownDrainsBeforeClearing:
 
         # `from ... import __init__` binds the dunder attribute, not the package —
         # import the package itself so `inspect.getsource` gets a module.
-        routes_init = importlib.import_module(
-            "kiro_crew.apps.builtins.meetings.backend.routes"
-        )
+        routes_init = importlib.import_module("kiro_crew.apps.builtins.meetings.backend.routes")
 
         offenders: list[str] = []
         for module in (routes_init, agents, meeting_lifecycle):
@@ -2886,9 +2877,9 @@ class TestTeardownLeavesNoMeetingFalselyActive:
         await routes_pkg._on_startup(app)
 
         for meeting_id in ("was-active", "was-paused", "was-reviewing"):
-            assert store.read_meeting_meta(meeting_id, root)["status"] == k.STATUS_ENDED, (
-                f"{meeting_id} was left orphaned at boot"
-            )
+            assert (
+                store.read_meeting_meta(meeting_id, root)["status"] == k.STATUS_ENDED
+            ), f"{meeting_id} was left orphaned at boot"
 
     @pytest.mark.asyncio
     async def test_startup_leaves_an_idle_meeting_alone(self, root: Path) -> None:
@@ -2946,9 +2937,7 @@ class TestFiledTasksStayFiled:
         assert after.get("filed_ref"), "the filing reference was lost"
 
     @pytest.mark.asyncio
-    async def test_an_unfiled_task_still_archives(
-        self, app: web.Application, root: Path
-    ) -> None:
+    async def test_an_unfiled_task_still_archives(self, app: web.Application, root: Path) -> None:
         """The guard must be scoped to `pushed` — ordinary archiving still works."""
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/m2/init", json={"title": "M2"})
@@ -3030,9 +3019,7 @@ class TestStartAndStopAreSerialized:
 
         async with client_for(app) as client:
             await client.post(f"{BASE}/meetings/racer/init", json={"title": "Racer"})
-            start = asyncio.create_task(
-                client.post(f"{BASE}/meetings/racer/start", json={})
-            )
+            start = asyncio.create_task(client.post(f"{BASE}/meetings/racer/start", json={}))
             # Let the start reach its first await, then race a stop against it.
             await asyncio.sleep(0)
             stop = asyncio.create_task(client.post(f"{BASE}/meetings/racer/stop", json={}))
@@ -3344,9 +3331,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
 
         monkeypatch.setattr(sess, "init_agents", blocking_init)
         await client.post(f"{BASE}/meetings/{meeting_id}/init", json={"title": "Standup"})
-        start = asyncio.create_task(
-            client.post(f"{BASE}/meetings/{meeting_id}/start", json={})
-        )
+        start = asyncio.create_task(client.post(f"{BASE}/meetings/{meeting_id}/start", json={}))
         await asyncio.wait_for(entered.wait(), timeout=5)
         return start, release
 
@@ -3363,9 +3348,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             start, release = await self._start_paused_in_init(client, monkeypatch)
 
             for line in ("first the agenda", "then the blockers", "and the owners"):
-                resp = await client.post(
-                    f"{BASE}/meetings/standup/dispatch", json={"text": line}
-                )
+                resp = await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": line})
                 assert resp.status == 200, await resp.text()
                 body = await resp.json()
                 # Held, not fanned out — and already durable either way. The hold is
@@ -3401,9 +3384,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
         """The durable record is written at ARRIVAL, so a reader loses nothing."""
         async with client_for(app) as client:
             start, release = await self._start_paused_in_init(client, monkeypatch)
-            await client.post(
-                f"{BASE}/meetings/standup/dispatch", json={"text": "opening remarks"}
-            )
+            await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "opening remarks"})
             # Readable BEFORE initialization finishes — the user sees their own words.
             body = await (await client.get(f"{BASE}/meetings/standup/transcript")).json()
             assert [s["text"] for s in body["segments"]] == ["opening remarks"]
@@ -3518,9 +3499,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             # keeps: `read_transcript_page` drops unrecognized sources, so a marker
             # written outside `VALID_TRANSCRIPT_SOURCES` would vanish on read.
             body = await (await client.get(f"{BASE}/meetings/standup/transcript")).json()
-            markers = [
-                s for s in body["segments"] if s["source"] == k.TRANSCRIPT_SOURCE_SYSTEM
-            ]
+            markers = [s for s in body["segments"] if s["source"] == k.TRANSCRIPT_SOURCE_SYSTEM]
             assert len(markers) == 1
             assert markers[0]["text"] == expected_marker
             # Every spoken line is still in the transcript — only the AGENTS lost two.
@@ -3572,9 +3551,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             assert live["buffering_dispatches"] is False
 
     @pytest.mark.asyncio
-    async def test_a_reviewing_meeting_still_refuses_instead_of_buffering(
-        self, app, fake_sessions
-    ):
+    async def test_a_reviewing_meeting_still_refuses_instead_of_buffering(self, app, fake_sessions):
         """The #1981 gate is untouched: only INITIALIZATION holds a line.
 
         A reviewing meeting has nowhere to put the line — its agents were told to
@@ -3588,9 +3565,7 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             )
             assert status.status == 200
 
-            resp = await client.post(
-                f"{BASE}/meetings/standup/dispatch", json={"text": "too late"}
-            )
+            resp = await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "too late"})
             assert resp.status == 409
             assert (await resp.json())["code"] == "no_active_meeting"
 
@@ -3611,13 +3586,9 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
             await _start(client, "the-old-one")
             outgoing = _common.ACTIVE.get("the-old-one")
             assert outgoing is not None
-            monkeypatch.setattr(
-                type(outgoing), "expired", property(lambda _self: True)
-            )
+            monkeypatch.setattr(type(outgoing), "expired", property(lambda _self: True))
 
-            start, release = await self._start_paused_in_init(
-                client, monkeypatch, "the-new-one"
-            )
+            start, release = await self._start_paused_in_init(client, monkeypatch, "the-new-one")
             # The replaced meeting refuses; only the starting one holds.
             stale = await client.post(
                 f"{BASE}/meetings/the-old-one/dispatch", json={"text": "orphan line"}
@@ -3649,13 +3620,9 @@ class TestSpeechDuringAgentInitIsHeldNotRefused:
         async with client_for(app) as client:
             start, release = await self._start_paused_in_init(client, monkeypatch)
 
-            await client.post(
-                f"{BASE}/meetings/standup/dispatch", json={"text": "the real agenda"}
-            )
+            await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": "the real agenda"})
             for filler in ("uh", "um", "ok so uh", "hmm"):
-                resp = await client.post(
-                    f"{BASE}/meetings/standup/dispatch", json={"text": filler}
-                )
+                resp = await client.post(f"{BASE}/meetings/standup/dispatch", json={"text": filler})
                 assert resp.status == 200
 
             session = _common.ACTIVE.get("standup")
@@ -3725,10 +3692,8 @@ class TestMuteCannotLandInsideADispatch:
         self, app, fake_sessions, monkeypatch: pytest.MonkeyPatch
     ):
         async with client_for(app) as client:
-            start, release = await (
-                TestSpeechDuringAgentInitIsHeldNotRefused._start_paused_in_init(
-                    client, monkeypatch
-                )
+            start, release = await TestSpeechDuringAgentInitIsHeldNotRefused._start_paused_in_init(
+                client, monkeypatch
             )
             session = _common.ACTIVE.get("standup")
             assert session is not None

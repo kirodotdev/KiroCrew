@@ -117,8 +117,6 @@ src/kiro_crew/apps/builtins/meetings/backend/domain/dictionary.py
 src/kiro_crew/apps/builtins/meetings/backend/domain/session.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/providers/tasks.py
-src/kiro_crew/apps/builtins/meetings/backend/routes/__init__.py
-src/kiro_crew/apps/builtins/meetings/backend/routes/_common.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/calendar.py
 src/kiro_crew/apps/builtins/meetings/backend/routes/tasks.py
 src/kiro_crew/apps/builtins/mochi/backend/routes.py
@@ -861,7 +859,6 @@ test/test_md_notebook.py
 test/test_meetings_agent_names.py
 test/test_meetings_dictionary.py
 test/test_meetings_providers.py
-test/test_meetings_routes.py
 test/test_meetings_session.py
 test/test_memory_benchmark_workflow.py
 test/test_memory_selfheal.py

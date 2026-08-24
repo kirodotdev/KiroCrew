@@ -302,3 +302,39 @@ MAX_MINUTES_CHARS = 200_000
 #: below the gateway's own 60 MiB ``client_max_size``. Raised for this ONE route
 #: rather than for all of them: every other body here is a short field.
 MAX_MINUTES_BODY_BYTES = 3 * 1024 * 1024
+# ── importing an existing recording ─────────────────────────────────────────
+
+#: Extensions the import route accepts. An allowlist, so an unrecognised suffix is
+#: refused rather than handed to the transcriber.
+#:
+#: Extension-only, and it is worth being clear that this is NOT a content check: it
+#: is a cheap "did the user mean to pick this file" filter in front of a decoder that
+#: does its own format detection. The barrier that matters for an import is
+#: :func:`kiro_crew.hooks.validate_file_path` (which enforces ``is_sensitive_path``),
+#: and ``transcribe_audio`` re-checks the path itself — sniffing container magic here
+#: would add a third opinion about audio formats without adding a guarantee.
+IMPORT_AUDIO_EXTENSIONS = frozenset(
+    {".wav", ".mp3", ".m4a", ".ogg", ".flac", ".webm", ".opus", ".aac", ".wma"}
+)
+
+#: Cap on the path an import request may carry. Generous — this is a host path the
+#: user chose, and PATH_MAX is 4096 on Linux.
+MAX_AUDIO_PATH_CHARS = 4096
+
+#: Size ceiling for an imported recording, enforced BEFORE the decoder runs.
+#:
+#: The decoder materializes decoded PCM for the whole file, so an unbounded
+#: multichannel WAV can cost several gigabytes of gateway memory before the
+#: transcript-length ceiling — which only runs AFTER decoding — can refuse
+#: anything. 512 MiB comfortably covers the product's own 4-hour meeting ceiling
+#: in every ordinary recording format (a 4-hour 16 kHz mono WAV is ~440 MiB;
+#: compressed formats are far smaller) while refusing the studio-grade
+#: multichannel files that are the memory hazard — re-encode those first.
+MAX_IMPORT_AUDIO_BYTES = 512 * 1024 * 1024
+
+#: Lines one import may feed into a meeting.
+#:
+#: An hour of speech is roughly 500–900 sentences, so this covers a long recording
+#: with room to spare while keeping a pathological file (a transcript of silence
+#: split into thousands of fragments) from filling every agent queue.
+MAX_IMPORT_LINES = 2000

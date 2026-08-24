@@ -2683,3 +2683,182 @@ class TestFfmpegIsNotResolvedFromPath:
                 assert os.path.basename(d.rstrip(os.sep)) in (
                     "bin",
                 ), f"{d} is not a package-manager bin directory"
+
+
+class TestBatchDurationCap:
+    """The provider-aware ceiling the meetings import route gates on."""
+
+    def _cfg(self, provider: str) -> SimpleNamespace:
+        return SimpleNamespace(provider=provider)
+
+    def test_the_local_provider_has_the_decoder_ceiling(self):
+        assert transcribe.batch_duration_cap_secs(self._cfg("local")) == transcribe._MAX_AUDIO_SECS
+
+    def test_providers_that_fail_loudly_have_no_ceiling(self):
+        """AWS refuses an oversized payload outright and Apple reads the whole
+        file, so neither needs — or may impose — the local decoder's cap."""
+        assert transcribe.batch_duration_cap_secs(self._cfg("transcribe")) is None
+        assert transcribe.batch_duration_cap_secs(self._cfg("apple")) is None
+
+    def test_an_unrecognised_provider_gets_the_local_ceiling(self):
+        """The dispatch in transcribe_audio lands unknown providers on the local
+        engine, so the cap answer must travel with them."""
+        assert (
+            transcribe.batch_duration_cap_secs(self._cfg("something-new"))
+            == transcribe._MAX_AUDIO_SECS
+        )
+
+
+class TestAudioExceedsSecs:
+    """Duration verdicts: exact for WAV headers, honest None when unanswerable."""
+
+    def _write_wav(self, path, seconds: int, rate: int = 100) -> None:
+        with wave.open(str(path), "wb") as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(rate)
+            wav.writeframes(b"\x00\x00" * (seconds * rate))
+
+    @pytest.mark.asyncio
+    async def test_a_short_wav_is_under_the_cap(self, tmp_path):
+        p = tmp_path / "short.wav"
+        self._write_wav(p, seconds=5)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_wav_over_the_cap_is_detected_from_the_header_alone(self, tmp_path):
+        """No decode and no sample read: the verdict is header math, which is
+        how a multi-hour meeting WAV can be refused instantly."""
+        p = tmp_path / "marathon.wav"
+        self._write_wav(p, seconds=11)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is True
+
+    @pytest.mark.asyncio
+    async def test_a_wav_exactly_at_the_cap_is_not_over_it(self, tmp_path):
+        p = tmp_path / "exact.wav"
+        self._write_wav(p, seconds=10)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_nonwav_with_no_ffmpeg_is_unanswerable_not_wrong(self, tmp_path, monkeypatch):
+        """None, not False: without the decoder there is no answer — and the
+        transcode that would truncate needs the same missing binary, so nothing
+        is silently lost by proceeding."""
+        p = tmp_path / "memo.opus"
+        p.write_bytes(b"not really audio")
+
+        async def _no_decoder():
+            return None
+
+        monkeypatch.setattr(transcribe, "_resolve_ffmpeg_for_execution", _no_decoder)
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    def test_the_progress_parser_reads_the_last_out_time(self):
+        """ffmpeg emits a progress block per interval; only the final decoded
+        timestamp is the file's (bounded) duration."""
+        stdout = b"out_time_us=1000000\nprogress=continue\nout_time_us=3601000000\nprogress=end\n"
+        matches = transcribe._PROGRESS_OUT_TIME_RE.findall(stdout)
+        assert int(matches[-1]) / 1_000_000 == 3601.0
+
+    def test_wav_duration_math_ignores_sample_rate_mismatches(self, tmp_path):
+        """_pcm_from_wav would reject a 44.1 kHz file (ffmpeg's job), but the
+        duration answer is pure header math and stays exact for any rate."""
+        p = tmp_path / "hifi.wav"
+        self._write_wav(p, seconds=7, rate=200)
+        assert transcribe._wav_duration_secs(str(p)) == 7.0
+
+    def test_an_unreadable_file_has_no_wav_duration(self, tmp_path):
+        p = tmp_path / "not.wav"
+        p.write_bytes(b"RIFF but not really")
+        assert transcribe._wav_duration_secs(str(p)) is None
+
+
+class _FakeFfmpegProc:
+    """Stand-in for the ffmpeg probe child: scripted stdout/returncode, and a
+    hang mode that blocks until kill() so the timeout arm and _kill_and_reap
+    can both be exercised without a real process (or a real platform)."""
+
+    def __init__(self, stdout: bytes = b"", returncode: int = 0, hang: bool = False) -> None:
+        self._stdout = stdout
+        self.returncode = returncode
+        self._hang = hang
+        self._released = asyncio.Event()
+        self.killed = False
+
+    async def communicate(self):
+        if self._hang and not self.killed:
+            await self._released.wait()
+        return self._stdout, b""
+
+    def kill(self) -> None:
+        self.killed = True
+        self._released.set()
+
+
+class TestAudioExceedsSecsProbe:
+    """The ffmpeg null-decode branch, driven through a scripted child process."""
+
+    def _arm(self, monkeypatch, proc):
+        async def _resolve():
+            return "/opt/fake/ffmpeg"
+
+        async def _spawn(_executable, *_argv, **_kw):
+            if isinstance(proc, BaseException):
+                raise proc
+            return proc
+
+        monkeypatch.setattr(transcribe, "_resolve_ffmpeg_for_execution", _resolve)
+        monkeypatch.setattr(transcribe, "_create_ffmpeg_subprocess", _spawn)
+
+    @pytest.mark.asyncio
+    async def test_a_decode_past_the_cap_answers_true(self, tmp_path, monkeypatch):
+        p = tmp_path / "long.webm"
+        p.write_bytes(b"x")
+        stdout = b"out_time_us=5000000\nprogress=continue\nout_time_us=11000000\nprogress=end\n"
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=stdout))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is True
+
+    @pytest.mark.asyncio
+    async def test_a_decode_under_the_cap_answers_false(self, tmp_path, monkeypatch):
+        p = tmp_path / "short.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=b"out_time_us=2000000\nprogress=end\n"))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_decode_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "corrupt.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(returncode=1))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    @pytest.mark.asyncio
+    async def test_a_decode_with_no_progress_output_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "odd.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, _FakeFfmpegProc(stdout=b""))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    @pytest.mark.asyncio
+    async def test_a_hung_probe_times_out_reaps_the_child_and_answers_none(
+        self, tmp_path, monkeypatch
+    ):
+        p = tmp_path / "hang.webm"
+        p.write_bytes(b"x")
+        proc = _FakeFfmpegProc(hang=True)
+        self._arm(monkeypatch, proc)
+        assert await transcribe.audio_exceeds_secs(str(p), 10, timeout_secs=0) is None
+        assert proc.killed, "the timed-out child must be killed, not leaked"
+
+    @pytest.mark.asyncio
+    async def test_an_unspawnable_ffmpeg_is_unanswerable(self, tmp_path, monkeypatch):
+        p = tmp_path / "noexec.webm"
+        p.write_bytes(b"x")
+        self._arm(monkeypatch, OSError("exec format error"))
+        assert await transcribe.audio_exceeds_secs(str(p), 10) is None
+
+    def test_the_capless_answer_loads_config_when_none_is_given(self, monkeypatch):
+        monkeypatch.setattr(
+            transcribe, "_load_stt_config", lambda: SimpleNamespace(provider="transcribe")
+        )
+        assert transcribe.batch_duration_cap_secs() is None

@@ -18,11 +18,12 @@ action items.
 | `.../backend/domain/dictionary.py` | speech-correction dictionary (TOML) |
 | `.../backend/domain/session.py` | batching dispatcher + meeting state machine |
 | `.../backend/domain/translate.py` | live per-line translation queue + its prompt |
+| `.../backend/domain/audio.py` | splitting an imported transcript into lines |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
 | `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
 | `.../backend/calendar_sync.py` | one calendar sync (provider fetch → cache), shared by the route and the poller |
 | `.../backend/calendar_poller.py` | background calendar poll: keeps the cache fresh, pre-creates the meeting about to start |
-| `.../backend/routes/` | `_common` (gate + validation), `meeting_lifecycle`, `agents`, `tasks`, `calendar`, `settings` |
+| `.../backend/routes/` | `_common` (gate + validation + the dispatch transaction), `meeting_lifecycle`, `agents`, `audio_import`, `tasks`, `calendar`, `settings` |
 | `.../agents/*.json` | the three shipped agent specs |
 | `src/kiro_crew/builtin_skills/meetings/SKILL.md` | the bundled skill (data layout, lifecycle, provider config) |
 | `website/src/apps/meetings/` | `MeetingsPage` (list) → `MeetingView` → `TaskReviewView`, `SettingsView` |
@@ -68,6 +69,7 @@ POST   /meetings/{id}/attachments   {action: add|remove, attachments[]|index}
 POST   /meetings/{id}/agents        {agent_id, enable} — toggle mid-meeting
 POST   /meetings/{id}/mute          {agent_id, muted}
 POST   /meetings/{id}/dispatch      {text, chat?} — persist then fan out one line
+POST   /meetings/{id}/import        {audio_path} — transcribe a file into the meeting
 POST   /meetings/{id}/message       {agent_id, text} — one agent, flushed at once
 POST   /meetings/{id}/reset         reset tripped circuit breakers
 GET    /meetings/{id}/tasks         extracted action items
@@ -79,7 +81,22 @@ POST   /meetings/{id}/tasks/review  {id, review_status} — pending | archived
 ```
 
 Every handler is wrapped by `_common.route`, which applies the enable gate and
-turns validation failures into 4xx.
+turns validation failures into 4xx. `_common.error_response` maps an exception's
+status to a LITERAL `web.json_response(..., status=NNN)` per branch — repetitive on
+purpose, because the error-code contract scanner reads `status=exc.status` as
+`dynamic_status` and cannot prove the contract is met. **A status with no branch
+falls through to 400**, which was a live bug before the import route needed 403:
+`store.contain` raises `MeetingsPathError(status=403)` for a path escaping the data
+root, and that was reported as "bad request". A containment violation reported as
+400 reads like a typo the caller can fix by retrying.
+
+The two transcript PRODUCERS — `…/dispatch` and `…/import` — share
+`_common.dispatch_line`: the live-session check, the transcript append, and the
+synchronous queue fan-out as ONE transaction under the dispatch-admission lock,
+plus the expiry branch's SIDE EFFECTS (close admission, drain the queues, mark the
+meeting ended on disk). Shared rather than copied because a second copy of that
+transaction is a second thing that has to stay correct — and because a producer
+that skipped it would reopen the stop-versus-append race the lock closes.
 
 ## Data
 
@@ -296,6 +313,53 @@ line number**, because a `queryFn` that runs twice for one cursor (React Strict 
 in dev) would otherwise duplicate every line. Stored `n` stays monotonic when the
 file is trimmed. A failed line is persisted with `text: ""` on purpose, so the panel
 marks it rather than leaving a gap indistinguishable from nobody speaking.
+## Importing a recording
+
+`POST …/{id}/import` (`backend/routes/audio_import.py`) takes a host path,
+transcribes it with the gateway's batch speech-to-text (`kiro_crew.transcribe`),
+and feeds the result into the meeting **as if it had been spoken**: every line goes
+through `_common.dispatch_line`, so it is appended to `transcript.jsonl` and only
+then fanned out — the same persist-before-fan-out boundary live speech crosses —
+and gets the same pipeline: domain-dictionary correction, the noise gate,
+per-agent batching, and the muted list, with nothing re-implemented and nothing
+that can drift. The consequence, the honest way round: **an import needs a LIVE
+meeting** — the agents are what turn transcript into minutes, and they only exist
+while one is running. The session is resolved FIRST so an hour of audio is not
+decoded on the way to an error that could be given immediately, and each line is
+re-admitted individually, so a meeting stopped or expired mid-import fails the
+loop with the same 409/410 a spoken line would get instead of writing into a
+torn-down meeting. The 16 MiB transcript ceiling applies per line exactly as it
+does to speech: 413, with everything already dispatched staying dispatched.
+
+`domain/audio.split_transcript` turns the one returned blob into lines in three
+tiers: the transcriber's own segments when it gave any (a whisper segment is the
+closest thing to one utterance), sentence boundaries when it returned a single
+paragraph (AWS Transcribe does), and a hard wrap at `MAX_TRANSCRIPT_CHARS` —
+wrapped rather than truncated, because truncating drops the tail of a long
+sentence. `MAX_IMPORT_LINES` (2000) caps the fan-out — an overflow refuses the
+entire import with a 413 rather than importing a truncated head, because a 200
+that silently dropped the recording's tail is data loss. A recording file above
+`MAX_IMPORT_AUDIO_BYTES` (512 MiB) is refused with a 413 before the decoder
+runs — decoding materializes PCM for the whole file, so the size gate is the
+only ceiling that fires while the memory cost is still zero. One import runs
+per meeting at a time; a second concurrent request answers 409
+(`import_in_progress`), because both would dispatch line-by-line into the same
+transcript and interleave.
+
+The path goes through `hooks.validate_file_path`, the shared dashboard file gate,
+which canonicalizes (following symlinks) and enforces `is_sensitive_path`. The
+predicate is never called directly, so this route's answer is identical to every
+other file read in the product, and the extension check runs on the CANONICAL
+path — a symlink named `.mp3` cannot smuggle in its target. `transcribe_audio`
+re-checks the path itself, so a refusal is enforced twice by two owners. The
+extension allowlist is a "did you mean this file" filter, not a content check.
+
+`lines` and `dispatched` are reported separately: the gap is what the noise gate
+dropped, and a recording that yields 400 lines of which 0 were dispatched (an
+empty room, filler) is a real outcome the user must be able to see.
+
+There is **no UI for this yet** — it is an API surface. A host-path picker in the
+meeting view is a separate UI decision.
 
 ## The two provider seams
 
@@ -552,9 +616,15 @@ toast, and the user can still type into the broadcast bar to feed the agents.
   `website/src/test/sketchSrcdoc.test.ts` — nothing executable survives, **and** a
   Mermaid diagram plus an inline-styled HTML table still render (the guards
   against over-stripping the panel into a blank).
+* **A client-supplied FILE path exists in exactly one place** — the audio import —
+  and it goes through `hooks.validate_file_path` rather than a local check, so it
+  gets the same canonicalization and `is_sensitive_path` verdict as every other
+  file read in the product. The format check runs on the canonical path, so a
+  symlink cannot use its own name to pass it.
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
-  enable check, the task-provider `create`, and every store read and the init
+  enable check, the task-provider `create`, the import's path vetting and
+  speech-to-text availability probe, and every store read and the init
   transaction inside a calendar-poller tick all run on an executor.
 
 ## What the port changed
@@ -577,9 +647,13 @@ validation, redaction, the enable gate), `test_meetings_calendar_poller.py` (the
 due-event rule, a tick against a real `.ics`, pre-creation as init-not-start, the
 loop surviving a bad tick, the settings round trip), `test_meetings_minutes.py` (the
 editable minutes: sidecar ownership, the read overlay, staleness, the widget
-gate, redaction asymmetry, body caps), and `test_meetings_translation.py` (the
-injection guard, the bounded queue, off-by-default), with the shared fixtures and
-fake session manager; no test spawns a process or opens a socket.
+gate, redaction asymmetry, body caps), `test_meetings_translation.py` (the
+injection guard, the bounded queue, off-by-default), and
+`test_meetings_audio_import.py` (the split's boundary rules, the refusals in
+ORDER, and the shared dispatch transaction), with the shared fixtures and the
+fake session manager in `test/meetings_helpers.py`. Every dispatch goes through
+that fake session manager; no test spawns a process, opens a socket, calls a
+model, or decodes audio.
 
 These live in the repo-level `test/` tree, not an in-package `tests/`:
 `setup.cfg` sets `testpaths = test transfer`, so a test under

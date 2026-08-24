@@ -1268,7 +1268,21 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # sandboxed_spawn_argv: codesign must read the system trust store and
         # evaluate the Apple certificate chain, which the OS sandbox denies.
         "transcribe.py::_macos_developer_id_authentic",
+        # `_pcm_via_ffmpeg` decodes a container the stdlib cannot read (a Slack
+        # voice memo's ogg/Opus, an uploaded m4a) down to the 16 kHz mono PCM the
+        # recogniser takes. Fixed argv, ffmpeg only; the sole variable part is a
+        # positional audio path that `_is_sensitive_audio_path` has already
+        # cleared, so a hostile value can only name a bad file, not a command.
+        # (`audio_exceeds_secs`, the meetings import route's duration probe, is
+        # the same ffmpeg on the same class of path and routes through
+        # `_create_ffmpeg_subprocess` above — `_SPAWN_NAMES` propagates the audit
+        # to each caller, so it is classified here like the other three: a null
+        # decode with fixed flags, `-t` bounded at the duration cap, no output
+        # file at all (`-f null -`), and the only variable argv element a
+        # positional path that `_vet_audio_file` validated and the route then
+        # snapshot-copied via `pinned_fs` into its own 0700 directory.)
         "transcribe.py::_pcm_via_ffmpeg",
+        "transcribe.py::audio_exceeds_secs",
         "transcribe.py::_transcribe_aws",
         # The build probe executes the same authenticated image with the single
         # fixed `-version` argument; it accepts no external input at all. Both
