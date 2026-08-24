@@ -1525,3 +1525,74 @@ class TestResolveInternalSecret:
         ):
             run_script_sandboxed("/f.py:run", "j1", "", timeout=30)
         assert captured["secret"] == "realsecret"
+
+
+class TestPostKillDrainTimeoutHardening:
+    """The post-kill drain must not leak pipes or mislabel the kill-path result.
+
+    ``Popen.communicate`` does not kill the child on timeout, so both spawners
+    SIGKILL the process group and then reap it with a bounded
+    ``communicate(timeout=5)``. That second drain can ITSELF raise
+    ``TimeoutExpired`` when the pipes never reach EOF — the child outlived the
+    group kill, or another process still holds the write end open. Two
+    invariants have to survive that:
+
+    - the ``PIPE`` fds get closed rather than left open for the life of the
+      gateway. ``Popen._communicate`` closes them as a side effect of reaching
+      EOF, which is exactly the path it does not reach here.
+    - the kill path still reports a *timeout*. In ``run_command_sandboxed`` a
+      ``TimeoutExpired`` raised inside the ``except`` block bypasses that
+      block's own handler list, so the timed-out ``return`` is skipped and the
+      broad ``except Exception`` reports "Command failed" instead.
+    """
+
+    def test_script_drain_timeout_closes_pipes_and_keeps_contract(self):
+        import subprocess as sp
+
+        mock_proc = MagicMock()
+        # A bare MagicMock pid coerces to 1 via __index__, and os.killpg(1, sig)
+        # is kill(-1, sig) — see TestKillBroadcastGuard.
+        mock_proc.pid = 2**22 + 12345  # > PID_MAX default, never a real pid
+        # BOTH the initial read and the post-kill drain time out.
+        mock_proc.communicate.side_effect = sp.TimeoutExpired("cmd", 30)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ), patch(
+            # Stub the reap at the shim, NOT via the subprocess.Popen patch above:
+            # same reason as TestRunScriptSandboxedTimeout.
+            "kiro_crew.platform_compat.kill_process_tree",
+            return_value=True,
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "", timeout=30)
+        # The drain's own timeout must neither escape nor alter the contract.
+        assert result == {"status": "error", "error": "Script timed out after 30s"}
+        # The fd-leak assertion: both pipes closed even though EOF never came.
+        mock_proc.stdout.close.assert_called_once()
+        mock_proc.stderr.close.assert_called_once()
+
+    def test_command_drain_timeout_closes_pipes_and_keeps_contract(self, monkeypatch):
+        import subprocess as sp
+
+        # See TestRunCommandSandboxed._passthrough_sandbox: bypass the OS-sandbox
+        # wrap and the runtime shell probe so this exercises only the kill path.
+        monkeypatch.setattr(
+            "kiro_crew.cron_script.wrap_argv", lambda argv, **k: (list(argv), None)
+        )
+        monkeypatch.setattr("kiro_crew.cron_script._resolve_command_shell", lambda: "sh")
+        mock_proc = MagicMock()
+        mock_proc.pid = 2**22 + 12345  # > PID_MAX default, never a real pid
+        mock_proc.communicate.side_effect = sp.TimeoutExpired("cmd", 30)
+        with patch("subprocess.Popen", return_value=mock_proc), patch(
+            "kiro_crew.platform_compat.kill_process_tree", return_value=True
+        ):
+            result = run_command_sandboxed("sleep 30", timeout=30)
+        # A timed-out command must report the timeout, not "Command failed".
+        assert result == {
+            "status": "error",
+            "output": "❌ Command timed out after 30s",
+            "exit_code": -1,
+        }
+        mock_proc.stdout.close.assert_called_once()
+        mock_proc.stderr.close.assert_called_once()

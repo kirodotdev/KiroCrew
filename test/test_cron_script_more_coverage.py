@@ -60,9 +60,13 @@ class _FakeStdout:
 
     def __init__(self, lines) -> None:
         self._lines = list(lines)
+        self.closed = False
 
     def readline(self) -> str:
         return self._lines.pop(0) if self._lines else ""
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _EndlessStdout:
@@ -92,6 +96,10 @@ class _FakeProc:
     ) -> None:
         self.stdin = _FakeStdin()
         self.stdout: object = _FakeStdout(out_lines)
+        # subprocess.Popen.__init__ assigns all three unconditionally (None when
+        # the stream was not piped), so the stand-in has to define stderr too —
+        # the post-kill drain closes both read pipes.
+        self.stderr: object = _FakeStdout(())
         self.pid = pid
         self.returncode = returncode
         self.terminate_calls = 0
