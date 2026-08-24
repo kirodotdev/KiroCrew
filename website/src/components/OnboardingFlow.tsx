@@ -12,7 +12,7 @@ import { capRoleOther, clampRoleOther } from '../lib/userProfile'
 import { ROLE_SLUGS, TECH_SLUGS } from '../lib/profileOptions'
 
 import { i18nT } from '../i18n/t'
-import { useImeGuard } from '../hooks/useImeGuard'
+import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 /**
  * First-run onboarding flow (5 steps) — the Customize chapter plus the feature
  * tour. It is the LAST of the three first-run chapters: Import setup runs first,
@@ -158,6 +158,13 @@ export default function OnboardingFlow({
   // Which dialog step already received its initial focus (see the trap effect).
   // Reset on close so reopening focuses again.
   const initialFocusKeyRef = useRef('')
+  // Shared IME latch for the modal-step Tab trap below (steps 1-2 only, like
+  // the trap itself): a Tab that lands during an IME composition (or its
+  // post-`compositionend` window) is choosing a candidate, not leaving the
+  // field, so the trap must decline it instead of yanking focus and aborting
+  // the composition (`useDialogFocusTrap` is the reference consumer of the
+  // same seam).
+  const imeLatch = useDocumentImeLatch(open && step <= 2)
 
   // ── Step-2 profile state ──────────────────────────────────────────────────
   const [role, setRole] = useState('')
@@ -444,19 +451,25 @@ export default function OnboardingFlow({
       if (items.length === 0) return
       const first = items[0]
       const last = items[items.length - 1]
-      if (e.shiftKey && document.activeElement === first) {
-        e.preventDefault()
-        last.focus()
-      } else if (!e.shiftKey && document.activeElement === last) {
-        e.preventDefault()
-        first.focus()
-      }
+      const wrapsBackward = e.shiftKey && document.activeElement === first
+      const wrapsForward = !e.shiftKey && document.activeElement === last
+      // A mid-dialog Tab is the browser's to move, so it is also not the
+      // trap's to claim — claiming it would consume legitimate navigation
+      // inside the post-composition latch window.
+      if (!wrapsBackward && !wrapsForward) return
+      // A Tab the IME owns must not cycle focus — the user is choosing a
+      // candidate, not leaving the field. `claimKey` owns the whole decline;
+      // it must run before the preventDefault() and focus move so the IME
+      // keeps the key (see its contract in useImeGuard.ts).
+      if (!imeLatch.claimKey(e)) return
+      e.preventDefault()
+      ;(wrapsBackward ? last : first).focus()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
     // shellHost?.sectionSlot: in host mode the dialog mounts a pass after the
     // flow opens, so re-run once it exists to install the trap + initial focus.
-  }, [open, step, skipAll, savingProfile, dialogRef, shellHost?.sectionSlot])
+  }, [open, step, skipAll, savingProfile, dialogRef, shellHost?.sectionSlot, imeLatch])
 
   if (!open) return null
 

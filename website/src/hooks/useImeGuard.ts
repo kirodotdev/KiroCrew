@@ -74,6 +74,62 @@ export function createImeLatch(): ImeLatch {
 }
 
 /**
+ * Document-tracked IME latch for NATIVE keydown handlers that trap Tab at a
+ * dialog's focus boundary (`useDialogFocusTrap` and the hand-rolled traps that
+ * share its shape). Those listeners receive native KeyboardEvents, which the
+ * synthetic-only `useImeGuard().claimEnter` cannot consume — so they share the
+ * tracked latch through this hook instead of each re-implementing the
+ * flag-and-timer semantics (the drift the `ImeEnterClaimRatchet` pins).
+ *
+ * Composition tracking listens at DOCUMENT capture: the composing input is
+ * anywhere inside the dialog, so element-scoped listeners have nothing
+ * reliable to attach to.
+ *
+ * `enabled` keys the tracking lifecycle and nothing else, so the latch
+ * survives the host's own re-renders: the commit's input event re-renders the
+ * host right before the committing keydown arrives, and a latch reset riding
+ * along on that churn would clear the post-composition window at exactly the
+ * moment it matters. A re-enabled latch does NOT inherit state from its
+ * disabled span — a composition that ended (or was abandoned) while the latch
+ * was off would otherwise strand it.
+ *
+ * Stranded-latch recovery ships with the tracking: a composition abandoned
+ * WITHOUT `compositionend` (focus moves off the input mid-composition, an
+ * OS-level IME cancel) would otherwise leave the latch set — and a latched
+ * guard consumes the keys it declines, so the trap would silently stop
+ * cycling for the dialog's lifetime. `focusout` at document capture is the
+ * recovery signal.
+ *
+ * The returned latch is identity-stable for the host's lifetime (it lives in
+ * a ref), so listing it in an effect dependency array never re-runs the
+ * effect.
+ */
+export function useDocumentImeLatch(enabled = true): ImeLatch {
+  const latchRef = useRef<ImeLatch>()
+  if (!latchRef.current) latchRef.current = createImeLatch()
+  const latch = latchRef.current
+  useEffect(() => {
+    if (!enabled) return
+    latch.reset()
+    const onCompositionStart = () => latch.onCompositionStart()
+    const onCompositionEnd = () => latch.onCompositionEnd()
+    const onRecover = () => latch.reset()
+    document.addEventListener('compositionstart', onCompositionStart, true)
+    document.addEventListener('compositionend', onCompositionEnd, true)
+    document.addEventListener('focusout', onRecover, true)
+    return () => {
+      document.removeEventListener('compositionstart', onCompositionStart, true)
+      document.removeEventListener('compositionend', onCompositionEnd, true)
+      document.removeEventListener('focusout', onRecover, true)
+      // Drop any pending post-composition timer with the listeners so a timer
+      // from a disabled span cannot fire into the next enablement.
+      latch.reset()
+    }
+  }, [enabled, latch])
+  return latch
+}
+
+/**
  * Guard against IME composition Enter falsely triggering submit handlers.
  *
  * IME (Chinese/Japanese/Korean) sends a final Enter to commit the composition.

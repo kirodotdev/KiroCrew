@@ -494,6 +494,26 @@ describe('ArtifactPanel', () => {
       expect(document.activeElement).toBe(focusable[1])
     })
 
+    it('declines a boundary Tab that belongs to an IME composition', async () => {
+      // On WebKit the keydown that commits a candidate arrives AFTER
+      // compositionend with `isComposing` already false — unguarded, the trap
+      // would yank focus and abort the composition (issue class of the shared
+      // hook's own guard).
+      renderPanel()
+      await screen.findByText(NAME)
+      const dialog = await enterFullscreen()
+      const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      last.focus()
+      fireEvent.compositionStart(last)
+      fireEvent.compositionEnd(last)
+      fireEvent.keyDown(dialog, { key: 'Tab' })
+      expect(document.activeElement).toBe(last)
+      expect(document.activeElement).not.toBe(first)
+    })
+
     it('navigates to the full artifact page from the overlay header', async () => {
       renderPanel()
       await screen.findByText(NAME)

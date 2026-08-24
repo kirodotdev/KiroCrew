@@ -169,4 +169,37 @@ describe('board column tag filter', () => {
       expect(keys).toContain(JSON.stringify(['tag-columns']))
     })
   })
+
+  it('popover Tab trap wraps a boundary Tab but declines one an IME composition owns', async () => {
+    // On WebKit the keydown that commits a candidate arrives AFTER
+    // compositionend with `isComposing` already false — unguarded, the trap
+    // would yank focus and abort the composition (issue class of the shared
+    // hook's own guard).
+    const { container } = renderSidebar()
+    fireEvent.click(container.querySelector(`[data-testid="column-edit-${COL_FILTERED}"]`)!)
+    const popover = await waitFor(() => {
+      const el = document.querySelector(`[data-column-popover="${COL_FILTERED}"]`)
+      expect(el).toBeTruthy()
+      return el as HTMLElement
+    })
+    const focusable = Array.from(popover.querySelectorAll<HTMLElement>(
+      'a[href],button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])',
+    ))
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    expect(focusable.length).toBeGreaterThan(1)
+
+    // Positive control: a plain boundary Tab still wraps.
+    last.focus()
+    fireEvent.keyDown(popover, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+
+    // A boundary Tab inside the post-composition window is declined.
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    fireEvent.keyDown(popover, { key: 'Tab' })
+    expect(document.activeElement).toBe(last)
+    expect(document.activeElement).not.toBe(first)
+  })
 })

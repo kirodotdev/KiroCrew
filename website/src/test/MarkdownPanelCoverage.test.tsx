@@ -676,6 +676,26 @@ describe('MarkdownPanel — fullscreen overlay', () => {
     expect(document.activeElement).toBe(last)
   })
 
+  it('declines a boundary Tab that belongs to an IME composition', async () => {
+    // On WebKit the keydown that commits a candidate arrives AFTER
+    // compositionend with `isComposing` already false — unguarded, the trap
+    // would yank focus and abort the composition (issue class of the shared
+    // hook's own guard).
+    const dialog = await goFullscreen()
+    const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+      'button:not([disabled]),textarea,input,a[href],select,[tabindex]:not([tabindex="-1"])',
+    ))
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(document.activeElement).toBe(last)
+    expect(document.activeElement).not.toBe(first)
+  })
+
   it('carries the editing toolbar into the overlay', async () => {
     mountPanel({ content: 'edited body', savedBaseline: 'disk body' })
     fireEvent.click(screen.getByText('View Source'))

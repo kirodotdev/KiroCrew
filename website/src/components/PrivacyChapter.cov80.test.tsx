@@ -1,4 +1,4 @@
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from '../test/helpers'
 import PrivacyChapter from './PrivacyChapter'
 import { api } from '../api/client'
@@ -78,6 +78,28 @@ describe('PrivacyChapter Tab trap', () => {
     ring[0].focus()
     fireEvent.keyDown(document, { key: 'ArrowDown' })
     expect(document.activeElement).toBe(ring[0])
+  })
+
+  it('declines a boundary Tab that belongs to an IME composition', async () => {
+    // On WebKit the keydown that commits a candidate arrives AFTER
+    // compositionend with `isComposing` already false — unguarded, the trap
+    // would yank focus and abort the composition (issue class of the shared
+    // hook's own guard).
+    renderWithProviders(<PrivacyChapter open onContinue={vi.fn()} />)
+    // Wait for the toggle to leave its loading-disabled state so the ring
+    // holds more than one member — a one-element ring wraps onto itself and
+    // cannot distinguish a decline from a wrap.
+    const toggle = await screen.findByRole('switch', { name: 'Send anonymous usage heartbeat' })
+    await waitFor(() => expect(toggle).toBeEnabled())
+    const ring = focusables()
+    expect(ring.length).toBeGreaterThan(1)
+    const last = ring[ring.length - 1]
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(last)
+    expect(document.activeElement).not.toBe(ring[0])
   })
 
   it('the trap is torn down when the chapter closes', async () => {

@@ -277,6 +277,26 @@ describe('AgentImportFlow', () => {
     expect(document.activeElement).toBe(focusable[focusable.length - 1])
   })
 
+  it('declines a boundary Tab that belongs to an IME composition', async () => {
+    // On WebKit the keydown that commits a candidate arrives AFTER
+    // compositionend with `isComposing` already false — unguarded, the trap
+    // would yank focus and abort the composition (issue class of the shared
+    // hook's own guard).
+    mockSuccessfulRequests()
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    const dialog = await screen.findByRole('dialog', { name: 'Import agent setup' })
+    const heading = await within(dialog).findByRole('heading', { name: 'Choose sources' })
+    await waitFor(() => expect(heading).toHaveFocus())
+
+    fireEvent.compositionStart(heading)
+    fireEvent.compositionEnd(heading)
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true })
+
+    // Declined: focus stays where it was instead of wrapping to the last button.
+    expect(document.activeElement).toBe(heading)
+  })
+
   it('waits for completion state to persist before calling onComplete', async () => {
     mockSuccessfulRequests()
     let resolveState: ((value: { ok: boolean }) => void) | undefined

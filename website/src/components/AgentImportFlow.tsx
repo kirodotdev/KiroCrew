@@ -22,6 +22,7 @@ import {
   type AgentImportSource,
 } from '../api/client'
 import { fmtList } from '../i18n/format'
+import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { Btn, SendBtn } from './ui'
 import OnboardingChapterShell, {
   OnboardingShellContext,
@@ -147,6 +148,12 @@ export default function AgentImportFlow({
   const previousFocusRef = useRef<HTMLElement | null>(null)
   const previousInitialOpenRef = useRef(initialOpen)
   const initializedScanGenerationRef = useRef<number | null>(null)
+  // Shared IME latch for the Tab trap below: a Tab that lands during an IME
+  // composition (or its post-`compositionend` window) is choosing a candidate,
+  // not leaving the field, so the trap must decline it instead of yanking
+  // focus and aborting the composition (`useDialogFocusTrap` is the reference
+  // consumer of the same seam).
+  const imeLatch = useDocumentImeLatch(open)
 
   const scanQuery = useQuery({
     queryKey: ['agent-import-scan', scanGeneration],
@@ -320,19 +327,25 @@ export default function AgentImportFlow({
       const first = focusable[0]
       const last = focusable[focusable.length - 1]
       const activeIndex = focusable.indexOf(document.activeElement as HTMLElement)
-      if (event.shiftKey && (activeIndex <= 0)) {
-        event.preventDefault()
-        last.focus()
-      } else if (!event.shiftKey && (activeIndex < 0 || activeIndex === focusable.length - 1)) {
-        event.preventDefault()
-        first.focus()
-      }
+      const wrapsBackward = event.shiftKey && activeIndex <= 0
+      const wrapsForward = !event.shiftKey && (activeIndex < 0 || activeIndex === focusable.length - 1)
+      // A mid-dialog Tab is the browser's to move, so it is also not the
+      // trap's to claim — claiming it would consume legitimate navigation
+      // inside the post-composition latch window.
+      if (!wrapsBackward && !wrapsForward) return
+      // A Tab the IME owns must not cycle focus — the user is choosing a
+      // candidate, not leaving the field. `claimKey` owns the whole decline;
+      // it must run before the preventDefault() and focus move so the IME
+      // keeps the key (see its contract in useImeGuard.ts).
+      if (!imeLatch.claimKey(event)) return
+      event.preventDefault()
+      ;(wrapsBackward ? last : first).focus()
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
     // `skipAll` intentionally follows the current mutation state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending])
+  }, [open, completionMutation.isPending, applyMutation.isPending, skipAllMutation.isPending, imeLatch])
 
   if (!open) return null
 

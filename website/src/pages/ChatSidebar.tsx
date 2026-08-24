@@ -43,7 +43,7 @@ import { useSessionActions } from '../hooks/useSessionActions'
 import { useAutoGrowTextarea } from '../hooks/useAutoGrowTextarea'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import { platformShortcut } from '../utils/platform'
-import { useImeGuard } from '../hooks/useImeGuard'
+import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { usePointerDrag } from '../hooks/usePointerDrag'
 import { safeSetItem } from '../utils/safeStorage'
@@ -2089,6 +2089,12 @@ function ChatSidebar({
   // together with the onKeyDown (Escape + Tab-trap) on the popover, this makes the
   // portaled overlay fully keyboard-operable.
   const columnPopoverRef = useRef<HTMLDivElement>(null)
+  // Shared IME latch for the popover's Tab trap: a Tab that lands during an
+  // IME composition (or its post-`compositionend` window) is choosing a
+  // candidate, not leaving the field, so the trap must decline it instead of
+  // yanking focus and aborting the composition (`useDialogFocusTrap` is the
+  // reference consumer of the same seam).
+  const columnPopoverImeLatch = useDocumentImeLatch(columnEditId !== null)
   const closeColumnPopover = useCallback((colId: string) => {
     setColumnEditId(null)
     requestAnimationFrame(() => document.querySelector<HTMLElement>(`[data-testid="column-edit-${colId}"]`)?.focus())
@@ -5326,8 +5332,22 @@ function ChatSidebar({
                         const f = Array.from(root.querySelectorAll<HTMLElement>('a[href],button:not([disabled]),input:not([disabled]),[tabindex]:not([tabindex="-1"])'))
                         if (f.length === 0) return
                         const first = f[0], last = f[f.length - 1]
-                        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-                        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+                        const wrapsBackward = e.shiftKey && document.activeElement === first
+                        const wrapsForward = !e.shiftKey && document.activeElement === last
+                        // A mid-popover Tab is the browser's to move, and not the trap's
+                        // to claim. A boundary Tab the IME owns must not cycle focus —
+                        // the user is choosing a candidate, not leaving the field —
+                        // so `claimKey` (native-event contract in useImeGuard.ts) runs
+                        // before the preventDefault() and focus move.
+                        if (!wrapsBackward && !wrapsForward) return
+                        // `claimKey` consumes the native event (document/window
+                        // listeners), but React 17+ checks the SYNTHETIC propagation
+                        // flag when walking component ancestors — stop that half too
+                        // so a declined Tab cannot trigger an ancestor's own
+                        // keyboard handling.
+                        if (!columnPopoverImeLatch.claimKey(e.nativeEvent)) { e.stopPropagation(); return }
+                        e.preventDefault()
+                        ;(wrapsBackward ? last : first).focus()
                       }}>
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-[11px] font-semibold text-muted uppercase tracking-wider">{i18nT('pages.chatSidebar.column_filter')}</span>

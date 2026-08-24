@@ -351,6 +351,37 @@ describe('OnboardingFlow — About You step', () => {
     expect(input).toHaveFocus()
   })
 
+  it('wraps a boundary Tab, but declines one that belongs to an IME composition', () => {
+    // On WebKit the keydown that commits a candidate arrives AFTER
+    // compositionend with `isComposing` already false — unguarded, the trap
+    // would yank focus and abort the composition (issue class of the shared
+    // hook's own guard).
+    renderWithProviders(<OnboardingFlow initialOpen onComplete={vi.fn()} />)
+    advanceToStep2()
+    const dialog = screen.getByRole('dialog')
+    const focusable = Array.from(
+      dialog.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      ),
+    ).filter(el => !el.hasAttribute('disabled'))
+    const first = focusable[0]
+    const last = focusable[focusable.length - 1]
+    expect(focusable.length).toBeGreaterThan(1)
+
+    // Positive control: a plain boundary Tab still wraps.
+    last.focus()
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(first)
+
+    // A boundary Tab inside the post-composition window is declined.
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    fireEvent.keyDown(document, { key: 'Tab' })
+    expect(document.activeElement).toBe(last)
+    expect(document.activeElement).not.toBe(first)
+  })
+
   it('re-seats focus inside the dialog when the save freeze lifts', async () => {
     // Every step-2 control is disabled during the save, so the browser drops
     // focus to <body>. On the failed-save path the modal stays open, and
