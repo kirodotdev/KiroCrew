@@ -147,6 +147,7 @@
       "bundle-location.js",
       "gateway-auth-hint.js",
       "blocking-prompt.js",
+      "splash-history.js",
       "hide-to-tray.js",
       "html-fullscreen.js",
       "gateway-stop.js",

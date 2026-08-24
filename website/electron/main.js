@@ -20,6 +20,7 @@ const { createTokenRetryHandler } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
 const { classifyAuthBlock, defaultedPort } = require("./gateway-auth-hint");
 const { exitImmersiveModes } = require("./blocking-prompt");
+const { armSplashHistoryClear } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
 const { attachHtmlFullScreen } = require("./html-fullscreen");
 const { shouldRetryLocalTokenMint, tokenMintRetryDelayMs, TOKEN_MINT_MAX_RETRIES } = require("./token-acquire");
@@ -1425,6 +1426,17 @@ function setupWindowContents(win, backendUrl) {
   });
   view.setBackgroundColor("#00000000");
   win.contentView.addChildView(view);
+
+  // Keep the boot splash / token prompt out of reachable navigation history:
+  // once the dashboard commits, prune the transient shell entries so mouse
+  // button 4 (Chromium's built-in history-back) cannot land the user on a
+  // dead-end loading.html with no way forward. Armed once per window; covers
+  // boot, the gateway reconnect/recovery re-paints, and the renderer-driven
+  // token-prompt handoff. See splash-history.js and #5538.
+  armSplashHistoryClear(view.webContents, {
+    isAlive: () => !win.isDestroyed() && !view.webContents.isDestroyed(),
+    log: glog,
+  });
 
   // Clean up views when window is closed
   win.on("closed", () => {
