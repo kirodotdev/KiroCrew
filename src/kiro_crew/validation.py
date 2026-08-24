@@ -2640,6 +2640,14 @@ SESSION_STOP_SCHEMA = ToolSchema(
     ],
 )
 
+SESSION_SEND_SCHEMA = ToolSchema(
+    tool_name="session_send",
+    fields=[
+        FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
+        FieldSpec("message", str, required=True, max_len=MAX_LONG_STRING),
+    ],
+)
+
 SESSION_READ_MESSAGE_SCHEMA = ToolSchema(
     tool_name="session_read_message",
     fields=[
@@ -2863,6 +2871,7 @@ def _cu_coord_field(name: str, *, required: bool = False) -> FieldSpec:
 MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "session_create": SESSION_CREATE_SCHEMA,
     "session_stop": SESSION_STOP_SCHEMA,
+    "session_send": SESSION_SEND_SCHEMA,
     "session_read_message": SESSION_READ_MESSAGE_SCHEMA,
     "chat_folder_tree": CHAT_FOLDER_TREE_SCHEMA,
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,

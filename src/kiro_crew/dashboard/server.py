@@ -401,6 +401,7 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # tool is unreachable in production while handler-level tests still pass.
         "/api/session-control/create",
         "/api/session-control/stop",
+        "/api/session-control/send",
         "/api/session-control/read",
     }
 )
@@ -1188,6 +1189,9 @@ def _register_mcp_routes(app: web.Application) -> None:
     )
     app.router.add_post(
         "/api/session-control/stop", _deferred_session_control("api_session_control_stop")
+    )
+    app.router.add_post(
+        "/api/session-control/send", _deferred_session_control("api_session_control_send")
     )
     app.router.add_get(
         "/api/session-control/read", _deferred_session_control("api_session_control_read")

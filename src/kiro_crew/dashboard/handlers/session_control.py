@@ -150,6 +150,30 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+async def api_session_control_send(request: web.Request) -> web.Response:
+    """POST /api/session-control/send — deliver a message to another session."""
+    refused = await _require_internal(request)
+    if refused is not None:
+        return refused
+    # No prewarm here: `send_to_target` warms the config after its own SEL
+    # prewarm, the same ordering `stop_target` uses and for the same reason.
+    state: DashboardState = request.app["state"]
+    try:
+        body = await _body(request)
+        message = body.get("message")
+        if not isinstance(message, str) or not message.strip():
+            raise sc.SessionControlError("message is required", code="message_required")
+        result = await sc.send_to_target(
+            state,
+            caller_session_key=_read_session_key(request),
+            target=_target(body),
+            message=message,
+        )
+    except sc.SessionControlError as exc:
+        return _refusal(exc)
+    return web.json_response(result)
+
+
 async def api_session_control_read(request: web.Request) -> web.Response:
     """GET /api/session-control/read — read another session's transcript tail."""
     refused = await _require_internal(request)

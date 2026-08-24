@@ -89,6 +89,7 @@ from kiro_crew.validation import (
     MCP_DASHBOARD_SCHEMAS,
     SESSION_CREATE_SCHEMA,
     SESSION_READ_MESSAGE_SCHEMA,
+    SESSION_SEND_SCHEMA,
     SESSION_STOP_SCHEMA,
     validate_tool_args,
 )
@@ -107,6 +108,7 @@ SERVER_VERSION = "1.0.0"
 SESSION_CONTROL_TOOLS: tuple[str, ...] = (
     "session_create",
     "session_stop",
+    "session_send",
     "session_read_message",
 )
 
@@ -270,6 +272,38 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     },
                 },
                 "required": ["target"],
+            },
+        },
+        {
+            "name": "session_send",
+            "description": (
+                "Send a message into another session as its next agent turn — the "
+                "way to seed a session you just created with session_create, answer "
+                "a question it raised, or steer it mid-run. If the target is idle "
+                "the turn starts immediately; if it is busy the message queues and "
+                "runs when its current turn ends — the result says which happened. "
+                "The message lands in the target's transcript tagged as sent by "
+                "your session, so the person reading it can tell it from their own "
+                "typing. Use session_read_message afterwards to watch what the "
+                "target did with it."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Session key from list_sessions, or its exact title.",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "The message to deliver. It becomes the target's next "
+                            "user-role turn, so write it as you would type into "
+                            "that session's composer."
+                        ),
+                    },
+                },
+                "required": ["target", "message"],
             },
         },
         {
@@ -854,6 +888,26 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # so rather than implying a turn was cancelled.
             return f"\u2139\ufe0f `{target}`: {info} — nothing to stop."
         return f"\U0001f6d1 Stop sent to `{target}`. Its transcript now shows the stop card."
+
+    if name == "session_send":
+        args = validate_tool_args(args, SESSION_SEND_SCHEMA)
+        resp = _post(
+            "/api/session-control/send",
+            {"target": args["target"], "message": args["message"]},
+            session_key=caller_key,
+        )
+        if resp.get("error"):
+            return f"Error: could not send to that session: {resp['error']}"
+        target = resp.get("target", args["target"])
+        if resp.get("started"):
+            return (
+                f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
+                "Watch the result with session_read_message."
+            )
+        return (
+            f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
+            "when the current turn ends. Poll with session_read_message."
+        )
 
     if name == "session_read_message":
         args = validate_tool_args(args, SESSION_READ_MESSAGE_SCHEMA)
