@@ -34,7 +34,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_delivery import sanitize_outbound
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import slot_history_key
-from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, SlotOrigin
 from kiro_crew.history import metadata_now_iso, transcript_stem
 from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
@@ -43,12 +43,6 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 logger = logging.getLogger(__name__)
-
-#: Live-slot ceiling for `session_create`, matching `_MAX_SLOTS_FOR_FORK` and
-#: `_MAX_SLOTS_FOR_IMPORT`. Every path that allocates a slot enforces the same
-#: number; a creator that skipped it would make the cap advisory, since nothing
-#: else bounds how many sessions one caller may open.
-_MAX_SLOTS_FOR_CREATE = 500
 
 # Reads are cheap but not free — each one walks the target's in-memory window.
 MAX_READ_MESSAGES = 100
@@ -471,9 +465,9 @@ async def create_session(
             code="caller_workspace_changed",
         )
     _refuse_ineligible_creator(state, live_caller)
-    if state.live_slot_count() >= _MAX_SLOTS_FOR_CREATE:
+    if state.live_slot_count() >= MAX_LIVE_SLOTS:
         raise SessionControlError(
-            f"slot cap reached ({_MAX_SLOTS_FOR_CREATE})",
+            f"slot cap reached ({MAX_LIVE_SLOTS})",
             code="slot_cap_reached",
             status=429,
         )

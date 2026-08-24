@@ -76,7 +76,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -97,10 +97,6 @@ BUNDLE_VERSION = 2
 #: best-effort parsed, because a silently misread field lands as corrupted
 #: conversation.
 _SUPPORTED_BUNDLE_VERSIONS = (1, 2)
-
-#: Same cap the fork path uses, for the same reason: bound the number of live
-#: slots so a repeated import cannot exhaust the slot table.
-_MAX_SLOTS_FOR_IMPORT = 500
 
 #: Per-bundle limits. A bundle arrives from another instance, so it is untrusted
 #: input even though the peer is one the owner configured: these bound the work
@@ -1059,7 +1055,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     caller = request_app or "dashboard"
 
-    if state.live_slot_count() >= _MAX_SLOTS_FOR_IMPORT:
+    if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
             caller=caller,
             operation="chat.slot_import",
@@ -1070,7 +1066,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": f"slot cap reached ({_MAX_SLOTS_FOR_IMPORT})",
+                "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "transfer_slot_cap",
             },
             status=429,
@@ -1109,7 +1105,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     #
     # Distinct from the construction accounting below: that keeps a RETRACTED slot
     # counted, which is a different window (after creation). Both are needed.
-    if state.live_slot_count() >= _MAX_SLOTS_FOR_IMPORT:
+    if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
             caller=caller,
             operation="chat.slot_import",
@@ -1120,7 +1116,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
         )
         return web.json_response(
             {
-                "error": f"slot cap reached ({_MAX_SLOTS_FOR_IMPORT})",
+                "error": f"slot cap reached ({MAX_LIVE_SLOTS})",
                 "code": "transfer_slot_cap",
             },
             status=429,

@@ -1687,7 +1687,7 @@ def test_the_slot_cap_is_re_checked_after_the_await(tmp_path, monkeypatch):
     caller = _slot(state, "chat-1")
 
     def _resolve_then_fill(_workspace):
-        for i in range(sc._MAX_SLOTS_FOR_CREATE):
+        for i in range(sc.MAX_LIVE_SLOTS):
             _slot(state, f"filler-{i}")
         return str(tmp_path)
 
@@ -2223,3 +2223,27 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
     )
     # The refusal must still be diagnosable: the code survives redaction.
     assert "target_not_found" in captured["resources"]
+
+
+def test_slot_cap_has_one_owning_constant() -> None:
+    """Every slot-creating path reads the SAME owning ceiling constant.
+
+    The live-slot ceiling used to be declared independently as ``= 500`` in
+    three modules (session create, chat fork, session import); raising it then
+    took three edits and the effective limit depended on which door the caller
+    came through. It now has one home -- ``state.MAX_LIVE_SLOTS`` in the module
+    that owns ``live_slot_count()`` -- and each door imports that one name. This
+    pins that no door has re-introduced its own literal: all three modules must
+    expose the identical owning object.
+    """
+    from kiro_crew.dashboard import chat_fork
+    from kiro_crew.dashboard import session_control as sc_mod
+    from kiro_crew.dashboard import session_transfer
+    from kiro_crew.dashboard import state as state_mod
+
+    owning = state_mod.MAX_LIVE_SLOTS
+    # Each door imported the owning constant into its own namespace; assert they
+    # are the very same object, so a re-introduced per-door literal is caught.
+    assert sc_mod.MAX_LIVE_SLOTS is owning
+    assert chat_fork.MAX_LIVE_SLOTS is owning
+    assert session_transfer.MAX_LIVE_SLOTS is owning

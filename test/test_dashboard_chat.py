@@ -12422,7 +12422,7 @@ class TestForkSlot:
         mock_sel = MagicMock()
         monkeypatch.setattr("kiro_crew.dashboard.chat_fork.sel", lambda: mock_sel)
         # Lower the cap so we don't need to create hundreds of slots.
-        monkeypatch.setattr("kiro_crew.dashboard.chat_fork._MAX_SLOTS_FOR_FORK", 3)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_fork.MAX_LIVE_SLOTS", 3)
 
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src")
