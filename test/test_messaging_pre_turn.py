@@ -243,11 +243,11 @@ class TestPreTurnRatchet:
         # obstacle -- its _handle_busy mirrors webex's, so migration looks
         # mechanical -- but it is still a behaviour change that gets its own
         # review, not a rider in a main-red unblock (#5448).
-        # feishu is exempt for the same reason, and its own source says so: the
-        # busy check runs BEFORE `maybe_rotate` (rotating first would mint a
-        # generation and miss the in-flight turn), and the session key is
-        # re-derived afterwards because rotation retires the pre-rotation one.
-        # Its comments name WeCom as the shape it mirrors.
+        # feishu is exempt on the same basis as whatsapp: transport_dispatch
+        # runs its own is_busy -> _handle_busy (with a busy re-check) ->
+        # maybe_rotate sequence, so migrating it to the shared helper is a
+        # separately-reviewable behaviour change, not a rider in a main-red
+        # unblock (#5483).
         exempt = {
             "telegram",
             "discord",

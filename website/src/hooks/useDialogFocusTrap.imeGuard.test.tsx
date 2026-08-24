@@ -18,12 +18,14 @@ import { useDialogFocusTrap } from './useDialogFocusTrap'
 function Harness({
   enabled = true,
   onEscape = () => {},
+  handleEscape = true,
 }: {
   enabled?: boolean
   onEscape?: () => void
+  handleEscape?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
-  useDialogFocusTrap(ref, onEscape, enabled)
+  useDialogFocusTrap(ref, onEscape, enabled, handleEscape)
   return (
     <div ref={ref} role="dialog">
       <button data-testid="first">first</button>
@@ -197,5 +199,103 @@ describe('useDialogFocusTrap IME guard', () => {
     last.focus()
     fireEvent.keyDown(last, { key: 'Escape' })
     expect(onEscape).toHaveBeenCalledTimes(1)
+  })
+})
+
+/**
+ * IME guard on the Escape-dismisses path (#5420, the Escape half of the
+ * defect whose Tab half is pinned above). A CJK user pressing Escape to
+ * cancel an in-flight candidate list must not have that same keypress close
+ * the dialog and discard a part-filled form.
+ */
+describe('useDialogFocusTrap Escape IME guard', () => {
+  const esc = (target: Element, init: KeyboardEventInit & { keyCode?: number } = {}) =>
+    fireEvent.keyDown(target, { key: 'Escape', ...init })
+
+  it('declines a mid-composition Escape (native flag) without cancelling the IME cancel', () => {
+    const onEscape = vi.fn()
+    const { last } = mount({ onEscape })
+    last.focus()
+    const notPrevented = esc(last, { isComposing: true })
+    expect(onEscape).not.toHaveBeenCalled()
+    // The IME is consuming this key to cancel its own candidate; the guard
+    // must not preventDefault or the candidate cancellation itself breaks
+    // (claimKey's split: consume only where the browser would otherwise act).
+    expect(notPrevented).toBe(true)
+  })
+
+  it('declines a keyCode-229 Escape without cancelling the IME cancel', () => {
+    const onEscape = vi.fn()
+    const { last } = mount({ onEscape })
+    last.focus()
+    const notPrevented = esc(last, { keyCode: 229 })
+    expect(onEscape).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(true)
+  })
+
+  it('declines the Escape landing in the post-composition window AND consumes it', () => {
+    const onEscape = vi.fn()
+    const { last } = mount({ onEscape })
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    // WebKit reports the keydown that follows a candidate commit/cancel as
+    // non-composing; only the tracked latch can identify it. Nothing live is
+    // cancelled, so the key is fully consumed rather than dismissing.
+    const notPrevented = esc(last)
+    expect(onEscape).not.toHaveBeenCalled()
+    expect(notPrevented).toBe(false)
+  })
+
+  it('dismisses again once the post-composition window has elapsed', () => {
+    // A guard that never released would make dialogs un-closable by keyboard,
+    // which is an accessibility regression as bad as the defect itself.
+    vi.useFakeTimers()
+    const onEscape = vi.fn()
+    const { last } = mount({ onEscape })
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    vi.advanceTimersByTime(60)
+    esc(last)
+    expect(onEscape).toHaveBeenCalledTimes(1)
+  })
+
+  it('recovers Escape dismissal from an abandoned composition when focus moves away', () => {
+    // No compositionend ever fires (OS-level IME cancel, focus stolen
+    // mid-composition). The focusout recovery resets the latch; without it
+    // every later Escape would be consumed for the dialog's lifetime — the
+    // un-closable dialog the release case above pins, on its other path.
+    const onEscape = vi.fn()
+    const { last } = mount({ onEscape })
+    last.focus()
+    fireEvent.compositionStart(last) // abandoned: no compositionEnd follows
+    last.blur()
+    last.focus()
+    esc(last)
+    expect(onEscape).toHaveBeenCalledTimes(1)
+  })
+
+  it('never claims an Escape the caller owns (handleEscape=false), even mid-latch', () => {
+    // The claim lives INSIDE the handleEscape branch. `claimKey` stops
+    // propagation on the keys it declines, so a hoisted claim would swallow
+    // Escapes that must reach a caller's own bubble-phase listener (Modal,
+    // CommandBarOverlay pass handleEscape=false for nested-overlay handling).
+    const onEscape = vi.fn()
+    const bubbleListener = vi.fn()
+    const { last } = mount({ onEscape, handleEscape: false })
+    last.focus()
+    fireEvent.compositionStart(last)
+    fireEvent.compositionEnd(last)
+    window.addEventListener('keydown', bubbleListener)
+    try {
+      esc(last)
+      // Untouched: not dismissed by the hook, and still propagating to the
+      // bubble phase where the caller's own Escape handling lives.
+      expect(onEscape).not.toHaveBeenCalled()
+      expect(bubbleListener).toHaveBeenCalledTimes(1)
+    } finally {
+      window.removeEventListener('keydown', bubbleListener)
+    }
   })
 })

@@ -113,6 +113,15 @@ export function useDialogFocusTrap(
     if (!enabled) return
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && handleEscape) {
+        // An Escape the IME owns must not dismiss the dialog: the user is
+        // cancelling a candidate list, not their part-filled form. `claimKey`
+        // owns the whole decline (see its contract in useImeGuard.ts) — a
+        // mid-composition Escape keeps its default action so the IME can
+        // still cancel the candidate. The claim sits INSIDE this branch on
+        // purpose: `claimKey` stops propagation on the keys it declines, and
+        // a hoisted claim would swallow Escapes belonging to callers that own
+        // dismissal on bubble-phase listeners (`handleEscape = false`).
+        if (!imeLatchRef.current!.claimKey(e)) return
         onEscape()
         return
       }
