@@ -1141,6 +1141,79 @@ class TestRunScriptSandboxedErrorPaths:
         assert result["status"] == "error"
         assert "segfault" in result.get("error", "")
 
+    def test_nonzero_exit_reports_stderr_tail_not_head(self, tmp_path):
+        """A leading startup warning must not displace the terminal traceback."""
+        leading_warning = "startup warning: " + ("x" * 500)
+        traceback_tail = "Traceback (most recent call last):\nValueError: actual cause"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", leading_warning + "\n" + traceback_tail)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "actual cause" in result["error"]
+        assert "startup warning" not in result["error"]
+
+    def test_nonzero_exit_redacts_before_truncating(self, tmp_path):
+        """A credential straddling the 500-char boundary must not leak its tail.
+
+        Redaction must run on the WHOLE stderr before the tail slice: slicing
+        first can cut off a secret's detectable prefix, so the pattern no
+        longer matches and the raw tail reaches cron alerts.
+        """
+        # Built at runtime so no credential-shaped literal lands in the repo.
+        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        # Sized so the 500-char window starts 2 chars into the credential:
+        # a slice-then-redact order keeps "IA" + all 16 B's but drops the
+        # "AK" prefix, so the pattern no longer matches and the tail leaks.
+        padding = "p" * 100
+        trailing = "e" * 482
+        stderr_text = padding + fake_key + trailing
+        assert len(stderr_text) - 500 == len(padding) + 2
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "B" * 16 not in result["error"]
+        assert fake_key not in result["error"]
+        assert len(result["error"]) <= 500
+
+    def test_nonzero_exit_short_stderr_stays_whole(self, tmp_path):
+        """A stderr already shorter than the 500-byte bound is not truncated."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", "short failure\n")
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["error"] == "short failure"
+
+    def test_nonzero_exit_empty_stderr_falls_back_to_exit_code(self, tmp_path):
+        """No stderr at all still yields a usable message, not an empty string."""
+        mock_proc = MagicMock()
+        mock_proc.returncode = 3
+        mock_proc.communicate.return_value = ("", "")
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["error"] == "exit 3"
+
     def test_bad_json_output(self, tmp_path):
         """Lines 337-338: stdout is not valid JSON."""
         mock_proc = MagicMock()

@@ -713,8 +713,15 @@ def run_script_sandboxed(
             return {"status": "cancelled", "error": "Cancelled by user"}
 
         if proc.returncode != 0 and not stdout.strip():
-            error_text = stderr[:500] or f"exit {proc.returncode}"
-            error_text = redact(error_text)
+            # A process that dies hard (e.g. an unhandled module-level exception)
+            # leaves its diagnosis last: the traceback is the final thing written.
+            # Report the tail, not the head, so a chatty startup warning on stderr
+            # can't displace the actual cause of the failure.
+            # Redact the complete stderr BEFORE truncating: slicing first could
+            # cut off a credential's detectable prefix (e.g. the scheme of a
+            # token-bearing URL), letting the raw secret tail through redaction.
+            tail = redact(stderr.rstrip())
+            error_text = tail[-500:] if tail else f"exit {proc.returncode}"
             return {"status": "error", "error": error_text}
 
         try:
