@@ -1235,7 +1235,11 @@ _ACTIVE_RUNS: dict[str, tuple[asyncio.Task, Any]] = {}
 # operations that constitute the critical section (read flag + register, or
 # set flag + snapshot) — it is never held across slow kill/await calls, so
 # there is no risk of asyncio lock contention or done-callback deadlocks.
-_SHUTDOWN_ADMISSION_LOCK = asyncio.Lock()
+# LoopBoundLock (not a bare asyncio.Lock) because a module-global primitive
+# binds to the import-time loop and raises RuntimeError from any other loop
+# (Python 3.10+, see #4800) — this module is imported once but serves
+# whichever loop the gateway runs.
+_SHUTDOWN_ADMISSION_LOCK = LoopBoundLock()
 _SHUTDOWN_IN_PROGRESS = False
 
 

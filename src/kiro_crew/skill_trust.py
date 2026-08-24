@@ -180,7 +180,7 @@ def _parse_store(text: str) -> frozenset[str]:
     """
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         logger.error("%s: not valid JSON (%s); ignoring every grant", _STORE_FILENAME, exc)
         return frozenset()
     if not isinstance(data, dict):
@@ -353,7 +353,7 @@ def _read_entries_unlocked() -> list[dict[str, Any]]:
         raise TrustStoreUnreadable(f"{_STORE_FILENAME} is unreadable: {exc}") from exc
     try:
         data = json.loads(text)
-    except (json.JSONDecodeError, ValueError) as exc:
+    except ValueError as exc:
         raise TrustStoreUnreadable(f"{_STORE_FILENAME} is not valid JSON: {exc}") from exc
     if not isinstance(data, dict):
         raise TrustStoreUnreadable(f"{_STORE_FILENAME} is not a JSON object")

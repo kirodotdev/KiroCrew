@@ -82,7 +82,7 @@ export function useDialogFocusTrap(
         // purpose: `claimKey` stops propagation on the keys it declines, and
         // a hoisted claim would swallow Escapes belonging to callers that own
         // dismissal on bubble-phase listeners (`handleEscape = false`).
-        if (!imeLatchRef.current!.claimKey(e)) return
+        if (!imeLatch.claimKey(e)) return
         onEscape()
         return
       }
