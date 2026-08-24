@@ -32,12 +32,6 @@ function render(source, format, destination) {
   );
 }
 
-function renderBmp24(source, destination) {
-  const intermediate = join(scratch, `${source.replaceAll(/[\\/]/g, "-")}.bmp`);
-  render(source, "bmp", intermediate);
-  bmp32To24(intermediate, destination);
-}
-
 function renderSvgAtScale(source, scale, destination) {
   const sourcePath = join(here, source);
   const scaledPath = join(scratch, `${source.replace(".svg", "")}@${scale}x.svg`);
@@ -104,12 +98,10 @@ try {
     ["-cathidpicheck", dmg1x, dmg2x, "-out", join(here, "dmg-background.tiff")],
     "Retina TIFF assembly"
   );
-  for (const name of [
-    "windows-installer-sidebar",
-    "windows-installer-header",
-    "windows-installer-full-light",
-  ]) {
-    renderBmp24(`${name}.svg`, join(here, `${name}.bmp`));
+  for (const name of ["windows-installer-sidebar", "windows-installer-header"]) {
+    const intermediate = join(scratch, `${name}.bmp`);
+    render(`${name}.svg`, "bmp", intermediate);
+    bmp32To24(intermediate, join(here, `${name}.bmp`));
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
