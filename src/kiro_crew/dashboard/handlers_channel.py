@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from aiohttp import web
 
-from kiro_crew.channel import ChannelManager, run_channel_agent
+from kiro_crew.channel import ApprovalPolicy, ChannelManager, ListenMode, run_channel_agent
 from kiro_crew.config.loader import config_path
 from kiro_crew.sel import sel
 
@@ -246,15 +246,47 @@ async def api_channel_post(request: web.Request) -> web.Response:
 # ── Agent management ──
 
 
+def _agent_field_error(error: str, code: str) -> web.Response:
+    return web.json_response({"error": error, "code": code}, status=400)
+
+
 async def api_channel_add_agent(request: web.Request) -> web.Response:
     ch, body = await _get_channel_body(request)
 
+    role = body.get("role", "Agent")
+    if not isinstance(role, str):
+        return _agent_field_error(
+            "role must be a string", "channel_agent_role_type_invalid"
+        )
+    agent_name = body.get("agent", "")
+    if not isinstance(agent_name, str):
+        return _agent_field_error(
+            "agent must be a string", "channel_agent_name_type_invalid"
+        )
+    task = body.get("task", ch.topic)
+    if not isinstance(task, str):
+        return _agent_field_error(
+            "task must be a string", "channel_agent_task_type_invalid"
+        )
+    is_orchestrator = body.get("is_orchestrator", False)
+    if not isinstance(is_orchestrator, bool):
+        return _agent_field_error(
+            "is_orchestrator must be a boolean",
+            "channel_agent_orchestrator_type_invalid",
+        )
+    try:
+        approval_policy = ApprovalPolicy(body.get("approval", "writes"))
+    except (TypeError, ValueError):
+        return _agent_field_error(
+            "approval must be a valid policy", "channel_agent_approval_invalid"
+        )
+
     agent = ch.add_agent(
-        role=body.get("role", "Agent")[:100],
-        agent_name=body.get("agent", ""),
-        task=body.get("task", ch.topic),
-        is_orchestrator=body.get("is_orchestrator", False),
-        approval_policy=body.get("approval", "writes"),
+        role=role[:100],
+        agent_name=agent_name,
+        task=task,
+        is_orchestrator=is_orchestrator,
+        approval_policy=approval_policy,
     )
     if not agent:
         return web.json_response(
@@ -273,20 +305,24 @@ async def api_channel_update_agent(request: web.Request) -> web.Response:
     if not agent:
         return web.json_response({"error": "agent not found"}, status=404)
 
+    approval_policy = agent.approval_policy
+    listen_mode = agent.listen_mode
     if "approval" in body:
-        from kiro_crew.channel import ApprovalPolicy
-
         try:
-            agent.approval_policy = ApprovalPolicy(body["approval"])
-        except ValueError:
-            pass
+            approval_policy = ApprovalPolicy(body["approval"])
+        except (TypeError, ValueError):
+            return _agent_field_error(
+                "approval must be a valid policy", "channel_agent_approval_invalid"
+            )
     if "listen" in body:
-        from kiro_crew.channel import ListenMode
-
         try:
-            agent.listen_mode = ListenMode(body["listen"])
-        except ValueError:
-            pass
+            listen_mode = ListenMode(body["listen"])
+        except (TypeError, ValueError):
+            return _agent_field_error(
+                "listen must be a valid mode", "channel_agent_listen_invalid"
+            )
+    agent.approval_policy = approval_policy
+    agent.listen_mode = listen_mode
     ch._save()
     return web.json_response({"ok": True, "agent": agent.to_dict()})
 
