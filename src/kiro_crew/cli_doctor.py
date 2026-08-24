@@ -1658,47 +1658,23 @@ def _doctor_kas(issues: list[str]) -> None:
 
 
 def _report_kas_backend(issues: list[str]) -> None:
-    """Print the KAS diagnostic block for whichever spawn path is selected.
+    """Print the KAS diagnostic block (assets + bundle version + token probe).
 
     Split from :func:`_doctor_kas` so the backend-selection check there stays a
     positive ``== ACP_BACKEND_KAS`` rather than an early-return on inequality.
-    Default path: KAS is fronted by ``kiro-cli acp --agent-engine v3``, so
-    readiness is kiro-cli being present and its ``acp`` subcommand knowing the
-    engine flag. Override path (either ``KIROCREW_KAS_*`` env set): the legacy
-    direct spawn, so readiness is the extracted assets. The token probe runs on
-    both — the ``_kiro/auth/getAccessToken`` callback is forwarded to Crew on
-    both paths. It prints only the expiry, never the token bytes.
     """
     print("\nKAS backend")
-    if kas_assets.kas_override_active():
-        node = kas_assets.find_kas_node()
-        script = kas_assets.find_kas_server_script()
-        print("  spawn:       direct (KIROCREW_KAS_* override active)")
-        print(f"  node:        {'✅ ' + str(node) if node else '❌ not found'}")
-        if script:
-            print(f"  bundle:      ✅ {_kas_version_label(script)}")
-        else:
-            print("  bundle:      ❌ KAS server script not found")
-        if not (node and script):
-            print("               Fix: point KIROCREW_KAS_NODE / KIROCREW_KAS_SCRIPT at a")
-            print("               local KAS build, or unset both to use kiro-cli's own")
-            print("               ACP surface instead.")
-            issues.append("KAS backend selected but assets missing")
+    node = kas_assets.find_kas_node()
+    script = kas_assets.find_kas_server_script()
+    print(f"  node:        {'✅ ' + str(node) if node else '❌ not found'}")
+    if script:
+        print(f"  bundle:      ✅ {_kas_version_label(script)}")
     else:
-        kiro_bin = shutil.which(KIRO_CLI_BIN)
-        print("  spawn:       kiro-cli acp --agent-engine v3")
-        print(f"  kiro-cli:    {'✅ ' + kiro_bin if kiro_bin else '❌ not found in PATH'}")
-        if kiro_bin:
-            engine_ok = _kas_engine_flag_supported(kiro_bin)
-            if engine_ok:
-                print(f"  engine flag: ✅ {kas_assets.KAS_ENGINE_FLAG} supported")
-            else:
-                print(f"  engine flag: ❌ this kiro-cli lacks {kas_assets.KAS_ENGINE_FLAG}")
-                print("               Fix: update kiro-cli (`kiro-cli update`).")
-                issues.append("KAS backend selected but kiro-cli lacks the engine flag")
-        else:
-            print("               Fix: install kiro-cli and sign in with `kiro-cli login`.")
-            issues.append("KAS backend selected but kiro-cli not found")
+        print("  bundle:      ❌ KAS server script not found")
+    if not (node and script):
+        print("               Fix: install kiro-cli and run it once so it unpacks its")
+        print("               KAS bundle (or set KIROCREW_KAS_NODE / KIROCREW_KAS_SCRIPT).")
+        issues.append("KAS backend selected but assets missing")
 
     # Token status — a bounded live probe through kiro-cli. Advisory: an
     # unobtainable token is usually a transient login state, not a broken
@@ -1713,26 +1689,6 @@ def _report_kas_backend(issues: list[str]) -> None:
     else:
         expires = resp.get("expiresAt")
         print(f"  token:       ✅ obtained via kiro-cli (expires {expires})")
-
-
-def _kas_engine_flag_supported(kiro_bin: str) -> bool:
-    """Bounded probe: does this kiro-cli's ``acp`` subcommand take the engine flag?
-
-    Reads ``acp --help`` rather than comparing versions, so the check keeps
-    working across version schemes and never encodes a floor that goes stale.
-    Any spawn/timeout failure reports unsupported — this is a diagnostic, and a
-    kiro-cli whose ``--help`` cannot run will not serve sessions either.
-    """
-    try:
-        proc = subprocess.run(
-            [kiro_bin, kas_assets.KAS_CLI_SUBCMD, "--help"],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    return kas_assets.KAS_ENGINE_FLAG in (proc.stdout or "") + (proc.stderr or "")
 
 
 def _doctor_agents_janitor(issues: list[str], sweep_backups: bool) -> None:

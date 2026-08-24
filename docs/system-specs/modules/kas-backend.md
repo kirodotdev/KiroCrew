@@ -14,31 +14,13 @@ needs editing if that backend changes.
 
 ## How Crew runs it
 
-- **Default spawn: `kiro-cli acp --agent-engine v3`.** kiro-cli fronts KAS on
-  its own ACP surface: it extracts the KAS bundle on demand (no prior
-  interactive run needed), supervises the Node process, and owns the KAS
-  version — pinning kiro-cli pins KAS. Crew depends only on kiro-cli's public
-  CLI surface on this path, never on its data-directory layout. The
-  `_kiro/auth/getAccessToken` callback is FORWARDED to Crew, not answered by
-  kiro-cli, so `acp/kas_auth.py` is load-bearing on both paths.
-- **Direct spawn stays as the escape hatch.** Setting either `KIROCREW_KAS_NODE`
-  or `KIROCREW_KAS_SCRIPT` selects the legacy shape — Crew locates the
-  extracted assets and launches Node itself (`acp/kas_assets.py`) — for airgap
-  and debugging against a pinned local build.
-- Both shapes go through the existing `AcpRuntime` (one process, multiplexed
-  sessions) via the established backend seam — no new runtime subclass, just a
-  spawn-argv branch plus adapters. `kiro-cli` keeps its own spawn path,
-  per-harness handshake literals, and session machinery unchanged
-  (harness-parity H9/H10). Sandbox classification stays a positive Kiro test
-  (H7): the spawn site grants membership only, and non-members defer to
-  `wrap_argv`'s argv-basename detection — so cli-fronted KAS classifies as
-  kiro-cli (its internal sandbox cannot nest inside Crew's seatbelt) while the
-  direct Node spawn keeps the seatbelt.
+- It goes through the existing `AcpRuntime` (one process, multiplexed sessions)
+  via the established backend seam — no new runtime subclass, just a spawn-argv
+  branch plus adapters. `kiro-cli` keeps its own spawn path, per-harness
+  handshake literals, and session machinery unchanged (harness-parity H9/H10).
 - Backend-specific parsing (the display/telemetry frames whose shape differs
   from `kiro-cli`'s) is localized in **`acp/kas_wire.py`** — a single module, so
-  an adjustment is a one-file edit. The frames arrive with the same
-  `_meta.kiro.kind` discriminants on both spawn shapes (verified against a live
-  cli-fronted session). Backend-neutral logic (the context-meter
+  an adjustment is a one-file edit. Backend-neutral logic (the context-meter
   math) lives on `AcpPromptStats` and is shared by both paths, so they cannot
   drift.
 - Capabilities the session layer reads off a provider are declared on the

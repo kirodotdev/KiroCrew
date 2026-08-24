@@ -1,20 +1,11 @@
-"""KAS spawn shapes: the kiro-cli-fronted default, plus the direct-spawn fallback.
+"""Locate the KAS (kiro-agent) assets kiro-cli extracted.
 
-The DEFAULT way Crew runs KAS is ``kiro-cli acp --agent-engine v3``
-(:func:`build_kas_cli_argv`): kiro-cli extracts the KAS bundle on demand,
-supervises its Node process, and forwards the auth callback to this client.
-Crew then depends only on kiro-cli's public CLI surface — never on its data
-directory — and the KAS version is whatever the installed (pinnable) kiro-cli
-carries.
+KAS ships inside kiro-cli, which unpacks it on first run. Kiro Crew drives that
+copy rather than distributing its own: the `kiro-team/kiro-agent` repository is
+restricted-read, and an open-source release cannot hide its contents. Reading
+files already on the user's disk distributes nothing.
 
-The DIRECT-SPAWN path below (locate the extracted assets, launch Node
-ourselves) remains as the escape hatch, selected by either env override
-(:func:`kas_override_active`): a pinned local build for airgap or debugging.
-Kiro Crew distributes no KAS bytes on either path: the `kiro-team/kiro-agent`
-repository is restricted-read, and an open-source release cannot hide its
-contents.
-
-Direct-spawn layout, as kiro-cli 2.18.0 actually lays it down::
+Layout, as kiro-cli 2.18.0 actually lays it down::
 
     {data_dir}/node                      the extracted Node runtime (+ node.sha256)
     {data_dir}/kas/{ver}-{hash}/         one directory per bundle version
@@ -37,42 +28,6 @@ from pathlib import Path
 ENV_KAS_NODE = "KIROCREW_KAS_NODE"
 #: Override for the KAS server entry script.
 ENV_KAS_SCRIPT = "KIROCREW_KAS_SCRIPT"
-
-#: kiro-cli's ACP subcommand. Mirrors ``client.KIRO_CLI_SUBCMD``; restated here
-#: so this module keeps owning every KAS spawn shape without importing the
-#: (much heavier) client module.
-KAS_CLI_SUBCMD = "acp"
-#: kiro-cli's engine selector. ``v3`` is the KAS engine; kiro-cli then owns
-#: asset extraction, versioning, and the Node runtime — Crew never touches
-#: kiro-cli's data directory on this path.
-KAS_ENGINE_FLAG = "--agent-engine"
-KAS_ENGINE_V3 = "v3"
-
-
-def kas_override_active() -> bool:
-    """True when either direct-spawn env override is set.
-
-    An override selects the legacy direct-spawn path (Crew launches KAS's Node
-    entry itself) — the airgap and debugging escape hatch. The default path
-    fronts KAS with ``kiro-cli acp --agent-engine v3`` instead.
-    """
-    return bool(
-        os.environ.get(ENV_KAS_NODE, "").strip() or os.environ.get(ENV_KAS_SCRIPT, "").strip()
-    )
-
-
-def build_kas_cli_argv(kiro_bin: str) -> list[str]:
-    """argv for a KAS session fronted by kiro-cli's own ACP surface.
-
-    kiro-cli extracts the KAS bundle on demand (no prior interactive run
-    needed), spawns and supervises its Node process, and passes KAS the flags
-    it requires. The ``_kiro/auth/getAccessToken`` callback is FORWARDED to
-    this client, not answered by kiro-cli, so :mod:`kiro_crew.acp.kas_auth`
-    stays load-bearing on this path. No ``--agent``: KAS takes custom agents
-    over the wire in ``session/new`` (``_meta.kiro.customAgents``).
-    """
-    return [kiro_bin, KAS_CLI_SUBCMD, KAS_ENGINE_FLAG, KAS_ENGINE_V3]
-
 
 #: Node refuses to load KAS's web-tree-sitter grammar without this, and the
 #: shell-command policy parser depends on it. kiro-cli passes it too.

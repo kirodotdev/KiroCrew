@@ -54,8 +54,6 @@ from kiro_crew.acp.kas_agents import (
 from kiro_crew.acp.kas_assets import (
     KasAssetsMissing,
     build_kas_argv,
-    build_kas_cli_argv,
-    kas_override_active,
     resolve_kas_entry,
 )
 from kiro_crew.acp.kas_auth import (
@@ -931,19 +929,10 @@ class AcpRuntime:
         only kiro-cli needs its agent file materialized first.
         """
         if self._acp_backend == ACP_BACKEND_KAS:
-            if kas_override_active():
-                # Escape hatch (airgap/debug): launch the operator's pinned
-                # local build directly. No --agent: KAS takes custom agents
-                # over the wire in session/new (_meta.kiro.customAgents).
-                node, script = await asyncio.to_thread(resolve_kas_entry)
-                return build_kas_argv(node, script)
-            # Default: front KAS with kiro-cli's own ACP surface. kiro-cli
-            # extracts the bundle on demand and supervises the Node process;
-            # the auth callback is still forwarded to this client (kas_auth).
-            kas_kiro_bin = await _resolve_kiro_bin_for_spawn()
-            if not kas_kiro_bin:
-                raise AcpRuntimeError(f"{KIRO_CLI_BIN} not found in PATH")
-            return build_kas_cli_argv(kas_kiro_bin)
+            node, script = await asyncio.to_thread(resolve_kas_entry)
+            # No --agent: KAS takes custom agents over the wire in session/new
+            # (_meta.kiro.customAgents), not from a CLI flag.
+            return build_kas_argv(node, script)
 
         kiro_bin = await _resolve_kiro_bin_for_spawn()
         if not kiro_bin:
@@ -1004,13 +993,7 @@ class AcpRuntime:
             argv,
             mode=self._sandbox_mode,
             strip_python_env=True,
-            # Positive grants only (harness-parity H7): membership grants the
-            # kiro backend directly; every other backend defers to wrap_argv's
-            # own argv-basename detection (None), which is a positive Kiro test
-            # that follows the spawned BINARY — the cli-fronted KAS shape
-            # launches kiro-cli itself (internal sandbox, cannot nest inside
-            # Crew's seatbelt), while the direct Node shape keeps the seatbelt.
-            is_kiro_cli=(True if self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX else None),
+            is_kiro_cli=self._acp_backend in ACP_BACKENDS_INTERNAL_SANDBOX,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).

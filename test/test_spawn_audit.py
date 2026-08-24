@@ -769,13 +769,6 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # classification as ``cli_doctor.py::_doctor`` above.
         "cli_doctor.py::_discord_intent_grants",
         "cli_doctor.py::_doctor_mcp_tools",
-        # Read-only diagnostic for the KAS backend section: ``<kiro-cli> acp
-        # --help`` with a fully constant argv tail — the binary comes from
-        # ``shutil.which(KIRO_CLI_BIN)`` (a fixed name, never agent-supplied)
-        # and the two trailing tokens are module constants. Operator-invoked
-        # doctor, 15s-capped, help text only — no session, no mutation. Same
-        # classification as the other fixed-argv doctor probes.
-        "cli_doctor.py::_kas_engine_flag_supported",
         # Read-only diagnostic for the Source Checkout section: ``git -C <repo>
         # rev-parse/rev-list`` with a hardcoded argv whose only variable is the
         # install's own source directory (derived from the package's module
