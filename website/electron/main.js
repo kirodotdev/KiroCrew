@@ -994,23 +994,6 @@ function spawnGateway(resolve) {
             // gateway spawns (app servers run on the same interpreter), so
             // the whole process tree stays out of the bundle.
             PYTHONPYCACHEPREFIX: path.join(kirocrewDir, "cache", "pycache"),
-            // The kiro-cli copy staged into the app's resources at build
-            // time (packaging/build-desktop.sh, BUNDLE_KIRO_CLI). Spread
-            // only when the directory actually shipped: the backend ranks
-            // it above system installs but below the KIROCREW_KIRO_BIN
-            // operator override (kiro_cli.known_kiro_cli_dirs). A build
-            // without the payload leaves the env unset, so discovery falls
-            // through to the user's own install exactly as before.
-            ...(() => {
-              const bundledKiro = path.join(process.resourcesPath || "", "backend-dist", "kiro-cli");
-              try {
-                return fs.statSync(bundledKiro).isDirectory()
-                  ? { KIROCREW_BUNDLED_KIRO_DIR: bundledKiro }
-                  : {};
-              } catch {
-                return {};
-              }
-            })(),
           },
         });
         gatewayProcess = child;

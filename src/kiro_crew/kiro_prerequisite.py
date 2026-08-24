@@ -38,7 +38,6 @@ import hashlib
 import json
 import logging
 import os
-import shlex
 import shutil
 import stat
 import subprocess
@@ -46,7 +45,7 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections.abc import Awaitable, Callable, Mapping, MutableMapping
+from collections.abc import Awaitable, Callable, MutableMapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -76,15 +75,7 @@ OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
 # website/docs/i18n-catalog.md — "A literal token the user must type must never be
 # a catalog value"). Served in the status payload so the UI has one source of
 # truth for it rather than hardcoding a second copy that can drift.
-# The argument tails are split out so login_commands_for() can compose the
-# bundled-copy form (absolute path + same tail) without duplicating flag
-# literals that would drift. They carry the leading space DELIBERATELY: the
-# read-only-probe tripwire in test_kiro_prerequisite.py forbids the standalone
-# quoted token a spawn argv element would have, and these are display strings
-# the user types, never argv.
-_LOGIN_TAIL = " login"
-_SSO_LOGIN_TAIL = " login --use-device-flow --license pro"
-KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
+KIRO_CLI_LOGIN_COMMAND = "kiro-cli login"
 # The organization-SSO counterpart, served alongside the bare command so the gate
 # can offer both instead of one ambiguous line. Both flags are load-bearing:
 # ``--use-device-flow`` is what makes the others take effect at all (kiro-cli
@@ -94,35 +85,7 @@ KIRO_CLI_LOGIN_COMMAND = f"kiro-cli{_LOGIN_TAIL}"
 # failure this exists to prevent: on the portal, a free Builder ID sits as a
 # visual peer of organization SSO, so a user on an SSO plan can sign in to the
 # wrong tier and only discover it when models are missing.
-KIRO_CLI_SSO_LOGIN_COMMAND = f"kiro-cli{_SSO_LOGIN_TAIL}"
-
-
-def login_commands_for(
-    binary: str,
-    environ: Mapping[str, str],
-) -> tuple[str, str, bool]:
-    """Sign-in commands for the RESOLVED binary, plus whether it is bundled.
-
-    The desktop app's bundled kiro-cli (``KIROCREW_BUNDLED_KIRO_DIR``) is not
-    on the user's shell PATH, so when it is the copy that resolved, the served
-    commands must carry the binary's absolute path — otherwise the setup gate
-    asserts "installed" while its only on-screen instruction fails with
-    command-not-found on a fresh machine. The path is shlex-quoted because the
-    macOS resources path contains a space. Any other resolution keeps the bare
-    constants: the binary is on PATH by construction there.
-    """
-    bundled_dir = environ.get("KIROCREW_BUNDLED_KIRO_DIR", "").strip()
-    if bundled_dir and binary:
-        try:
-            inside = Path(binary).resolve().parent == Path(bundled_dir).resolve()
-        except OSError:
-            inside = False
-        if inside:
-            quoted = shlex.quote(binary)
-            return f"{quoted}{_LOGIN_TAIL}", f"{quoted}{_SSO_LOGIN_TAIL}", True
-    return KIRO_CLI_LOGIN_COMMAND, KIRO_CLI_SSO_LOGIN_COMMAND, False
-
-
+KIRO_CLI_SSO_LOGIN_COMMAND = "kiro-cli login --use-device-flow --license pro"
 # Compatibility shim, not live state. Nothing performs an operation any more, but a
 # dashboard loaded BEFORE this change reads ``status.operation.status``
 # unconditionally in its refetch-interval callback — the optional chain there
@@ -419,11 +382,6 @@ class PrerequisiteStatus:
     # tier is an explicit choice rather than whichever option the sign-in page
     # happens to make prominent.
     sso_login_command: str = KIRO_CLI_SSO_LOGIN_COMMAND
-    # True when the resolved binary is the desktop app's own bundled copy
-    # (KIROCREW_BUNDLED_KIRO_DIR). Provenance for the gate and diagnostics: a
-    # user comparing against a system install they upgraded can see WHICH
-    # kiro-cli answered, instead of chasing an upstream fix that never appears.
-    bundled: bool = False
     # A Kiro CLI binary that is present and executable but could not be VERIFIED
     # (verification runs the binary inside the sandbox) is a categorically
     # different condition from a missing binary, and a failed sandbox build
@@ -2544,9 +2502,6 @@ class KiroPrerequisiteService:
                         kind,
                         detail,
                     )
-                    login_cmd, sso_cmd, is_bundled = login_commands_for(
-                        first_candidate, self._environ
-                    )
                     self._status = PrerequisiteStatus(
                         platform=_platform_label(self._platform),
                         # Present and executable on disk. Verification is what
@@ -2558,9 +2513,6 @@ class KiroPrerequisiteService:
                         ready=False,
                         repair_required=False,
                         initial_setup_complete=self._initial_setup_complete,
-                        login_command=login_cmd,
-                        sso_login_command=sso_cmd,
-                        bundled=is_bundled,
                         sandbox_unavailable=True,
                         sandbox_failure_kind=kind,
                         sandbox_detail=detail,
@@ -2616,9 +2568,6 @@ class KiroPrerequisiteService:
                             first_candidate,
                             _PROBE_TIMEOUT_SECS,
                         )
-                    login_cmd, sso_cmd, is_bundled = login_commands_for(
-                        first_candidate, self._environ
-                    )
                     self._status = PrerequisiteStatus(
                         platform=_platform_label(self._platform),
                         installed=True,
@@ -2628,9 +2577,6 @@ class KiroPrerequisiteService:
                         ready=False,
                         repair_required=False,
                         initial_setup_complete=self._initial_setup_complete,
-                        login_command=login_cmd,
-                        sso_login_command=sso_cmd,
-                        bundled=is_bundled,
                         probe_timed_out=True,
                     )
                     self._last_probe_at = self._clock()
@@ -2672,9 +2618,6 @@ class KiroPrerequisiteService:
                 rejected, rejection_detail = await self._probe_spec_acceptance(
                     self._viable_binary
                 )
-            login_cmd, sso_cmd, is_bundled = login_commands_for(
-                self._viable_binary, self._environ
-            )
             self._status = PrerequisiteStatus(
                 platform=_platform_label(self._platform),
                 installed=True,
@@ -2684,9 +2627,6 @@ class KiroPrerequisiteService:
                 ready=whoami.ok and not rejected,
                 repair_required=bool(rejected),
                 initial_setup_complete=self._initial_setup_complete,
-                login_command=login_cmd,
-                sso_login_command=sso_cmd,
-                bundled=is_bundled,
                 rejected_agent_specs=rejected,
                 agent_spec_rejection_detail=rejection_detail,
             )

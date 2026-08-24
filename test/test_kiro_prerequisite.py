@@ -49,7 +49,6 @@ from kiro_crew.kiro_prerequisite import (
     ProcessResult,
     _run_process,
     find_kiro_cli_candidates,
-    login_commands_for,
 )
 
 
@@ -525,81 +524,6 @@ class TestKiroPrerequisiteHelpers:
         )
 
         assert str(executable) in candidates
-
-    def test_bundled_dir_ranks_above_system_installs(self, tmp_path: Path) -> None:
-        """KIROCREW_BUNDLED_KIRO_DIR (the desktop app's own copy) wins over a
-        user install, because the app was built against that exact version."""
-        bundled = tmp_path / "resources" / "kiro-cli" / "kiro-cli"
-        user_install = tmp_path / "home" / ".local" / "bin" / "kiro-cli"
-        _make_executable(bundled)
-        _make_executable(user_install)
-
-        resolved = resolve_kiro_cli(
-            platform_name="linux",
-            home=tmp_path / "home",
-            environ={"KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent), "PATH": ""},
-        )
-
-        assert resolved == str(bundled)
-
-    def test_operator_override_still_beats_the_bundled_dir(self, tmp_path: Path) -> None:
-        """KIROCREW_KIRO_BIN stays the highest-priority escape hatch: an
-        operator can force a different binary even on a bundled install."""
-        bundled = tmp_path / "resources" / "kiro-cli" / "kiro-cli"
-        forced = tmp_path / "operator" / "kiro-cli"
-        _make_executable(bundled)
-        _make_executable(forced)
-
-        resolved = resolve_kiro_cli(
-            platform_name="linux",
-            home=tmp_path / "home",
-            environ={
-                "KIROCREW_KIRO_BIN": str(forced),
-                "KIROCREW_BUNDLED_KIRO_DIR": str(bundled.parent),
-                "PATH": "",
-            },
-        )
-
-        assert resolved == str(forced)
-
-    def test_bundled_login_command_carries_the_absolute_path(self, tmp_path: Path) -> None:
-        """A bundled resolution serves sign-in commands the user can actually
-        run: the bundled copy is not on their shell PATH, and the macOS
-        resources path contains a space, so the path must be quoted."""
-        bundled_dir = tmp_path / "Kiro Res" / "kiro-cli"
-        binary = bundled_dir / "kiro-cli"
-        _make_executable(binary)
-
-        login, sso, bundled = login_commands_for(
-            str(binary), {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)}
-        )
-
-        assert bundled is True
-        assert login.endswith(" login")
-        assert str(bundled_dir) in login.replace("'", "")
-        assert "--license pro" in sso
-
-    def test_system_resolution_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
-        bundled_dir = tmp_path / "resources" / "kiro-cli"
-        bundled_dir.mkdir(parents=True)
-
-        login, sso, bundled = login_commands_for(
-            "/usr/local/bin/kiro-cli",
-            {"KIROCREW_BUNDLED_KIRO_DIR": str(bundled_dir)},
-        )
-
-        assert bundled is False
-        assert login == KIRO_CLI_LOGIN_COMMAND
-        assert sso == KIRO_CLI_SSO_LOGIN_COMMAND
-
-    def test_no_bundled_env_keeps_the_bare_login_command(self, tmp_path: Path) -> None:
-        binary = tmp_path / "resources" / "kiro-cli" / "kiro-cli"
-        _make_executable(binary)
-
-        login, _sso, bundled = login_commands_for(str(binary), {})
-
-        assert bundled is False
-        assert login == KIRO_CLI_LOGIN_COMMAND
 
     def test_windows_candidates_include_inherited_path(
         self,

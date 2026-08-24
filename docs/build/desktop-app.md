@@ -78,27 +78,6 @@ running **natively** on both Apple Silicon and Intel Macs. It needs only
 an Apple-Silicon host with Rosetta 2; the script fails fast with instructions
 otherwise, and `UNIVERSAL=0` is the opt-out.)
 
-### Bundled kiro-cli — the app carries its own agent runtime
-
-By default (`BUNDLE_KIRO_CLI=1`), the build stages a pinned, sha256-verified
-kiro-cli into the app's resources at `backend-dist/kiro-cli/`: the version is
-resolved from the official release manifest and the archive is verified
-fail-closed before staging, mirroring the Docker image's kiro-cli install. On
-macOS the binaries are extracted from the universal `Kiro CLI.dmg` (one copy
-serves both arches); Linux uses the matching per-arch zip. A
-`BUNDLED-VERSION` file beside the payload records provenance.
-
-At runtime the Electron shell exports the directory as
-`KIROCREW_BUNDLED_KIRO_DIR` when it spawns the gateway; the backend resolver
-ranks it **above** any system install (the app was built against that exact
-version) but **below** the `KIROCREW_KIRO_BIN` operator override. `kiro-cli
-login` is still the user's own step — bundling covers the binary, never the
-credential.
-
-`BUNDLE_KIRO_CLI=0 make desktop` opts a build out (the payload is large);
-the app then detects a system kiro-cli exactly as before. Windows builds
-never bundle (upstream ships only an MSI there).
-
 ### macOS opt-out and Linux — host-arch-only builds
 
 `UNIVERSAL=0 make desktop` (and every Linux build) produces an installer for

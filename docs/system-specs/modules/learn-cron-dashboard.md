@@ -907,13 +907,7 @@ still refresh while the dashboard body is blocked. On a new gateway it:
 3. once a viable CLI is found, names the commands the USER runs to sign in
    (`KIRO_CLI_LOGIN_COMMAND`, `kiro-cli login`, for a personal account, and
    `KIRO_CLI_SSO_LOGIN_COMMAND`, `kiro-cli login --use-device-flow --license pro`,
-   for organization SSO) and offers **Check again**. When the resolved binary
-   is the desktop app's bundled copy (`KIROCREW_BUNDLED_KIRO_DIR`), the served
-   commands carry the binary's shlex-quoted absolute path instead of the bare
-   name (`login_commands_for`): the bundled copy is not on the user's shell
-   PATH, so the bare command would fail with command-not-found on exactly the
-   fresh machine bundling targets, while the gate insists the CLI is
-   installed. The status payload's `bundled` flag records the provenance;
+   for organization SSO) and offers **Check again**;
 4. records first-run completion when `ready=true`.
 
 **Kiro Crew performs neither setup step, and there is no code path that could.**

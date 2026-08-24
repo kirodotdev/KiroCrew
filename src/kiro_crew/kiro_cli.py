@@ -194,31 +194,15 @@ def known_kiro_cli_dirs(
     *,
     include_inherited_path: bool = True,
 ) -> list[str]:
-    """Return fixed and inherited directories where Kiro CLI may be installed.
+    """Return fixed and inherited directories where Kiro CLI may be installed."""
 
-    ``KIROCREW_BUNDLED_KIRO_DIR`` names the copy the desktop app ships inside
-    its own resources (the Electron shell sets it at gateway spawn). It ranks
-    ABOVE every system install — the app was built and tested against that
-    exact version — but BELOW the ``KIROCREW_KIRO_BIN`` operator override in
-    :func:`find_kiro_cli_candidates`, so an operator can still force a
-    different binary. A directory (not a file) on purpose: kiro-cli 2.15+
-    exec-dispatches to sibling executables, so the whole layout must resolve
-    together.
-    """
-
-    dirs: list[str] = []
-    bundled = environ.get("KIROCREW_BUNDLED_KIRO_DIR", "").strip()
-    if bundled:
-        dirs.append(bundled)
     if platform_name == "win32":
-        dirs.append(str(Path(_windows_program_files(environ)) / "Kiro-Cli"))
+        dirs = [str(Path(_windows_program_files(environ)) / "Kiro-Cli")]
     else:
-        dirs.extend(
-            [
-                str(home / ".local" / "bin"),
-                str(home / ".cargo" / "bin"),
-            ]
-        )
+        dirs = [
+            str(home / ".local" / "bin"),
+            str(home / ".cargo" / "bin"),
+        ]
     if platform_name == "darwin":
         dirs.extend(
             [
