@@ -51,6 +51,7 @@
         "chat_turn_timeout_secs": 7200,
         "session_start_timeout_secs": 90,
         "tool_approval_timeout_secs": 600,
+        "session_control": false,
         "subagent_cost_gb": 0.5,
         "subagent_cpu_cost_cores": 1.0,
         "subagent_auto_max": 32,
@@ -661,6 +662,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 600
+    },
+    {
+      "path": "agent.session_control",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Session Control",
+      "help": "Let one chat session open a new session, and stop or read another session of yours. No session writes into another session's conversation: reading returns a transcript tail, stopping cancels an in-flight turn, and a created session starts empty for you to type into. Off by default: the three tools ride on a server you may already have assigned for other work, so reaching another session waits for you to grant it here rather than arriving with an upgrade. Sessions can only reach peers in the same workspace; incognito, app-scoped and scheduled sessions are never addressable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
     },
     {
       "path": "agent.subagent_cost_gb",
