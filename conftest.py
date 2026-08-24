@@ -13,7 +13,7 @@ test collected from any testpath, because what they protect is the
 developer's machine rather than the correctness of one suite. Everything that is
 merely suite-specific isolation stays in ``test/conftest.py``.
 
-The floor has five parts, and each one exists because the "remember to isolate
+The floor has six parts, and each one exists because the "remember to isolate
 this" contract failed at least once:
 
 * **Services.** ``$XDG_CONFIG_HOME`` is redirected and the stdlib spawn funnels
@@ -25,6 +25,10 @@ this" contract failed at least once:
   under ``src/kiro_crew/apps/builtins/*/tests/`` -- which see this conftest and no
   other -- write the operator's live ``~/.kiro/crew`` the moment they touch
   ``config_dir()``.
+* **Credential environment.** Recognised fixed credentials and validated
+  ``JIRA_TOKEN_<HEX>`` keys are restored after every test, so a fabricated
+  ``.env`` cannot silently override the next test's credentials in the same
+  worker.
 * **The agent-spec home.** ``kiro_agents_dir()`` is a LAZY resolver, so neither of
   the two above reaches it, and a test that reaches the spec write path rewrites
   the machine-wide ``<kiro home>/agents/kirocrew.json`` -- the file that decides
@@ -384,20 +388,27 @@ def _no_credential_env_residue():
     token from one file's temp ``.env`` silently satisfied the other's assertion,
     and only when both landed in the same worker.
 
-    Bounded to the recognised credential keys, so this is two dict passes over
-    ~20 names per test and cannot mask an unrelated environment change.
+    Bounded to the recognised fixed keys and the validated ``JIRA_TOKEN_<HEX>``
+    shape. Two linear environment scans per test also catch a dynamic key that
+    did not exist at setup, without masking an unrelated environment change.
     """
-    from kiro_crew.config.loader import _CREDENTIAL_KEYS
+    from kiro_crew.config.loader import _CREDENTIAL_KEYS, _JIRA_TOKEN_RE
 
-    before = {key: os.environ.get(key) for key in _CREDENTIAL_KEYS}
+    fixed = frozenset(_CREDENTIAL_KEYS)
+
+    def _is_credential(key: str) -> bool:
+        return key in fixed or _JIRA_TOKEN_RE.match(key) is not None
+
+    before = {key: value for key, value in os.environ.items() if _is_credential(key)}
     try:
         yield
     finally:
-        for key, value in before.items():
-            if value is None:
+        current = {key for key in os.environ if _is_credential(key)}
+        for key in current | before.keys():
+            if key not in before:
                 os.environ.pop(key, None)
             else:
-                os.environ[key] = value
+                os.environ[key] = before[key]
 
 
 @pytest.fixture(autouse=True)

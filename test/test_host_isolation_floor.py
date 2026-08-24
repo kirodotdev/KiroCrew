@@ -761,6 +761,30 @@ class TestTheWorkingDirectoryIsRestored:
         )
 
 
+_DYNAMIC_CREDENTIAL_ORDER: dict[str, bool] = {}
+
+
+@pytest.mark.xdist_group(name="dynamic_credential_env_floor")
+class TestDynamicCredentialEnvironmentIsRestored:
+    """A dynamic per-host Jira token must not leak to the next test.
+
+    ``load_credentials`` propagates ``JIRA_TOKEN_<HEX>`` keys even though they
+    are not members of the fixed ``_CREDENTIAL_KEYS`` tuple. Keep these tests
+    adjacent on one worker so the second observes the first test's teardown.
+    """
+
+    def test_a_test_can_inject_a_dynamic_jira_token(self) -> None:
+        os.environ["JIRA_TOKEN_AABBCC"] = "token-from-previous-test"
+        _DYNAMIC_CREDENTIAL_ORDER["injected"] = True
+
+    def test_the_next_test_does_not_inherit_the_dynamic_token(self) -> None:
+        assert _DYNAMIC_CREDENTIAL_ORDER.get("injected"), (
+            "the injecting test did not run on this worker, so this assertion "
+            "would prove nothing"
+        )
+        assert "JIRA_TOKEN_AABBCC" not in os.environ
+
+
 # ── the logging record factory ─────────────────────────────────────────────
 
 
