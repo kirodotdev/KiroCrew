@@ -16,6 +16,7 @@ import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import type { Artifact } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 interface Props {
   slug: string
   /** Kind captured at open time; the live query overrides it once loaded. */
@@ -107,6 +108,7 @@ function SubmitBar({ count, submitting, onSubmit, bleed = false }: {
  * full-page `iterateWithAgent` navigate — and only for human comments.
  */
 export default memo(function ArtifactPanel({ slug, kind, content, onClose, onSubmitComments, embedded, scrollMemoryKey }: Props) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const navigate = useNavigate()
   const previewRef = useRef<HTMLDivElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)

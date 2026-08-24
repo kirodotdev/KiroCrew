@@ -4,6 +4,7 @@ import { ChevronRight, Info, Layers, RotateCcw, TriangleAlert } from 'lucide-rea
 import { i18nT } from '../../i18n/t'
 import { DENY_REASON_MARKER } from '../../utils/denyReason'
 import { useRowDisclosure } from './rowDisclosure'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 /**
  * The synthetic-continuation prefixes the gateway prepends when it recovers a
@@ -389,6 +390,7 @@ export function resolveInjectCard(m: { content: string; meta?: Record<string, un
  * NudgeCard.
  */
 export default memo(function RecoveryCard({ parsed, disclosureKey }: { parsed: ParsedRecovery; disclosureKey?: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { kind, title, detail, chip, body } = parsed
   // Severity split: a refusal or a stall means something was blocked or died and

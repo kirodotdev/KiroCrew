@@ -12,6 +12,7 @@ import type { FileType } from './FileRenderers'
 import type { Artifact, ArtifactComment } from '../types'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 // Shared renderer for the full-page route and the chat side-panel Artifacts
 // tab (markdown/text/json/svg natively via ContentRenderer; widget/html via
 // the sandboxed iframe).
@@ -105,6 +106,7 @@ export const ArtifactBodyNative = memo(function ArtifactBodyNative({
    *  fight the first over recording). */
   scrollMemoryKey?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const fileType = fileTypeForKind(kind)
   const ext = extForKind(kind)
   const isRichType = fileType === 'json' || fileType === 'svg' || fileType === 'html' || fileType === 'image' || fileType === 'csv' || fileType === 'pdf'
@@ -179,6 +181,7 @@ export const ArtifactBodyIframe = memo(function ArtifactBodyIframe({
   /** Override the iframe height (side-panel fit). */
   heightStyle?: React.CSSProperties
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -302,6 +305,7 @@ export const ArtifactBodyImage = memo(function ArtifactBodyImage({
    *  bodies. Falls back to the full-page reading height. */
   heightStyle?: React.CSSProperties
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = artifactAssetUrl(slug)
   const alt = artifact.image?.alt || artifact.name
   const downloadName =

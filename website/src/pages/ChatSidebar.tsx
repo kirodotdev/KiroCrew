@@ -77,6 +77,7 @@ import { focusSiblingSessionRow, SESSION_ROW_SELECTOR } from './chat/sessionRowN
 import { focusComposer } from './chat/composerFocus'
 import { compareBySort, comparePinnedThenSort, fmtRelativeTime, slotActivityTs } from './chat/sessionOrder'
 import type { SortKey } from './chat/sessionOrder'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 import { i18nT } from '../i18n/t'
 import { fmtDateFields, fmtList } from '../i18n/format'
@@ -1323,6 +1324,7 @@ function ChatSidebar({
   defaultAgent, installedAgents, mode, onWidthChange, onDragChange, onSelectSlot, onOpenSource, collapsible,
   chatDropTarget, onDropSessionRef,
 }: ChatSidebarProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const ime = useImeGuard()

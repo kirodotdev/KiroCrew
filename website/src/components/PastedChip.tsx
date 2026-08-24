@@ -8,6 +8,7 @@ import { PREVIEW_OPEN_DELAY_MS, PREVIEW_MAX_HEIGHT } from './pastePreviewConstan
 import PastePreviewTooltip from './PastePreviewTooltip'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /**
  * Inline chip shown in a sent user bubble in place of a collapsed-paste token.
@@ -26,6 +27,7 @@ import { i18nT } from '../i18n/t'
  * visible) and dismisses on mouse-out/blur/scroll.
  */
 function PastedChip({ block }: { block: PasteBlock }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useState(false)
   const [anchor, setAnchor] = useState<{ left: number; top: number; below: boolean } | null>(null)
   const btnRef = useRef<HTMLButtonElement | null>(null)

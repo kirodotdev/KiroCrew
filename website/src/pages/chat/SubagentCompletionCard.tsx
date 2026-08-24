@@ -26,6 +26,7 @@ import {
   type ParsedSubagentCompletion,
   type SubagentOutcome,
 } from './subagentCompletion'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 function outcomeLabel(outcome: SubagentOutcome): string {
   if (outcome === 'failed') return i18nT('pages.chat.subagentCompletionCard.failed')
@@ -100,6 +101,7 @@ const SubagentCompletionCard = memo(function SubagentCompletionCard({
    *  (the embed SDK), which then render the card without the button. */
   onOpenPanel?: (parsed: ParsedSubagentCompletion) => void
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const parsed = parseSubagentCompletionMessage(message)
   const failed = parsed !== null && (parsed.kind === 'single' ? parsed.outcome === 'failed' : parsed.failed > 0)
   // A restart orphan: the run was cut short but its result survived on disk, so

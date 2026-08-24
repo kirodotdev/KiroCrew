@@ -5,6 +5,7 @@ import DOMPurify from 'dompurify'
 import { i18nT } from '../i18n/t'
 import { ExcalidrawBlock } from './ExcalidrawBlock'
 import { fileDownloadUrl, fileStreamUrl } from '../utils/fileReadUrl'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 /* ── extension helpers ── */
 const IMG_EXTS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico'])
 const CSV_EXTS = new Set(['.csv', '.tsv'])
@@ -67,6 +68,7 @@ function extOf(fp: string) { const i = fp.lastIndexOf('.'); return i >= 0 ? fp.s
 
 /* ── Image viewer ── */
 export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   return (
     <div className="flex items-center justify-center h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
       <img
@@ -84,6 +86,7 @@ export const ImageViewer = memo(function ImageViewer({ filePath }: { filePath: s
  * content, not on disk. DOMPurify with the SVG profile strips dangerous
  * elements (script, foreignObject) while preserving normal SVG markup. */
 export const SvgViewer = memo(function SvgViewer({ content }: { content: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const safe = useMemo(
     () => DOMPurify.sanitize(content, { USE_PROFILES: { svg: true, svgFilters: true } }),
     [content],
@@ -101,6 +104,7 @@ export const SvgViewer = memo(function SvgViewer({ content }: { content: string 
  * surfaces share one renderer and stay in sync. Read-only: opening a scene
  * never mutates the file on disk. */
 export const ExcalidrawViewer = memo(function ExcalidrawViewer({ content }: { content: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   return (
     <div className="h-full overflow-auto p-4 bg-bg-elevated rounded-md border border-border">
       <ExcalidrawBlock code={content} className="flex justify-center min-h-[60px]" />
@@ -110,6 +114,7 @@ export const ExcalidrawViewer = memo(function ExcalidrawViewer({ content }: { co
 
 /* ── CSV table viewer ── */
 export const CsvViewer = memo(function CsvViewer({ content, filePath }: { content: string; filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const delimiter = extOf(filePath) === '.tsv' ? '\t' : ','
   const rows = useMemo(() => {
     const lines = content.split('\n').filter(l => l.trim())
@@ -154,6 +159,7 @@ export const CsvViewer = memo(function CsvViewer({ content, filePath }: { conten
 
 /* ── JSON tree viewer ── */
 export const JsonViewer = memo(function JsonViewer({ content }: { content: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const parsed = useMemo(() => {
     try { return { ok: true as const, value: JSON.parse(content) } }
     catch (e) { return { ok: false as const, error: e instanceof Error ? e.message : String(e) } }
@@ -223,6 +229,7 @@ function JsonNode({ value, depth }: { value: unknown; depth: number }) {
 const JSONL_PAGE_SIZE = 100
 
 export const JsonlViewer = memo(function JsonlViewer({ content }: { content: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const lines = useMemo(() => content.split('\n').filter(l => l.trim()), [content])
   const [visible, setVisible] = useState(JSONL_PAGE_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
@@ -252,6 +259,7 @@ export const JsonlViewer = memo(function JsonlViewer({ content }: { content: str
 
 /* ── HTML preview (sandboxed iframe) ── */
 export const HtmlViewer = memo(function HtmlViewer({ content }: { content: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   return (
     <div className="h-full border border-border rounded-md overflow-hidden bg-white">
       <iframe
@@ -266,6 +274,7 @@ export const HtmlViewer = memo(function HtmlViewer({ content }: { content: strin
 
 /* ── PDF viewer (embedded + fallback open externally) ── */
 export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = '/api/file-raw?path=' + encodeURIComponent(filePath)
   return (
     <div className="h-full border border-border rounded-md overflow-hidden bg-white flex flex-col">
@@ -290,6 +299,7 @@ export const PdfViewer = memo(function PdfViewer({ filePath }: { filePath: strin
  * /api/file-download, which streams the original bytes with attachment
  * disposition + nosniff so the file downloads cleanly instead. */
 export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: { filePath: string; hideHint?: boolean }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Split on BOTH separators — Kiro Crew ships native on Windows where paths
   // arrive as `C:\Users\…\report.docx`, and a `/`-only split would surface the
   // whole path as the "filename". Matches the pattern in MarkdownRenderer.tsx
@@ -329,6 +339,7 @@ export const OfficeViewer = memo(function OfficeViewer({ filePath, hideHint }: {
 
 /* ── Media player (inline video/audio via /api/file-stream) ── */
 export const MediaPlayer = memo(function MediaPlayer({ filePath, kind }: { filePath: string; kind: 'video' | 'audio' }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [failed, setFailed] = useState(false)
   const filename = filePath.split(/[\\/]/).pop() || filePath
   const src = fileStreamUrl(filePath)
@@ -418,6 +429,7 @@ export function columnLetter(index: number): string {
 }
 
 export const SheetViewer = memo(function SheetViewer({ filePath }: { filePath: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [payload, setPayload] = useState<SheetPayload | null>(null)
   const [failed, setFailed] = useState(false)
   const [active, setActive] = useState(0)

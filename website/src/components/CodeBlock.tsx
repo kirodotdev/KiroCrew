@@ -5,12 +5,14 @@ import { PierreCode } from '../pierre'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 export const CodeBlock = memo(function CodeBlock(
   { code, lang, complete, headerActions }: {
     code: string; lang?: string; complete: boolean; headerActions?: React.ReactNode
   },
 ) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   const copy = () => { copyCode(code); setCopied(true); setTimeout(() => setCopied(false), 1500) }
   // Stable file identity per (code, lang): Pierre diffs options/files by

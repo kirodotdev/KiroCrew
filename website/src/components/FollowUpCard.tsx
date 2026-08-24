@@ -3,6 +3,7 @@ import { GitBranch, Lightbulb, Plus, X } from 'lucide-react'
 import type { FollowupItem } from '../store/chatSlice'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FollowUpCardProps {
   items: FollowupItem[]
   /** Pre-fill THIS session's composer with the item's expanded prompt. */
@@ -42,6 +43,7 @@ function FollowUpCard({
   onSkip,
   projectDir,
 }: FollowUpCardProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Index of the item whose worktree is being created, so only that row shows
   // a pending state and double-clicks cannot fire two `worktree add` calls.
   const [busyIndex, setBusyIndex] = useState<number | null>(null)

@@ -4,6 +4,7 @@ import Clickable from './Clickable'
 import { copyToClipboard } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /**
  * Side-by-side / unified diff viewer (Pierre-rendered).
@@ -17,6 +18,7 @@ export default memo(function DiffPanel({ filePath, original, modified, sideBySid
   sideBySide?: boolean
   lineNumbers?: boolean
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Show the banner only when both sides carry content and it's the same.
   // Both-empty is a degenerate "new empty file" state, not a meaningful
   // identical comparison — let it fall through to the diff gracefully.

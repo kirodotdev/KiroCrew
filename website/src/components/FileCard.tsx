@@ -3,6 +3,7 @@ import { Music, Video, Image, Paperclip, ArrowDown } from 'lucide-react'
 
 import { i18nT } from '../i18n/t'
 import { fmtBytes } from '../i18n/format'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 export interface FileData {
   filename: string
   description?: string
@@ -12,6 +13,7 @@ export interface FileData {
 
 /** Renders a file embed card — inline audio/video player or download link. */
 export const FileCard = memo(function FileCard({ file }: { file: FileData }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const url = `/api/outbox/${encodeURIComponent(file.filename)}`
   const mime = (file.content_type || '') as string
 

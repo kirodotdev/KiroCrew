@@ -9,6 +9,7 @@ import { PIERRE_COMPACT_HEADER_CSS, PIERRE_WRAP_NO_HSCROLL_CSS, PIERRE_SEPARATOR
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /** Extract the target file path from unified-diff header lines.
  *
@@ -90,6 +91,7 @@ export function extractFilePath(code: string): { path: string; prefixStripped: b
 const ROOTLESS_ABS_RE = /^(home|Users|tmp|var|opt|workplace)\//
 
 export default memo(function DiffBlock({ code, complete, onFileOpen, pathHint, streaming, onFold }: { code: string; complete: boolean; onFileOpen?: (path: string) => void; pathHint?: string; streaming?: boolean; onFold?: () => void }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [copied, setCopied] = useState(false)
   const [sideBySide, setSideBySide] = useState(false)
   // Resolve the file path: prefer headers inside the diff, fall back to the

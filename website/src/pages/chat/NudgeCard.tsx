@@ -4,6 +4,7 @@ import type { ChatMessage } from '../../types'
 
 import { i18nT } from '../../i18n/t'
 import { useRowDisclosure } from './rowDisclosure'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 /** Matches the `[auto-nudge cycle N]` prefix the gateway prepends to nudge turns. */
 const NUDGE_TAG_RE = /^\[auto-nudge cycle (\d+)\]\n?/
 
@@ -83,6 +84,7 @@ export default memo(function NudgeCard({
   onOpenLoop?: () => void
   disclosureKey?: string
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
   const { cycle, body } = parseNudgeMessage(message)
   const firstLine = body.split('\n').find(l => l.trim().length > 0)?.trim() ?? ''

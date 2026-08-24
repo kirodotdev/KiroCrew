@@ -7,6 +7,7 @@ import RunInTerminalBtn, { SHELL_LANGS } from './RunInTerminalBtn'
 import { useTerminalEnabled } from '../utils/terminalRegistry'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /** djb2 over the snippet, so two same-language snippets that happen to share a
  *  character count get distinct cache keys. A hash and not the text itself:
@@ -24,6 +25,7 @@ function contentHash(text: string): string {
 const EditableCodeBlock = memo(function EditableCodeBlock(
   { code, lang, complete }: { code: string; lang?: string; complete: boolean },
 ) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const [editing, setEditing] = useState(false)
   const [copied, setCopied] = useState(false)
   const valueRef = useRef(code)

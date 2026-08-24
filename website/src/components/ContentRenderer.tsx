@@ -19,6 +19,7 @@ import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer,
 import { PierreCode, PierreEditor, type PierreEditorHandle } from '../pierre'
 
 import { i18nT } from '../i18n/t'
+import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 export const MD_EXTS = new Set(['.md', '.markdown', '.mdx', '.txt', ''])
 
@@ -196,6 +197,7 @@ export const ContentRenderer = memo(function ContentRenderer({
   /** Split vs unified layout for the live-diff editing surface. */
   diffSplit?: boolean
 }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const codeFile = useMemo(
     () => ({ name: filePath?.split('/').pop() || `file.${lang}`, contents: content }),
     [filePath, lang, content],

@@ -2,6 +2,7 @@ import { memo } from 'react'
 import { Loader2, Play } from 'lucide-react'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 export interface ErrorCardProps {
   /** Server- or client-authored error prose, rendered verbatim. */
@@ -30,6 +31,7 @@ export interface ErrorCardProps {
  * feature, and there is no state the user could reach that would enable it.
  */
 export const ErrorCard = memo(function ErrorCard({ content, onContinue, continuing }: ErrorCardProps) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   if (!onContinue) {
     return (
       <div

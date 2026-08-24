@@ -6,6 +6,7 @@ import { ROW_PILL_BUTTON_CLASS, ROW_PILL_WRAPPER_CLASS, ROW_RAIL_CLASS } from '.
 import { useStreamIdle } from './ChatFooter'
 
 import { i18nT } from '../../i18n/t'
+import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 
 /** Newest slice of the reasoning kept for the one-line live preview. Bounded so
  *  a long trace does not put tens of kB of nowrap text in the DOM on every
@@ -40,6 +41,7 @@ function liveTail(content: string): string {
  * partial/ill-formed and shouldn't run through the markdown renderer.
  */
 function ThinkingBlock({ content, disclosureKey }: { content: string; disclosureKey?: string }) {
+  useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   // Held outside the row: the transcript is virtualised, so this block is
   // unmounted whenever its row leaves the mounted window.
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, false)
