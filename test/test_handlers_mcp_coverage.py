@@ -123,6 +123,39 @@ def _known(monkeypatch: pytest.MonkeyPatch, *names: str) -> None:
     monkeypatch.setattr(disc, "list_servers", lambda *a, **k: list(rows))
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("handler", "body", "code"),
+    [
+        (mcp_mod.api_mcp_toggle, {"name": []}, "mcp_server_name_type_invalid"),
+        (
+            mcp_mod.api_mcp_toggle_tool,
+            {"server": {}, "tool": "ReadFile"},
+            "mcp_server_name_type_invalid",
+        ),
+        (
+            mcp_mod.api_mcp_toggle_tool,
+            {"server": "srv", "tool": 7},
+            "mcp_tool_name_type_invalid",
+        ),
+        (mcp_mod.api_mcp_remove, {"name": True}, "mcp_server_name_type_invalid"),
+    ],
+)
+async def test_mutations_reject_non_string_identifiers_before_writes(
+    sandbox: SimpleNamespace,
+    handler,
+    body: dict[str, Any],
+    code: str,
+) -> None:
+    resp = await handler(_request(body))
+
+    assert resp.status == 400
+    assert _payload(resp)["code"] == code
+    assert not sandbox.global_json.exists()
+    assert sandbox.synced == []
+    assert sandbox.batched == []
+
+
 # ── POST /api/mcp/toggle ────────────────────────────────────────────────
 
 

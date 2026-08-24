@@ -213,6 +213,23 @@ def _write_mcp_json(data: dict) -> None:
     _atomic_json_write(_GLOBAL_MCP_JSON, data)
 
 
+def _mcp_identifier(
+    body: dict,
+    field: str,
+    *,
+    label: str,
+    code: str,
+) -> tuple[str, web.Response | None]:
+    """Normalize an MCP identifier or return its field-contract response."""
+    value = body.get(field, "")
+    if not isinstance(value, str):
+        return "", web.json_response(
+            {"error": f"{label} must be a string", "code": code},
+            status=400,
+        )
+    return value.strip(), None
+
+
 # ── MCP Servers ──
 
 
@@ -1047,7 +1064,14 @@ async def api_mcp_toggle(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    name = body.get("name", "").strip()
+    name, error = _mcp_identifier(
+        body,
+        "name",
+        label="server name",
+        code="mcp_server_name_type_invalid",
+    )
+    if error is not None:
+        return error
     enabled = body.get("enabled", True)
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
@@ -1111,8 +1135,22 @@ async def api_mcp_toggle_tool(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    server = body.get("server", "").strip()
-    tool = body.get("tool", "").strip()
+    server, error = _mcp_identifier(
+        body,
+        "server",
+        label="server name",
+        code="mcp_server_name_type_invalid",
+    )
+    if error is not None:
+        return error
+    tool, error = _mcp_identifier(
+        body,
+        "tool",
+        label="tool name",
+        code="mcp_tool_name_type_invalid",
+    )
+    if error is not None:
+        return error
     enabled = body.get("enabled", True)
     if not server or not tool:
         return web.json_response({"error": "server and tool are required"}, status=400)
@@ -1219,7 +1257,14 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
-    name = body.get("name", "").strip()
+    name, error = _mcp_identifier(
+        body,
+        "name",
+        label="server name",
+        code="mcp_server_name_type_invalid",
+    )
+    if error is not None:
+        return error
     if not name:
         return web.json_response({"error": "name is required"}, status=400)
 
