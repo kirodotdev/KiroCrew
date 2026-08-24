@@ -237,7 +237,13 @@ class TestPreTurnRatchet:
         # checks (wecom additionally clears attachments there and ingests
         # media before rotating), so folding them into the helper is a
         # behaviour change that needs its own review, not a rider here.
-        exempt = {"telegram", "discord", "teams", "slack", "weixin", "wecom"}
+        # whatsapp is exempt on the same basis: its dispatcher runs its own
+        # pre-turn sequence with its own busy check (is_busy -> _handle_busy,
+        # then maybe_rotate). Unlike weixin/wecom there is no structural
+        # obstacle -- its _handle_busy mirrors webex's, so migration looks
+        # mechanical -- but it is still a behaviour change that gets its own
+        # review, not a rider in a main-red unblock (#5448).
+        exempt = {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp"}
         rostered = {d.channel_type for d in builtin_channel_descriptors()}
         unaccounted = rostered - set(_PRE_TURN_CHANNELS) - exempt
         assert not unaccounted, (
