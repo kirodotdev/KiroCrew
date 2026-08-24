@@ -21,6 +21,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.knowledge.store import KnowledgeStore
 
@@ -910,6 +911,70 @@ class TestImportBundle:
             assert resp.status == 200
         assert store.db.execute("SELECT COUNT(*) c FROM sources").fetchone()["c"] == 1
         assert store.db.execute("SELECT COUNT(*) c FROM entities").fetchone()["c"] == 1
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc", [
+        pytest.param(sqlite3.OperationalError("database is locked"), id="locked-db"),
+        pytest.param(sqlite3.OperationalError("disk I/O error"), id="full-disk"),
+        pytest.param(sqlite3.InterfaceError("bad binding"), id="interface"),
+        pytest.param(sqlite3.InternalError("corrupt page"), id="internal"),
+    ])
+    async def test_operational_store_failure_is_500_not_400(self, store, monkeypatch, exc):
+        # A locked DB past busy_timeout or a full disk is not the client's
+        # fault: 400 "malformed bundle" for a valid file sends the user off
+        # debugging their export.  Every non-bad-bundle sqlite3.Error must
+        # surface as a 5xx with a generic body.
+        def exploding_import(bundle):
+            raise exc
+        monkeypatch.setattr(store, "import_bundle", exploding_import)
+        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
+                             "item_type": "note"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 500
+            body = await resp.json()
+        assert body["code"] == "knowledge_import_failed"
+        assert body["error"] == "internal server error"
+        assert str(exc) not in body["error"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exc", [
+        pytest.param(sqlite3.IntegrityError("FOREIGN KEY constraint failed"),
+                     id="integrity"),
+        pytest.param(sqlite3.ProgrammingError("Incorrect number of bindings"),
+                     id="programming"),
+        pytest.param(sqlite3.DataError("string or blob too big"), id="data"),
+    ])
+    async def test_bad_bundle_store_failure_is_still_400(self, store, monkeypatch, exc):
+        # The narrowed arm must keep classifying genuine bad-bundle failures
+        # as 400 -- IntegrityError (constraints), ProgrammingError and
+        # DataError (bad values reaching the SQL layer).
+        def exploding_import(bundle):
+            raise exc
+        monkeypatch.setattr(store, "import_bundle", exploding_import)
+        bundle = {"items": [{"id": "i1", "title": "t", "content": "c",
+                             "item_type": "note"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+
+    @pytest.mark.asyncio
+    async def test_client_error_carries_no_raw_exception_text(self, store):
+        # The dashboard renders ``error`` verbatim into a localized UI, so
+        # raw driver/exception text must never reach the client -- on either
+        # the 400 arm (e2e via a real FK violation) or the 500 arm (covered
+        # above).  Server-side logs keep the detail instead.
+        bundle = {"source_locations": [
+            {"id": "sl1", "item_id": "missing-item", "source_id": "missing-source"}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["error"] == "malformed bundle"
+        assert "FOREIGN KEY" not in body["error"]
+        assert "constraint" not in body["error"].lower()
 
 
 # ----------------------------------------------------------------- embeddings

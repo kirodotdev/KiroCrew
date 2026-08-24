@@ -1620,15 +1620,34 @@ async def import_bundle(request: web.Request) -> web.Response:
         rel["description"] = _redact(rel.get("description"))
     try:
         result = _store(request).import_bundle(body)
-    except (KeyError, sqlite3.Error, OverflowError) as exc:
-        # OverflowError: a bundle integer field (e.g. chunk_index) too large
-        # for SQLite's 64-bit INTEGER, raised at bind time inside the store
-        # call -- neither a KeyError nor a sqlite3.Error, so it needs its own
-        # arm or it leaks through as an unhandled 500.
+    except (KeyError, OverflowError, sqlite3.IntegrityError,
+            sqlite3.ProgrammingError, sqlite3.DataError) as exc:
+        # Only failures that genuinely mean a bad bundle earn a 400:
+        # IntegrityError (constraint/FK violations), ProgrammingError and
+        # DataError (bad values reaching the SQL layer), KeyError (missing
+        # required field), and OverflowError (a bundle integer field, e.g.
+        # chunk_index, too large for SQLite's 64-bit INTEGER, raised at bind
+        # time inside the store call -- neither a KeyError nor a
+        # sqlite3.Error, so it needs its own arm).  The exception detail
+        # stays server-side: the dashboard renders ``error`` verbatim, so
+        # raw driver text must not reach the client.
+        logger.warning("Knowledge bundle import rejected: %s", exc)
         _sel_log("import", outcome="rejected", reason=str(exc))
         return web.json_response(
-            {"error": f"malformed bundle: {exc}", "code": "malformed_knowledge_bundle"},
+            {"error": "malformed bundle", "code": "malformed_knowledge_bundle"},
             status=400,
+        )
+    except sqlite3.Error as exc:
+        # Operational store failures -- OperationalError from a locked DB
+        # past busy_timeout or a full disk, and every other sqlite3.Error --
+        # are not the client's fault: a 400 "malformed bundle" for a valid
+        # file sends the user off debugging their export.  Surface them as a
+        # 5xx with a generic body; the detail is logged server-side only.
+        logger.exception("Knowledge bundle import failed in the store")
+        _sel_log("import", outcome="error", reason=str(exc))
+        return web.json_response(
+            {"error": "internal server error", "code": "knowledge_import_failed"},
+            status=500,
         )
     _sel_log("import", **result)
     return web.json_response(result)
