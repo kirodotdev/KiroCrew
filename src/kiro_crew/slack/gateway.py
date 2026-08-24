@@ -9587,6 +9587,15 @@ class GatewayOrchestrator:
                 ),
             ),
             (
+                "feishu",
+                "Feishu",
+                self._cfg.feishu.enabled,
+                (
+                    (CRED_FEISHU_APP_ID, self._feishu_app_id),
+                    (CRED_FEISHU_APP_SECRET, self._feishu_app_secret),
+                ),
+            ),
+            (
                 "discord",
                 "Discord",
                 self._cfg.discord.enabled,

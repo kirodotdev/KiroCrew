@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
@@ -7102,6 +7103,128 @@ class TestMandatoryUpdateOnWheelInstall:
 # ─── Channel skip-reason warning on the PRODUCTION start path (#304, #5418) ──
 
 
+_UNCREDENTIALED_PROBE_EXEMPTIONS = {
+    # Slack has credential operands, but no cfg.slack.enabled setting: an
+    # absent token pair means "not configured", rather than an enabled channel
+    # that was silently skipped.
+    "slack": "token-driven enablement with no config enabled flag",
+    # These transports are config-only. Their runtime pairing/prerequisite
+    # diagnostics live in the channel implementation, not in credential env.
+    "whatsapp": "config-only enablement; pairing state is not a credential operand",
+    "imessage": "config-only enablement through the signed-in Messages.app",
+}
+
+
+def _gateway_method(name: str) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    tree = ast.parse(Path(gw.__file__).read_text(encoding="utf-8"))
+    gateway_class = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "GatewayOrchestrator"
+    )
+    return next(
+        node
+        for node in gateway_class.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+    )
+
+
+def _collapsed_enabled_operands() -> dict[str, set[str]]:
+    """Return self-attribute operands read by each collapsed enabled flag."""
+    found: dict[str, set[str]] = {}
+    for node in ast.walk(_gateway_method("__init__")):
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
+            continue
+        target = node.targets[0]
+        if not (
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "self"
+            and target.attr.startswith("_")
+            and target.attr.endswith("_enabled")
+        ):
+            continue
+        channel = target.attr.removeprefix("_").removesuffix("_enabled")
+        found[channel] = {
+            child.attr
+            for child in ast.walk(node.value)
+            if isinstance(child, ast.Attribute)
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "self"
+        }
+    return found
+
+
+def _uncredentialed_probe_operands() -> dict[str, set[str]]:
+    """Return the self-attribute values named by each production probe row."""
+    assignment = next(
+        node
+        for node in ast.walk(_gateway_method("_start_channel_transports"))
+        if isinstance(node, ast.AnnAssign)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "uncredentialed_probe_rows"
+    )
+    assert isinstance(assignment.value, ast.Tuple)
+    found: dict[str, set[str]] = {}
+    for row in assignment.value.elts:
+        assert isinstance(row, ast.Tuple) and len(row.elts) == 4
+        channel_node, _, _, credentials_node = row.elts
+        assert isinstance(channel_node, ast.Constant) and isinstance(channel_node.value, str)
+        assert isinstance(credentials_node, ast.Tuple)
+        found[channel_node.value] = {
+            pair.elts[1].attr
+            for pair in credentials_node.elts
+            if isinstance(pair, ast.Tuple)
+            and len(pair.elts) == 2
+            and isinstance(pair.elts[1], ast.Attribute)
+            and isinstance(pair.elts[1].value, ast.Name)
+            and pair.elts[1].value.id == "self"
+        }
+    return found
+
+
+class TestUncredentialedProbeRatchet:
+    """Keep collapsed enable predicates and their skip-reason probes aligned."""
+
+    def test_every_rostered_channel_is_accounted_for(self) -> None:
+        from kiro_crew.channels import builtin_channel_descriptors
+
+        rostered = {descriptor.channel_type for descriptor in builtin_channel_descriptors()}
+        accounted = set(_uncredentialed_probe_operands()) | set(
+            _UNCREDENTIALED_PROBE_EXEMPTIONS
+        )
+        assert rostered == accounted, (
+            "rostered channels must have an uncredentialed probe row or an "
+            "explicit config-only/token-driven exemption; "
+            f"missing={sorted(rostered - accounted)}, "
+            f"stale={sorted(accounted - rostered)}"
+        )
+
+    def test_each_probe_tracks_the_predicate_operands(self) -> None:
+        enabled = _collapsed_enabled_operands()
+        probes = _uncredentialed_probe_operands()
+        mismatched = {
+            channel: {
+                "predicate": sorted(enabled.get(channel, set())),
+                "probe": sorted(operands),
+            }
+            for channel, operands in probes.items()
+            if enabled.get(channel) != operands
+        }
+        assert not mismatched, (
+            "uncredentialed probe rows must name exactly the self-attribute "
+            f"operands read by their _<channel>_enabled predicate: {mismatched}"
+        )
+
+    def test_exemptions_are_not_credential_probe_rows(self) -> None:
+        overlap = set(_uncredentialed_probe_operands()) & set(
+            _UNCREDENTIALED_PROBE_EXEMPTIONS
+        )
+        assert not overlap, (
+            "a channel cannot be both credential-probed and exempt: " f"{sorted(overlap)}"
+        )
+
+
 # One row per collapsed-flag channel the enabled-but-uncredentialed WARNING
 # covers: (channel_type, names the WARNING must carry, names it must NOT carry,
 # creds entries + cfg mutations that make the channel FULLY credentialed).
@@ -7135,6 +7258,17 @@ _UNCREDENTIALED_CHANNEL_ROWS = (
         id="weixin",
     ),
     pytest.param(
+        "feishu",
+        ("FEISHU_APP_ID", "FEISHU_APP_SECRET"),
+        (),
+        {
+            "FEISHU_APP_ID": "feishu-app-id-value",
+            "FEISHU_APP_SECRET": "feishu-app-secret-value",
+        },
+        (),
+        id="feishu",
+    ),
+    pytest.param(
         "discord",
         ("DISCORD_BOT_TOKEN",),
         (),
@@ -7165,7 +7299,15 @@ _UNCREDENTIALED_CHANNEL_ROWS = (
     ),
 )
 
-_UNCREDENTIALED_CHANNEL_TYPES = ("wecom", "telegram", "weixin", "discord", "webex", "teams")
+_UNCREDENTIALED_CHANNEL_TYPES = (
+    "wecom",
+    "telegram",
+    "weixin",
+    "feishu",
+    "discord",
+    "webex",
+    "teams",
+)
 
 
 class TestChannelSkipReasonAtTransportStart:
@@ -7176,7 +7318,7 @@ class TestChannelSkipReasonAtTransportStart:
     enabled-but-uncredentialed channel alike — so a factory-level log can
     never be reached in production. The skip reason is therefore logged by
     ``_start_channel_transports`` at the decision point, which runs AFTER
-    ``KIROCREW_READY`` (outside the boot-path window), via the six-channel
+    ``KIROCREW_READY`` (outside the boot-path window), via the seven-channel
     table feeding ``warn_if_channel_uncredentialed``. These pin that wiring
     for every collapsed-flag channel (issue #5418, generalizing the
     WeCom-only class issue #304 introduced); the helper's message contract is
