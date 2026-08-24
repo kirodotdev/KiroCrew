@@ -784,10 +784,21 @@ def _record_is_enabled(j: dict[str, Any]) -> bool:
 def _job_from_record(j: dict[str, Any]) -> CronJob:
     """Build one :class:`CronJob` from its serialized record.
 
-    Raises ``KeyError``/``TypeError``/``AttributeError`` when the record is
-    malformed (missing required keys, or not shaped like a job object at all).
-    The caller (:meth:`CronService._load`) isolates that failure to THIS entry
-    — one bad record must never discard the rest of the store (#4664).
+    Raises ``KeyError``/``TypeError`` when the record is malformed (missing
+    required keys, or not shaped like a job object at all). The caller
+    (:meth:`CronService._load`) isolates that failure to THIS entry — one bad
+    record must never discard the rest of the store (#4664).
+
+    It does NOT raise ``AttributeError`` for any record ``json.loads`` can
+    produce: every ``.get()`` below is dominated by a ``[...]`` subscript on the
+    same object, and only a ``dict`` survives a string subscript. An
+    ``AttributeError`` from this function therefore signals a defect in this
+    code, not bad data, so :meth:`CronService._load` deliberately lets it
+    propagate rather than catching it: catching it there would reclassify a
+    valid job as malformed, and because ``_save`` rewrites ``jobs[]`` from
+    ``self._jobs`` the next write would erase that job from disk permanently —
+    turning a code defect into silent, unrecoverable data loss. Letting it
+    propagate trades a loud failure at load for that silent loss.
     """
     return CronJob(
         id=j["id"],
@@ -3523,11 +3534,17 @@ class CronService:
             # well-formed job survives. The whole-store reset below is reserved
             # for a genuinely unparseable file (json.JSONDecodeError), where
             # there is nothing to salvage.
+            #
+            # The caught tuple is deliberately NARROWER than the exceptions
+            # _job_from_record can raise: KeyError and TypeError are its two
+            # bad-data signals, and AttributeError is not reachable from JSON.
+            # See _job_from_record's docstring for why, and for what catching it
+            # would cost.
             jobs: list[CronJob] = []
             for j in records:
                 try:
                     jobs.append(_job_from_record(j))
-                except (KeyError, TypeError, AttributeError) as entry_exc:
+                except (KeyError, TypeError) as entry_exc:
                     entry_id = (
                         j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
                     )
