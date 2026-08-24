@@ -75,12 +75,22 @@ logger = logging.getLogger(__name__)
 #: again) rather than silently authorizing the wrong service.
 SERVICE_POLLY = "polly"
 SERVICE_TRANSCRIBE = "transcribe"
-GATED_SERVICES: frozenset[str] = frozenset({SERVICE_POLLY, SERVICE_TRANSCRIBE})
+#: AWS Control's paid services (spec: docs/system-specs/features/aws-control.md).
+#: Declared ahead of the first billable call — S3 backs the cloud drive (P1),
+#: Cost Explorer backs the bill page (~$0.01 per query) — so the consent cards
+#: can be confirmed per account before either capability ships.
+SERVICE_S3 = "s3"
+SERVICE_COST_EXPLORER = "ce"
+GATED_SERVICES: frozenset[str] = frozenset(
+    {SERVICE_POLLY, SERVICE_TRANSCRIBE, SERVICE_S3, SERVICE_COST_EXPLORER}
+)
 
 #: Human-facing service names for the confirmation surfaces and the log lines.
 SERVICE_LABELS: dict[str, str] = {
     SERVICE_POLLY: "Amazon Polly",
     SERVICE_TRANSCRIBE: "Amazon Transcribe",
+    SERVICE_S3: "Amazon S3 (cloud drive storage)",
+    SERVICE_COST_EXPLORER: "AWS Cost Explorer",
 }
 
 #: Lock filename beside the consent file -- NOT the file itself, because

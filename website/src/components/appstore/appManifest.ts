@@ -119,6 +119,20 @@ export const APP_MANIFEST_KEY: Record<string, ManifestKeys> = {
     useCases: ['apps.autoTriagePipeline.manifest.use_case_1'],
     configuration: ['apps.autoTriagePipeline.manifest.configuration_1'],
   },
+  'aws-control': {
+    displayName: 'apps.awsControl.manifest.display_name',
+    description: 'apps.awsControl.manifest.description',
+    pageLabel: 'apps.awsControl.manifest.page_label',
+    highlights: [
+      'apps.awsControl.manifest.highlight_1',
+      'apps.awsControl.manifest.highlight_2',
+      'apps.awsControl.manifest.highlight_3',
+      'apps.awsControl.manifest.highlight_4',
+      'apps.awsControl.manifest.highlight_5',
+    ],
+    useCases: ['apps.awsControl.manifest.use_case_1'],
+    configuration: ['apps.awsControl.manifest.configuration_1'],
+  },
   'channels': {
     displayName: 'apps.channels.manifest.display_name',
     description: 'apps.channels.manifest.description',

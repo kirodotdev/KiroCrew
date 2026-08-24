@@ -158,6 +158,16 @@ def load_registry() -> dict[str, Any]:
     v2 shape (``profiles.json``): ``{"version": 2, "profiles": [...], "default": "x"}``.
     Migration is read-through: a v1 config becomes a one-entry registry; the
     legacy file is left in place (GET /config keeps serving the default entry).
+
+    Valid JSON of the WRONG SHAPE degrades exactly like unparseable JSON. This
+    file is agent-writable, so ``[]``, ``"x"`` or ``{"profiles": 5}`` are all
+    reachable contents, and each of them used to escape as an ``AttributeError``
+    or ``TypeError`` from ``raw.get`` / the comprehension -- past the caller and
+    out as an HTTP 500 on every route that reads the registry. Catching them
+    here routes a mis-shaped file into the fallback chain the function already
+    implements (try the legacy registry, then the v1 config, then an empty
+    registry) rather than inventing a second recovery, and it fixes every reader
+    at once instead of asking each call site to guard a shape it did not parse.
     """
     try:
         raw = json.loads(_registry_path().read_text(encoding="utf-8"))
@@ -172,7 +182,7 @@ def load_registry() -> dict[str, Any]:
         if default and not any(p["name"] == default for p in profiles):
             default = profiles[0]["name"] if profiles else ""
         return {"version": 2, "profiles": profiles, "default": default}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
@@ -188,7 +198,7 @@ def load_registry() -> dict[str, Any]:
         if default and not any(p["name"] == default for p in profiles):
             default = profiles[0]["name"] if profiles else ""
         return {"version": 2, "profiles": profiles, "default": default}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
     try:
@@ -197,7 +207,7 @@ def load_registry() -> dict[str, Any]:
         if name:
             return {"version": 2, "default": name,
                     "profiles": [make_entry(name, str(legacy.get("region", "")))]}
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     return {"version": 2, "profiles": [], "default": ""}
 

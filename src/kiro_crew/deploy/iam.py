@@ -6,6 +6,7 @@ KiroCrew never performs an IAM write. Verification is **read-only reachability o
 confirm create/write perms without writing (CloudFront has no --dry-run), so it is
 labelled "access reachable", and the first real deploy is the true permission test.
 """
+
 from __future__ import annotations
 
 import json
@@ -48,7 +49,8 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Sid": "LambdaLogs",
                 "Effect": "Allow",
                 "Action": [
-                    "logs:CreateLogGroup", "logs:CreateLogStream",
+                    "logs:CreateLogGroup",
+                    "logs:CreateLogStream",
                     "logs:PutLogEvents",
                 ],
                 "Resource": "arn:aws:logs:*:*:*",
@@ -57,10 +59,14 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Sid": "OwnTableCrud",
                 "Effect": "Allow",
                 "Action": [
-                    "dynamodb:GetItem", "dynamodb:PutItem",
-                    "dynamodb:UpdateItem", "dynamodb:DeleteItem",
-                    "dynamodb:Query", "dynamodb:Scan",
-                    "dynamodb:BatchWriteItem", "dynamodb:BatchGetItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:PutItem",
+                    "dynamodb:UpdateItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:Query",
+                    "dynamodb:Scan",
+                    "dynamodb:BatchWriteItem",
+                    "dynamodb:BatchGetItem",
                 ],
                 "Resource": "arn:aws:dynamodb:*:*:table/kirocrew-deploy-app-*",
             },
@@ -70,12 +76,18 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Sid": "ReaperOpsCap",
                 "Effect": "Allow",
                 "Action": [
-                    "s3:ListBucket", "s3:GetObject", "s3:DeleteObject",
-                    "s3:PutObject", "s3:DeleteBucket", "s3:GetBucketTagging",
+                    "s3:ListBucket",
+                    "s3:GetObject",
+                    "s3:DeleteObject",
+                    "s3:PutObject",
+                    "s3:DeleteBucket",
+                    "s3:GetBucketTagging",
                 ],
                 "Resource": [
-                    f"arn:aws:s3:::{S3_PREFIX}", f"arn:aws:s3:::{S3_PREFIX}/*",
-                    S3_PREFIX_WEB, f"{S3_PREFIX_WEB}/*",
+                    f"arn:aws:s3:::{S3_PREFIX}",
+                    f"arn:aws:s3:::{S3_PREFIX}/*",
+                    S3_PREFIX_WEB,
+                    f"{S3_PREFIX_WEB}/*",
                 ],
             },
             {
@@ -94,11 +106,7 @@ def boundary_policy_document() -> dict[str, Any]:
                     "cloudfront:CreateInvalidation",
                 ],
                 "Resource": "*",
-                "Condition": {
-                    "StringEquals": {
-                        f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"
-                    }
-                },
+                "Condition": {"StringEquals": {f"aws:ResourceTag/{MANAGED_TAG_KEY}": "true"}},
             },
             {
                 # Read/list CloudFront actions are non-destructive; OAC delete
@@ -136,10 +144,13 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Sid": "ReaperCascadeCap",
                 "Effect": "Allow",
                 "Action": [
-                    "lambda:GetFunction", "lambda:DeleteFunction",
-                    "lambda:RemovePermission", "lambda:GetFunctionUrlConfig",
+                    "lambda:GetFunction",
+                    "lambda:DeleteFunction",
+                    "lambda:RemovePermission",
+                    "lambda:GetFunctionUrlConfig",
                     "lambda:DeleteFunctionUrlConfig",
-                    "dynamodb:DescribeTable", "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:DeleteTable",
                 ],
                 "Resource": [
                     "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*",
@@ -169,8 +180,11 @@ def boundary_policy_document() -> dict[str, Any]:
                 "Sid": "ReaperCascadeIamCap",
                 "Effect": "Allow",
                 "Action": [
-                    "iam:GetRole", "iam:DeleteRole", "iam:DeleteRolePolicy",
-                    "iam:DetachRolePolicy", "iam:ListRolePolicies",
+                    "iam:GetRole",
+                    "iam:DeleteRole",
+                    "iam:DeleteRolePolicy",
+                    "iam:DetachRolePolicy",
+                    "iam:ListRolePolicies",
                     "iam:ListAttachedRolePolicies",
                 ],
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-app-*",
@@ -188,6 +202,83 @@ def boundary_policy_document() -> dict[str, Any]:
     }
 
 
+def _drive_statements() -> list[dict[str, Any]]:
+    """The AWS Control drive's own least-privilege statement set.
+
+    Scope discipline mirrors the deploy tiers: bucket + object grants are
+    pinned to the ``kirocrew-drive-*`` naming scheme the engine creates and
+    discovery requires, so a foreign bucket is out of reach even with a
+    stolen tag. Cost Explorer has no resource-level scoping (account-global
+    read of the bill), and tag discovery + STS identity are the same
+    account-wide reads the deploy tiers already grant.
+    """
+    # Partition-neutral on purpose. An S3 ARN's partition is not always ``aws``
+    # -- GovCloud is ``aws-us-gov`` and China is ``aws-cn`` -- and a policy
+    # pinned to one partition grants nothing on the others, so a GovCloud owner
+    # pasting this tier would be denied on their own drive. The ``*`` covers the
+    # partition field only; the bucket-name pattern stays exact, so the scoping
+    # this docstring promises is unchanged.
+    drive_arn = "arn:*:s3:::kirocrew-drive-*"
+    return [
+        {
+            "Sid": "DriveBucketLevel",
+            "Effect": "Allow",
+            "Action": [
+                "s3:CreateBucket",
+                "s3:ListBucket",
+                "s3:GetBucketLocation",
+                "s3:PutBucketPublicAccessBlock",
+                "s3:GetBucketPublicAccessBlock",
+                "s3:PutBucketOwnershipControls",
+                "s3:GetBucketOwnershipControls",
+                "s3:PutEncryptionConfiguration",
+                "s3:PutBucketTagging",
+                "s3:PutBucketVersioning",
+                "s3:GetBucketVersioning",
+                "s3:ListBucketVersions",
+            ],
+            "Resource": [drive_arn],
+        },
+        {
+            "Sid": "DriveObjectLevel",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject",
+            ],
+            "Resource": [f"{drive_arn}/drive/*", f"{drive_arn}/artifacts/*"],
+        },
+        {
+            # The backup prefix is WRITE-ONLY in this recommended tier: raw
+            # gateway state (sessions, memory, workspace) can be deposited but
+            # never read back with this credential — so even a fully-adopted
+            # least-privilege profile cannot be driven to exfiltrate backups.
+            # Restore needs broader-than-minimum rights (or the owner's own
+            # console access); the HTTP surface already refuses backup
+            # share/download links regardless.
+            "Sid": "DriveBackupWriteOnly",
+            "Effect": "Allow",
+            "Action": [
+                "s3:PutObject",
+            ],
+            "Resource": [f"{drive_arn}/backup/*"],
+        },
+        {
+            "Sid": "DriveDiscovery",
+            "Effect": "Allow",
+            "Action": ["tag:GetResources", "sts:GetCallerIdentity"],
+            "Resource": ["*"],
+        },
+        {
+            "Sid": "DriveBill",
+            "Effect": "Allow",
+            "Action": ["ce:GetCostAndUsage"],
+            "Resource": ["*"],
+        },
+    ]
+
+
 def policy_document(*, include_custom_domain: bool = False, tier: str = "static") -> dict[str, Any]:
     """Return the least-privilege customer-managed policy as a dict.
 
@@ -195,27 +286,44 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
       - static (default): S3, CloudFront, CloudFormation on the base stack.
       - fullstack: adds scoped Lambda, API Gateway, DynamoDB, IAM PassRole
         for kirocrew-deploy-app-* stacks, and CloudFront invalidation.
+      - drive: a SELF-CONTAINED statement set for the AWS Control drive —
+        S3 on kirocrew-drive-* buckets only, tag discovery, identity, and
+        Cost Explorer reads. Returned alone (no deploy-web statements): a
+        drive user who never publishes a site should paste nothing wider.
     """
+    if tier == "drive":
+        return {"Version": "2012-10-17", "Statement": _drive_statements()}
     statements: list[dict[str, Any]] = [
         {
             "Sid": "S3BucketLevel",
             "Effect": "Allow",
             "Action": [
-                "s3:CreateBucket", "s3:ListBucket", "s3:GetBucketLocation",
-                "s3:PutBucketPolicy", "s3:GetBucketPolicy", "s3:DeleteBucketPolicy",
-                "s3:PutBucketPublicAccessBlock", "s3:GetBucketPublicAccessBlock",
-                "s3:PutBucketOwnershipControls", "s3:GetBucketOwnershipControls",
-                "s3:PutEncryptionConfiguration", "s3:PutBucketTagging", "s3:DeleteBucket",
+                "s3:CreateBucket",
+                "s3:ListBucket",
+                "s3:GetBucketLocation",
+                "s3:PutBucketPolicy",
+                "s3:GetBucketPolicy",
+                "s3:DeleteBucketPolicy",
+                "s3:PutBucketPublicAccessBlock",
+                "s3:GetBucketPublicAccessBlock",
+                "s3:PutBucketOwnershipControls",
+                "s3:GetBucketOwnershipControls",
+                "s3:PutEncryptionConfiguration",
+                "s3:PutBucketTagging",
+                "s3:DeleteBucket",
                 # Versioning + lifecycle on the retained OriginBucket:
                 # CFN calls these bucket-level APIs during base-stack create/update.
-                "s3:PutBucketVersioning", "s3:GetBucketVersioning",
-                "s3:PutLifecycleConfiguration", "s3:GetLifecycleConfiguration",
+                "s3:PutBucketVersioning",
+                "s3:GetBucketVersioning",
+                "s3:PutLifecycleConfiguration",
+                "s3:GetLifecycleConfiguration",
                 # Server access logging on OriginBucket (CWE-778 audit control):
                 # base-stack.yaml's LoggingConfiguration makes CFN call
                 # PutBucketLogging during create/update. Both the OriginBucket
                 # and the kirocrew-deploy-logs-* target bucket match the
                 # kirocrew-deploy-* resource prefix below.
-                "s3:PutBucketLogging", "s3:GetBucketLogging",
+                "s3:PutBucketLogging",
+                "s3:GetBucketLogging",
             ],
             "Resource": [f"arn:aws:s3:::{S3_PREFIX}", S3_PREFIX_WEB],
         },
@@ -223,8 +331,11 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Sid": "S3ObjectLevel",
             "Effect": "Allow",
             "Action": [
-                "s3:PutObject", "s3:GetObject", "s3:DeleteObject",
-                "s3:ListBucketMultipartUploads", "s3:AbortMultipartUpload",
+                "s3:PutObject",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:ListBucketMultipartUploads",
+                "s3:AbortMultipartUpload",
             ],
             "Resource": [f"arn:aws:s3:::{S3_PREFIX}/*", f"{S3_PREFIX_WEB}/*"],
         },
@@ -252,13 +363,18 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Sid": "CloudFrontCreateList",
             "Effect": "Allow",
             "Action": [
-                "cloudfront:CreateDistribution", "cloudfront:CreateDistributionWithTags",
-                "cloudfront:CreateOriginAccessControl", "cloudfront:ListDistributions",
-                "cloudfront:ListOriginAccessControls", "cloudfront:TagResource",
+                "cloudfront:CreateDistribution",
+                "cloudfront:CreateDistributionWithTags",
+                "cloudfront:CreateOriginAccessControl",
+                "cloudfront:ListDistributions",
+                "cloudfront:ListOriginAccessControls",
+                "cloudfront:TagResource",
                 "cloudfront:ListTagsForResource",
                 # CloudFront Function (index-rewrite) — created by base-stack.yaml.
-                "cloudfront:CreateFunction", "cloudfront:DescribeFunction",
-                "cloudfront:PublishFunction", "cloudfront:ListFunctions",
+                "cloudfront:CreateFunction",
+                "cloudfront:DescribeFunction",
+                "cloudfront:PublishFunction",
+                "cloudfront:ListFunctions",
                 # ResponseHeadersPolicy (security headers) — created by base-stack.yaml.
                 "cloudfront:CreateResponseHeadersPolicy",
                 "cloudfront:GetResponseHeadersPolicy",
@@ -270,12 +386,16 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Sid": "CloudFrontManageTagged",
             "Effect": "Allow",
             "Action": [
-                "cloudfront:GetDistribution", "cloudfront:GetDistributionConfig",
-                "cloudfront:UpdateDistribution", "cloudfront:DeleteDistribution",
+                "cloudfront:GetDistribution",
+                "cloudfront:GetDistributionConfig",
+                "cloudfront:UpdateDistribution",
+                "cloudfront:DeleteDistribution",
                 "cloudfront:CreateInvalidation",
-                "cloudfront:GetInvalidation", "cloudfront:ListInvalidations",
+                "cloudfront:GetInvalidation",
+                "cloudfront:ListInvalidations",
                 # Function + headers policy updates on tagged distributions.
-                "cloudfront:UpdateFunction", "cloudfront:DeleteFunction",
+                "cloudfront:UpdateFunction",
+                "cloudfront:DeleteFunction",
                 "cloudfront:UpdateResponseHeadersPolicy",
                 "cloudfront:DeleteResponseHeadersPolicy",
             ],
@@ -305,13 +425,18 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Sid": "CloudFormationBaseStack",
             "Effect": "Allow",
             "Action": [
-                "cloudformation:CreateStack", "cloudformation:UpdateStack",
-                "cloudformation:DeleteStack", "cloudformation:DescribeStacks",
-                "cloudformation:DescribeStackEvents", "cloudformation:GetTemplate",
+                "cloudformation:CreateStack",
+                "cloudformation:UpdateStack",
+                "cloudformation:DeleteStack",
+                "cloudformation:DescribeStacks",
+                "cloudformation:DescribeStackEvents",
+                "cloudformation:GetTemplate",
                 "cloudformation:ListStackResources",
                 # `aws cloudformation deploy` works via change sets.
-                "cloudformation:CreateChangeSet", "cloudformation:DescribeChangeSet",
-                "cloudformation:ExecuteChangeSet", "cloudformation:DeleteChangeSet",
+                "cloudformation:CreateChangeSet",
+                "cloudformation:DescribeChangeSet",
+                "cloudformation:ExecuteChangeSet",
+                "cloudformation:DeleteChangeSet",
             ],
             "Resource": "arn:aws:cloudformation:*:*:stack/kirocrew-deploy-*/*",
         },
@@ -332,34 +457,47 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             "Sid": "CloudTrailBaseStack",
             "Effect": "Allow",
             "Action": [
-                "cloudtrail:CreateTrail", "cloudtrail:UpdateTrail",
-                "cloudtrail:DeleteTrail", "cloudtrail:StartLogging",
-                "cloudtrail:StopLogging", "cloudtrail:PutEventSelectors",
-                "cloudtrail:GetEventSelectors", "cloudtrail:GetTrail",
-                "cloudtrail:GetTrailStatus", "cloudtrail:ListTags",
-                "cloudtrail:AddTags", "cloudtrail:RemoveTags",
+                "cloudtrail:CreateTrail",
+                "cloudtrail:UpdateTrail",
+                "cloudtrail:DeleteTrail",
+                "cloudtrail:StartLogging",
+                "cloudtrail:StopLogging",
+                "cloudtrail:PutEventSelectors",
+                "cloudtrail:GetEventSelectors",
+                "cloudtrail:GetTrail",
+                "cloudtrail:GetTrailStatus",
+                "cloudtrail:ListTags",
+                "cloudtrail:AddTags",
+                "cloudtrail:RemoveTags",
             ],
             "Resource": "arn:aws:cloudtrail:*:*:trail/kirocrew-deploy-trail-*",
         },
     ]
-    statements.append({
-        "Sid": "CloudFormationValidate",
-        "Effect": "Allow",
-        # ValidateTemplate does not support resource-level scoping.
-        "Action": ["cloudformation:ValidateTemplate"],
-        "Resource": "*",
-    })
+    statements.append(
+        {
+            "Sid": "CloudFormationValidate",
+            "Effect": "Allow",
+            # ValidateTemplate does not support resource-level scoping.
+            "Action": ["cloudformation:ValidateTemplate"],
+            "Resource": "*",
+        }
+    )
     if tier == "fullstack":
         statements += [
             {
                 "Sid": "LambdaFullstack",
                 "Effect": "Allow",
                 "Action": [
-                    "lambda:CreateFunction", "lambda:UpdateFunctionCode",
-                    "lambda:UpdateFunctionConfiguration", "lambda:DeleteFunction",
-                    "lambda:GetFunction", "lambda:GetFunctionConfiguration",
-                    "lambda:InvokeFunction", "lambda:AddPermission",
-                    "lambda:RemovePermission", "lambda:TagResource",
+                    "lambda:CreateFunction",
+                    "lambda:UpdateFunctionCode",
+                    "lambda:UpdateFunctionConfiguration",
+                    "lambda:DeleteFunction",
+                    "lambda:GetFunction",
+                    "lambda:GetFunctionConfiguration",
+                    "lambda:InvokeFunction",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                    "lambda:TagResource",
                 ],
                 "Resource": "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*",
             },
@@ -374,9 +512,11 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "LogsFullstack",
                 "Effect": "Allow",
                 "Action": [
-                    "logs:CreateLogGroup", "logs:DeleteLogGroup",
+                    "logs:CreateLogGroup",
+                    "logs:DeleteLogGroup",
                     "logs:PutRetentionPolicy",
-                    "logs:TagResource", "logs:ListTagsForResource",
+                    "logs:TagResource",
+                    "logs:ListTagsForResource",
                 ],
                 "Resource": [
                     "arn:aws:logs:*:*:log-group:/kirocrew-deploy-app/*",
@@ -424,26 +564,32 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "ApiGatewayFullstackMutateManagedOnly",
                 "Effect": "Allow",
                 "Action": [
-                    "apigateway:POST", "apigateway:PUT", "apigateway:PATCH",
+                    "apigateway:POST",
+                    "apigateway:PUT",
+                    "apigateway:PATCH",
                     "apigateway:DELETE",
                 ],
                 "Resource": [
                     "arn:aws:apigateway:*::/apis/*",
                     "arn:aws:apigateway:*::/tags/*",
                 ],
-                "Condition": {
-                    "StringEquals": {"aws:ResourceTag/kirocrew:managed": "true"}
-                },
+                "Condition": {"StringEquals": {"aws:ResourceTag/kirocrew:managed": "true"}},
             },
             {
                 "Sid": "DynamoDBFullstack",
                 "Effect": "Allow",
                 "Action": [
-                    "dynamodb:CreateTable", "dynamodb:DeleteTable",
-                    "dynamodb:DescribeTable", "dynamodb:UpdateTable",
+                    "dynamodb:CreateTable",
+                    "dynamodb:DeleteTable",
+                    "dynamodb:DescribeTable",
+                    "dynamodb:UpdateTable",
                     "dynamodb:UpdateContinuousBackups",  # enable PITR
-                    "dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:DeleteItem",
-                    "dynamodb:Query", "dynamodb:Scan", "dynamodb:TagResource",
+                    "dynamodb:PutItem",
+                    "dynamodb:GetItem",
+                    "dynamodb:DeleteItem",
+                    "dynamodb:Query",
+                    "dynamodb:Scan",
+                    "dynamodb:TagResource",
                 ],
                 "Resource": "arn:aws:dynamodb:*:*:table/kirocrew-deploy-app-*",
             },
@@ -460,10 +606,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "BoundaryPreflightRead",
                 "Effect": "Allow",
                 "Action": ["iam:GetPolicy"],
-                "Resource": (
-                    "arn:aws:iam::${aws:PrincipalAccount}:policy/"
-                    + BOUNDARY_POLICY_NAME
-                ),
+                "Resource": ("arn:aws:iam::${aws:PrincipalAccount}:policy/" + BOUNDARY_POLICY_NAME),
             },
             {
                 "Sid": "IAMCreateRoleWithBoundaryOnly",
@@ -472,9 +615,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-app-*",
                 "Condition": {
                     "ArnLike": {
-                        "iam:PermissionsBoundary": (
-                            f"arn:aws:iam::*:policy/{BOUNDARY_POLICY_NAME}"
-                        )
+                        "iam:PermissionsBoundary": (f"arn:aws:iam::*:policy/{BOUNDARY_POLICY_NAME}")
                     }
                 },
             },
@@ -482,8 +623,10 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "IAMRoleLifecycleFullstack",
                 "Effect": "Allow",
                 "Action": [
-                    "iam:DeleteRole", "iam:GetRole",
-                    "iam:PutRolePolicy", "iam:DeleteRolePolicy",
+                    "iam:DeleteRole",
+                    "iam:GetRole",
+                    "iam:PutRolePolicy",
+                    "iam:DeleteRolePolicy",
                     "iam:DetachRolePolicy",
                     "iam:TagRole",
                 ],
@@ -522,9 +665,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Action": ["iam:PassRole"],
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-app-*",
                 "Condition": {
-                    "StringEquals": {
-                        "iam:PassedToService": "lambda.amazonaws.com"
-                    },
+                    "StringEquals": {"iam:PassedToService": "lambda.amazonaws.com"},
                     "ArnLike": {
                         "iam:AssociatedResourceArn": (
                             "arn:aws:lambda:*:*:function:kirocrew-deploy-app-*"
@@ -536,11 +677,16 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "ReaperLambda",
                 "Effect": "Allow",
                 "Action": [
-                    "lambda:CreateFunction", "lambda:UpdateFunctionCode",
-                    "lambda:UpdateFunctionConfiguration", "lambda:DeleteFunction",
-                    "lambda:GetFunction", "lambda:GetFunctionConfiguration",
-                    "lambda:InvokeFunction", "lambda:AddPermission",
-                    "lambda:RemovePermission", "lambda:TagResource",
+                    "lambda:CreateFunction",
+                    "lambda:UpdateFunctionCode",
+                    "lambda:UpdateFunctionConfiguration",
+                    "lambda:DeleteFunction",
+                    "lambda:GetFunction",
+                    "lambda:GetFunctionConfiguration",
+                    "lambda:InvokeFunction",
+                    "lambda:AddPermission",
+                    "lambda:RemovePermission",
+                    "lambda:TagResource",
                 ],
                 "Resource": "arn:aws:lambda:*:*:function:kirocrew-deploy-reaper*",
             },
@@ -548,12 +694,17 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "ReaperCloudFormation",
                 "Effect": "Allow",
                 "Action": [
-                    "cloudformation:CreateStack", "cloudformation:UpdateStack",
-                    "cloudformation:DeleteStack", "cloudformation:DescribeStacks",
-                    "cloudformation:DescribeStackEvents", "cloudformation:GetTemplate",
+                    "cloudformation:CreateStack",
+                    "cloudformation:UpdateStack",
+                    "cloudformation:DeleteStack",
+                    "cloudformation:DescribeStacks",
+                    "cloudformation:DescribeStackEvents",
+                    "cloudformation:GetTemplate",
                     "cloudformation:ListStackResources",
-                    "cloudformation:CreateChangeSet", "cloudformation:DescribeChangeSet",
-                    "cloudformation:ExecuteChangeSet", "cloudformation:DeleteChangeSet",
+                    "cloudformation:CreateChangeSet",
+                    "cloudformation:DescribeChangeSet",
+                    "cloudformation:ExecuteChangeSet",
+                    "cloudformation:DeleteChangeSet",
                 ],
                 "Resource": "arn:aws:cloudformation:*:*:stack/kirocrew-deploy-reaper/*",
             },
@@ -567,9 +718,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-reaper*",
                 "Condition": {
                     "ArnLike": {
-                        "iam:PermissionsBoundary": (
-                            f"arn:aws:iam::*:policy/{BOUNDARY_POLICY_NAME}"
-                        )
+                        "iam:PermissionsBoundary": (f"arn:aws:iam::*:policy/{BOUNDARY_POLICY_NAME}")
                     }
                 },
             },
@@ -577,9 +726,12 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "ReaperIAMRole",
                 "Effect": "Allow",
                 "Action": [
-                    "iam:DeleteRole", "iam:GetRole",
-                    "iam:PutRolePolicy", "iam:DeleteRolePolicy",
-                    "iam:AttachRolePolicy", "iam:DetachRolePolicy",
+                    "iam:DeleteRole",
+                    "iam:GetRole",
+                    "iam:PutRolePolicy",
+                    "iam:DeleteRolePolicy",
+                    "iam:AttachRolePolicy",
+                    "iam:DetachRolePolicy",
                     "iam:TagRole",
                 ],
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-reaper*",
@@ -595,9 +747,7 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Action": ["iam:PassRole"],
                 "Resource": "arn:aws:iam::*:role/kirocrew-deploy-reaper*",
                 "Condition": {
-                    "StringEquals": {
-                        "iam:PassedToService": "lambda.amazonaws.com"
-                    },
+                    "StringEquals": {"iam:PassedToService": "lambda.amazonaws.com"},
                     "ArnLike": {
                         "iam:AssociatedResourceArn": (
                             "arn:aws:lambda:*:*:function:kirocrew-deploy-reaper*"
@@ -609,9 +759,12 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
                 "Sid": "ReaperEvents",
                 "Effect": "Allow",
                 "Action": [
-                    "events:PutRule", "events:PutTargets",
-                    "events:DeleteRule", "events:RemoveTargets",
-                    "events:DescribeRule", "events:ListTargetsByRule",
+                    "events:PutRule",
+                    "events:PutTargets",
+                    "events:DeleteRule",
+                    "events:RemoveTargets",
+                    "events:DescribeRule",
+                    "events:ListTargetsByRule",
                 ],
                 "Resource": "arn:aws:events:*:*:rule/kirocrew-deploy-reaper*",
             },
@@ -634,16 +787,24 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
             {
                 "Sid": "AcmForCloudFront",
                 "Effect": "Allow",
-                "Action": ["acm:RequestCertificate", "acm:DescribeCertificate",
-                           "acm:ListCertificates", "acm:GetCertificate",
-                           "acm:AddTagsToCertificate"],
+                "Action": [
+                    "acm:RequestCertificate",
+                    "acm:DescribeCertificate",
+                    "acm:ListCertificates",
+                    "acm:GetCertificate",
+                    "acm:AddTagsToCertificate",
+                ],
                 "Resource": "*",
             },
             {
                 "Sid": "Route53Alias",
                 "Effect": "Allow",
-                "Action": ["route53:ListHostedZones", "route53:GetHostedZone",
-                           "route53:ListResourceRecordSets", "route53:GetChange"],
+                "Action": [
+                    "route53:ListHostedZones",
+                    "route53:GetHostedZone",
+                    "route53:ListResourceRecordSets",
+                    "route53:GetChange",
+                ],
                 "Resource": "*",
             },
         ]
@@ -651,7 +812,9 @@ def policy_document(*, include_custom_domain: bool = False, tier: str = "static"
 
 
 def policy_json(*, include_custom_domain: bool = False, tier: str = "static") -> str:
-    return json.dumps(policy_document(include_custom_domain=include_custom_domain, tier=tier), indent=2)
+    return json.dumps(
+        policy_document(include_custom_domain=include_custom_domain, tier=tier), indent=2
+    )
 
 
 def reachability_check(profile: str) -> dict[str, Any]:
@@ -662,8 +825,12 @@ def reachability_check(profile: str) -> dict[str, Any]:
     Never mutates anything; the first deploy is the real permission test.
     """
     result: dict[str, Any] = {
-        "reachable": False, "account": "", "s3_reachable": False,
-        "cloudfront_reachable": False, "note": "", "detail": "",
+        "reachable": False,
+        "account": "",
+        "s3_reachable": False,
+        "cloudfront_reachable": False,
+        "note": "",
+        "detail": "",
     }
     rc, out, err = engine.run_aws(["sts", "get-caller-identity", "--output", "json"], profile)
     if rc != 0:
@@ -681,10 +848,14 @@ def reachability_check(profile: str) -> dict[str, Any]:
 
     s3_rc, _o, _e = engine.run_aws(["s3api", "list-buckets", "--output", "json"], profile)
     result["s3_reachable"] = s3_rc == 0
-    cf_rc, _o2, _e2 = engine.run_aws(["cloudfront", "list-distributions", "--output", "json"], profile)
+    cf_rc, _o2, _e2 = engine.run_aws(
+        ["cloudfront", "list-distributions", "--output", "json"], profile
+    )
     result["cloudfront_reachable"] = cf_rc == 0
 
-    result["note"] = ("Access reachable (not fully verified — create/write perms can't be "
-                      "checked without writing). First deploy is the real test; on AccessDenied "
-                      "the exact missing IAM statement is reported.")
+    result["note"] = (
+        "Access reachable (not fully verified — create/write perms can't be "
+        "checked without writing). First deploy is the real test; on AccessDenied "
+        "the exact missing IAM statement is reported."
+    )
     return result

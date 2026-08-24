@@ -268,7 +268,6 @@ src/kiro_crew/dashboard/ws_event_scope.py
 src/kiro_crew/deploy/__init__.py
 src/kiro_crew/deploy/engine.py
 src/kiro_crew/deploy/handlers.py
-src/kiro_crew/deploy/iam.py
 src/kiro_crew/deploy/pricing.py
 src/kiro_crew/deploy/profiles.py
 src/kiro_crew/deploy/render.py

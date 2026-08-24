@@ -5,6 +5,7 @@ single subsystem belongs in [../modules/](../modules/README.md) instead.
 
 | Spec | Covers |
 |---|---|
+| [aws-control.md](aws-control.md) | The AWS account portal and S3-backed cloud drive app: accounts, Drive/Library/Backup, consent and confirmation guards, sharing. |
 | [dashboard-token-auth.md](dashboard-token-auth.md) | Signed, IP-pinned dashboard tokens, session TTLs, and token refresh. |
 | [session-work-ledger.md](session-work-ledger.md) | Per-session durable work state (goal, phase, tried, artifacts) on disk, its MCP tools, and monitor-loop snapshot injection. |
 | [babysit-pr-watch.md](babysit-pr-watch.md) | Zero-token PR polling for babysit loops: a script cron that wakes the owning session only on unexpected state. |
