@@ -29,6 +29,7 @@ from aiohttp.multipart import BodyPartReader
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import KiroCrewConfig, WorkspaceConfig, config_dir, data_home
+from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.file_index import _SKIP_DIRS as _WALK_SKIP_DIRS
 from kiro_crew.dashboard.state import DashboardState
@@ -761,6 +762,12 @@ def _upload_dir() -> Path:
 
 
 _MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB per file
+#: Video gets its own, larger ceiling: a 30-second retina screen recording is
+#: routinely 60-150 MB, so the 50 MB document cap would reject the dominant
+#: case and make the feature read as broken. Safe to raise only because video
+#: parts STREAM to disk (:func:`_stream_video_part`) instead of accumulating in
+#: memory the way every other accepted type does.
+_MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024  # 512 MB per video
 _MAX_UPLOAD_FILES = 20  # max files per request
 
 # Fallback-walk budgets. ``_WALK_MAX_SCAN_*`` bounds entries scored PER KIND
@@ -816,6 +823,40 @@ _ALLOWED_DOC_EXT = {
     ".zip",
     ".tar",
     ".gz",
+}
+#: Video containers accepted at the upload boundary. Deliberately narrower than
+#: ``FileRenderers``' VIDEO_EXTS: every entry here must be verifiable by
+#: :func:`_sniff_media_type` AND playable by ``<video>``, so an accepted upload
+#: is always one the chat can actually show. ``.mkv`` is excluded — it shares
+#: WebM's EBML signature but browser playback is unreliable, and accepting a
+#: file that then refuses to play is worse than refusing it at the door.
+_ALLOWED_VIDEO_EXT = {".mp4", ".m4v", ".mov", ".webm"}
+#: Media containers a browser will often play but the upload boundary does not
+#: accept. Rejecting them with the bare "Unsupported file type" reads as "video
+#: is not supported at all", when the actual remedy is a re-encode -- so the
+#: refusal for one of these names the containers that do work. VIDEO containers
+#: only: naming the video set to an audio upload (``.m4a``) would tell its
+#: sender to re-encode audio into a video container, which is worse than the
+#: bare refusal.
+_VIDEO_HINT_EXT = frozenset(
+    {".mkv", ".ogv", ".avi", ".mpg", ".mpeg", ".wmv", ".flv", ".3gp"}
+)
+#: Media type :func:`_sniff_media_type` must report for the claimed video
+#: extension. The MP4 family (mp4/m4v/mov) all carry a ``ftyp`` box at offset 4
+#: and sniff as ``video/mp4``; QuickTime's brand differs but the box does not.
+#:
+#: This gate proves the bytes are the claimed FAMILY, not the exact container:
+#: ``.webm`` and ``.mkv`` share the EBML magic, so an ``.mkv`` renamed to
+#: ``.webm`` passes here even though the ``.mkv`` extension is refused.
+#: Distinguishing them needs the EBML DocType, which is not worth parsing for
+#: this boundary -- the gate's job is to keep NON-media bytes off disk (CWE-434),
+#: and the extension set is what carries the narrower "accepted means playable"
+#: promise.
+_VIDEO_EXT_MIME: dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/mp4",
+    ".webm": "video/webm",
 }
 
 
@@ -902,6 +943,14 @@ def _content_matches_ext(ext: str, data: bytes) -> bool:
         # OOXML / ODF / zip all begin with a local-file-header, empty-archive,
         # or spanned-archive PK signature.
         return data[:4] in (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
+    expected_media = _VIDEO_EXT_MIME.get(ext)
+    if expected_media is not None:
+        # Reuses the read path's container sniffer so the upload boundary and
+        # /api/file-stream agree on what each signature means. ``data`` may be
+        # just the leading chunk here — every signature involved lives in the
+        # first 12 bytes, so a header is sufficient and a whole-file read is
+        # never needed.
+        return _sniff_media_type(data[:SNIFF_BYTES]) == expected_media
     expected = _RASTER_EXT_MIME.get(ext)
     if expected is not None:
         return sniff_raster_mime(data[:SNIFF_BYTES]) == expected
@@ -909,6 +958,58 @@ def _content_matches_ext(ext: str, data: bytes) -> bool:
     if prefixes is None:
         return True  # text / svg / unknown — nothing to enforce
     return any(data.startswith(p) for p in prefixes)
+
+
+async def _stream_video_part(
+    part: BodyPartReader,
+    dest: Path,
+) -> tuple[int, tuple[str, str, str] | None]:
+    """Stream a video *part* to *dest*, gating on its container signature.
+
+    Returns ``(bytes_written, None)`` on success, or ``(bytes_written,
+    (audit_reason, error_code, user_message))`` on refusal. The code is a
+    machine-readable id the caller maps to a CONSTANT HTTP status: returning a
+    status from here would make the response's `status=` an expression at the
+    call site, which the error-code contract rejects because it defeats static
+    analysis of what the endpoint can return.
+
+    All the file handling lives in :func:`~kiro_crew.dashboard.part_stream.
+    stream_part_to_file`, which owns the temp through a synchronous context
+    manager. This function is now only the translation between that helper's
+    exceptions and this endpoint's audit reasons and error codes -- deliberately,
+    because the hand-rolled version of the streaming here collected SEVEN
+    blocking review findings in seven rounds, three of them introduced while
+    fixing the previous one. That module's docstring carries the ledger and the
+    invariant; the short version is that a cancellable coroutine cannot own a
+    file safely, so it no longer does.
+    """
+    ext = dest.suffix.lower()
+    try:
+        total = await part_stream.stream_part_to_file(
+            part,
+            dest,
+            max_bytes=_MAX_VIDEO_UPLOAD_BYTES,
+            accepts=lambda head: _content_matches_ext(ext, head),
+        )
+    except part_stream.PartTooLarge as too_large:
+        cap_mb = _MAX_VIDEO_UPLOAD_BYTES // 1024 // 1024
+        return too_large.total, (
+            f"too_large:{too_large.total}",
+            "video_too_large",
+            f"Video too large (max {cap_mb}MB)",
+        )
+    except part_stream.PartContentMismatch:
+        accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
+        return 0, (
+            f"content_signature_mismatch:{ext}",
+            "video_content_mismatch",
+            # Names the remedy for the same reason the unsupported-container
+            # refusal does: "does not match its type" tells the user their file
+            # is wrong without telling them what to do about it, and the fix
+            # (re-export) is not guessable from the sentence.
+            f"This file is not really a {ext} — re-export it as one of: {accepted}",
+        )
+    return total, None
 
 
 async def api_upload_file(request: web.Request) -> web.Response:
@@ -923,12 +1024,28 @@ async def api_upload_file(request: web.Request) -> web.Response:
     upload_dir.mkdir(parents=True, exist_ok=True)
     reader = await request.multipart()
     paths: list[str] = []
-    allowed = _ALLOWED_IMAGE_EXT | _ALLOWED_TEXT_EXT | _ALLOWED_DOC_EXT
+    allowed = _ALLOWED_IMAGE_EXT | _ALLOWED_TEXT_EXT | _ALLOWED_DOC_EXT | _ALLOWED_VIDEO_EXT
     caller = request.get("user", "dashboard")
 
-    def _cleanup() -> None:
-        for p in paths:
-            Path(p).unlink(missing_ok=True)
+    async def _cleanup(*also: Path) -> None:
+        """Remove this request's files, plus *also*, off the serving loop.
+
+        The ONE cleanup entry point for this handler, and a coroutine so it
+        cannot be called the blocking way by accident. Every refusal and error
+        path in a 20-file request may unlink up to 20 paths (a video among them
+        up to 512 MB), and `Path.unlink` is a synchronous syscall: on a slow or
+        network filesystem doing that inline stalls chat and heartbeat for the
+        whole gateway. It also absorbs the destination itself via *also*, so the
+        sites that previously paired a bare ``dest.unlink()`` with a cleanup call
+        have one call and cannot drift back to unlinking on the loop.
+        """
+        targets = [*paths, *(str(p) for p in also)]
+
+        def _rm() -> None:
+            for p in targets:
+                Path(p).unlink(missing_ok=True)
+
+        await asyncio.to_thread(_rm)
 
     try:
         while True:
@@ -940,7 +1057,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
             if part.name != "file":
                 continue
             if len(paths) >= _MAX_UPLOAD_FILES:
-                _cleanup()
+                await _cleanup()
                 _sel().log_api_access(
                     caller=caller,
                     operation="upload.file",
@@ -957,7 +1074,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
             safe_name = re.sub(r"[^\w.\-]", "_", Path(fname).name)
             ext = Path(safe_name).suffix.lower()
             if ext not in allowed:
-                _cleanup()
+                await _cleanup()
                 _sel().log_api_access(
                     caller=caller,
                     operation="upload.file",
@@ -965,10 +1082,82 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     source="dashboard",
                     resources=f"file:{fname} reason:unsupported_type:{ext}",
                 )
+                detail = f"Unsupported file type: {ext}"
+                if ext in _VIDEO_HINT_EXT:
+                    # Name the way out. A browser plays several containers this
+                    # boundary refuses, so the bare refusal reads as "no video
+                    # support" when the remedy is a re-encode.
+                    accepted = ", ".join(sorted(_ALLOWED_VIDEO_EXT))
+                    detail = f"{detail} — accepted video containers: {accepted}"
                 return web.json_response(
-                    {"error": f"Unsupported file type: {ext}"},
+                    {"error": detail, "code": "unsupported_file_type"},
                     status=400,
                 )
+            # UUID prefix guarantees uniqueness even within a single request.
+            # Resolved BEFORE any byte is read because the video branch streams
+            # straight to this destination rather than buffering the part first.
+            dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+            if not dest.resolve().is_relative_to(upload_dir.resolve()):
+                await _cleanup()
+                _sel().log_api_access(
+                    caller=caller,
+                    operation="upload.file",
+                    outcome="rejected",
+                    source="dashboard",
+                    resources=f"file:{fname} reason:path_traversal",
+                )
+                return web.json_response({"error": "Invalid filename"}, status=400)
+            if ext in _ALLOWED_VIDEO_EXT:
+                # Video takes the streaming route for two reasons: a screen
+                # recording is far too large to buffer, and its CONTENT is not
+                # something the model can read anyway (ACP has no video content
+                # block). So the bytes land on disk, the PATH reaches the agent
+                # as an [attached_file N] token, and the chat renders a <video>
+                # off /api/file-stream. An agent that needs frames runs ffmpeg
+                # on the path.
+                try:
+                    written, refusal = await _stream_video_part(part, dest)
+                except (Exception, asyncio.CancelledError):
+                    # CancelledError derives from BaseException, not Exception, so
+                    # a bare `except Exception` lets a gateway shutdown mid-stream
+                    # past every cleanup: the partial video AND the siblings this
+                    # request already wrote stay in uploads/, and the partial is
+                    # indistinguishable from a complete file to everything
+                    # downstream. Cleanup here rather than relying on the outer
+                    # handler, which has the same blind spot.
+                    await _cleanup(dest)
+                    raise
+                if refusal is not None:
+                    await _cleanup(dest)
+                    reason, code, message = refusal
+                    _sel().log_api_access(
+                        caller=caller,
+                        operation="upload.file",
+                        outcome="rejected",
+                        source="dashboard",
+                        resources=f"file:{fname} reason:{reason}",
+                    )
+                    # Branched rather than parameterised: each response states a
+                    # CONSTANT status and its own `code`, which is what keeps the
+                    # endpoint's possible outcomes statically readable (and is
+                    # what the error-code contract checks for).
+                    if code == "video_too_large":
+                        return web.json_response(
+                            {"error": message, "code": "video_too_large"},
+                            status=413,
+                        )
+                    return web.json_response(
+                        {"error": message, "code": "video_content_mismatch"},
+                        status=400,
+                    )
+                logger.info(
+                    "upload.file video: name=%s ext=%s size=%d",
+                    safe_name,
+                    ext,
+                    written,
+                )
+                paths.append(str(dest))
+                continue
             # Read with size limit
             data = bytearray()
             while True:
@@ -977,7 +1166,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     break
                 data.extend(chunk)
                 if len(data) > _MAX_UPLOAD_BYTES:
-                    _cleanup()
+                    await _cleanup()
                     _sel().log_api_access(
                         caller=caller,
                         operation="upload.file",
@@ -993,7 +1182,7 @@ async def api_upload_file(request: web.Request) -> web.Response:
             # claimed extension BEFORE writing, so an allowed extension can't
             # smuggle arbitrary/binary content (e.g. a .png that is really HTML).
             if not _content_matches_ext(ext, bytes(data)):
-                _cleanup()
+                await _cleanup()
                 _sel().log_api_access(
                     caller=caller,
                     operation="upload.file",
@@ -1005,22 +1194,10 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     {"error": f"File content does not match its type: {ext}"},
                     status=400,
                 )
-            # UUID prefix guarantees uniqueness even within a single request
-            dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
-            if not dest.resolve().is_relative_to(upload_dir.resolve()):
-                _cleanup()
-                _sel().log_api_access(
-                    caller=caller,
-                    operation="upload.file",
-                    outcome="rejected",
-                    source="dashboard",
-                    resources=f"file:{fname} reason:path_traversal",
-                )
-                return web.json_response({"error": "Invalid filename"}, status=400)
             try:
                 await asyncio.to_thread(_write_file_restricted, dest, bytes(data))
             except Exception:
-                dest.unlink(missing_ok=True)
+                await _cleanup(dest)
                 raise
             # Diagnostic logging for binary uploads. Compares the bytes
             # we received in memory against the bytes that landed on
@@ -1055,8 +1232,12 @@ async def api_upload_file(request: web.Request) -> web.Response:
                     # Diagnostic failure must never break the upload.
                     logger.exception("upload.file diagnostic failed for %s", safe_name)
             paths.append(str(dest))
-    except Exception:
-        _cleanup()
+    except (Exception, asyncio.CancelledError):
+        # Same blind spot as the video branch above: a cancelled request (gateway
+        # shutdown, client disconnect) raises CancelledError, which is NOT an
+        # Exception, so without naming it every file this request already wrote
+        # is orphaned in uploads/ with nothing left to reference or remove it.
+        await _cleanup()
         _sel().log_api_access(
             caller=caller,
             operation="upload.file",

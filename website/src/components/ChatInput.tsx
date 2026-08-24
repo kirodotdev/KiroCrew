@@ -56,7 +56,16 @@ import type { SendMode } from '../pages/chat/ChatSettings'
 // Upload picker accept hints. Client-side ONLY (UX) — the server validates type
 // (magic bytes), size, and runs malware scanning per input-validation guidance.
 const IMAGE_ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,image/bmp,image/svg+xml'
-const FILE_ACCEPT = IMAGE_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
+// Video containers the server accepts (see `_ALLOWED_VIDEO_EXT`). MIME form, not
+// extensions, because this string is also what the MOBILE photo picker filters
+// the library by: iOS shows videos only when a video/* type is listed, so an
+// extension-only hint is what made a phone able to attach photos and nothing else.
+// One MIME per accepted extension — `video/x-m4v` is NOT covered by `video/mp4`
+// in a picker's filter, so omitting it hides a file the server would accept.
+// test_accept_list_covers_every_accepted_extension pins this set against the
+// server's, from the Python side, since a vitest cannot read the Python constant.
+const VIDEO_ACCEPT = 'video/mp4,video/x-m4v,video/quicktime,video/webm'
+const FILE_ACCEPT = IMAGE_ACCEPT + ',' + VIDEO_ACCEPT + ',.txt,.md,.json,.har,.yaml,.yml,.xml,.csv,.log,.py,.js,.ts,.tsx,.jsx,.html,.css,.sh,.bash,.rb,.go,.rs,.java,.c,.cpp,.h,.hpp,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.rtf,.zip,.tar,.gz'
 
 // Extension per image MIME type, mirroring IMAGE_ACCEPT. Used to synthesize a
 // filename for clipboard-pasted images (see nameClipboardImage).

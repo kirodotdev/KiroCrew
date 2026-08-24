@@ -31,7 +31,7 @@ import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { serializeDirTokens, spliceDirTokens } from '../utils/fileTokens'
+import { serializeDirTokens, spliceDirTokens, VIDEO_EXT, VIDEO_MAX_BYTES } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -275,7 +275,17 @@ export default function ChatPane({
   })
   const uploadFiles = useCallback((files: File[]) => {
     if (!files.length || files.length > 20) return
-    if (files.find((f) => f.size > 50 * 1024 * 1024)) return
+    // Same video exemption as ChatPage's uploadFiles: the server's video cap is
+    // far higher than 50 MB, and this guard drops the batch SILENTLY, so
+    // applying it to a recording would swallow the attach with no explanation.
+    // But this pane has no error surface at all -- `uploadMutation` renders
+    // nothing on failure -- so it cannot delegate the ceiling to the server's
+    // 413 the way ChatPage does. It pre-checks against the server's own cap
+    // instead: a legal recording gets through, and an over-cap one is dropped
+    // exactly the way this pane already drops every oversized file, rather than
+    // gaining a NEW silent failure mode from this change.
+    const cap = (f: File) => (VIDEO_EXT.test(f.name) ? VIDEO_MAX_BYTES : 50 * 1024 * 1024)
+    if (files.find((f) => f.size > cap(f))) return
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
