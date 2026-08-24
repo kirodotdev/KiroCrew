@@ -185,6 +185,52 @@ def _unescape(value: str) -> str:
 _TZID_RE = re.compile(r"TZID=([^;:]+)", re.IGNORECASE)
 
 
+#: Windows (CLDR ``windowsZones``) display names -> the IANA key ``zoneinfo``
+#: understands.
+#:
+#: Microsoft Exchange and Outlook -- among the most common ``.ics`` producers --
+#: stamp ``DTSTART;TZID=Romance Standard Time:...`` rather than an IANA key like
+#: ``Europe/Paris``. ``ZoneInfo("Romance Standard Time")`` raises, so without this
+#: table :func:`_tzid_of` returned ``None`` and :func:`_parse_dt` read the local
+#: wall-clock time AS UTC -- a whole-timezone shift (a 16:00 Paris meeting stored
+#: as 16:00Z instead of 14:00Z, DST included). Mapping to the CLDR primary-territory
+#: IANA zone resolves the instant correctly, because the offset then comes from the
+#: IANA rules for the event's actual date. Matched case-insensitively (see
+#: :func:`_tzid_of`); an unmapped name still degrades to UTC-visible rather than
+#: dropping the event, per the module's never-drop convention. This is the common
+#: subset an Exchange / Outlook / Google export emits, not the full CLDR set.
+_WINDOWS_TO_IANA: dict[str, str] = {
+    "romance standard time": "Europe/Paris",
+    "w. europe standard time": "Europe/Berlin",
+    "central europe standard time": "Europe/Budapest",
+    "central european standard time": "Europe/Warsaw",
+    "e. europe standard time": "Europe/Chisinau",
+    "gmt standard time": "Europe/London",
+    "greenwich standard time": "Atlantic/Reykjavik",
+    "utc": "UTC",
+    "eastern standard time": "America/New_York",
+    "central standard time": "America/Chicago",
+    "mountain standard time": "America/Denver",
+    "us mountain standard time": "America/Phoenix",
+    "pacific standard time": "America/Los_Angeles",
+    "atlantic standard time": "America/Halifax",
+    "e. south america standard time": "America/Sao_Paulo",
+    "sa pacific standard time": "America/Bogota",
+    "argentina standard time": "America/Argentina/Buenos_Aires",
+    "arab standard time": "Asia/Riyadh",
+    "arabian standard time": "Asia/Dubai",
+    "israel standard time": "Asia/Jerusalem",
+    "india standard time": "Asia/Kolkata",
+    "china standard time": "Asia/Shanghai",
+    "tokyo standard time": "Asia/Tokyo",
+    "korea standard time": "Asia/Seoul",
+    "singapore standard time": "Asia/Singapore",
+    "w. australia standard time": "Australia/Perth",
+    "aus eastern standard time": "Australia/Sydney",
+    "new zealand standard time": "Pacific/Auckland",
+}
+
+
 def _tzid_of(params: str) -> ZoneInfo | None:
     """The ``TZID`` parameter as a tzinfo, or ``None`` when absent/unresolvable.
 
@@ -196,13 +242,23 @@ def _tzid_of(params: str) -> ZoneInfo | None:
     if not match:
         return None
     name = match.group(1).strip().strip('"')
-    # Some exporters emit a Windows zone name or a custom VTIMEZONE id, neither of
-    # which is an IANA key.
+    # An IANA key resolves directly. A Windows/CLDR display name -- what Exchange
+    # and Outlook emit (`Romance Standard Time`) -- is not an IANA key, so map it
+    # before giving up; otherwise ``ZoneInfo`` raises and the caller silently reads
+    # the wall-clock time as UTC, a whole-timezone error. A custom VTIMEZONE id that
+    # is neither still degrades to UTC-visible.
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, ValueError, OSError):
-        logger.debug("meetings: unknown calendar TZID %r; reading the time as UTC", name)
-        return None
+        pass
+    mapped = _WINDOWS_TO_IANA.get(name.lower())
+    if mapped is not None:
+        try:
+            return ZoneInfo(mapped)
+        except (ZoneInfoNotFoundError, ValueError, OSError):
+            pass
+    logger.debug("meetings: unknown calendar TZID %r; reading the time as UTC", name)
+    return None
 
 
 #: Length of the disambiguating digest appended to a sanitized event id.

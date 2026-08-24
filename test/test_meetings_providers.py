@@ -239,13 +239,36 @@ class TestParseDt:
         # 09:00 PST (UTC-8 in January) == 17:00 UTC.
         assert parsed == datetime(2026, 1, 15, 17, 0, tzinfo=timezone.utc)
 
-    def test_an_unknown_tzid_degrades_to_utc_rather_than_dropping(self):
+    def test_a_windows_zone_name_is_mapped_to_iana(self):
+        """Exchange/Outlook stamp Windows/CLDR names, not IANA keys.
+
+        `TZID=Romance Standard Time` is Europe/Paris; without the mapping the
+        wall-clock time was read as UTC (a whole-timezone shift). 16:00 Paris in
+        August (UTC+2) == 14:00 UTC.
+        """
+        parsed = cal._parse_dt("20260827T160000", ";TZID=Romance Standard Time")
+        assert parsed == datetime(2026, 8, 27, 14, 0, tzinfo=timezone.utc)
+
+    def test_a_windows_zone_name_honours_dst_at_the_event_date(self):
+        """Mapped zone uses the IANA rules for THAT date, not a fixed offset.
+
+        Pacific Standard Time -> America/Los_Angeles. 09:00 in January is PST
+        (UTC-8) == 17:00 UTC; the same clock time in August would be UTC-7.
+        """
+        parsed = cal._parse_dt("20260115T090000", ";TZID=Pacific Standard Time")
+        assert parsed == datetime(2026, 1, 15, 17, 0, tzinfo=timezone.utc)
+
+    def test_a_quoted_windows_zone_name_is_mapped(self):
+        parsed = cal._parse_dt("20260827T160000", ';TZID="Romance Standard Time"')
+        assert parsed == datetime(2026, 8, 27, 14, 0, tzinfo=timezone.utc)
+
+    def test_an_unmappable_tzid_degrades_to_utc_rather_than_dropping(self):
         """A visible meeting at a possibly-wrong hour beats a missing one.
 
-        Some exporters emit a Windows zone name or a custom VTIMEZONE id, neither
-        of which is an IANA key.
+        A custom VTIMEZONE id that is neither an IANA key nor a known Windows
+        name still degrades to reading the wall-clock time as UTC.
         """
-        parsed = cal._parse_dt("20260803T090000", ";TZID=Pacific Standard Time")
+        parsed = cal._parse_dt("20260803T090000", ";TZID=Custom Made-Up Zone 42")
         assert parsed == datetime(2026, 8, 3, 9, 0, tzinfo=timezone.utc)
 
     def test_a_floating_time_is_read_as_utc(self):
