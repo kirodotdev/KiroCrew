@@ -59,8 +59,11 @@ Current status:
   Kiro Crew logo and ghost family in the native NSIS sidebar, and intermediate
   pages retain a compact branded header. Buttons, progress, install-mode copy,
   keyboard behavior, and localization remain the standard Windows experience.
-  No custom page animation, bitmap timer, or UI-thread sleep is used; CI performs
-  a real silent install, records its duration, and fails if it exceeds 5 minutes.
+  Native page boundaries use a short Win32 alpha-blended cross-fade and honor
+  Windows' client-area animation setting. The fade contains no timer-driven
+  bitmap swap or UI-thread sleep, so extraction keeps the native progress path;
+  CI performs a real silent install, records its duration, and fails if it
+  exceeds 5 minutes.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu shortcut, the uninstall registry key,
   and any “start with Windows” Run entry left by an earlier custom installer,

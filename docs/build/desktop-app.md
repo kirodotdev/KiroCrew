@@ -45,7 +45,9 @@ The electron-builder configuration lives in
 - Windows target: assisted NSIS. A 164×314 welcome/finish sidebar and a 150×57
   page header reuse the Kiro Crew logo while preserving native NSIS controls,
   localization, the per-user default, and the no-UAC default path. The installer
-  deliberately has no custom page animation or timer work on the NSIS UI thread;
+  cross-fades the native top-level dialog at page boundaries with Win32's
+  alpha-blended window animation, honoring the client-area animation preference.
+  It performs no timer-driven bitmap work or `Sleep` on the NSIS UI thread;
   Windows CI installs the real artifact, records its duration, and enforces a
   5-minute ceiling.
 - linux targets: `AppImage`, `deb`, `rpm` (category `Development`). One backend

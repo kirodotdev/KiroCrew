@@ -4,10 +4,10 @@
 ; generated script; nothing here runs unless the macro name matches a hook the
 ; template inserts.
 ;
-; Keep the assisted flow on electron-builder's native MUI pages. In particular,
-; do not add custom page animations, timer-driven bitmap swaps, or Sleep calls:
-; they block the NSIS UI thread and made extraction appear stalled. The native
-; finish page also owns the automatic transition away from 100% completion.
+; Keep the assisted flow on electron-builder's native MUI pages. Page boundaries
+; use one short top-level Win32 cross-fade, but extraction stays on the native
+; progress page: no timer-driven bitmap swaps or Sleep calls can stall its UI
+; thread. The native finish page still owns the transition away from 100%.
 ;
 ; SCOPE: exactly one directory -- the electron-updater cache under $LOCALAPPDATA,
 ; which the generated uninstaller cannot reach (it only ever clears $APPDATA).
@@ -32,6 +32,14 @@
 !define KIRO_RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 !define KIRO_FILE_ATTRIBUTE_DIRECTORY 0x10
 !define KIRO_INVALID_FILE_ATTRIBUTES -1
+!define KIRO_SPI_GETCLIENTAREAANIMATION 0x1042
+!define KIRO_SW_HIDE 0
+!define KIRO_SW_SHOW 5
+!define KIRO_AW_HIDE 0x00010000
+!define KIRO_AW_ACTIVATE 0x00020000
+!define KIRO_AW_BLEND 0x00080000
+!define KIRO_FADE_IN_MS 180
+!define KIRO_FADE_OUT_MS 120
 
 !ifndef BUILD_UNINSTALLER
 
@@ -41,6 +49,74 @@ Var KiroPerMachineDefault
 Var KiroHasPerUserInstallation
 Var KiroHasPerMachineInstallation
 Var KiroScope
+Var KiroAnimationsEnabled
+Var KiroWindowVisible
+
+; The fade operates on the top-level dialog, the only window type for which
+; AW_BLEND is supported. It runs once per page boundary and leaves the native
+; extraction page untouched while files are being installed.
+Function KiroDetectAnimations
+  Push $0
+  Push $1
+  StrCpy $KiroAnimationsEnabled 1
+  System::Call "user32::SystemParametersInfoW(i ${KIRO_SPI_GETCLIENTAREAANIMATION}, i 0, *i .r0, i 0)i.r1"
+  ${If} $1 != 0
+    StrCpy $KiroAnimationsEnabled $0
+  ${EndIf}
+  Pop $1
+  Pop $0
+FunctionEnd
+
+Function KiroFadeInPage
+  ${If} ${Silent}
+    Return
+  ${EndIf}
+  ${If} $KiroAnimationsEnabled == 0
+    ShowWindow $HWNDPARENT ${KIRO_SW_SHOW}
+    StrCpy $KiroWindowVisible 1
+    Return
+  ${EndIf}
+
+  Push $0
+  IntOp $0 ${KIRO_AW_ACTIVATE} | ${KIRO_AW_BLEND}
+  ShowWindow $HWNDPARENT ${KIRO_SW_HIDE}
+  System::Call "user32::AnimateWindow(p $HWNDPARENT, i ${KIRO_FADE_IN_MS}, i $0)i.r0"
+  ${If} $0 == 0
+    ShowWindow $HWNDPARENT ${KIRO_SW_SHOW}
+  ${EndIf}
+  StrCpy $KiroWindowVisible 1
+  Pop $0
+FunctionEnd
+
+Function KiroFadeOutPage
+  ${If} ${Silent}
+    Return
+  ${EndIf}
+  ${If} $KiroAnimationsEnabled == 0
+    Return
+  ${EndIf}
+  ${If} $KiroWindowVisible != 1
+    Return
+  ${EndIf}
+
+  Push $0
+  Push $1
+  IntOp $0 ${KIRO_AW_HIDE} | ${KIRO_AW_BLEND}
+  System::Call "user32::AnimateWindow(p $HWNDPARENT, i ${KIRO_FADE_OUT_MS}, i $0)i.r1"
+  ${If} $1 == 0
+    ShowWindow $HWNDPARENT ${KIRO_SW_HIDE}
+  ${EndIf}
+  StrCpy $KiroWindowVisible 0
+  Pop $1
+  Pop $0
+FunctionEnd
+
+; Cancel closes the wizard without leaving a page, so the normal page callback
+; cannot observe it. The GUI lifecycle hook gives that path the same fade-out;
+; the visibility guard makes it a no-op after a finish-page leave already hid it.
+Function .onGUIEnd
+  Call KiroFadeOutPage
+FunctionEnd
 
 ; electron-builder's generated uninstaller removes $INSTDIR recursively. A
 ; fresh install must therefore own a directory that did not exist beforehand.
@@ -93,6 +169,15 @@ Function KiroEnsureAppInstallDir
   KiroFreshInstallDirReady:
 FunctionEnd
 
+; electron-builder exposes the welcome-page macro hook directly. Reinsert the
+; same native MUI page with show/leave callbacks so startup and the first Next
+; transition do not blink before the rest of the fade sequence begins.
+!macro customWelcomePage
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW KiroFadeInPage
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroFadeOutPage
+  !insertmacro MUI_PAGE_WELCOME
+!macroend
+
 !macro customPageAfterChangeDir
   ; The native install-mode page calls electron-builder's setInstallMode
   ; macros, which can replace $INSTDIR after .onInit/customInit has run.
@@ -115,6 +200,15 @@ FunctionEnd
     ${EndIf}
     StrCpy $INSTDIR $KiroInstallDir
   FunctionEnd
+
+  Function KiroInstallModeLeave
+    Call KiroValidateInstallDirAfterMode
+    Call KiroFadeOutPage
+  FunctionEnd
+
+  ; These hooks apply to the immediately following native instfiles page.
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW KiroFadeInPage
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroFadeOutPage
 !macroend
 
 ; Attach the validator to the native install-mode page's own leave callback.
@@ -122,13 +216,39 @@ FunctionEnd
 ; or changing the native Install button into a misleading Next button.
 !macro customInstallMode
   !ifndef BUILD_UNINSTALLER
-    !define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroValidateInstallDirAfterMode
+    !define MUI_PAGE_CUSTOMFUNCTION_SHOW KiroFadeInPage
+    !define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroInstallModeLeave
   !endif
+!macroend
+
+; Add callbacks around the stock MUI finish page without replacing its controls,
+; localization, run-after-finish behavior, or automatic progress handoff. The
+; packaging contract compares this copied StartApp block with electron-builder's
+; locked template so a dependency upgrade cannot silently drift from upstream.
+!macro customFinishPage
+  !ifndef HIDE_RUN_AFTER_FINISH
+    Function StartApp
+      ${if} ${isUpdated}
+        StrCpy $1 "--updated"
+      ${else}
+        StrCpy $1 ""
+      ${endif}
+      ${StdUtils.ExecShellAsUser} $0 "$launchLink" "open" "$1"
+    FunctionEnd
+
+    !define MUI_FINISHPAGE_RUN
+    !define MUI_FINISHPAGE_RUN_FUNCTION "StartApp"
+  !endif
+  !define MUI_PAGE_CUSTOMFUNCTION_SHOW KiroFadeInPage
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroFadeOutPage
+  !insertmacro MUI_PAGE_FINISH
 !macroend
 
 ; Preserve only the install-root ownership guard from the former custom UI.
 ; This runs for silent installs too and does not replace or restyle any page.
 !macro customInit
+  StrCpy $KiroWindowVisible 0
+  Call KiroDetectAnimations
   StrCpy $KiroScope "current"
   ${If} $installMode == "all"
     StrCpy $KiroScope "all"

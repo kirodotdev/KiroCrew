@@ -95,7 +95,9 @@ Notes:
   `KiroCrew Nightly Setup <version>.exe`), in `website/electron/dist/`.
 - The native welcome/finish sidebar and the header used on intermediate pages
   carry the Kiro Crew logo and ghost artwork. The standard NSIS controls and
-  localized instructions remain native; only their supporting artwork changes.
+  localized instructions remain native. Page boundaries use a short Win32
+  alpha-blended cross-fade that follows the system client-area animation setting;
+  extraction itself stays on the native progress page without timer-driven art.
 
 See `../../docs/guides/windows-install.md` for the CI-built installer and the
 current Windows support status.
