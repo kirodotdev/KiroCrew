@@ -17,8 +17,18 @@ interface CollapsibleToolGroupProps {
   permissionMeta?: Record<string, unknown>
   /** Number of pending permission messages in this group (shown as indicator when > 1). */
   pendingPermCount?: number
-  /** Callback for approve/trust/reject — same as PermissionMessage.onApprove. */
+  /** Callback for approve/reject (and trust, only when `canTrust`) — same as PermissionMessage.onApprove. */
   onApprove?: (decision: string) => void | Promise<void>
+  /**
+   * Offer the standing-trust tier. FAIL-CLOSED: leave unset unless this mount's
+   * `onApprove` routes to an endpoint that actually RECORDS standing trust
+   * (POST /api/chat/slots/{slot}/approve carries the decision verbatim).
+   * The common resolve path — ChatPage's `toApiDecision` into the one-shot
+   * `api.resolveApproval` — has no trust verb, so offering Trust there (or
+   * labelling a decision "Trusted") overstates the grant: the next identical
+   * call prompts again (#5400 on the spawn card, #5434 on this row).
+   */
+  canTrust?: boolean
   /** Callback to open the Activity Viewer. */
   onViewActivity?: () => void
   /** Whether the Activity Viewer is currently open. */
@@ -44,7 +54,7 @@ function extractPreview(meta?: Record<string, unknown>): string {
 }
 
 /** Collapsible row that wraps tool/thinking/permission messages — always collapsed unless autoExpand. */
-const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
+const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExpand, disclosureKey, hasPermission, isRunning, children, permissionMeta, pendingPermCount, onApprove, canTrust, onViewActivity, activityOpen }: CollapsibleToolGroupProps) {
   const [expanded, setExpanded] = useRowDisclosure(disclosureKey, !!autoExpand)
   const userToggled = useRef(false)
   const [submitting, setSubmitting] = useState(false)
@@ -63,6 +73,10 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
     wasRunning.current = !!isRunning
   }, [isRunning, setExpanded])
 
+  // The 'trust' entries are reachable only from a `canTrust` mount (see the
+  // prop's contract above): a mount resolving through the one-shot
+  // `api.resolveApproval` endpoint never offers the Trust button, so it can
+  // never wear a "Trusted" label it did not earn (#5400, #5434).
   const decisionLabel: Record<string, ReactNode> = { approved: <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approved')}</>, trust: <><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trusted')}</>, rejected: <><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.rejected')}</> }
   const labelNode = localResolved
     ? (decisionLabel[localResolved] || <><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.resolved')}</>)
@@ -126,7 +140,7 @@ const CollapsibleToolGroup = memo(function CollapsibleToolGroup({ count, autoExp
       {needsAttention && !expanded && onApprove && (
         <div className="mt-1 ml-4 pl-3 flex gap-2 flex-wrap">
           <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('approved') }}><CheckCircle className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.approve')}</button>
-          <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>
+          {canTrust && <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-text hover:border-border-strong hover:bg-bg-hover transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('trust') }}><Handshake className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.trust')}</button>}
           <button disabled={submitting} className="px-3 py-1 rounded-md border border-border bg-transparent text-muted text-[13px] leading-5 cursor-pointer font-body hover:text-danger hover:border-danger transition-all disabled:opacity-50 disabled:cursor-not-allowed" onClick={e => { e.stopPropagation(); submitDecision('rejected') }}><Ban className="lucide-inline" /> {i18nT('pages.chat.collapsibleToolGroup.reject')}</button>
         </div>
       )}

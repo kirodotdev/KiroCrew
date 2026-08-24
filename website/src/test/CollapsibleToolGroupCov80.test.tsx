@@ -54,9 +54,38 @@ describe('CollapsibleToolGroup header label', () => {
 describe('CollapsibleToolGroup approval dispatch', () => {
   const cases: [string, string][] = [
     [T('approve'), T('approved')],
-    [T('trust'), T('trusted')],
     [T('reject'), T('rejected')],
   ]
+
+  it('offers only the decisions its resolve path honors — Approve / Reject, no Trust (#5434)', () => {
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission permissionMeta={{ tool_input: 'zzq --run' }} onApprove={() => {}}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    // This row resolves through ChatPage's toApiDecision into the one-shot
+    // resolveApproval endpoint, which has no trust verb — offering a Trust
+    // tier here would overstate the grant, because the next identical call
+    // prompts again (#5400 on the spawn card, #5434 on this row).
+    const actionButtons = screen.getAllByRole('button').slice(1) // [0] is the header toggle
+    expect(actionButtons.map(b => b.textContent?.trim())).toEqual([T('approve'), T('reject')])
+    expect(screen.queryByText(T('trust'))).not.toBeInTheDocument()
+  })
+
+  it('offers the Trust tier only on a canTrust mount, and reports the trust decision verbatim (#5434)', async () => {
+    const onApprove = vi.fn()
+    renderWithProviders(
+      <CollapsibleToolGroup count={1} hasPermission canTrust permissionMeta={{ tool_input: 'zzq --run' }} onApprove={onApprove}>
+        <div>zzq-child</div>
+      </CollapsibleToolGroup>,
+    )
+    const actionButtons = screen.getAllByRole('button').slice(1)
+    expect(actionButtons.map(b => b.textContent?.trim())).toEqual([T('approve'), T('trust'), T('reject')])
+
+    fireEvent.click(screen.getByText(T('trust')))
+    await waitFor(() => expect(onApprove).toHaveBeenCalledWith('trust'))
+    expect(screen.getByText(T('trusted'))).toBeInTheDocument()
+  })
 
   for (const [buttonLabel, resolvedLabel] of cases) {
     it(`${buttonLabel} reports its decision and shows the resolved label`, async () => {
@@ -69,7 +98,7 @@ describe('CollapsibleToolGroup approval dispatch', () => {
       fireEvent.click(screen.getByText(buttonLabel))
 
       await waitFor(() => expect(onApprove).toHaveBeenCalledTimes(1))
-      expect(onApprove.mock.calls[0][0]).toBe(resolvedLabel.toLowerCase() === 'trusted' ? 'trust' : resolvedLabel.toLowerCase())
+      expect(onApprove.mock.calls[0][0]).toBe(resolvedLabel.toLowerCase())
       expect(screen.getByText(resolvedLabel)).toBeInTheDocument()
       // The approval affordances are gone once resolved.
       expect(screen.queryByText(T('approve'))).not.toBeInTheDocument()

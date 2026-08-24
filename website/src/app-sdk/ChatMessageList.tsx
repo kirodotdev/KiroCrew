@@ -28,6 +28,13 @@ export interface ChatMessageListProps {
   running: boolean
   contentWidth?: string
   onApprove?: (approvalId: string, decision: string) => void
+  /** Offer the standing-trust tier on pending-approval rows. FAIL-CLOSED: set it
+   *  only when `onApprove` routes to an endpoint that RECORDS standing trust
+   *  (the slot approve endpoint carries the decision verbatim). Hosts resolving
+   *  through the one-shot `resolveApproval` endpoint must leave it unset — that
+   *  path has no trust verb, so a Trust offer there overstates the grant
+   *  (#5400, #5434). */
+  canTrust?: boolean
   onFileOpen?: (path: string, opts?: { line?: number; endLine?: number }) => void
   /** Optional host-injected renderer for tool messages (role 'tool'/'tool_call'/
    *  'tool_result'). Lets a Redux-connected host (e.g. the dashboard's split-view
@@ -57,6 +64,7 @@ const ChatMessageList = memo(function ChatMessageList({
   running,
   contentWidth = '900px',
   onApprove,
+  canTrust,
   onFileOpen,
   renderTool,
   hideCardOwnedOAuth = false,
@@ -198,6 +206,7 @@ const ChatMessageList = memo(function ChatMessageList({
           permissionMeta={lastPerm?.meta}
           pendingPermCount={unresolvedPerms.length}
           onApprove={handleApprove}
+          canTrust={canTrust}
         >
           {/* Grouped messages (thinking, permission) return null from renderMessage
               intentionally — CollapsibleToolGroup handles their display via its
@@ -206,7 +215,7 @@ const ChatMessageList = memo(function ChatMessageList({
         </CollapsibleToolGroup>
       </div>
     )
-  }, [renderMessage, running, messages.length, contentWidth, onApprove])
+  }, [renderMessage, running, messages.length, contentWidth, onApprove, canTrust])
 
   // Render a DisplayItem (single, group, or turn)
   const renderDisplayItem = useCallback((item: DisplayItem, i: number) => {

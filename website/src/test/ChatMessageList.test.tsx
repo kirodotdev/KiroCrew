@@ -22,14 +22,15 @@ vi.mock('../pages/chat/UserMessage', () => ({
 }))
 
 vi.mock('../pages/chat/CollapsibleToolGroup', () => ({
-  default: ({ children, count, hasPermission, pendingPermCount }: {
-    children?: ReactNode; count?: number; hasPermission?: boolean; pendingPermCount?: number
+  default: ({ children, count, hasPermission, pendingPermCount, canTrust }: {
+    children?: ReactNode; count?: number; hasPermission?: boolean; pendingPermCount?: number; canTrust?: boolean
   }) => (
     <div
       data-testid="collapsible-tool-group"
       data-count={count}
       data-has-permission={String(hasPermission)}
       data-pending-perm-count={pendingPermCount}
+      data-can-trust={String(!!canTrust)}
     >
       {children}
     </div>
@@ -273,6 +274,25 @@ describe('ChatMessageList', () => {
       // All permissions are resolved, so has-permission should be false
       expect(group.getAttribute('data-has-permission')).toBe('false')
       expect(group.getAttribute('data-pending-perm-count')).toBe('0')
+    })
+
+    it('threads canTrust to the group, and withholds it by default (#5434)', () => {
+      const msgs: ChatMessage[] = [
+        msg('user', 'Run a command'),
+        msg('thinking', 'Analyzing...'),
+        msg('permission', 'Allow read access?', { meta: { approval_id: 'a1' } }),
+        msg('assistant', 'Here you go.'),
+      ]
+      // Fail-closed default: a host that says nothing gets no Trust tier —
+      // most hosts resolve through the one-shot resolveApproval endpoint,
+      // which has no trust verb (#5400, #5434).
+      const { unmount } = render(<ChatMessageList messages={msgs} running={false} onApprove={() => {}} />)
+      expect(screen.getByTestId('collapsible-tool-group').getAttribute('data-can-trust')).toBe('false')
+      unmount()
+
+      // A host whose onApprove records standing trust declares it explicitly.
+      render(<ChatMessageList messages={msgs} running={false} onApprove={() => {}} canTrust />)
+      expect(screen.getByTestId('collapsible-tool-group').getAttribute('data-can-trust')).toBe('true')
     })
 
     it('groups at end of messages list are flushed', () => {

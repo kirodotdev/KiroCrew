@@ -180,7 +180,10 @@ function ChatEmbed({ slotKey, agent, placeholder, frameless, startAtBottom, onSe
         {messages.length === 0 && !running && (
           <div className="text-center text-muted text-[13px] py-10">{i18nT('appSdk.chatEmbed.session_ready_type_a_message_to_start')}</div>
         )}
-        <ChatMessageList messages={messages} running={running} onApprove={approve} />
+        {/* canTrust: this embed's approve routes through the slot approve
+            endpoint (above), which records standing trust — the one mount
+            allowed to offer the tier (#5434). */}
+        <ChatMessageList messages={messages} running={running} onApprove={approve} canTrust />
         <div ref={endRef} />
       </div>
 

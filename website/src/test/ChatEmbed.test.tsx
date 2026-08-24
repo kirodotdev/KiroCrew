@@ -16,12 +16,13 @@ interface MockChatMessageListProps {
   messages: unknown[]
   running: boolean
   onApprove?: (approvalId: string, decision: string) => void
+  canTrust?: boolean
 }
 
 vi.mock('./ChatMessageList', () => ({
-  default: ({ messages, running, onApprove }: MockChatMessageListProps) => (
+  default: ({ messages, running, onApprove, canTrust }: MockChatMessageListProps) => (
     <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
-      data-can-approve={String(!!onApprove)}>
+      data-can-approve={String(!!onApprove)} data-can-trust={String(!!canTrust)}>
       {onApprove && (
         <>
           <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
@@ -34,9 +35,9 @@ vi.mock('./ChatMessageList', () => ({
 
 // Mock ChatMessageList from the correct path (ChatEmbed imports from ./ChatMessageList)
 vi.mock('../app-sdk/ChatMessageList', () => ({
-  default: ({ messages, running, onApprove }: MockChatMessageListProps) => (
+  default: ({ messages, running, onApprove, canTrust }: MockChatMessageListProps) => (
     <div data-testid="chat-message-list" data-count={messages.length} data-running={String(running)}
-      data-can-approve={String(!!onApprove)}>
+      data-can-approve={String(!!onApprove)} data-can-trust={String(!!canTrust)}>
       {onApprove && (
         <>
           <button data-testid="mock-approve" onClick={() => onApprove('appr-1', 'approved')}>approve</button>
@@ -488,6 +489,10 @@ describe('ChatEmbed approvals', () => {
       renderWithProviders(<ChatEmbed slotKey="slot-1" />)
       await vi.advanceTimersByTimeAsync(0)
     })
+    // The embed must DECLARE the trust tier: CollapsibleToolGroup is fail-closed
+    // and only renders the Trust button on a canTrust mount (#5434). Dropping
+    // the flag would silently remove Trust from every embedded approval row.
+    expect(screen.getByTestId('chat-message-list').dataset.canTrust).toBe('true')
     await act(async () => {
       screen.getByTestId('mock-trust').click()
       await vi.advanceTimersByTimeAsync(0)
