@@ -21,6 +21,7 @@ AGENT_FILENAME = "kirocrew.json"
 
 # Background/auxiliary managed agent specs KiroCrew writes under ~/.kiro/agents/.
 LITE_AGENT_FILENAME = "kirocrew-lite.json"
+CONDUCTOR_AGENT_FILENAME = "kirocrew-conductor.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
@@ -35,6 +36,7 @@ CC_MCP_SIDECAR_FILENAME = "kirocrew.mcp.json"
 OWNED_KIRO_AGENT_FILES = (
     AGENT_FILENAME,
     LITE_AGENT_FILENAME,
+    CONDUCTOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,
@@ -50,8 +52,8 @@ OWNED_CC_AGENT_FILES = (CC_MCP_SIDECAR_FILENAME,)
 #     compaction, heartbeat), reached via ``SessionManager.get_bg_session``.
 # The remaining OWNED_KIRO_AGENT_FILES entries are deliberately excluded: their
 # installers in ``agent.py`` already degrade to ``logger.debug`` on failure
-# because each one only disables its own feature (Knowledge extraction, Research
-# Lab, unattended heartbeat polling).
+# because each one only disables its own feature (goal conducting, Knowledge
+# extraction, Research Lab, unattended heartbeat polling).
 REQUIRED_KIRO_AGENT_FILES = (
     AGENT_FILENAME,
     LITE_AGENT_FILENAME,
