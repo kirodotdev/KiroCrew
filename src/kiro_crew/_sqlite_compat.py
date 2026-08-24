@@ -18,6 +18,24 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+
+def fts5_quote_tokens(query: str) -> list[str]:
+    """Quote each whitespace-separated token of ``query`` for FTS5 MATCH.
+
+    One escaping dialect for every FTS5 reader in the tree. A token becomes a
+    quoted string, so FTS5 reads it as text rather than syntax: unquoted, ``-``
+    ``.`` and a bare ``AND`` are operators, which makes the everyday queries
+    (``PROJ-123``, ``hooks.py``) raise inside the driver. Internal double quotes
+    are doubled, the escape FTS5 defines for its own string literals.
+
+    Returns the tokens rather than a finished expression: how they are joined is
+    a per-surface product decision, not an escaping one. Memory search ANDs them
+    (the user typed every word deliberately); knowledge retrieval drops stopwords
+    and ORs them (natural-language recall).
+    """
+    return ['"' + token.replace('"', '""') + '"' for token in query.split()]
+
+
 try:
     import pysqlite3 as sqlite3  # type: ignore
 except ImportError:  # pragma: no cover - exercised on platforms without pysqlite3

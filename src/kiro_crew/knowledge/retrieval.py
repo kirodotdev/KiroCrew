@@ -14,6 +14,7 @@ try:
 except ImportError:
     import sqlite3
 
+from .._sqlite_compat import fts5_quote_tokens
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -283,8 +284,10 @@ class HybridRetriever:
         # than returning an empty match (which would drop the keyword leg).
         if not tokens:
             tokens = raw_tokens
-        quoted = ['"' + t.replace('"', '""') + '"' for t in tokens]
-        return " OR ".join(quoted)
+        # Quoting comes from the shared primitive so the tree has exactly one
+        # FTS5 escaping dialect; the stopword drop and OR join above stay this
+        # surface's own recall policy.
+        return " OR ".join(fts5_quote_tokens(" ".join(tokens)))
 
     def _graph_search(self, query: str, limit: int = 20) -> list[tuple[str, int]]:
         """Find entities matching query terms, traverse graph, rank items by mention count."""

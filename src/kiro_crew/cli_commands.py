@@ -1859,6 +1859,39 @@ def _markdown_memory_store() -> MemoryStore:
     return MemoryStore()
 
 
+def _memory_search_history(args: argparse.Namespace) -> None:
+    """Print FTS5 hits from the markdown memory layer.
+
+    Reads the same index the heartbeat and gateway keep current, so this needs
+    no embedder and no vector store — it answers "where did I write this word"
+    against preferences, projects and the dated daily-history files.
+
+    Resolves the store through ``_markdown_memory_store`` for the reason spelled
+    out there: the reader must anchor exactly where the gateway's consolidator
+    writes, or a config that remaps the default workspace searches a tree
+    nothing writes to.
+    """
+    store = _markdown_memory_store()
+    results = store.search(args.query, limit=10)
+    if not results:
+        # An empty index is not the same statement as an absent word, so the two
+        # are reported differently.
+        if not store.index_row_count():
+            print("Memory history index is empty or unavailable; nothing was searched.")
+        else:
+            print("No memory-history matches.")
+        return
+    print("  Daily history / preferences / projects:")
+    for r in results:
+        # Strip terminal control sequences for the same reason the semantic
+        # listing does: memory holds whatever the user pasted into a session.
+        path = _TERMINAL_CTRL_RE.sub("", str(r.get("path", "?")))
+        snippet = _TERMINAL_CTRL_RE.sub("", str(r.get("snippet", ""))).strip()
+        print(f"    {path}")
+        if snippet:
+            print(f"        {snippet}")
+
+
 def _memory_show(args: argparse.Namespace) -> None:
     """Read-only view of the markdown memory layer (preferences/projects/history).
 
@@ -1906,6 +1939,11 @@ def _memory_cmd(args: argparse.Namespace) -> None:
     if action == "show":
         _memory_show(args)
         return
+    # "search --layer history" reads only the markdown FTS index, so don't open
+    # (or create) the vector store for it — same reason as "show" above.
+    if action == "search" and getattr(args, "layer", "all") == "history":
+        _memory_search_history(args)
+        return
     cfg = KiroCrewConfig.load()
     store = VectorMemoryStore(embedding_dim=cfg.memory.embedding_dim)
     store.init()
@@ -1931,19 +1969,31 @@ def _memory_cmd(args: argparse.Namespace) -> None:
                 )
 
         elif action == "search":
-            results = store.search_episodic(query_text=args.query, limit=10)
-            if not results:
-                print("No episodic memories found.")
-                return
-            for r in results:
-                tags = (
-                    json.loads(r.get("tags", "[]"))
-                    if isinstance(r.get("tags"), str)
-                    else r.get("tags", [])
-                )
-                print(f"  [{r.get('importance', 0):.1f}] {r['text'][:120]}")
-                if tags:
-                    print(f"        tags: {', '.join(tags)}")
+            layer = getattr(args, "layer", "all")
+            if layer in ("vector", "all"):
+                results = store.search_episodic(query_text=args.query, limit=10)
+                if not results:
+                    print("No episodic memories found.")
+                    # Under "all" the markdown layer is still to come: an empty
+                    # vector result is not an empty answer.
+                    if layer == "vector":
+                        return
+                elif layer == "all":
+                    # Both sections are printed, so both are named. Unlabelled,
+                    # the first block of hits reads as the whole answer. Held
+                    # back under "vector", whose output shape is a promise.
+                    print("  Episodic recall:")
+                for r in results:
+                    tags = (
+                        json.loads(r.get("tags", "[]"))
+                        if isinstance(r.get("tags"), str)
+                        else r.get("tags", [])
+                    )
+                    print(f"  [{r.get('importance', 0):.1f}] {r['text'][:120]}")
+                    if tags:
+                        print(f"        tags: {', '.join(tags)}")
+            if layer == "all":
+                _memory_search_history(args)
 
         elif action == "stats":
             stats = store.memory_stats()
