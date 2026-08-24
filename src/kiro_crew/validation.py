@@ -2453,6 +2453,20 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     ],
 )
 
+SEND_TO_SESSION_SCHEMA = ToolSchema(
+    tool_name="send_to_session",
+    fields=[
+        # Anchored pattern: slot keys follow a fixed grammar (chat-<n>-<ts>).
+        # Rejects namespaced values (dashboard:chat-...) that would bypass the
+        # handler's self-target and workspace-isolation comparisons.
+        FieldSpec(
+            "slot", str, required=True, max_len=MAX_SHORT_STRING,
+            pattern=re.compile(r"^chat-\d+-\d+$", flags=re.ASCII),
+        ),
+        FieldSpec("message", str, required=True, max_len=MAX_MEDIUM_STRING),
+    ],
+)
+
 # select_crew: `crew` is optional — omitted/empty returns the roster. When
 # present it is NOT pattern-validated here: crew creation only strips the name
 # (agents.py), so names may contain spaces/dots; the deny-by-default gate is the
@@ -2597,6 +2611,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "read_slack_profile": READ_SLACK_PROFILE_SCHEMA,
     "wait": WAIT_SCHEMA,
     "register_hook": REGISTER_HOOK_SCHEMA,
+    "send_to_session": SEND_TO_SESSION_SCHEMA,
     "file_send": FILE_SEND_SCHEMA,
     "autonudge_stop": AUTONUDGE_STOP_SCHEMA,
     "monitor_start": MONITOR_START_SCHEMA,

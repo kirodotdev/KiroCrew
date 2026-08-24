@@ -94,6 +94,15 @@ export default function SessionGridView({
     refetchInterval: 3000,
   })
 
+  // Cross-session send is opt-in (Settings > Chat > Cross-Session Send). When
+  // enabled, each pane gets the OTHER visible sessions as send targets.
+  const { data: dashCfg } = useQuery<{ cross_session_send?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  const crossSendEnabled = dashCfg?.cross_session_send === true
+
   // Once the slot list loads, heal a restored layout: drop panes whose session was
   // deleted/archived while away. Runs once (the first non-empty slots payload).
   const prunedRef = useRef(false)
@@ -125,6 +134,12 @@ export default function SessionGridView({
 
   const renderLeaf = (leaf: GridLeaf) => {
     if (leaf.kind === 'session' && leaf.slot) {
+      // Other visible sessions this pane can send to (flag-gated).
+      const sendTargets = crossSendEnabled
+        ? grid.occupiedSlots
+            .filter((s) => s !== leaf.slot)
+            .map((s) => ({ key: s, title: slots.find((x) => x.key === s)?.title }))
+        : undefined
       return (
         <ChatPane
           slotKey={leaf.slot}
@@ -134,6 +149,7 @@ export default function SessionGridView({
           onSplitRight={() => grid.splitLeaf(leaf.id, 'right')}
           onSplitDown={() => grid.splitLeaf(leaf.id, 'down')}
           onOpenFull={onCollapse}
+          sendTargets={sendTargets}
         />
       )
     }

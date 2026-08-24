@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
-import { X } from 'lucide-react'
+import { X, SendHorizontal } from 'lucide-react'
 import { SplitGlyph } from './SplitGlyph'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import { useModelsDegraded } from '../providers/modelListHealth'
@@ -59,6 +59,7 @@ export default function ChatPane({
   onSplitRight,
   onSplitDown,
   onOpenFull,
+  sendTargets,
 }: {
   slotKey: string
   focused?: boolean
@@ -70,6 +71,9 @@ export default function ChatPane({
    *  the earlier-messages row is hidden rather than shown inert. The optional ts
    *  anchors the destination near the pane's oldest message, not the newest. */
   onOpenFull?: (slot: string, anchorTs?: string, anchorMid?: string) => void
+  /** Other grid sessions this pane can send its composed text to (cross_session_send flag).
+   *  Absent/empty → the "Send to" control is not rendered. */
+  sendTargets?: { key: string; title?: string }[]
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -430,6 +434,65 @@ export default function ChatPane({
   }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer])
 
   const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])
+
+  // ── Cross-session send (cross_session_send flag) ──
+  const [sendToOpen, setSendToOpen] = useState(false)
+  const [sendToBtnRect, setSendToBtnRect] = useState<DOMRect | null>(null)
+  const sendToWrapRef = useRef<HTMLDivElement>(null)
+  const sendToBtnRef = useRef<HTMLButtonElement>(null)
+  const sendToMenuRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!sendToOpen) return
+    const handler = (e: MouseEvent) => {
+      const t = e.target as Node
+      if (sendToWrapRef.current?.contains(t) || sendToMenuRef.current?.contains(t)) return
+      setSendToOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [sendToOpen])
+  const [sendToError, setSendToError] = useState('')
+  const doSendToSession = useCallback(async (targetSlot: string) => {
+    const text = input.trim()
+    setSendToOpen(false)
+    setSendToError('')
+    if (!text) {
+      sendToBtnRef.current?.focus()
+      return
+    }
+    if (pendingFiles.length) {
+      setSendToError('Not sent \u2014 attachments not supported')
+      sendToBtnRef.current?.focus()
+      return
+    }
+    const wrapped = `[Cross-session message from ${slotKey}]\n\n${text}`
+    try {
+      const res = await api.sendChat(wrapped, targetSlot)
+      if (!res.ok) throw new Error(`send failed: ${res.status}`)
+      setInput('')
+    } catch {
+      setSendToError('Send failed \u2014 input preserved')
+    } finally {
+      sendToBtnRef.current?.focus()
+    }
+  }, [input, pendingFiles, slotKey])
+  const sendToKeyboardRef = useRef<HTMLElement | null>(null)
+  const { onListKeyDown: onSendToKeyDown } = useListboxKeyboard({
+    open: sendToOpen,
+    dropdownRef: sendToMenuRef,
+    inputRef: sendToKeyboardRef,
+    hasFilterInput: false,
+    filteredCount: sendTargets?.length ?? 0,
+    onEnterSingleMatch: () => {
+      const t = sendTargets?.[0]
+      if (t) void doSendToSession(t.key)
+    },
+    closeToTrigger: () => {
+      setSendToOpen(false)
+      sendToBtnRef.current?.focus()
+    },
+  })
+
   const onCancelQueued = useCallback((queueId: string) => {
     dispatch(cancelQueuedMessage({ slot: slotKey, queue_id: queueId }))
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
@@ -526,6 +589,61 @@ export default function ChatPane({
           )}
           <span className="flex-1" />
           {running && <span className="shrink-0 text-[10px] text-ok font-mono">{streamState}</span>}
+          {(sendTargets?.length ?? 0) > 0 && (
+            <div ref={sendToWrapRef} className="relative shrink-0">
+              {sendToError && (
+                <span role="alert" className="text-[10px] text-danger mr-1">{sendToError}</span>
+              )}
+              <button
+                ref={sendToBtnRef}
+                onClick={() => setSendToOpen((v) => {
+                  const next = !v
+                  if (next) {
+                    setSendToError('')
+                    setSendToBtnRect(sendToBtnRef.current?.getBoundingClientRect() ?? null)
+                  }
+                  return next
+                })}
+                title="Send composed message to another session"
+                aria-label="Send to session"
+                aria-expanded={sendToOpen}
+                aria-haspopup="listbox"
+                className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors"
+              >
+                <SendHorizontal size={15} />
+              </button>
+              {sendToOpen && sendToBtnRect && createPortal(
+                <div
+                  ref={sendToMenuRef}
+                  tabIndex={-1}
+                  onKeyDown={onSendToKeyDown}
+                  role="listbox"
+                  aria-label="Send input to session"
+                  className="fixed z-[9999] min-w-[180px] max-w-[280px] bg-bg-elevated border border-border rounded-md shadow-lg py-1"
+                  style={(() => {
+                    const left = Math.max(8, Math.min(sendToBtnRect.right - 180, window.innerWidth - 288))
+                    return { top: sendToBtnRect.bottom + 4, left }
+                  })()}
+                >
+                  <div className="px-2 py-1 text-[10px] text-muted uppercase">Send input to…</div>
+                  {sendTargets!.map((t) => (
+                    <button
+                      key={t.key}
+                      role="option"
+                      aria-selected={false}
+                      tabIndex={-1}
+                      onClick={() => doSendToSession(t.key)}
+                      className="w-full text-left px-2 py-1.5 text-[12px] text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none truncate"
+                      title={t.key}
+                    >
+                      {t.title || t.key}
+                    </button>
+                  ))}
+                </div>,
+                document.body,
+              )}
+            </div>
+          )}
           {onSplitRight && (
             <button onClick={onSplitRight} title={i18nT('components.chatPane.split_right_d')} aria-label={i18nT('components.chatPane.split_right')} className="shrink-0 p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer bg-transparent border-none transition-colors">
               <SplitGlyph />

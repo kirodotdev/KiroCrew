@@ -306,6 +306,32 @@ def schemas() -> list[dict[str, Any]]:
                 "required": ["path"],
             },
         },
+        {
+            "name": "send_to_session",
+            "description": (
+                "Send a message into ANOTHER chat session (by slot key). The target "
+                "session receives it as input: if idle, it starts a new agent turn; "
+                "if busy, it is queued for the next turn. The message is prefixed "
+                "with cross-session provenance so the receiving agent knows its origin. "
+                "Requires the dashboard.cross_session_send feature flag (Settings > Chat). "
+                "Use to coordinate work between split-view sessions or hand off "
+                "context/results to a parallel session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "slot": {
+                        "type": "string",
+                        "description": "Target session slot key (e.g. 'chat-3-1712793600').",
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": "Message text to inject into the target session.",
+                    },
+                },
+                "required": ["slot", "message"],
+            },
+        },
     ]
 
 
@@ -732,10 +758,155 @@ def file_send(name: str, args: dict[str, Any]) -> str:
     return msg + slack_warning
 
 
+def send_to_session(name: str, args: dict[str, Any]) -> str:
+    """Send a message into another chat session (cross-session messaging)."""
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.validation import SEND_TO_SESSION_SCHEMA, ValidationError, validate_tool_args
+
+    # Resolve the caller identity ONCE, fail-closed.
+    try:
+        origin = mcp_core._resolve_session_key_strict()
+    except Exception:
+        origin = ""
+
+    # Defense-in-depth: re-validate here so a direct/unvalidated call degrades
+    # to a clean error string, and audit the failure.
+    try:
+        args = validate_tool_args(args, SEND_TO_SESSION_SCHEMA)
+    except ValidationError as exc:
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="error",
+        )
+        return f"Error: {exc}"
+
+    # Cross-session messaging is opt-in: gated on the dashboard config flag.
+    try:
+        _flag = KiroCrewConfig.load().dashboard.cross_session_send
+    except Exception:
+        _flag = False
+    if not _flag:
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="denied",
+        )
+        return (
+            "Error: cross_session_send is disabled — enable it in "
+            "Settings > Chat > Cross-Session Send (dashboard.cross_session_send)."
+        )
+
+    target_slot = args.get("slot", "")
+    text = args.get("message", "")
+
+    # Deny-by-default: positively require the namespaced key format.
+    origin_slot = origin.split(":", 1)[1] if ":" in origin else ""
+    _validation_error = None
+    if not target_slot:
+        _validation_error = "Error: slot is required."
+    elif not text:
+        _validation_error = "Error: message is required."
+    elif not origin or ":" not in origin:
+        _validation_error = (
+            "Error: cannot resolve origin session — cross-session send "
+            "requires a known source."
+        )
+    elif not origin.startswith("dashboard:"):
+        _validation_error = (
+            "Error: cross-session send requires a dashboard origin session."
+        )
+    elif target_slot == origin_slot:
+        _validation_error = (
+            f"Error: cannot send to your own session ({target_slot})."
+        )
+    if _validation_error:
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="error",
+        )
+        return _validation_error
+
+    # Workspace isolation: reads refuse cross-workspace access, so this WRITE
+    # path must not cross the same boundary.
+    try:
+        cl = mcp_core.ConversationLog()
+        # Existence probe first: a missing session must not spawn a new one.
+        if not cl.has_log(f"dashboard:{target_slot}"):
+            mcp_core.sel().log_tool_invocation(
+                session_key=origin,
+                source="mcp",
+                tool_name="send_to_session",
+                outcome="error",
+            )
+            return f"Error: no session found for slot {target_slot}."
+        caller_ws = mcp_core._caller_workspace(cl, origin)
+        target_ws = mcp_core._ws_bucket(
+            cl.get_metadata(f"dashboard:{target_slot}").get("workspace")
+        )
+    except Exception:
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="error",
+        )
+        return "Error: unable to verify workspace isolation."
+
+    if target_ws != caller_ws:
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="denied",
+        )
+        return "Error: target session belongs to a different workspace."
+
+    # Redact credentials/exfiltration before injecting into another session.
+    text, _ = redact_exfiltration_urls(text)
+    text, _ = redact_credentials(text)
+    wrapped = f"[Cross-session message from {origin}]\n\n{text}"
+
+    # ws=1 → gateway returns JSON immediately.
+    resp = mcp_core._post("/api/chat?ws=1", {"message": wrapped, "slot": target_slot})
+    if resp.get("error"):
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="error",
+        )
+        return f"Failed to send to session {target_slot}: {resp['error']}"
+
+    if resp.get("queued") or resp.get("ok"):
+        mcp_core.sel().log_tool_invocation(
+            session_key=origin,
+            source="mcp",
+            tool_name="send_to_session",
+            outcome="success",
+        )
+        if resp.get("queued"):
+            return f"Message queued in busy session {target_slot} — it will be processed after the current turn."
+        return f"Message sent to session {target_slot} — a new agent turn started."
+
+    mcp_core.sel().log_tool_invocation(
+        session_key=origin,
+        source="mcp",
+        tool_name="send_to_session",
+        outcome="error",
+    )
+    return f"Failed: unexpected response {resp}"
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "send_message": send_message,
     "send_notification": send_notification,
     "delete_message": delete_message,
     "read_slack_profile": read_slack_profile,
     "file_send": file_send,
+    "send_to_session": send_to_session,
 }

@@ -504,6 +504,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.cross-session-send",
+    "label": "Cross-Session Send",
+    "description": "Opt-in: send messages from one session to another (split view button and send_to_session agent tool). Experimental.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.default-model",
     "label": "Default Model",
     "labelKey": "pages.settings.chatPanel.default_model",
