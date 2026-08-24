@@ -37,7 +37,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import secrets
 import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
@@ -49,12 +48,18 @@ from kiro_crew.messaging.outbound_files import (
     hide_local_refs,
     upload_filename,
 )
-from kiro_crew.messaging.renderer import Renderer, apply_options_cap, split_options_trailer
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    apply_options_cap,
+    new_approval_nonce,
+    split_options_trailer,
+)
+from kiro_crew.messaging.split import chunk_utf8_bytes
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.webex.cards import approval_card, options_card, usable_choices
-from kiro_crew.webex.client import WEBEX_MAX_TEXT, chunk_utf8
+from kiro_crew.webex.client import WEBEX_MAX_TEXT
 
 if TYPE_CHECKING:
     from kiro_crew.webex.client import WebexClient
@@ -372,7 +377,13 @@ class WebexRenderer(Renderer):
         # here and must reassemble exactly, which a line-oriented splitter cannot
         # promise because it consumes the boundary whitespace. Pinned by
         # test_channel_table_rendering.py::TestDeliveryFraming.
-        chunks = chunk_utf8(content) or ["…"]
+        #
+        # The SHARED primitive, not a local copy: it carries two termination
+        # guards (a non-positive budget, and a single code point wider than the
+        # budget) that a hand-rolled copy of this loop spins forever on. And
+        # deliberately the FENCE-BLIND one, not ``split_markdown_bytes``: the
+        # answer path above re-seals its own fences.
+        chunks = chunk_utf8_bytes(content, WEBEX_MAX_TEXT) or ["…"]
         first, rest = chunks[0], chunks[1:]
         delivered = False
         if self._placeholder_id is not None:
@@ -695,6 +706,12 @@ class WebexRenderer(Renderer):
         usable = usable_choices(choices)
         if not usable:
             return None
-        nonce = secrets.token_hex(8)
+        # The SHARED minter, for the reason stated at ``new_approval_nonce``: an
+        # options press and an approval press are the same hazard (a control left
+        # in a chat from an earlier turn naming indexes that are live again), so a
+        # second generator with its own alphabet is what eventually diverges. The
+        # approval card on this same renderer already reaches it through
+        # ``PendingApprovals.reserve``.
+        nonce = new_approval_nonce()
         self._publish_choices(nonce, usable)
         return options_card(usable, nonce=nonce)

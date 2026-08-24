@@ -3,23 +3,38 @@
 Everything channel-neutral (caps, classification, signature sniffing, temp-file
 ownership, the SEL audit) belongs to ``messaging/attachments.py`` and is tested
 there. What is Webex-specific and tested here: an opaque content URL becomes a
-described :class:`Attachment` via a HEAD probe, and a probe that fails still
-yields an entry so the failure surfaces to the user instead of the file
-disappearing.
+described :class:`Attachment` via a HEAD probe, a probe that fails still yields an
+entry so the failure surfaces to the user instead of the file disappearing, and
+``process_webex_attachments`` wires the probe, the download and the audio
+transcription into the shared ingest.
 """
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
-from kiro_crew.webex.attachments import outbound_mimetype, to_attachments
+from kiro_crew.messaging.attachments import cleanup
+from kiro_crew.webex.attachments import process_webex_attachments, to_attachments
 
 
 class FakeClient:
-    """A client whose HEAD answers are scripted per URL."""
+    """A client whose HEAD answers are scripted per URL.
 
-    def __init__(self, answers: dict[str, tuple[str, str, int]] | None = None) -> None:
+    ``bodies`` makes a download actually write bytes, which the shared ingest
+    needs: it classifies on the file's SIGNATURE, so a download that writes
+    nothing is indistinguishable from a corrupt file and never reaches the
+    interesting paths.
+    """
+
+    def __init__(
+        self,
+        answers: dict[str, tuple[str, str, int]] | None = None,
+        bodies: dict[str, bytes] | None = None,
+    ) -> None:
         self.answers = answers or {}
+        self.bodies = bodies or {}
         self.head_calls: list[str] = []
         self.downloads: list[tuple[str, str]] = []
 
@@ -29,6 +44,10 @@ class FakeClient:
 
     async def download_content(self, url: str, dest: str) -> None:
         self.downloads.append((url, dest))
+        body = self.bodies.get(url)
+        if body is not None:
+            with open(dest, "wb") as fh:
+                fh.write(body)
 
 
 class TestToAttachments:
@@ -95,26 +114,73 @@ class TestToAttachments:
             assert hostile not in hint
 
 
-class TestOutboundMimetype:
-    @pytest.mark.parametrize(
-        "path,expected",
-        [
-            ("/tmp/chart.png", "image/png"),
-            ("/tmp/a.jpg", "image/jpeg"),
-            ("/tmp/notes.txt", "text/plain"),
-        ],
-    )
-    def test_a_known_extension_maps_to_its_type(self, path: str, expected: str) -> None:
-        assert outbound_mimetype(path) == expected
+class TestProcessWebexAttachments:
+    """The Webex half of ingest: probe -> download -> shared ingest -> transcribe."""
 
-    def test_an_unknown_extension_falls_back_to_binary(self) -> None:
-        """A wrong guess costs a preview, not the delivery.
+    @pytest.mark.asyncio
+    async def test_a_text_file_becomes_prompt_material(self) -> None:
+        url = "https://webexapis.com/v1/contents/C1"
+        client = FakeClient(
+            {url: ("notes.txt", "text/plain", 11)},
+            {url: b"hello there"},
+        )
+        inbound = SimpleNamespace(file_urls=(url,))
 
-        Webex previews only a handful of types; everything else still uploads, so
-        a generic binary type is the right fallback rather than a refusal.
+        result = await process_webex_attachments(client, inbound)  # type: ignore[arg-type]
+
+        try:
+            # The download went through the client's own content endpoint, which is
+            # what carries the bot's Authorization header — a plain fetch of that URL
+            # is unauthenticated and would 401.
+            assert client.downloads and client.downloads[0][0] == url
+            assert any("hello there" in block for block in result.text_blocks)
+        finally:
+            # ``finally`` so a failed assertion still drops the downloaded bytes:
+            # a bypassed cleanup leaves temp residue that trips the suite's
+            # residue reporting and mis-attributes it to the next test.
+            cleanup(result.temp_paths)
+
+    @pytest.mark.asyncio
+    async def test_no_files_does_no_work(self) -> None:
+        client = FakeClient()
+        inbound = SimpleNamespace(file_urls=())
+
+        result = await process_webex_attachments(client, inbound)  # type: ignore[arg-type]
+
+        assert client.head_calls == []
+        assert client.downloads == []
+        assert result.text_blocks == []
+
+    @pytest.mark.asyncio
+    async def test_audio_is_transcribed_here(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``handle_audio=True`` because Webex offers no server-side transcript.
+
+        iLink voice clips arrive with one and are preferred; a Webex clip has to be
+        downloaded and run through local STT, so this is the channel that must ask
+        the shared ingest to keep the audio bytes.
         """
-        assert outbound_mimetype("/tmp/thing.qqq") == "application/octet-stream"
+        import os
 
-    def test_only_the_basename_is_consulted(self) -> None:
-        # A directory called "x.png" must not decide the type of a file that is not.
-        assert outbound_mimetype("/tmp/x.png/data.txt") == "text/plain"
+        url = "https://webexapis.com/v1/contents/C1"
+        client = FakeClient(
+            {url: ("voice.ogg", "audio/ogg", 36)},
+            {url: b"OggS" + b"\x00" * 32},
+        )
+        transcribed: list[str] = []
+
+        async def _transcribe(path: str) -> str:
+            assert os.path.exists(path), "STT must run against the downloaded bytes"
+            transcribed.append(path)
+            return "spoken words"
+
+        monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda: True)
+        monkeypatch.setattr("kiro_crew.transcribe.transcribe_audio", _transcribe)
+        inbound = SimpleNamespace(file_urls=(url,))
+
+        result = await process_webex_attachments(client, inbound)  # type: ignore[arg-type]
+
+        try:
+            assert transcribed == result.audio_paths
+            assert any("spoken words" in block for block in result.text_blocks)
+        finally:
+            cleanup(result.temp_paths)

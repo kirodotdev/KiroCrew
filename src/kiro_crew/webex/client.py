@@ -58,38 +58,12 @@ def truncate_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> str:
     """Byte-exact truncation, defaulted to Webex's own cap.
 
     The implementation is the shared one in ``messaging.split``; this wrapper
-    exists only to keep ``WEBEX_MAX_TEXT`` as the default for Webex's call sites.
-    It loses the tail, so it is the last-resort guard for a SINGLE send —
-    multi-message content is split losslessly first by :func:`chunk_utf8`.
+    exists only to keep ``WEBEX_MAX_TEXT`` as the default for this module's three
+    call sites. It loses the tail, so it is the last-resort guard for a SINGLE
+    send — multi-message content is split losslessly first, by the shared
+    ``messaging.split.chunk_utf8_bytes`` at the renderer's answer path.
     """
     return _truncate_utf8(text, max_bytes)
-
-
-def chunk_utf8(text: str, max_bytes: int = WEBEX_MAX_TEXT) -> list[str]:
-    """Split ``text`` into chunks of at most *max_bytes* UTF-8 bytes each,
-    never splitting a code point and never dropping content.
-
-    The neutral ``chunk_text`` helper splits by CHARACTERS, but Webex limits
-    BYTES — a multibyte-heavy chunk under the character cap could exceed the
-    byte limit and be silently tail-truncated by the send path, losing the
-    remainder. Splitting on the encoded bytes and re-decoding with
-    ``errors="ignore"`` finds the largest whole-code-point prefix per chunk;
-    the loop then resumes from exactly the characters consumed, so the
-    concatenation of all chunks always equals the input.
-    """
-    if not text:
-        return []
-    chunks: list[str] = []
-    remaining = text
-    while remaining:
-        encoded = remaining.encode("utf-8")
-        if len(encoded) <= max_bytes:
-            chunks.append(remaining)
-            break
-        piece = encoded[:max_bytes].decode("utf-8", errors="ignore")
-        chunks.append(piece)
-        remaining = remaining[len(piece) :]
-    return chunks
 
 
 # A WS connection must live at least this long to count as "healthy" and reset
