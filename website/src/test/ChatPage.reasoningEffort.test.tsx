@@ -16,7 +16,7 @@ vi.mock('../hooks/useVoiceInput', () => ({ useVoiceInput: () => ({ recording: fa
 
 import ChatInput, { REASONING_EFFORT_PROVIDERS, EFFORT_LABEL_KEY, modelSupportsEffort } from '../components/ChatInput'
 import ReasoningEffortDropdown from '../components/ReasoningEffortDropdown'
-import { pendingSlotSwitchTarget, performSlotSwitch } from '../lib/slotSwitch'
+import { pendingSlotSwitchTarget, performSlotSwitch, SWITCH_CONFIRM_TIMEOUT_MS } from '../lib/slotSwitch'
 
 beforeEach(() => { vi.clearAllMocks() })
 
@@ -209,6 +209,84 @@ describe('ReasoningEffortDropdown', () => {
     // The failed pick changed nothing server-side; the store keeps the
     // pre-pick value (the popover's own optimistic label is local-only).
     expect(store.getState().dashboard.slots.find(s => s.key === 's1')?.reasoning_effort).toBe('high')
+  })
+
+  it('rolls the optimistic control back and announces the newest persist failure', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    mockApi.chatSlotReasoningEffort.mockRejectedValueOnce(new Error('effort rejected'))
+    const { store } = renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    expect(slider.getAttribute('aria-valuetext')).toBe('Extra High')
+
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('High'))
+    expect(store.getState().chat.agentSwitchNotice?.message).toBe('effort rejected')
+  })
+
+  it('rolls back and announces when the current target times out while still in flight', async () => {
+    vi.useFakeTimers()
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let resolveRequest!: (value: { reasoning_effort: string }) => void
+    mockApi.chatSlotReasoningEffort.mockImplementationOnce(() => new Promise((resolve) => { resolveRequest = resolve }))
+    try {
+      const { store } = renderDropdown()
+      await vi.waitFor(() => expect(screen.getByRole('slider', { name: 'Reasoning effort' }).getAttribute('aria-valuemax')).toBe('4'))
+      const slider = screen.getByRole('slider', { name: 'Reasoning effort' })
+
+      fireEvent.keyDown(slider, { key: 'ArrowRight' })
+      expect(slider.getAttribute('aria-valuetext')).toBe('Extra High')
+
+      await vi.advanceTimersByTimeAsync(150)
+      expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh')
+      expect(pendingSlotSwitchTarget('reasoning_effort', 's1')).toBe('xhigh')
+
+      await vi.advanceTimersByTimeAsync(SWITCH_CONFIRM_TIMEOUT_MS)
+      await vi.waitFor(() => expect(slider.getAttribute('aria-valuetext')).toBe('High'))
+      await vi.waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toBe(
+        'Switch not confirmed yet — it will apply if the connection recovers.',
+      ))
+    } finally {
+      resolveRequest({ reasoning_effort: 'xhigh' })
+      await vi.advanceTimersByTimeAsync(0)
+      vi.useRealTimers()
+    }
+  })
+
+  it('announces a failed pending write flushed while the dropdown closes', async () => {
+    mockApi.chatSlotReasoningEffort.mockRejectedValueOnce(new Error('close flush rejected'))
+    const { store, unmount } = renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' })
+    unmount()
+
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+    await vi.waitFor(() => expect(store.getState().chat.agentSwitchNotice?.message).toBe('close flush rejected'))
+  })
+
+  it('does not let an older failure roll back or warn over a newer pick', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    let rejectFirst!: (error: Error) => void
+    mockApi.chatSlotReasoningEffort
+      .mockImplementationOnce(() => new Promise((_, reject) => { rejectFirst = reject }))
+      .mockResolvedValueOnce({ reasoning_effort: 'max' })
+    const { store } = renderDropdown()
+    const slider = await screen.findByRole('slider', { name: 'Reasoning effort' })
+    await vi.waitFor(() => expect(slider.getAttribute('aria-valuemax')).toBe('4'))
+
+    fireEvent.keyDown(slider, { key: 'ArrowRight' }) // high -> xhigh
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'xhigh'))
+    fireEvent.keyDown(slider, { key: 'ArrowRight' }) // newer intent: max
+    expect(slider.getAttribute('aria-valuetext')).toBe('Max')
+    rejectFirst(new Error('superseded failure'))
+
+    await vi.waitFor(() => expect(mockApi.chatSlotReasoningEffort).toHaveBeenCalledWith('s1', 'max'))
+    expect(slider.getAttribute('aria-valuetext')).toBe('Max')
+    expect(store.getState().chat.agentSwitchNotice).toBeNull()
   })
 
   it('reflects the active level as the slider value', async () => {

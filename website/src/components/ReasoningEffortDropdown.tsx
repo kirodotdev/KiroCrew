@@ -7,6 +7,8 @@ import { api } from '../api/client'
 import { pendingSlotSwitchTarget, performSlotSwitch, stageSlotSwitchTarget } from '../lib/slotSwitch'
 import { useAppDispatch } from '../store'
 import { updateSlot } from '../store/dashboardSlice'
+import { setAgentSwitchNotice } from '../store/chatSlice'
+import { agentSwitchFailureMessage } from '../utils/agentSwitchFeedback'
 import { Slider, Toggle } from './ui'
 import InfoTip from './InfoTip'
 
@@ -68,6 +70,12 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
   // so toggling Default off restores the user's last explicit pick.
   const [idx, setIdx] = useState(() => currentIdx >= 0 ? currentIdx : Math.min(2, maxIdx))
   useEffect(() => { if (currentIdx >= 0) setIdx(currentIdx) }, [currentIdx])
+  // Async failures must restore the latest authoritative props, not the values
+  // captured when a debounced pick started. Keep the concrete selection while
+  // Default is authoritative: it is intentionally remembered for the next
+  // time the user disables Default.
+  const authoritativeRef = useRef({ isDefault: propDefault, idx: currentIdx >= 0 ? currentIdx : idx })
+  authoritativeRef.current = { isDefault: propDefault, idx: currentIdx >= 0 ? currentIdx : idx }
 
   // Persist one level pick through the shared switch protocol (#4523): the
   // local optimistic state above masks staleness in THIS popover, but the
@@ -85,6 +93,18 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
       (value) => dispatch(updateSlot({ key: slot, reasoning_effort: value }))),
   [slot, dispatch])
 
+  const announcePersistFailure = useCallback((error: unknown, failedLevel: string) => {
+    // A superseded request may still reject after a newer pick was staged or
+    // began. That older failure changed no current intent, so it must not flash
+    // a misleading notice for the newer selection. A confirmation timeout,
+    // however, leaves its own wire request pending; identity distinguishes that
+    // unconfirmed current pick from a genuinely newer target.
+    const pending = pendingSlotSwitchTarget('reasoning_effort', slot)
+    if (pending !== null && pending !== failedLevel) return false
+    dispatch(setAgentSwitchNotice(agentSwitchFailureMessage(error)))
+    return true
+  }, [dispatch, slot])
+
   const commitTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingLevel = useRef<string | null>(null)
   useEffect(() => () => {
@@ -96,10 +116,10 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
       // timer below).
       const level = pendingLevel.current
       if (level !== null && pendingSlotSwitchTarget('reasoning_effort', slot) === level) {
-        persistEffort(level).catch(() => {})
+        persistEffort(level).catch((err: unknown) => { announcePersistFailure(err, level) })
       }
     }
-  }, [persistEffort, slot])
+  }, [announcePersistFailure, persistEffort, slot])
 
   // Persist debounced so a drag across several notches doesn't spam the backend.
   // The pick is STAGED synchronously so the Alt+Shift effort-cycle shortcuts
@@ -119,8 +139,15 @@ export default function ReasoningEffortDropdown({ slot, currentEffort, defaultEf
       // this pick is still the newest declared intent.
       if (pendingSlotSwitchTarget('reasoning_effort', slot) !== level) return
       try { await persistEffort(level) }
-      // eslint-disable-next-line no-console -- intentional failure diagnostic
-      catch (err) { console.warn('Failed to set reasoning effort', err) }
+      catch (err) {
+        if (announcePersistFailure(err, level)) {
+          const authoritative = authoritativeRef.current
+          setIsDefault(authoritative.isDefault)
+          setIdx(authoritative.idx)
+        }
+        // eslint-disable-next-line no-console -- visible notice above; retain diagnostic detail
+        console.warn('Failed to set reasoning effort', err)
+      }
     }, 150)
   }
 
