@@ -1559,14 +1559,11 @@ _DEPS_REFRESH_TASKS_APP_KEY: web.AppKey[_DepsRefreshTasks] = web.AppKey(
 )
 
 # Per-repo rebuild mutex. Coalescing (above) only stops a SECOND BACKGROUND
-# refresh; it cannot order a background rebuild against a synchronous one, and
-# ``write_deps_cache`` stamps ``fetched_at`` at WRITE time. Without this lock:
-# a stale GET starts background rebuild A, an edge changes, ``refresh=1`` starts
-# synchronous rebuild B, B writes the fresh graph -- and then the slower A lands
-# on top with its older edges and stamps them fresh for a full TTL. Serializing
-# every rebuild for a repo makes the last write the last FETCH, which is the
-# property the cache's freshness stamp claims. Two concurrent ``refresh=1``
-# calls are ordered by the same lock.
+# refresh; this lock keeps a background rebuild and a synchronous ``refresh=1``
+# rebuild (or two concurrent ``refresh=1`` calls) from fetching the same graph
+# concurrently. Ordering their WRITES is not its job: the store's compare-and-set on
+# ``fetched_at`` decides which graph is newer, and it also covers the sweep's
+# thread-side write, which never takes this mutex.
 _DepsRebuildLocks = dict[str, "asyncio.Lock"]
 _DEPS_REBUILD_LOCKS_APP_KEY: web.AppKey[_DepsRebuildLocks] = web.AppKey(
     "issue_radar_deps_rebuild_locks", dict
@@ -1641,6 +1638,15 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
     """
     owner, repo = key.owner, key.repo
     async with _deps_rebuild_lock(app, key):
+        # Captured BEFORE the issue snapshot is loaded — the snapshot is the
+        # graph's SCOPE, so the rebuilt graph is as old as its oldest input,
+        # not as old as the edge fetch alone. A later stamp would let a rebuild
+        # scoped by a stale snapshot outrank a concurrent producer (the sweep's
+        # thread-side write, which never takes the mutex above) that used a
+        # fresher one, and suppress its scope changes for the TTL.
+        # Under-claiming age is the safe direction: this rebuild can only lose
+        # a CAS race it might have won, never persist stale data as fresh.
+        fetch_started = time.time()
         try:
             issues = await _load_open_issues_for_reco(key)
         except GhCliError as exc:
@@ -1650,7 +1656,7 @@ async def _rebuild_deps(app: web.Application, key: provider.RepoKey) -> dict:
         edges, nodes = await asyncio.to_thread(
             partial(github_client.fetch_dependency_edges, owner, repo, issues, hints)
         )
-        await _st(key, store.write_deps_cache, owner, repo, edges, nodes)
+        await _st(key, store.write_deps_cache, owner, repo, edges, nodes, fetched_at=fetch_started)
         stored = await _st(key, store.read_deps_cache, owner, repo)
     if stored is not None:
         return stored
