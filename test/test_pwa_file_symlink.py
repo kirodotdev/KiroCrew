@@ -7,6 +7,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 from aiohttp import web
 
+from kiro_crew import platform_compat
+
 
 @pytest.mark.asyncio
 async def test_pwa_file_serves_through_symlinked_dist(tmp_path):
@@ -22,7 +24,7 @@ async def test_pwa_file_serves_through_symlinked_dist(tmp_path):
     (real_dist / "pcm-worklet.js").write_text("// worklet")
 
     link = tmp_path / "linked-dist"
-    link.symlink_to(real_dist)
+    platform_compat.symlink_or_junction(real_dist, link)
 
     req = MagicMock()
     req.match_info = {"name": "pcm-worklet.js"}

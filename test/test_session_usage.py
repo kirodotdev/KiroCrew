@@ -213,12 +213,16 @@ class TestFetchUsageBg:
         assert sessions_mod._usage_cache.get("plan") == "KIRO POWER"
 
     @pytest.mark.asyncio
-    async def test_text_fallback_launches_resolved_binary_in_place(self):
+    async def test_text_fallback_launches_resolved_binary_in_place(self, monkeypatch):
         # The resolved binary is exec'd at its own path, with no inherited
         # snapshot descriptor — a copy/memfd would strand a multi-call CLI's
         # sibling subcommand executable.
         resolved = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
         spawn = AsyncMock(return_value=_mock_proc(SAMPLE_USAGE.encode()))
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+        monkeypatch.setenv("PYTHONHOME", "/gateway/pythonhome")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "0000:FAKE")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
         with (
             patch.object(sessions_mod, "_resolve_kiro_bin_for_spawn", return_value=resolved),
             patch("asyncio.create_subprocess_exec", spawn),
@@ -233,6 +237,11 @@ class TestFetchUsageBg:
         assert resolved in argv, argv
         assert not any("kiro-cli-snapshots" in str(a) for a in argv), argv
         assert "pass_fds" not in spawn.await_args.kwargs
+        env = spawn.await_args.kwargs["env"]
+        assert "AWS_SECRET_ACCESS_KEY" not in env
+        assert "PYTHONHOME" not in env
+        assert "TELEGRAM_BOT_TOKEN" not in env
+        assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
     @pytest.mark.asyncio
     async def test_unparseable_usage_caches_unavailable(self):
@@ -695,6 +704,42 @@ class TestFetchWhoami:
     def test_values_are_length_bounded(self):
         out = self._run(b'{"email":"' + b"x" * 400 + b'@b.com"}')
         assert len(out["email"]) <= 254
+
+    def test_spawn_uses_full_agent_environment_scrub(self, monkeypatch):
+        # One key per scrub source, so the assertion proves all three lists are
+        # applied rather than just the sensitive-prefix one: AWS/SSH from
+        # ``_SENSITIVE_ENV_PREFIXES``, PYTHONPATH from ``_PYTHON_ENV_PREFIXES``
+        # (this branch's list is PYTHONPATH + PYTHONHOME; main's third key,
+        # PYTHONPYCACHEPREFIX, arrived with the pycache-GC work that is not on
+        # this release branch), and WECOM_SECRET from ``_AGENT_DENIED_ENV_KEYS``.
+        # PYTHONPATH discriminates because it is deliberately EXCLUDED from
+        # ``_SENSITIVE_ENV_PREFIXES``, so only the extra-prefixes path drops it.
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+        monkeypatch.setenv("SSH_AUTH_SOCK", "/tmp/fake-agent.sock")
+        monkeypatch.setenv("PYTHONPATH", "/gateway/site-packages")
+        monkeypatch.setenv("WECOM_SECRET", "FAKE-wecom-secret")
+        monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
+        proc = MagicMock()
+        proc.communicate = AsyncMock(return_value=(b'{"email":"me@corp.com"}', b""))
+        proc.returncode = 0
+        spawn = AsyncMock(return_value=proc)
+        with (
+            patch.object(sessions_mod, "wrap_argv", return_value=(["/usr/bin/kiro-cli"], None)),
+            patch.object(sessions_mod, "cgroup_scope_argv", side_effect=lambda a: a),
+            patch("asyncio.create_subprocess_exec", spawn),
+        ):
+            out = asyncio.run(sessions_mod._fetch_whoami("kiro-cli"))
+
+        assert out["email"] == "me@corp.com"
+        env = spawn.await_args.kwargs["env"]
+        for key in (
+            "AWS_SECRET_ACCESS_KEY",
+            "SSH_AUTH_SOCK",
+            "PYTHONPATH",
+            "WECOM_SECRET",
+        ):
+            assert key not in env
+        assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
 
 class TestIdentityAccountCoupling:

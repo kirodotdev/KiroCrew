@@ -15,7 +15,7 @@ import time
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from kiro_crew.acp.client import AcpError
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
@@ -3288,10 +3288,18 @@ class TestTelegramMidTurn:
         assert sess.queued == []  # pending queue cleared
         assert any("Stopped" in t for t, _ in cli.sent)
 
-    def test_concurrent_queue_adds_share_one_receipt(self) -> None:
+    def test_concurrent_queue_adds_share_one_receipt(self, monkeypatch: Any) -> None:
         d, cli, sess = _dispatcher({7})
         sess._busy = True
         d.cfg.messaging.queue_mode = "queue"
+        # This test starts four first-use inbound checks concurrently. Keep the
+        # receipt race isolated from governance's deliberately fail-closed lazy
+        # profile load: otherwise whichever checks arrive while the first load is
+        # in progress are denied before they ever reach the receipt queue.
+        monkeypatch.setattr(
+            "kiro_crew.telegram.transport_dispatch.channel_inbound_permitted",
+            AsyncMock(return_value=True),
+        )
 
         async def _go() -> None:
             await asyncio.gather(

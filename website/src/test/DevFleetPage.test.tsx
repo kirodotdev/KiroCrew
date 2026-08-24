@@ -3,7 +3,7 @@
  * verifies loading state, fleet table, and empty state.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
 import DevFleetPage, { mergeLogWindow, LOG_GAP_MARKER, pruneVerdictLabel, gatewayRecovered } from '../pages/DevFleetPage'
@@ -1327,7 +1327,12 @@ describe('DevFleetPage', () => {
     fireEvent.click(screen.getByText('Prune merged'))
     await waitFor(() => expect(screen.getByText('Prune worktrees')).toBeInTheDocument())
     // Check the force-override box on the kept row, then remove + confirm.
-    fireEvent.click(screen.getByLabelText('Force remove wt-kept'))
+    // The dialog opens from an async handler. Drain that commit before changing
+    // the controlled checkbox, then observe its checked state before submitting.
+    await act(async () => {})
+    const forceCheckbox = screen.getByLabelText('Force remove wt-kept') as HTMLInputElement
+    fireEvent.click(forceCheckbox)
+    await waitFor(() => expect(forceCheckbox).toBeChecked())
     fireEvent.click(screen.getByText('Remove selected'))
     fireEvent.click(await screen.findByText('Delete anyway'))
     // The forced worktree is tracked as its own checklist row and finishes done.

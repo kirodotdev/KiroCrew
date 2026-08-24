@@ -28,3 +28,10 @@
 *.sh text eol=lf
 scripts/scrub-allowlist.txt text eol=lf
 *.nsh text eol=lf
+
+# The vendored-source integrity manifest hashes checkout bytes. Keep its text
+# payload byte-identical on Windows so core.autocrlf cannot make an untouched
+# vendor tree look modified; native libraries remain unclassified/binary.
+src/kiro_crew/_vendor/**/*.py text eol=lf
+src/kiro_crew/_vendor/**/*.md text eol=lf
+src/kiro_crew/_vendor/**/*.typed text eol=lf

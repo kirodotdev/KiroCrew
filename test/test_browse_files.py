@@ -16,6 +16,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import requires_symlinks
 from kiro_crew.dashboard.handlers import api_browse_files
 from kiro_crew.dashboard.handlers.files import _browse_files_sync
 
@@ -124,6 +125,7 @@ class TestBrowseFiles:
                 assert resp.status == 403
 
     @pytest.mark.asyncio
+    @requires_symlinks
     async def test_symlink_to_sensitive_path_filtered(self, tmp_path, mock_sel):
         """Symlink in a benign dir pointing at ~/.aws must not leak through.
 

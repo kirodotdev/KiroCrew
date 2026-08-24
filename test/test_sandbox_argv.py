@@ -1052,6 +1052,7 @@ class TestResourceLimitPreexec:
 
         sb._RESOURCE_PREEXEC = sb._UNSET
 
+    @_POSIX_ONLY
     def test_returns_callable_and_caches(self):
         import kiro_crew.sandbox as sb
 
@@ -1064,6 +1065,7 @@ class TestResourceLimitPreexec:
         finally:
             self._reset_cache()
 
+    @_POSIX_ONLY
     def test_config_read_failure_falls_back_to_defaults(self):
         """If config load raises, the preexec still builds from safe defaults
         (no crash, protection still applied)."""
@@ -1101,6 +1103,7 @@ class TestSessionHostPreexec:
 
         sb._SESSION_HOST_PREEXEC = sb._UNSET
 
+    @_POSIX_ONLY
     def test_returns_callable_and_caches(self):
         import kiro_crew.sandbox as sb
 
@@ -1113,6 +1116,7 @@ class TestSessionHostPreexec:
         finally:
             self._reset_cache()
 
+    @_POSIX_ONLY
     def test_raises_nofile_to_hard_limit(self):
         """The preexec callable raises NOFILE soft to the hard limit."""
         import resource
@@ -1190,6 +1194,7 @@ class TestCgroupScopeArgv:
         finally:
             self._reset_probe()
 
+    @_POSIX_ONLY
     def test_cpu_controller_delegated_real_path(self):
         """Cover the uncached probe body: reads the user-slice controllers file
         and reports cpu presence; failures report False (skip CPU properties,
@@ -1378,6 +1383,7 @@ class TestCgroupScopeArgv:
         finally:
             self._reset_probe()
 
+    @_POSIX_ONLY
     def test_default_max_memory_is_host_proportional(self):
         """The memory default scales with physical RAM (65%), not a flat cap."""
         import kiro_crew.sandbox as sb
@@ -1389,6 +1395,7 @@ class TestCgroupScopeArgv:
         assert mb == int(sixteen_g * sb._CGROUP_MEMORY_FRACTION) // (1024 * 1024)
         assert 10_000 < mb < 11_000  # ~10.6 GB, expected range
 
+    @_POSIX_ONLY
     def test_default_max_memory_falls_back_when_ram_unknown(self):
         """If sysconf can't report RAM, fall back to the flat MB constant.
 
@@ -1614,6 +1621,7 @@ class TestAgentsSliceLimits:
         assert mem == sb._default_max_total_memory_mb()
         assert tasks == sb._CGROUP_DEFAULT_MAX_TOTAL_TASKS
 
+    @_POSIX_ONLY
     def test_default_total_memory_fraction_and_fallback(self):
         """80% of RAM by default; flat fallback when RAM is unreadable. Both
         must sit ABOVE their per-scope counterparts, or the slice would clamp
@@ -1989,8 +1997,7 @@ class TestCgroupScopeBusEnv:
 
 
 class TestKiroInternalSandboxExclusion:
-    """macOS sandbox mutual exclusion: kiro internal sandbox ON
-    -> KiroCrew seatbelt OFF for kiro-cli spawns; OFF -> seatbelt ON."""
+    """Kiro internal-sandbox delegation stays narrow and fail-closed."""
 
     def _write_settings(self, tmp_path, monkeypatch, content: str | None):
         p = tmp_path / "amazon-internal.json"
@@ -2116,6 +2123,76 @@ class TestKiroInternalSandboxExclusion:
             wrap_argv(["kiro-cli", "acp"], mode="auto")
         mock_ns.assert_called_once()
 
+    def test_windows_explicit_kiro_backend_delegates_before_backend_probe(self, monkeypatch):
+        """Fresh Windows installs use the positively identified Kiro sandbox."""
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        launch = r"C:\Program Files\Kiro\kiro-cli.exe"
+        with (
+            patch("kiro_crew.sel.sel", return_value=MagicMock()),
+            patch("kiro_crew.sandbox.detect_backend") as mock_detect,
+            patch(
+                "kiro_crew.sandbox.kiro_internal_sandbox_enabled",
+                side_effect=AssertionError("Windows delegation must not depend on macOS settings"),
+            ),
+        ):
+            argv, cleanup = wrap_argv(
+                [launch, "acp"],
+                mode="auto",
+                strip_python_env=True,
+                is_kiro_cli=True,
+            )
+        assert argv == [launch, "acp"]
+        assert cleanup is None
+        mock_detect.assert_not_called()
+
+    @pytest.mark.parametrize("classification", [None, False])
+    def test_windows_nonclassified_spawn_still_fails_closed(self, monkeypatch, classification):
+        """A Kiro-looking basename cannot grant the Windows delegation."""
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.sandbox._allow_unsandboxed_exec", lambda: False)
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="none"),
+            patch("kiro_crew.sel.sel", return_value=MagicMock()),
+            pytest.raises(sandbox_mod.SandboxUnavailableError),
+        ):
+            wrap_argv(
+                [r"C:\Program Files\Kiro\kiro-cli.exe", "acp"],
+                mode="auto",
+                is_kiro_cli=classification,
+            )
+
+    def test_windows_kiro_with_extra_path_policy_fails_closed(self, monkeypatch):
+        """Delegation cannot silently discard Crew-specific path restrictions."""
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.sandbox._allow_unsandboxed_exec", lambda: False)
+        with (
+            patch("kiro_crew.sandbox.detect_backend", return_value="none"),
+            patch("kiro_crew.sel.sel", return_value=MagicMock()),
+            pytest.raises(sandbox_mod.SandboxUnavailableError),
+        ):
+            wrap_argv(
+                [r"C:\Program Files\Kiro\kiro-cli.exe", "acp"],
+                mode="auto",
+                is_kiro_cli=True,
+                extra_hidden_dirs=(r"C:\secrets",),
+            )
+
+    def test_windows_sel_failure_refuses_delegation(self, monkeypatch):
+        """An unaudited Windows delegation falls through to fail-closed policy."""
+        monkeypatch.setattr("kiro_crew.sandbox.sys.platform", "win32")
+        monkeypatch.setattr("kiro_crew.sandbox._allow_unsandboxed_exec", lambda: False)
+        with (
+            patch("kiro_crew.sel.sel", side_effect=RuntimeError("audit down")),
+            patch("kiro_crew.sandbox.detect_backend", return_value="none") as mock_detect,
+            pytest.raises(sandbox_mod.SandboxUnavailableError),
+        ):
+            wrap_argv(
+                [r"C:\Program Files\Kiro\kiro-cli.exe", "acp"],
+                mode="auto",
+                is_kiro_cli=True,
+            )
+        mock_detect.assert_called_once_with(config_mode="auto")
+
     def test_sel_failure_refuses_delegation_falls_back_to_seatbelt(self, tmp_path, monkeypatch):
         """Audit-or-deny: if the SEL audit cannot be written, the delegation
         is refused and the spawn falls back to KiroCrew's own seatbelt."""
@@ -2154,7 +2231,12 @@ class TestKiroInternalSandboxExclusion:
         sensitive.parent.mkdir()
         sensitive.write_text('{"sandbox": true}')
         link = tmp_path / "amazon-internal.json"
-        link.symlink_to(sensitive)
+        try:
+            link.symlink_to(sensitive)
+        except OSError as exc:
+            if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+                pytest.skip("Windows host has not granted symlink creation privilege")
+            raise
         monkeypatch.setattr("kiro_crew.sandbox._KIRO_INTERNAL_SETTINGS_PATH", str(link))
         assert kiro_internal_sandbox_enabled() is False
 
@@ -2557,6 +2639,7 @@ class TestAgentSliceMemoryHigh:
             sb._CGROUP_SCOPE_PROBE = None
             sb._CGROUP_WARNED = False
 
+    @_POSIX_ONLY
     def test_default_is_host_proportional_with_fallback(self):
         import kiro_crew.sandbox as sb
 

@@ -29,6 +29,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import kiro_crew.apps.routes as routes_mod
+from conftest import requires_symlinks
 from kiro_crew.apps.manager import (
     APP_MANIFEST_FILENAME,
     AppResult,
@@ -1503,6 +1504,7 @@ class TestAppUiFile:
             resp = await client.get(f"/apps/{APP}/ui/missing.mjs")
             assert resp.status == 404
 
+    @requires_symlinks
     @pytest.mark.asyncio
     async def test_symlink_escaping_ui_root_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1851,6 +1853,7 @@ class TestBlobProxy:
             assert resp.status == 502
         assert seen["ref"] == "release"
 
+    @requires_symlinks
     @pytest.mark.asyncio
     async def test_symlinked_cache_dir_escaping_root_is_rejected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -238,13 +238,18 @@ def test_successful_list_returns_200_with_models(tmp_path):
     assert any(m["model_name"] == "claude-opus-4.8" for m in models)
 
 
-def test_successful_list_launches_resolved_binary_in_place(tmp_path):
+def test_successful_list_launches_resolved_binary_in_place(tmp_path, monkeypatch):
     # The resolved binary is exec'd at its own path with no inherited snapshot
     # descriptor: a copy/memfd would strand a multi-call CLI's sibling
     # subcommand executable and every spawn would fail with ENOENT.
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
     resolved = "/Applications/Kiro CLI.app/Contents/MacOS/kiro-cli"
     spawn = AsyncMock(return_value=_FakeProc(payload))
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "FAKE-secret")
+    monkeypatch.setenv("PYTHONPATH", "/gateway/pythonpath")
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-FAKE")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "FAKE-akid")
+    monkeypatch.setenv("KIROCREW_UNRELATED_KEEPME", "keep-this-value")
     with (
         patch.object(agents.KiroCrewConfig, "load", return_value=_kiro_cfg()),
         patch("kiro_crew.acp.client._resolve_kiro_bin_for_spawn", return_value=resolved),
@@ -263,6 +268,12 @@ def test_successful_list_launches_resolved_binary_in_place(tmp_path):
     assert resolved in argv, argv
     assert not any("kiro-cli-snapshots" in str(a) for a in argv), argv
     assert "pass_fds" not in spawn.await_args.kwargs
+    env = spawn.await_args.kwargs["env"]
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "PYTHONPATH" not in env
+    assert "SLACK_BOT_TOKEN" not in env
+    assert env["AWS_ACCESS_KEY_ID"] == "FAKE-akid"
+    assert env["KIROCREW_UNRELATED_KEEPME"] == "keep-this-value"
 
 
 def test_structured_context_window_seeds_central_authority(tmp_path):
@@ -325,9 +336,9 @@ def test_list_models_spawns_at_the_configured_sandbox_tier(tmp_path):
     ``wrap_argv``'s mode parameter defaults to ``"auto"``, which ignores what the
     operator configured. Where ``agent.sandbox`` is an explicit ``"off"``
     (isolation deferred to kiro-cli's own internal sandbox, which cannot nest
-    inside Kiro Crew's), taking that default asked for a STRICTER tier than chat
-    itself runs under — and on a host with no backend at all (every Windows host,
-    macOS >= 26) it fail-closed while chat worked fine.
+    inside Kiro Crew's), taking that default asks for a STRICTER tier than chat
+    itself runs under. Explicit Windows Kiro classification delegates either
+    tier, but the configured-tier invariant remains cross-platform.
     """
     payload = json.dumps({"models": [{"model_name": "claude-opus-4.8"}]}).encode()
     seen: dict[str, Any] = {}

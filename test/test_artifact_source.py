@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import artifact_source
 from kiro_crew.artifact_source import (
     COPY,
@@ -87,6 +88,7 @@ class TestClassifySourceGuards:
         )
         assert classify_source(target) == (COPY, "")
 
+    @requires_symlinks
     def test_symlink_into_sensitive_is_copy(
         self, narrow_tempdir, tmp_path: Path, monkeypatch
     ) -> None:
@@ -259,8 +261,10 @@ class TestNonGitProjectsLink:
         ``.vscode``. Keying the rule to one accessor let the other real home be
         walked into and authorize a link across the whole profile.
         """
+        original_home = str(Path.home())
         other_home = tmp_path / "otherhome"
         (other_home / ".vscode").mkdir(parents=True)
+        monkeypatch.setenv("HOME", original_home)
         monkeypatch.setenv("USERPROFILE", str(other_home))
         assert project_root_marker(str(other_home)) is None
         assert classify_source(_file(other_home / "notes.md")) == (COPY, "")

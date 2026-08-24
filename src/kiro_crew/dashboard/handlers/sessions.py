@@ -36,6 +36,7 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     configured_sandbox_mode,
     create_subprocess_limited,
+    scrub_agent_subprocess_env,
     wrap_argv,
 )
 from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
@@ -557,11 +558,10 @@ def _wrap_argv_at_configured_tier(argv: list[str]) -> tuple[list[str], str | Non
     ``is_kiro_cli=True`` is explicit because ``_spawns_kiro_cli``'s basename test
     only matches a literal ``kiro-cli``: a Windows ``kiro-cli.exe``, a wrapper
     shim, or a ``KIROCREW_KIRO_BIN`` pointing at a nonstandard launch path all
-    read as "not kiro-cli". On macOS with ``agent.sandbox="off"`` that
-    misclassification skips the delegation branch — and with it the credential-env
-    scrub — so the child would inherit the sensitive environment. Both callers
-    here spawn kiro-cli by construction, and both ACP spawn paths pass the same
-    flag for the same reason.
+    read as "not kiro-cli". The positive classification is also the security gate
+    for default Windows delegation to Kiro's internal sandbox; basename inference
+    cannot grant it. Both callers here spawn kiro-cli by construction, and both ACP
+    spawn paths pass the same flag for the same reason.
     """
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
@@ -600,10 +600,10 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
         # Configured tier, not a hardcoded "standard": this is the same binary
         # chat spawns, so it must not demand stricter isolation than chat does.
         # Where the operator set agent.sandbox="off" (isolation deferred to
-        # kiro-cli's own internal sandbox) on a host with no backend, the pinned
-        # "standard" fail-closed and silently dropped the identity this readout
-        # labels the credit numbers with — failure here is non-fatal by design,
-        # so the symptom is a permanently blank email, not an error.
+        # kiro-cli's own internal sandbox), the pinned "standard" tier could
+        # silently diverge from chat and drop the identity this readout labels the
+        # credit numbers with. The explicit Kiro classification also lets the
+        # default Windows tier delegates through Kiro's internal sandbox.
         # Off the loop: see _wrap_argv_at_configured_tier for the two blocking reads.
         argv, cleanup = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _wrap_argv_whoami, kiro_bin
@@ -613,6 +613,7 @@ async def _fetch_whoami(kiro_bin: str) -> dict[str, object]:
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=scrub_agent_subprocess_env(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=30)
         raw = (out or err or b"").decode(errors="replace")
@@ -811,6 +812,7 @@ async def _fetch_usage_bg() -> None:
             *argv,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=scrub_agent_subprocess_env(),
         )
         out, err = await asyncio.wait_for(proc.communicate(), timeout=60)
         raw = (out or err or b"").decode(errors="replace")

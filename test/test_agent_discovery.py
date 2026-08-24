@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.agent_discovery import (
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
@@ -349,6 +350,7 @@ class TestListAgentsRobustness:
         names = [a.name for a in list_agents(agents_dir=d)]
         assert names == ["good"]
 
+    @requires_symlinks
     def test_skips_symlink_to_sensitive_file(self, fake_home):
         """A ``*.json`` symlink under ~/.kiro/agents/ that resolves to a
         sensitive credential path must NOT be read or returned."""
@@ -583,6 +585,7 @@ class TestSpecModelCoercion:
 class TestListAgentsGlobalGuards:
     """Global agent loader edge cases."""
 
+    @requires_symlinks
     def test_global_symlink_loop_skipped_not_crashed(self, tmp_path: Path) -> None:
         """A self-referential symlink is skipped, never an uncaught RuntimeError.
 
@@ -602,6 +605,7 @@ class TestListAgentsGlobalGuards:
         assert any(a.name == "ok" for a in agents)
         assert not any(a.name == "loop" for a in agents)
 
+    @requires_symlinks
     def test_global_broken_symlink_skipped(self, tmp_path: Path) -> None:
         """list_agents skips broken symlinks in the global dir."""
         agents_dir = tmp_path / "agents"

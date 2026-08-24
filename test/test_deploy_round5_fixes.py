@@ -9,6 +9,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conftest import requires_symlinks
+
 SCRIPTS_DIR = Path(__file__).parent.parent / "src" / "kiro_crew" / "deploy" / "skills" / "artifact-deploy" / "scripts"
 
 
@@ -34,6 +36,7 @@ class TestAttachBackendTOCTOU:
     def _mod(self):
         self.mod = _load_script("attach_backend.py")
 
+    @requires_symlinks
     def test_symlink_rejected_in_fallback_mode(self, tmp_path: Path):
         """A symlink at the secret path is rejected by the O_NOFOLLOW fallback."""
         real = tmp_path / "target"
@@ -55,6 +58,7 @@ class TestAttachBackendTOCTOU:
         # Should not raise
         self.mod._validate_secret_file_path(secret)
 
+    @requires_symlinks
     def test_safe_read_file_rejects_symlink_atomically(self, tmp_path: Path):
         """When kiro_crew.hooks.safe_read_file is importable, a symlink is
         rejected atomically (no TOCTOU window)."""

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
 
 /**
  * The terminal is reachable from two places — the docked bottom panel and a chat
@@ -45,7 +45,7 @@ describe('terminal surface parity', () => {
     // terminal implementation, and the completion menu would not follow it.
     const sites = files
       .filter(f => /new Terminal\s*\(/.test(readFileSync(f, 'utf8')))
-      .map(f => f.slice(SRC.length + 1))
+      .map(f => relative(SRC, f).split(sep).join('/'))
     expect(sites).toEqual(['components/CliPanel.tsx'])
   })
 

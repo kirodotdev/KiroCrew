@@ -20,6 +20,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from conftest import requires_symlinks
 from kiro_crew import hooks
 from kiro_crew.connections import mint
 from kiro_crew.dashboard.handlers import connections
@@ -838,6 +839,7 @@ def test_a_traversal_row_is_never_unlinked(_isolated_mint: Path, tmp_path: Path)
     assert victim.read_text(encoding="utf-8") == "VICTIM"
 
 
+@requires_symlinks
 def test_a_symlink_redirecting_outside_the_agents_dir_is_never_followed(
     _isolated_mint: Path, tmp_path: Path
 ):
@@ -913,6 +915,7 @@ def test_an_unrecorded_mint_shaped_file_in_the_agents_dir_is_never_unlinked(
     assert sibling.read_text(encoding="utf-8") == "SIBLING"
 
 
+@requires_symlinks
 def test_an_owned_name_symlinked_to_a_mint_shaped_file_is_never_unlinked(
     _isolated_mint: Path,
 ):
@@ -935,6 +938,7 @@ def test_an_owned_name_symlinked_to_a_mint_shaped_file_is_never_unlinked(
     assert target.is_file()
 
 
+@requires_symlinks
 def test_a_symlinked_mint_shaped_name_is_also_refused(_isolated_mint: Path):
     # Even when the link's OWN name is mint-shaped: a name and its target disagree
     # by construction, so there is no safe way to check one and unlink the other.
@@ -1534,6 +1538,7 @@ async def _client(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     return client
 
 
+@requires_symlinks
 def test_a_row_whose_parent_is_a_symlink_is_never_unlinked(tmp_path, monkeypatch):
     # The leaf is a real file, so a leaf-only symlink check passes it, and the
     # resolved parent equals the agents dir -- yet unlink() re-resolves the link at

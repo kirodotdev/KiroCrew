@@ -180,17 +180,23 @@ over `Scripts\kirocrew.exe` (whose embedded interpreter path names the build
 machine) and is unwrapped to `<root>\python.exe -P -s -m kiro_crew <sub>` when
 spawned.
 
-## The unsandboxed-exec opt-in
+## Kiro sandbox delegation and the unsandboxed-exec opt-in
 
-Windows has no OS sandbox backend, and `wrap_argv` fails closed rather than running
-an agent subprocess unconfined without consent. So chat tool calls, and the Papyrus
-compile and git paths, need an explicit opt-in in `%USERPROFILE%\.kiro\crew\config.json`:
+Windows has no Kiro Crew OS sandbox backend. The official Kiro CLI does have its
+own sandbox, so Kiro Crew delegates the default chat backend, model list, account
+identity and usage reads to it automatically. A fresh desktop install therefore
+does **not** need a config edit before the first chat.
+
+This is deliberately not a Windows-wide bypass. Scripts, hooks, third-party ACP
+backends and other commands without a proven internal sandbox still fail closed.
+To run those paths without an OS sandbox, explicitly opt in at
+`%USERPROFILE%\.kiro\crew\config.json`:
 
 ```json
 { "agent": { "sandbox_allow_unsandboxed_exec": true } }
 ```
 
-**`kirocrew setup` now offers this for you.** Because Windows has no OS-level
+**`kirocrew setup` offers this for non-Kiro subprocesses.** Because Windows has no OS-level
 sandbox backend, the wizard detects that and asks once — stating that agent
 subprocesses will be able to read your home directory, including `.aws` and
 `.ssh`, with no OS confinement. It defaults to **no** and writes the key only if
@@ -204,16 +210,16 @@ same posture as running the tool yourself in a shell. Config is read live, so no
 gateway restart is needed. Without it, the affected paths answer a clear 422 naming
 the remedy rather than failing obscurely.
 
-**The model picker and the credit pill follow chat's posture, not their own.**
+**The model picker and the credit pill follow chat's Kiro delegation.**
 `/api/models`, the credit pill's `whoami` identity fetch and its `/usage` scrape
 spawn the same `kiro-cli` binary chat does, at the same `agent.sandbox` tier — so
 on this platform they succeed and fail together with chat, rather than one working
 while the other 503s. Concretely:
 
-- **Default install** (`agent.sandbox` unset → `"auto"`): Windows has no backend,
-  so chat *and* these reads all need the opt-in above. Without it `/api/models`
-  answers 503 with `code: "model_list_sandbox_unavailable"` and a log line naming
-  the remedy, and the picker falls back to offering only `auto`.
+- **Default install** (`agent.sandbox` unset → `"auto"`): chat and these fixed
+  Kiro reads delegate to the CLI's built-in sandbox. No broad opt-in is needed.
+  The parent strips gateway credentials, secret/session variables and inherited
+  Python runtime variables before every delegated spawn.
 - **`agent.sandbox` explicitly `"off"`** (isolation deferred to kiro-cli's own
   internal sandbox): all of them run, and none of them need the opt-in. Note that
   an explicit `"off"` now logs a one-time `SECURITY` warning where no OS-level
@@ -223,7 +229,7 @@ while the other 503s. Concretely:
 
 | Feature | Status on Windows |
 |---------|-------------------|
-| Core gateway / chat / dashboard | works — a source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
+| Core gateway / chat / dashboard | works without `sandbox_allow_unsandboxed_exec` — the official Kiro backend delegates to Kiro CLI's built-in sandbox, while the parent scrubs sensitive environment variables. A source install with a built `website/dist` is linked into `src/kiro_crew/static/dist` at gateway start via a **directory junction** (`platform_compat.symlink_or_junction`), which needs no privilege; a symlink there would need `SeCreateSymbolicLinkPrivilege` and would leave a non-elevated install serving the "not built" page |
 | LLM cron jobs (the `message` kind) | works |
 | Script cron jobs | need the `agent.sandbox_allow_unsandboxed_exec` opt-in above — they run through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it the job fails with a message naming that setting (it no longer raises an uncaught error) |
 | Command cron jobs (`sh -c "…"`) | not supported on Windows — the stored command is vetted under POSIX-sh semantics, and Windows ships no shell whose language matches: cmd.exe is not POSIX at all, and Git-for-Windows's `sh.exe` is bash and performs brace expansion that hides `cat ~/.a{w,w}s/credentials` from the vet. The job fails-closed with an explanation. Use a **script cron** or an LLM `message` cron on this platform |
@@ -238,7 +244,7 @@ while the other 503s. Concretely:
 | SSH tunnel (`kirocrew cloud` remote dashboard) | not yet — needs the OpenSSH client on `PATH` and a signal-handling audit |
 | MCP server tool listing (dashboard MCP page, `kirocrew doctor`) | **built-in servers work, no opt-in** — `kirocrew-core` / `-cron` / `-computer` are probed for real: their command line is derived entirely inside the package (never user-config text), so the first-party carve-out spawns the handshake probe unconfined (env-scrubbed, SEL-audited as `unconfined`) even with no sandbox backend. When that probe cannot run (a transient sandbox failure, a governance sandbox floor, or a customized command for the server), the listing falls back to reading the package's own tool declaration and logs a WARNING noting that `ok` then means "declared" rather than "handshake succeeded". A **third-party** server has no declaration to read and never gets the carve-out, so its listing needs the `agent.sandbox_allow_unsandboxed_exec` opt-in — its binary is named by config and spawning it is what the sandbox exists to confine. The third-party server itself is unaffected: kiro-cli launches it from the agent config without this probe, so its tools still work in chat |
 | MCP gateway (opt-in, OFF by default) | works — a named-pipe transport replaces the AF_UNIX socket, and the peer check uses `GetNamedPipeClientProcessId` + a SID comparison in place of `SO_PEERCRED`. Still opt-in: set `mcp_gateway.enabled` to turn it on |
-| Papyrus (LaTeX editor, opt-in builtin) | works, **but compiling and git need the `agent.sandbox_allow_unsandboxed_exec` opt-in above** — like chat, its spawns route through `wrap_argv`, which fail-closes where no OS sandbox backend exists. Without it, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
+| Papyrus (LaTeX editor, opt-in builtin) | works, **but compiling and git need the `agent.sandbox_allow_unsandboxed_exec` opt-in above** — unlike official Kiro, these processes have no proven internal sandbox, so `wrap_argv` keeps the no-backend fail-closed policy. Without it, compile and clone/commit/push/pull answer a clear 422 (`compiler_sandbox_unavailable` / `git_sandbox_unavailable`) naming the remedy rather than a bare "internal error". The managed Tectonic compiler is Windows-pinned (`x86_64-pc-windows-msvc`); Windows-on-ARM has no upstream asset and keeps the manual install path |
 | Computer use — **reading** (`computer_list_apps`, `computer_get_state`) | works, still behind the operator's one keystone opt-in (Settings → Computer Use). Reads the UI Automation tree of a window and can attach a `PrintWindow` screenshot. Two Windows-specific limits: a **non-elevated gateway cannot see an elevated window** (UIPI, and the secure desktop is unreachable to any application — a security property, not a gap), and a window drawn on a swapchain surface **cannot be captured**, so WindowsTerminal returns a tree with no screenshot rather than a blank image. Walking is also markedly slower than macOS — a large Chromium window costs hundreds of milliseconds at the node budget — so raise `max_tree_nodes` deliberately |
 | Computer use — **input** (click, drag, type, key, set value, scroll, action) | works, behind the same keystone opt-in. **Element-addressed actions touch neither your cursor nor your focus** — they go through UI Automation control patterns, so the provider performs them inside the target application; prefer them, and they are what `click_method: "auto"` resolves to. The exceptions are forced by the platform: Windows has no per-process input delivery (no `CGEventPostToPid` analogue), so `type_text` / `press_key` TAKE your keyboard focus (the result says so), and a coordinate click needs `click_method: "global"` named explicitly because it moves your real cursor — `auto` refuses to resolve onto it. Every pointer gesture is confined to the authorized window first, comparing top-level handles rather than pids (one broker process fronts many packaged apps), and a drag confines every point of its path since the release is where a drop lands |
 

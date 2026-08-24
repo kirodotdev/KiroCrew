@@ -322,7 +322,8 @@ class TestPermissionProbe:
 
         async def _spawn(*argv, **_kw):
             # Fixed argv, no shell, nothing request-derived.
-            assert argv[1:] == (cu_api.DOCTOR_SUBCOMMAND, *cu_api.DOCTOR_ARGS)
+            expected = (cu_api.DOCTOR_SUBCOMMAND, *cu_api.DOCTOR_ARGS)
+            assert argv[-len(expected) :] == expected
             return proc
 
         monkeypatch.setattr("asyncio.create_subprocess_exec", _spawn)

@@ -15,6 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import hooks as hooks_mod
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 
@@ -36,6 +37,7 @@ class TestF1FdPinnedContainment:
         outside.write_text("leak")
         assert safe_read_file_bytes_nolink(str(outside), within_root=str(root)) is None
 
+    @requires_symlinks
     def test_rejects_nested_symlink_escape(self, tmp_path):
         # simulate the post-walk swap: a dir component inside root is a
         # symlink pointing outside — the opened fd's real path escapes root.

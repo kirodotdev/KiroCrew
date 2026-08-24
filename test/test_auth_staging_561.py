@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from conftest import requires_symlinks
 from kiro_crew.kiro_prerequisite import _AUTH_STAGING_RELATIVE, _ensure_auth_staging_parent
 
 
@@ -27,6 +28,7 @@ def test_stray_file_is_removed(tmp_path: Path) -> None:
     assert not any(".broken-" in p.name for p in staging.parent.iterdir())
 
 
+@requires_symlinks
 def test_dangling_symlink_is_removed(tmp_path: Path) -> None:
     staging = tmp_path / _AUTH_STAGING_RELATIVE
     staging.parent.mkdir(parents=True, exist_ok=True)

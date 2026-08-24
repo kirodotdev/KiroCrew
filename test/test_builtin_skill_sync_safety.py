@@ -24,6 +24,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import skills as skills_mod
 from kiro_crew.skills import (
     _PROVENANCE_MARKER,
@@ -160,6 +161,7 @@ class TestNameCollisionPreservation:
         second = _backup_skill_md(base / ".deploy.user-backup.2")
         assert "USER second" in second.read_text(encoding="utf-8")
 
+    @requires_symlinks
     def test_dangling_symlink_at_backup_name_is_not_overwritten(
         self, builtin_root: Path, base: Path
     ) -> None:
@@ -380,6 +382,7 @@ class TestFingerprint:
         _record_builtin_provenance(a)
         assert _skill_tree_fingerprint(a) == before
 
+    @requires_symlinks
     def test_symlink_target_participates(self, tmp_path: Path) -> None:
         # A symlink is hashed by its target TEXT, never followed: retargeting
         # it diverges the tree, and outside file content can't leak into the
@@ -391,6 +394,7 @@ class TestFingerprint:
         os.symlink("target-two", a / "link")
         assert _skill_tree_fingerprint(a) != one
 
+    @requires_symlinks
     def test_symlink_and_regular_file_with_same_bytes_differ(self, tmp_path: Path) -> None:
         a = _make_skill(tmp_path, "a", "same")
         b = _make_skill(tmp_path, "b", "same")
@@ -445,6 +449,7 @@ class TestFingerprint:
 class TestMarkerHardening:
     """The provenance marker is data the sync wrote, never a path to follow."""
 
+    @requires_symlinks
     def test_marker_symlink_is_not_followed_on_write(
         self, builtin_root: Path, base: Path, tmp_path: Path
     ) -> None:
@@ -462,6 +467,7 @@ class TestMarkerHardening:
 
         assert victim.read_text(encoding="utf-8") == "do not touch"
 
+    @requires_symlinks
     def test_marker_symlink_reads_as_no_provenance(self, tmp_path: Path) -> None:
         # A symlink at the marker path is not a marker: the directory counts
         # as user-authored ("no provenance") instead of trusting content read
@@ -498,6 +504,7 @@ class TestVerificationBounds:
         os.link(outside, a / "innocuous.txt")
         assert _skill_tree_fingerprint(a) is None
 
+    @requires_symlinks
     def test_link_root_is_unprovable(self, tmp_path: Path) -> None:
         real = _make_skill(tmp_path, "real", "content")
         link = tmp_path / "linked"
@@ -556,6 +563,7 @@ class TestVerificationBounds:
         )
         assert preserved
 
+    @requires_symlinks
     def test_linked_dest_is_quarantined_without_following(
         self, builtin_root: Path, base: Path, tmp_path: Path
     ) -> None:

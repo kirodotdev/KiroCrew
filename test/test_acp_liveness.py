@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.acp import liveness
 from kiro_crew.acp.liveness import (
     CHILD_EXIT_GRACE_SECS,
@@ -626,6 +627,7 @@ def test_mcp_tool_moving_counters_working(tmp_path):
     assert verdict == VERDICT_WORKING
 
 
+@requires_symlinks
 def test_mcp_tool_flat_with_runtime_backend_socket_is_tagged_established_flat(tmp_path):
     """A genuinely flat tool subtree whose RUNTIME process holds an established
     backend socket is the LLM-turn-inside-a-tool shape (e.g. use_subagent
@@ -653,6 +655,7 @@ def test_mcp_tool_flat_with_runtime_backend_socket_is_tagged_established_flat(tm
     assert evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
 
 
+@requires_symlinks
 def test_mcp_tool_flat_ordinary_tool_with_runtime_socket_not_tagged(tmp_path):
     """F1 regression: a quiet ordinary MCP tool (no model-wrapping tool_name)
     running while the runtime holds a persistent ESTABLISHED socket must NOT
@@ -686,6 +689,7 @@ def test_mcp_tool_flat_ordinary_tool_with_runtime_socket_not_tagged(tmp_path):
     assert "mcp subtree flat" in evidence
 
 
+@requires_symlinks
 def test_mcp_tool_flat_without_runtime_socket_keeps_plain_evidence(tmp_path):
     """A quiet MCP tool with no established socket on the runtime process keeps
     the untagged flat evidence — the full build-scale tool windows apply. Also
@@ -712,6 +716,7 @@ def test_mcp_tool_flat_without_runtime_socket_keeps_plain_evidence(tmp_path):
     assert "mcp subtree flat" in evidence
 
 
+@requires_symlinks
 def test_mcp_tool_baseline_sample_never_tagged(tmp_path):
     """The first (baseline) tick reports "sampling" — no real flatness delta
     exists yet, so the established_flat tag must not fire even with a live
@@ -760,6 +765,7 @@ def test_model_wait_flat_no_socket_is_dead(tmp_path):
     assert "no established backend socket" in evidence
 
 
+@requires_symlinks
 def test_model_wait_flat_with_established_socket_is_unknown_tagged(tmp_path):
     """Flat counters but an established backend connection → probably a
     non-streamed server-side think → UNKNOWN with the established_flat tag

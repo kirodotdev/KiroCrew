@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 import yaml
 
+from conftest import requires_symlinks
 from kiro_crew import beacon, diagnostics
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
@@ -251,6 +252,7 @@ def test_quoted_serialized_headers_are_redacted(tmp_path, monkeypatch):
     assert "keep this line" in gw
 
 
+@requires_symlinks
 def test_symlinked_dump_directory_is_not_enumerated(tmp_path, monkeypatch):
     """A symlinked crash-dumps DIRECTORY must not be walked.
 
@@ -279,6 +281,7 @@ def test_symlinked_dump_directory_is_not_enumerated(tmp_path, monkeypatch):
     assert b"OFFTREEdumpLEAK4242" not in blob
 
 
+@requires_symlinks
 def test_symlinked_source_is_not_followed(tmp_path, monkeypatch):
     """A symlinked source must be skipped, not followed to an off-tree target."""
     home = tmp_path / "home"

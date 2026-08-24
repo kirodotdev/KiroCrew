@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2226,7 +2227,11 @@ class TestProbeServerTimeout:
     @pytest.mark.asyncio
     async def test_probe_server_timeout_on_tools_list(self) -> None:
         """probe_server times out on tools/list (second readline), covering L456."""
-        server = McpServerInfo(name="slow-server", command="sleep", args=["999"])
+        server = McpServerInfo(
+            name="slow-server",
+            command=sys.executable,
+            args=["-c", "import time; time.sleep(999)"],
+        )
 
         init_resp = json.dumps({"jsonrpc": "2.0", "id": 1, "result": {}}).encode() + b"\n"
 
@@ -2256,7 +2261,7 @@ class TestProbeServerTimeout:
     @pytest.mark.asyncio
     async def test_probe_server_config_fallback_on_error(self) -> None:
         """probe_server falls back to 15s when config loading fails."""
-        server = McpServerInfo(name="test", command="echo")
+        server = McpServerInfo(name="test", command=sys.executable)
 
         mock_proc = AsyncMock()
         mock_proc.stdin = AsyncMock()

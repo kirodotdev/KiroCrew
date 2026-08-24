@@ -237,12 +237,12 @@ class TestRunScriptHook:
         assert result.error == ""  # exit code is not an error, just non-zero
 
     @pytest.mark.asyncio
-    async def test_timeout(self):
+    async def test_timeout(self, tmp_path: Path):
         hook = ScriptHook(
             id="test-3",
             name="timeout",
             event=HOOK_EVENT_USER_PROMPT_SUBMIT,
-            command="sleep 10",
+            command=_script_command(tmp_path / "timeout.py", "import time\ntime.sleep(10)\n"),
             timeout=1,
             enabled=True,
         )

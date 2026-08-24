@@ -1,6 +1,8 @@
 """Tests for kiro_crew.apps.dependencies — dependency resolution."""
 from __future__ import annotations
 
+import sys
+
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
@@ -54,10 +56,9 @@ class TestDependencyResult:
 class TestResolveDependencies:
     async def test_commands_check(self):
         """Commands that exist are skipped, missing ones go to missing list."""
-        deps = Dependencies(commands=["sh", "nonexistent-cmd-xyz"])
+        deps = Dependencies(commands=[sys.executable, "nonexistent-cmd-xyz"])
         result = await resolve_dependencies("test-app", deps)
-        # sh should exist on any unix system
-        assert "command:sh" in result.skipped
+        assert f"command:{sys.executable}" in result.skipped
         assert "nonexistent-cmd-xyz" in result.missing
 
     async def test_app_managed_deps_skipped(self):
@@ -80,8 +81,9 @@ class TestResolveDependencies:
 # Property tests
 # ---------------------------------------------------------------------------
 
-# Commands that definitely exist on any unix system
-_EXISTING_CMDS = ["sh", "ls", "cat", "echo"]
+# An absolute path works with ``shutil.which`` and is guaranteed to exist on the
+# host running pytest, without assuming a Unix command set.
+_EXISTING_CMDS = [sys.executable]
 _NONEXISTENT_CMDS = ["zzz-no-such-cmd-1", "zzz-no-such-cmd-2", "zzz-no-such-cmd-3"]
 
 

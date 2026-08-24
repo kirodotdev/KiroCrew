@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
+
 _ROOT = Path(__file__).resolve().parents[1]
 _TPL = _ROOT / "src/kiro_crew/deploy/skills/artifact-deploy/templates"
 
@@ -90,6 +92,7 @@ def test_f2_all_staging_rejections_convert_to_409():
 # --- F3: directory symlinks rejected, not dropped ---
 
 
+@requires_symlinks
 def test_f3_stage_tree_safe_rejects_dir_symlink(tmp_path):
     from kiro_crew.deploy.handlers import _stage_tree_safe
     src = tmp_path / "src"

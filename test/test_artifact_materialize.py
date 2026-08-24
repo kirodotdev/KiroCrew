@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore, ArtifactValidationError
 from kiro_crew.dashboard.handlers import artifacts as h
@@ -96,6 +97,7 @@ def test_materialize_symlinked_request_resolves_to_recorded_inode(isolated_store
     assert isolated_store.get(art.slug).content == "# real\n"
 
 
+@requires_symlinks
 def test_materialize_symlink_to_unrecorded_file_refused(isolated_store, tmp_path):
     """A symlink whose target is not a recorded document is refused by inode."""
     recorded = _write_doc(tmp_path, "recorded.md")

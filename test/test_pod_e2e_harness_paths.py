@@ -56,7 +56,8 @@ def _bash_works() -> bool:
 
 
 pytestmark = pytest.mark.skipif(
-    not _bash_works(), reason="harness fragments need a working bash (not the WSL stub)"
+    os.name == "nt" or not _bash_works(),
+    reason="harness fragments require POSIX path and process semantics plus bash",
 )
 
 
@@ -101,16 +102,12 @@ def gnu_readlink(tmp_path: Path) -> str:
     bindir = tmp_path / "shim"
     bindir.mkdir()
     shim = bindir / "readlink"
-    shim.write_text(
-        textwrap.dedent(
-            """\
+    shim.write_text(textwrap.dedent("""\
             #!/usr/bin/env python3
             import os, sys
             args = [a for a in sys.argv[1:] if a not in ("-f", "--")]
             print(os.path.realpath(args[0]))
-            """
-        )
-    )
+            """))
     shim.chmod(0o755)
     return str(bindir)
 
@@ -149,7 +146,7 @@ def test_guard_works_without_any_readlink_at_all(symlinked_home, tmp_path):
     empty = tmp_path / "no-readlink"
     empty.mkdir()
     res = subprocess.run(
-        ["bash", "-c", f'NAME=smoke\n{GUARD}\necho OK'],
+        ["bash", "-c", f"NAME=smoke\n{GUARD}\necho OK"],
         env={"HOME": symlinked_home, "PATH": f"{empty}:/usr/bin:/bin"},
         capture_output=True,
         text=True,
@@ -161,7 +158,7 @@ def test_guard_works_without_any_readlink_at_all(symlinked_home, tmp_path):
 
 def test_guard_still_rejects_an_escaping_name(symlinked_home, gnu_readlink):
     """The guard's actual purpose must survive the fix."""
-    res = _run(f'NAME=../../escape\n{GUARD}\necho SHOULD_NOT_REACH', symlinked_home, gnu_readlink)
+    res = _run(f"NAME=../../escape\n{GUARD}\necho SHOULD_NOT_REACH", symlinked_home, gnu_readlink)
     assert res.returncode == 65, res.stdout + res.stderr
     assert "escapes .e2e-artifacts" in res.stderr
     assert "SHOULD_NOT_REACH" not in res.stdout
@@ -218,7 +215,7 @@ def _resolve(name: str, home: str, porcelain: str = PORCELAIN, tmp: Path | None 
     fake = bindir / "git"
     fake.write_text("#!/bin/sh\ncat <<'PORC'\n" + porcelain + "PORC\n")
     fake.chmod(0o755)
-    snippet = f'HERE=/repo\n{RESOLVER}\n_resolve_checkout {name!r}'
+    snippet = f"HERE=/repo\n{RESOLVER}\n_resolve_checkout {name!r}"
     return _run(snippet, home, extra_path=str(bindir)).stdout.strip()
 
 

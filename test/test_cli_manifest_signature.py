@@ -31,6 +31,38 @@ WHEEL_NAME = f"kirocrew-{VERSION}-py3-none-any.whl"
 CDN_BASE = "https://fixtures.invalid"
 
 
+def _find_openssl() -> str | None:
+    direct = shutil.which("openssl")
+    if direct:
+        return direct
+    if os.name != "nt":
+        return None
+
+    git = shutil.which("git")
+    candidates: list[Path] = []
+    if git:
+        candidates.append(Path(git).resolve().parents[1] / "usr" / "bin" / "openssl.exe")
+    for variable in ("ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(variable)
+        if root:
+            candidates.append(Path(root) / "Git" / "usr" / "bin" / "openssl.exe")
+    return next((str(path) for path in candidates if path.is_file()), None)
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _openssl_on_path():
+    """Expose Git for Windows' OpenSSL to Python helpers and installer shells."""
+    openssl = _find_openssl()
+    if openssl is None:
+        pytest.skip("OpenSSL is not available")
+    old_path = os.environ.get("PATH", "")
+    os.environ["PATH"] = str(Path(openssl).parent) + os.pathsep + old_path
+    try:
+        yield
+    finally:
+        os.environ["PATH"] = old_path
+
+
 @dataclass(frozen=True)
 class SigningKey:
     private: Path

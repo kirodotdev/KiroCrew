@@ -26,6 +26,8 @@ from pathlib import Path
 
 import pytest
 
+from conftest import _find_posix_test_shell
+
 _SKILL = (
     Path(__file__).resolve().parent.parent
     / "src/kiro_crew/apps/builtins/dev_fleet/skills/pod-e2e"
@@ -193,7 +195,10 @@ def test_normal_recording_is_transcoded(driver, tmp_path, monkeypatch):
 # --- orphan cleanup ---------------------------------------------------------
 
 
-@pytest.mark.skipif(not Path("/proc").is_dir(), reason="/proc walk is Linux-only")
+@pytest.mark.skipif(
+    os.name != "posix" or not Path("/proc").is_dir(),
+    reason="/proc walk is Linux-only",
+)
 def test_descendant_pids_finds_a_grandchild(driver):
     """A wedged run used to leave the driver + ~19 chromium processes behind."""
     child = subprocess.Popen(
@@ -369,33 +374,10 @@ def test_spec_recorded_pass_keeps_the_run_green(driver, tmp_path):
 
 
 def _usable_bash() -> str | None:
-    """Return a bash that can actually execute a script, else None.
-
-    `shutil.which("bash")` is not enough: on GitHub's Windows runners it finds
-    the WSL launcher stub, which exits 1 with a UTF-16 "no installed
-    distributions" message instead of running anything. Probe it.
-    """
-    candidates = ["bash", r"C:\Program Files\Git\bin\bash.exe"]
-    for cand in candidates:
-        exe = shutil.which(cand)
-        if exe is None and Path(cand).exists():
-            exe = cand
-        if exe is None:
-            continue
-        try:
-            probe = subprocess.run(
-                [exe, "-c", "echo ok"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=60,
-            )
-        except OSError:                         # pragma: no cover - env guard
-            continue
-        if probe.returncode == 0 and "ok" in (probe.stdout or ""):
-            return exe
-    return None
+    """Return Bash specifically, never a generic ``/bin/sh`` or WSL stub."""
+    if os.name == "nt":
+        return _find_posix_test_shell()
+    return shutil.which("bash")
 
 
 @pytest.mark.skipif(
