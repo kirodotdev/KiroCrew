@@ -22,6 +22,7 @@ from kiro_crew.apps.manager import (
     register_builtin_apps,
     uninstall_app,
 )
+from kiro_crew.apps.manifest import app_name_error
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -134,8 +135,22 @@ def _no_disk_discovery(monkeypatch):
 # Strategies
 # ---------------------------------------------------------------------------
 
-# Generate valid kebab-case app names
-app_name_st = st.from_regex(r"[a-z][a-z0-9]{1,8}(-[a-z][a-z0-9]{1,5}){0,2}", fullmatch=True)
+# Generate valid kebab-case app names.
+#
+# The regex alone is not the admission contract. It happily produces `aux`,
+# `con`, `nul`, `com1`..`com9`, `lpt1`..`lpt9` and `system`, every one of which
+# `app_name_error` refuses -- the device stems because a directory of that name
+# cannot be created on Windows, `system` because it would shadow the
+# `system.*` notification channel namespace. A definition carrying one is not a
+# VALID builtin definition, so a strategy that emits one is out of contract and
+# the tests below, which assert the app registers, fail on it.
+#
+# Filtered through `app_name_error` itself rather than a copied exclusion list:
+# the contract gains names over time (it has already gained the device stems),
+# and a second copy here would silently stop matching it.
+app_name_st = st.from_regex(
+    r"[a-z][a-z0-9]{1,8}(-[a-z][a-z0-9]{1,5}){0,2}", fullmatch=True
+).filter(lambda name: app_name_error(name) is None)
 
 # Generate valid builtin app definitions
 valid_builtin_def_st = st.fixed_dictionaries({
@@ -148,6 +163,40 @@ valid_builtin_def_st = st.fixed_dictionaries({
     "defaultEnabled": st.booleans(),
     "tags": st.lists(st.text(min_size=1, max_size=10), max_size=3),
 })
+
+
+# ---------------------------------------------------------------------------
+# The strategy's own contract
+# ---------------------------------------------------------------------------
+
+
+@given(name=app_name_st)
+@settings(max_examples=200)
+def test_the_name_strategy_only_emits_admissible_names(name):
+    """Every name this module calls VALID must be one the app store admits.
+
+    The three property tests below register the generated definition and assert
+    the app is there afterwards. A name `app_name_error` refuses is skipped by
+    `register_builtin_apps` instead -- correctly, and with a warning -- so the
+    assertion fails on a definition that was never valid to begin with.
+    """
+    assert app_name_error(name) is None, f"strategy produced an inadmissible name: {name!r}"
+
+
+def test_the_filter_is_load_bearing():
+    """The bare regex admits refused names, so the filter is not decoration.
+
+    Without this, a later reader sees a `.filter` that never seems to reject
+    anything (the offending names are a vanishing fraction of the space, which
+    is exactly why the failure arrived as an intermittent Windows-shard flake
+    rather than a reproducible red) and removes it.
+    """
+    import re
+
+    bare = re.compile(r"[a-z][a-z0-9]{1,8}(-[a-z][a-z0-9]{1,5}){0,2}")
+    refused = [n for n in ("aux", "con", "nul", "com1", "lpt9", "system")
+               if bare.fullmatch(n) and app_name_error(n) is not None]
+    assert refused == ["aux", "con", "nul", "com1", "lpt9", "system"], refused
 
 
 # ---------------------------------------------------------------------------
