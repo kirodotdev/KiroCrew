@@ -14,6 +14,7 @@ import {
 import { api } from '../../api/client'
 import { Badge, Btn } from '../ui'
 import AppIconTile from './AppIconTile'
+import { manifestArt } from './useHeroArt'
 import type { InstalledApp } from './types'
 import { appDisplayName, appDescription } from './appManifest'
 
@@ -50,12 +51,15 @@ export default function InstalledAppCard({
   const canUpdate = app.lifecycle === 'gateway'
   const canUninstall = app.lifecycle !== 'locked'
   const hasOpenCommand = !!m?.openCommand
-  // Derive icon URL: prefer manifest iconUrl (builtins), fallback to blob proxy (registry)
-  const blob = (p?: string) => (p && m?.repo
-    ? `/api/apps/blob?repo=${encodeURIComponent(m.repo)}&path=${encodeURIComponent(p)}`
-    : undefined)
-  const iconUrl = m?.iconUrl || blob(m?.iconPath)
-  const iconUrlDark = m?.iconUrlDark || blob(m?.iconPathDark)
+  // Icon: a built-in's absolute `iconUrl`, else the repo-relative `iconPath`
+  // through the blob proxy. Both go through the same resolver, so a manifest
+  // naming an external host is refused rather than handed to <img>. The repo is
+  // the manifest's own when it declares one, else the git URL the install
+  // recorded — a manifest is not required to name its repo, and without that
+  // fallback such an app renders the generic box.
+  const artRepo = m?.repo || app.sourceUrl || ''
+  const iconUrl = manifestArt(m?.iconUrl, artRepo) || manifestArt(m?.iconPath, artRepo)
+  const iconUrlDark = manifestArt(m?.iconUrlDark, artRepo) || manifestArt(m?.iconPathDark, artRepo)
 
   return (
     <div className="border border-border rounded-lg hover:border-accent/30 transition-colors overflow-hidden">

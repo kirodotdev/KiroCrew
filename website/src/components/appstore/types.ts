@@ -67,6 +67,14 @@ export type InstalledApp = {
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
+  /**
+   * The git URL this app was installed from, recorded at install time. It is
+   * the only repo identifier that survives independently of the store's
+   * registry caches, so art resolution falls back to it when neither the row
+   * nor the manifest names a repo. Empty on a built-in, a local-directory
+   * install, and on records written before provenance was captured.
+   */
+  sourceUrl?: string
   resources?: string  // "gateway" | "app"
   lifecycle?: string  // "gateway" | "app" | "locked"
   migratedTo?: string
@@ -100,6 +108,8 @@ export type InstalledApp = {
     iconPath?: string
     repo?: string
     screenshots?: string[]
+    /** Dark-appearance screenshots, when the manifest ships a second set. */
+    screenshotsDark?: string[]
     heroImage?: string
     heroImageDark?: string
     // The wide detail-page banners. Ten of the twelve builtins ship them, but
@@ -271,8 +281,25 @@ export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
       sops: strings(manifest.sops),
       tags: strings(manifest.tags),
       jobFamilies: strings(manifest.jobFamilies),
-      screenshots: strings(manifest.screenshots),
       highlights: strings(manifest.highlights),
+      // Art fields, coerced here for the reason in this function's docstring: the
+      // payload's entry point is where a wrong TYPE stops being every consumer's
+      // problem. `screenshots` was coerced and its dark sibling was not, which is
+      // how `"screenshotsDark": {}` reached a bare `.map`, and `"iconPath": {}` a
+      // bare `startsWith` — each throwing on the surface that read it rather than
+      // degrading. `repo` rides along because it is the base the others resolve
+      // against, so a non-string there produces a nonsense request instead of none.
+      iconUrl: str(manifest.iconUrl),
+      iconUrlDark: str(manifest.iconUrlDark),
+      iconPath: str(manifest.iconPath),
+      iconPathDark: str(manifest.iconPathDark),
+      heroImage: str(manifest.heroImage),
+      heroImageDark: str(manifest.heroImageDark),
+      heroImageDetail: str(manifest.heroImageDetail),
+      heroImageDetailDark: str(manifest.heroImageDetailDark),
+      repo: str(manifest.repo),
+      screenshots: strings(manifest.screenshots),
+      screenshotsDark: strings(manifest.screenshotsDark),
       // A cron entry is only useful for its name, which is also the only field
       // the dashboard reads, so an entry without one is dropped rather than
       // rendered as a blank row.

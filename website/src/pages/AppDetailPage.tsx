@@ -26,6 +26,7 @@ import AskAgentButton from '../components/AskAgentButton'
 import { i18nT } from '../i18n/t'
 import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
+import { manifestArt, manifestArtList, classifyManifestArt } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric } from '../i18n/format'
 type AppInfo = {
   name: string
@@ -105,6 +106,15 @@ interface AppManifest {
   // (preserved through AppManifest.extra) rather than on a registry entry —
   // built-ins are not part of the /api/apps/registry feed.
   iconUrl?: string
+  iconUrlDark?: string
+  // Repo-relative icon paths. An external app declares these (the backend
+  // rewrites them into blob-proxy URLs on a registry row); `iconUrl` is the
+  // built-in spelling.
+  iconPath?: string
+  iconPathDark?: string
+  // The repo an external app's art paths are relative to, when the manifest
+  // declares it.
+  repo?: string
   heroImage?: string
   heroImageDark?: string
   heroImageDetail?: string
@@ -273,27 +283,58 @@ export default function AppDetailPage() {
             manifest: m,
           })
         } else {
+          // A non-built-in installed app may have no registry row carrying art
+          // at all — a local-directory install has none, and a row built from a
+          // cached manifest older than the release that added the art carries
+          // those fields empty. The manifest on disk still has the paths, but
+          // they are repo-relative, so every fallback below goes through
+          // `manifestArt` to reach the blob proxy. The repo it resolves against
+          // is the row's when there is one, else the manifest's own, else the
+          // git URL the app was installed from — which the install records
+          // independently of the store's caches.
+          const artRepo = registryEntry?.repo || m.repo || installed.sourceUrl || ''
+          // A page's own icon ships inside the app's UI bundle, not at the repo
+          // root, so a relative value resolves against the app's UI asset route —
+          // the same base the rail and the command palette use. A cross-origin
+          // value is refused here for the same reason it is everywhere else on
+          // this path: the manifest is untrusted, and requesting it would leak the
+          // viewer to whatever host it names.
+          const pageIcon: unknown = m.ui?.pages?.[0]?.iconUrl
+          const pageIconKind = classifyManifestArt(pageIcon)
+          const pageIconUrl = pageIconKind === 'same-origin' ? pageIcon as string
+            : pageIconKind === 'relative' ? `/apps/${installed.name}/ui/${pageIcon as string}`
+              : ''
           setApp({
             name: installed.name,
             displayName: installed.displayName || m.displayName || installed.name,
             description: m.description || '',
             version: registryEntry?.version || m.version || installed.version || '0.0.0',
             author: m.author || registryEntry?.author || '',
-            // A non-built-in installed app may have no registry entry at all (a
-            // local-directory install), so the manifest is the only source for
-            // icon/hero metadata; without this fallback the page renders the
-            // generic Package box.
             icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
-            iconUrl: registryEntry?.iconUrl || m.iconUrl || m.ui?.pages?.[0]?.iconUrl || '',
-            iconUrlDark: registryEntry?.iconUrlDark || m.iconUrlDark || '',
+            // `iconPath` is preferred over a manifest-declared `iconUrl` for the
+            // same reason the backend honours only `iconPath`: a repo-relative
+            // path stays on our own proxy, which enforces the extension
+            // allowlist and the trusted-repo gate. The `iconUrl` fallback goes
+            // through the same resolver rather than straight to `<img>`, so a
+            // manifest naming an external host is refused on this surface too.
+            iconUrl: registryEntry?.iconUrl || manifestArt(m.iconPath, artRepo)
+              || manifestArt(m.iconUrl, artRepo) || pageIconUrl || '',
+            iconUrlDark: registryEntry?.iconUrlDark || manifestArt(m.iconPathDark, artRepo)
+              || manifestArt(m.iconUrlDark, artRepo) || '',
             tags: m.tags || registryEntry?.tags || [],
             highlights: m.highlights || registryEntry?.highlights || [],
-            screenshots: registryEntry?.screenshots || m.screenshots || [],
-            screenshotsDark: registryEntry?.screenshotsDark || m.screenshotsDark || [],
-            heroImage: registryEntry?.heroImage || m.heroImage || '',
-            heroImageDark: registryEntry?.heroImageDark || m.heroImageDark || '',
-            heroImageDetail: registryEntry?.heroImageDetail || m.heroImageDetail || '',
-            heroImageDetailDark: registryEntry?.heroImageDetailDark || m.heroImageDetailDark || '',
+            screenshots: registryEntry?.screenshots || manifestArtList(m.screenshots, artRepo),
+            screenshotsDark: registryEntry?.screenshotsDark
+              || manifestArtList(m.screenshotsDark, artRepo),
+            heroImage: registryEntry?.heroImage || manifestArt(m.heroImage, artRepo),
+            heroImageDark: registryEntry?.heroImageDark || manifestArt(m.heroImageDark, artRepo),
+            heroImageDetail: registryEntry?.heroImageDetail
+              || manifestArt(m.heroImageDetail, artRepo),
+            heroImageDetailDark: registryEntry?.heroImageDetailDark
+              || manifestArt(m.heroImageDetailDark, artRepo),
+            // Left as the row's own value: this field also names the repo in the
+            // trust-consent prompt and the details list, and widening those to a
+            // fallback identifier is a separate decision from resolving art.
             repo: registryEntry?.repo || '',
             installed: true,
             installedVersion: installed.version,

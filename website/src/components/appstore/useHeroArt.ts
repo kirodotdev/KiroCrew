@@ -34,6 +34,127 @@ export function resolveArtPath(path: string, repo?: string): string {
 }
 
 /**
+ * How a manifest-declared art path may be used.
+ *
+ * `'same-origin'` is fetchable exactly as written and cannot leave this origin —
+ * a built-in's ``/app-assets/…``, or a store row's own ``/api/apps/blob?…`` URL.
+ * `'relative'` needs a base, and what it is relative TO differs per field, so
+ * the caller supplies it. `'refused'` is a value this surface must not request
+ * at all.
+ */
+export type ArtPathKind = 'same-origin' | 'relative' | 'refused'
+
+/**
+ * A same-origin base to resolve a candidate art path against.
+ *
+ * Escaping an origin is a property of the VALUE's own syntax, not of the base —
+ * so a value that leaves this (unreachable) origin would equally leave the
+ * dashboard's, and one that stays inside it stays inside the dashboard's. Using
+ * a fixed base instead of `window.location` keeps the rule deterministic and
+ * testable, and means the classifier does not need a DOM.
+ */
+const ORIGIN_PROBE_BASE = 'https://origin-probe.invalid/apps/detail/probe'
+const ORIGIN_PROBE_ORIGIN = 'https://origin-probe.invalid'
+
+/**
+ * The URL parser's own preprocessing, reproduced so the value we HAND to
+ * ``<img>`` is the value we classified.
+ *
+ * The parser removes every ASCII tab and newline anywhere in the input and trims
+ * leading C0 controls and spaces, all BEFORE parsing. Measured: against a
+ * same-origin base, ``/<TAB>/host/x``, ``/<LF>/host/x``, ``<TAB>//host/x`` and
+ * ``<SPACE>//host/x`` all resolve to ``https://host`` — so no test on the raw
+ * string's first characters can decide anything. (A space or form feed MID-value
+ * is not stripped and stays on-origin, which is why this mirrors the spec's exact
+ * set rather than "all whitespace".)
+ */
+function asParserSees(path: string): string {
+  return path.replace(/[\t\n\r]/g, '').replace(/^[\u0000-\u0020]+/, '')
+}
+
+/**
+ * Classify one art path read off an installed app's ``app.json``.
+ *
+ * The parameter is ``unknown`` because a manifest is JSON from disk and its
+ * field TYPES are not guaranteed either: the installed-app normalizer coerces
+ * some list fields but passes unknown keys through verbatim, so an ``app.json``
+ * declaring ``"iconPath": {}`` arrives here as an object. A bare ``startsWith``
+ * would throw and take the whole surface down, so anything that is not a
+ * non-empty string is refused.
+ *
+ * An installed manifest is untrusted content: honouring an absolute URL out of
+ * it would let a third party point the store's ``<img>`` at any host, so merely
+ * rendering the app would leak the viewer's address and headers to that host.
+ * The rule is therefore POSITIVE — a value is accepted only when the URL parser
+ * itself says it lands on our own origin — rather than a list of forbidden
+ * spellings. Three spellings defeated three successive prefix tests here
+ * (protocol-relative ``//``, the backslash forms the parser reads as slashes,
+ * and a tab or leading space splitting the two slashes), which is the evidence
+ * that the parser has to be the authority and not a regex approximating it.
+ *
+ * This mirrors the backend, which honours only the repo-relative ``iconPath``
+ * when it builds a store row and never a manifest-declared ``iconUrl``.
+ */
+export function classifyManifestArt(path: unknown): ArtPathKind {
+  if (typeof path !== 'string' || !path) return 'refused'
+  const value = asParserSees(path)
+  if (!value) return 'refused'
+  // Parses on its own => it carries a scheme, so it is not ours to honour.
+  try {
+    new URL(value)
+    return 'refused'
+  } catch {
+    // Relative: keep going and let the origin check decide.
+  }
+  try {
+    if (new URL(value, ORIGIN_PROBE_BASE).origin !== ORIGIN_PROBE_ORIGIN) return 'refused'
+  } catch {
+    return 'refused'
+  }
+  return value.startsWith('/') ? 'same-origin' : 'relative'
+}
+
+/**
+ * Resolve ONE art path read straight off an installed app's ``app.json``.
+ *
+ * Store rows arrive server-enriched (the backend rewrites ``iconPath`` and the
+ * hero/screenshot fields into ``/api/apps/blob?…`` URLs), so a surface that
+ * renders a row needs no resolution. A surface that falls back to the manifest
+ * does: a local-directory install has no row at all, and a row built from a
+ * cached manifest predating the release that added the art carries those fields
+ * empty while the manifest on disk has them.
+ *
+ * Unlike :func:`resolveArtPath`, an unusable path answers ``''`` rather than
+ * passing through — both a repo-relative path with no repo to resolve against
+ * and a refused cross-origin one. Passing through is right for a store row (the
+ * value may already be absolute) but wrong here: the browser would resolve
+ * ``assets/hero.webp`` against the current route, get the SPA shell, and the
+ * ``<img>`` would fail silently instead of degrading to the gradient.
+ */
+export function manifestArt(path: unknown, repo: string | undefined): string {
+  const kind = classifyManifestArt(path)
+  if (kind === 'refused') return ''
+  // The normalized form, not the raw one: classifying one string and emitting
+  // another is exactly the gap a tab-splitting value walks through.
+  const value = asParserSees(path as string)
+  if (kind === 'same-origin') return value
+  return repo ? resolveArtPath(value, repo) : ''
+}
+
+/**
+ * Resolve a LIST of manifest art paths, dropping every entry the rules refuse.
+ *
+ * The array itself is ``unknown`` for the same reason each entry is: the
+ * installed-app normalizer coerces ``screenshots`` but not ``screenshotsDark``,
+ * so an ``app.json`` declaring ``"screenshotsDark": {}`` would reach a bare
+ * ``.map`` and throw.
+ */
+export function manifestArtList(paths: unknown, repo: string | undefined): string[] {
+  if (!Array.isArray(paths)) return []
+  return paths.map(p => manifestArt(p, repo)).filter(Boolean)
+}
+
+/**
  * True when the app ships ANY art ``useHeroArt`` could render (either theme's
  * hero, or a screenshot). Featured ranking uses this so a dark-only or
  * screenshot-only app is not treated as art-less.

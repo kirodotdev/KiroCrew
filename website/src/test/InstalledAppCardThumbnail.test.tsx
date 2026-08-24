@@ -100,4 +100,35 @@ describe('InstalledAppCard thumbnail', () => {
     const srcs = [...document.querySelectorAll('img')].map(i => i.getAttribute('src') || '')
     expect(srcs.some(s => s.includes('/api/apps/blob'))).toBe(false)
   })
+
+  it("proxies iconPath against the manifest's repo", () => {    renderCard(app({ iconPath: 'assets/icon.webp', repo: 'octocat/some-app' }))
+    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url'))
+      .toBe('/api/apps/blob?repo=octocat%2Fsome-app&path=assets%2Ficon.webp')
+  })
+
+  it('falls back to the recorded install URL when the manifest names no repo', () => {
+    // A manifest is not required to declare `repo`, and a registry row can be
+    // absent or missing its art. `sourceUrl` is recorded at install time, so it
+    // is the identifier that survives both.
+    const a = app({ iconPath: 'assets/icon.webp' })
+    a.sourceUrl = 'https://example.invalid/octocat/some-app'
+    renderCard(a)
+    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url'))
+      .toBe('/api/apps/blob?repo=https%3A%2F%2Fexample.invalid%2Foctocat%2Fsome-app&path=assets%2Ficon.webp')
+  })
+
+  it('renders no icon URL at all when nothing can resolve the repo-relative path', () => {
+    renderCard(app({ iconPath: 'assets/icon.webp' }))
+    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url')).toBe('')
+  })
+
+  it('refuses a manifest icon pointing at an external host', () => {
+    // Twelve Library rows each fetching an app-declared URL is twelve hosts told
+    // the viewer opened this dashboard.
+    renderCard(app({ iconUrl: 'https://evil.example/icon.png', repo: 'octocat/some-app' }))
+    expect(screen.getByTestId('app-icon').getAttribute('data-icon-url')).toBe('')
+    renderCard(app({ iconPath: '//evil.example/icon.png', repo: 'octocat/some-app' }))
+    const urls = screen.getAllByTestId('app-icon').map(el => el.getAttribute('data-icon-url') || '')
+    expect(urls.some(u => u.includes('evil.example'))).toBe(false)
+  })
 })
