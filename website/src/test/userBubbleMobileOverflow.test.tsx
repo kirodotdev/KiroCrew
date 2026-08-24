@@ -78,9 +78,12 @@ describe('user bubble stays inside a phone viewport', () => {
   it('caps the animation wrapper the steered-message path splices in', () => {
     const { container } = renderBubble({ meta: { steer: true } })
     // An uncapped box anywhere in the chain re-breaks the whole chain, and this
-    // one only exists for a steered message.
+    // one only exists for a steered message. The wrapper carries the bubble's
+    // own min(550px,100%) cap — the 100% arm is what keeps a phone viewport
+    // capped, and the 550px arm is what keeps a long steered bubble on the
+    // shared end edge in a wide column.
     const wrapper = container.querySelector('[data-role="user"] .relative')!
-    expect(wrapper.className).toContain('max-w-full')
+    expect(wrapper.className).toContain('max-w-[min(550px,100%)]')
   })
 
   it.each(HOSTS)('%s caps the transcript row wrapper it shares with the bubble', (_label, rel) => {

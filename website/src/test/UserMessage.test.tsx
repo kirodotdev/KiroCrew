@@ -198,6 +198,22 @@ describe('UserMessage', () => {
     expect(normalBubble.className).not.toContain('bg-accent-subtle')
   })
 
+  // The wrapper-cap invariant itself is pinned by the two pre-existing tests
+  // that guard this chain (UserMessage.bubbleHug.test.tsx source pin,
+  // userBubbleMobileOverflow.test.tsx rendered-wrapper pin); no third copy here.
+
+  // The entrance ring must be drawn INSIDE the bubble box (inset-0), because the
+  // transcript row wrapper is overflow-hidden and hugs the bubble's edges — a
+  // ring drawn outside (-inset-*) is clipped flat on the right for every steer.
+  it('draws the entrance ring inside the bubble box so the row clip cannot cut it', () => {
+    const { container } = render(<UserMessage content="fresh steer" meta={{ steer: true }} messageTs={`steer-ring-${Date.now()}`} renderContent={renderContent} />)
+    const ring = container.querySelector('[aria-hidden="true"].absolute.border-accent') as HTMLElement
+    expect(ring).not.toBeNull()
+    expect(ring.className).toContain('inset-0')
+    expect(ring.className).not.toContain('-inset-0.5')
+  })
+
+
   // One-shot entrance guard identity: the optimistic bubble mounts with a client
   // ts; the steer_push reconcile stashes it as meta.clientTs and swaps messageTs
   // to the server ts. A later remount (virtualization scroll-away) must key the

@@ -79,6 +79,16 @@
   position: relative;
 }
 
+/* The steer animation wrapper sits between the root and the bubble and
+   carries the bubble's own 550px cap (the shrink-wrap chain invariant in
+   UserMessage). CLI mode lifts the cap on the root and on `.msg-content`
+   above, so this middle box must be lifted too or a long steered message
+   stays capped at 550px while normal ones run full-width. */
+[data-ui="cli"] [style*="--mc-content-width"] [data-role="user"]:has(.msg-content) > .relative {
+  max-width: none !important;
+  width: auto !important;
+}
+
 /* The user-message card chrome: drop bg, border, rounding. Keep a faint
    background on the text only — Kiro CLI's "the words look slightly
    highlighted" effect. */

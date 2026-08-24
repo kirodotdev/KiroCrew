@@ -23,6 +23,11 @@ describe('sent bubble sizing', () => {
   })
 
   it('the steer wrapper shrink-wraps too, so both bubbles share one end edge', () => {
-    expect(/className="relative w-fit max-w-full"/.test(src)).toBe(true)
+    // The wrapper must carry the SAME cap as the bubble, not just max-w-full:
+    // during intrinsic sizing a percentage max-width is treated as none, so a
+    // wrapper capped only at 100% inflates to the full column and the capped
+    // bubble inside lands at its left edge. min(550px,100%) resolves to 100%
+    // below 550px, so the mobile-overflow cap is preserved.
+    expect(/className="relative w-fit max-w-\[min\(550px,100%\)\]"/.test(src)).toBe(true)
   })
 })
