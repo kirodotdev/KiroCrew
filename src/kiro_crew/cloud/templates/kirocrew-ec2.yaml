@@ -295,7 +295,18 @@ Resources:
       #   surface it. Quotes/backslashes are stripped because the fallback
       #   curl embeds the reason in hand-built JSON; an unescaped quote would
       #   malform the body and the WaitCondition would hang to timeout instead
-      #   of failing cleanly. The ${!tail_ctx} inside fail() is
+      #   of failing cleanly. Both the log tail and the caller's message are
+      #   then filtered to printable ASCII (space..tilde): CloudFormation
+      #   rejects a Reason carrying control or non-ASCII bytes ("Resource
+      #   status reason contains invalid characters"), which would replace
+      #   the real error with a charset complaint -- and dnf/git/npm/vite
+      #   routinely emit ANSI escapes and UTF-8 glyphs. Newlines fold to '|'
+      #   BEFORE the filter (newline is itself a control byte); the filter
+      #   drops ESC so an ANSI sequence degrades to printable residue, and an
+      #   all-ASCII payload means the byte-level 1000-byte cap can no longer
+      #   split a multi-byte UTF-8 sequence at the reason= point (an upstream
+      #   byte cap like fe_err's tail -c 500 may still split one, but the "$1"
+      #   filter drops the orphan continuation bytes). The ${!tail_ctx} inside fail() is
       #   CloudFormation's !Sub literal escape, NOT bash indirect expansion:
       #   !Sub renders it as the plain dollar-brace form, an ordinary bash
       #   expansion at runtime; without the "!" escape, !Sub would try to
@@ -416,9 +427,9 @@ Resources:
             echo "BOOTSTRAP FAILED: $1"
             tail_ctx=$(tail -n 25 "$LOG" 2>/dev/null | tr -d '\r"\\' \
               | grep -aviE 'Installing (npm|kirocrew and) depend|building React app' \
-              | tr '\n' '|' | tail -c 900)
+              | tr '\n' '|' | tr -cd '\40-\176' | tail -c 900)
             # NB: ${!tail_ctx} is the !Sub literal escape, not bash indirection.
-            reason="$(echo "$1" | tr -d '"\\') :: ...${!tail_ctx}"
+            reason="$(printf '%s' "$1" | tr -d '"\\' | tr '\n' '|' | tr -cd '\40-\176') :: ...${!tail_ctx}"
             /opt/aws/bin/cfn-signal -e 1 -r "$(echo "$reason" | head -c 1000)" "$HANDLE" || \
               curl -s -X PUT -H 'Content-Type:' --data-binary \
                 "{\"Status\":\"FAILURE\",\"Reason\":\"$(echo "$reason" | head -c 1000)\",\"UniqueId\":\"kirocrew\",\"Data\":\"fail\"}" "$HANDLE" || true
