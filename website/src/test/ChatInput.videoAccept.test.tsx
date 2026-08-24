@@ -18,7 +18,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { screen } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 
-import { VIDEO_EXT, VIDEO_MAX_BYTES } from '../utils/fileTokens'
+import { VIDEO_EXT } from '../utils/fileTokens'
 
 vi.mock('../hooks/useScreenSnip', () => ({ isScreenSnipSupported: () => false }))
 vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => true }))
@@ -77,18 +77,5 @@ describe('VIDEO_EXT', () => {
     // exempt a real document from the 50 MB guard.
     expect(VIDEO_EXT.test('mp4-notes.md')).toBe(false)
     expect(VIDEO_EXT.test('about-mov.txt')).toBe(false)
-  })
-})
-
-describe('VIDEO_MAX_BYTES', () => {
-  it('is the ceiling ChatPane pre-checks against, and clears the document cap', () => {
-    // NOT a cross-language pin: a vitest cannot read `_MAX_VIDEO_UPLOAD_BYTES`,
-    // so this only fixes the value the client uses. The two-sided check lives in
-    // test/test_handlers_files_video_upload.py
-    // (test_client_video_cap_matches_the_server_ceiling), which can see both
-    // numbers — a server cap raised without the mirror leaves ChatPane, which
-    // renders nothing on failure, silently refusing legal recordings.
-    expect(VIDEO_MAX_BYTES).toBe(512 * 1024 * 1024)
-    expect(VIDEO_MAX_BYTES).toBeGreaterThan(50 * 1024 * 1024)
   })
 })

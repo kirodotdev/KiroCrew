@@ -355,18 +355,20 @@ def test_accept_list_covers_every_accepted_extension() -> None:
     assert set(files_mod._ALLOWED_VIDEO_EXT) == {".mp4", ".m4v", ".mov", ".webm"}
 
 
-def test_client_video_cap_matches_the_server_ceiling() -> None:
-    """`VIDEO_MAX_BYTES` in fileTokens.ts equals ``_MAX_VIDEO_UPLOAD_BYTES``.
+def test_video_ceiling_stays_above_the_document_cap() -> None:
+    """``_MAX_VIDEO_UPLOAD_BYTES`` exceeds ``_MAX_UPLOAD_BYTES``.
 
-    ChatPane pre-checks against the client copy because it has no error surface,
-    so a server cap raised without the mirror leaves that pane silently refusing
-    recordings the server would take. Asserted here rather than in the vitest
-    that reads the constant: only this side can see both numbers.
+    This is the invariant both composers' video exemption rests on. Since #5707
+    neither pre-checks a recording: they exempt video from the client-side
+    document guard and let an over-cap recording's own 413 report the real
+    ceiling. That is only right while the video ceiling is the higher of the
+    two -- if it fell to or below the document cap, exempting video would waive
+    a limit the server still enforces.
+
+    Asserted here, where both numbers live, rather than against a mirrored
+    client copy: the client no longer reads either one.
     """
-    src = _website_source("utils/fileTokens.ts")
-    match = re.search(r"VIDEO_MAX_BYTES = (\d+) \* 1024 \* 1024", src)
-    assert match, "VIDEO_MAX_BYTES not found in fileTokens.ts"
-    assert int(match.group(1)) * 1024 * 1024 == files_mod._MAX_VIDEO_UPLOAD_BYTES
+    assert files_mod._MAX_VIDEO_UPLOAD_BYTES > files_mod._MAX_UPLOAD_BYTES
 
 
 def test_client_video_regex_matches_the_server_extension_set() -> None:

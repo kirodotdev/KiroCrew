@@ -36,7 +36,7 @@ import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { serializeDirTokens, spliceDirTokens, VIDEO_EXT, VIDEO_MAX_BYTES } from '../utils/fileTokens'
+import { serializeDirTokens, spliceDirTokens, VIDEO_EXT } from '../utils/fileTokens'
 import { displayModel } from '../lib/model'
 
 
@@ -84,6 +84,7 @@ export default function ChatPane({
   const connectionsUiOn = useConnectionsUiEnabled()
   const [input, setInput] = useState('')
   const [pendingFiles, setPendingFiles] = useState<string[]>([])
+  const [uploadError, setUploadError] = useState('')
   const [agentBtnRect, setAgentBtnRect] = useState<DOMRect | null>(null)
   const [modelBtnRect, setModelBtnRect] = useState<DOMRect | null>(null)
   const endRef = useRef<HTMLDivElement>(null)
@@ -324,21 +325,41 @@ export default function ChatPane({
   // File upload as a mutation (isPending replaces a manual `uploading` flag).
   const uploadMutation = useMutation({
     mutationFn: (files: File[]) => api.uploadFiles(files),
-    onSuccess: (res) => { if (res.paths?.length) setPendingFiles((prev) => [...prev, ...res.paths]) },
+    // api.uploadFiles does NOT throw on a server refusal (unsupported type,
+    // signature mismatch, over-cap): it resolves with { paths: [], error }.
+    // So a refusal lands here in onSuccess, not onError — surface res.error
+    // (matching ChatPage) instead of silently doing nothing.
+    onSuccess: (res) => {
+      if (res.error) { setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: res.error })); return }
+      if (res.paths?.length) setPendingFiles((prev) => [...prev, ...res.paths])
+    },
+    // api.uploadFiles throws for three distinct reasons: a client-side image
+    // resize failure, a session expiry, and a transport reject. The first two
+    // carry a message worth showing. A fetch reject arrives as a TypeError
+    // reading "Failed to fetch", which is not user-facing copy, so that case
+    // gets the pane's shared connectivity string instead.
+    onError: (err: unknown) => {
+      const message = (err as Error)?.message
+      const reason = (!message || err instanceof TypeError)
+        ? i18nT('pages.chatPage.connection_error')
+        : message
+      setUploadError(i18nT('pages.chatPage.upload_failed_error', { error: reason }))
+    },
   })
   const uploadFiles = useCallback((files: File[]) => {
-    if (!files.length || files.length > 20) return
-    // Same video exemption as ChatPage's uploadFiles: the server's video cap is
-    // far higher than 50 MB, and this guard drops the batch SILENTLY, so
-    // applying it to a recording would swallow the attach with no explanation.
-    // But this pane has no error surface at all -- `uploadMutation` renders
-    // nothing on failure -- so it cannot delegate the ceiling to the server's
-    // 413 the way ChatPage does. It pre-checks against the server's own cap
-    // instead: a legal recording gets through, and an over-cap one is dropped
-    // exactly the way this pane already drops every oversized file, rather than
-    // gaining a NEW silent failure mode from this change.
-    const cap = (f: File) => (VIDEO_EXT.test(f.name) ? VIDEO_MAX_BYTES : 50 * 1024 * 1024)
-    if (files.find((f) => f.size > cap(f))) return
+    if (!files.length) return
+    // Clear FIRST, so a refusal from the previous attempt cannot stay on
+    // screen and read as the reason this one failed.
+    setUploadError('')
+    if (files.length > 20) { setUploadError(i18nT('pages.chatPage.too_many_files_max_20')); return }
+    // Video is deliberately exempt from this pre-check, exactly as in
+    // ChatPage: the server's video ceiling is far higher than 50 MB, so the
+    // figure this message states would be a lie for a recording. An over-cap
+    // recording's own 413 carries the real cap and surfaces through the
+    // res.error branch above -- the route every other server-side refusal
+    // already takes, and the one this change just wired to the banner.
+    const big = files.find((f) => !VIDEO_EXT.test(f.name) && f.size > 50 * 1024 * 1024)
+    if (big) { setUploadError(i18nT('pages.chatPage.file_too_large', { name: big.name })); return }
     uploadMutation.mutate(files)
   }, [uploadMutation])
 
@@ -716,6 +737,13 @@ export default function ChatPane({
               .catch(() => fail())
           }}
         />
+
+        {uploadError && (
+          <div className="mx-4 mt-2 mb-0 bg-bg-elevated border rounded-lg p-3 flex items-center gap-3 animate-rise" style={{ borderColor: 'color-mix(in srgb, var(--danger) 45%, transparent)' }}>
+            <span className="text-sm text-text flex-1 min-w-0 break-words">{uploadError}</span>
+            <button onClick={() => setUploadError('')} aria-label={i18nT('pages.chatPage.dismiss_upload_error')} className="text-muted hover:text-text leading-none p-0.5 shrink-0"><X className="w-4 h-4" /></button>
+          </div>
+        )}
 
         <ChatInput
           value={input}

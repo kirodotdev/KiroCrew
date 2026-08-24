@@ -10,12 +10,6 @@ export const IMG_EXT = /\.(png|jpe?g|gif|webp|bmp|svg)$/i
  *  only produces uploads that die at the door. */
 export const VIDEO_EXT = /\.(mp4|m4v|mov|webm)$/i
 
-/** The server's own per-video ceiling (`_MAX_VIDEO_UPLOAD_BYTES`). Mirrored here
- *  only for the surfaces that cannot report a server error and must therefore
- *  pre-check locally; a surface that CAN report one should let the server's 413
- *  speak, since it states the cap authoritatively. */
-export const VIDEO_MAX_BYTES = 512 * 1024 * 1024
-
 /** Boundary-aware regex for @token matching. Prevents `@foo.ts` from matching
  *  inside `@foo.tsx` (right boundary) and inside `foo@bar.ts` (left boundary).
  *
