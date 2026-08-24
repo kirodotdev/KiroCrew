@@ -3024,17 +3024,32 @@ class GatewayOrchestrator:
                 logger.warning("Cron '%s' delivery failed: %s", job.name, notify_exc)
             if remove and delivered and self.cron_svc:
                 try:
-                    await self.cron_svc.remove_job_async(job.id)
+                    removed = await self.cron_svc.remove_job_async(job.id)
                 except CronStoreBusy:
                     # No caller to retry this fire-and-forget removal, so hand
                     # it to the service's deferred-removal queue: the job is
                     # disabled in memory immediately (can't re-fire) and the
                     # next timer tick drains it from disk under the store lock.
+                    # No audit here — whichever path lands the removal on disk
+                    # emits cron.remove: the deferred drain, or the run-merge
+                    # consume when a delete_after_run job's merge gets there
+                    # first.
                     self.cron_svc.defer_removal(job.id)
                     logger.warning(
                         "Cron '%s': store busy, queued one-shot removal for " "the next timer tick",
                         job.name,
                     )
+                else:
+                    if removed:
+                        # SEL audit: automated one-shot (Done) removal after
+                        # delivery (issue #5408). One owner for the record
+                        # shape: the service's helper emits the same
+                        # cron.remove event as the deferred-drain and
+                        # run-merge paths, best-effort and exception-contained
+                        # (audit unavailability never fails the delivery
+                        # callback). removed=False means another path already
+                        # deleted the job — that path owns the audit record.
+                        self.cron_svc.audit_one_shot_removal(job.id, "cron_gateway")
 
         async def _alert_cron_failure(job: CronJob, detail: str, *, denied: bool = False) -> None:
             """Tell the user WHY a script/command cron run failed or was denied.

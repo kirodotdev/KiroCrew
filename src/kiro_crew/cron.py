@@ -2015,8 +2015,42 @@ class CronService:
                 break
         self._pending_removals.add(job_id)
 
-    def _drain_pending_removals_locked(self) -> None:
+    def audit_one_shot_removal(self, job_id: str, path: str) -> None:
+        """SEL-audit one automated one-shot removal. Call AFTER the store lock.
+
+        An automated removal with no human caller is exactly the delete an
+        operator cannot otherwise distinguish from data loss (issue #5408).
+        Emits the ``cron.remove`` shape PR #5405 introduces for the
+        dashboard/MCP/CLI single-delete paths (on base, the plural
+        ``cron.batch_delete`` is the only audited removal), with an
+        automated-actor identity and a ``one_shot_completed`` outcome.
+        ``source`` stays ``"cron"`` — the SEL spec treats ``source`` as a
+        constrained identity vocabulary (it skips redaction on that promise),
+        and ``"cron"`` is this module's established value — so the removal
+        path rides in ``resources`` as a ``path=`` discriminator instead.
+        Best-effort and exception-contained: the removal is already saved, so
+        audit unavailability must never break the caller. Never call while
+        holding ``_file_lock`` — the first ``sel()`` of a process constructs
+        the log and must not extend the store-lock hold.
+        """
+        try:
+            sel.sel().log_api_access(
+                caller="cron",
+                operation="cron.remove",
+                outcome="one_shot_completed",
+                source="cron",
+                resources=f"job_id={job_id} path={path}",
+            )
+        except Exception:
+            logger.warning(
+                "SEL audit for one-shot cron removal failed (job %s)", job_id, exc_info=True
+            )
+
+    def _drain_pending_removals_locked(self) -> list[str]:
         """Delete jobs queued via :meth:`defer_removal`. MUST hold the store lock.
+
+        Returns the ids actually removed (sorted, empty when nothing drained)
+        so the caller can SEL-audit them after releasing the store lock.
 
         Called from :meth:`_tick_scan_locked` (the timer tick's worker-thread
         transaction) inside its ``_file_lock`` block, so the delete+save is
@@ -2040,7 +2074,7 @@ class CronService:
         even an id deferred to the next tick from re-firing meanwhile.
         """
         if not self._pending_removals:
-            return
+            return []
         # Atomic claim-and-reset (see docstring) — do NOT split into a read
         # (``& present``) followed by ``.clear()``; an id added between those
         # two steps would be erased without ever being deleted from disk, so
@@ -2049,11 +2083,16 @@ class CronService:
         present = {j.id for j in self._jobs}
         to_remove = pending & present
         if not to_remove:
-            return
+            return []
         self._jobs = [j for j in self._jobs if j.id not in to_remove]
         self._save()
         for jid in to_remove:
             logger.info("Removed deferred one-shot cron job %s", jid)
+        # SEL audit is the CALLER's job (post-lock): this method runs inside
+        # the caller's ``_file_lock`` transaction, and the first ``sel()`` of a
+        # process constructs the log (trust-dir + HMAC key read), which must
+        # never extend the store-lock hold past the CronStoreBusy timeout.
+        return sorted(to_remove)
 
     def _remove_job_locked(self, job_id: str) -> bool:
         """Lock/reload/mutate/save core of :meth:`remove_job` (no timer work)."""
@@ -2697,12 +2736,18 @@ class CronService:
         the (re)arm back to the bound event loop thread-safely (see
         :meth:`_arm_timer`) — no caller-side drain is required.
         """
+        drained: list[str] = []
         try:
             with self._file_lock():
                 self._sync()
-                self._drain_pending_removals_locked()
+                drained = self._drain_pending_removals_locked()
         except CronStoreBusy:
             logger.debug("Cron timer tick: store busy, using in-memory snapshot")
+        # Post-lock on purpose: the emit must never extend the store-lock hold
+        # (see audit_one_shot_removal). Still on this worker thread, so the
+        # queue append cannot block the event loop either.
+        for jid in drained:
+            self.audit_one_shot_removal(jid, "cron_deferred_drain")
         return list(self._jobs)
 
     async def _on_timer(self) -> None:
@@ -3204,9 +3249,20 @@ class CronService:
             # the one-shot would destroy scheduled work that never got a chance to
             # run. Only the delete is suppressed: unlike a policy denial this needs
             # no operator action, so the job stays enabled and simply retries.
+            removed_one_shot = False
             if job.delete_after_run and not (job.fire_time_denied or job.run_never_started):
+                # Presence check keeps the audit honest: a Done-script one-shot
+                # already removed by the gateway path leaves nothing to delete
+                # here, and that path owns the audit record.
+                removed_one_shot = job.id in by_id
                 self._jobs = [j for j in self._jobs if j.id != job.id]
             self._save()
+        if removed_one_shot:
+            # The delete_after_run consume is an automated removal with no
+            # handler-level caller (issue #5408), so the emit lives with the
+            # removal. AFTER the lock: only a saved removal is recorded, and
+            # the sel call never extends the store-lock hold.
+            self.audit_one_shot_removal(job.id, "cron_run_complete")
 
     def _merge_terminal_state_locked(
         self,

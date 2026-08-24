@@ -828,14 +828,16 @@ class TestCronHelpers:
     async def test_remove_all_empty(self):
         svc = MagicMock()
         svc.list_jobs.return_value = []
-        assert await h._remove_all_jobs(svc) == "No cron jobs to remove."
+        assert await h._remove_all_jobs(svc, user_id="U1") == "No cron jobs to remove."
 
     @pytest.mark.asyncio
     async def test_remove_all_reports_each_job(self):
         svc = MagicMock()
         svc.list_jobs.return_value = [_job("j1"), _job("j2")]
-        svc.remove_jobs = AsyncMock()
-        out = await h._remove_all_jobs(svc)
+        # remove_jobs returns (removed_ids, missing_ids); _remove_all_jobs now
+        # unpacks it for the SEL batch audit.
+        svc.remove_jobs = AsyncMock(return_value=(["j1", "j2"], []))
+        out = await h._remove_all_jobs(svc, user_id="U1")
         assert "Removed 2 cron job(s)" in out and "`j1`" in out and "`j2`" in out
 
     @pytest.mark.asyncio
@@ -843,7 +845,7 @@ class TestCronHelpers:
         svc = MagicMock()
         svc.list_jobs.return_value = [_job()]
         svc.remove_jobs = AsyncMock(side_effect=CronStoreBusy())
-        assert "busy" in (await h._remove_all_jobs(svc))
+        assert "busy" in (await h._remove_all_jobs(svc, user_id="U1"))
 
     @pytest.mark.asyncio
     async def test_remove_all_via_cron_remove_all(self):
