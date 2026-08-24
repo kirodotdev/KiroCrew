@@ -219,8 +219,10 @@ of the AUTOSDE rules; the semantic half is delegated to the line reviewers.
   closed on **high or critical production** vulnerabilities. Time-boxed exceptions
   live in `.vulnerability-exceptions.json`.
 - **`pr-hygiene`** enforces a Conventional-Commits PR title (it becomes the
-  squash-merge message) and exactly one commit (`git rev-list --count == 1`). Both
-  blocking.
+  squash-merge message) and at most two commits (`git rev-list --count <= 2`).
+  One commit stays the norm; the second is there so a mechanical follow-up (a
+  regenerated artifact, a formatting sweep) can stay separable from the change
+  it accompanies. Both blocking.
 
 Separately, **`dependency-review.yml`** fails a PR that adds or changes a
 dependency whose license is off the curated allowlist in
