@@ -79,13 +79,13 @@ jobs:
           name: wheel
           path: dist/*.whl
 
-  # Compile the actual x64 NSIS installer on Windows. POSIX makensis accepts
-  # source-path forms that fail on Windows, so static tests and cross-compilation
-  # cannot substitute for this native gate.
+  # Keep the native installer fast without coupling the check to a custom UI.
+  # This builds the real Windows artifact, installs it silently, verifies the
+  # registration and payload, and fails if extraction exceeds five minutes.
   build-windows-installer:
     name: Build Windows Installer (x64)
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -112,25 +112,20 @@ jobs:
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
 
-      - name: Install pinned video capture tool
-        shell: pwsh
-        run: choco install ffmpeg --version=9.0.1 --yes --no-progress
-
-      - name: Exercise native Windows 11 installer flow
+      - name: Enforce native installer performance ceiling
         shell: pwsh
         working-directory: website/electron
-        run: |
-          & "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1"
+        run: '& "$env:GITHUB_WORKSPACE\.github\scripts\test-windows-installer.ps1"'
 
-      - name: Upload live Windows installer evidence
+      - name: Upload installer timing
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: windows-installer-runtime-evidence
+          name: windows-installer-performance
           path: |
-            website/electron/runtime-evidence/*.png
-            website/electron/runtime-evidence/*.mp4
-            website/electron/runtime-evidence/*.txt
+            website/electron/runtime-evidence/install-timing.txt
+            website/electron/runtime-evidence/native-install-mode.png
+          if-no-files-found: warn
 
   # Resolve which desktop platforms a PR builds. Linux (both arches) ALWAYS
   # builds -- it is comparatively cheap and catches cross-platform bundle

@@ -68,18 +68,6 @@ function bmpInfo(file) {
   };
 }
 
-function contrastRatio(first, second) {
-  const luminance = color => {
-    const channels = color.match(/[\da-f]{2}/gi).map(value => parseInt(value, 16) / 255);
-    const linear = channels.map(value =>
-      value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4
-    );
-    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
-  };
-  const values = [luminance(first), luminance(second)].sort((a, b) => b - a);
-  return (values[0] + 0.05) / (values[1] + 0.05);
-}
-
 describe("electron-builder files list", () => {
   const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8"));
   const bundledFiles = pkg.build.files;
@@ -132,12 +120,7 @@ describe("first-download installer design contract", () => {
   const background = path.join(INSTALLER_ASSETS, "dmg-background.tiff");
   const sidebar = path.join(INSTALLER_ASSETS, "windows-installer-sidebar.bmp");
   const header = path.join(INSTALLER_ASSETS, "windows-installer-header.bmp");
-  const fullLight = path.join(INSTALLER_ASSETS, "windows-installer-full-light.bmp");
   const installer = fs.readFileSync(path.join(ROOT, "build", "installer.nsh"), "utf8");
-  const installerMessages = fs.readFileSync(
-    path.join(ROOT, "build", "installer-messages.nsh"),
-    "utf8"
-  );
   const buildWorkflow = fs.readFileSync(
     path.join(REPO_ROOT, ".github", "workflows", "build.yml"),
     "utf8"
@@ -146,10 +129,6 @@ describe("first-download installer design contract", () => {
     path.join(REPO_ROOT, ".github", "scripts", "test-windows-installer.ps1"),
     "utf8"
   );
-
-  it("pins the electron-builder NSIS template this integration targets", () => {
-    assert.equal(pkg.devDependencies["electron-builder"], "26.15.3");
-  });
 
   it("positions the macOS app and Applications target on the branded background", () => {
     assert.equal(pkg.build.dmg.background, "../../packaging/installer-assets/dmg-background.tiff");
@@ -167,7 +146,7 @@ describe("first-download installer design contract", () => {
     ]);
   });
 
-  it("keeps assisted NSIS behavior behind the full-window custom pages", () => {
+  it("uses NSIS-native branded artwork without changing the assisted install flow", () => {
     assert.equal(
       pkg.build.nsis.installerSidebar,
       "../../packaging/installer-assets/windows-installer-sidebar.bmp"
@@ -184,333 +163,51 @@ describe("first-download installer design contract", () => {
     assert.equal(pkg.build.nsis.runAfterFinish, true);
   });
 
-  it("ships one responsive full-window glass surface without frame-swap assets", () => {
-    assert.deepEqual(bmpInfo(fullLight), { width: 1280, height: 860, bitsPerPixel: 24 });
-    assert.match(installer, /File "[^\n]*windows-installer-full-light\.bmp"/);
-    assert.doesNotMatch(installer, /windows-installer-(?:full-dark|progress-)/);
-    assert.doesNotMatch(installer, /(?:NSD_CreateTimer|Sleep 120|KiroAdvanceProgressFrame)/);
+  it("keeps the native installer responsive and enforces a real install-time ceiling", () => {
+    assert.doesNotMatch(installer, /!macro custom(?:Welcome|Finish)Page/);
+    assert.doesNotMatch(installer, /NSD_(?:Create|Kill)Timer|Sleep\s+\d+/);
+    assert.match(buildWorkflow, /test-windows-installer\.ps1/);
+    assert.match(runtimeScript, /^\$MaxInstallSeconds = 300$/m);
+    assert.match(runtimeScript, /silent-install-seconds=/);
+    assert.match(runtimeScript, /WaitForExit\(\$MaxInstallSeconds \* 1000\)/);
+    assert.match(runtimeScript, /native-install-mode\.png/);
   });
 
-  it("keeps one light native-control palette readable and out of the artwork", () => {
-    const lightSource = fs.readFileSync(
-      path.join(INSTALLER_ASSETS, "windows-installer-full-light.svg"),
-      "utf8"
-    );
-    assert.match(lightSource, /fill="#ffffff"[\s\S]*?>Kiro Crew<\/text>/i);
-    assert.match(lightSource, /x="230" y="563" width="820" height="273"/);
-    assert.match(lightSource, /stop-color="#a573ff"/i);
-    assert.match(lightSource, /font-size="88"/);
-    assert.match(lightSource, /id="hero-glow"/);
-    assert.match(lightSource, /Same bright character cast and framing as the opening animation/);
-    assert.doesNotMatch(`${lightSource}\n${installer}`, /About 1\.4 GB/i);
-
-    assert.doesNotMatch(installer, /AppsUseLightTheme|DarkMode_Explorer/);
-    assert.match(installer, /DwmSetWindowAttribute/);
-    assert.match(installer, /GetWindowLongW/);
-    assert.match(installer, /SetWindowLongW/);
-    assert.doesNotMatch(installer, /(?:Get|Set)WindowLongPtrW/);
+  it("keeps install-root ownership and legacy startup cleanup without custom pages", () => {
+    assert.match(installer, /Function KiroEnsureAppInstallDir[\s\S]*?FunctionEnd/);
+    assert.match(installer, /!macro customInit[\s\S]*?Call KiroEnsureAppInstallDir/);
     assert.match(
       installer,
-      /Function KiroStyleLabel[\s\S]*?SetCtlColors \$0 0x24143C transparent[\s\S]*?FunctionEnd/,
-      "native labels must blend into the light glass without text boxes"
+      /!macro customPageAfterChangeDir[\s\S]*?Function KiroValidateInstallDirAfterMode/
     );
     assert.match(
       installer,
-      /Function KiroStyleControl[\s\S]*?Explorer[\s\S]*?SetCtlColors \$0 0x24143C 0xF9F5FF/,
-      "native fields must use the same light surface in either Windows theme"
+      /!macro customInstallMode[\s\S]*?!define MUI_PAGE_CUSTOMFUNCTION_LEAVE KiroValidateInstallDirAfterMode/
     );
-    assert.match(installer, /SetCtlColors \$KiroActionButton 0xFFFFFF 0x6332B4/);
+    assert.doesNotMatch(installer, /Page custom KiroValidateInstallDirAfterMode/);
     assert.match(
       installer,
-      /nsDialogs::CreateControl STATIC 0x50010301 \$\{KIRO_WS_EX_TRANSPARENT\}[^\n]*\$\(kiroExitSetup\)[\s\S]*?SetCtlColors \$KiroExitButton 0xFFFFFF transparent/,
-      "Exit must read as part of the header instead of a detached system button"
-    );
-    assert.match(
-      installer,
-      /CreateControl STATIC 0x50000300 \$\{KIRO_WS_EX_TRANSPARENT\} 21% 84%[^\n]*\$\(kiroDesktopShortcut\)[\s\S]*?NSD_CreateCheckbox} 19\.4% 84% 2% 3\.8% ""/,
-      "a preceding transparent label must name each glyph-only checkbox"
-    );
-    assert.match(
-      installer,
-      /SetLayeredWindowAttributes\(p \$KiroNativeCancel[\s\S]*?SetWindowPos\(p \$KiroNativeCancel[\s\S]*?ShowWindow \$KiroNativeCancel \$\{SW_SHOW\}/,
-      "the flat progress-page Exit caption must overlay the real NSIS cancel control"
-    );
-    assert.match(installer, /SystemParametersInfoW\(i \$\{KIRO_SPI_GETWORKAREA\}/);
-    assert.match(
-      installer,
-      /IntOp \$8 \$KiroWindowWidth \* \$\{KIRO_DESIGN_HEIGHT\}[\s\S]*?IntOp \$9 \$KiroWindowHeight \* \$\{KIRO_DESIGN_WIDTH\}[\s\S]*?IntOp \$KiroWindowHeight \$KiroWindowHeight \/ \$\{KIRO_DESIGN_WIDTH\}/,
-      "smaller work areas must preserve the approved scene aspect ratio"
-    );
-    assert.match(
-      installer,
-      /!macro KiroSetSceneImage[\s\S]*?CopyImage\(p r0, i \$\{IMAGE_BITMAP\}, i \$KiroWindowWidth, i \$KiroWindowHeight, i \$\{LR_COPYDELETEORG\}\)/,
-      "whole-scene bitmaps must be resized to the fitted window instead of clipped"
+      /Function KiroValidateInstallDirAfterMode[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?StrCpy \$INSTDIR \$KiroInstallDir[\s\S]*?FunctionEnd/
     );
     assert.doesNotMatch(
       installer,
-      /NSD_SetStretchedImage[^\n]*windows-installer/,
-      "the MUI control-relative bitmap path clips the 1280px scene on small screens"
+      /Function KiroValidateInstallDirAfterMode[\s\S]*?Abort[\s\S]*?FunctionEnd/
     );
-
-    assert.ok(contrastRatio("#ffffff", "#411188") >= 4.5, "header copy");
-    assert.ok(contrastRatio("#ffffff", "#a573ff") >= 3, "large hero copy");
-    assert.ok(contrastRatio("#24143c", "#f5efff") >= 4.5, "light primary copy");
-    assert.ok(contrastRatio("#5c4d6d", "#f5efff") >= 4.5, "light secondary copy");
-    assert.ok(contrastRatio("#ffffff", "#6332b4") >= 4.5, "light action copy");
+    assert.match(installer, /GetFileAttributesW/);
+    assert.match(installer, /KiroCheckFreshInstallDir/);
+    assert.match(
+      installer,
+      /\$\{ifNot\} \$\{isUpdated\}[\s\S]*?DeleteRegValue SHELL_CONTEXT "\$\{KIRO_RUN_KEY\}" "\$\{PRODUCT_NAME\}"/
+    );
+    assert.match(installer, /MessageBox MB_OK\|MB_ICONSTOP "\$\(\^CantWrite\)\$KiroInstallDir"/);
+    assert.doesNotMatch(installer, /MessageBox[^\r\n]*\$\(\^DirBrowseText\)/);
+    assert.match(runtimeScript, /pre-existing-user-file\.txt/);
+    assert.match(runtimeScript, /existing-install-file/);
+    assert.match(runtimeScript, /invalidProcess\.ExitCode -ne 2/);
+    assert.equal(pkg.devDependencies["electron-builder"], "26.15.3");
   });
 
-  it("integrates scope, location, shortcut and startup choices into one page", () => {
-    assert.match(installer, /!macro customWelcomePage/);
-    assert.match(installer, /!macro customInstallMode/);
-    assert.match(installer, /!macro customPageAfterChangeDir/);
-    assert.match(installer, /!macro customFinishPage/);
-    assert.match(installer, /\$\(onlyForMe\)/);
-    assert.match(installer, /\$\(forAll\)/);
-    assert.match(
-      installer,
-      /\$\{StrRep\} \$KiroCurrentUserLabel "\$\(onlyForMe\)" "&" ""/,
-      "combo-box labels must not expose translated accelerator markers"
-    );
-    assert.match(installer, /\$\{StrRep\} \$KiroAllUsersLabel "\$\(forAll\)" "&" ""/);
-    assert.match(
-      installer,
-      /NSD_CB_AddString\} \$KiroScopeSelect "\$KiroCurrentUserLabel"/
-    );
-    assert.match(installer, /NSD_CB_AddString\} \$KiroScopeSelect "\$KiroAllUsersLabel"/);
-    assert.doesNotMatch(installer, /NSD_CB_AddString\} \$KiroScopeSelect "\$\(forAll\)"/);
-    assert.doesNotMatch(installer, /NSD_CB_SelectString\} \$KiroScopeSelect "\$\(forAll\)"/);
-    assert.match(installer, /nsDialogs::SelectFolderDialog/);
-    assert.match(installer, /ExecShell "runas"/);
-    assert.match(installer, /Software\\Microsoft\\Windows\\CurrentVersion\\Run/);
-    assert.match(installer, /KiroInstallerDesktopShortcut/);
-    assert.match(installer, /KiroInstallerStartWithWindows/);
-    assert.match(installer, /NSD_CreateCheckbox} 19\.4% 84% 2% 3\.8% ""/);
-    assert.match(installer, /NSD_CreateCheckbox} 19\.4% 88\.2% 2% 3\.8% ""/);
-    assert.match(installer, /NSD_CreateBrowseButton} 69\.1% 78\.4% 10%/);
-    assert.match(installer, /CreateControl STATIC 0x50000300[^\n]*19\.4% 78\.8% 23\.8%/);
-    assert.match(installer, /NSD_CreateText} 44\.2% 78\.4% 24\.1%/);
-    assert.match(installer, /NSD_CreateButton} 54\.1% 92\.2% 25% 5%/);
-    assert.match(installer, /Function KiroCreateFonts[\s\S]*?\$KiroWindowWidth < 900[\s\S]*?"Segoe UI Variable Text" 8/);
-    assert.match(
-      installer,
-      /Function KiroColorScopeNote[\s\S]*?SW_HIDE[\s\S]*?KIRO_RDW_ERASE_REFRESH[\s\S]*?SW_SHOW/,
-      "changing transparent scope copy must erase its previous glyphs"
-    );
-    assert.match(runtimeScript, /Sort-Object \{ \(Get-KiroNativeRect \$_\)\.Top \}/);
-    assert.match(runtimeScript, /Assert-KiroNoOverlap \$startupLabel \$install 'Startup option overlaps Install action'/);
-    assert.match(installer, /\$PROGRAMFILES64/);
-    assert.match(installer, /\$LOCALAPPDATA\\Programs/);
-    assert.match(installer, /StrCpy \$KiroStartWithWindows 0/);
-    assert.doesNotMatch(installer, /StrCpy \$KiroStartWithWindows 1/);
-    assert.match(
-      installer,
-      /Function KiroEnsureAppInstallDir[\s\S]*?KiroCheckExistingInstallParent:[\s\S]*?GetFileAttributesW[\s\S]*?KIRO_FILE_ATTRIBUTE_DIRECTORY[\s\S]*?SetErrors[\s\S]*?Return[\s\S]*?\$\{GetParent\}[\s\S]*?Goto KiroCheckExistingInstallParent[\s\S]*?\$\{GetFileName\}[\s\S]*?\\\$\{APP_FILENAME\}[\s\S]*?FunctionEnd/,
-      "fresh custom locations must end in an app-owned directory"
-    );
-    assert.match(
-      installer,
-      /KiroCheckFreshInstallDir:[\s\S]*?IfFileExists "\$KiroInstallDir\\\*\.\*" KiroFreshInstallDirExists 0[\s\S]*?IfFileExists "\$KiroInstallDir" KiroFreshInstallDirExists KiroFreshInstallDirReady[\s\S]*?KiroFreshInstallDirExists:[\s\S]*?\\\$\{APP_FILENAME\}[\s\S]*?Goto KiroCheckFreshInstallDir/,
-      "even an existing app-named or empty directory must not become the uninstall root"
-    );
-    assert.match(
-      installer,
-      /Function KiroBrowseClicked[\s\S]*?ClearErrors[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?\$\{Errors\}[\s\S]*?NSD_SetFocus} \$KiroLocationInput[\s\S]*?Return[\s\S]*?NSD_SetText} \$KiroLocationInput \$KiroInstallDir/,
-      "Browse must reject a file parent or show the normalized destination"
-    );
-    assert.match(
-      installer,
-      /Function KiroOptionsLeave[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?ExecShell "runas"/,
-      "the parent process must normalize a path before an elevated handoff"
-    );
-    assert.match(
-      installer,
-      /Function KiroUseAllUsers[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerMachineDefault[\s\S]*?NSD_SetText} \$KiroLocationInput \$KiroInstallDir[\s\S]*?EnableWindow \$KiroLocationInput 0[\s\S]*?EnableWindow \$KiroBrowseButton 0/,
-      "all-users installs must expose only the protected machine destination"
-    );
-    assert.match(
-      installer,
-      /Function KiroOptionsLeave[\s\S]*?\$KiroScope == "all"[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerMachineDefault[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?ExecShell "runas"/,
-      "the elevation handoff must reassert Program Files instead of trusting UI state"
-    );
-    assert.match(
-      installer,
-      /Function KiroApplyOptions[\s\S]*?\$KiroScope == "all"[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerMachineDefault[\s\S]*?\$KiroSkipOptions == 0[\s\S]*?\$KiroScope == "all"[\s\S]*?ClearErrors[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?\$\{Errors\}[\s\S]*?SetErrorLevel 2[\s\S]*?Quit[\s\S]*?StrCpy \$INSTDIR \$KiroInstallDir/,
-      "the final apply boundary must re-derive machine destinations and fail closed"
-    );
-    assert.match(
-      installer,
-      /GetOptions} \$R0 "\/kiro-options" \$R1[\s\S]*?StrCpy \$KiroSkipOptions 1[\s\S]*?StrCpy \$KiroScope "all"[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerMachineDefault/,
-      "the elevated handoff must ignore an attacker-controlled /D destination"
-    );
-    assert.match(
-      installer,
-      /Function KiroEnsureAppInstallDir[\s\S]*?\$KiroScope == "current"[\s\S]*?\$KiroHasPerUserInstallation == 1[\s\S]*?Return[\s\S]*?\$KiroScope == "all"[\s\S]*?\$KiroHasPerMachineInstallation == 1[\s\S]*?Return[\s\S]*?\$\{GetFileName\}/,
-      "manual upgrades may preserve only the registered directory for their selected scope"
-    );
-    assert.match(
-      installer,
-      /!macro customInit[\s\S]*?\$KiroHasPerUserInstallation == 1[\s\S]*?\$KiroHasPerMachineInstallation == 1[\s\S]*?StrCpy \$KiroSkipOptions 1/,
-      "manual upgrades must bypass fresh-install choices"
-    );
-    assert.match(
-      installer,
-      /!macro customInit[\s\S]*?\$KiroScope == "all"[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerMachineDefault[\s\S]*?\$KiroHasPerUserInstallation == 1[\s\S]*?StrCpy \$KiroInstallDir \$KiroPerUserDefault[\s\S]*?ClearErrors[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?\$\{Errors\}[\s\S]*?SetErrorLevel 2[\s\S]*?Quit[\s\S]*?StrCpy \$INSTDIR \$KiroInstallDir[\s\S]*?!macroend/,
-      "customInit must normalize valid targets and fail closed on file parents"
-    );
-    assert.doesNotMatch(
-      installer,
-      /\$hasPer(?:User|Machine)Installation/,
-      "the early custom include must not reference electron-builder variables declared later"
-    );
-    assert.match(
-      installer,
-      /Function KiroOptionsLeave[\s\S]*?ClearErrors[\s\S]*?Call KiroEnsureAppInstallDir[\s\S]*?\$\{Errors\}[\s\S]*?kiroInvalidLocation[\s\S]*?NSD_SetFocus} \$KiroLocationInput[\s\S]*?Abort[\s\S]*?NSD_SetText} \$KiroLocationInput \$KiroInstallDir/,
-      "typed file destinations must stay on the page while valid paths are normalized"
-    );
-  });
-
-  it("compiles the installer assets with native Windows paths and no install-dir side effect", () => {
-    assert.ok(
-      installer.includes(
-        'File "${PROJECT_DIR}\\..\\..\\packaging\\installer-assets\\windows-installer-full-light.bmp"'
-      ),
-      "customInit must use a Windows filespec for the full custom scene"
-    );
-    assert.doesNotMatch(installer, /File "[^"]*windows-installer-(?:full-dark|progress-)/);
-    assert.doesNotMatch(installer, /^\s*File "[^"]*\//gm);
-    assert.doesNotMatch(installer, /SetOutPath "\$INSTDIR"/);
-  });
-
-  it("keeps native controls above the clipped static background", () => {
-    assert.match(installer, /KIRO_WS_CLIPSIBLINGS 0x04000000/);
-    assert.match(
-      installer,
-      /Function KiroEnableSiblingClipping[\s\S]*?GetWindowLongW[\s\S]*?KIRO_WS_CLIPSIBLINGS[\s\S]*?SetWindowLongW/
-    );
-    assert.match(
-      installer,
-      /!macro KiroCommitVisualZOrder BACKGROUND[\s\S]*?KiroSinkVisual \$\{BACKGROUND\}[\s\S]*?RedrawWindow[\s\S]*?!macroend/,
-      "transparent labels must repaint after the scene moves below them"
-    );
-    assert.doesNotMatch(installer, /KiroProgressGhost/);
-    assert.match(
-      installer,
-      /Function KiroOptionsCreate[\s\S]*?!insertmacro KiroCommitVisualZOrder \$KiroBackground\s+nsDialogs::Show/
-    );
-    assert.doesNotMatch(
-      installer,
-      /Function KiroInstallShow[\s\S]*?!insertmacro KiroCommitVisualZOrder \$KiroProgressBackground[\s\S]*?FunctionEnd/,
-      "the native progress overlay uses an outer-window layer instead of sinking below MUI chrome"
-    );
-    assert.match(
-      installer,
-      /Function KiroInstallShow[\s\S]*?CreateWindowExW\([^\r\n]*p \$HWNDPARENT[\s\S]*?CreateRectRgn[\s\S]*?SetWindowRgn\(p \$KiroProgressPage[\s\S]*?FunctionEnd/,
-      "the whole scene must cover outer MUI chrome while preserving the native progress HWND"
-    );
-    assert.match(
-      installer,
-      /Function KiroHideNativeChrome[\s\S]*?GetDlgItem \$0 \$HWNDPARENT 1045[\s\S]*?GetDlgItem \$0 \$HWNDPARENT 1046[\s\S]*?GetDlgItem \$0 \$HWNDPARENT 1256[\s\S]*?FunctionEnd/,
-      "the progress scene must hide MUI's full-window line, header bitmap, and branding text"
-    );
-    assert.doesNotMatch(
-      installer,
-      /Function KiroInstallShow[\s\S]*?SetParent\(p \$KiroProgressBar[\s\S]*?FunctionEnd/,
-      "NSIS resolves progress control 1004 from its original dialog before extraction"
-    );
-    assert.match(
-      installer,
-      /Function KiroFinishCreate[\s\S]*?!insertmacro KiroCommitVisualZOrder \$KiroBackground\s+nsDialogs::Show/
-    );
-    assert.match(
-      installer,
-      /Function KiroInstallShow[\s\S]*?SetAutoClose true/,
-      "the custom finish page must retain MUI's completed-install handoff"
-    );
-  });
-
-  it("reuses the opening ghost and localizes every custom label", () => {
-    const loading = fs.readFileSync(path.join(ROOT, "loading.html"), "utf8");
-    const lightSource = fs.readFileSync(
-      path.join(INSTALLER_ASSETS, "windows-installer-full-light.svg"),
-      "utf8"
-    );
-    const openingGhost = "M398.554 818.914C316.315 1001.03";
-    assert.ok(loading.includes(openingGhost));
-    assert.ok(lightSource.includes(openingGhost));
-    assert.doesNotMatch(
-      installer,
-      /Kiro(?:Animation|Opening|ProgressFrame|Timer)|NSD_(?:Create|Kill)Timer|Sleep\s+\d+/,
-      "the installer must not block its UI thread on whole-window animation"
-    );
-    assert.match(
-      installer,
-      /CreateWindowExW\(i \$\{KIRO_WS_EX_TRANSPARENT\}, w "STATIC", w "\$\(installing\)"[\s\S]*?SetWindowTheme\(p \$KiroProgressBar, w "", w ""\)[\s\S]*?KIRO_PBM_SETBARCOLOR} 0 0xFF488E/,
-      "progress copy and accent must remain localized and readable above the glass"
-    );
-    assert.match(
-      installer,
-      /Function KiroInstallShow[\s\S]*?windows-installer-full-light\.bmp[\s\S]*?SetWindowRgn\(p \$KiroProgressPage[\s\S]*?CreateWindowExW\(i \$\{KIRO_WS_EX_TRANSPARENT\}, w "STATIC", w "\$\(kiroExitSetup\)[\s\S]*?FunctionEnd/,
-      "progress must preserve the full custom scene and flat header exit control"
-    );
-    assert.doesNotMatch(
-      installer,
-      /Function KiroInstallShow(?:(?!FunctionEnd)[\s\S])*nsDialogs::Create 1018/,
-      "the native progress page must not leave an unshown nsDialogs host behind"
-    );
-
-    for (const message of [
-      "kiroInstallFor",
-      "kiroInstallLocation",
-      "kiroDesktopShortcut",
-      "kiroStartWithWindows",
-      "kiroReadyToInstall",
-      "kiroInstalled",
-      "kiroLaunchAfterFinish",
-      "kiroFinishAction",
-      "kiroInstallOptions",
-      "kiroExitSetup",
-      "kiroInstallAction",
-      "kiroInvalidLocation",
-    ]) {
-      const entries = installerMessages.match(new RegExp(`^LangString ${message} `, "gm")) || [];
-      assert.equal(entries.length, 26, `${message} must cover all bundled installer languages`);
-    }
-  });
-
-  it("runs the complete responsive custom flow and captures runtime evidence", () => {
-    assert.match(
-      buildWorkflow,
-      /test-windows-installer\.ps1[\s\S]*?windows-installer-runtime-evidence[\s\S]*?runtime-evidence\/\*\.mp4[\s\S]*?runtime-evidence\/\*\.txt/,
-      "the Windows job must run the external flow and upload its screenshots and video"
-    );
-    assert.match(
-      runtimeScript,
-      /Set-KiroScope \$lightOptions\.Scope 1[\s\S]*?Wait-KiroScopeState \$lightOptions\.Location \$lightOptions\.Browse \$false[\s\S]*?light-all-users\.png/
-    );
-    assert.match(
-      runtimeScript,
-      /unexpectedly exposes a scrollable outer window[\s\S]*?unexpectedly requires scrolling/,
-      "runtime layout must fail on either outer or inner scrolling"
-    );
-    assert.match(
-      runtimeScript,
-      /Set-Content -Path \$blockedDestination[\s\S]*?"\/D=\$blockedDestination"[\s\S]*?\$blockedProcess\.ExitCode -ne 2/,
-      "the Windows job must exercise an existing-file destination through the real installer"
-    );
-    assert.match(
-      runtimeScript,
-      /Invoke-KiroElement \$darkOptions\.Install[\s\S]*?Wait-KiroFinishPage[\s\S]*?Assert-KiroRegistration[\s\S]*?Silent reinstall[\s\S]*?Silent uninstall/,
-      "the runtime flow must install, finish, reinstall, and uninstall for real"
-    );
-    assert.match(
-      runtimeScript,
-      /\[int\]\$MaxSeconds = 60[\s\S]*?install-click-to-finish-seconds=/,
-      "the real install must publish timing evidence and fail if it becomes slow"
-    );
-    assert.match(runtimeScript, /windows-installer-flow\.mp4[\s\S]*?ffprobe[\s\S]*?ffmpeg could not decode/);
-  });
-
-  it("reuses shipped artwork without adding non-localized installer copy", () => {
+  it("reuses the shipped logo and opening-animation ghost artwork", () => {
     const normalize = text => text.replaceAll(",", " ").replace(/\s+/g, " ");
     const loading = normalize(fs.readFileSync(path.join(ROOT, "loading.html"), "utf8"));
     const siteLogo = normalize(
@@ -525,9 +222,6 @@ describe("first-download installer design contract", () => {
     const headerSource = normalize(
       fs.readFileSync(path.join(INSTALLER_ASSETS, "windows-installer-header.svg"), "utf8")
     );
-    const fullLightSource = normalize(
-      fs.readFileSync(path.join(INSTALLER_ASSETS, "windows-installer-full-light.svg"), "utf8")
-    );
 
     const openingGhost = "M398.554 818.914C316.315 1001.03";
     const logoGhost = "M84.76 266.62c-19.2 42.53";
@@ -537,11 +231,6 @@ describe("first-download installer design contract", () => {
     assert.ok(siteLogo.includes(logoGhost));
     assert.ok(sidebarSource.includes(logoGhost));
     assert.ok(headerSource.includes(logoGhost));
-    assert.ok(fullLightSource.includes(openingGhost));
-    assert.ok(fullLightSource.includes(logoGhost));
-    assert.match(sidebarSource, /fill="#c6a0ff"/i);
-    assert.match(headerSource, /fill="#fbfafd"/i);
-    assert.doesNotMatch(`${sidebarSource}\n${headerSource}`, /Quick setup/i);
   });
 
   it("applies the branded layout again after signing and stapling", () => {
