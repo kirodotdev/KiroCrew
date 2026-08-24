@@ -124,7 +124,7 @@ def _mint(store, app_dir, slug="terrace-app", client="127.0.0.1") -> str:
     _mk_webapp(store, app_dir, slug=slug)
     webroot = wp._resolve_webroot(slug)
     assert webroot is not None
-    return wp._make_token(slug, str(webroot), client=client)
+    return wp._signer.mint(slug, str(webroot), client)
 
 
 class TestPreviewServe:
@@ -183,7 +183,7 @@ class TestPreviewServe:
         # Expired: mint with a past exp using the module's own MAC.
         exp = int(time.time()) - 10
         webroot = wp._resolve_webroot("terrace-app")
-        stale = f"{exp}.{wp._mac('terrace-app', str(webroot), exp, '127.0.0.1')}"
+        stale = f"{exp}.{wp._signer._mac(exp, ('terrace-app', str(webroot), '127.0.0.1'))}"
         with pytest.raises(web.HTTPNotFound):
             await wp.serve_artifact_app_file(
                 _req({"slug": "terrace-app", "token": stale, "path": ""}))

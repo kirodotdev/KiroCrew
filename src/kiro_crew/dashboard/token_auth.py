@@ -415,7 +415,20 @@ _state: TokenStateManager = TokenStateManager(max_concurrent_nonces=MAX_CONCURRE
 # without the exemption the middleware 403s the runtime and every <mcwidget>
 # renders unstyled (Tailwind classes silently ignored, inline styles only).
 # Same exposure class as /assets/: static non-secret files.
-_BYPASS_PREFIXES = ("/assets/", "/static/", "/fonts/", "/vendor/", "/artifact-app/")
+# /sandbox-doc/ is the model-authored-HTML document channel: auth is the HMAC
+# path token minted by the authed POST /api/sandbox-doc endpoint. It exists
+# because a blob: URL is refused outright by some WebKit-based in-app browsers,
+# so artifact and widget frames load a real document instead. See
+# dashboard/handlers/sandbox_doc.py for the full security model.
+# Same exposure class as /assets/: static non-secret files.
+_BYPASS_PREFIXES = (
+    "/assets/",
+    "/static/",
+    "/fonts/",
+    "/vendor/",
+    "/artifact-app/",
+    "/sandbox-doc/",
+)
 _BYPASS_EXACT = {
     "/logo.png",
     "/manifest.json",
@@ -579,6 +592,7 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/fonts/",
     "/app-assets/",
     "/artifact-app/",
+    "/sandbox-doc/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served

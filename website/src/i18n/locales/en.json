@@ -3446,8 +3446,10 @@
       }
     },
     "artifactBody": {
+      "could_not_render": "Couldn't render this artifact",
       "image_could_not_be_loaded": "Image couldn't be loaded",
-      "rendering": "Rendering…"
+      "rendering": "Rendering…",
+      "retry": "Retry"
     },
     "artifactFolderDeleteDialog": {
       "cancel": "Cancel",
@@ -4582,8 +4584,10 @@
       "try_create_a_plan_to_analyze_kirocrew_code_packa": "Try: “Create a plan to analyze {{productName}} code package and report file count by major components”"
     },
     "widgetFrame": {
+      "could_not_render": "Couldn't render this widget",
       "download_as_html": "Download as HTML",
       "open_in_new_tab": "Open in new tab",
+      "retry": "Retry",
       "save_failed": "save failed"
     },
     "widgetPlaceholder": {

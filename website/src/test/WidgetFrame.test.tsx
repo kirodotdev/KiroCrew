@@ -9,6 +9,14 @@ import { effectiveWidgetSlug } from '../lib/widgetSlug'
 import { i18nT } from '../i18n/t'
 import { TAILWIND_COMPLEXITY_THRESHOLD } from '../lib/widgetComplexity'
 
+// The sandboxed frame mints its document URL through the api client instead of
+// building a `blob:` URL, so the real method has to be stubbed for the frame to
+// render at all. This suite spies on the real module rather than automocking it.
+beforeEach(() => {
+  vi.spyOn(api, 'sandboxDocUrl').mockResolvedValue({ url: '/sandbox-doc/test/tok' })
+})
+
+
 // WidgetFrame consumes useTheme(), which requires a ThemeProvider, and now
 // useQuery, which requires a QueryClient. Wrap every render here to mirror the
 // production setup (main.tsx wraps App in both).
@@ -57,7 +65,7 @@ beforeEach(() => {
     constructor(parts?: BlobPart[], options?: BlobPropertyBag) {
       super(parts, options)
       if (options?.type?.includes('text/html') && parts?.length) {
-        lastBlobContent = parts.map(p => typeof p === 'string' ? p : '').join('')
+        _lastBlobContent = parts.map(p => typeof p === 'string' ? p : '').join('')
       }
     }
   } as typeof Blob
@@ -124,13 +132,32 @@ afterEach(() => {
   queryClient.clear()
 })
 
-// Capture blob content passed to createObjectURL for test inspection
-let lastBlobContent = ''
+// The Blob mock stays: the "open in new tab" and download paths still build one
+// deliberately (they are user-initiated and do not crash). Nothing reads the
+// captured content any more — the frame's html is observed at the mint call
+// instead — so the sink is named to say so.
+let _lastBlobContent = ''
 const OriginalBlob = globalThis.Blob
 
+/** The frame mounts only once its document URL resolves, so every lookup has to
+ * wait. Returns the iframe or fails the test with a readable reason. */
+async function frameIn(container: HTMLElement): Promise<HTMLIFrameElement> {
+  return await waitFor(() => {
+    const el = container.querySelector('iframe')
+    if (!el) throw new Error('the widget frame never mounted an iframe')
+    return el as HTMLIFrameElement
+  })
+}
+
 function getSrcdoc(_container: HTMLElement): string {
-  // Return the captured blob content from our mock
-  return lastBlobContent
+  // The document html is what the frame POSTs to mint its URL, so read it from
+  // the mint call's argument. It used to be captured from a mocked `Blob`
+  // constructor, which no longer sees anything: the frame stopped building a
+  // `blob:` URL because some WebKit-based in-app browsers refuse that load.
+  // The assertions below are unchanged — only where the html is observed moved.
+  const calls = vi.mocked(api.sandboxDocUrl).mock.calls
+  if (!calls.length) throw new Error('the frame never minted a document URL')
+  return String(calls[calls.length - 1][0])
 }
 
 describe('WidgetFrame theme passthrough', () => {
@@ -171,9 +198,9 @@ describe('WidgetFrame theme passthrough', () => {
     expect(srcdoc).not.toMatch(/--accent-subtle:/)
   })
 
-  it('outer iframe frame uses bg-card (not bg-white) so dark themes do not flash white', () => {
+  it('outer iframe frame uses bg-card (not bg-white) so dark themes do not flash white', async () => {
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
     expect(iframe.className).toMatch(/\bbg-card\b/)
     expect(iframe.className).not.toMatch(/\bbg-white\b/)
   })
@@ -383,7 +410,7 @@ describe('WidgetFrame interactive event bridge', () => {
 
   it('dispatches mc-widget-send CustomEvent when receiving mc-widget-action postMessage', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
 
     const events: CustomEvent[] = []
     const listener = (e: Event) => events.push(e as CustomEvent)
@@ -404,7 +431,7 @@ describe('WidgetFrame interactive event bridge', () => {
 
   it('formats action-only messages without payload when payload is empty', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
 
     const events: CustomEvent[] = []
     const listener = (e: Event) => events.push(e as CustomEvent)
@@ -426,7 +453,7 @@ describe('WidgetFrame interactive event bridge', () => {
  // shape validation / allowlist hardening of widget actions.
   it('ignores a widget action with a non-string action (no event dispatched)', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
 
     const events: CustomEvent[] = []
     const listener = (e: Event) => events.push(e as CustomEvent)
@@ -447,7 +474,7 @@ describe('WidgetFrame interactive event bridge', () => {
 
   it('ignores a non-object/array payload and emits the action only', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
 
     const events: CustomEvent[] = []
     const listener = (e: Event) => events.push(e as CustomEvent)
@@ -466,7 +493,7 @@ describe('WidgetFrame interactive event bridge', () => {
 
   it('caps an oversized widget action payload', async () => {
     const { container } = wrap(<WidgetFrame html="<p>test</p>" title="T" />)
-    const iframe = container.querySelector('iframe')!
+    const iframe = await frameIn(container)
 
     const events: CustomEvent[] = []
     const listener = (e: Event) => events.push(e as CustomEvent)
@@ -949,10 +976,10 @@ describe('WidgetFrame exists-vs-pinned states', () => {
 describe('WidgetFrame expanded layout (structural contract)', () => {
   const expandLabel = () => i18nT('components.widgetFrame.expand')
 
-  it('expanded: root is a flex column and the body wrapper/iframe form an unbroken height chain', () => {
+  it('expanded: root is a flex column and the body wrapper/iframe form an unbroken height chain', async () => {
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
     const root = container.firstElementChild as HTMLElement
-    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    const iframe = await frameIn(container)
 
     // Collapsed baseline: measured pixel height, plain wrapper, no modal classes.
     expect(iframe.style.height).not.toBe('100%')
@@ -981,7 +1008,7 @@ describe('WidgetFrame expanded layout (structural contract)', () => {
     expect(iframe.style.height).toBe('100%')
   })
 
-  it('expanded: the loading overlay of a heavy widget spans the full body wrapper', () => {
+  it('expanded: the loading overlay of a heavy widget spans the full body wrapper', async () => {
     // Enough unique Tailwind utility classes to cross the complexity
     // threshold, so the parent-side progress overlay actually renders and
     // its expanded-mode height style is exercised.
@@ -990,7 +1017,7 @@ describe('WidgetFrame expanded layout (structural contract)', () => {
       (_, i) => `p-${i}`,
     ).join(' ')
     const { container } = wrap(<WidgetFrame html={`<div class="${classes}">x</div>`} title="T" />)
-    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    const iframe = await frameIn(container)
     // The overlay stays mounted until the iframe's load event, which the
     // mocked blob: URL never fires in this environment.
     const overlay = iframe.parentElement!.querySelector(
@@ -1007,10 +1034,10 @@ describe('WidgetFrame expanded layout (structural contract)', () => {
     expect(overlay.style.height).toBe('100%')
   })
 
-  it('restores the collapsed layout on minimize', () => {
+  it('restores the collapsed layout on minimize', async () => {
     const { container } = wrap(<WidgetFrame html="<p>hi</p>" title="T" />)
     const root = container.firstElementChild as HTMLElement
-    const iframe = container.querySelector('iframe') as HTMLIFrameElement
+    const iframe = await frameIn(container)
     const collapsedHeight = iframe.style.height
 
     const expandBtn = container.querySelector(

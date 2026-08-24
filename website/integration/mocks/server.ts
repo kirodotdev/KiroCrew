@@ -141,6 +141,17 @@ export const mockMemoryGraph = {
 
 // Request handlers
 export const handlers = [
+  // Minting a sandbox document URL. Every surface that renders model-authored
+  // HTML in an iframe now asks the gateway for a document URL instead of
+  // building a `blob:` one, so ANY suite that mounts one of those frames against
+  // the real api client reaches this. Answered here rather than per-suite: the
+  // catch-all fallback returns an empty 200, which resolves to no `url`, and the
+  // frame then never mounts — a failure that surfaces as an unrelated-looking
+  // `expected null not to be null` in whichever shard happens to run it.
+  http.post('/api/sandbox-doc', () => {
+    return HttpResponse.json({ url: '/sandbox-doc/msw-test-doc/msw-test-token' })
+  }),
+
   // Memory endpoints
   http.get('/api/memory/settings', () => {
     return HttpResponse.json(mockMemorySettings)

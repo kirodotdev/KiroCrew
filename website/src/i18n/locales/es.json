@@ -4761,8 +4761,10 @@
     },
     "artifactBody": {
       "artifact": "Artefacto: {{slug}}",
+      "could_not_render": "No se pudo representar este artefacto",
       "image_could_not_be_loaded": "No se pudo cargar la imagen",
-      "rendering": "Renderizando…"
+      "rendering": "Renderizando…",
+      "retry": "Reintentar"
     },
     "artifactChatPanel": {
       "agent_chat": "Chat del agente",
@@ -6794,12 +6796,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "No se puede destacar: el widget no tiene slug ni contexto de mensaje",
+      "could_not_render": "No se pudo representar este widget",
       "download_as_html": "Descargar como HTML",
       "expand": "Expandir",
       "minimize": "Minimizar",
       "open_in_new_tab": "Abrir en una pestaña nueva",
       "remove_artifact_from_library": "Quitar el artefacto {{name}} de la biblioteca",
       "rendering": "Renderizando…",
+      "retry": "Reintentar",
       "save_failed": "error al guardar",
       "star_as_artifact": "Destacar como artefacto",
       "starred_as_click_to_remove": "Destacado como \"{{name}}\" — haz clic para quitarlo"

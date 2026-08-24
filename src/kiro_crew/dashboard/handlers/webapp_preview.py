@@ -44,13 +44,10 @@ Security model (all LLM-influenceable inputs re-validated at serve time):
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import logging
 import mimetypes
 import os
 import re
-import secrets as _secrets
 import sys
 import time
 from pathlib import Path
@@ -65,6 +62,8 @@ from kiro_crew.deploy.handlers import _allowed_local_roots
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+
+from .path_token import PathTokenSigner
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +87,9 @@ _MAX_FILE_BYTES = 32 * 1024 * 1024  # single-file cap; previews are static build
 # Per-process token secret. Tokens are minted per page-load by the SPA, so
 # gateway restarts invalidating outstanding tokens is fine (the card simply
 # re-mints on its next query).
-_TOKEN_SECRET = _secrets.token_bytes(32)
+# Its own signer, hence its own independent secret. See path_token for why a
+# shared key across channels would be the wrong shape.
+_signer = PathTokenSigner("webapp-preview", _TOKEN_TTL_SECS)
 
 # safe_read_file_bytes_nolink's fd-realpath containment check is
 # implemented for Linux (/proc/self/fd) and macOS (F_GETPATH) only; elsewhere
@@ -96,39 +97,6 @@ _TOKEN_SECRET = _secrets.token_bytes(32)
 # claiming the preview is available — suppressing the working remote
 # fallback. Gate the whole channel on platform support instead.
 _PLATFORM_SUPPORTED = sys.platform.startswith(("linux", "darwin"))
-
-
-def _mac(slug: str, webroot: str, exp: int, client: str) -> str:
-    # The bearer token rides in the iframe's own location, so
-    # previewed (LLM-authored) script can read it and self-navigate it to an
-    # attacker. Binding the MAC to the requesting client address makes an
-    # exfiltrated token useless from anywhere but the minting browser's
-    # connection path.
-    msg = f"{slug}\x00{webroot}\x00{exp}\x00{client}".encode()
-    return hmac.new(_TOKEN_SECRET, msg, hashlib.sha256).hexdigest()[:43]
-
-
-def _make_token(slug: str, webroot: str, client: str = "") -> str:
-    exp = int(time.time()) + _TOKEN_TTL_SECS
-    return f"{exp}.{_mac(slug, webroot, exp, client)}"
-
-
-def _check_token(slug: str, webroot: str, token: str, client: str = "") -> bool:
-    # Bound the token before parsing — a multi-thousand-digit
-    # expiry passes isdigit() but blows past the int conversion digit limit
-    # (ValueError → 500). Real tokens are ~55 chars.
-    if len(token) > 128:
-        return False
-    exp_s, _, mac = token.partition(".")
-    if not exp_s.isdigit() or not mac:
-        return False
-    try:
-        exp = int(exp_s)
-    except ValueError:
-        return False
-    if exp < time.time():
-        return False
-    return hmac.compare_digest(_mac(slug, webroot, exp, client), mac)
 
 
 def _resolve_webroot(slug: str) -> Path | None:
@@ -283,7 +251,7 @@ async def api_artifact_app_preview(request: web.Request) -> web.Response:
             "remote_framable": await _remote_framable(public_url),
         })
     _audit("webapp_preview.mint", "allowed", slug)
-    token = _make_token(slug, str(webroot), client=request.remote or "")
+    token = _signer.mint(slug, str(webroot), request.remote or "")
     return web.json_response({
         "available": True,
         "base": f"{APP_PREVIEW_PREFIX}{slug}/{token}/",
@@ -362,7 +330,7 @@ def _resolve_and_read(
     Returns (None, None) for every rejection (single 404 shape, no oracle).
     """
     webroot = _resolve_webroot(slug)
-    if webroot is None or not _check_token(slug, str(webroot), token, client):
+    if webroot is None or not _signer.verify(token, slug, str(webroot), client):
         return None, None
     if not rel or rel.endswith("/"):
         rel = rel + "index.html"

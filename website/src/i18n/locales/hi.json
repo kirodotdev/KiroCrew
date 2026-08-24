@@ -4690,8 +4690,10 @@
     },
     "artifactBody": {
       "artifact": "आर्टिफ़ैक्ट: {{slug}}",
+      "could_not_render": "यह आर्टिफ़ैक्ट रेंडर नहीं हो सका",
       "image_could_not_be_loaded": "छवि लोड नहीं हो सकी",
-      "rendering": "रेंडर हो रहा है…"
+      "rendering": "रेंडर हो रहा है…",
+      "retry": "पुन: प्रयास करें"
     },
     "artifactChatPanel": {
       "agent_chat": "एजेंट चैट",
@@ -6704,12 +6706,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "स्टार नहीं किया जा सकता: विजेट में कोई slug या संदेश संदर्भ नहीं है",
+      "could_not_render": "यह विजेट रेंडर नहीं हो सका",
       "download_as_html": "HTML के रूप में डाउनलोड करें",
       "expand": "फैलाएँ",
       "minimize": "समेटें",
       "open_in_new_tab": "नए टैब में खोलें",
       "remove_artifact_from_library": "आर्टिफ़ैक्ट {{name}} को लाइब्रेरी से हटाएँ",
       "rendering": "रेंडर हो रहा है…",
+      "retry": "पुन: प्रयास करें",
       "save_failed": "सहेजना विफल",
       "star_as_artifact": "आर्टिफ़ैक्ट के रूप में स्टार करें",
       "starred_as_click_to_remove": "\"{{name}}\" के रूप में स्टार किया गया — हटाने के लिए क्लिक करें"

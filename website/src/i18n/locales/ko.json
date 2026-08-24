@@ -4603,8 +4603,10 @@
     },
     "artifactBody": {
       "artifact": "아티팩트: {{slug}}",
+      "could_not_render": "이 아티팩트를 렌더링할 수 없습니다",
       "image_could_not_be_loaded": "이미지를 불러올 수 없습니다",
-      "rendering": "렌더링 중…"
+      "rendering": "렌더링 중…",
+      "retry": "다시 시도"
     },
     "kiroAccountModal": {
       "account_details_unavailable": "계정 세부 정보를 불러올 수 없음",
@@ -6614,12 +6616,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "즐겨찾기할 수 없습니다: 위젯에 slug 또는 메시지 컨텍스트가 없습니다",
+      "could_not_render": "이 위젯을 렌더링할 수 없습니다",
       "download_as_html": "HTML로 다운로드",
       "expand": "확대",
       "minimize": "최소화",
       "open_in_new_tab": "새 탭에서 열기",
       "remove_artifact_from_library": "라이브러리에서 아티팩트 {{name}} 제거",
       "rendering": "렌더링 중…",
+      "retry": "다시 시도",
       "save_failed": "저장 실패",
       "star_as_artifact": "아티팩트로 즐겨찾기",
       "starred_as_click_to_remove": "‘{{name}}’(으)로 즐겨찾기됨 — 클릭하면 해제됩니다"

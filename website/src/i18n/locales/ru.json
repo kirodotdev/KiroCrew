@@ -4832,8 +4832,10 @@
     },
     "artifactBody": {
       "artifact": "Артефакт: {{slug}}",
+      "could_not_render": "Не удалось отобразить этот артефакт",
       "image_could_not_be_loaded": "Не удалось загрузить изображение",
-      "rendering": "Отрисовка…"
+      "rendering": "Отрисовка…",
+      "retry": "Повторить"
     },
     "artifactChatPanel": {
       "agent_chat": "Чат с агентом",
@@ -6884,12 +6886,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Нельзя добавить в избранное: у виджета нет slug или контекста сообщения",
+      "could_not_render": "Не удалось отобразить этот виджет",
       "download_as_html": "Скачать как HTML",
       "expand": "Развернуть",
       "minimize": "Свернуть",
       "open_in_new_tab": "Открыть в новой вкладке",
       "remove_artifact_from_library": "Удалить артефакт {{name}} из библиотеки",
       "rendering": "Отрисовка…",
+      "retry": "Повторить",
       "save_failed": "не удалось сохранить",
       "star_as_artifact": "В избранное как артефакт",
       "starred_as_click_to_remove": "В избранном как «{{name}}» — нажми, чтобы убрать"

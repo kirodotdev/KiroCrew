@@ -4761,8 +4761,10 @@
     },
     "artifactBody": {
       "artifact": "Artefatto: {{slug}}",
+      "could_not_render": "Non è stato possibile visualizzare questo artefatto",
       "image_could_not_be_loaded": "Impossibile caricare l'immagine",
-      "rendering": "Visualizzazione in corso…"
+      "rendering": "Visualizzazione in corso…",
+      "retry": "Riprova"
     },
     "artifactChatPanel": {
       "agent_chat": "Chat con l’agente",
@@ -6794,12 +6796,14 @@
     },
     "widgetFrame": {
       "cannot_star_widget_has_no_slug_or_message_contex": "Impossibile aggiungere ai preferiti: il widget non ha slug nè contesto del messaggio",
+      "could_not_render": "Non è stato possibile visualizzare questo widget",
       "download_as_html": "Scarica come HTML",
       "expand": "Espandi",
       "minimize": "Riduci",
       "open_in_new_tab": "Apri in una nuova scheda",
       "remove_artifact_from_library": "Rimuovi l’artefatto {{name}} dalla libreria",
       "rendering": "Rendering in corso…",
+      "retry": "Riprova",
       "save_failed": "salvataggio non riuscito",
       "star_as_artifact": "Aggiungi ai preferiti come artefatto",
       "starred_as_click_to_remove": "Aggiunto ai preferiti come \"{{name}}\" — clicca per rimuoverlo"

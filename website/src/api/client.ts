@@ -2916,6 +2916,17 @@ export const api = {
   updateArtifactSharing: (slug: string, body: { visibility: 'PRIVATE' | 'SHARED' | 'PUBLIC'; shared_with?: string[] }) =>
     patch(`/api/artifacts/${encodeURIComponent(slug)}/sharing`, body).then(j),
   unpublishArtifact: (slug: string) => del(`/api/artifacts/${encodeURIComponent(slug)}/publish`).then(j),
+  /** Stash model-authored HTML and get back a URL a sandboxed iframe can load.
+   *
+   *  Artifact and widget frames cannot use a `blob:` URL: some WebKit-based
+   *  in-app browsers refuse the load outright and can take the page down with
+   *  it, and a sandboxed `srcdoc` frame blank-renders on WebKit. The returned
+   *  URL carries a short-lived client-bound token and the response pins
+   *  `Content-Security-Policy: sandbox`, so the document keeps an opaque origin
+   *  even opened top-level. See dashboard/handlers/sandbox_doc.py.
+   */
+  sandboxDocUrl: (html: string) =>
+    post('/api/sandbox-doc', { html }).then(j) as Promise<{ url: string }>,
   refreshArtifactSharing: (slug: string) => post(`/api/artifacts/${encodeURIComponent(slug)}/publish/refresh`, {}).then(j),
   pullLatest: (slug: string) =>
     post(`/api/artifacts/${encodeURIComponent(slug)}/pull-latest`, {}).then(j),
