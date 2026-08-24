@@ -8,6 +8,8 @@ Tests correctness properties from the design document:
 """
 from __future__ import annotations
 
+import re
+
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
@@ -22,6 +24,8 @@ from kiro_crew.apps.manager import (
     register_builtin_apps,
     uninstall_app,
 )
+from kiro_crew.apps.manifest import app_name_error
+from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -134,8 +138,17 @@ def _no_disk_discovery(monkeypatch):
 # Strategies
 # ---------------------------------------------------------------------------
 
-# Generate valid kebab-case app names
-app_name_st = st.from_regex(r"[a-z][a-z0-9]{1,8}(-[a-z][a-z0-9]{1,5}){0,2}", fullmatch=True)
+# Generate app names the admission contract actually accepts. The kebab-case
+# grammar alone still reaches Windows reserved device stems (``aux``, ``con``,
+# ``nul``, ``com1``…), which ``app_name_error`` refuses on every platform, so
+# ``register_builtin_apps`` would skip the definition and ``_read_installed``
+# would return None — a domain error in the strategy, not a bug in the store.
+# The exclusion is delegated to ``app_name_error`` rather than restated, so the
+# sampling domain cannot drift away from what production admits.
+_APP_NAME_GRAMMAR = r"[a-z][a-z0-9]{1,8}(-[a-z][a-z0-9]{1,5}){0,2}"
+app_name_st = st.from_regex(_APP_NAME_GRAMMAR, fullmatch=True).filter(
+    lambda name: app_name_error(name) is None
+)
 
 # Generate valid builtin app definitions
 valid_builtin_def_st = st.fixed_dictionaries({
@@ -148,6 +161,23 @@ valid_builtin_def_st = st.fixed_dictionaries({
     "defaultEnabled": st.booleans(),
     "tags": st.lists(st.text(min_size=1, max_size=10), max_size=3),
 })
+
+
+def test_strategy_cannot_sample_an_inadmissible_app_name() -> None:
+    """Deterministic guard for the sampling domain.
+
+    ``aux`` is kebab-case and inside the grammar's length range, so the regex
+    alone still reaches it — and registration refuses it on every platform, so
+    a strategy that samples it asserts on an impossible state (Hypothesis lands
+    on it intermittently, surfacing as a Windows-shard flake). Production must
+    keep refusing the name first; the strategy filter then keeps it out of the
+    domain by delegating to the same contract.
+    """
+    assert re.fullmatch(
+        _APP_NAME_GRAMMAR, "aux"
+    ), "grammar no longer reaches the name under test"
+    assert app_name_error("aux") is not None, "production must refuse it first"
+    assert app_name_error("aux-tools") is None, "ordinary names stay in the domain"
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +479,76 @@ class TestValidateBuiltinApp:
         }
         errors = _validate_builtin_app(app)
         assert any("unsafe" in e for e in errors)
+
+    @pytest.mark.parametrize("name", sorted(WINDOWS_DEVICE_STEMS))
+    def test_windows_device_stem_rejected_on_all_platforms(self, name):
+        """Builtins are registered from a dict, never through ``AppManifest``,
+        so the reserved-stem refusal has to hold at this door too — otherwise a
+        name the manifest path refuses would be admitted here and the store's
+        write would silently produce no meta on Windows."""
+        app = {
+            "name": name,
+            "version": "1.0.0",
+            "displayName": "Device",
+            "description": "Reserved stem",
+            "author": "x",
+        }
+        errors = _validate_builtin_app(app)
+        assert any("not portable" in e for e in errors), (name, errors)
+
+    @pytest.mark.parametrize("name", ["AUX", "Con", "aux.txt", "nul."])
+    def test_device_stem_variants_refused_by_the_grammar(self, name):
+        """Windows reserves the stem case-insensitively and with any extension
+        (``AUX``, ``aux.txt``, ``nul.``). These variants never reach the stem
+        comparison because the kebab-case grammar refuses uppercase and dots
+        first — so the assertion pins the rule that actually fires, not the
+        stem check the names merely resemble."""
+        app = {
+            "name": name,
+            "version": "1.0.0",
+            "displayName": "Device",
+            "description": "Reserved stem variant",
+            "author": "x",
+        }
+        errors = _validate_builtin_app(app)
+        assert any("kebab-case" in e for e in errors), (name, errors)
+
+    def test_reserved_name_produces_no_meta_and_no_crash(
+        self, app_home, monkeypatch, caplog
+    ):
+        """End-to-end at the registration boundary: a reserved name is skipped
+        loudly (validation error + warning log) before any write, so no partial
+        state lands on disk and other apps are unaffected."""
+        import logging
+
+        import kiro_crew.apps.manager as mgr
+
+        monkeypatch.setattr(mgr, "_BUILTIN_APPS", [
+            {
+                "name": "aux",
+                "version": "1.0.0",
+                "displayName": "Aux",
+                "description": "Reserved",
+                "author": "x",
+            },
+            {
+                "name": "good-app",
+                "version": "1.0.0",
+                "displayName": "Good App",
+                "description": "A valid sibling",
+                "author": "x",
+            },
+        ])
+        monkeypatch.setattr(mgr, "_orphaned_builtins_cache", None)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.apps.manager"):
+            count = register_builtin_apps()
+
+        assert "aux" in caplog.text, "the skip must be operator-visible"
+        assert count == 1, "the valid sibling still registers"
+        assert _read_installed("good-app") is not None
+        assert _read_installed("aux") is None
+        assert not app_dir("aux").exists()
 
     def test_existing_builtins_all_valid(self):
         """The shipped builtin apps must all pass validation."""
