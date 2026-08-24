@@ -54,7 +54,7 @@ class TestScrubListSync:
         loader would happily re-inject (the exact defect behind KIRO_API_KEY
         leaking into /proc/<pid>/environ), or a loader key the entrypoint never
         scrubs, both fail here."""
-        text = _ENTRYPOINT.read_text()
+        text = _ENTRYPOINT.read_text(encoding="utf-8")
         match = re.search(r'^CRED_KEYS="([^"]+)"', text, re.MULTILINE)
         assert match, "CRED_KEYS assignment not found in docker/entrypoint.sh"
         entrypoint_keys = set(match.group(1).split())
@@ -63,7 +63,7 @@ class TestScrubListSync:
     def test_kiro_api_key_is_in_both_lists(self) -> None:
         """The regression this file exists for, pinned by name."""
         assert CRED_KIRO_API_KEY in _CREDENTIAL_KEYS
-        assert CRED_KIRO_API_KEY in _ENTRYPOINT.read_text()
+        assert CRED_KIRO_API_KEY in _ENTRYPOINT.read_text(encoding="utf-8")
 
 
 class TestReadEnvFileCredential:
@@ -242,7 +242,7 @@ class TestJiraTokenScrubGuard:
 
     def test_entrypoint_scrubs_dynamic_jira_tokens(self) -> None:
         """docker/entrypoint.sh feeds JIRA_TOKEN_* into the credential scrub loop."""
-        text = _ENTRYPOINT.read_text()
+        text = _ENTRYPOINT.read_text(encoding="utf-8")
         # The dynamic key capture must exist, restrict to hex suffix, and feed into loop
         assert "JIRA_TOKEN_[0-9A-Fa-f]" in text
         assert "JIRA_DYNAMIC" in text

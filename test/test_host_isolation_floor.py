@@ -839,8 +839,8 @@ class TestTheWorkerBudgetIsMemoryBounded:
         invoked: a test that inspected only the live plugin manager would pass from
         ``test/`` even after a regression put the hook back in the wrong file.
         """
-        root_conftest = (_REPO_ROOT / "conftest.py").read_text()
-        suite_conftest = (_REPO_ROOT / "test" / "conftest.py").read_text()
+        root_conftest = (_REPO_ROOT / "conftest.py").read_text(encoding="utf-8")
+        suite_conftest = (_REPO_ROOT / "test" / "conftest.py").read_text(encoding="utf-8")
         hook = "def pytest_xdist_auto_num_workers"
 
         assert hook in root_conftest, (
