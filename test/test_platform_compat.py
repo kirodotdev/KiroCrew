@@ -2250,6 +2250,31 @@ class TestFindPythonInterpreterReal:
         monkeypatch.setattr(pc.subprocess, "check_output", boom)
         assert pc.find_python_interpreter() is None
 
+    def test_version_gate_ignores_a_sitecustomize_decoy_on_pythonpath(
+        self, tmp_path, monkeypatch
+    ):
+        # The selection-side twin of test_origin_probe_ignores_pythonpath: at
+        # child startup the ``site`` module imports any ``sitecustomize.py``
+        # found on the caller's PYTHONPATH, and that module can monkeypatch
+        # ``sys.version_info`` — here forcing this real >= 3.10 interpreter to
+        # report 3.4, which would make the version gate reject it and steer
+        # selection. The gate runs the probe isolated (-I), so the decoy is
+        # never imported and the candidate is judged by its REAL version.
+        # This spawns a real child; the probe is a read-only version query
+        # that creates nothing, so no cwd pin is needed.
+        decoy = tmp_path / "decoy-pythonpath"
+        decoy.mkdir()
+        (decoy / "sitecustomize.py").write_text(
+            "import sys\nsys.version_info = (3, 4, 0, 'final', 0)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("PYTHONPATH", str(decoy))
+        # Every candidate name resolves to this suite's own interpreter — a
+        # real, runnable >= 3.10 CPython on every platform CI runs.
+        monkeypatch.setattr("shutil.which", lambda name: sys.executable)
+
+        assert pc.find_python_interpreter() == sys.executable
+
 
 class TestFindListeningPidsErrors:
     def test_returns_empty_when_lsof_missing(self, monkeypatch):

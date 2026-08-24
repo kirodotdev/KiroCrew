@@ -3751,11 +3751,17 @@ def find_python_interpreter(reject: Optional[Callable[[str], bool]] = None) -> s
         if _is_windows_store_python_stub(p):
             continue
         try:
+            # -I isolates the probe from the caller's environment: without it,
+            # ``site`` imports any ``sitecustomize.py`` found on the caller's
+            # PYTHONPATH at child startup, and that module can monkeypatch
+            # ``sys.version_info`` to steer WHICH interpreter this loop selects.
+            # Because -I implies -E (PYTHON* env vars ignored), the UTF-8 pin
+            # must ride the argv as ``-X utf8``, matching
+            # ``dep_sync._probe_interpreter``.
             out = subprocess.check_output(
-                [p, "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
+                [p, "-I", "-X", "utf8", "-c", "import sys; print('%d.%d' % sys.version_info[:2])"],
                 timeout=5,
                 stderr=subprocess.DEVNULL,
-                env={**os.environ, "PYTHONIOENCODING": "utf-8"},
                 **UTF8_TEXT,
             ).strip()
             major, _, minor = out.partition(".")
