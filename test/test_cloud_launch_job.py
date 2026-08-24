@@ -406,6 +406,35 @@ class TestRealEngineGatewayPort:
         assert "dashboard_port" not in seen
         assert "remote_port" not in seen["reg"]
 
+    def test_the_template_default_and_the_registry_default_name_the_same_port(self):
+        """The invariant behind the no-override contract above.
+
+        Both ends resolve independently -- the stack binds the template's
+        ``DashboardPort`` Default, the registry records ``register_instance``'s
+        signature default -- so nothing at runtime checks they agree. A drift in
+        either literal ships crews whose tunnel forwards to a port nothing is
+        listening on, with every other test green. This is the one place the two
+        numbers are compared.
+        """
+        import re
+
+        from kiro_crew.cloud import ec2
+        from kiro_crew.cloud.connect import DEFAULT_REMOTE_DASHBOARD_PORT
+
+        text = ec2.load_template()
+        # The template carries CloudFormation short-form tags (!Sub), which a
+        # plain YAML load rejects, so read the parameter block textually. The
+        # match is anchored to the DashboardPort block's own indentation and
+        # guarded below so a template reshape fails loudly instead of matching
+        # some other parameter's Default.
+        m = re.search(
+            r"^  DashboardPort:\n(?:    \S.*\n)*?    Default: (\d+)\n",
+            text,
+            re.MULTILINE,
+        )
+        assert m, "DashboardPort parameter with a Default not found in the template"
+        assert int(m.group(1)) == DEFAULT_REMOTE_DASHBOARD_PORT
+
 
 class TestRealEnginePreflight:
     """The credentials gate that runs immediately before `provision`.

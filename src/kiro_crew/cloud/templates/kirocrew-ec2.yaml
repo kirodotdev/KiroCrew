@@ -99,11 +99,12 @@ Parameters:
     MinValue: 1024
     MaxValue: 65535
     Description: >-
-      Port the crew's gateway listens on. The local tunnel MIRRORS this port
-      (the remote gateway only trusts CSRF/WebSocket Origins on its own
-      configured port), so every simultaneously-connected crew needs a distinct
-      value and it must not collide with the operator's own gateway port. The
-      launcher allocates one; 5476 is the default only for a direct deploy.
+      Port the crew's gateway listens on. The launcher registers the instance
+      with the registry's own stock remote-port default, so this Default must
+      equal DEFAULT_REMOTE_DASHBOARD_PORT in cloud/connect.py -- a test pins
+      the two together. Crews may share this value: the hub allocates its LOCAL
+      forward port independently, so simultaneously-connected crews do not
+      collide. Override only for a direct (non-launcher) deploy.
   AllowSshCidr:
     Type: String
     Default: ""
@@ -386,9 +387,9 @@ Resources:
       #   (the default clone-of-main path). install.sh stages website/dist ->
       #   src/kiro_crew/static/dist.
       # "systemd unit": a system-level unit so the gateway survives reboots
-      #   and runs as ec2-user. The local tunnel MIRRORS DashboardPort, so the
-      #   crew must listen on the launcher-allocated port, not the built-in
-      #   default -- hence the KIROCREW_PORT Environment line.
+      #   and runs as ec2-user. The registry records DashboardPort as the
+      #   instance's remote_port, so the gateway must listen on exactly this
+      #   parameter -- hence the KIROCREW_PORT Environment line.
       # Editing hazard: the whole UserData is ONE CloudFormation !Sub, so any
       #   dollar-brace token in the script -- even inside a bash comment -- is
       #   parsed as a Sub variable and breaks change-set creation. Use plain
@@ -583,7 +584,7 @@ Resources:
           WorkingDirectory=$RUN_HOME
           Environment=HOME=$RUN_HOME
           Environment=PATH=$RUN_HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
-          # The local tunnel mirrors this launcher-allocated port.
+          # The registry records this port as the instance's remote_port.
           Environment=KIROCREW_PORT=${DashboardPort}
 
           [Install]
