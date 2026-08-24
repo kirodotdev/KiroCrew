@@ -209,7 +209,16 @@ async def api_channel_close(request: web.Request) -> web.Response:
 
 async def api_channel_post(request: web.Request) -> web.Response:
     ch, body = await _get_channel_body(request)
-    content = body.get("content", "").strip()[:10000]
+    raw_content = body.get("content", "")
+    if not isinstance(raw_content, str):
+        return web.json_response(
+            {
+                "error": "content must be a string",
+                "code": "channel_message_content_type_invalid",
+            },
+            status=400,
+        )
+    content = raw_content.strip()[:10000]
     if not content:
         return web.json_response({"error": "content required"}, status=400)
     # Validate mentions
