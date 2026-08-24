@@ -37,14 +37,15 @@ Current status:
   lane verifies the signature before the bytes become immutable.
 - **Full-window assisted installer, per user by default** — the themed setup
   surface combines install scope, destination, desktop-shortcut and Windows
-  startup choices on one frosted-glass page. It follows the Windows light/dark
-  app theme, fits the full composition proportionally inside the available work
-  area, keeps every functional label and control native (including all 26 bundled
-  installer languages), and replays all eight Kiro characters with the opening
-  animation's staggered entrance. The custom pages continue a calm bob, while
-  the native extraction page plays the entrance once before its
-  progress bar advances. Turning off animation effects in Windows keeps the
-  characters still on every page.
+  startup choices on one light frosted-glass page. It fits the full composition
+  proportionally inside the available work area without a scrollable inner
+  container and keeps every functional label and control native (including all
+  26 bundled installer languages). The same light control palette is used under
+  both Windows app themes so checkbox and text backgrounds remain integrated
+  with the dock. All eight Kiro characters remain in the static scene; avoiding
+  full-window bitmap animation keeps the NSIS UI thread responsive throughout
+  extraction.
+
   New installs default to the current user and a desktop shortcut. Starting
   Kiro Crew with Windows is an explicit opt-in; both checkboxes can be changed
   before installing. A current-user install needs no UAC prompt. Choosing "all
@@ -68,9 +69,9 @@ Current status:
 - **Guided Kiro Crew artwork** — the upper brand field uses the shipped app mark
   and leaves only “Kiro Crew” in the center. The lower glass plane is
   deliberately text-free artwork, so native fonts and longer translations sit
-  above it without being obscured. Both themes use WCAG-AA control colors; the
-  raster glass is also the visual fallback where Windows 11's system backdrop
-  is unavailable.
+  above it without being obscured. Its light palette uses WCAG-AA control colors
+  in both Windows themes; the raster glass is also the visual fallback where
+  Windows 11's system backdrop is unavailable.
 - **Uninstall removes the app and its caches, and keeps your data.** Removed:
   the install directory, the Start Menu and desktop shortcuts, the uninstall
   registry key, this channel's “start with Windows” Run entry,

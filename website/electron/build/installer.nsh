@@ -1,6 +1,6 @@
 ; Kiro Crew's Windows installer remains an electron-builder assisted NSIS
 ; installer. This include replaces the installer's first-download pages with a
-; full-window, theme-aware surface while preserving the generated extraction,
+; responsive full-window branded surface while preserving the generated extraction,
 ; update, UAC, registry, shortcut, and uninstall machinery.
 
 !include LogicLib.nsh
@@ -19,20 +19,23 @@
 !define KIRO_DWMWA_SYSTEMBACKDROP_TYPE 38
 !define KIRO_DWMSBT_TRANSIENTWINDOW 3
 !define KIRO_SPI_GETWORKAREA 0x0030
-!define KIRO_SPI_GETCLIENTAREAANIMATION 0x1042
 !define KIRO_GWL_STYLE -16
+!define KIRO_GWL_EXSTYLE -20
 !define KIRO_STYLE_MASK_NO_CHROME 0xFF3BFFFF
 !define KIRO_WS_CLIPSIBLINGS 0x04000000
 !define KIRO_WS_EX_TRANSPARENT 0x00000020
+!define KIRO_WS_EX_LAYERED 0x00080000
+!define KIRO_LWA_ALPHA 0x00000002
 !define KIRO_SWP_FRAMECHANGED 0x0020
 !define KIRO_SWP_NOACTIVATE 0x0010
 !define KIRO_SWP_ZORDER_ONLY 0x0013
 !define KIRO_HWND_BOTTOM 1
 !define KIRO_HWND_TOP 0
-; RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW. The opening animation
-; changes bitmap child controls while the NSIS UI thread is intentionally
-; sleeping between frames, so the children must paint before each sleep.
-!define KIRO_RDW_ANIMATE 0x0181
+; RDW_INVALIDATE | RDW_ALLCHILDREN | RDW_UPDATENOW.
+!define KIRO_RDW_REFRESH 0x0181
+; Add RDW_ERASE when transparent text changes so the scene repaints before the
+; replacement glyphs are drawn. Without it, old and new scope notes can stack.
+!define KIRO_RDW_ERASE_REFRESH 0x0185
 !define KIRO_PBM_SETBARCOLOR 0x0409
 !define KIRO_PBM_SETBKCOLOR 0x2001
 !define KIRO_FILE_ATTRIBUTE_DIRECTORY 0x10
@@ -43,8 +46,6 @@
 !include StrFunc.nsh
 ${StrRep}
 
-Var KiroTheme
-Var KiroAnimationsEnabled
 Var KiroWindowWidth
 Var KiroWindowHeight
 Var KiroPage
@@ -54,17 +55,9 @@ Var KiroProgressPage
 Var KiroProgressBackground
 Var KiroProgressStatus
 Var KiroProgressBar
-Var KiroAnimationSurface
-Var KiroProgressFrame
-Var KiroOpeningSettled
-Var KiroOpeningBobFrame
-Var KiroTimerRunning
 Var KiroPrimaryFont
 Var KiroTitleFont
 Var KiroButtonFont
-Var KiroPrimaryColor
-Var KiroMutedColor
-Var KiroControlBackground
 Var KiroScope
 Var KiroScopeSelect
 Var KiroScopeNote
@@ -88,31 +81,6 @@ Var KiroActionButton
 Var KiroExitButton
 Var KiroActionLabel
 Var KiroFinishLaunchCheckbox
-
-Function KiroDetectTheme
-  StrCpy $KiroTheme "light"
-  StrCpy $KiroAnimationsEnabled 1
-  System::Call "user32::SystemParametersInfoW(i ${KIRO_SPI_GETCLIENTAREAANIMATION}, i 0, *i .r0, i 0)i.r1"
-  ${If} $1 != 0
-    StrCpy $KiroAnimationsEnabled $0
-  ${EndIf}
-  ClearErrors
-  ReadRegDWORD $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" "AppsUseLightTheme"
-  ${IfNot} ${Errors}
-  ${AndIf} $0 == 0
-    StrCpy $KiroTheme "dark"
-  ${EndIf}
-
-  ${If} $KiroTheme == "dark"
-    StrCpy $KiroPrimaryColor 0xFFFFFF
-    StrCpy $KiroMutedColor 0xE3D9F1
-    StrCpy $KiroControlBackground 0x482878
-  ${Else}
-    StrCpy $KiroPrimaryColor 0x24143C
-    StrCpy $KiroMutedColor 0x5C4D6D
-    StrCpy $KiroControlBackground 0xF9F5FF
-  ${EndIf}
-FunctionEnd
 
 ; The design caps at the approved 1280x860 composition and shrinks to a small
 ; display instead of rendering off-screen. Use the desktop work area rather
@@ -174,9 +142,6 @@ Function KiroConfigureWindow
   StrCpy $5 ${KIRO_DWMSBT_TRANSIENTWINDOW}
   System::Call "dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i ${KIRO_DWMWA_SYSTEMBACKDROP_TYPE}, *i r5, i 4)i"
   StrCpy $5 0
-  ${If} $KiroTheme == "dark"
-    StrCpy $5 1
-  ${EndIf}
   System::Call "dwmapi::DwmSetWindowAttribute(p $HWNDPARENT, i ${KIRO_DWMWA_USE_IMMERSIVE_DARK_MODE}, *i r5, i 4)i"
 FunctionEnd
 
@@ -214,38 +179,44 @@ FunctionEnd
 Function KiroStyleControl
   Exch $0
   SendMessage $0 ${WM_SETFONT} $KiroPrimaryFont 0
-  ${If} $KiroTheme == "dark"
-    System::Call 'uxtheme::SetWindowTheme(p r0, w "DarkMode_Explorer", p 0)i'
-    SetCtlColors $0 0xFFFFFF 0x482878
-  ${Else}
-    System::Call 'uxtheme::SetWindowTheme(p r0, w "Explorer", p 0)i'
-    SetCtlColors $0 0x24143C 0xF9F5FF
-  ${EndIf}
+  System::Call 'uxtheme::SetWindowTheme(p r0, w "Explorer", p 0)i'
+  SetCtlColors $0 0x24143C 0xF9F5FF
   Pop $0
 FunctionEnd
 
 Function KiroStyleLabel
   Exch $0
   SendMessage $0 ${WM_SETFONT} $KiroPrimaryFont 0
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $0 0xFFFFFF transparent
-  ${Else}
-    SetCtlColors $0 0x24143C transparent
-  ${EndIf}
+  SetCtlColors $0 0x24143C transparent
   Pop $0
 FunctionEnd
 
 Function KiroColorScopeNote
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $KiroScopeNote 0xE3D9F1 transparent
+  SetCtlColors $KiroScopeNote 0x5C4D6D transparent
+  ShowWindow $KiroScopeNote ${SW_HIDE}
+  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ERASE_REFRESH})i"
+  ShowWindow $KiroScopeNote ${SW_SHOW}
+  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ERASE_REFRESH})i"
+FunctionEnd
+
+Function KiroCreateFonts
+  ; Keep the complete localized form readable when the approved composition is
+  ; fitted into a small work area. Eight points is still the Windows dialog
+  ; default and avoids introducing a scroll container.
+  ${If} $KiroWindowWidth < 900
+    CreateFont $KiroPrimaryFont "Segoe UI Variable Text" 8 500
+    CreateFont $KiroTitleFont "Segoe UI Variable Display" 10 600
+    CreateFont $KiroButtonFont "Segoe UI Variable Text" 9 650
   ${Else}
-    SetCtlColors $KiroScopeNote 0x5C4D6D transparent
+    CreateFont $KiroPrimaryFont "Segoe UI Variable Text" 10 500
+    CreateFont $KiroTitleFont "Segoe UI Variable Display" 12 600
+    CreateFont $KiroButtonFont "Segoe UI Variable Text" 11 650
   ${EndIf}
 FunctionEnd
 
-; Bitmap siblings repaint on every animation tick. Clip their drawing to the
-; native controls and establish the final z-order only after every child exists.
-; Otherwise the full-window bitmap can remain topmost and consume all input.
+; Clip the scene to its native-control siblings and establish the final z-order
+; only after every child exists. Otherwise the full-window bitmap can remain
+; topmost and consume all input.
 Function KiroEnableSiblingClipping
   Exch $0
   Push $1
@@ -264,13 +235,13 @@ FunctionEnd
 !macroend
 
 !macro KiroCommitVisualZOrder BACKGROUND
-  ; Animation swaps the one full-window surface, so it can stay bottom-most
-  ; without independently scaled sibling sprites crossing native controls.
+  ; One full-window surface stays bottom-most, so independently scaled sibling
+  ; sprites cannot cross native controls or introduce scaling seams.
   !insertmacro KiroSinkVisual ${BACKGROUND}
-  ; The first animation frame can paint before the transparent labels exist.
-  ; Repaint every child after the final z-order is committed so those labels do
-  ; not remain visually buried even though their HWNDs are now above the scene.
-  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
+  ; The scene can paint before the transparent labels exist. Repaint every child
+  ; after the final z-order is committed so those labels do not remain visually
+  ; buried even though their HWNDs are now above the scene.
+  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_REFRESH})i"
 !macroend
 
 ; NSD_SetStretchedImage relies on a control-relative size lookup that leaves the
@@ -291,11 +262,7 @@ FunctionEnd
 Function KiroCreateBackground
   ${NSD_CreateBitmap} 0 0 100% 100% ""
   Pop $KiroBackground
-  ${If} $KiroTheme == "dark"
-    !insertmacro KiroSetSceneImage $KiroBackground "$PLUGINSDIR\windows-installer-full-dark.bmp" $KiroBackgroundHandle
-  ${Else}
-    !insertmacro KiroSetSceneImage $KiroBackground "$PLUGINSDIR\windows-installer-full-light.bmp" $KiroBackgroundHandle
-  ${EndIf}
+  !insertmacro KiroSetSceneImage $KiroBackground "$PLUGINSDIR\windows-installer-full-light.bmp" $KiroBackgroundHandle
   Push $KiroBackground
   Call KiroEnableSiblingClipping
 FunctionEnd
@@ -310,24 +277,52 @@ Function KiroExitClicked
   SendMessage $KiroNativeCancel ${BM_CLICK} 0 0
 FunctionEnd
 
+Function KiroDesktopLabelClicked
+  Pop $0
+  ${NSD_GetState} $KiroDesktopCheckbox $1
+  ${If} $1 == ${BST_CHECKED}
+    ${NSD_Uncheck} $KiroDesktopCheckbox
+  ${Else}
+    ${NSD_Check} $KiroDesktopCheckbox
+  ${EndIf}
+FunctionEnd
+
+Function KiroStartupLabelClicked
+  Pop $0
+  ${NSD_GetState} $KiroStartupCheckbox $1
+  ${If} $1 == ${BST_CHECKED}
+    ${NSD_Uncheck} $KiroStartupCheckbox
+  ${Else}
+    ${NSD_Check} $KiroStartupCheckbox
+  ${EndIf}
+FunctionEnd
+
+Function KiroFinishLaunchLabelClicked
+  Pop $0
+  ${NSD_GetState} $KiroFinishLaunchCheckbox $1
+  ${If} $1 == ${BST_CHECKED}
+    ${NSD_Uncheck} $KiroFinishLaunchCheckbox
+  ${Else}
+    ${NSD_Check} $KiroFinishLaunchCheckbox
+  ${EndIf}
+FunctionEnd
+
 Function KiroCreateActionButtons
-  ${NSD_CreateButton} 66.6% 90.6% 12.5% 4.6% "$KiroActionLabel"
+  ${NSD_CreateButton} 54.1% 92.2% 25% 5% "$KiroActionLabel"
   Pop $KiroActionButton
   SendMessage $KiroActionButton ${WM_SETFONT} $KiroButtonFont 0
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $KiroActionButton 0x2B144B 0xFFFFFF
-  ${Else}
-    SetCtlColors $KiroActionButton 0xFFFFFF 0x6332B4
-  ${EndIf}
+  SetCtlColors $KiroActionButton 0xFFFFFF 0x6332B4
   ${NSD_OnClick} $KiroActionButton KiroActionClicked
   ${NSD_SetFocus} $KiroActionButton
 
-  ${NSD_CreateButton} 89.2% 3.1% 8.3% 4.2% "$(kiroExitSetup)  ×"
+  ; A regular themed Button renders as a detached gray rectangle over the
+  ; artwork. This notifying label reads as part of the branded header; Escape
+  ; remains the standard keyboard path through the hidden native Cancel button.
+  nsDialogs::CreateControl STATIC 0x50010301 ${KIRO_WS_EX_TRANSPARENT} 83% 2.6% 15% 5% "$(kiroExitSetup)  ×"
   Pop $KiroExitButton
   SendMessage $KiroExitButton ${WM_SETFONT} $KiroPrimaryFont 0
   ${NSD_OnClick} $KiroExitButton KiroExitClicked
-  Push $KiroExitButton
-  Call KiroStyleControl
+  SetCtlColors $KiroExitButton 0xFFFFFF transparent
 FunctionEnd
 
 Function KiroUseCurrentUser
@@ -373,7 +368,7 @@ Function KiroBrowseClicked
     ClearErrors
     Call KiroEnsureAppInstallDir
     ${If} ${Errors}
-      MessageBox MB_OK|MB_ICONEXCLAMATION "$(^DirBrowseText)"
+      MessageBox MB_OK|MB_ICONEXCLAMATION "$(kiroInvalidLocation)"
       ${NSD_SetFocus} $KiroLocationInput
       Return
     ${EndIf}
@@ -381,62 +376,10 @@ Function KiroBrowseClicked
   ${EndIf}
 FunctionEnd
 
-; Reuse the opening screen's staggered character motion on every visible setup
-; phase. Each frame is a complete scene so Windows performs one coherent scale
-; instead of exposing seams between independently stretched bitmap crops.
-Function KiroCreateOpeningAnimation
-  StrCpy $KiroAnimationSurface $KiroBackground
-  Call KiroStartOpeningAnimation
-FunctionEnd
-
-Function KiroPlayNativeOpeningAnimation
-  StrCpy $KiroProgressFrame 0
-  StrCpy $KiroOpeningSettled 0
-  StrCpy $KiroOpeningBobFrame 0
-
-  ${If} $KiroAnimationsEnabled == 0
-    StrCpy $KiroOpeningSettled 1
-    StrCpy $KiroProgressFrame 6
-    Call KiroSetProgressFrame
-    System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-    Return
-  ${EndIf}
-
-  KiroNativeOpeningFrame:
-  Call KiroSetProgressFrame
-  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-  Sleep 120
-  IntOp $KiroProgressFrame $KiroProgressFrame + 1
-  ${If} $KiroProgressFrame < 5
-    Goto KiroNativeOpeningFrame
-  ${EndIf}
-  StrCpy $KiroOpeningSettled 1
-  StrCpy $KiroOpeningBobFrame 0
-  StrCpy $KiroProgressFrame 6
-  Call KiroSetProgressFrame
-  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-FunctionEnd
-
-Function KiroStartOpeningAnimation
-  StrCpy $KiroProgressFrame 0
-  StrCpy $KiroOpeningSettled 0
-  StrCpy $KiroOpeningBobFrame 0
-  ${If} $KiroAnimationsEnabled == 0
-    StrCpy $KiroOpeningSettled 1
-    StrCpy $KiroProgressFrame 6
-    Call KiroSetProgressFrame
-    Return
-  ${EndIf}
-  Call KiroSetProgressFrame
-  ${NSD_CreateTimer} KiroAdvanceProgressFrame 150
-  StrCpy $KiroTimerRunning 1
-FunctionEnd
-
 Function KiroOptionsCreate
   ${If} $KiroSkipOptions == 1
     Abort
   ${EndIf}
-  Call KiroDetectTheme
   Call KiroConfigureWindow
   nsDialogs::Create 1018
   Pop $KiroPage
@@ -446,26 +389,19 @@ Function KiroOptionsCreate
   System::Call "user32::SetWindowPos(p $KiroPage, p ${KIRO_HWND_BOTTOM}, i 0, i 0, i $KiroWindowWidth, i $KiroWindowHeight, i ${KIRO_SWP_NOACTIVATE})i"
   Call KiroHideNativeChrome
 
-  CreateFont $KiroPrimaryFont "Segoe UI Variable Text" 10 500
-  CreateFont $KiroTitleFont "Segoe UI Variable Display" 12 600
-  CreateFont $KiroButtonFont "Segoe UI Variable Text" 11 650
+  Call KiroCreateFonts
   Call KiroCreateBackground
-  Call KiroCreateOpeningAnimation
 
-  ${NSD_CreateLabel} 19.4% 67.5% 24% 3.4% "$(kiroInstallOptions)"
+  ${NSD_CreateLabel} 19.4% 66.8% 59.7% 3.4% "$(kiroInstallOptions)"
   Pop $0
   SendMessage $0 ${WM_SETFONT} $KiroTitleFont 0
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $0 0xFFFFFF transparent
-  ${Else}
-    SetCtlColors $0 0x24143C transparent
-  ${EndIf}
-  ${NSD_CreateLabel} 19.4% 72.5% 15% 3.5% "$(kiroInstallFor)"
+  SetCtlColors $0 0x24143C transparent
+  nsDialogs::CreateControl STATIC 0x50000300 ${KIRO_WS_EX_TRANSPARENT} 19.4% 71.3% 23.8% 3.8% "$(kiroInstallFor)"
   Pop $0
   Push $0
   Call KiroStyleLabel
 
-  ${NSD_CreateDropList} 34.7% 71.1% 44.4% 100u ""
+  ${NSD_CreateDropList} 44.2% 70.5% 34.9% 100u ""
   Pop $KiroScopeSelect
   ReadEnvStr $0 "USERNAME"
   ${StrRep} $KiroCurrentUserLabel "$(onlyForMe)" "&" ""
@@ -478,42 +414,55 @@ Function KiroOptionsCreate
   Push $KiroScopeSelect
   Call KiroStyleControl
 
-  ${NSD_CreateLabel} 34.7% 76.1% 44.4% 3.2% ""
+  ${NSD_CreateLabel} 44.2% 74.8% 34.9% 3.2% ""
   Pop $KiroScopeNote
   SendMessage $KiroScopeNote ${WM_SETFONT} $KiroPrimaryFont 0
   Call KiroColorScopeNote
-  ${NSD_CreateLabel} 19.4% 80.6% 15% 3.5% "$(kiroInstallLocation)"
+  nsDialogs::CreateControl STATIC 0x50000300 ${KIRO_WS_EX_TRANSPARENT} 19.4% 78.8% 23.8% 4.2% "$(kiroInstallLocation)"
   Pop $0
   Push $0
   Call KiroStyleLabel
 
-  ${NSD_CreateText} 34.7% 79.3% 35.5% 4.5% "$KiroInstallDir"
+  ${NSD_CreateText} 44.2% 78.4% 24.1% 4.5% "$KiroInstallDir"
   Pop $KiroLocationInput
   Push $KiroLocationInput
   Call KiroStyleControl
   ${NSD_OnChange} $KiroLocationInput KiroLocationChanged
-  ${NSD_CreateBrowseButton} 70.8% 79.3% 8.3% 4.5% "$(^BrowseBtn)"
+  ${NSD_CreateBrowseButton} 69.1% 78.4% 10% 4.5% "$(^BrowseBtn)"
   Pop $KiroBrowseButton
   ${NSD_OnClick} $KiroBrowseButton KiroBrowseClicked
   Push $KiroBrowseButton
   Call KiroStyleControl
 
-  ${NSD_CreateCheckbox} 29.7% 85.2% 22% 3.8% "$(kiroDesktopShortcut)"
+  ; Create each transparent label immediately before its checkbox. The Win32
+  ; accessibility proxy uses that standard sibling order as the checkbox name,
+  ; while the empty glyph-only button cannot paint a duplicate text strip.
+  nsDialogs::CreateControl STATIC 0x50000300 ${KIRO_WS_EX_TRANSPARENT} 21% 84% 58.1% 3.8% "$(kiroDesktopShortcut)"
+  Pop $0
+  SendMessage $0 ${WM_SETFONT} $KiroPrimaryFont 0
+  SetCtlColors $0 0x24143C transparent
+  ${NSD_OnClick} $0 KiroDesktopLabelClicked
+  ${NSD_CreateCheckbox} 19.4% 84% 2% 3.8% ""
   Pop $KiroDesktopCheckbox
   Push $KiroDesktopCheckbox
-  Call KiroStyleLabel
+  Call KiroStyleControl
   ${If} $KiroCreateDesktopShortcut == 1
     ${NSD_Check} $KiroDesktopCheckbox
   ${EndIf}
-  ${NSD_CreateCheckbox} 52% 85.2% 27.1% 3.8% "$(kiroStartWithWindows)"
+  nsDialogs::CreateControl STATIC 0x50000300 ${KIRO_WS_EX_TRANSPARENT} 21% 88.2% 58.1% 3.8% "$(kiroStartWithWindows)"
+  Pop $0
+  SendMessage $0 ${WM_SETFONT} $KiroPrimaryFont 0
+  SetCtlColors $0 0x24143C transparent
+  ${NSD_OnClick} $0 KiroStartupLabelClicked
+  ${NSD_CreateCheckbox} 19.4% 88.2% 2% 3.8% ""
   Pop $KiroStartupCheckbox
   Push $KiroStartupCheckbox
-  Call KiroStyleLabel
+  Call KiroStyleControl
   ${If} $KiroStartWithWindows == 1
     ${NSD_Check} $KiroStartupCheckbox
   ${EndIf}
 
-  ${NSD_CreateLabel} 19.4% 91.4% 30% 3.5% "$(kiroReadyToInstall)"
+  ${NSD_CreateLabel} 19.4% 93% 34% 3.5% "$(kiroReadyToInstall)"
   Pop $0
   Push $0
   Call KiroStyleLabel
@@ -608,13 +557,13 @@ Function KiroOptionsLeave
     ${NSD_SetText} $KiroLocationInput $KiroInstallDir
   ${EndIf}
   ${If} $KiroInstallDir == ""
-    MessageBox MB_OK|MB_ICONEXCLAMATION "$(^DirBrowseText)"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(kiroInvalidLocation)"
     Abort
   ${EndIf}
   ClearErrors
   Call KiroEnsureAppInstallDir
   ${If} ${Errors}
-    MessageBox MB_OK|MB_ICONEXCLAMATION "$(^DirBrowseText)"
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$(kiroInvalidLocation)"
     ${NSD_SetFocus} $KiroLocationInput
     Abort
   ${EndIf}
@@ -632,11 +581,9 @@ Function KiroOptionsLeave
         MessageBox MB_OK|MB_ICONSTOP "$(loginWithAdminAccount)"
         Abort
       ${EndIf}
-      Call KiroStopProgressAnimation
       Quit
     ${EndIf}
   ${EndIf}
-  Call KiroStopProgressAnimation
 FunctionEnd
 
 ; Invisible handoff after electron-builder selects the current/all-users shell
@@ -654,7 +601,7 @@ Function KiroApplyOptions
     Call KiroEnsureAppInstallDir
     ${If} ${Errors}
       ${IfNot} ${Silent}
-        MessageBox MB_OK|MB_ICONSTOP "$(^DirBrowseText)"
+        MessageBox MB_OK|MB_ICONSTOP "$(kiroInvalidLocation)"
       ${EndIf}
       SetErrorLevel 2
       Quit
@@ -664,58 +611,11 @@ Function KiroApplyOptions
   Abort
 FunctionEnd
 
-Function KiroSetProgressFrame
-  Push $0
-  ; Select the complete replacement scene before freeing the old bitmap. A
-  ; clear-first swap leaves a visible gray frame that screen capture (and users
-  ; on a slow machine) can observe between the two STM_SETIMAGE messages.
-  StrCpy $0 $KiroBackgroundHandle
-  StrCpy $KiroBackgroundHandle ""
-  ${If} $KiroProgressFrame >= 6
-    !insertmacro KiroSetSceneImage $KiroAnimationSurface "$PLUGINSDIR\windows-installer-full-$KiroTheme.bmp" $KiroBackgroundHandle
-  ${Else}
-    !insertmacro KiroSetSceneImage $KiroAnimationSurface "$PLUGINSDIR\windows-installer-progress-$KiroTheme-$KiroProgressFrame.bmp" $KiroBackgroundHandle
-  ${EndIf}
-  ${If} $0 != ""
-    ${NSD_FreeBitmap} $0
-  ${EndIf}
-  Pop $0
-FunctionEnd
-
-Function KiroAdvanceProgressFrame
-  ${If} $KiroOpeningSettled == 0
-    IntOp $KiroProgressFrame $KiroProgressFrame + 1
-    ${If} $KiroProgressFrame >= 5
-      StrCpy $KiroOpeningSettled 1
-      StrCpy $KiroOpeningBobFrame 0
-      StrCpy $KiroProgressFrame 6
-    ${EndIf}
-    Call KiroSetProgressFrame
-    System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-  ${Else}
-    IntOp $KiroOpeningBobFrame $KiroOpeningBobFrame + 1
-    IntOp $KiroOpeningBobFrame $KiroOpeningBobFrame % 24
-    ${If} $KiroOpeningBobFrame == 0
-      StrCpy $KiroProgressFrame 6
-      Call KiroSetProgressFrame
-      System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-    ${ElseIf} $KiroOpeningBobFrame == 12
-      StrCpy $KiroProgressFrame 5
-      Call KiroSetProgressFrame
-      System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-    ${EndIf}
-  ${EndIf}
-FunctionEnd
-
-Function KiroStopProgressAnimation
-  ${If} $KiroTimerRunning == 1
-    ${NSD_KillTimer} KiroAdvanceProgressFrame
-    StrCpy $KiroTimerRunning 0
-  ${EndIf}
-FunctionEnd
-
 Function KiroInstallShow
-  Call KiroDetectTheme
+  ; MUI_PAGE_FINISH normally enables this during GUI initialization. Our
+  ; custom finish page replaces that macro, so restore the handoff explicitly:
+  ; when InstFiles completes, NSIS advances instead of sitting at 100% forever.
+  SetAutoClose true
   Call KiroConfigureWindow
   Call KiroHideNativeChrome
   FindWindow $KiroProgressPage "#32770" "" $HWNDPARENT
@@ -728,14 +628,9 @@ Function KiroInstallShow
   ; changes cannot paint legacy chrome over the approved composition.
   System::Call 'user32::CreateWindowExW(i 0, w "STATIC", w "", i 0x5400000E, i 0, i 0, i $KiroWindowWidth, i $KiroWindowHeight, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
   StrCpy $KiroProgressBackground $0
-  ${If} $KiroTheme == "dark"
-    !insertmacro KiroSetSceneImage $KiroProgressBackground "$PLUGINSDIR\windows-installer-full-dark.bmp" $KiroBackgroundHandle
-  ${Else}
-    !insertmacro KiroSetSceneImage $KiroProgressBackground "$PLUGINSDIR\windows-installer-full-light.bmp" $KiroBackgroundHandle
-  ${EndIf}
+  !insertmacro KiroSetSceneImage $KiroProgressBackground "$PLUGINSDIR\windows-installer-full-light.bmp" $KiroBackgroundHandle
   Push $KiroProgressBackground
   Call KiroEnableSiblingClipping
-  StrCpy $KiroAnimationSurface $KiroProgressBackground
 
   ; The NSIS engine obtains progress control 1004 from its original dialog and
   ; retains that HWND while extracting. Clip the dialog to that one rectangle
@@ -752,11 +647,7 @@ Function KiroInstallShow
   StrCpy $KiroProgressStatus $0
   CreateFont $KiroPrimaryFont "Segoe UI Variable Text" 11 600
   SendMessage $KiroProgressStatus ${WM_SETFONT} $KiroPrimaryFont 0
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $KiroProgressStatus 0xFFFFFF transparent
-  ${Else}
-    SetCtlColors $KiroProgressStatus 0x24143C transparent
-  ${EndIf}
+  SetCtlColors $KiroProgressStatus 0x24143C transparent
   GetDlgItem $KiroProgressBar $KiroProgressPage 1004
   IntOp $0 $KiroWindowWidth * 1940
   IntOp $0 $0 / 10000
@@ -773,38 +664,49 @@ Function KiroInstallShow
   System::Call "user32::SetWindowPos(p $KiroProgressBar, p ${KIRO_HWND_TOP}, i r0, i r1, i r2, i r3, i ${KIRO_SWP_NOACTIVATE})i"
   System::Call 'uxtheme::SetWindowTheme(p $KiroProgressBar, w "", w "")i'
   SendMessage $KiroProgressBar ${KIRO_PBM_SETBARCOLOR} 0 0xFF488E
-  ${If} $KiroTheme == "dark"
-    SendMessage $KiroProgressBar ${KIRO_PBM_SETBKCOLOR} 0 0x782848
-  ${Else}
-    SendMessage $KiroProgressBar ${KIRO_PBM_SETBKCOLOR} 0 0xFFF5F9
-  ${EndIf}
-  IntOp $0 $KiroWindowWidth * 8750
+  SendMessage $KiroProgressBar ${KIRO_PBM_SETBKCOLOR} 0 0xFFF5F9
+  IntOp $0 $KiroWindowWidth * 8300
   IntOp $0 $0 / 10000
   IntOp $1 $KiroWindowHeight * 310
   IntOp $1 $1 / 10000
-  IntOp $2 $KiroWindowWidth * 1000
+  IntOp $2 $KiroWindowWidth * 1500
   IntOp $2 $2 / 10000
   IntOp $3 $KiroWindowHeight * 420
   IntOp $3 $3 / 10000
-  System::Call 'user32::SetWindowTextW(p $KiroNativeCancel, w "$(kiroExitSetup)  ×")i'
-  System::Call "user32::SetWindowPos(p $KiroNativeCancel, p ${KIRO_HWND_TOP}, i r0, i r1, i r2, i r3, i ${KIRO_SWP_NOACTIVATE})i"
-  SendMessage $KiroNativeCancel ${WM_SETFONT} $KiroPrimaryFont 0
-  Push $KiroNativeCancel
-  Call KiroStyleControl
+  StrCpy $6 $0
+  StrCpy $7 $1
+  StrCpy $8 $2
+  StrCpy $9 $3
+  ; The visible caption remains a flat part of the header. A nearly transparent,
+  ; layered native Cancel button occupies the same rectangle above it, so mouse,
+  ; keyboard, accessibility, and the NSIS cancellation machinery stay real.
+  System::Call 'user32::CreateWindowExW(i ${KIRO_WS_EX_TRANSPARENT}, w "STATIC", w "$(kiroExitSetup)  ×", i 0x50000201, i r6, i r7, i r8, i r9, p $HWNDPARENT, p 0, p 0, p 0)p.r0'
+  StrCpy $KiroExitButton $0
+  SendMessage $KiroExitButton ${WM_SETFONT} $KiroPrimaryFont 0
+  SetCtlColors $KiroExitButton 0xFFFFFF transparent
+  SendMessage $KiroNativeCancel ${WM_SETTEXT} 0 "STR:$(kiroExitSetup)"
+  System::Call "user32::GetWindowLongW(p $KiroNativeCancel, i ${KIRO_GWL_EXSTYLE})i.r4"
+  IntOp $4 $4 | ${KIRO_WS_EX_LAYERED}
+  System::Call "user32::SetWindowLongW(p $KiroNativeCancel, i ${KIRO_GWL_EXSTYLE}, i r4)i"
+  System::Call "user32::SetLayeredWindowAttributes(p $KiroNativeCancel, i 0, i 1, i ${KIRO_LWA_ALPHA})i"
+  System::Call "user32::SetWindowPos(p $KiroNativeCancel, p ${KIRO_HWND_TOP}, i r6, i r7, i r8, i r9, i ${KIRO_SWP_NOACTIVATE})i"
   ; The outer scene was created after the MUI header controls. Raise only the
   ; clipped native progress dialog and the two intentional outer controls.
   System::Call "user32::SetWindowPos(p $KiroProgressBackground, p ${KIRO_HWND_TOP}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_ZORDER_ONLY})i"
   System::Call "user32::SetWindowPos(p $KiroProgressStatus, p ${KIRO_HWND_TOP}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_ZORDER_ONLY})i"
   System::Call "user32::SetWindowPos(p $KiroProgressPage, p ${KIRO_HWND_TOP}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_ZORDER_ONLY})i"
+  System::Call "user32::SetWindowPos(p $KiroExitButton, p ${KIRO_HWND_TOP}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_ZORDER_ONLY})i"
   System::Call "user32::SetWindowPos(p $KiroNativeCancel, p ${KIRO_HWND_TOP}, i 0, i 0, i 0, i 0, i ${KIRO_SWP_ZORDER_ONLY})i"
   ShowWindow $KiroProgressPage ${SW_SHOW}
+  ShowWindow $KiroExitButton ${SW_SHOW}
   ShowWindow $KiroNativeCancel ${SW_SHOW}
-  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_ANIMATE})i"
-  Call KiroPlayNativeOpeningAnimation
+  System::Call "user32::RedrawWindow(p $HWNDPARENT, p 0, p 0, i ${KIRO_RDW_REFRESH})i"
 FunctionEnd
 
 Function KiroFinishCreate
-  Call KiroStopProgressAnimation
+  ShowWindow $KiroExitButton ${SW_HIDE}
+  System::Call "user32::DestroyWindow(p $KiroExitButton)i"
+  StrCpy $KiroExitButton 0
   ShowWindow $KiroProgressPage ${SW_HIDE}
   ShowWindow $KiroProgressStatus ${SW_HIDE}
   ShowWindow $KiroProgressBackground ${SW_HIDE}
@@ -817,7 +719,6 @@ Function KiroFinishCreate
   System::Call "user32::DestroyWindow(p $KiroProgressBackground)i"
   StrCpy $KiroProgressStatus 0
   StrCpy $KiroProgressBackground 0
-  Call KiroDetectTheme
   Call KiroConfigureWindow
   nsDialogs::Create 1018
   Pop $KiroPage
@@ -826,30 +727,30 @@ Function KiroFinishCreate
   ${EndIf}
   System::Call "user32::SetWindowPos(p $KiroPage, p ${KIRO_HWND_BOTTOM}, i 0, i 0, i $KiroWindowWidth, i $KiroWindowHeight, i ${KIRO_SWP_NOACTIVATE})i"
   Call KiroHideNativeChrome
-  CreateFont $KiroPrimaryFont "Segoe UI Variable Text" 10 500
+  Call KiroCreateFonts
   CreateFont $KiroTitleFont "Segoe UI Variable Display" 19 650
-  CreateFont $KiroButtonFont "Segoe UI Variable Text" 11 650
   Call KiroCreateBackground
-  Call KiroCreateOpeningAnimation
 
   ${NSD_CreateLabel} 19.4% 70.5% 59.7% 6% "$(kiroInstalled)"
   Pop $0
   SendMessage $0 ${WM_SETFONT} $KiroTitleFont 0
-  ${If} $KiroTheme == "dark"
-    SetCtlColors $0 0xFFFFFF transparent
-  ${Else}
-    SetCtlColors $0 0x24143C transparent
-  ${EndIf}
-  ${NSD_CreateCheckbox} 19.4% 78.3% 59.7% 4.5% "$(kiroLaunchAfterFinish)"
+  SetCtlColors $0 0x24143C transparent
+  nsDialogs::CreateControl STATIC 0x50000300 ${KIRO_WS_EX_TRANSPARENT} 21% 78.3% 58.1% 4.5% "$(kiroLaunchAfterFinish)"
+  Pop $0
+  SendMessage $0 ${WM_SETFONT} $KiroPrimaryFont 0
+  SetCtlColors $0 0x24143C transparent
+  ${NSD_OnClick} $0 KiroFinishLaunchLabelClicked
+  ${NSD_CreateCheckbox} 19.4% 78.3% 2% 4.5% ""
   Pop $KiroFinishLaunchCheckbox
   Push $KiroFinishLaunchCheckbox
-  Call KiroStyleLabel
+  Call KiroStyleControl
   ${NSD_Check} $KiroFinishLaunchCheckbox
-  StrCpy $KiroActionLabel "$(^FinishBtn)"
+  ; ^FinishBtn is populated by MUI_PAGE_FINISH. The custom finish page replaces
+  ; that macro, so use our own complete language table instead of a blank label.
+  StrCpy $KiroActionLabel "$(kiroFinishAction)"
   Call KiroCreateActionButtons
   !insertmacro KiroCommitVisualZOrder $KiroBackground
   nsDialogs::Show
-  Call KiroStopProgressAnimation
 
   ${If} $KiroBackgroundHandle != ""
     ${NSD_FreeBitmap} $KiroBackgroundHandle
@@ -886,11 +787,8 @@ FunctionEnd
   InitPluginsDir
   SetOutPath "$PLUGINSDIR"
   File "${PROJECT_DIR}\..\..\packaging\installer-assets\windows-installer-full-light.bmp"
-  File "${PROJECT_DIR}\..\..\packaging\installer-assets\windows-installer-full-dark.bmp"
-  File "${PROJECT_DIR}\..\..\packaging\installer-assets\windows-installer-progress-*.bmp"
 
   StrCpy $KiroSkipOptions 0
-  StrCpy $KiroTimerRunning 0
   StrCpy $KiroBackgroundHandle ""
   StrCpy $KiroCreateDesktopShortcut 1
   StrCpy $KiroStartWithWindows 0
@@ -980,7 +878,7 @@ FunctionEnd
   Call KiroEnsureAppInstallDir
   ${If} ${Errors}
     ${IfNot} ${Silent}
-      MessageBox MB_OK|MB_ICONSTOP "$(^DirBrowseText)"
+      MessageBox MB_OK|MB_ICONSTOP "$(kiroInvalidLocation)"
     ${EndIf}
     SetErrorLevel 2
     Quit
