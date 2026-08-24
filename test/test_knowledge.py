@@ -19,7 +19,7 @@ from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.extractor import EntityExtractor
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever, _bytes_to_floats
-from kiro_crew.knowledge.store import KnowledgeStore, SimpleDiGraph
+from kiro_crew.knowledge.store import KnowledgeBundleError, KnowledgeStore, SimpleDiGraph
 from kiro_crew.knowledge.sync import SyncScheduler
 
 # ---------------------------------------------------------------------------
@@ -115,6 +115,92 @@ class TestKnowledgeStore:
         stats = s2.get_stats()
         assert stats["items"] == 2
         assert stats["entities"] == 1
+
+    # ---- import_bundle JSON-column well-formedness (issue #5559) -----------
+    # The invariant "sources.properties / entities.aliases is JSON text every
+    # reader json.loads()s back" is enforced at the writer, so every store
+    # caller is covered — not only the dashboard handler.
+
+    def _source(self, **overrides):
+        src = {"id": "s1", "name": "f", "source_type": "local_file", "uri": "/tmp/x.md"}
+        src.update(overrides)
+        return src
+
+    def _entity(self, **overrides):
+        ent = {"id": "e1", "name": "Svc", "entity_type": "service"}
+        ent.update(overrides)
+        return ent
+
+    @pytest.mark.parametrize("props", [
+        "{not json",          # unparseable
+        "",                   # empty string: json.loads("") raises
+        "[]",                 # parses, wrong shape (readers index a dict)
+        "null",               # parses to None, not a dict
+        {"k": "v"},           # non-string: would bind str(dict) repr as TEXT
+        7,                    # non-string scalar
+        pytest.param(
+            "[" * 200000 + "]" * 200000,  # json.loads raises RecursionError
+            # Short id: the default id embeds all 400k characters, and on
+            # Windows pytest's PYTEST_CURRENT_TEST env var (which carries the
+            # full test id) is capped at 32767 chars -> setup ValueError.
+            id="deep-nesting",
+        ),
+        '{"x": "\ud800"}',    # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
+    ])
+    def test_import_bundle_rejects_malformed_properties(self, store, props):
+        bundle = {"sources": [self._source(properties=props)]}
+        with pytest.raises(KnowledgeBundleError):
+            store.import_bundle(bundle)
+        # The transaction rolled back: no partial row committed.
+        assert store.db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"] == 0
+
+    @pytest.mark.parametrize("aliases", [
+        "{not json",          # unparseable
+        "",                   # empty string
+        "{}",                 # parses, wrong shape (find_entity iterates a list)
+        '["ok", 3]',          # list with a non-string element (.lower() crashes)
+        ["a"],                # non-string: a Python list, not JSON text
+        '["\ud800"]',         # lone surrogate: json.loads accepts, SQLite bind cannot UTF-8-encode
+    ])
+    def test_import_bundle_rejects_malformed_aliases(self, store, aliases):
+        bundle = {"entities": [self._entity(aliases=aliases)]}
+        with pytest.raises(KnowledgeBundleError):
+            store.import_bundle(bundle)
+        assert store.db.execute("SELECT COUNT(*) AS c FROM entities").fetchone()["c"] == 0
+
+    def test_import_bundle_defaults_absent_and_null_json_columns(self, store):
+        bundle = {
+            "sources": [self._source(), self._source(id="s2", uri="/tmp/y.md", properties=None)],
+            "entities": [self._entity(), self._entity(id="e2", name="Svc2", aliases=None)],
+        }
+        store.import_bundle(bundle)
+        for row in store.db.execute("SELECT properties FROM sources"):
+            assert json.loads(row["properties"]) == {}
+        for row in store.db.execute("SELECT aliases FROM entities"):
+            assert json.loads(row["aliases"]) == []
+
+    def test_import_bundle_accepts_valid_json_columns(self, store):
+        bundle = {
+            "sources": [self._source(properties='{"sync_status": "synced"}')],
+            "entities": [self._entity(aliases='["svc", "the-svc"]')],
+        }
+        result = store.import_bundle(bundle)
+        assert result["entities_created"] == 1
+        props = store.db.execute("SELECT properties FROM sources").fetchone()["properties"]
+        assert json.loads(props) == {"sync_status": "synced"}
+        # The committed alias row is readable by the alias-scanning reader.
+        assert store.find_entity("THE-SVC")["id"] == "e1"
+
+    def test_import_bundle_rejection_rolls_back_earlier_rows(self, store):
+        # A valid source followed by a corrupt entity must commit NOTHING:
+        # the whole bundle is one transaction.
+        bundle = {
+            "sources": [self._source()],
+            "entities": [self._entity(aliases="{oops")],
+        }
+        with pytest.raises(KnowledgeBundleError):
+            store.import_bundle(bundle)
+        assert store.db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"] == 0
 
     def test_delete_item(self, store):
         item_id = store.add_item("Temp Doc", "Will be deleted", "personal_notes")

@@ -54,6 +54,7 @@ from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
 from kiro_crew.knowledge.retrieval import HybridRetriever
 from kiro_crew.knowledge.spend import source_spend
+from kiro_crew.knowledge.store import KnowledgeBundleError
 from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 from kiro_crew.messaging.raster import SNIFF_BYTES
@@ -1673,6 +1674,17 @@ async def import_bundle(request: web.Request) -> web.Response:
         rel["description"] = _redact(rel.get("description"))
     try:
         result = _store(request).import_bundle(body)
+    except KnowledgeBundleError as exc:
+        # The store enforces the JSON-column well-formedness invariant
+        # (sources.properties / entities.aliases) at the writer; surface its
+        # typed rejection as a clean 400.  Unlike the driver errors below,
+        # its message is validator-crafted (the same class as the handler's
+        # own shape errors above), so it is safe to render verbatim.
+        _sel_log("import", outcome="rejected", reason=str(exc))
+        return web.json_response(
+            {"error": f"malformed bundle: {exc}", "code": "malformed_knowledge_bundle"},
+            status=400,
+        )
     except (KeyError, OverflowError, sqlite3.IntegrityError,
             sqlite3.ProgrammingError, sqlite3.DataError) as exc:
         # Only failures that genuinely mean a bad bundle earn a 400:

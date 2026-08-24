@@ -646,6 +646,29 @@ class TestImportBundle:
         assert result["entities_created"] == 1
 
     @pytest.mark.asyncio
+    async def test_corrupt_json_column_is_a_clean_400(self, store, monkeypatch):
+        # The store's writer-side invariant (issue #5559) rejects this value
+        # AT THE STORE: a lone-surrogate escape passes json.loads (so it gets
+        # through the handler's pre-redaction shape validator) but cannot be
+        # UTF-8-encoded at SQLite bind time. The handler surfaces the store's
+        # typed error as a 400, and the rejected row is not committed.
+        sel_calls = []
+        monkeypatch.setattr(kh, "_sel_log",
+                            lambda tool, **kw: sel_calls.append((tool, kw)))
+        bundle = {"sources": [{"id": "s1", "name": "f", "source_type": "local_file",
+                               "uri": "/tmp/x.md", "properties": '{"x": "\ud800"}'}]}
+        async with _client(_make_app(store)) as client:
+            resp = await client.post("/api/knowledge/import", json=bundle)
+            assert resp.status == 400
+            body = await resp.json()
+        assert body["code"] == "malformed_knowledge_bundle"
+        assert "sources.properties" in body["error"]
+        assert store.db.execute("SELECT COUNT(*) AS c FROM sources").fetchone()["c"] == 0
+        # The refusal of a cross-instance bundle is audited.
+        assert ("import", {"outcome": "rejected",
+                           "reason": "'sources.properties' must be valid UTF-8 text"}) in sel_calls
+
+    @pytest.mark.asyncio
     async def test_missing_text_fields_coerce_to_empty_string(self, store):
         # title/content/name/relation_type are NOT NULL-ish downstream: the
         # handler must substitute "" rather than pass None through.
