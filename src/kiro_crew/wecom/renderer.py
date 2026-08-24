@@ -28,8 +28,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
-from kiro_crew.messaging.renderer import Renderer, format_overflow
+from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -72,14 +71,6 @@ _STREAM_MAX_AGE_S = 8 * 60.0
 # what is inside it as a collapsed reasoning block rather than as the answer.
 _THINKING = "<think>…</think>"
 
-# Trailing "[OPTIONS: a | b | c]" chip trailer (a dashboard convention WeCom
-# can't render as tappable chips). Matched only at the very END of the message,
-# so use the DOTALL/trailer canonical parser. Defined once in constants.py
-# (shared with the Slack/dashboard/Discord/Telegram surfaces) so the
-# ReDoS-hardened grammar can never drift; see OPTIONS_RE_TRAILER for the full
-# rationale. Per-choice whitespace is stripped by the caller.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
 
 def _render_options_as_text(text: str) -> str:
     """Turn a trailing ``[OPTIONS: a | b | c]`` trailer into a numbered list.
@@ -98,18 +89,11 @@ def _render_options_as_text(text: str) -> str:
     A still-streaming partial ``[OPTIONS…`` fragment (no closing ``]``) is hidden
     rather than rendered, so protocol markup never flashes as raw text mid-stream.
     """
-    m = _OPTIONS_RE.search(text)
-    if m:
-        body = text[: m.start()].rstrip()
-        choices = [c.strip() for c in m.group(1).split("|") if c.strip()]
-        if not choices:
-            return body
-        listing = format_overflow(choices, start=0)
-        return f"{body}\n\n{listing}" if body else listing
-    idx = text.rfind("[OPTIONS")
-    if idx != -1 and "]" not in text[idx:]:
-        return text[:idx].rstrip()
-    return text
+    body, choices = split_options_trailer(text, hide_partial=True)
+    if not choices:
+        return body
+    listing = format_overflow(choices, start=0)
+    return f"{body}\n\n{listing}" if body else listing
 
 
 class WeComRenderer(Renderer):

@@ -46,7 +46,7 @@ Slack's transport path is gated behind the `messaging.use_transport` config flag
 | `messaging/__init__.py` | Package facade re-exporting the public contracts, approval-mode constants, and Layer-3 helpers |
 | `messaging/transport.py` | **Layer 1** — `MessagingTransport` ABC + the `TransportCapabilities`, `InboundMessage`, and `ConfiguredChannelTarget` value objects (stdlib-only) |
 | `messaging/driver.py` | **Layer 2** — `TurnDriver` (channel-neutral turn loop), approval-mode constants, `_redact` helper |
-| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line |
+| `messaging/renderer.py` | **Layer 2b** — `Renderer` ABC, `OutputEvent`, output-kind constants + `OUTPUT_KINDS`, `chunk_text` helper, `apply_options_cap`/`cap_choices`/`format_overflow` (`max_buttons` enforcement), `split_options_trailer` (the ONE `[OPTIONS:]` parse — see below), and `render_options_as_text` — the whole-trailer path for a channel with no widget, which reaches the same cap with zero slots so every choice becomes a numbered line |
 | `messaging/approval.py` | Two channel-neutral approval styles behind one INTERACTIVE `decider`, both deny-by-default on timeout and keyed `session_key`+`request_id`. **Typed reply** (`TEXT_APPROVAL_TIMEOUT_S`, the verdict vocabulary, `TextReplyApprovalDecider`) for a `max_buttons=0` channel, with Trust recorded as the session's own approval policy rather than a second trust store. **Widget awaiter** (`PendingApprovals` + `SessionApprovalDecider`) for a press whose correlation id and per-prompt nonce travel a round trip this module cannot see (a Webex Adaptive Card over the device websocket); a typed answer has no nonce, a press has no free text |
 | `messaging/driver.py` `deny_all_tools` | Rejects EVERY permission request ahead of every approve path. The approval ladder cannot express "this sender is not the operator" on its own: the PreToolUse hook may answer `auto_approve` and the Trust/YOLO predicates approve and short-circuit, both BEFORE the ladder is consulted, so setting the mode to `interactive` without a decider is not sufficient. Defaults False |
 | `messaging/display_safety.py` | `strip_ansi` / `canonicalize_display` / `redact_for_display` — credential redaction against the form a platform RENDERS, not the bytes sent. Hoisted out of `slack/format.py` when the shared overflow sink began writing choice text into the parsed body on every widget channel |
@@ -2412,6 +2412,41 @@ keeps its own `_render_options_as_text` rather than the shared
 `render_options_as_text` for one reason, and the contract test names it: WeCom
 STREAMS, so an unterminated `[OPTIONS…` tail there really may be a marker
 mid-flight and is hidden, where the buffer-and-send-once channels keep it as prose.
+That difference is now expressed as `split_options_trailer(..., hide_partial=True)`
+rather than as a second copy of the parse — only the folding into `format_overflow`
+stays local.
+
+### One parse of the `[OPTIONS:]` marker
+
+`split_options_trailer(text, *, hide_partial=False) -> (body, choices)` is the
+single parse. `render_options_as_text` returns only the body, so every
+widget-capable renderer used to carry its own copy — six of them, three (Discord,
+Telegram, Teams) identical down to the comment. A parse duplicated per channel
+drifts per channel and does it silently, because each copy reads correctly alone.
+
+`hide_partial` is the one thing the channels genuinely disagree about, so it is a
+parameter rather than a baked-in policy:
+
+- **`True` — a streaming surface** (Discord, Telegram, Teams, WeCom, and Webex's
+  status frame). Text is still arriving, so an unfinished `[OPTIONS` fragment may
+  be a marker mid-flight; hiding it keeps reserved protocol off the screen, and the
+  next frame re-renders from the full buffer, so nothing is lost.
+- **`False` — a buffered surface that sends once** (Webex's final answer and the
+  zero-widget path). Such a caller cannot tell a live fragment from prose, and
+  cutting prose is permanent: a reply ending `see the [OPTIONS section` keeps its
+  last four words.
+
+The default is `False` because the failure directions are asymmetric — a needless
+keep flashes markup for one frame, a needless cut deletes unrecoverable text — so a
+caller that forgets degrades toward the cosmetic failure, and every streaming caller
+states `True` explicitly, which also makes the destructive choice greppable.
+
+**`slack/format.py::extract_options` is deliberately NOT converged.** It parses the
+LINE grammar (`OPTIONS_RE_LINE` — `re.MULTILINE`, end-of-*line*), not the
+end-of-buffer `OPTIONS_RE_TRAILER` every other channel uses, so routing it through
+this helper would silently stop matching a marker that ends a line mid-message.
+Different grammar, not a duplicate. `test_options_cap_contract.py::TestOnlyOneTrailerParseExists`
+greps the tree for a re-derived parse and records both exemptions.
 
 **Proactive push works, per-target.** `aibot_send_msg` needs no token and has no
 expiry, but WeCom only delivers into a conversation the user has already written

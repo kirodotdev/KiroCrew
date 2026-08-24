@@ -42,7 +42,6 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Callable
 
-from kiro_crew.constants import OPTIONS_RE_TRAILER
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
     ExtractLimits,
@@ -50,7 +49,7 @@ from kiro_crew.messaging.outbound_files import (
     hide_local_refs,
     upload_filename,
 )
-from kiro_crew.messaging.renderer import Renderer, apply_options_cap
+from kiro_crew.messaging.renderer import Renderer, apply_options_cap, split_options_trailer
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -171,43 +170,6 @@ _TOOL_LABEL_MAX = 120
 # remove text or create a target, and inside the body's code span an underscore
 # is literal.
 _MD_CONTROL_RE = re.compile(r"[*`\[\]()<>{}]")
-
-
-# Trailing "[OPTIONS: a | b | c]" chip trailer. The shared ReDoS-hardened,
-# end-anchored grammar from constants.py, aliased locally exactly as the other
-# widget channels do (teams, discord, telegram): a widget renderer needs BOTH
-# halves of the parse -- the body and the choices it will put on buttons -- and
-# ``messaging.renderer.render_options_as_text`` returns only the body, which is
-# what the zero-widget channels want.
-_OPTIONS_RE = OPTIONS_RE_TRAILER
-
-
-def _split_trailer(text: str, *, hide_partial: bool = False) -> tuple[str, list[str]]:
-    """Split a COMPLETE trailing ``[OPTIONS:]`` marker off *text*.
-
-    Only a complete, end-anchored marker counts. An UNFINISHED ``[OPTIONS`` tail
-    is left in the body by default, matching ``render_options_as_text``: this
-    renderer buffers the whole turn and sends once, so by the time ``on_done``
-    reads the buffer such a tail is the assistant's own prose and cutting it is
-    permanent data loss -- a reply ending ``see the [OPTIONS section`` keeps its
-    last four words.
-
-    ``hide_partial=True`` is the STATUS-FRAME caller, and it is the one place the
-    other reading applies: a frame renders text that is still arriving, so a
-    partial marker there really may be a marker mid-flight, and showing reserved
-    protocol as raw text -- even for one frame -- is what this hides. The cost is
-    only cosmetic and only mid-turn, because the next frame and the final answer
-    both re-render from the buffer.
-    """
-    match = _OPTIONS_RE.search(text)
-    if match:
-        choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
-        return text[: match.start()].rstrip(), choices
-    if hide_partial:
-        idx = text.rfind("[OPTIONS")
-        if idx != -1 and "]" not in text[idx:]:
-            return text[:idx].rstrip(), []
-    return text, []
 
 
 def _safe_tool_label(raw: str) -> str:
@@ -365,7 +327,12 @@ class WebexRenderer(Renderer):
             return
         self._finalized = True
         ok = stop_reason != "error"
-        body, choices = _split_trailer("".join(self._buf).strip())
+        # The BUFFERED default: this renderer sends the answer once, so an
+        # unfinished ``[OPTIONS`` tail here is the assistant's own prose and
+        # cutting it would be permanent -- a reply ending ``see the [OPTIONS
+        # section`` keeps its last four words. The status frame above trades the
+        # other way, because a frame is transient.
+        body, choices = split_options_trailer("".join(self._buf).strip())
         # Cap the choices for the widget and degrade the remainder to numbered
         # text through the SHARED helper, so the cap is enforced in one place and
         # a choice past it is still visible rather than silently dropped.
@@ -568,8 +535,13 @@ class WebexRenderer(Renderer):
         Used for the status frame's tail. The trailer is NOT rendered here:
         ``on_done`` decides between a card and numbered text, and a status frame
         showing choices the user cannot yet act on would be noise.
+
+        ``hide_partial=True``: a frame renders text still arriving, so a partial
+        marker really may be a marker mid-flight, and showing reserved protocol as
+        raw text -- even for one frame -- is what this hides. Safe here and not on
+        the answer path because the next frame re-renders from the same buffer.
         """
-        return _split_trailer("".join(self._buf).strip(), hide_partial=True)[0]
+        return split_options_trailer("".join(self._buf).strip(), hide_partial=True)[0]
 
     def authorize_upload_root(self, root: str) -> None:
         """Authorize the provider's resolved cwd as the upload root.

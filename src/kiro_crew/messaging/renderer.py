@@ -339,6 +339,61 @@ def apply_options_cap(
     return f"{body}{sep}{lines}", kept
 
 
+def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str, list[str]]:
+    """Split a trailing ``[OPTIONS:]`` marker off *text* into ``(body, choices)``.
+
+    The ONE parse of that marker. Widget-capable renderers need both halves and
+    :func:`render_options_as_text` returns only the body, so before this existed
+    every channel carried the same eight lines: search the shared trailer regex,
+    ``rstrip`` the body, split the group on ``|``, drop the blanks, and decide what
+    to do with an unfinished marker. Six copies of it, three of them (Discord,
+    Telegram, Teams) identical down to the comment -- and a parse duplicated per
+    channel is a parse that drifts per channel, silently, because each copy looks
+    right in isolation.
+
+    Only a COMPLETE, end-anchored marker yields choices, and both halves of that
+    matter:
+
+    * A quoted ``[OPTIONS:`` mid-answer cannot swallow the body between it and
+      some later ``]`` -- the end-of-buffer anchor is what prevents that.
+    * An unfinished ``[OPTIONS`` tail is not a marker yet, so what to do with it
+      is the CALLER's question, which is why it is a parameter rather than a
+      policy baked in here.
+
+    *hide_partial* is that question, and the channels genuinely answer it
+    differently:
+
+    * ``True`` -- a STREAMING surface (Discord, Telegram, Teams, WeCom, and Webex's
+      status frame). The text is still arriving, so a partial marker really may be
+      a marker mid-flight, and showing reserved protocol as raw text is the cost
+      being avoided. Safe there precisely because the frame is transient: the next
+      frame, or the sealed answer, re-renders from the full buffer.
+    * ``False`` -- a BUFFERED surface that sends once (Slack's extraction, Webex's
+      final answer, and this module's own zero-widget path). Such a caller cannot
+      tell a live fragment from the assistant's prose, and cutting prose is
+      PERMANENT data loss: a reply ending ``see the [OPTIONS section`` must keep
+      its last four words.
+
+    The default is ``False`` because the two failure directions are not
+    symmetric -- a needless keep flashes reserved markup for one frame, a needless
+    cut deletes text nobody can recover -- so a caller that forgets degrades
+    toward the cosmetic failure. Every streaming caller states ``True``
+    explicitly, which is also what makes the data-loss choice greppable.
+
+    Stripping a genuine steering frame is ``TurnDriver``'s job and happens before
+    a renderer sees the text.
+    """
+    match = OPTIONS_RE_TRAILER.search(text)
+    if match:
+        choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
+        return text[: match.start()].rstrip(), choices
+    if hide_partial:
+        idx = text.rfind("[OPTIONS")
+        if idx != -1 and "]" not in text[idx:]:
+            return text[:idx].rstrip(), []
+    return text, []
+
+
 def render_options_as_text(text: str, capabilities: TransportCapabilities) -> str:
     """Rewrite a trailing ``[OPTIONS:]`` trailer in *text* as numbered text.
 
@@ -347,30 +402,21 @@ def render_options_as_text(text: str, capabilities: TransportCapabilities) -> st
     Returns the body only; the widget half of :func:`apply_options_cap` has
     nothing to keep at ``max_buttons == 0``.
 
-    Only a COMPLETE marker at the very end is recognised, via the shared
-    ``OPTIONS_RE_TRAILER``. Everything else is returned untouched, and both halves
-    of that matter:
+    Parsing is :func:`split_options_trailer`, at its buffered default: this path's
+    callers do not stream — they buffer a whole turn and send once — so an
+    unfinished ``[OPTIONS`` tail is the assistant's prose here and is kept. The one
+    zero-widget channel that DOES stream (WeCom) asks for ``hide_partial=True`` in
+    its own ``wecom.renderer._render_options_as_text``, where the cost is a
+    transient flash whose next frame replaces the bubble anyway.
 
-    * A quoted ``[OPTIONS:`` mid-answer cannot swallow the body between it and
-      some later ``]`` — the end-of-buffer anchor is what prevents that.
-    * An UNFINISHED ``[OPTIONS`` tail is left alone rather than stripped. It reads
-      like a marker still arriving, but this helper cannot tell a live frame from
-      a sealed answer, and its callers here do not stream at all — they buffer a
-      whole turn and send once — so for them such a tail is simply the assistant's
-      prose and cutting it is permanent data loss. A reply ending
-      ``see the [OPTIONS section`` keeps its last four words. The one zero-widget
-      channel that DOES stream (WeCom) trades the other way and hides the tail,
-      in its own ``wecom.renderer._render_options_as_text``: there the cost is a
-      transient cosmetic flash whose next frame replaces the bubble anyway.
-
-    Stripping a genuine steering frame is ``TurnDriver``'s job and happens before
-    a renderer sees the text.
+    ``apply_options_cap`` is reached unconditionally rather than behind an
+    ``if not choices`` guard, which would NOT be equivalent: a matched-but-EMPTY
+    trailer (``[OPTIONS: ]``) must still have the marker stripped. With no match
+    ``split_options_trailer`` hands back the text unchanged, and the cap is the
+    identity on an empty choice list, so one call covers all three cases.
     """
-    match = OPTIONS_RE_TRAILER.search(text)
-    if not match:
-        return text
-    choices = [c.strip() for c in match.group(1).split("|") if c.strip()]
-    return apply_options_cap(text[: match.start()].rstrip(), choices, capabilities)[0]
+    body, choices = split_options_trailer(text)
+    return apply_options_cap(body, choices, capabilities)[0]
 
 
 class Renderer(ABC):
