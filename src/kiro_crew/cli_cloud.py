@@ -21,6 +21,7 @@ from kiro_crew.cloud import login as login_mod
 from kiro_crew.cloud import sizes, ssm, ui, wizard
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
 from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.deploy.engine import resolve_aws_bin
 from kiro_crew.validation import ValidationError
 
 
@@ -363,8 +364,11 @@ def _cloud_doctor(args: argparse.Namespace) -> int:
 
     profile, region = _resolve(args)
     ui.note(f"{ui.BOLD}KiroCrew cloud — diagnostics{ui.RESET}")
-    # Client prerequisites.
-    if shutil.which("aws"):
+    # Client prerequisites. Probe the exact binary resolved spawn sites execute
+    # (the shared deploy-engine resolver), so the doctor's verdict agrees with
+    # what `kirocrew cloud` commands actually run under a GUI-launched
+    # gateway's minimal PATH.
+    if shutil.which(resolve_aws_bin()):
         ui.ok("aws CLI found")
     else:
         ui.fail("aws CLI not found — install it (https://aws.amazon.com/cli/)")

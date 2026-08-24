@@ -25,6 +25,23 @@ import shutil
 import subprocess
 import sys
 
+# The deploy engine owns the repo-wide ``aws``-CLI resolution chokepoint, and
+# narrate.py's polly spawn resolves through it -- so this doctor must probe the
+# same binary, or its verdict disagrees with what the pipeline actually runs
+# under a GUI-launched gateway's minimal PATH. The doctor also has to stay
+# runnable WITHOUT kiro_crew on sys.path (diagnosing that environment is part
+# of its job), so the resolver is an optional dependency: when it is not
+# importable the probe degrades to the bare-name PATH lookup so the remaining
+# checks still run. (In that environment narrate.py cannot import either, so
+# spawn-parity is moot there; the fallback keeps the doctor itself alive.)
+try:
+    from kiro_crew.deploy.engine import resolve_aws_bin
+except ImportError:  # kiro_crew not importable for this interpreter
+
+    def resolve_aws_bin() -> str:
+        """Bare-name fallback matching the plain PATH-probe behaviour."""
+        return "aws"
+
 
 def _home() -> pathlib.Path:
     """Resolved on call, never bound at import.
@@ -145,7 +162,9 @@ def check_speech() -> Result:
     )
     if piper_ready:
         return Result("speech", True, "auto picks piper -- local, nothing leaves the machine")
-    if shutil.which("aws"):
+    # Probe the same binary narrate.py's resolved polly spawn executes, so the
+    # doctor's verdict agrees with the pipeline under a minimal PATH.
+    if shutil.which(resolve_aws_bin()):
         detail = "auto picks polly -- runs in YOUR AWS account (costs a little)"
         if piper_bin:
             detail += "; piper is installed but has no model, so auto skips it. Set "

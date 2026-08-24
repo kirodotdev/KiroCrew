@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 
 import pytest
 
@@ -423,3 +424,32 @@ class TestCloudLogin:
 
     def test_tunnel_is_alias_of_connect(self):
         assert cli_cloud._DISPATCH["tunnel"] is cli_cloud._DISPATCH["connect"]
+
+
+class TestDoctor:
+    def test_doctor_probes_resolved_aws_binary(self, monkeypatch, capsys):
+        """The doctor probes the binary resolved spawns execute, never the
+        bare name — a bare-name probe disagrees with resolved spawn sites
+        under a GUI-launched gateway's minimal PATH."""
+        resolved = "/opt/aws-cli/aws"
+        probed: list[str] = []
+
+        def fake_which(name, *args, **kwargs):
+            probed.append(name)
+            return name if name == resolved else None
+
+        monkeypatch.setattr(cli_cloud, "resolve_aws_bin", lambda: resolved)
+        monkeypatch.setattr(shutil, "which", fake_which)
+        monkeypatch.setattr(cli_cloud, "_resolve", lambda _args: ("dev", "us-west-2"))
+        monkeypatch.setattr(cli_cloud.ssm, "session_manager_plugin_installed", lambda: True)
+        monkeypatch.setattr(
+            cli_cloud.iam,
+            "reachability_check",
+            lambda profile, region: {"reachable": False, "note": ""},
+        )
+
+        assert cli_cloud.handle_cloud(_args(cloud_action="doctor")) == 0
+        out = capsys.readouterr().out
+        assert "aws CLI found" in out
+        assert resolved in probed
+        assert "aws" not in probed  # the bare-name probe is the defect

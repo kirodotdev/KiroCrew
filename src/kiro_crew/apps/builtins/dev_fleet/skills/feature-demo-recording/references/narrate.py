@@ -56,6 +56,7 @@ from _pathcheck import (  # noqa: E402
     safe_output_path,
 )
 
+from kiro_crew.deploy.engine import resolve_aws_bin  # noqa: E402
 from kiro_crew.security import (  # noqa: E402
     redact_credentials,
     redact_exfiltration_urls,
@@ -256,7 +257,10 @@ def resolve_provider(requested: str, piper_binary: str, piper_model: str) -> str
         return requested
     if _piper_ready(piper_binary, piper_model):
         return "piper"
-    if shutil.which("aws"):
+    # Probe the same binary the polly spawn in synthesize() executes (the
+    # shared deploy-engine resolver), so auto's answer holds under a
+    # GUI-launched gateway's minimal PATH.
+    if shutil.which(resolve_aws_bin()):
         return "polly"
     raise SystemExit(
         "no speech provider available. This pipeline speaks through piper or polly\n"
@@ -300,7 +304,9 @@ def synthesize(
     if provider == "polly":
         out = dest_raw.with_suffix(".mp3")
         argv = [
-            "aws",
+            # Resolved absolutely (shared deploy-engine resolver) so a
+            # GUI-launched gateway's minimal PATH still finds the CLI.
+            resolve_aws_bin(),
             "polly",
             "synthesize-speech",
             "--output-format",
