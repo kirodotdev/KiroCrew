@@ -7985,7 +7985,8 @@
         "expand_model_reasoning": "モデルの推論を展開",
         "hide_reasoning": "推論を非表示",
         "show_reasoning": "推論を表示",
-        "thinking": "考え中"
+        "thinking": "考え中",
+        "thought_process": "思考プロセス"
       },
       "toolCallLine": {
         "aria_hide_diff": "diff を非表示",

@@ -27,6 +27,9 @@ import '../src/index.css'
 const params = new URLSearchParams(location.search)
 const scene = params.get('scene') || 'long'
 const theme = params.get('theme') || 'dark'
+// The label defect this entry evidences is locale-specific (zh-CN renders the
+// in-progress form "思考中"), so the capture can pin the language too.
+const lang = params.get('lang') || undefined
 
 document.documentElement.setAttribute('data-theme', theme === 'light' ? 'kiro-light' : 'kiro-dark')
 
@@ -63,7 +66,7 @@ function Stream({ seed, live, chunks }: { seed: string; live: boolean; chunks: n
   return <ThinkingBlock content={content} disclosureKey="capture-row" />
 }
 
-initI18n()
+initI18n(lang)
 
 createRoot(document.getElementById('root')!).render(
   <div

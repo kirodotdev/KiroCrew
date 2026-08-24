@@ -8300,7 +8300,8 @@
         "expand_model_reasoning": "Развернуть рассуждения модели",
         "hide_reasoning": "Скрыть рассуждения",
         "show_reasoning": "Показать рассуждения",
-        "thinking": "Размышление"
+        "thinking": "Размышление",
+        "thought_process": "Ход размышлений"
       },
       "toolCallLine": {
         "aria_hide_diff": "Скрыть diff",

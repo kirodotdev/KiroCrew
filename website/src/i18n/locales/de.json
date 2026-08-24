@@ -8090,7 +8090,8 @@
         "expand_model_reasoning": "Denkprozess des Modells aufklappen",
         "hide_reasoning": "Denkprozess ausblenden",
         "show_reasoning": "Denkprozess anzeigen",
-        "thinking": "Denkt nach"
+        "thinking": "Denkt nach",
+        "thought_process": "Denkprozess"
       },
       "toolCallLine": {
         "aria_hide_diff": "Diff ausblenden",

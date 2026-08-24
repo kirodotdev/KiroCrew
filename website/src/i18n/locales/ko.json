@@ -7985,7 +7985,8 @@
         "expand_model_reasoning": "모델 추론 펼치기",
         "hide_reasoning": "추론 숨기기",
         "show_reasoning": "추론 표시",
-        "thinking": "생각 중"
+        "thinking": "생각 중",
+        "thought_process": "사고 과정"
       },
       "toolCallLine": {
         "aria_hide_diff": "diff 숨기기",

@@ -428,8 +428,9 @@ describe('ChatPage renderMessage — role dispatch', () => {
     ])
     // The trace is folded behind its own disclosure, so the label is what
     // reaches the transcript — the point being that it is NOT an ordinary
-    // assistant bubble.
-    await waitFor(() => expect(shown()).toContain('Thinking'))
+    // assistant bubble. A block that merely mounts is settled, so it carries
+    // the finished-form label, not the in-progress one.
+    await waitFor(() => expect(shown()).toContain('Thought process'))
     expect(screen.queryByTestId('assistant-msg')).not.toBeInTheDocument()
     // The empty thinking row still occupies a display slot but renders nothing.
     expect(rows()).toHaveLength(2)

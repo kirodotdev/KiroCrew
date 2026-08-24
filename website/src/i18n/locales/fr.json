@@ -8195,7 +8195,8 @@
         "expand_model_reasoning": "Développer le raisonnement du modèle",
         "hide_reasoning": "Masquer le raisonnement",
         "show_reasoning": "Afficher le raisonnement",
-        "thinking": "Réflexion"
+        "thinking": "Réflexion",
+        "thought_process": "Processus de réflexion"
       },
       "toolCallLine": {
         "aria_hide_diff": "Masquer le diff",

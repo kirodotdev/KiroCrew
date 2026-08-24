@@ -8090,7 +8090,8 @@
         "expand_model_reasoning": "মডেলের রিজনিং প্রসারিত করো",
         "hide_reasoning": "রিজনিং লুকাও",
         "show_reasoning": "রিজনিং দেখাও",
-        "thinking": "ভাবছে"
+        "thinking": "ভাবছে",
+        "thought_process": "চিন্তার প্রক্রিয়া"
       },
       "toolCallLine": {
         "aria_hide_diff": "diff লুকান",

@@ -7985,7 +7985,8 @@
         "expand_model_reasoning": "展开模型推理",
         "hide_reasoning": "隐藏推理",
         "show_reasoning": "显示推理",
-        "thinking": "思考中"
+        "thinking": "思考中",
+        "thought_process": "思考过程"
       },
       "toolCallLine": {
         "aria_hide_diff": "隐藏 diff",

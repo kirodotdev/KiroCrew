@@ -8090,7 +8090,8 @@
         "expand_model_reasoning": "मॉडल की रीज़निंग विस्तृत करें",
         "hide_reasoning": "रीज़निंग छिपाएँ",
         "show_reasoning": "रीज़निंग दिखाएँ",
-        "thinking": "सोच रहा है"
+        "thinking": "सोच रहा है",
+        "thought_process": "विचार प्रक्रिया"
       },
       "toolCallLine": {
         "aria_hide_diff": "diff छिपाएँ",

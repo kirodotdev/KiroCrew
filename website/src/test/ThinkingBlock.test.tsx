@@ -111,6 +111,28 @@ describe('ThinkingBlock live preview', () => {
     expect(screen.getByRole('button').getAttribute('aria-expanded')).toBe('true')
   })
 
+  it('labels a settled block as a finished thought, not an in-progress one', () => {
+    // Several locales translate `thinking` as an explicitly in-progress form
+    // ("思考中"), so a finished block that keeps that label reads as if the
+    // model were still reasoning. A block that merely mounts (history restore,
+    // virtualizer recycle) is settled by definition.
+    render(<ThinkingBlock content="settled reasoning" />)
+    expect(screen.getByRole('button').textContent).toContain('Thought process')
+    expect(screen.getByRole('button').textContent).not.toContain('Thinking')
+  })
+
+  it('labels the row as thinking while chunks arrive, then settles the label', () => {
+    vi.useFakeTimers()
+    const { rerender } = render(<ThinkingBlock content="first" />)
+    rerender(<ThinkingBlock content="first second" />)
+    expect(screen.getByRole('button').textContent).toContain('Thinking')
+
+    act(() => { vi.advanceTimersByTime(1500) })
+
+    expect(screen.getByRole('button').textContent).toContain('Thought process')
+    expect(screen.getByRole('button').textContent).not.toContain('Thinking')
+  })
+
   it('shares the tool row layout spec (unified header + rail geometry)', () => {
     // The thinking block and the tool call row are siblings in a turn; their
     // header and expanded-rail geometry must stay on one spec. Both components
