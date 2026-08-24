@@ -45,6 +45,7 @@ import { formatThinkingTime, getTopMoods, shouldShowStat, formatDate, formatComp
 
 import { api } from '../mochiApi'
 import { i18nT } from '../../../../i18n/t'
+import ErrorNotice from '../../../../components/ErrorNotice'
 import { capabilitiesVars } from '../../../../components/destinationVars'
 import { SUPPORTED_LANGUAGES } from '../../../../i18n/languages'
 import { moodLabel } from '../../i18nKeys'
@@ -1053,7 +1054,7 @@ const McpSection: React.FC<{
   const [loading, setLoading] = React.useState(true)
   const [expanded, setExpanded] = React.useState<string | null>(null)
   const [activeTab, setActiveTab] = React.useState<Record<string, 'chat' | 'bg'>>({})
-  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string }>>({})
+  const [toolsMap, setToolsMap] = React.useState<Record<string, { tools: Array<{ name: string; description?: string }>; fromCache: boolean; errorCode?: string; status?: 'needs_auth' }>>({})
   const [refreshing, setRefreshing] = React.useState<string | null>(null)
   const [stagedConfigs, setStagedConfigs] = React.useState<Record<string, { agents: ('chat' | 'bg')[]; autoApprove: string[]; disabledTools: string[] }>>({})
 
@@ -1122,7 +1123,12 @@ const McpSection: React.FC<{
           // network hiccup wipe the chip groups a user is mid-way through
           // configuring -- the error message must ADD to the view, not clear it.
           if (result.errorCode && previous) {
-            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode } }
+            // Clear any prior `status` when merging a fresh error: discoverMcpTools
+            // never returns `errorCode` and `status: 'needs_auth'` together, so an
+            // errorCode here means THIS attempt is not needs_auth. The render below
+            // checks status before errorCode, so a carried-over status would mask
+            // the new error behind the muted "Not verified" copy.
+            return { ...prev, [serverName]: { ...previous, errorCode: result.errorCode, status: undefined } }
           }
           return { ...prev, [serverName]: result }
         })
@@ -1196,18 +1202,42 @@ const McpSection: React.FC<{
             opacity: refreshing === s.name ? 0.5 : 1,
           }}>{refreshing === s.name ? i18nT('apps.mochi.settingsPanel.mcp_refreshing') : i18nT('apps.mochi.settingsPanel.mcp_refresh_tools')}</button>
           {toolData?.fromCache && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{i18nT('apps.mochi.settingsPanel.mcp_from_cache')}</span>}
-          {/* A failed discover used to be indistinguishable from a server with no
-              tools, which is how a 405 on this button went unnoticed. The live
-              region is mounted UNCONDITIONALLY and its text swapped: a
-              role="status" node that appears together with its content is not
-              announced by many screen-reader/browser pairs, which would leave AT
-              users with exactly the silence this fix set out to break. */}
-          <span
-            role="status"
-            aria-live="polite"
-            style={{ fontSize: 11, color: 'var(--danger, #e5484d)' }}
-          >
-            {toolData?.errorCode ? mcpErrorText(toolData.errorCode) : ''}
+          {/* One role="status" region is mounted UNCONDITIONALLY and has only its
+              TEXT swapped: a live region that appears together with its content is
+              not announced by many screen-reader/browser pairs. It carries the
+              muted "Not verified" copy for needs_auth (a non-error status) and is
+              empty otherwise. A genuine discovery FAILURE renders additionally
+              through the shared ErrorNotice, whose role="alert" is assertive.
+              Styling is inline `var(--*)`, not Tailwind: this settings window
+              receives core CSS variables only, and utility classes resolve to no
+              rules here (see MochiCodeBlock / PendingAttachments). ErrorNotice is
+              itself Tailwind-styled, so its danger color and 11px size are
+              supplied by INHERITANCE from the wrapper below — its stripped
+              utilities fall back to the inherited `color`/`font-size`. */}
+          <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            <span
+              role="status"
+              aria-live="polite"
+              title={toolData?.status === 'needs_auth'
+                ? i18nT('pages.connectionsPage.not_verified_help', { provider: s.name })
+                : undefined}
+              style={{
+                fontSize: 11,
+                color: toolData?.status === 'needs_auth' ? 'var(--text-muted)' : undefined,
+              }}
+            >
+              {toolData?.status === 'needs_auth' ? i18nT('pages.overview.mcpTab.not_verified') : ''}
+            </span>
+            {/* No hand-off: this panel's settings (pet name, MCP agent chips, trust
+                mode) are staged in local state and applied only on Save, and the
+                Mochi settings window mounts under a bare createRoot with no
+                soft-nav seam, so the agent hand-off would hard-navigate to /chat
+                and discard the unsaved staging. */}
+            {toolData?.status !== 'needs_auth' && toolData?.errorCode && (
+              <span style={{ display: 'inline-flex', alignItems: 'center', color: 'var(--danger, #e5484d)', fontSize: 11 }}>
+                <ErrorNotice variant="inline" message={mcpErrorText(toolData.errorCode)} />
+              </span>
+            )}
           </span>
         </div>
         {/* Tool lists */}
