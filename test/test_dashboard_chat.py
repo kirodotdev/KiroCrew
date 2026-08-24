@@ -18677,10 +18677,12 @@ class TestSlotModelLiveSwitch:
         state.sessions.reset.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_active_turn_falls_back_to_reset(self, tmp_path):
+    async def test_active_turn_answers_409_without_reset(self, tmp_path):
         # Awaiting a response mid-turn would race the streaming prompt loop on
         # stdout for the non-multiplexed client (same hazard the effort handler
-        # documents), so a turn in flight takes the old reset path.
+        # documents), and the old reset fallback tore down the in-flight turn
+        # mid-stream for any programmatic caller. A turn in flight now answers
+        # busy: no live switch, no reset, slot model untouched.
         state = _make_state(tmp_path)
         state.sessions.reset = AsyncMock()
         provider = self._provider(active_turn=True)
@@ -18690,10 +18692,13 @@ class TestSlotModelLiveSwitch:
 
         async with TestClient(TestServer(self._app(state))) as client:
             resp = await client.post("/api/chat/slots/a/model", json={"model": "gpt-5.6-sol"})
+            data = await resp.json()
 
-        assert resp.status == 200
+        assert resp.status == 409
+        assert data["code"] == "turn_in_flight"
         provider.client.set_model.assert_not_awaited()
-        state.sessions.reset.assert_awaited_once()
+        state.sessions.reset.assert_not_awaited()
+        assert state._slots["a"].model == "claude-opus-4.8"
 
     @pytest.mark.asyncio
     async def test_live_switch_failure_falls_back_to_reset(self, tmp_path):

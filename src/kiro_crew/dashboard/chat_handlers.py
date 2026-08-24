@@ -5623,8 +5623,10 @@ async def _try_live_model_switch(
     if provider.has_active_turn():
         # Same hazard api_chat_slot_reasoning_effort documents: awaiting a
         # response mid-turn races the streaming prompt loop on stdout for the
-        # non-multiplexed client. The UI disables the model button while a turn
-        # runs, so this is defensive — take the old reset path.
+        # non-multiplexed client. api_chat_slot_model answers 409 before
+        # reaching here (its check and this call share one no-await window),
+        # so this is defense in depth for any future caller — decline the
+        # live switch rather than race the stream.
         return False
     wire = _wire_model_id(provider, model_name)
     if not wire:
@@ -5680,8 +5682,9 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/model — set model for a chat slot.
 
     Prefers an in-place ``session/set_model`` on the running session and only
-    resets when that is impossible (no ACP provider, a turn in flight, an
-    unrepresentable target, or the live call failing).
+    resets when that is impossible (no ACP provider, an unrepresentable
+    target, or the live call failing). A turn in flight answers 409 instead:
+    the reset fallback would tear down the streaming turn mid-stream.
     """
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
@@ -5705,14 +5708,53 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # below has nothing to act on: the session that would receive
         # ``session/set_model`` is on the other machine.
         return await _apply_remote_pick(request, state, slot, "model", {"model": model_name})
-    # One pick transaction at a time per slot (verifier finding on 84fc7961):
-    # two picks interleaving at the set_model await can roll back each other's
-    # state no matter how careful the rollback condition is — with two failed
-    # picks out of order, the later one restores the earlier one's already-
-    # refused model. Serialising the whole check → mutate → switch → rollback
-    # span makes each pick atomic; the CAS below stays as a backstop against
-    # any writer outside this lock.
-    async with slot._model_pick_lock:
+    # Two locks, always in this order (slot._lock outer, _model_pick_lock
+    # inner; the bulk handler nests them the same way and nothing takes them
+    # in the opposite order):
+    #
+    # slot._lock — same serialization as the agent, effort and workspace
+    # switch handlers: the awaits below yield the event loop, and an
+    # interleaved second switch could otherwise observe (or write)
+    # intermediate state — two racing switches would each commit and reset
+    # against the other's half-applied session. Holding it across the
+    # provider RPC mirrors the effort handler holding it across change_effort.
+    #
+    # slot._model_pick_lock — one pick transaction at a time against the
+    # model-fallback machinery (verifier finding on 84fc7961): the fallback
+    # swap and restore probe in chat_runner hold it across their own
+    # set_model awaits, and a pick landing inside that window could be
+    # overwritten by the swap (or roll back the swap's state). Serialising
+    # the whole check → mutate → switch → rollback span makes each pick
+    # atomic; the CAS rollback below stays as a backstop against any writer
+    # outside both locks.
+    #
+    # There is deliberately NO unlocked no-op fast path: a serialized switch
+    # holding the locks commits slot.model before its RPC and rolls it back
+    # on AcpModelUnavailable, so an unlocked equality read could match that
+    # transient value and report "already on X" for a model that is then
+    # rolled back.
+    async with slot._lock, slot._model_pick_lock:
+        # The session the switch will probe and, on the reset path, tear
+        # down. ``effective_session_key``, never ``_history_key_for`` (the
+        # reload handler's rule): a channel- or cron-born slot runs its turns
+        # under its linked key, and the dashboard-prefixed spelling names a
+        # session that never existed — the busy probe would see nothing and
+        # the reset would "succeed" against nothing while the live process
+        # kept the old model. Resolved INSIDE the lock, not before it: the
+        # binding can land while this request waits on the lock (a cron or
+        # workflow slot is linked when its first result is injected), and a
+        # key read before the wait would then name the wrong session.
+        session_key = effective_session_key(slot)
+        # App isolation on the SESSION, not just the slot (the cancel
+        # routes' policy): slot ownership does not imply ownership of a
+        # linked channel session, so an app caller may not switch the model
+        # a channel thread runs on. Denied as an indistinguishable 404.
+        denied = _app_cancel_denied(request, slot, "chat.slot_model", session_key)
+        if denied is not None:
+            return denied
+        # Checked INSIDE the locks only: a serialized predecessor targeting the
+        # same model may have committed while this request waited, and acting
+        # again would tear down the session that predecessor just set up.
         if slot.model == model_name and not slot._active_fallback_model:
             # Same-value pick: nothing to switch, but the user's EXPLICIT
             # affirmation of this model must still be recorded — the fallback
@@ -5732,8 +5774,29 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
             # still protects the choice from the restore probe.
             slot._model_pick_gen += 1
             return web.json_response({"ok": True, "model": model_name})
-        session_key = _history_key_for(name)
         provider = state.sessions.get_provider(session_key)
+        if slot.running or (isinstance(provider, LLMProvider) and provider.has_active_turn()):
+            # Never tear down an in-flight turn: _try_live_model_switch
+            # declines a mid-turn live switch, so falling through would take
+            # the reset fallback and kill the streaming turn for any
+            # programmatic caller (the UI disables the picker mid-turn, but
+            # the API has no such guard). Answer busy instead — same policy
+            # as the effort handler's defer-not-reset branch and the bulk
+            # handler's skip_running default. slot.running is checked FIRST
+            # because it is set at dispatch, BEFORE the multi-second
+            # provider.start() registers a session — a cold-starting first
+            # turn is invisible to get_provider but not to slot.running
+            # (api_chat's own busy gate uses the same signal). The refusal
+            # applies to EVERY provider class with an active turn, not only
+            # the ACP one that could have gone live: the reset fallback below
+            # tears down the in-flight turn regardless of provider type, and
+            # a 409 is retryable once the turn completes. isinstance, not a
+            # None check: the base class documents that caller-side guards
+            # defend against test doubles that are not LLMProvider instances,
+            # and the base default is False so no real provider is missed.
+            return web.json_response(
+                {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+            )
         prior_model = slot.model
         prior_pick_gen = slot._model_pick_gen
         slot.model = model_name
@@ -5741,45 +5804,222 @@ async def api_chat_slot_model(request: web.Request) -> web.Response:
         # restore probe never overrides this choice (automatic backfill does NOT
         # bump it).
         slot._model_pick_gen += 1
-        try:
-            went_live = await _try_live_model_switch(name, slot, provider, model_name)
-        except AcpModelUnavailable as exc:
-            # The live session refused the pick as unavailable to this account. Roll
-            # the slot back so the picker keeps showing what is actually running, and
-            # answer 4xx — deliberately NOT the reset fallback below, which would
-            # destroy the conversation and cold-start on a different model while
-            # reporting success. Only the session that owns the advertised list gets
-            # to make this call, so there is no pre-emptive gate here to go stale.
-            # The pick generation rolls back WITH the model: a refused pick changed
-            # nothing, and leaving the bump in place would make the fallback
-            # restore probe read it as an explicit choice and silently abandon
-            # restoring the primary — the session would stay on the fallback with
-            # no card and no probe.
-            #
-            # COMPARE-AND-SWAP, not unconditional (local review finding on
-            # eb3cf067): handlers interleave at the await above, so a NEWER pick
-            # may have landed while this one was in flight. An unconditional
-            # rollback would erase that later pick's model AND its generation,
-            # making the restore probe treat it as nonexistent. Only restore when
-            # the state is still exactly ours (our bump, our model); the check and
-            # both writes are synchronous, so they are atomic on the event loop.
-            # Interleavings compose: a later pick's own rollback restores what IT
-            # observed, unwinding in LIFO order to a consistent state.
+
+        def _rollback_pick() -> None:
+            """Undo this request's commit — model AND pick generation together.
+
+            A refused or declined pick changed nothing, and leaving the bump in
+            place would make the fallback restore probe read it as an explicit
+            choice and silently abandon restoring the primary — the session
+            would stay on the fallback with no card and no probe.
+
+            COMPARE-AND-SWAP, not unconditional (local review finding on
+            eb3cf067): both locks make an interleaved pick impossible, so this
+            is a backstop against any writer outside them. Only restore when
+            the state is still exactly ours (our bump, our model); the check
+            and both writes are synchronous, so they are atomic on the event
+            loop.
+            """
             if slot._model_pick_gen == prior_pick_gen + 1 and slot.model == model_name:
                 slot.model = prior_model
                 slot._model_pick_gen = prior_pick_gen
+
+        def _live_serves_target(candidate: object) -> bool:
+            """True when the live session's BACKEND-RESOLVED model already
+            equals the requested wire id — the truth-based success exception.
+
+            Not identity guessing: dispatch captures slot.model at its call
+            site and registers the session only after provider.start(), so
+            neither identity nor registration time proves anything; the
+            served model does. A True here means slot.model is consistent
+            with what actually runs — the partially-applied live switch
+            (set_model landed, then the effort reapply failed) — so rollback
+            would publish the OLD model over a live session running the NEW
+            one, and a teardown would kill it. Defined once and consumed by
+            BOTH the pre-reset busy re-check and the post-decline
+            disambiguation, so the two spellings cannot diverge.
+            """
+            if not isinstance(candidate, AcpProvider):
+                return False
+            wire = _wire_model_id(candidate, model_name)
+            if not wire:
+                return False
+            if candidate.served_model == wire:
+                return True
+            if wire == "auto":
+                # AcpProvider.served_model collapses the "auto" sentinel to ""
+                # on purpose (the fallback canary must never probe a model the
+                # backend did not resolve), so a landed switch TO Auto is
+                # invisible through it. The session client keeps the raw id —
+                # after set_model("auto") lands the handle prefers that
+                # explicit assignment — so read it unfiltered for this one
+                # value (the same literal _wire_model_id hands out for Auto).
+                # Any other non-match stays False (fail-closed).
+                raw = getattr(candidate.client, "served_model", "")
+                return str(raw or "").strip() == wire
+            return False
+
+        try:
+            went_live = await _try_live_model_switch(name, slot, provider, model_name)
+        except AcpModelUnavailable as exc:
+            # The live session refused the pick as unavailable to this account.
+            # Roll the slot back so the picker keeps showing what is actually
+            # running, and answer 4xx — deliberately NOT the reset fallback
+            # below, which would destroy the conversation and cold-start on a
+            # DIFFERENT model while reporting success. Only the session that
+            # owns the advertised list gets to make this call, so there is no
+            # pre-emptive gate here to go stale. The rollback runs under the
+            # locks, so no serialized successor can observe the transient value.
+            _rollback_pick()
             logger.warning("Slot %s model rejected: %s", name, exc)
             return web.json_response({"error": str(exc), "code": "model_unavailable"}, status=400)
+        if effective_session_key(slot) != session_key:
+            # The slot was bound to a different session while the live switch
+            # awaited its provider RPCs (a cron/workflow slot gets linked when
+            # its first result is injected). Whatever set_model did landed on
+            # a session the slot no longer runs on, and resetting the key this
+            # request resolved would tear down (or "succeed" against) the
+            # wrong session — either way committing would advertise the new
+            # model over a session this handler never touched. Roll back and
+            # answer 409; the retry resolves the current binding.
+            _rollback_pick()
+            return web.json_response(
+                {"error": "slot session was rebound during the switch", "code": "session_rebound"},
+                status=409,
+            )
         if went_live:
             _broadcast_context_reset(state, slot.key, provider)
         else:
+            # LAST-INSTANT busy re-check — the invariant all the review rounds
+            # on this handler converge on: no destructive step may run while a
+            # turn can be live, so idleness must be established within a
+            # NO-AWAIT window immediately before the teardown, and the atomic
+            # skip_if_busy decline covers only that microsecond residue. The
+            # pre-check above is separated from this point by
+            # _try_live_model_switch's provider RPCs (seconds on a slow
+            # backend), so a send may have started — and even posted an
+            # ask_question card — since it ran; _reset_slot_session clears
+            # pending waits BEFORE its atomic decline (its docstring's safety
+            # argument assumes a caller-side busy check microseconds old), so
+            # entering it busy would falsely reject that turn's cards even
+            # though the reset itself declines. Busy here → roll back and
+            # answer the same 409 the pre-check gives.
+            recheck = state.sessions.get_provider(session_key)
+            if slot.running or (isinstance(recheck, LLMProvider) and recheck.has_active_turn()):
+                if _live_serves_target(recheck):
+                    # The turn that slipped in runs on a session that already
+                    # serves the target (set_model landed before the effort
+                    # reapply failed): slot.model is truthful, so report
+                    # success without teardown — rolling back would publish
+                    # the old model while the live turn streams under the new
+                    # one.
+                    logger.warning(
+                        "Slot %s model switch: live session already serves the "
+                        "target; skipping the reset under its in-flight turn",
+                        name,
+                    )
+                    _broadcast_context_reset(state, slot.key, recheck)
+                    state.push_slots_update()
+                    return web.json_response({"ok": True, "model": model_name})
+                _rollback_pick()
+                return web.json_response(
+                    {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                )
+            # Children guard, shared with reload/continue: the reset tears
+            # down the runtime attached sub-agents run on, so a parent that is
+            # idle but still has children (running, queued, or with a
+            # completion event in flight) must refuse rather than discard
+            # their work. Same probe block as api_chat_slot_reload; only the
+            # rollback is added here because this handler committed first.
+            children_409 = _subagents_attached_response(state, slot, session_key, "slot_model")
+            if children_409 is not None:
+                _rollback_pick()
+                return children_409
             logger.info(
                 "Slot %s model switched to %r, resetting session", name, model_name or "auto"
             )
-            await _reset_slot_session(state, slot, session_key)
+            # skip_if_busy: the has_active_turn() 409 above is a best-effort
+            # fast path — message dispatch does not take slot._lock, so a turn
+            # can start between that check and this reset. SessionManager.reset
+            # evaluates busyness atomically with the session pop (the same
+            # authoritative-backstop split api_chat_slot_reload documents), so
+            # a turn that slipped into the window is declined here instead of
+            # torn down mid-stream.
+            reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+            if not reset_ok:
+                # Disambiguate the decline FAIL-CLOSED — with one truth-based
+                # exception checked first. Provider identity or registration
+                # time cannot prove which model a live session runs: dispatch
+                # captures slot.model at its call site but registers the
+                # session only after a multi-second provider.start(), so a
+                # session registered after the commit may still carry the old
+                # model. A false 409 is retryable and costs nothing; a false
+                # success strands a live session on the old model under the
+                # new slot.model.
+                busy_provider = state.sessions.get_provider(session_key)
+                live_serves_target = _live_serves_target(busy_provider)
+                if live_serves_target:
+                    # See _live_serves_target: slot.model is consistent with
+                    # what actually runs, so success without teardown is the
+                    # truthful answer; the un-pushed effort override is
+                    # already persisted on the slot and applies on the next
+                    # cold start (same degradation the effort handler's defer
+                    # branch accepts).
+                    logger.warning(
+                        "Slot %s model switch: live session already serves the "
+                        "target; declined reset left it in place (effort "
+                        "override, if any, applies on the next cold start)",
+                        name,
+                    )
+                if not live_serves_target and isinstance(busy_provider, LLMProvider):
+                    if busy_provider.has_active_turn():
+                        # A turn slipped in: roll back the commit and answer
+                        # the same 409 the fast path gives, leaving the turn
+                        # running whichever model it captured.
+                        _rollback_pick()
+                        return web.json_response(
+                            {"error": "a turn is in flight", "code": "turn_in_flight"},
+                            status=409,
+                        )
+                    # A live IDLE session declined the reset (its turn ended
+                    # before this re-read). Reporting success would leave that
+                    # process alive on whatever model it captured. Tearing
+                    # down an idle session is always safe — history lives on
+                    # the slot, not in the process — so retry once
+                    # (api_chat_slot_reload's template for this exact race); a
+                    # second decline means another turn is genuinely racing,
+                    # which is the turn-in-flight case again.
+                    reset_ok = await _reset_slot_session(
+                        state, slot, session_key, skip_if_busy=True
+                    )
+                    if not reset_ok:
+                        _rollback_pick()
+                        return web.json_response(
+                            {"error": "a turn is in flight", "code": "turn_in_flight"},
+                            status=409,
+                        )
+                # No live provider: there was no registered session to tear
+                # down — the next message cold-starts under the new model,
+                # which is exactly what the reset would have arranged.
+            if effective_session_key(slot) != session_key:
+                # Same check after the reset await(s) as after the live
+                # switch: the session this request tore down is no longer
+                # the slot's, so the commit would advertise the new model
+                # over a session that never saw the switch. The teardown
+                # itself was harmless (that session was idle and no longer
+                # bound); roll back the commit and let the retry resolve the
+                # current binding.
+                _rollback_pick()
+                return web.json_response(
+                    {
+                        "error": "slot session was rebound during the switch",
+                        "code": "session_rebound",
+                    },
+                    status=409,
+                )
             _broadcast_context_reset(state, slot.key, None)
-        state.push_slots_update()
-        return web.json_response({"ok": True, "model": model_name})
+    state.push_slots_update()
+    return web.json_response({"ok": True, "model": model_name})
 
 
 # Per-slot transaction locks for the autocompact endpoint. The write span
@@ -6050,11 +6290,13 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
 
     Body: {"model": "<name>" | "", "skip_running": bool (default True)}.
     "" selects the provider/auto default. Applies the model to every slot
-    whose model differs, resetting each affected slot's session — a model
-    switch always resets, same as ``api_chat_slot_model``. Slots mid-turn are
-    skipped when ``skip_running`` is true to avoid the model-switch-mid-stream
-    duplicate-content bug; pass ``skip_running: false`` to force
-    every slot. Returns the slot keys that were switched / skipped / unchanged /
+    whose model differs, resetting each affected slot's session. Mid-turn
+    policy deliberately differs from ``api_chat_slot_model``: the single-slot
+    handler prefers a live in-place switch and answers 409 for a slot
+    mid-turn, while this bulk endpoint always resets and skips mid-turn slots
+    when ``skip_running`` is true (the default) — passing ``skip_running:
+    false`` is an explicit opt-in that still tears down in-flight turns.
+    Returns the slot keys that were switched / skipped / unchanged /
     failed; a per-slot reset failure is isolated (that slot is reported in
     ``failed`` and keeps its old model) rather than aborting the whole switch.
     """
@@ -6094,33 +6336,125 @@ async def api_chat_slots_model(request: web.Request) -> web.Response:
         # user bypasses the ownership check.
         if not is_dashboard_user and slot._app != request_app:
             continue
-        # Same transaction lock as the single-slot pick (verifier finding on
-        # 9f182b0c): without it, a bulk select of a model that a single-slot
-        # pick is speculatively holding reads equality and reports the slot
-        # unchanged — then the single pick's failure rolls it back, leaving
-        # the bulk response claiming a model the slot does not have.
-        async with slot._model_pick_lock:
+        # Same two locks, same order, as the single-slot pick (slot._lock
+        # outer, _model_pick_lock inner). ALL classification happens inside
+        # them, equality FIRST: a serialized switch commits slot.model before
+        # its provider RPC and rolls it back on failure, so an unlocked
+        # equality read could match that transient value and report a slot
+        # "unchanged" for a model that is then rolled back (verifier finding
+        # on 9f182b0c) — and an unlocked running-check ahead of the equality
+        # check would classify a running slot that already uses the requested
+        # model as skipped_running instead of unchanged. Queuing on the locks
+        # is cheap: turns do not hold slot._lock, so a running slot's lock
+        # only contends with another switch handler.
+        async with slot._lock, slot._model_pick_lock:
+            # The session this slot's turns run on — effective_session_key,
+            # never _history_key_for (see api_chat_slot_model), resolved
+            # INSIDE the lock so a binding that lands while this iteration
+            # waits on it is what the reset addresses.
+            session_key = effective_session_key(slot)
+            if not is_dashboard_user and session_key != _history_key_for(name):
+                # Slot ownership does not imply ownership of a linked channel
+                # session (the cancel routes' second condition): an app caller
+                # does not get to switch the model a channel thread runs on.
+                # Skipped silently, like every other slot the app does not own.
+                continue
             if slot.model == model_name:
                 unchanged.append(name)
                 continue
             if skip_running and slot.running:
                 skipped_running.append(name)
                 continue
-            # Reset before flipping the model and isolate per-slot failures: if the
-            # reset raises, leave slot.model untouched so the slot is never left on
-            # the new model with stale history (the model/history inconsistency), and a
-            # single failure doesn't abort the whole bulk switch.
+            # Last-instant busy re-check on the EFFECTIVE session, same as the
+            # single-slot handler: slot.running only sees turns dispatched
+            # through this slot's task, and a channel-linked slot's turn runs
+            # under its linked key without setting it. _reset_slot_session
+            # clears pending waits BEFORE its atomic decline (its docstring's
+            # safety argument assumes a caller-side busy check microseconds
+            # old), so entering it against a live linked turn would reject
+            # that turn's cards even though the reset itself declines.
+            live_now = state.sessions.get_provider(session_key)
+            if skip_running and isinstance(live_now, LLMProvider) and live_now.has_active_turn():
+                skipped_running.append(name)
+                continue
+            # Children guard (api_chat_slot_reload's): the reset tears down the
+            # runtime attached sub-agents run on, so a parent with children
+            # running, queued, or mid-delivery is skipped rather than have
+            # their work discarded — regardless of skip_running, which speaks
+            # to the parent's own turn, not to its children.
+            if subagents_attached(state, slot, session_key, "slots_model"):
+                skipped_running.append(name)
+                continue
+            # Reset before flipping the model and isolate per-slot failures: if
+            # the reset raises, leave slot.model untouched so the slot is never
+            # left on the new model with stale history (the model/history
+            # inconsistency), and a single failure doesn't abort the whole bulk
+            # switch. skip_if_busy mirrors skip_running: when the caller asked
+            # to skip running slots, a turn that started AFTER the checks above
+            # (message dispatch does not take slot._lock) is declined at the
+            # authoritative point — SessionManager.reset evaluates busyness
+            # atomically with the session pop — instead of being torn down;
+            # skip_running=false keeps its documented force semantics.
             try:
-                await _reset_slot_session(state, slot, _history_key_for(name))
+                reset_ok = await _reset_slot_session(
+                    state, slot, session_key, skip_if_busy=skip_running
+                )
+                if skip_running and not reset_ok:
+                    if slot.running:
+                        # A first send slipped into the reset await and is still
+                        # inside its multi-second provider.start(): visible to
+                        # slot.running (set at dispatch) but not yet to
+                        # get_provider, so the provider ladder below would read
+                        # "no live provider" and commit over a session that
+                        # captured the OLD model (this handler commits AFTER the
+                        # reset). Classify it as the in-lock pre-check would have.
+                        skipped_running.append(name)
+                        continue
+                    busy_provider = state.sessions.get_provider(session_key)
+                    if isinstance(busy_provider, LLMProvider):
+                        if busy_provider.has_active_turn():
+                            # A turn slipped into the check window: classify it
+                            # the same as the pre-check would have, leaving the
+                            # turn (and the slot's model) untouched.
+                            skipped_running.append(name)
+                            continue
+                        # A live IDLE session declined the reset: the
+                        # slipped-in turn already finished before the re-read.
+                        # This handler commits AFTER the reset, so that session
+                        # is still on the old model — committing over it would
+                        # create the exact model/history inconsistency the
+                        # ordering exists to prevent. Retry once
+                        # (api_chat_slot_reload's template); a second decline
+                        # means another turn is genuinely racing. The retry
+                        # runs INSIDE this try so a teardown that raises keeps
+                        # the per-slot failure isolation: the slot lands in
+                        # failed with its model untouched instead of aborting
+                        # the whole bulk switch with a 500.
+                        reset_ok = await _reset_slot_session(
+                            state, slot, session_key, skip_if_busy=True
+                        )
+                        if not reset_ok:
+                            skipped_running.append(name)
+                            continue
+                    # No live provider: no session to tear down — the next
+                    # message cold-starts under the new model.
             except Exception:
                 logger.error("Bulk model switch: session reset failed for %s", name, exc_info=True)
                 failed.append(name)
                 continue
+            if effective_session_key(slot) != session_key:
+                # The slot was bound to a different session during the reset
+                # await: the session torn down is no longer the slot's, so
+                # committing would advertise the new model over one that
+                # never saw the switch. Nothing to roll back (bulk commits
+                # after the reset); report it as skipped so the caller retries.
+                skipped_running.append(name)
+                continue
             slot.model = model_name
             # Explicit pick (bulk): same generation bump as the single-slot pick.
             slot._model_pick_gen += 1
-        _broadcast_context_reset(state, slot.key, None)
-        switched.append(name)
+            _broadcast_context_reset(state, slot.key, None)
+            switched.append(name)
 
     if switched:
         logger.info(
@@ -6374,24 +6708,126 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     ws_name = body.get("workspace", "default")
-    # Block workspace change after conversation has started
-    if slot.total_messages > 0:
-        return web.json_response(
-            {
-                "error": "Cannot change workspace after messages have been sent. Open a new session instead."
-            },
-            status=409,
-        )
     if slot.is_remote:
+        # Same guard as the local path, then hand the pick to the peer.
         # ``slot.project`` is deliberately left alone: it is a path on THIS
         # machine (file search, @-mentions), and `default_project_dir` would
         # write a local directory that has nothing to do with the peer's
-        # workspace. The peer resolves its own project from the name.
+        # workspace. The peer resolves its own project from the name. No
+        # local session is reset, so this runs outside slot._lock (the
+        # effort handler's ordering).
+        if slot.total_messages > 0:
+            return web.json_response(
+                {
+                    "error": "Cannot change workspace after messages have been sent. Open a new session instead.",
+                    "code": "conversation_started",
+                },
+                status=409,
+            )
         return await _apply_remote_pick(request, state, slot, "workspace", {"workspace": ws_name})
-    slot.workspace = ws_name
-    slot.project = default_project_dir(ws_name)
-    logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
-    await _reset_slot_session(state, slot, _history_key_for(name))
+    # Same serialization as the agent switch: the reset await yields the event
+    # loop, so the mutate-then-reset section runs under the slot's lock — an
+    # unlocked write here would interleave with the agent handler's locked
+    # compare-and-set on the same workspace/project fields, and two racing
+    # workspace switches could each reset against the other's half-applied
+    # state. Commit-before-reset ordering per the agent-handler template: a
+    # send landing while the reset await is in flight cold-starts a session
+    # from the slot's CURRENT bindings, so the new pair must already be
+    # visible.
+    async with slot._lock:
+        # The session the reset tears down — effective_session_key, never
+        # _history_key_for (see api_chat_slot_model), resolved INSIDE the lock
+        # so a binding that lands while this request waits on it is what the
+        # reset addresses — with the same session-level app isolation the
+        # model handler applies.
+        session_key = effective_session_key(slot)
+        denied = _app_cancel_denied(request, slot, "chat.slot_workspace", session_key)
+        if denied is not None:
+            return denied
+        # Block workspace change after conversation has started. Checked
+        # INSIDE the lock: the guard is a check-then-act across an await, so
+        # an unlocked read could pass while a serialized switch this request
+        # waited on was still resetting.
+        if slot.total_messages > 0:
+            return web.json_response(
+                {
+                    "error": "Cannot change workspace after messages have been sent. Open a new session instead.",
+                    "code": "conversation_started",
+                },
+                status=409,
+            )
+        prior_workspace = slot.workspace
+        prior_project = slot.project
+        slot.workspace = ws_name
+        slot.project = default_project_dir(ws_name)
+        logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
+        # skip_if_busy: the total_messages guard above is checked before this
+        # await, and message dispatch does not take slot._lock — a first send
+        # can slip into that window. SessionManager.reset evaluates busyness
+        # atomically with the session pop (the authoritative backstop
+        # api_chat_slot_reload documents), so the slipped-in turn is declined
+        # here instead of torn down mid-stream.
+        reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+        if not reset_ok:
+            # Disambiguate FAIL-CLOSED, same as the model handler: dispatch
+            # captures the slot bindings at its call site but registers the
+            # session only after a multi-second provider.start(), so no
+            # identity or registration-time reasoning can prove which
+            # bindings a live session carries. A false 409 is retryable; a
+            # false success strands a live session on the old bindings.
+            busy_provider = state.sessions.get_provider(session_key)
+            live_serves_target = False
+            if isinstance(busy_provider, AcpProvider) and slot.project:
+                # Truth-based check, mirroring the model handler: when the
+                # live session's actual working directory already equals the
+                # COMMITTED project, the session cold-started on the new
+                # bindings (a first send captured them after the commit) —
+                # rolling back would advertise the old workspace while the
+                # live process runs the new one. Success without teardown is
+                # the truthful answer.
+                live_serves_target = busy_provider.cwd == slot.project
+                if live_serves_target:
+                    logger.info(
+                        "Slot %s workspace switch: live session already runs under %r; "
+                        "declined reset left it in place",
+                        name,
+                        slot.project,
+                    )
+            if not live_serves_target and isinstance(busy_provider, LLMProvider):
+                if busy_provider.has_active_turn():
+                    # Roll back the commit (commit-before-reset means the new
+                    # pair is already visible) and answer the same 409 the
+                    # guard gives.
+                    slot.workspace = prior_workspace
+                    slot.project = prior_project
+                    return web.json_response(
+                        {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                    )
+                # A live IDLE session declined the reset. Tearing down an idle
+                # session is always safe, so retry once
+                # (api_chat_slot_reload's template); a second decline means
+                # another turn is genuinely racing.
+                reset_ok = await _reset_slot_session(state, slot, session_key, skip_if_busy=True)
+                if not reset_ok:
+                    slot.workspace = prior_workspace
+                    slot.project = prior_project
+                    return web.json_response(
+                        {"error": "a turn is in flight", "code": "turn_in_flight"}, status=409
+                    )
+            # No live provider: no registered session to tear down — the next
+            # message cold-starts under the new bindings.
+        if effective_session_key(slot) != session_key:
+            # The slot was bound to a different session during the reset
+            # await(s): the session torn down is no longer the slot's, so the
+            # committed bindings would describe a session that never saw the
+            # switch. Roll back and answer 409; the retry resolves the
+            # current binding.
+            slot.workspace = prior_workspace
+            slot.project = prior_project
+            return web.json_response(
+                {"error": "slot session was rebound during the switch", "code": "session_rebound"},
+                status=409,
+            )
     state.push_slots_update()
     return web.json_response({"ok": True, "workspace": ws_name})
 
@@ -6446,35 +6882,46 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 {"error": conflict, "code": "workspace_overlaps_data_home"},
                 status=400,
             )
-    old_project = slot.project
-    slot.project = project
-    logger.info("Slot %s project set to %r", name, project)
-    sel().log_api_access(
-        caller=request.get("user", "dashboard"),
-        operation="chat_slot_project",
-        outcome="allowed",
-        resources=f"slot={name} project={project}",
-    )
-    # Track recent projects
-    if project:
-        try:
-            await asyncio.to_thread(_save_recent_project, project)
-        except Exception:
-            logger.warning("Failed to save recent project", exc_info=True)
-    # Reset the session so the next message cold-starts with the new CWD and
-    # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
-    # Only on an actual change — avoids a needless cold start on a no-op set.
-    #
-    # Deferred via a flag because this endpoint is reachable over loopback HTTP
-    # from inside the kiro-cli process group (the set_project MCP tool); an
-    # inline reset would killpg() the caller. Consumed in chat_runner.
-    if project != old_project:
-        slot._pending_reset_history_key = _history_key_for(name)
-        # Speculatively re-create the session rooted at the new project so the
-        # cwd change is paid during think-time. The eager task consumes the
-        # deferred reset itself, but only when no turn is running — the
-        # same killpg constraint that deferred the reset applies to it.
-        schedule_eager_spawn(state, slot)
+    # Same serialization as the agent/model/workspace switch handlers: this is
+    # the one remaining live HTTP mutator of slot.project (the MCP set_project
+    # directive in session_directive_apply also writes it, but from inside the
+    # slot's own running turn, where this lock is not an option), and unlocked
+    # it could interleave with a locked switch's mutate-then-reset section —
+    # the workspace handler's rollback would then erase a project pick that
+    # landed during its reset await. The lock only serializes the write; the
+    # reset stays DEFERRED via the flag (the killpg constraint below), so no
+    # reset is awaited while holding the lock beyond what the other switch
+    # handlers already hold.
+    async with slot._lock:
+        old_project = slot.project
+        slot.project = project
+        logger.info("Slot %s project set to %r", name, project)
+        sel().log_api_access(
+            caller=request.get("user", "dashboard"),
+            operation="chat_slot_project",
+            outcome="allowed",
+            resources=f"slot={name} project={project}",
+        )
+        # Track recent projects
+        if project:
+            try:
+                await asyncio.to_thread(_save_recent_project, project)
+            except Exception:
+                logger.warning("Failed to save recent project", exc_info=True)
+        # Reset the session so the next message cold-starts with the new CWD and
+        # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
+        # Only on an actual change — avoids a needless cold start on a no-op set.
+        #
+        # Deferred via a flag because this endpoint is reachable over loopback HTTP
+        # from inside the kiro-cli process group (the set_project MCP tool); an
+        # inline reset would killpg() the caller. Consumed in chat_runner.
+        if project != old_project:
+            slot._pending_reset_history_key = _history_key_for(name)
+            # Speculatively re-create the session rooted at the new project so the
+            # cwd change is paid during think-time. The eager task consumes the
+            # deferred reset itself, but only when no turn is running — the
+            # same killpg constraint that deferred the reset applies to it.
+            schedule_eager_spawn(state, slot)
     state.push_slots_update()
     return web.json_response({"ok": True, "project": project})
 
