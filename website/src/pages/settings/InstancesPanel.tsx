@@ -41,8 +41,8 @@ import {
   EMPTY_INSTANCE_FORM,
 } from './InstanceFormFields'
 const STATE_DOT: Record<InstanceTunnelStatus['state'], string> = {
-  connected: 'bg-success',
-  connecting: 'bg-warning',
+  connected: 'bg-ok',
+  connecting: 'bg-warn',
   error: 'bg-danger',
   stopped: 'bg-muted',
   disconnected: 'bg-muted',
@@ -137,7 +137,7 @@ function InstanceRow({
         </div>
         <div className="mt-1"><StatusBadge status={inst.status} /></div>
         {diag && !diag.ok ? (
-          <div className="mt-1 text-[12px] text-warning"><AlertTriangle size={12} className="lucide-inline" /> {diag.reason}</div>
+          <div className="mt-1 text-[12px] text-warn"><AlertTriangle size={12} className="lucide-inline" /> {diag.reason}</div>
         ) : null}
       </div>
       <div className="flex items-center gap-2 shrink-0">
@@ -288,7 +288,7 @@ export function InstancesPanel() {
           {i18nT('pages.settings.instancesPanel.enable_it_to_let_this_gateway_open_ssh_tunnels_t')}
         </p>
         {restartPending && (
-          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warning/10 text-warning border border-warning/30">
+          <div role="status" className="flex items-start gap-2 px-3 py-2 mb-3 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
             <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
             <span>
               {i18nT('pages.settings.instancesPanel.disabled_in_config_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
@@ -319,7 +319,7 @@ export function InstancesPanel() {
           config; `active` reflects whether the SSH manager is actually running. */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex items-center gap-2 text-[13px]">
-          <span className={`inline-block w-2 h-2 rounded-full ${active ? 'bg-success' : 'bg-warning'}`} aria-hidden />
+          <span className={`inline-block w-2 h-2 rounded-full ${active ? 'bg-ok' : 'bg-warn'}`} aria-hidden />
           <span className="text-muted">
             {i18nT('pages.settings.instancesPanel.multi_instance_management_is')} <span className="text-text font-medium">{i18nT('pages.settings.instancesPanel.enabled')}</span>
             {active ? '' : ' — not active until restart'}
@@ -330,7 +330,7 @@ export function InstancesPanel() {
         </Btn>
       </div>
       {!active && (
-        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-warning/10 text-warning border border-warning/30">
+        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-warn/10 text-warn border border-warn/30">
           <AlertTriangle size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span>
             {i18nT('pages.settings.instancesPanel.enabled_but_not_active_yet_restart_the_gateway')}<code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew_restart')}</code>){' '}
@@ -339,7 +339,7 @@ export function InstancesPanel() {
         </div>
       )}
       {connectedNote && (
-        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-success/10 text-success border border-success/30">
+        <div role="status" className="flex items-start gap-2 px-3 py-2 text-[13px] rounded-md bg-ok/10 text-ok border border-ok/30">
           <Plug size={14} className="lucide-inline mt-0.5 shrink-0" />
           <span className="flex-1 break-words">{connectedNote}</span>
           <button type="button" aria-label={i18nT('pages.settings.instancesPanel.dismiss')} className="shrink-0 opacity-70 hover:opacity-100" onClick={() => setConnectedNote(null)}><X size={12} /></button>
@@ -358,10 +358,10 @@ export function InstancesPanel() {
           className={
             'flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
             (diagNote.kind === 'ok'
-              ? 'bg-success/10 text-success border-success/30'
+              ? 'bg-ok/10 text-ok border-ok/30'
               : diagNote.kind === 'info'
                 ? 'bg-accent/10 text-accent border-accent/30'
-                : 'bg-warning/10 text-warning border-warning/30')
+                : 'bg-warn/10 text-warn border-warn/30')
           }
         >
           <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
