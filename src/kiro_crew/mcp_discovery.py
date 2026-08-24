@@ -1617,11 +1617,18 @@ async def probe_server(
 
         # Resolve command to absolute path using the merged env PATH
         effective_path = env.get("PATH") or ""
+        # A command carrying a directory component is not PATH-searched:
+        # ``shutil.which`` looks it up directly and ignores ``path=``. Reporting
+        # ``effective_path`` for it would name directories that were never
+        # consulted, inverting the not-installed/installed-elsewhere distinction
+        # the search-path report exists to draw -- so the report gets "" while
+        # the lookup below still uses the real PATH.
+        reported_path = "" if os.path.dirname(server.command) else effective_path
         resolved = shutil.which(server.command, path=effective_path)
         if not resolved:
             server.status = "error"
-            server.error = _unresolved_error(server.command, effective_path)
-            _warn_unresolvable_once(server.name, server.command, effective_path)
+            server.error = _unresolved_error(server.command, reported_path)
+            _warn_unresolvable_once(server.name, server.command, reported_path)
             return server
 
         # The command resolved, so forget any prior "not found" report — keyed on
@@ -1889,10 +1896,15 @@ async def probe_server(
         )
     except FileNotFoundError:
         server.status = "error"
-        server.error = _unresolved_error(server.command, effective_path)
-        # ``effective_path`` was bound before the try, so it is always safe to
-        # read here even if the failure preceded PATH resolution.
-        _warn_unresolvable_once(server.name, server.command, effective_path)
+        # Report the search path only for a bare command: a directory-qualified
+        # one is looked up directly by shutil.which, not PATH-searched, so naming
+        # ``effective_path`` would cite directories never consulted. Recomputed
+        # here (not read from ``reported_path``) because this handler can fire
+        # before the try-body binds it, just as ``effective_path`` is bound
+        # before the try for exactly that reason.
+        _reported = "" if os.path.dirname(server.command) else effective_path
+        server.error = _unresolved_error(server.command, _reported)
+        _warn_unresolvable_once(server.name, server.command, _reported)
     except SandboxUnavailableError as exc:
         # The PROBE could not run — this says nothing about the server, and the
         # two must not be reported alike. Ahead of the generic clause, which would

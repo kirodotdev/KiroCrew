@@ -3450,6 +3450,15 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
         _key = spec_path_key(_env)
         _declared = _env.get(_key, "") if _key else ""
         _search = mcp_search_path(_declared if isinstance(_declared, str) else "")
+        # A command carrying a directory component is not PATH-searched:
+        # ``shutil.which`` returns before it reads ``path=`` when
+        # ``os.path.dirname(cmd)`` is truthy, checking exactly the one location
+        # the command names. Reporting ``_search`` for it would send the reader
+        # to audit directories that were never consulted, which is the opposite
+        # of the not-installed/installed-elsewhere distinction this path draws --
+        # so return "" as the searched path even though the lookup still runs.
+        if os.path.dirname(cmd):
+            return shutil.which(cmd, path=_search), ""
         # The search path is returned, not recomputed by the caller: a candidate
         # that declares its own ``env.PATH`` is searched against a DIFFERENT path
         # than one that does not, so a caller reporting ``mcp_search_path("")``
@@ -3605,13 +3614,26 @@ def rebuild_agent_config(*, clean: bool = False) -> Path:
             # against a different path, so recomputing one here would name
             # directories that were never consulted. The candidate list stays at
             # DEBUG: that is about which spec won, not about why none resolved.
-            logger.warning(
-                "Dropping MCP server %r: command not found: %s — %s; %s",
-                name,
-                spec.get("command", ""),
-                describe_search_path(dedup_path(os.pathsep.join(searched))),
-                MCP_PATH_HINT,
-            )
+            if searched:
+                logger.warning(
+                    "Dropping MCP server %r: command not found: %s — %s; %s",
+                    name,
+                    spec.get("command", ""),
+                    describe_search_path(dedup_path(os.pathsep.join(searched))),
+                    MCP_PATH_HINT,
+                )
+            else:
+                # No candidate was PATH-searched (e.g. every command carries a
+                # directory component, which shutil.which looks up directly).
+                # ``describe_search_path("")`` would render "searched no
+                # directories (empty PATH)" and blame a PATH that was never
+                # consulted, so omit the clause instead.
+                logger.warning(
+                    "Dropping MCP server %r: command not found: %s; %s",
+                    name,
+                    spec.get("command", ""),
+                    MCP_PATH_HINT,
+                )
             logger.debug("MCP %r resolution failed; tried %s", name, "; ".join(tried))
     config["mcpServers"] = valid_servers
 

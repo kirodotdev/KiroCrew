@@ -1873,6 +1873,35 @@ class TestProbeRemote:
         mock_remote.assert_not_awaited()
         assert result.status == "error"
 
+    @pytest.mark.asyncio
+    async def test_directory_qualified_command_reports_no_search_path(self) -> None:
+        """A directory-qualified command is looked up directly, not PATH-searched.
+
+        Regression for #5053: ``shutil.which`` returns before it reads ``path=``
+        when the command carries a directory component, so it checks exactly the
+        one location named. Reporting the declared search path for it told the
+        reader it "searched N directories" that were never consulted -- the exact
+        not-installed vs installed-elsewhere confusion #4954 exists to prevent,
+        stated backwards. The error for such a command must be the bare
+        ``command not found: <cmd>`` with no directory list.
+        """
+        abs_missing = os.path.join(os.sep, "opt", "vendor", "bin", "ghost-mcp")
+        server = McpServerInfo(name="dirq", command=abs_missing)
+        result = await probe_server(server)
+        assert result.status == "error"
+        assert f"command not found: {abs_missing}" in result.error
+        assert "directories" not in result.error  # nothing was searched
+        assert "empty PATH" not in result.error
+
+    @pytest.mark.asyncio
+    async def test_bare_command_still_reports_the_search_path(self) -> None:
+        """The bare-command path is unchanged: it IS PATH-searched, so say so."""
+        server = McpServerInfo(name="bare", command="ghost-mcp-xyz")
+        result = await probe_server(server)
+        assert result.status == "error"
+        assert "command not found: ghost-mcp-xyz" in result.error
+        assert "directories" in result.error  # PATH was searched, report it
+
 
 class TestProbeServerConsentGate:
     """``probe_server`` itself refuses a consent-disabled server.
