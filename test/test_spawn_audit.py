@@ -693,9 +693,13 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # spelled out inline before, with the target read from sys.executable and
         # the repo from the operator-configured checkout. Sandboxing it now would
         # refuse a step every platform has always run unsandboxed.
-        "dep_sync.py::interpreter_version",
-        "dep_sync.py::installed_console_script_target",
-        "dep_sync.py::installed_package_origin",
+        #
+        # The three interpreter probes (interpreter_version,
+        # installed_package_origin, installed_console_script_target) share one
+        # fixed-argv helper, _probe_interpreter, which is where their single
+        # spawn now lives: `<target python> -I -X utf8 -c <fixed probe>` with a
+        # neutral cwd, so the answer describes the venv instead of the caller.
+        "dep_sync.py::_probe_interpreter",
         "dep_sync.py::sync",
         "dep_sync.py::sync_or_reinstall",
         # Foreground last-resort restart (Make Live on hosts with no drivable
