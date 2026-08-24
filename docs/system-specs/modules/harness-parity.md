@@ -2,8 +2,15 @@
 
 A *harness* is the agent process Kiro Crew drives over ACP. Kiro Crew has one
 first-class harness — `kiro-cli` (`ACP_BACKEND_KIRO`, spelled `""`) — and a
-growing set of adapted ones: the dormant `ACP_BACKEND_CLAUDE` seam, `KAS`
-(`ACP_BACKEND_KAS`), and whatever a bring-your-own (BYO) adapter registers next.
+growing set of adapted ones: Codex (`ACP_BACKEND_CODEX`, the official
+`@agentclientprotocol/codex-acp` adapter), the dormant `ACP_BACKEND_CLAUDE`
+seam, `KAS` (`ACP_BACKEND_KAS`), and whatever a bring-your-own (BYO) adapter
+registers next. Codex is explicitly selectable and is explicitly a member of
+the advertised-model-gating and prompt-command capability sets. It is explicitly
+absent from internal-sandbox delegation, shared runtime, session sharing,
+steering, Kiro identity-store, Kiro prerequisite, and Kiro agent-spec sets.
+Those memberships are evidence-based and fail closed; no capability is inherited
+from being “not another backend.”
 
 *Parity* here does not mean equal treatment. It means the opposite, stated
 precisely: **an added harness may only adapt itself to the seams the Kiro
@@ -62,7 +69,7 @@ harness is treated as Kiro.
 | Id | Guarantees | Pinned by | Constrains |
 |---|---|---|---|
 | H5 | Harness identity is a positive comparison against a named constant, or membership in a named set. `not is_claude_backend`, `!= ACP_BACKEND_KAS`, and `== "kas"` (bare literal) are all forbidden; `is_kiro_backend` and `backend in ACP_BACKENDS_<CAP>` are the forms. Enforced on the lines a change ADDS, not whole-tree — see the gate doc for why. | `scripts/check_harness_parity.py` (six rules, self-tested), `test_harness_parity.py::test_added_line_gate_self_test_passes`, `::test_added_line_gate_flags_a_planted_negative_test` | every module reading `AcpClient.backend` / `AcpProvider.is_*_backend` |
-| H6 | A capability is granted by opt-in membership, never by negation. `is_session_sharing_eligible` reads `ACP_BACKENDS_SESSION_SHARING` and `supports_steer` reads `ACP_BACKENDS_STEER`, so a harness that has not demonstrated the capability does not inherit it from a set it was never added to. | `test_harness_parity.py::test_session_sharing_is_opt_in`, `::test_steer_is_opt_in` | `providers/acp.py` (`AcpProvider.is_session_sharing_eligible`), `acp/client.py` (`AcpClient.supports_steer`), `acp/types.py` |
+| H6 | A capability is granted by opt-in membership, never by negation. `is_session_sharing_eligible` reads `ACP_BACKENDS_SESSION_SHARING`, `supports_steer` reads `ACP_BACKENDS_STEER`, and `_bg_provider_uses_acp_runtime` reads `ACP_BACKENDS_ACP_RUNTIME`, so a harness that has not demonstrated a capability does not inherit it from a set it was never added to. | `test_harness_parity.py::test_session_sharing_is_opt_in`, `::test_steer_is_opt_in`; `test_acp_backend_codex.py::test_codex_background_work_uses_the_dedicated_provider_path` | `providers/acp.py` (`AcpProvider.is_session_sharing_eligible`), `acp/client.py` (`AcpClient.supports_steer`), `session.py` (`SessionManager._bg_provider_uses_acp_runtime`), `acp/types.py` |
 | H7 | `is_kiro_cli` is a positive Kiro test at every call site. It drives internal-sandbox delegation: macOS skips Kiro Crew's seatbelt because Kiro's sandbox cannot nest inside it, and Windows permits the official Kiro backend to run despite having no Kiro Crew OS wrapper. Passed for a harness with no internal sandbox, it hands isolation to a layer that never starts; this is the only Group B row that is also a security invariant. **Windows requires `is_kiro_cli is True` exactly** — `None` and `_spawns_kiro_cli` basename inference can never grant the backend-less-host exception. On macOS a site may grant membership explicitly or pass `None` to defer to the positive basename test. | `test_harness_parity.py::test_is_kiro_cli_is_positive`, `test_sandbox_argv.py::TestKiroInternalSandboxExclusion` | `acp/runtime.py` (`AcpRuntime.spawn`), `acp/client.py` (`AcpClient.ensure_ready`), `sandbox.py` (`wrap_argv`, `_spawns_kiro_cli`) |
 | H8 | New harness identifiers live in `acp/types.py` and are added to `ACP_BACKENDS_KNOWN`; every capability set is a subset of it; and `AcpProvider.__init__` rejects anything outside it. `ACP_BACKEND_KIRO` is the empty string, so a value that falls through every identity check spawns `kiro-cli` under a foreign label. | `test_harness_parity.py::test_capability_sets_are_subsets_of_known_backends`, `::test_unknown_backend_rejected_at_construction` | `acp/types.py` (`ACP_BACKENDS_KNOWN`), `providers/acp.py` (`AcpProvider.__init__`) |
 

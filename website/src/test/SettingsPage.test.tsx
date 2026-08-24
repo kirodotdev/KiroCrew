@@ -2,8 +2,9 @@
  * Tests for the Settings page tab roster.
  *
  * Asserts SettingsPage *lists* its tabs (panel tests only cover the panels).
- * The Browser tab is present; there is no Provider tab because KiroCrew has a
- * single KiroACP / kiro-cli provider with nothing to select.
+ * The Browser and AI Backend tabs are present. There is no Provider tab because
+ * `agent.provider` remains fixed to ACP; the AI Backend tab selects the harness
+ * through `agent.acp_backend`.
  *
  * The five chat integrations live under ONE Channels tab (rows inside
  * ChannelsPanel), the sidebar carries Preferences/System group headers, and
@@ -17,6 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 // Stub the heavy panels — we are testing the tab roster, not panel internals.
 vi.mock('../pages/settings/OverviewPanel', () => ({ OverviewPanel: () => <div data-testid="overview-panel" /> }))
 vi.mock('../pages/settings/ChatPanel', () => ({ ChatPanel: () => <div data-testid="chat-panel" /> }))
+vi.mock('../pages/settings/AiBackendPanel', () => ({ AiBackendPanel: () => <div data-testid="ai-backend-panel" /> }))
 vi.mock('../pages/settings/DisplayPanel', () => ({ DisplayPanel: () => <div data-testid="display-panel" /> }))
 vi.mock('../pages/settings/BrowserPanel', () => ({ BrowserPanel: () => <div data-testid="browser-panel" /> }))
 // MANDATORY, not tidiness: the `../api/client` mock below exposes a FIXED method
@@ -100,7 +102,7 @@ describe('SettingsPage tabs', () => {
     expect(screen.getByText('Browser')).toBeInTheDocument()
   })
 
-  it('does not list a Provider tab (KiroACP is the only provider)', () => {
+  it('does not list a Provider tab because agent.provider remains fixed to ACP', () => {
     renderAt('/settings')
     expect(screen.queryByText('Provider')).not.toBeInTheDocument()
   })
@@ -120,6 +122,12 @@ describe('SettingsPage tabs', () => {
     cleanup()
     renderAt('/settings?tab=browser')
     expect(screen.getByTestId('browser-panel').parentElement!.className).toContain('pb-8')
+  })
+
+  it('lists and renders the AI Backend tab under System', () => {
+    renderAt('/settings?tab=ai-backend')
+    expect(screen.getByRole('button', { name: 'AI Backend' })).toBeInTheDocument()
+    expect(screen.getByTestId('ai-backend-panel')).toBeInTheDocument()
   })
 
   it('hides the Webhooks tab while its preview flag is off', () => {

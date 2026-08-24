@@ -1941,6 +1941,34 @@ def _apply_user_kiro_hooks(config: dict, mc_cfg: dict) -> None:
         logger.debug("SEL audit for kiro_hooks merge failed", exc_info=True)
 
 
+def managed_mcp_session_specs() -> dict[str, dict]:
+    """Return always-on managed MCP launch specs for ACP session injection.
+
+    This is the backend-neutral counterpart to the dynamic ``mcpServers`` block
+    in :func:`build_agent_config`: it evaluates the same capability gates and
+    invocation functions, but does not load, write, or require a Kiro agent
+    spec. Opt-in servers remain absent because no agent grant selected them.
+    Registry markers are intentionally omitted; they are a kiro-cli account
+    filtering mechanism, not part of an ACP stdio launch descriptor.
+    """
+    gated_off = _gated_off_servers()
+    env = _managed_mcp_env()
+    servers: dict[str, dict] = {}
+    for name, spec in _MANAGED_MCP_SERVERS.items():
+        if name in gated_off or spec.get("opt_in"):
+            continue
+        if "invocation_fn" in spec:
+            command, args = spec["invocation_fn"]()
+        else:
+            command = spec.get("command") or spec["command_fn"]()
+            args = list(spec["args"])
+        entry: dict = {"command": command, "args": list(args)}
+        if env:
+            entry["env"] = dict(env)
+        servers[name] = entry
+    return servers
+
+
 def build_agent_config(*, gated_off: "frozenset[str] | None" = None) -> dict:
     """Return the final agent config (shipped defaults + user overrides + dynamic fields).
 

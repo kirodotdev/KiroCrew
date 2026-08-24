@@ -24,6 +24,9 @@ from kiro_crew.acp.client import (
     model_is_unusable,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KIRO_IDENTITY_STORE,
+    ACP_BACKENDS_KNOWN,
     EVENT_AGENT_SWITCHED,
     EVENT_CLEAR_STATUS,
     EVENT_COMPACTION_STATUS,
@@ -2362,25 +2365,19 @@ def _resolve_mirror_target(state: Any, session_key: str) -> Any:
     )
 
 
-async def _retire_sessions_on_identity_change(state: Any) -> None:
-    """Recycle kiro-backed children when the signed-in account has changed.
+def _running_acp_backend(state: Any) -> str:
+    """Return the gateway's immutable startup backend, failing closed to Kiro."""
+    sessions = getattr(state, "sessions", None)
+    backend = getattr(sessions, "acp_backend", None)
+    if isinstance(backend, str) and backend in ACP_BACKENDS_KNOWN:
+        return backend
+    return ACP_BACKEND_KIRO
 
-    The counterpart to :func:`_mark_kiro_signed_out`, for the case that function
-    can never see: an external ``kiro-cli logout`` (or a switch to another
-    account) leaves a RUNNING child holding the old credential in memory. It
-    keeps refreshing and keeps answering, so no ACP auth failure ever occurs and
-    nothing reports the change -- turns simply continue under the account the user
-    believes they left.
 
-    This does NOT gate the send. A stale latch must never block a turn (see
-    ``dashboard/kiro_readiness.py``), and nothing here can: the check retires an
-    invalidated child and lets the send proceed on a fresh one, which is a
-    process recycle rather than a readiness verdict. It stays off the spawn path
-    too -- the trigger is a local database read, briefly cached, not a ``whoami``.
-
-    Best-effort: a failure here must not fail the turn, which would be a worse
-    outcome than the staleness it exists to correct.
-    """
+async def _retire_sessions_on_identity_change(state: Any, acp_backend: str) -> None:
+    """Recycle Kiro-backed children when the signed-in account has changed."""
+    if acp_backend not in ACP_BACKENDS_KIRO_IDENTITY_STORE:
+        return
 
     service = getattr(state, "kiro_prerequisite_service", None)
     sessions = getattr(state, "sessions", None)
@@ -4977,6 +4974,7 @@ async def _run_chat(
         # guards (`is_claude_backend`, the advertised list) rather than trusting a
         # provider name that could not be read.
         provider_name = ""
+        acp_backend = _running_acp_backend(state)
         # Canonical crew identity for watchdog overrides — same seeding rule
         # as the eager-spawn path (the two must agree): slot value until the
         # resolver supplies its alias, which covers the default crew on an
@@ -4989,6 +4987,8 @@ async def _run_chat(
         try:
             cfg = KiroCrewConfig.load()
             provider_name = cfg.agent.provider
+            # Backend selection is pending configuration until gateway restart;
+            # live safety gates keep using SessionManager's startup snapshot.
             # Warm the project agent index OFF the loop, then resolve inline. Only
             # the warm is offloaded: resolve_agent_bindings can raise StopIteration
             # on a malformed config, and StopIteration cannot be delivered through a
@@ -5073,7 +5073,7 @@ async def _run_chat(
         # see: the child is alive and healthy, but the account it authenticated
         # as is gone. Retiring it here means this turn cold-starts on the current
         # account instead of running as the previous one.
-        await _retire_sessions_on_identity_change(state)
+        await _retire_sessions_on_identity_change(state, acp_backend)
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -8542,7 +8542,8 @@ async def _run_chat(
             )
         _auth_msg = str(exc)
         slot.append("error", _auth_msg, "msg msg-err")
-        _mark_kiro_signed_out(state)
+        if acp_backend in ACP_BACKENDS_KIRO_IDENTITY_STORE:
+            _mark_kiro_signed_out(state)
         await _deliver_auth_error_to_slack(state, slot, sessions, session_key, _auth_msg)
     except AcpProcessDied as exc:
         logger.warning("ACP process died in slot %s: %s — resetting session", slot.key, exc)

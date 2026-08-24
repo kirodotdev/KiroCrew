@@ -2137,6 +2137,35 @@ class TestKiroPrerequisiteWorkflow:
         assert len(runtime.calls) == before
 
     @pytest.mark.asyncio
+    async def test_warm_up_skips_kiro_probe_for_codex_backend(
+        self,
+        tmp_path: Path,
+        monkeypatch,
+    ) -> None:
+        """Foreign backends do not pay for or depend on Kiro readiness probes."""
+        from kiro_crew.acp.types import ACP_BACKEND_CODEX
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = SimpleNamespace(agent=SimpleNamespace(acp_backend=ACP_BACKEND_CODEX))
+        monkeypatch.setattr(KiroCrewConfig, "load", MagicMock(return_value=cfg))
+        service = KiroPrerequisiteService(
+            platform_name="linux",
+            environ={"HOME": str(tmp_path), "PATH": ""},
+            home=tmp_path,
+            data_home=tmp_path / "data-home",
+            audit_writer=_no_audit,
+            warm_up_delay=0,
+        )
+        probe = AsyncMock()
+        service._probe = probe  # type: ignore[method-assign]
+
+        warm_up = service.warm_up()
+        assert warm_up is not None
+        await warm_up
+
+        probe.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_session_gate_probes_once_then_reuses_the_result(
         self,
         tmp_path: Path,

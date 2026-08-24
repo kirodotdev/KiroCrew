@@ -11307,6 +11307,20 @@
         "could_not_create_a_sign_in_link_try_again": "Не удалось создать ссылку для входа. Попробуй ещё раз.",
         "copy_failed_select_the_link_and_copy_it_manually": "Не удалось скопировать. Выдели ссылку и скопируй её вручную."
       },
+      "aiBackendPanel": {
+        "acp_backend": "Бэкенд ACP",
+        "ai_backend": "Бэкенд ИИ",
+        "kiro": "Kiro",
+        "codex": "Codex",
+        "kiro_agent_server": "Kiro Agent Server",
+        "choose_which_agent_runtime_handles_new_chats": "Выберите среду агента для обработки новых чатов.",
+        "codex_description": "Использует Codex CLI через официальный адаптер Codex ACP. Установите оба компонента на хосте шлюза, затем выполните указанную ниже команду для входа.",
+        "kas_description": "Использует Kiro Agent Server. Требования к установке и входу такие же, как у Kiro.",
+        "kiro_description": "Использует kiro-cli и вашу учётную запись Kiro. Это бэкенд по умолчанию.",
+        "restart_new_chats_description": "Перезапустите шлюз, затем начните новый чат, чтобы использовать этот бэкенд. Существующие чаты не переключаются на другой бэкенд во время работы.",
+        "restart_required": "Требуется перезапуск",
+        "selected_backend_saved": "Выбранный бэкенд сохранён в конфигурации {{productName}}."
+      },
       "aboutPanel": {
         "diverged": "Расхождение",
         "checkout_diverged_from_upstream": "Эта рабочая копия разошлась с upstream ({{distance}}). Выполните rebase или merge, чтобы обновиться — ничего не применяется автоматически, поэтому ваши локальные коммиты в безопасности.",

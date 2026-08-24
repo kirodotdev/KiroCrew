@@ -27,6 +27,7 @@ from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import runtime as acp_runtime
 from kiro_crew.acp.types import (
     ACP_BACKEND_CLAUDE,
+    ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ACP_RUNTIME,
@@ -36,8 +37,10 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_SESSION_SHARING,
     ACP_BACKENDS_STEER,
     ACP_CLIENT_CAPABILITIES,
+    CODEX_CLIENT_CAPABILITIES,
     KAS_CLIENT_CAPABILITIES,
     PROVIDER_LABEL_CLAUDE,
+    PROVIDER_LABEL_CODEX,
     PROVIDER_LABEL_DEFAULT,
     PROVIDER_LABEL_KAS,
 )
@@ -211,8 +214,8 @@ def test_is_kiro_cli_is_positive() -> None:
             ), f"{spawn.__qualname__} must use membership or a literal: {line.strip()}"
 
     assert ACP_BACKENDS_INTERNAL_SANDBOX == frozenset({ACP_BACKEND_KIRO}), (
-        "only kiro-cli ships an internal OS sandbox; adding a member here waives "
-        "Kiro Crew's own seatbelt for that harness on macOS"
+        "only kiro-cli may delegate to the kiro-cli settings-controlled internal "
+        "sandbox instead of Kiro Crew's seatbelt on macOS"
     )
 
 
@@ -269,9 +272,16 @@ def test_handshake_is_per_backend() -> None:
     Collapsing the two capability dicts into one every harness accepts silently
     downgrades what the Kiro session declares.
     """
-    source = inspect.getsource(acp_runtime.AcpRuntime.spawn)
-    assert "KAS_CLIENT_CAPABILITIES" in source and "ACP_CLIENT_CAPABILITIES" in source
+    runtime_source = inspect.getsource(acp_runtime.AcpRuntime.spawn)
+    assert "KAS_CLIENT_CAPABILITIES" in runtime_source
+    assert "ACP_CLIENT_CAPABILITIES" in runtime_source
     assert KAS_CLIENT_CAPABILITIES != ACP_CLIENT_CAPABILITIES
+
+    kiro_client_source = inspect.getsource(acp_client.AcpClient._initialize_session)
+    codex_client_source = inspect.getsource(acp_client.AcpClient._codex_initialize_session)
+    assert "CODEX_CLIENT_CAPABILITIES" not in kiro_client_source
+    assert "CODEX_CLIENT_CAPABILITIES" in codex_client_source
+    assert CODEX_CLIENT_CAPABILITIES != ACP_CLIENT_CAPABILITIES
 
 
 def test_every_known_backend_has_a_label() -> None:
@@ -284,6 +294,7 @@ def test_every_known_backend_has_a_label() -> None:
     labels = {
         ACP_BACKEND_KIRO: PROVIDER_LABEL_DEFAULT,
         ACP_BACKEND_CLAUDE: PROVIDER_LABEL_CLAUDE,
+        ACP_BACKEND_CODEX: PROVIDER_LABEL_CODEX,
         ACP_BACKEND_KAS: PROVIDER_LABEL_KAS,
     }
     assert set(labels) == set(ACP_BACKENDS_KNOWN), (

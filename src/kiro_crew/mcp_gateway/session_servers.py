@@ -76,20 +76,43 @@ def _acp_server_entry(
         # shadow the agent's working entry with a broken one. Skip instead,
         # leaving the spec's own server in place.
         return None
-    args = [a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
-            for a in (entry.get("args") or [])]
+    args = [
+        a if isinstance(a, str) else json.dumps(a, sort_keys=True, default=str)
+        for a in (entry.get("args") or [])
+    ]
     if channel_id and "--channel-id" not in args:
         args.extend(["--channel-id", channel_id])
     shaped: dict[str, Any] = {
         k: v for k, v in entry.items() if k not in _ACP_RESERVED and k != "command"
     }
-    shaped.update({
-        "name": name,
-        "command": command,
-        "args": args,
-        "env": _acp_env(entry.get("env")),
-    })
+    shaped.update(
+        {
+            "name": name,
+            "command": command,
+            "args": args,
+            "env": _acp_env(entry.get("env")),
+        }
+    )
     return shaped
+
+
+def acp_session_servers(
+    servers: dict[str, Any], channel_id: str | None = None
+) -> list[dict[str, Any]]:
+    """Convert an MCP server mapping to deterministic ACP session descriptors.
+
+    Invalid entries are skipped rather than shadowing a working server with an
+    unlaunchable descriptor. Callers decide which servers are authorized; this
+    helper only converts transport shape and preserves non-reserved fields.
+    """
+    out: list[dict[str, Any]] = []
+    for name, entry in sorted(servers.items()):
+        if not isinstance(entry, dict):
+            continue
+        shaped = _acp_server_entry(str(name), entry, channel_id)
+        if shaped is not None:
+            out.append(shaped)
+    return out
 
 
 def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | None:
@@ -141,7 +164,9 @@ def _load_overlay_for_agent(overlay_dir: Path, agent: str) -> dict[str, Any] | N
         logger.debug(
             "MCP-gateway: no overlay with name %r among %d filename-qualified "
             "candidate(s) in %s; session runs unpooled",
-            agent, len(candidates), overlay_dir,
+            agent,
+            len(candidates),
+            overlay_dir,
         )
     return None
 
@@ -214,8 +239,8 @@ def injection_server_names(
     if not isinstance(servers, dict):
         return frozenset()
     return frozenset(
-        name for name, entry in servers.items()
-        if isinstance(entry, dict) and (
-            entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY)
-        )
+        name
+        for name, entry in servers.items()
+        if isinstance(entry, dict)
+        and (entry.get(_WRAPPER_MARKER) or entry.get(_WRAPPER_MARKER_LEGACY))
     )

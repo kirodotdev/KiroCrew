@@ -14,24 +14,27 @@ run see [`../guides/install.md`](../guides/install.md).
 
 ## What Kiro Crew is, and what it adds
 
-Three layers sit beneath Kiro Crew, and the distinction matters:
+Three layers sit beneath Kiro Crew's default Kiro-backed path, and the
+distinction matters:
 
-1. **kiro-cli** is an agent *runtime*, not an agent. It owns the LLM connection,
-   tool execution (bash, file read/write, grep, glob), MCP server management,
-   session persistence, context compaction, and **ACP** (the Agent Client
-   Protocol): a JSON-RPC 2.0 stdio interface any orchestrator can drive.
+1. **kiro-cli** is the default agent *runtime*, not an agent. It owns the LLM
+   connection, tool execution (bash, file read/write, grep, glob), MCP server
+   management, session persistence, context compaction, and **ACP** (the Agent
+   Client Protocol): a JSON-RPC 2.0 stdio interface any orchestrator can drive.
 2. **Agent configs** (JSON under `~/.kiro/agents/`, or a project's own
-   `<project>/.kiro/agents/`) tell kiro-cli *how* to
-   behave: system prompt, enabled tools, MCP servers. Every agent runs as
-   `kiro-cli acp --agent <name>`; the `--agent` flag selects the config, the
-   runtime is always kiro-cli. Kiro Crew generates and refreshes its own
-   `kirocrew.json` there (`agent.py`).
+   `<project>/.kiro/agents/`) tell kiro-cli *how* to behave: system prompt,
+   enabled tools, MCP servers. On the default backend each agent runs as
+   `kiro-cli acp --agent <name>`; the `--agent` flag selects the config. Kiro
+   Crew generates and refreshes its own `kirocrew.json` there (`agent.py`).
 3. **Kiro Crew** is the gateway: a single asyncio process that multiplexes
-   surfaces onto that runtime and adds everything a runtime deliberately has no
-   opinion about.
+   surfaces onto the selected ACP harness and adds everything a harness
+   deliberately has no opinion about.
 
-Kiro Crew is **KiroACP-only**: `agent.provider` is fixed to `acp`, and kiro-cli is
-a hard requirement.
+Kiro Crew has one provider surface: `agent.provider` remains fixed to `acp`.
+The empty `agent.acp_backend` value selects the first-class Kiro harness;
+`agent.acp_backend = "codex"` selects the adapted official Codex ACP adapter.
+Only the Kiro backend requires `kiro-cli` and its agent configuration, identity
+store, readiness checks, and usage service.
 
 | Capability | kiro-cli alone | With Kiro Crew |
 |---|---|---|

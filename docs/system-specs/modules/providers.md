@@ -1,8 +1,11 @@
 ## LLM Provider Abstraction
 
-KiroCrew drives a single LLM backend: `kiro-cli` over ACP. The `LLMProvider`
-interface is retained as a thin seam (consumers depend only on the ABC), but
-there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
+Kiro Crew drives one provider type, `AcpProvider`, behind the `LLMProvider`
+interface. `agent.provider` remains fixed to `acp`; the harness is selected by
+`agent.acp_backend`. Kiro (`""`) is the default and first-class path. Codex
+(`"codex"`) is a selectable adapted harness using the official
+`@agentclientprotocol/codex-acp` adapter. The dormant Claude seam and KAS retain
+their existing registration rules.
 
 ### Architecture
 
@@ -19,19 +22,20 @@ there is exactly one concrete provider — `agent.provider` is fixed to `acp`.
                    │
             ┌──────┴──────┐
             │ AcpProvider │
-            │ acp.py      │
-            │ kiro-cli    │
+            │ kiro/codex  │
             └─────────────┘
 ```
 
 **Note:** the removed Bedrock provider and the removed standalone provider were
 **deleted** during de-Amazoning, along with their config fields and the
-multi-provider dispatch factory. `acp/client.py` keeps a dormant
-`ACP_BACKEND_CLAUDE` seam (`AcpProvider` can in principle drive
-`claude-agent-acp`) so an internal companion can re-register a Claude backend,
-but the public provider factory never selects it — `kiro-cli` is the only
-backend.
-See [`../features/claude-code-provider.md`](../features/claude-code-provider.md).
+multi-provider dispatch factory. Codex does not add a provider value: the public
+factory selects it only through `agent.acp_backend="codex"`. The Kiro path
+continues to use `AcpRuntime`; Codex uses a dedicated `AcpClient`, advertised
+models/config options, direct ACP MCP descriptors, and Codex-specific auth
+remediation without Kiro prerequisites, identity state, usage polling, agent
+specs, or settings overlays. See
+[`acp-client.md`](acp-client.md) and
+[`harness-parity.md`](harness-parity.md).
 
 ### LLMProvider ABC (`providers/base.py`)
 
@@ -76,13 +80,13 @@ Provider-agnostic event dataclass (aliased from `AcpEvent`):
 The sole provider. Spawns a long-lived `kiro-cli acp --agent <name>` subprocess
 and speaks JSON-RPC 2.0 over stdio.
 
-**Dormant backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend`
-parameter (`"" ` → kiro-cli; `"claude"` / `ACP_BACKEND_CLAUDE` → `claude-agent-acp`)
-so an internal companion can re-register a Claude backend over the same
-client. **The public provider factory only ever selects kiro-cli** — the claude
-branch is unreachable in this build. Its binary-resolution + config-isolation
-details live in [`acp-client.md`](acp-client.md); do not re-add the registration
-glue or a provider selector (see the repo-root `CLAUDE.md`).
+**Backend seam:** `AcpProvider`/`AcpClient` retain an `acp_backend` parameter
+(`""` → kiro-cli; `"codex"` / `ACP_BACKEND_CODEX` → the official Codex ACP
+adapter; `"claude"` / `ACP_BACKEND_CLAUDE` → the dormant Claude seam).
+The public provider factory selects Kiro or Codex while keeping
+`agent.provider="acp"`; Claude remains unreachable in this build. Binary
+resolution, direct MCP injection, config isolation, and resume details live in
+[`acp-client.md`](acp-client.md).
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)
@@ -114,13 +118,27 @@ glue or a provider selector (see the repo-root `CLAUDE.md`).
 {
   "agent": {
     "provider": "acp",
+    "acp_backend": "codex",
     "model": "auto"
   }
 }
 ```
 
-- `agent.provider` is fixed to `"acp"` (enum `["acp"]`); there is no provider to choose.
-- `create_provider_factory()` returns a `Callable` that creates the kiro-cli `AcpProvider`.
+- `agent.provider` is fixed to `"acp"` (enum `["acp"]`); there is no second
+  provider value.
+- `agent.acp_backend` accepts `""` (Kiro default), `"codex"` (official Codex ACP
+  adapter), and `"kas"`. Unknown or unavailable values degrade to Kiro under
+  the harness-parity rules.
+- Settings exposes those values under **System → AI Backend** and writes only
+  `agent.acp_backend`. The dashboard PATCH gate validates against
+  `ACP_BACKENDS_SELECTABLE` and reports `restart_required`; the running provider
+  and existing chats are left untouched until the operator restarts the gateway.
+- For Codex, `agent.model="auto"` inherits the adapter session default. Explicit
+  model ids are never translated through Kiro's model registry and must be
+  present in the adapter-advertised model set before a live switch.
+- `create_provider_factory()` returns the same `AcpProvider` factory for every
+  selectable backend and passes the selected backend through; Codex does not
+  load a Kiro agent spec or resolve model/effort values through one.
 
 An agent spec's model is consumed by kiro-cli before Kiro Crew reaches
 `session/new`, so the live-session entitlement guard cannot diagnose a wrong

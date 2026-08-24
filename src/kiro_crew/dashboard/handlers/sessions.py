@@ -26,6 +26,7 @@ from aiohttp import web
 import kiro_crew.dashboard.handlers as _h
 from kiro_crew import session_ledger
 from kiro_crew.acp.client import _resolve_kiro_bin_for_spawn
+from kiro_crew.acp.types import ACP_BACKEND_CODEX
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.dashboard.handlers import kiro_usage_api
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
@@ -934,7 +935,11 @@ async def _fetch_usage_bg() -> None:
 
 
 async def api_sessions_usage(request: web.Request) -> web.Response:
-    """GET /api/sessions/usage — cached kiro credit usage (background refresh)."""
+    """GET /api/sessions/usage — cached usage for the running backend."""
+    dashboard_state = request.app.get("state")
+    session_manager = getattr(dashboard_state, "sessions", None)
+    if getattr(session_manager, "acp_backend", None) == ACP_BACKEND_CODEX:
+        return web.json_response({"usage": {"available": False, "backend": "codex"}})
     # Same browser-storm guard as api_models: the /usage scrape shells out to
     # `kiro-cli chat --no-interactive ... /usage`, which auto-opens a browser
     # login while signed out. This endpoint is polled every 30s by the top-bar

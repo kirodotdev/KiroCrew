@@ -21,8 +21,13 @@ from kiro_crew import __version__ as _mc_version
 from kiro_crew import agent_state, dep_sync, diagnostics, platform_compat, sandbox
 from kiro_crew._bootstrap import _source_checkout_root
 from kiro_crew.acp import kas_assets, kas_auth
-from kiro_crew.acp.client import KIRO_CLI_BIN
-from kiro_crew.acp.types import ACP_BACKEND_KAS
+from kiro_crew.acp.client import CODEX_ACP_BIN, KIRO_CLI_BIN, _resolve_codex_acp_bin
+from kiro_crew.acp.types import (
+    ACP_BACKEND_CODEX,
+    ACP_BACKEND_KAS,
+    ACP_BACKENDS_KIRO_AGENT_SPEC,
+    ACP_BACKENDS_KIRO_PREREQUISITE,
+)
 from kiro_crew.agent import AGENT_FILENAME
 from kiro_crew.agent_discovery import (
     _read_agent_spec,
@@ -2125,13 +2130,26 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
                 print(f"  jail:        ❌ composition failed: {exc}")
                 issues.append(f"jail provider composition failed: {exc}")
 
+    cfg = KiroCrewConfig.load()
+
     # ── Dependencies ──
     print("Dependencies")
     # kiro-cli is THE agent backend for the public build. claude-agent-acp is
     # only the dormant protocol seam (re-registered by an internal companion),
     # so report it as optional and report kiro-cli as the backend.
     kiro = shutil.which(KIRO_CLI_BIN)
-    if kiro:
+    if cfg.agent.acp_backend == ACP_BACKEND_CODEX:
+        codex_acp = _resolve_codex_acp_bin()
+        if codex_acp:
+            print(f"  {CODEX_ACP_BIN}:   ✅ {codex_acp}")
+            print("  codex auth:  checked by the adapter at session start")
+        else:
+            print(f"  {CODEX_ACP_BIN}:   ❌ not found")
+            print("               Fix: npm i -g @agentclientprotocol/codex-acp")
+            issues.append("Codex ACP adapter not found")
+        if kiro:
+            print(f"  kiro-cli:    ⏭  installed but unused by backend ({kiro})")
+    elif kiro:
         print(f"  kiro-cli:    ✅ {kiro}")
         # Check login status — best-effort, never a hard failure
         try:
@@ -2225,12 +2243,13 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     elif not stale_project:
         print("  project dir: ⚠️  not set (run kirocrew setup from project root)")
 
-    cfg = KiroCrewConfig.load()
-
     # ── Agent config ──
     print("\nAgent")
     agent_path = _agents_dir() / AGENT_FILENAME
-    if agent_path.exists():
+    uses_kiro_agent_spec = cfg.agent.acp_backend in ACP_BACKENDS_KIRO_AGENT_SPEC
+    if not uses_kiro_agent_spec:
+        print("  config:      ⏭  Kiro agent spec not required by selected backend")
+    elif agent_path.exists():
         print(f"  config:      ✅ {agent_path}")
     else:
         print("  config:      ❌ not found (run kirocrew setup)")
@@ -2246,17 +2265,22 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # user-level agent of the same name — scanning only the global scope would
     # miss the very spec a session in this project actually runs, and report a
     # clean bill of health for it.
-    _bad_pins = _agent_spec_model_problems(project_dir=proj or None, provider=cfg.agent.provider)
-    if _bad_pins is None:
-        print("  model pins:  ⚠️  could not check (agent specs unreadable)")
-        issues.append("agent model pins unchecked")
-    elif _bad_pins:
-        for _agent_name, _pin, _correction in _bad_pins:
-            for _line in _format_model_pin_problem(_agent_name, _pin, _correction):
-                print(_line)
-        issues.append("agent model pin")
+    if not uses_kiro_agent_spec:
+        print("  model pins:  ⏭  Kiro agent specs not used")
     else:
-        print("  model pins:  ✅ no unusable spellings in agent specs")
+        _bad_pins = _agent_spec_model_problems(
+            project_dir=proj or None, provider=cfg.agent.provider
+        )
+        if _bad_pins is None:
+            print("  model pins:  ⚠️  could not check (agent specs unreadable)")
+            issues.append("agent model pins unchecked")
+        elif _bad_pins:
+            for _agent_name, _pin, _correction in _bad_pins:
+                for _line in _format_model_pin_problem(_agent_name, _pin, _correction):
+                    print(_line)
+            issues.append("agent model pin")
+        else:
+            print("  model pins:  ✅ no unusable spellings in agent specs")
 
     # ── Config ──
     print("\nConfiguration")
@@ -2299,7 +2323,11 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # After Configuration, deliberately: that section prints the global
     # agent.model, and the whole point here is that the global is not
     # necessarily what a new session gets.
-    _doctor_effective_model(cfg, proj, issues)
+    if uses_kiro_agent_spec:
+        _doctor_effective_model(cfg, proj, issues)
+    else:
+        print("\nEffective Model")
+        print("  source:      Codex adapter session default / advertised models")
 
     # ── Stored defaults a release has since changed (#5244) ──
     render_doctor_section(issues)
@@ -2311,7 +2339,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_strict_identity(cfg)
 
     # ── Agents dir janitor (orphaned atomic-write temps + stale backups) ──
-    _doctor_agents_janitor(issues, cfg.agent.sweep_agents_backups)
+    if uses_kiro_agent_spec:
+        _doctor_agents_janitor(issues, cfg.agent.sweep_agents_backups)
 
     # ── KAS backend (only when selected) ──
     _doctor_kas(issues)
@@ -2328,7 +2357,8 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_memory_pressure(issues)
 
     # ── kiro-cli installer residue (silent unless residue is on disk) ──
-    _doctor_cli_installer_residue(issues)
+    if cfg.agent.acp_backend in ACP_BACKENDS_KIRO_PREREQUISITE:
+        _doctor_cli_installer_residue(issues)
 
     # ── Agent Spec Paths (dead command/args/env paths) ──
     # Own module + single call so a sibling sweep wiring into doctor rebases
@@ -2342,11 +2372,12 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # whose command went dead, and the probe should observe the repaired spec.
     # Ordered the other way round, the probe records the stale command as a
     # failure first and a successful repair still exits nonzero.
-    doctor_dead_paths(issues, agents_dir=_agents_dir())
+    if uses_kiro_agent_spec:
+        doctor_dead_paths(issues, agents_dir=_agents_dir())
 
     # ── MCP Tools ──
     print("\nMCP Tools")
-    if agent_path.exists():
+    if uses_kiro_agent_spec and agent_path.exists():
         _doctor_mcp_tools(agent_path, issues)
         # After the probe, deliberately: the probe reporting green is the exact
         # condition this section exists to explain.
@@ -2707,7 +2738,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Connectivity ──
     print("\nConnectivity")
-    if kiro:
+    if cfg.agent.acp_backend == ACP_BACKEND_CODEX:
+        print("  kiro-cli:    ⏭  not used by selected backend")
+    elif kiro:
         kiro_result = subprocess.run(
             [KIRO_CLI_BIN, "--version"], capture_output=True, text=True, timeout=5
         )

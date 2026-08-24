@@ -1,20 +1,22 @@
 # Standalone provider — removed
 
-> **This provider no longer exists in KiroCrew.** The public fork drives a single
-> backend — `kiro-cli` over the Agent Client Protocol (`agent.provider` is fixed
-> to `acp`). The removed standalone provider, the removed Bedrock provider, the
-> removed agent-renderer / mirror modules, their config fields, and the dashboard
-> provider selector were all removed during de-Amazoning. There is no provider to
-> choose.
+> **This standalone provider no longer exists in Kiro Crew.** The public fork
+> exposes one provider — the Agent Client Protocol (`agent.provider` is fixed to
+> `acp`) — with Kiro as its first-class default harness and Codex as an adapted
+> backend. The removed standalone Claude provider, the removed Bedrock provider,
+> the removed agent-renderer / mirror modules, their config fields, and the
+> dashboard provider selector were all removed during de-Amazoning. There is no
+> second provider to choose.
 
 ## What remains (the dormant ACP seam)
 
 `acp/client.py` keeps an inert protocol seam (`ACP_BACKEND_CLAUDE` / the
 `_is_claude` branch) so an internal companion package can re-register an
 alternate `claude-agent-acp` backend without forking the client. The public core
-never selects it: `_resolve_kiro_bin` is the only backend the provider factory
-wires, and the dashboard exposes no provider choice. **Do not re-add the
-registration glue or a provider selector** — see the repo-root `CLAUDE.md`.
+never selects Claude: the provider factory wires positive Kiro and Codex backend
+branches, and the dashboard exposes no provider selector. **Do not re-add the
+Claude registration glue or a second provider selector** — see the repo-root
+`CLAUDE.md`.
 
 The seam's binary-resolution details (`_resolve_claude_acp_bin`, the per-session
 `settings.local.json` permission routing, `CLAUDE_CONFIG_DIR` isolation) are

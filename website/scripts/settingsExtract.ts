@@ -105,6 +105,7 @@ type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
 export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
+  'AiBackendPanel.tsx': 'ai-backend',
   'VoicePanel.tsx': 'voice',
   'DisplayPanel.tsx': 'display',
   'BrowserPanel.tsx': 'browser',

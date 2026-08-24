@@ -128,6 +128,31 @@ class TestRoleModels:
             assert resp.status == 400
 
 
+class TestAcpBackend:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("backend", ["", "codex", "kas"])
+    async def test_selectable_backend_is_persisted_and_requires_restart(
+        self, tmp_config, backend
+    ) -> None:
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await _patch(client, "agent.acp_backend", backend)
+            assert resp.status == 200
+            assert (await resp.json())["restart_required"] is True
+
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "provider" not in data["agent"]
+        assert data["agent"]["acp_backend"] == backend
+
+    @pytest.mark.asyncio
+    async def test_unselectable_backend_is_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await _patch(client, "agent.acp_backend", "claude")
+            assert resp.status == 400
+
+        data = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert "acp_backend" not in data["agent"]
+
+
 # ── General ──────────────────────────────────────────────────────────────
 
 

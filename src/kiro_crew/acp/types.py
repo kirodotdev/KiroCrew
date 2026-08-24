@@ -116,6 +116,7 @@ ACP_CLIENT_CAPABILITIES: dict = {
 # ── ACP Backend Identifiers ──
 
 ACP_BACKEND_CLAUDE = "claude"
+ACP_BACKEND_CODEX = "codex"
 ACP_BACKEND_KAS = "kas"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
@@ -127,15 +128,29 @@ ACP_BACKENDS_KNOWN = frozenset(
     {
         ACP_BACKEND_KIRO,
         ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
         ACP_BACKEND_KAS,
     }
 )
-# What an operator may actually persist in ``agent.acp_backend``, which is a
-# narrower question than what the code understands: ``ACP_BACKEND_CLAUDE`` is a
-# dormant seam reached by its own provider, not something to select here. Config
-# resolution degrades an unselectable value to the default, so a typo costs a log
-# line rather than a gateway that will not start.
-ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+# What an operator may actually persist in ``agent.acp_backend``. The dormant
+# ``ACP_BACKEND_CLAUDE`` seam remains selected only by its companion provider;
+# Kiro, KAS, and Codex are first-class choices at this seam.
+ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX, ACP_BACKEND_KAS})
+
+# Backends that depend on kiro-cli installation/authentication and the managed
+# Kiro agent-spec materialization path. Codex authenticates through its own CLI
+# and receives managed MCP descriptors directly in ``session/new|load``.
+ACP_BACKENDS_KIRO_PREREQUISITE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+ACP_BACKENDS_KIRO_AGENT_SPEC = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
+# Dedicated AcpClient backends whose advertised model list is authoritative for
+# both inherited startup pins and explicit switches. Unknown/empty advertisement
+# remains fail-open to the backend, matching ``model_is_unusable``.
+ACP_BACKENDS_ADVERTISED_MODEL_GATING = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CODEX})
+
+# Backends without Kiro's private commands/execute extension. Slash commands
+# are ordinary ``session/prompt`` turns for these adapters.
+ACP_BACKENDS_PROMPT_COMMANDS = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
 
 # ── Capability membership (harness-parity H6, H7) ──
 # Every capability a backend may claim is an OPT-IN set here, never a negation at
@@ -145,6 +160,12 @@ ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # that harness is the one who finds out. Adding a member is a deliberate edit
 # with evidence; inheriting a default is not a decision. See
 # docs/system-specs/modules/harness-parity.md.
+#
+# Codex is deliberately absent from session sharing, steering, shared runtime,
+# the Kiro identity store, and Kiro's internal-sandbox delegation. The adapter
+# advertises load/resume, steering, and command sandboxing, but those capabilities
+# remain fail-closed until Kiro Crew has exercised the relevant lifecycle or OS
+# isolation semantics end to end.
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
 # demux) AND can persist a SHARED subagent session across teardown. KAS runs on
@@ -152,29 +173,27 @@ ACP_BACKENDS_SELECTABLE = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # which removes the persisted session — so a shared subagent would strand
 # spawn_continue (conversation_gone). KAS therefore opts in only once a
 # keep-aware teardown lands (native subagent work); until then its subagents get
-# dedicated sessions. claude-agent-acp runs through AcpClient (one process per
-# session) and is not a member.
+# dedicated sessions. claude-agent-acp and codex-acp run through AcpClient (one
+# process per session) and are not members.
 ACP_BACKENDS_SESSION_SHARING = frozenset({ACP_BACKEND_KIRO})
 
 # Backends implementing the ``_session/steer`` extension (mid-turn steer).
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
-# Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
-# inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips
-# Crew's own layer for them. This is the one membership test that fails OPEN:
-# claiming it for a harness with no internal sandbox hands isolation to a layer
-# that never starts and leaves the agent process unconfined. Only kiro-cli
-# qualifies; a Node or Python harness does not, however it is spawned.
+# Backends that may delegate macOS isolation to kiro-cli's own internal sandbox.
+# This is the one membership test that fails OPEN: ``sandbox.wrap_argv`` skips
+# Kiro Crew's seatbelt when kiro-cli's settings say its internal sandbox is on.
+# Only kiro-cli may consume that signal; foreign adapters keep Crew's seatbelt
+# unless they gain a separate, backend-specific delegation contract.
 ACP_BACKENDS_INTERNAL_SANDBOX = frozenset({ACP_BACKEND_KIRO})
 
 # Backends served by AcpRuntime + AcpSessionHandle — the kiro-agent family
 # (kiro-cli and KAS) whose single process hosts N sessions via demux. The
-# dormant claude-agent-acp seam runs one AcpClient per session and is NOT a
-# member. Membership drives the shared runtime start path and the kiro-family
+# claude-agent-acp and codex-acp adapters run one AcpClient per session and are
+# NOT members. Membership drives the shared runtime start path and kiro-family
 # spawn conventions: members read the cli.json effort/tool-search overlay and
-# receive effort at spawn, whereas claude applies it via a live push after the
-# session is ready. Stated as opt-in membership (harness-parity H5/H6) so the
-# four sites that mean "kiro or kas" say so positively rather than as
+# receive effort at spawn. Stated as opt-in membership (harness-parity H5/H6) so
+# the four sites that mean "kiro or kas" say so positively rather than as
 # ``not is_claude_backend`` — an inference that silently captures every harness
 # added later. This is a SUPERSET of ACP_BACKENDS_SESSION_SHARING: running on
 # AcpRuntime is necessary for session sharing but not sufficient (KAS runs here
@@ -186,10 +205,9 @@ ACP_BACKENDS_ACP_RUNTIME = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 # is already running. Membership is what authorizes retiring a live session's
 # child when that store starts naming a different account: a harness
 # authenticated some other way must not be recycled on a store it never reads.
-# KAS is deliberately NOT a member — it is a separate Node entry point
-# (``build_kas_argv``), and nothing here establishes that it authenticates from
-# kiro-cli's store; it opts in when someone demonstrates that it does. Positive
-# membership rather than "not claude" (harness-parity H5).
+# KAS and Codex are deliberately NOT members: each authenticates independently
+# of kiro-cli's identity store. Positive membership rather than "not claude"
+# (harness-parity H5).
 ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO})
 
 # ── Provider labels ──
@@ -202,7 +220,16 @@ ACP_BACKENDS_KIRO_IDENTITY_STORE = frozenset({ACP_BACKEND_KIRO})
 # An absent label means kiro-cli, which is the default backend.
 PROVIDER_LABEL_DEFAULT = "acp"
 PROVIDER_LABEL_CLAUDE = "claude_code"
+PROVIDER_LABEL_CODEX = "codex"
 PROVIDER_LABEL_KAS = "kas"
+
+# Codex follows ACP protocol version 1. It receives only capabilities Kiro Crew
+# implements for this adapter: no client-side filesystem or terminal service,
+# and no elicitation claim until the inbound request path supports it.
+CODEX_CLIENT_CAPABILITIES: dict = {
+    "fs": {"readTextFile": False, "writeTextFile": False},
+    "terminal": False,
+}
 
 # KAS reads only fs.readTextFile / fs.writeTextFile / terminal from the top
 # level of clientCapabilities; every other capability it honours lives under

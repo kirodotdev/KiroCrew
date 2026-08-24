@@ -30,6 +30,10 @@ describe('settingsTabLabelKey', () => {
 
   it('derives the regular shape and overrides only the irregular tabs', () => {
     expect(settingsTabLabelKey('browser')).toBe('settings.tabs.browser.label')
+    // Owned by AiBackendPanel instead of the settings tab catalog block.
+    expect(settingsTabLabelKey('ai-backend')).toBe(
+      'pages.settings.aiBackendPanel.ai_backend',
+    )
     // Kebab tab key, camelCase catalog segment.
     expect(settingsTabLabelKey('computer-use')).toBe('settings.tabs.computerUse.label')
     // Lives outside the settings tab block entirely.

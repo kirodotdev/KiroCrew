@@ -6,9 +6,9 @@
  * already localizes every tab name; this resolves the same catalog key so a tab
  * name reads the same wherever it appears.
  *
- * Most tabs follow `settings.tabs.<key>.label`. Two do not, and a mechanical
- * derivation would silently render the key itself for exactly those two, so they
- * are listed explicitly. `settingsTabLabel.test.ts` pins every tab in
+ * Most tabs follow `settings.tabs.<key>.label`. A few do not, and a mechanical
+ * derivation would silently render the key itself for those tabs, so they are
+ * listed explicitly. `settingsTabLabel.test.ts` pins every tab in
  * SETTINGS_REGISTRY to a key that exists in the catalog, so adding a tab or moving
  * its key fails the test instead of shipping a raw id.
  */
@@ -16,6 +16,8 @@ import { i18nT } from '../../i18n/t'
 
 /** Tabs whose catalog key does not follow `settings.tabs.<key>.label`. */
 const IRREGULAR_TAB_LABEL_KEYS: Record<string, string> = {
+  // Owned by AiBackendPanel instead of the settings tab catalog block.
+  'ai-backend': 'pages.settings.aiBackendPanel.ai_backend',
   // The tab key is kebab-case; the catalog segment is camelCase.
   'computer-use': 'settings.tabs.computerUse.label',
   // Owned by the privacy disclosure copy, not the settings tab block.

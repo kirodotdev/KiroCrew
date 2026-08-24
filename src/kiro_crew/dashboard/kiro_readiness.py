@@ -26,6 +26,10 @@ import time
 
 from aiohttp import web
 
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_KIRO_PREREQUISITE,
+    ACP_BACKENDS_KNOWN,
+)
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
@@ -61,6 +65,25 @@ _clock = time.monotonic
 # Small enough that an external logout cannot linger behind this gate, large
 # enough that a burst of callers collapses onto one probe.
 _VERIFY_MAX_AGE_SECS = 30.0
+
+
+async def running_backend_requires_kiro_prerequisite(request: web.Request) -> bool:
+    """Whether this gateway's running ACP backend depends on Kiro readiness.
+
+    Backend selection is restart-only. Reading persisted config here would let a
+    pending switch to Codex disable Kiro's destructive-action guards while this
+    process still runs Kiro. A missing or malformed runtime snapshot fails closed.
+    """
+    try:
+        state = request.app.get("state")
+        sessions = getattr(state, "sessions", None)
+        backend = getattr(sessions, "acp_backend", None)
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_KNOWN:
+            return True
+        return backend in ACP_BACKENDS_KIRO_PREREQUISITE
+    except Exception:
+        logger.debug("Could not resolve running ACP backend for Kiro readiness", exc_info=True)
+        return True
 
 
 async def kiro_session_ready(service: object) -> bool:
@@ -247,6 +270,8 @@ async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None
     browser-opening spawn), and only these paths pay for the re-probe.
     """
 
+    if not await running_backend_requires_kiro_prerequisite(request):
+        return None
     if await kiro_verified_ready(_service(request)):
         _clear_refusal_warning()
         return None

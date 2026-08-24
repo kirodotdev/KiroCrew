@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import kiro_prerequisite as kp
+from kiro_crew.acp.types import ACP_BACKEND_KIRO
 from kiro_crew.session import _MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FOR_TEST
 
 
@@ -1021,7 +1022,7 @@ class TestLatchNarrowingPolicy:
         )
 
         state = self._State(service, self._Sessions())
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
 
         assert service._status.ready is True, "readiness was narrowed on a valid switch"
 
@@ -1045,7 +1046,7 @@ class TestLatchNarrowingPolicy:
         _expire_identity_cache(service)
 
         state = self._State(service, self._Sessions())
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
 
         assert service._status.ready is False
         assert service._status.authenticated is False
@@ -1065,11 +1066,11 @@ class TestLatchNarrowingPolicy:
         sessions = self._Sessions(complete=False)
         state = self._State(service, sessions)
 
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
         assert sessions.calls == 1
 
         # Still pending, so the next turn tries again.
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
         assert sessions.calls == 2
 
     @pytest.mark.asyncio
@@ -1085,8 +1086,8 @@ class TestLatchNarrowingPolicy:
         sessions = self._Sessions(complete=True)
         state = self._State(service, sessions)
 
-        await chat_runner._retire_sessions_on_identity_change(state)
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
         assert sessions.calls == 1
 
     @pytest.mark.asyncio
@@ -1106,9 +1107,9 @@ class TestLatchNarrowingPolicy:
         sessions = self._Sessions(complete=True)
         state = self._State(service, sessions)
 
-        await chat_runner._retire_sessions_on_identity_change(state)
-        await chat_runner._retire_sessions_on_identity_change(state)
-        await chat_runner._retire_sessions_on_identity_change(state)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
+        await chat_runner._retire_sessions_on_identity_change(state, ACP_BACKEND_KIRO)
 
         # Every turn re-sweeps rather than accepting the unreadable state.
         assert sessions.calls == 3
