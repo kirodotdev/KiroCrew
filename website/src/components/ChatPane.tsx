@@ -32,8 +32,8 @@ import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capt
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
 import { CONTENT_WIDTH, loadChatConfig, type ChatConfig } from '../pages/chat/ChatSettings'
 import { tryQuickSend } from '../lib/quickSend'
-import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
+import { sendTurn } from '../chat-core/transport/sendTurn'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
 import { performSlotSwitch } from '../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
@@ -45,11 +45,6 @@ import { displayModel } from '../lib/model'
 
 
 import { i18nT } from '../i18n/t'
-/** Stop waiting on a pane send's response. Mirrors the same bound in
- *  `ChatPage.send`, and carries its meaning too: reaching it means the request
- *  was received and only the reply is late, so the turn's output arrives over
- *  the socket rather than through this promise. It is NOT a failure signal. */
-const SEND_ABORT_MS = 10_000
 
 /**
  * ChatPane — one live chat session in the native session grid.
@@ -508,66 +503,37 @@ export default function ChatPane({
       // can re-click any time.
       if (!optionText) restoreIntoComposer(text, files)
     }
-    // Same 10s abort `ChatPage.send` uses. Without it a HUNG (not refused) POST
-    // settles neither way until the browser's own network timeout, so the
-    // message sits on screen looking sent for minutes with the composer already
-    // cleared — the exact window this change exists to close, and the one place
-    // the removed 30s notice used to speak sooner.
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), SEND_ABORT_MS)
-    api.sendChat(llm, slotKey, undefined, controller.signal, meta)
-      .then(async (r) => {
-        clearTimeout(timeout)
-        const { body, outcome } = await readSendReceipt(r)
-        // The server accepted neither `ok` nor `queued` (or refused with a status
-        // and no readable body), so nothing was sent. Reported before the card
-        // logic below, which only runs on acceptance.
-        if (outcome === 'refused') {
-          reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
-          return
-        }
-        // NO READABLE RECEIPT on a 2xx: the request was accepted and only its
-        // ANSWER is mangled, so this send is in exactly the state an abort leaves
-        // one — it may well have started a turn, whose output arrives over the
-        // socket. The catch below already refuses to report an abort as a failure
-        // because handing the payload back invites a retry that duplicates a
-        // delivered turn, side effects included; the same is true here, so an
-        // unknown takes no action either way rather than claiming a refusal it
-        // cannot prove.
-        if (outcome === 'unknown') return
-        // A `queued` acceptance with no wire text is not an acceptance at all.
-        // `chat_handlers` queues `if message:` but returns `{ok, queued}`
-        // unconditionally, so an attachment-only send that raced the slot into
-        // the busy state was neither queued nor broadcast — nothing carries the
-        // attachment, and the composer has already cleared. Reported so the file
-        // comes back rather than vanishing. (The same request answers 400 when
-        // the slot is idle, which the branch above already handles.)
-        if (body.queued && !llm.trim()) { reportFailedSend(); return }
-        // The response is the delivery receipt for this pane's optimistic bubble
-        // (#4131) — see the same dispatch in ChatPage.send for why no `chat_message`
-        // echo is coming. Parsed unconditionally now: the previous early return on
-        // "no card and no ask" skipped the body entirely, which would have skipped
-        // this confirmation too. `confirmedDelivered` accepts only an IMMEDIATE
-        // dispatch: a queued acceptance is not a receipt for this bubble.
-        if (confirmedDelivered(body)) dispatch(confirmOptimisticSend({ slot: slotKey, sendId, mid: typeof body.mid === 'string' ? body.mid : undefined }))
-        if (!cardAtSend && !askAtSend) return
-        // `ok` only: a QUEUED acceptance is still cancellable — the queued
-        // path retires at its queue_pop instead (removeQueuedMessage).
-        if (body.ok && !body.queued && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
-        void resolveAskAfterSend(body, askAtSend, dispatch)
-      })
-      .catch((e: unknown) => {
-        clearTimeout(timeout)
-        // An abort means the request WAS received and only the RESPONSE is late,
-        // which is what `ChatPage` records at its own timeout ("message was
-        // received, WS will deliver response") — the turn is running and its
-        // output arrives over the socket. Reporting that as a failure would hand
-        // the payload back and invite a retry that duplicates a turn already in
-        // flight, side effects included. Only a rejection that is NOT an abort
-        // means the send never left.
-        if (e instanceof DOMException && e.name === 'AbortError') return
-        reportFailedSend()
-      })
+    // Receipt semantics live in the chat-core transport (sendTurn owns the
+    // abort deadline and the shared readSendReceipt classification). This
+    // pane only decides how to REACT
+    // per status: failures report on the pane that owns the message and hand
+    // the payload back. `unknown` proves a 2xx was received, while
+    // `response-late` proves no refusal either; restoring either one here could
+    // invite a retry that duplicates a turn already in flight, side effects
+    // included, so the optimistic composer row stays pending.
+    void sendTurn({ message: llm, slot: slotKey, meta }).then((receipt) => {
+      if (receipt.status === 'refused' || receipt.status === 'transport-error') {
+        reportFailedSend(receipt.reason)
+        return
+      }
+      if (receipt.status === 'unknown' || receipt.status === 'response-late') return
+      // The response is the delivery receipt for this pane's optimistic bubble
+      // because no `chat_message` echo is coming for a dashboard send. Only
+      // an IMMEDIATE dispatch counts: a queued acceptance is not a receipt for
+      // this bubble.
+      if (receipt.status === 'dispatched') {
+        dispatch(confirmOptimisticSend({
+          slot: slotKey,
+          sendId,
+          mid: typeof receipt.body.mid === 'string' ? receipt.body.mid : undefined,
+        }))
+      }
+      if (!cardAtSend && !askAtSend) return
+      // Immediate dispatch only: a QUEUED acceptance is still cancellable —
+      // the queued path retires at its queue_pop instead (removeQueuedMessage).
+      if (receipt.status === 'dispatched' && cardAtSend) dispatch(retireStatelessQuestion({ slot: slotKey, expected: cardAtSend }))
+      void resolveAskAfterSend(receipt.body, askAtSend, dispatch)
+    })
   }, [input, pendingFiles, busy, slotKey, dispatch, restoreIntoComposer, reportSendFailure])
 
   const onStop = useCallback(() => { dispatch(requestStop({ slotId: slotKey, force: false })) }, [dispatch, slotKey])
@@ -754,33 +720,26 @@ export default function ChatPane({
             full window. */}
         <PendingQuestionCard
           slotKey={slotKey}
-          /* doSend() reads the composer state, so the fallback sends directly,
-             and `sendChat` returns the raw Response — a refusal RESOLVES here
-             rather than rejecting, so the receipt has to be read. The card is
-             already cleared by the time this runs, which makes this the one send
-             in the pane whose payload nothing else carries: a failure it did not
-             report would destroy the user's answer outright AND leave the agent
-             waiting with nothing on screen saying so. Every refusal therefore
-             gets an error row and the answer back, through the same recovery
-             `doSend` uses. */
+          /* doSend() reads the composer state, so the fallback sends directly
+             through the chat-core transport. The card is already cleared by
+             the time this runs, so a swallowed failure would destroy the
+             user's answer outright; on refusal, transport failure, or
+             the abort deadline it goes back into the composer through the
+             same recovery `doSend` uses. `response-late` restores HERE unlike
+             the composer send: a deadline can fire before the POST ever
+             reached the gateway, and with the card gone a silently lost
+             answer has no other trace — the worst case is a duplicate answer,
+             which the user can see and delete. `unknown` stays silent — a 2xx
+             proves the request was accepted, so the answer may well have
+             landed, and handing it back would invite a second answer to a
+             question already gone. */
           onFallbackSend={(text) => {
             const fail = (reason?: string) => { reportSendFailure(reason); restoreIntoComposer(text) }
-            api
-              .sendChat(text, slotKey)
-              .then(async (res) => {
-                if (!res) { fail(); return }
-                // The RECEIPT, not the status alone: a 200 answering `{ok:false}`
-                // is a refusal too, and a status-only check let it pass as a
-                // success. An unreadable 2xx stays silent, as it always has here
-                // and as the composer's own send now does — the request was
-                // accepted, so the answer may well have landed, and handing it
-                // back would invite a second answer to a question already gone.
-                const { body, outcome } = await readSendReceipt(res)
-                if (outcome === 'refused') fail(typeof body.error === 'string' ? body.error : undefined)
-              })
-              // No body to quote on a transport reject, so the shared
-              // connectivity copy stands rather than a raw fetch message.
-              .catch(() => fail())
+            void sendTurn({ message: text, slot: slotKey }).then((receipt) => {
+              if (receipt.status === 'refused' || receipt.status === 'transport-error' || receipt.status === 'response-late') {
+                fail(receipt.reason)
+              }
+            })
           }}
         />
 
