@@ -177,6 +177,35 @@ other languages keep, so a shared key forces a translator to guess:
 
 If a value's part of speech is not obvious from the key, **put it in the key**.
 
+## Destructive-confirm operands must be quoted
+
+A confirm string that interpolates a user-supplied name without quotes lets an
+ordinary-word name blend into the sentence: a pet named "Everything" produced
+"Reset Everything?", indistinguishable from a sentence about resetting
+everything (#4653, #4657, #4676, #4821).
+
+**Quote the operand in every authored catalog**, using that locale's pair from
+`OPERAND_QUOTE_PAIRS` in `scripts/lib/qa-checks.mjs` (curly doubles in English,
+guillemets with U+202F in French, `„“` in German, `「」` in Japanese, and so on).
+ASCII `"{{name}}"` is not enough.
+
+`src/i18n/destructiveConfirm.test.ts` is the convention detector, not an
+allowlist you can forget to extend:
+
+- every key whose **name** matches `/confirm/i` and whose English value
+  interpolates a placeholder must be on `QUOTED_OPERAND_CONFIRM_KEYS`, **or**
+- listed in `CONFIRM_OPERAND_KEY_EXEMPTIONS` with a reason (today: the #4657
+  kind-word forms, where "template" / "crew" already sit next to the name), **or**
+- interpolate **only** placeholder names in `EXEMPT_CONFIRM_PLACEHOLDER_NAMES`
+  (numerals, closed-set schedule fragments, version ids, and system error
+  text — they cannot parse as prose). The set lives next to the pin; do not
+  restate it here.
+
+A new confirm key with `{{name}}` and no kind word fails CI until it is quoted
+in all 12 catalogs and added to the pin. The glyph pin then requires **every**
+non-exempt placeholder in a pinned key to be wrapped, not merely one of them.
+After changing English, regenerate `en-XA.json` with `npm run i18n:pseudo`.
+
 **A literal token the user must type must never be a catalog value.** Keep it a
 code constant (`BULK_DELETE_TOKEN`), or translating it makes the action impossible
 to complete. A test pins that the constant exists, that the comparison is against

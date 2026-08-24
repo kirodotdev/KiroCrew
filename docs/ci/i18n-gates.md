@@ -298,6 +298,13 @@ per-file dynamic-site diff, the same shape as `[vs-base]`.
 Runs in `frontend-test`, outside the `i18n:check` runner above, because it is a
 plain vitest assertion over the catalog files rather than a diff-scoped gate.
 
+The same job also runs `src/i18n/destructiveConfirm.test.ts`, which is the
+convention detector for quoted operands on destructive confirms (#4821): every
+`confirm` key that interpolates a placeholder must be on the quoted-operand pin,
+an explicit key exemption, or interpolate only names in
+`EXEMPT_CONFIRM_PLACEHOLDER_NAMES`. A brand-new confirm with a bare `{{name}}`
+fails that test even if nobody remembers to extend the pin.
+
 It fails on any key defined **twice inside one object** in any
 `src/i18n/locales/*.json`. Every catalog on disk is covered, so adding a language
 needs no edit.

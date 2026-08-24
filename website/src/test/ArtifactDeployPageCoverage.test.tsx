@@ -299,7 +299,7 @@ describe('ArtifactDeployPage — profile registry mutations', () => {
     await profilesLoaded()
     fireEvent.click(screen.getByLabelText('Remove ship-sandbox from registry'))
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText(/Removes 'ship-sandbox' from the registry\./)).toBeInTheDocument()
+    expect(within(dialog).getByText(/Remove “ship-sandbox” from the registry\?/)).toBeInTheDocument()
     // Opening the dialog alone must not delete anything.
     expect(writes(calls, '/profiles')).toHaveLength(0)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove profile' }))
