@@ -7435,7 +7435,8 @@
       "toggle_focus_mode": "Activar o desactivar el modo de concentración",
       "toggle_left_sidebar": "Mostrar u ocultar la barra lateral izquierda",
       "toggle_session_panel": "Mostrar u ocultar el panel de sesiones",
-      "toggle_side_panel": "Mostrar u ocultar el panel lateral"
+      "toggle_side_panel": "Mostrar u ocultar el panel lateral",
+      "toggle_terminal": "Mostrar u ocultar el terminal"
     },
     "usePanelTabs": {
       "artifacts": "Artefactos",
@@ -12105,7 +12106,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "Activa o desactiva los atajos de teclado de forma global — {{mod}} + K (esta referencia) siempre funciona",
         "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (no ⌥ Option) para los chats 1–9",
         "clear_shortcut": "Borrar",
-        "panel_toggles": "Alternar paneles"
+        "panel_toggles": "Alternar paneles",
+        "skips_shell_hint": "También funciona dentro del terminal, por lo que tu shell deja de recibir esta tecla: no elijas Ctrl+C ni Ctrl+R."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analiza cada sesión completada y redacta un SKILL.md reutilizable cuando la sesión demuestra un procedimiento recurrente — uno que una sesión futura, trabajando sobre un objetivo distinto, volvería a ejecutar. Desactivado por defecto. Los borradores pasan a la cola de pendientes de la pestaña Habilidades para su revisión — nada se activa sin tu aprobación (ver más abajo).",

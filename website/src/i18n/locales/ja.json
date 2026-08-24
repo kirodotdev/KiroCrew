@@ -7227,7 +7227,8 @@
       "toggle_focus_mode": "フォーカスモードを切り替え",
       "toggle_left_sidebar": "左サイドバーの表示を切り替え",
       "toggle_session_panel": "セッションパネルの表示を切り替え",
-      "toggle_side_panel": "サイドパネルの表示を切り替え"
+      "toggle_side_panel": "サイドパネルの表示を切り替え",
+      "toggle_terminal": "ターミナルの表示を切り替え"
     },
     "usePanelTabs": {
       "artifacts": "アーティファクト",
@@ -11786,7 +11787,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "キーボードショートカットを全体で有効または無効にします — {{mod}} + K（このリファレンス）は常に有効です",
         "use_ctrl_not_option_for_chat_1_9": "チャット 1～9 に ⌃ Ctrl（⌥ Option ではなく）を使用します",
         "clear_shortcut": "クリア",
-        "panel_toggles": "パネルの表示切り替え"
+        "panel_toggles": "パネルの表示切り替え",
+        "skips_shell_hint": "ターミナル内でも動作するため、シェルはこのキーを受け取らなくなります。Ctrl+C や Ctrl+R は選ばないでください。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "完了したセッションを分析し、繰り返し使われる手順 — 将来のセッションが別の対象に対して再び実行するような手順 — が示されたときに再利用可能な SKILL.md を作成します。デフォルトではオフです。ドラフトはスキルタブの保留キューにステージされます。レビュー用です。何もライブにはなりません（以下を参照してください）。",

@@ -446,6 +446,7 @@ describe('panel-toggle shortcuts', () => {
     onToggleLeftSidebar: vi.fn(),
     onToggleSessionPanel: vi.fn(),
     onToggleSidePanel: vi.fn(),
+    onToggleTerminal: vi.fn(),
   })
 
   function setup(handlers: ReturnType<typeof cbs>, opts: { enabled?: boolean; disabled?: boolean } = {}) {
@@ -509,6 +510,95 @@ describe('panel-toggle shortcuts', () => {
     document.body.appendChild(term)
     fireEvent.keyDown(inner, { code: 'KeyB', ctrlKey: true })
     expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+    term.remove()
+  })
+
+  /* The terminal ships UNBOUND, so every test below binds it the way a user who
+     wants it would — to Cmd/Ctrl+J, whose `^J` collision is precisely what the
+     skip-shell seam has to survive. Binding it here rather than relying on a
+     default is also the point: the behaviour under test is the seam, not the
+     factory chord. */
+  const bindTerminalToModJ = () =>
+    localStorage.setItem(PANEL_TOGGLE_SHORTCUTS_KEY, JSON.stringify({ terminal: { key: 'j', mod: true } }))
+
+  /* The shipped default must claim nothing: an unbound panel that preventDefault-ed
+     would suppress the browser's own Ctrl+J (Downloads) in exchange for no action,
+     and inside a shell would eat readline's accept-line. This is the assertion that
+     makes adding a default a deliberate act — it fails the moment one appears. */
+  it('claims no chord out of the box, since the terminal ships unbound', () => {
+    const h = cbs(); setup(h)
+    const event = new KeyboardEvent('keydown', { code: 'KeyJ', key: 'j', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(document.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+    expect(h.onToggleTerminal).not.toHaveBeenCalled()
+  })
+
+  it('Ctrl+J toggles the docked terminal once the user binds it', () => {
+    bindTerminalToModJ()
+    const h = cbs(); setup(h)
+    fireEvent.keyDown(document, { code: 'KeyJ', ctrlKey: true })
+    expect(h.onToggleTerminal).toHaveBeenCalledTimes(1)
+    expect(h.onToggleSessionPanel).not.toHaveBeenCalled()
+    expect(h.onToggleSidePanel).not.toHaveBeenCalled()
+  })
+
+  /* The terminal toggle is the ONE id exempt from the PTY yield above: opening
+     that panel focuses its shell, so yielding there would leave the chord able to
+     open the panel but never close it. */
+  it('still toggles the terminal from inside the embedded terminal', () => {
+    bindTerminalToModJ()
+    const h = cbs(); setup(h)
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    const inner = document.createElement('textarea')
+    term.appendChild(inner)
+    document.body.appendChild(term)
+    // xterm.js consumes the keys it recognises, and on Windows/Linux this chord IS
+    // one (Ctrl+J is ^J), so a target that stops propagation stands in for it —
+    // only the capture-phase skip-shell listener can survive this.
+    term.addEventListener('keydown', e => e.stopPropagation())
+    inner.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyJ', key: 'j', ctrlKey: true, cancelable: true, bubbles: true }))
+    expect(h.onToggleTerminal).toHaveBeenCalledTimes(1)
+    term.remove()
+  })
+
+  it('keeps the skip-shell keystroke away from the PTY', () => {
+    bindTerminalToModJ()
+    const h = cbs(); setup(h)
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    document.body.appendChild(term)
+    const event = new KeyboardEvent('keydown', { code: 'KeyJ', key: 'j', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(!term.dispatchEvent(event)).toBe(true)
+    term.remove()
+  })
+
+  /* App leaves the callback undefined when dashboard.terminal.enabled=false, and in
+     a popout/embed where the panel does not exist. A panel with no action is not
+     ours to claim even when the user HAS bound a chord to it: preventDefault-ing
+     there would suppress the browser's own Ctrl+J in exchange for nothing, so the
+     chord has to fall through untouched rather than merely not throw. */
+  it('leaves a bound Ctrl+J to the browser when the terminal is disabled (no callback supplied)', () => {
+    bindTerminalToModJ()
+    const h = cbs(); setup({ ...h, onToggleTerminal: undefined as unknown as () => void })
+    const event = new KeyboardEvent('keydown', { code: 'KeyJ', key: 'j', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(document.dispatchEvent(event)).toBe(true)
+    expect(event.defaultPrevented).toBe(false)
+  })
+
+  /* Same rule on the capture-phase seam, which would otherwise stopPropagation the
+     keystroke away from the shell the user actually aimed it at. */
+  it('leaves a bound Ctrl+J to the shell inside a terminal when the terminal is disabled', () => {
+    bindTerminalToModJ()
+    const h = cbs(); setup({ ...h, onToggleTerminal: undefined as unknown as () => void })
+    const term = document.createElement('div')
+    term.className = 'xterm'
+    document.body.appendChild(term)
+    const seen: string[] = []
+    term.addEventListener('keydown', e => seen.push((e as KeyboardEvent).code))
+    const event = new KeyboardEvent('keydown', { code: 'KeyJ', key: 'j', ctrlKey: true, cancelable: true, bubbles: true })
+    expect(term.dispatchEvent(event)).toBe(true)
+    expect(seen).toEqual(['KeyJ'])
     term.remove()
   })
 

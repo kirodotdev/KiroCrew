@@ -2501,7 +2501,8 @@
       "jump_to_chat_letters": "Jump to chat 10 and beyond (letters follow the badge shown on each row)",
       "toggle_left_sidebar": "Toggle left sidebar",
       "toggle_session_panel": "Toggle session panel",
-      "toggle_side_panel": "Toggle side panel"
+      "toggle_side_panel": "Toggle side panel",
+      "toggle_terminal": "Toggle terminal"
     },
     "useSceneInteraction": {
       "all_slots_are_occupied": "All slots are occupied",
@@ -4908,7 +4909,8 @@
         "custom_hint": "Use at least one modifier key.",
         "turn_keyboard_shortcuts_on_or_off_globally": "Turn keyboard shortcuts on or off globally — {{mod}} + K (this reference) always works",
         "clear_shortcut": "Clear",
-        "panel_toggles": "Panel toggles"
+        "panel_toggles": "Panel toggles",
+        "skips_shell_hint": "Works inside the terminal too, so your shell stops receiving this key — do not pick Ctrl+C or Ctrl+R."
       },
       "reportProblemCard": {
         "support": "Support",

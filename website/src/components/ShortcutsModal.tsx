@@ -9,6 +9,7 @@ import { formatQuickSearchKeys, formatChordKeys } from '../lib/quickSearchShortc
 import { PANEL_TOGGLE_IDS, type PanelToggleId } from '../lib/panelToggleShortcuts'
 import { formatAcceleratorKeys } from '../lib/globalHotkey'
 import { isElectron } from '../lib/electron'
+import { useTerminalEnabled } from '../utils/terminalRegistry'
 import { Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
@@ -147,6 +148,7 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
   'left-sidebar': 'hooks.useKeyboardShortcuts.toggle_left_sidebar',
   'session-panel': 'hooks.useKeyboardShortcuts.toggle_session_panel',
   'side-panel': 'hooks.useKeyboardShortcuts.toggle_side_panel',
+  'terminal': 'hooks.useKeyboardShortcuts.toggle_terminal',
 }
 
 /**
@@ -157,9 +159,13 @@ export const PANEL_TOGGLE_LABEL_KEY: Record<PanelToggleId, string> = {
  */
 export function PanelToggleRows() {
   const { bindings } = usePanelToggleShortcuts()
+  // Reactive, not a one-shot read: the enabled flag resolves from a config probe,
+  // so a static read leaves the terminal row rendered from a stale value until
+  // something else re-renders this surface. Mirrors SidePanel / EditableCodeBlock.
+  const terminalEnabled = useTerminalEnabled()
   return (
     <>
-      {PANEL_TOGGLE_IDS.map(id => {
+      {PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled).map(id => {
         const chord = bindings[id]
         return (
           <div key={id} className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">

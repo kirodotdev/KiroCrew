@@ -7435,7 +7435,8 @@
       "toggle_focus_mode": "Activer/désactiver le mode concentration",
       "toggle_left_sidebar": "Afficher/masquer la barre latérale gauche",
       "toggle_session_panel": "Afficher/masquer le panneau de sessions",
-      "toggle_side_panel": "Afficher/masquer le panneau latéral"
+      "toggle_side_panel": "Afficher/masquer le panneau latéral",
+      "toggle_terminal": "Afficher/masquer le terminal"
     },
     "usePanelTabs": {
       "artifacts": "Artefacts",
@@ -12105,7 +12106,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "Active ou désactive les raccourcis clavier globalement — {{mod}} + K (cette référence) fonctionne toujours",
         "use_ctrl_not_option_for_chat_1_9": "Utiliser ⌃ Ctrl (et non ⌥ Option) pour les chats 1–9",
         "clear_shortcut": "Effacer",
-        "panel_toggles": "Affichage des panneaux"
+        "panel_toggles": "Affichage des panneaux",
+        "skips_shell_hint": "Fonctionne aussi dans le terminal, donc votre shell ne reçoit plus cette touche — ne choisissez pas Ctrl+C ni Ctrl+R."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analyser chaque session terminée et rédiger un SKILL.md réutilisable lorsqu'elle démontre une procédure récurrente — une procédure qu'une session future, travaillant sur une autre cible, exécuterait à nouveau. Désactivé par défaut. Les brouillons sont placés dans la file d'attente de l'onglet Compétences pour relecture — rien n'est activé sans votre approbation (voir ci-dessous).",

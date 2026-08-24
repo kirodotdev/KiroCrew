@@ -7435,7 +7435,8 @@
       "toggle_focus_mode": "Alternar o modo de foco",
       "toggle_left_sidebar": "Alternar barra lateral esquerda",
       "toggle_session_panel": "Alternar painel de sessões",
-      "toggle_side_panel": "Alternar painel lateral"
+      "toggle_side_panel": "Alternar painel lateral",
+      "toggle_terminal": "Alternar terminal"
     },
     "usePanelTabs": {
       "artifacts": "Artefatos",
@@ -12104,7 +12105,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "Ativar ou desativar os atalhos de teclado globalmente — {{mod}} + K (esta referência) sempre funciona",
         "use_ctrl_not_option_for_chat_1_9": "Usar ⌃ Ctrl (não ⌥ Option) para chats 1–9",
         "clear_shortcut": "Limpar",
-        "panel_toggles": "Alternar painéis"
+        "panel_toggles": "Alternar painéis",
+        "skips_shell_hint": "Também funciona dentro do terminal, por isso o seu shell deixa de receber esta tecla — não escolha Ctrl+C nem Ctrl+R."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Analisa cada sessão concluída e cria um rascunho de SKILL.md reutilizável quando ela demonstra um procedimento recorrente — um que uma sessão futura, trabalhando em um alvo diferente, executaria novamente. Desativado por padrão. Os rascunhos vão para a fila de pendentes na aba Habilidades para revisão — nada entra em vigor sem a sua aprovação (veja abaixo).",

@@ -5,7 +5,8 @@ import { useQuickSearchShortcut } from '../../hooks/useQuickSearchShortcut'
 import { usePanelToggleShortcuts } from '../../hooks/usePanelToggleShortcuts'
 import { useGlobalHotkey } from '../../hooks/useGlobalHotkey'
 import { formatChordKeys, type QuickSearchMode } from '../../lib/quickSearchShortcut'
-import { PANEL_TOGGLE_IDS } from '../../lib/panelToggleShortcuts'
+import { PANEL_TOGGLE_IDS, PANEL_TOGGLES_SKIPPING_SHELL } from '../../lib/panelToggleShortcuts'
+import { useTerminalEnabled } from '../../utils/terminalRegistry'
 import { Btn } from '../../components/ui'
 
 import { i18nT } from '../../i18n/t'
@@ -68,41 +69,55 @@ function SearchEverywhereConfig() {
  */
 function PanelToggleConfig() {
   const { bindings, recordingId, startRecording, cancelRecording, clear } = usePanelToggleShortcuts()
+  // Reactive, not a one-shot read — see the same call in ShortcutsModal.
+  const terminalEnabled = useTerminalEnabled()
   return (
     <>
-      {PANEL_TOGGLE_IDS.map(id => {
+      {PANEL_TOGGLE_IDS.filter(id => id !== 'terminal' || terminalEnabled).map(id => {
         const chord = bindings[id]
         const recording = recordingId === id
         const caps = chord ? formatChordKeys(chord) : []
         return (
-          <div key={id} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-md">
-            {/* A div, not a span: the label and the button caption are separate
-                catalog units, and a block label ends the inline text run so the
-                i18n render gate never sees them joined into one string. */}
-            <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
-            <span className="flex items-center gap-2">
-              <Btn
-                onClick={recording ? cancelRecording : () => startRecording(id)}
-                aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
-                className={recording ? 'border-accent text-accent' : ''}
-              >
-                {recording ? (
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
-                    {i18nT('pages.settings.shortcutsPanel.record_prompt')}
-                  </span>
-                ) : caps.length > 0 ? (
-                  <span className="flex items-center gap-1"><KeyCapSequence caps={caps} plus /></span>
-                ) : (
-                  i18nT('pages.settings.shortcutsPanel.record_prompt')
-                )}
-              </Btn>
-              {chord && !recording && (
-                <Btn onClick={() => clear(id)} aria-label={i18nT('pages.settings.shortcutsPanel.clear_shortcut')}>
-                  {i18nT('pages.settings.shortcutsPanel.clear_shortcut')}
+          <div key={id}>
+            <div className="flex items-center justify-between gap-2 py-1.5 px-2 rounded-md">
+              {/* A div, not a span: the label and the button caption are separate
+                  catalog units, and a block label ends the inline text run so the
+                  i18n render gate never sees them joined into one string. */}
+              <div className="text-[13px] text-text">{i18nT(PANEL_TOGGLE_LABEL_KEY[id])}</div>
+              <span className="flex items-center gap-2">
+                <Btn
+                  onClick={recording ? cancelRecording : () => startRecording(id)}
+                  aria-label={i18nT('pages.settings.shortcutsPanel.record_prompt')}
+                  className={recording ? 'border-accent text-accent' : ''}
+                >
+                  {recording ? (
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-accent animate-pulse" aria-hidden="true" />
+                      {i18nT('pages.settings.shortcutsPanel.record_prompt')}
+                    </span>
+                  ) : caps.length > 0 ? (
+                    <span className="flex items-center gap-1"><KeyCapSequence caps={caps} plus /></span>
+                  ) : (
+                    i18nT('pages.settings.shortcutsPanel.record_prompt')
+                  )}
                 </Btn>
-              )}
-            </span>
+                {chord && !recording && (
+                  <Btn onClick={() => clear(id)} aria-label={i18nT('pages.settings.shortcutsPanel.clear_shortcut')}>
+                    {i18nT('pages.settings.shortcutsPanel.clear_shortcut')}
+                  </Btn>
+                )}
+              </span>
+            </div>
+            {/* A skip-shell panel's chord is taken from the PTY by design, so the
+                cost of the binding lands on the SHELL, not on the dashboard: a
+                recorded Ctrl+C or Ctrl+R would stop reaching the shell in every
+                session. The recorder cannot refuse those (a shell key is not
+                invalid, and which keys matter depends on the user's shell and
+                bindings), so the trade is disclosed here, at the moment it is
+                made, rather than left to be discovered by a broken Ctrl+C. */}
+            {PANEL_TOGGLES_SKIPPING_SHELL.has(id) && (
+              <div className="text-[12px] text-muted px-2 pb-1">{i18nT('pages.settings.shortcutsPanel.skips_shell_hint')}</div>
+            )}
           </div>
         )
       })}

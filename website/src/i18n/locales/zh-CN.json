@@ -7227,7 +7227,8 @@
       "toggle_focus_mode": "切换专注模式",
       "toggle_left_sidebar": "切换左侧边栏",
       "toggle_session_panel": "切换会话面板",
-      "toggle_side_panel": "切换侧边面板"
+      "toggle_side_panel": "切换侧边面板",
+      "toggle_terminal": "切换终端"
     },
     "usePanelTabs": {
       "artifacts": "工件",
@@ -11786,7 +11787,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "全局开启或关闭键盘快捷键 — {{mod}} + K（此快捷键参考）始终可用",
         "use_ctrl_not_option_for_chat_1_9": "聊天 1–9 使用 ⌃ Ctrl（而不是 ⌥ Option）",
         "clear_shortcut": "清除",
-        "panel_toggles": "面板开关"
+        "panel_toggles": "面板开关",
+        "skips_shell_hint": "在终端内也会生效，因此 shell 将不再收到该按键——请不要选择 Ctrl+C 或 Ctrl+R。"
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "分析每个已完成会话，当该会话展示出会复现的流程（即未来会话在处理不同目标时仍会再次执行的流程）时起草可复用 SKILL.md。默认关闭。草稿会暂存到“技能”标签页的待审队列中供审阅 — 未经你批准不会生效（见下文）。",

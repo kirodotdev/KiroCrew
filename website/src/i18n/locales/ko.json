@@ -7227,7 +7227,8 @@
       "toggle_focus_mode": "집중 모드 전환",
       "toggle_left_sidebar": "왼쪽 사이드바 표시 전환",
       "toggle_session_panel": "세션 패널 표시 전환",
-      "toggle_side_panel": "사이드 패널 표시 전환"
+      "toggle_side_panel": "사이드 패널 표시 전환",
+      "toggle_terminal": "터미널 표시 전환"
     },
     "usePanelTabs": {
       "artifacts": "아티팩트",
@@ -11786,7 +11787,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "키보드 단축키를 전체적으로 켜거나 끕니다 — {{mod}} + K(이 도움말)는 항상 동작합니다",
         "use_ctrl_not_option_for_chat_1_9": "채팅 1–9에 ⌥ Option이 아니라 ⌃ Ctrl 사용",
         "clear_shortcut": "지우기",
-        "panel_toggles": "패널 표시 전환"
+        "panel_toggles": "패널 표시 전환",
+        "skips_shell_hint": "터미널 안에서도 작동하므로 셸이 이 키를 더 이상 받지 않습니다. Ctrl+C나 Ctrl+R은 선택하지 마세요."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "완료된 각 세션을 분석해 반복될 절차 — 향후 세션이 다른 대상에 대해 다시 실행할 절차 — 가 나타나면 재사용 가능한 SKILL.md 초안을 작성합니다. 기본값은 꺼짐입니다. 초안은 스킬 탭의 대기 큐에 검토용으로 등록되며, 승인 없이는 아무것도 적용되지 않습니다(아래 참조).",

@@ -7331,7 +7331,8 @@
       "toggle_focus_mode": "Fokusmodus umschalten",
       "toggle_left_sidebar": "Linke Seitenleiste umschalten",
       "toggle_session_panel": "Sitzungsbereich umschalten",
-      "toggle_side_panel": "Seitenpanel umschalten"
+      "toggle_side_panel": "Seitenpanel umschalten",
+      "toggle_terminal": "Terminal umschalten"
     },
     "usePanelTabs": {
       "artifacts": "Artefakte",
@@ -11945,7 +11946,8 @@
         "turn_keyboard_shortcuts_on_or_off_globally": "Tastenkürzel global ein- oder ausschalten — {{mod}} + K (diese Übersicht) funktioniert immer",
         "use_ctrl_not_option_for_chat_1_9": "⌃ Strg (nicht ⌥ Option) für Chat 1–9 verwenden",
         "clear_shortcut": "Leeren",
-        "panel_toggles": "Panels umschalten"
+        "panel_toggles": "Panels umschalten",
+        "skips_shell_hint": "Funktioniert auch im Terminal, sodass Ihre Shell diese Taste nicht mehr erhält — wählen Sie nicht Strg+C oder Strg+R."
       },
       "skillsPanel": {
         "analyze_each_completed_session_and_draft_a_reusa": "Jede abgeschlossene Sitzung analysieren und eine wiederverwendbare SKILL.md entwerfen, wenn die Sitzung ein wiederkehrendes Verfahren zeigt — eines, das eine künftige Sitzung an einem anderen Ziel erneut ausführen würde. Standardmäßig aus. Entwürfe werden in der Warteschlange auf dem Tab „Skills“ zur Überprüfung bereitgestellt — nichts geht ohne Ihre Genehmigung live (siehe unten).",

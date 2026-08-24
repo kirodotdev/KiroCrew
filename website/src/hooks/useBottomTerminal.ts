@@ -263,6 +263,11 @@ export function useBottomTerminalOpen(): boolean {
   return useSyncExternalStore(subscribe, getOpenSnapshot, getOpenSnapshot)
 }
 
+/** Imperative read of the same flag, for non-React callers that must know which
+ *  way a `toggleBottomTerminal` is about to go — see `terminalChordFocus.ts`,
+ *  which has to decide about focus BEFORE the panel unmounts. */
+export function isBottomTerminalOpen(): boolean { return state.open }
+
 /** Selector for just the `position` field. */
 function getPositionSnapshot(): TerminalPosition { return state.position }
 export function useTerminalPosition(): TerminalPosition {
