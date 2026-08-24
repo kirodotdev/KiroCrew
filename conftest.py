@@ -363,6 +363,44 @@ def _isolate_launchd_paths(_xdg_config_root, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_credential_env_residue():
+    """Restore the credential env vars a test may have had INJECTED into it.
+
+    ``KiroCrewConfig.load_credentials()`` deliberately propagates every credential
+    it reads into ``os.environ`` with ``setdefault``, so a spawned child (sandboxed
+    agent, MCP server, cron subprocess) inherits it through ``Popen``'s default
+    ``env=os.environ.copy()``. Any test that points ``env_path()`` at a fabricated
+    ``.env`` therefore leaves those fake credentials in the WORKER's environment,
+    for every test that follows it.
+
+    The usual guard does not catch this, which is what makes it worth a floor:
+    ``monkeypatch.delenv(KEY, raising=False)`` on a key that is ABSENT records
+    nothing to undo, so a value written during the test is restored to nothing.
+
+    And the residue is not inert -- ``load_credentials`` lets ``os.environ`` WIN
+    over the file it just read, so the next test pointing at a different ``.env``
+    is answered with the previous test's token. Observed between
+    ``test_handlers_messaging_coverage.py`` and ``test_review_fixes.py``: a Slack
+    token from one file's temp ``.env`` silently satisfied the other's assertion,
+    and only when both landed in the same worker.
+
+    Bounded to the recognised credential keys, so this is two dict passes over
+    ~20 names per test and cannot mask an unrelated environment change.
+    """
+    from kiro_crew.config.loader import _CREDENTIAL_KEYS
+
+    before = {key: os.environ.get(key) for key in _CREDENTIAL_KEYS}
+    try:
+        yield
+    finally:
+        for key, value in before.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
 def _block_host_service_mutation(request, monkeypatch):
     """Fail loudly if a test really starts, stops, or reconfigures a service.
 

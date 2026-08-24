@@ -243,7 +243,21 @@ class TestPreTurnRatchet:
         # obstacle -- its _handle_busy mirrors webex's, so migration looks
         # mechanical -- but it is still a behaviour change that gets its own
         # review, not a rider in a main-red unblock (#5448).
-        exempt = {"telegram", "discord", "teams", "slack", "weixin", "wecom", "whatsapp"}
+        # feishu is exempt for the same reason, and its own source says so: the
+        # busy check runs BEFORE `maybe_rotate` (rotating first would mint a
+        # generation and miss the in-flight turn), and the session key is
+        # re-derived afterwards because rotation retires the pre-rotation one.
+        # Its comments name WeCom as the shape it mirrors.
+        exempt = {
+            "telegram",
+            "discord",
+            "teams",
+            "slack",
+            "weixin",
+            "wecom",
+            "whatsapp",
+            "feishu",
+        }
         rostered = {d.channel_type for d in builtin_channel_descriptors()}
         unaccounted = rostered - set(_PRE_TURN_CHANNELS) - exempt
         assert not unaccounted, (
