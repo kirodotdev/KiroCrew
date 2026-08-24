@@ -21,7 +21,7 @@ import type { ResizeInfo } from '../utils/resizeImage'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
-import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, fetchHistory, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection,
@@ -4859,6 +4859,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // this shape since long before this feature, and changing it here would widen
     // the PR into pre-existing attachment behaviour.
     const sentSessionRefs = optionText ? [] : pendingSessionsRef.current.slice()
+    // Snapshot the staged files BEFORE the optimistic clear below: if the
+    // server answers `queued`, this send's pre-serialization composer state
+    // is stashed so a cancel can restore it losslessly (see queuedSendStash).
+    const stagedFilesAtSend = [...new Set(pendingFilesRef.current)]
     const { txt: typedTxt, displayTxt: typedDisplayTxt, filePaths } = prepareSendPayload(raw, pendingFilesRef.current)
     // Folder references serialize like files but from the text alone: each
     // `@rel/` token becomes `[attached_dir N] /abs/path` in the LLM-facing
@@ -5185,6 +5189,37 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       // is streaming right now. Reporting a refusal there would hand the payload
       // back and invite a retry that duplicates a delivered turn, so an unknown
       // takes no action rather than asserting a refusal it cannot prove.
+      if (body.queued && llmTxt === typedTxtDirs) {
+        // The server queued this send and its receipt names the entry:
+        // `queue_id` is the same id `queue_push` broadcasts and the card's
+        // cancel button carries, so the pre-send composer state binds to
+        // exactly this card — content plays no part in the key, which is what
+        // makes duplicate texts, serialization-colliding captions, and other
+        // tabs' cards structurally unable to consume someone else's record.
+        // A receipt without `queue_id` (an older gateway, a requeued steer)
+        // simply doesn't stash — the parser fallback covers those cards.
+        //
+        // Eligibility is DERIVED, not enumerated: stash only when the POSTed
+        // text is exactly what {raw, staged files} alone explain
+        // (`typedTxtDirs` — prepareSendPayload + dir-token serialization).
+        // Expanded paste blocks, appended session-ref links, a prepended
+        // knowledge block, and ANY FUTURE feature that diverges `llmTxt`
+        // from the composer state all fail this equality and fall to the
+        // parser — a stash hit for such a send would restore `raw` WITHOUT
+        // the context the user staged, silently dropping it, so the failure
+        // mode of forgetting is a conservative fallback, not silent loss.
+        //
+        // No size bound on purpose: an entry is deleted on the cancel that
+        // consumes it, and evicting a live entry would degrade that queued
+        // card's cancel to the parser fallback — for a spaced attachment path
+        // that is exactly the marker-in-composer data loss this PR exists to
+        // fix. Entries orphaned by normal delivery are three small strings
+        // and are bounded by how many sends a single tab queues in one
+        // session.
+        if (typeof body.queue_id === 'string' && body.queue_id) {
+          queuedSendStash.set(body.queue_id, { raw, files: stagedFilesAtSend, sent: llmTxt })
+        }
+      }
       if (outcome === 'refused') {
         dispatch(setSlotRunning(false))
         const reason = typeof body.error === 'string' ? body.error : ''
@@ -7186,7 +7221,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Whatever lands here is persisted into this slot's draft by the `[input]`
   // effect above, so a recovered draft survives a slot switch.
   const restoreQueuedDraft = useCallback(
-    (text: string) => setInput(prev => mergeRecoveredDraft(prev, text)),
+    (text: string, files: string[]) => {
+      setInput(prev => mergeRecoveredDraft(prev, text))
+      // Chips MERGE like the text does: paths join whatever is already staged,
+      // deduped, so a re-send serializes each attachment exactly once.
+      if (files.length) setPendingFiles(prev => [...new Set([...prev, ...files])])
+    },
     [],
   )
   const {

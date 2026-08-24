@@ -394,6 +394,149 @@ export function prepareSendPayload(raw: string, pendingFiles: string[]): SendPay
   }
 }
 
+/** Producer-form image markdown line: `![image](dest)` alone on its line,
+ *  where `dest` is exactly what mdImageDest emits — the conservative
+ *  passthrough-safe subset, or the `<…>`-wrapped escaped form. Anchored to
+ *  whole lines so an image the user wove into a sentence is left alone. */
+/** One producer image line, sans anchors — a regex LITERAL so the word-bearing
+ *  pattern text never sits in a string constant (i18n strict gate). */
+const IMG_LINE_INNER = /!\[image\]\(((?:<(?:\\.|[^\\>])*>)|[\w/.@:~-]+)\)/
+/** One producer image line, anchored to the whole string (per-line re-exec). */
+const IMG_LINE_RE = new RegExp(`^${IMG_LINE_INNER.source}$`)
+/** The producer's whole image block: `txt = [imgMd, textBody].join('\n\n')`
+ *  puts every image line at the very START of the content, one per line,
+ *  terminated by the join's blank line (or end of content when the body is
+ *  empty). The terminator is consumed by the match so removing the block
+ *  leaves the body byte-exact — including a body that itself begins with a
+ *  newline (an expanded paste). */
+const IMG_BLOCK_RE = new RegExp(`^(?:${IMG_LINE_INNER.source})(?:\n(?:${IMG_LINE_INNER.source}))*(?:\n\n|$)`)
+
+/** A path shape the send path could actually have serialized: absolute POSIX
+ *  (which also covers the producer's forward-slashed UNC form) or a Windows
+ *  drive-letter path. Upload and picker paths are absolute, so a marker whose
+ *  path is relative cannot be producer output — it is foreign text (a pasted
+ *  transcript, a knowledge block) and must be left verbatim. */
+const RESTORABLE_PATH_RE = /^(?:[/\\]|[A-Za-z]:[/\\])/
+
+/** Composer state recovered from a queued message's serialized content. */
+export interface RestoredComposerState {
+  /** The typed text, with provably-lossless attachment markers stripped. */
+  text: string
+  /** Attachment paths (images included) to re-stage into pendingFiles. */
+  files: string[]
+}
+
+/**
+ * FALLBACK inverse of prepareSendPayload's attachment serialization, for
+ * restoring a cancelled queued message into the composer.
+ *
+ * The PRIMARY restore path is ChatPage's send-side stash: `send()` records
+ * the pre-serialization composer state ({typed text, staged files}) keyed by
+ * the exact queued content, and `handleCancelQueued` restores from it
+ * losslessly for every path shape. This parser covers the cases the stash
+ * cannot — a reload, another tab, or a queue entry edited after send — and
+ * its contract is strict: claim ONLY what is provably lossless, leave
+ * everything else verbatim (never worse than the verbatim restore the base
+ * behavior was).
+ *
+ * Provably lossless claims, and nothing more:
+ *  - The producer's LEADING image block — `![image](dest)` lines at the very
+ *    start of the content, one per line, ending at the `\n\n` paragraph
+ *    break `prepareSendPayload` joins with (or at end of content). Claimed
+ *    all-or-nothing: every line must recover an absolute image path, since
+ *    the producer never emits anything else there. mdImageDest's `<…>` wrap
+ *    makes each destination boundary exact, spaces included. An own-line
+ *    image ANYWHERE ELSE is the user's own markdown and stays verbatim —
+ *    position alone distinguishes producer output from user content.
+ *  - An own-line `[attached_file N] <token>` whose remainder is a single
+ *    whitespace-free token, with N ≥ 1 (the producer indexes from 1) and N
+ *    unclaimed (the producer emits each index once) and the path absolute.
+ *    Both possible readings — whole-line path vs path-plus-prose — are
+ *    identical for this shape, so stripping the line and re-staging the path
+ *    cannot corrupt either. The line vanishes; the path re-stages.
+ *
+ * Deliberately left VERBATIM, because their path boundary is not provable
+ * from the wire text alone (any whitespace-bounded capture can truncate a
+ * spaced path, staging a nonexistent file and re-sending the wrong one):
+ *  - embedded (@-mention) markers sitting inline in prose;
+ *  - own-line markers whose remainder contains whitespace — equally a spaced
+ *    bare-upload path and a line-start mention followed by prose;
+ *  - `[attached_dir N]` markers (always inline in prose);
+ *  - marker-shaped text with relative paths, N ≤ 0, or duplicate N.
+ * Claims are held in a list, never an N-indexed array, so malformed marker
+ * text cannot build a sparse structure that throws mid-cancel and breaks
+ * cancel entirely. Expanded paste blocks, knowledge blocks, and session-ref
+ * links also stay in the text — their collapsed forms lived in drafts that
+ * were cleared on send.
+ *
+ * The shape rules are only CANDIDATE generators. The final arbiter is a
+ * byte-exact round trip: the claim stands only when re-serializing the
+ * restored state (`prepareSendPayload(text, files).txt`) reproduces the
+ * original content exactly; otherwise everything stays verbatim. That is
+ * the literal definition of lossless, and it rejects what shape rules
+ * cannot see locally — e.g. an own-line @-mention marker mid-text, which
+ * would re-serialize as an appended token and reorder the user's words
+ * around the attachment.
+ *
+ * Lossless inversion of EVERY shape needs attachment metadata on queue
+ * entries — a backend schema change tracked in #5594 — after which this
+ * parser can retire to legacy-entry duty.
+ */
+export function restoreQueuedContent(content: string): RestoredComposerState {
+  const files: string[] = []
+  let text = content
+
+  // Image lines are claimed ONLY as the producer's leading block, and only
+  // all-or-nothing: prepareSendPayload never emits an image line anywhere
+  // else, and never emits one with a relative or non-image path — so a block
+  // failing either test is foreign text (the user's own markdown) and stays
+  // verbatim, as does an own-line image later in the content. The block match
+  // consumes its own `\n\n` terminator, so nothing is stripped afterwards.
+  const block = IMG_BLOCK_RE.exec(content)
+  if (block) {
+    const lines = block[0].replace(/\n+$/, '').split('\n')
+    const paths = lines.map((l) => mdImageDestToPath(IMG_LINE_RE.exec(l)?.[1] ?? ''))
+    if (paths.every((p) => IMG_EXT.test(p) && RESTORABLE_PATH_RE.test(p))) {
+      files.push(...paths)
+      text = content.slice(block[0].length)
+    }
+  }
+
+  const claims: Array<{ path: string; matched: string }> = []
+  const claimedN = new Set<number>()
+  for (const m of text.matchAll(/^\[attached_file (\d+)\][^\S\n]+(\S+)[ \t]*$/gm)) {
+    const n = parseInt(m[1], 10)
+    if (n < 1 || claimedN.has(n) || !RESTORABLE_PATH_RE.test(m[2]) || IMG_EXT.test(m[2])) continue
+    claimedN.add(n)
+    claims.push({ path: m[2], matched: m[0] })
+  }
+  for (const c of claims) {
+    const esc = c.matched.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // Remove the marker line together with exactly ONE adjacent newline — the
+    // producer's own separator (`[llmRaw, tokens].join('\n')` appends trailing
+    // markers, so a marker at end-of-content takes its LEADING newline
+    // instead). Consuming the separator here is what lets the surrounding
+    // user text survive byte-exact, leading/trailing whitespace included.
+    text = text.replace(new RegExp(`^${esc}\\n|\\n?${esc}$`, 'm'), '')
+    files.push(c.path)
+  }
+
+  // FINAL ARBITER — the definition of lossless, applied literally: a claim
+  // stands only if re-serializing the restored state reproduces the original
+  // content BYTE-FOR-BYTE. Shape rules above are only candidate generators;
+  // this gate is what actually proves the round trip. It rejects what no
+  // shape rule can see locally: a marker the producer put mid-text (an
+  // own-line @-mention) re-serializes as an APPENDED token, reordering the
+  // user's words around the attachment; an index that cannot renumber
+  // identically; any residue the removals left. Anything that fails the
+  // round trip stays fully verbatim — never worse than the base behaviour.
+  const dedupedFiles = [...new Set(files)]
+  if (dedupedFiles.length && prepareSendPayload(text, dedupedFiles).txt !== content) {
+    return { text: content, files: [] }
+  }
+  return { text, files: dedupedFiles }
+}
+
 /* ------------------------------------------------------------------------- */
 /* Folder references                                                          */
 /* ------------------------------------------------------------------------- */

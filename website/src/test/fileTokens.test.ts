@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath } from '../utils/fileTokens'
+import { addPendingFile, hasExactRelMention, prepareSendPayload, buildFileLabels, resolveFileSegment, mdImageDest, mdImageDestToPath, restoreQueuedContent, serializeDirTokens } from '../utils/fileTokens'
 
 describe('buildFileLabels uniqueness', () => {
   it('disambiguates paths that share a basename', () => {
@@ -305,5 +305,199 @@ describe('hasExactRelMention exact-token mention detection', () => {
     // while the file still gets staged with no valid distinguishing @token.
     expect(hasExactRelMention('foo@README.md', 'README.md')).toBe(false)
     expect(hasExactRelMention('see @README.md now', 'README.md')).toBe(true)
+  })
+})
+
+describe('restoreQueuedContent (cancel-queued parser fallback)', () => {
+  // The primary cancel restore is ChatPage's send-side stash (lossless for
+  // every shape). This parser covers reload/other-tab/edited entries, and its
+  // contract is strict: claim ONLY provably-lossless shapes, everything else
+  // stays verbatim — never worse than the base branch's verbatim restore.
+
+  it('returns plain text unchanged with no files', () => {
+    const r = restoreQueuedContent('run the tests')
+    expect(r.text).toBe('run the tests')
+    expect(r.files).toEqual([])
+  })
+
+  it('strips a standalone attachment marker and re-stages its path', () => {
+    const { txt } = prepareSendPayload('summarize this report', ['/tmp/q3/report.docx'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('summarize this report')
+    expect(r.text).not.toContain('[attached_file')
+    expect(r.files).toEqual(['/tmp/q3/report.docx'])
+  })
+
+  it('strips several standalone markers and re-stages each path', () => {
+    const { txt } = prepareSendPayload('compare all of these', ['/tmp/a.csv', '/tmp/b.log'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('compare all of these')
+    expect(new Set(r.files)).toEqual(new Set(['/tmp/a.csv', '/tmp/b.log']))
+  })
+
+  it('leaves an embedded (@-mentioned) marker verbatim — its path boundary is not provable', () => {
+    // `[attached_file 1] /a/b c` inline in prose: a whitespace-bounded capture
+    // truncates a spaced path, staging a nonexistent file and re-sending the
+    // wrong one. The stash handles this shape; the parser must not guess.
+    const { txt } = prepareSendPayload('see @data.csv for details', ['/tmp/data.csv'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe(txt)
+    expect(r.files).toEqual([])
+  })
+
+  it('restores a producer-form image line as a staged image path', () => {
+    const { txt } = prepareSendPayload('what is in this picture', ['/tmp/photo.png'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('what is in this picture')
+    expect(r.files).toEqual(['/tmp/photo.png'])
+  })
+
+  it('restores an image path containing spaces from its wrapped destination', () => {
+    // mdImageDest's <...> wrap gives the destination an exact boundary, so an
+    // image is the one spaced-path shape the parser CAN claim losslessly.
+    const { txt } = prepareSendPayload('look', ['/tmp/My Shots/pic 1.png'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('look')
+    expect(r.files).toEqual(['/tmp/My Shots/pic 1.png'])
+  })
+
+  it('leaves an inline image reference the user typed themselves alone', () => {
+    const r = restoreQueuedContent('the logo ![image](/tmp/logo.png) sits inline in this sentence')
+    expect(r.text).toContain('![image](/tmp/logo.png)')
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves an own-line relative image from pasted markdown verbatim', () => {
+    const pasted = 'review this README excerpt:\n\n## Logo\n\n![image](docs/logo.png)\n\nand the table below'
+    const r = restoreQueuedContent(pasted)
+    expect(r.text).toBe(pasted)
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves a relative-path file marker from foreign text verbatim', () => {
+    const pasted = 'the transcript said:\n[attached_file 1] docs/spec.md\nwhich was odd'
+    const r = restoreQueuedContent(pasted)
+    expect(r.text).toBe(pasted)
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves an own-line marker with a spaced remainder verbatim — the ambiguous shape', () => {
+    // Equally a spaced bare-upload path and a line-start mention followed by
+    // prose; any claim corrupts one reading, so neither is made.
+    const { txt } = prepareSendPayload('summarize this', ['/Users/me/Desktop/My Report.pdf'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe(txt)
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves a line-start mention followed by prose verbatim rather than eating the prose', () => {
+    const { txt } = prepareSendPayload('@data.csv is broken', ['/tmp/data.csv'])
+    expect(txt).toBe('[attached_file 1] /tmp/data.csv is broken')
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe(txt)
+    expect(r.files).toEqual([])
+  })
+
+  it('survives malformed marker indices without crashing or consuming them', () => {
+    // N=999999999 can never renumber identically on re-send, so the
+    // round-trip arbiter keeps the whole content verbatim: restoring it
+    // would silently rewrite the marker's index.
+    const weird = 'a [attached_file 0] /tmp/x.txt b\n[attached_file 999999999] /tmp/y.txt'
+    const r = restoreQueuedContent(weird)
+    expect(r.text).toBe(weird)
+    expect(r.files).toEqual([])
+  })
+
+  it('claims each marker index once — a duplicate N stays verbatim', () => {
+    // Claiming one of the two lines cannot round-trip (the survivor would
+    // renumber), so the arbiter keeps both verbatim.
+    const dup = '[attached_file 1] /tmp/a.txt\n[attached_file 1] /tmp/b.txt'
+    const r = restoreQueuedContent(dup)
+    expect(r.text).toBe(dup)
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves a mid-text own-line mention marker verbatim — restoring would reorder it', () => {
+    // '@data.csv\nthen summarize': the mention serializes INLINE at the line
+    // start; claiming it would re-stage the file as an APPENDED token on
+    // re-send, moving the marker after the instruction. The round-trip
+    // arbiter rejects the claim.
+    const { txt } = prepareSendPayload('@data.csv\nthen summarize', ['/tmp/data.csv'])
+    expect(txt).toBe('[attached_file 1] /tmp/data.csv\nthen summarize')
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe(txt)
+    expect(r.files).toEqual([])
+  })
+
+  it('leaves dir markers verbatim — they sit inline where no boundary is provable', () => {
+    const project = '/home/me/proj'
+    const { llm } = serializeDirTokens('review @a/src/ carefully', project)
+    const r = restoreQueuedContent(llm)
+    expect(r.text).toBe(llm)
+    expect(r.files).toEqual([])
+  })
+
+  it('re-sending the restored state does not double markers', () => {
+    const original = prepareSendPayload('check these', ['/tmp/data.csv', '/tmp/extra.log'])
+    const r = restoreQueuedContent(original.txt)
+    const resent = prepareSendPayload(r.text, r.files)
+    expect(resent.txt).toBe(original.txt)
+    expect(resent.filePaths).toEqual(original.filePaths)
+  })
+
+  it('restores a mixed image + document + text payload completely', () => {
+    const { txt } = prepareSendPayload('compare these', ['/tmp/shot.png', '/tmp/data.csv'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('compare these')
+    expect(new Set(r.files)).toEqual(new Set(['/tmp/shot.png', '/tmp/data.csv']))
+  })
+
+  it('preserves interior whitespace and strips only the blank lines removed markers left', () => {
+    const { txt } = prepareSendPayload('line one\n\nline  two', ['/tmp/photo.png'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('line one\n\nline  two')
+  })
+
+  it('leaves an own-line ABSOLUTE image outside the leading block verbatim', () => {
+    // The producer only ever emits image lines as the leading block; an
+    // own-line image later in the content is the user's own markdown even
+    // when its path is absolute. Claiming it would strip user content and
+    // reposition it as a chip on re-send.
+    const typed = 'compare with the golden file:\n\n![image](/tmp/golden/expected.png)\n\ndoes it match?'
+    const r = restoreQueuedContent(typed)
+    expect(r.text).toBe(typed)
+    expect(r.files).toEqual([])
+  })
+
+  it('preserves a body that begins with a newline (expanded paste) byte-exact', () => {
+    // The image block match consumes exactly the producer's `\n\n` separator,
+    // so a paste whose expansion starts with a blank/indented line keeps it.
+    const { txt } = prepareSendPayload('\n  indented first line\nsecond', ['/tmp/pic.png'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('\n  indented first line\nsecond')
+    expect(r.files).toEqual(['/tmp/pic.png'])
+  })
+
+  it('keeps leading and trailing blank lines of markerless content untouched', () => {
+    const padded = '\n\nhello\n\n'
+    const r = restoreQueuedContent(padded)
+    expect(r.text).toBe(padded)
+    expect(r.files).toEqual([])
+  })
+
+  it('claims the leading image block all-or-nothing — one foreign line keeps the whole block verbatim', () => {
+    // The producer never emits a relative path, so a block containing one is
+    // foreign text; claiming the valid line alone would tear pasted markdown.
+    const pasted = '![image](/tmp/real.png)\n![image](docs/logo.png)\n\nfrom the README'
+    const r = restoreQueuedContent(pasted)
+    expect(r.text).toBe(pasted)
+    expect(r.files).toEqual([])
+  })
+
+  it('restores a two-image leading block completely', () => {
+    const { txt } = prepareSendPayload('diff these', ['/tmp/a.png', '/tmp/b shots/b 2.png'])
+    const r = restoreQueuedContent(txt)
+    expect(r.text).toBe('diff these')
+    expect(r.files).toEqual(['/tmp/a.png', '/tmp/b shots/b 2.png'])
   })
 })

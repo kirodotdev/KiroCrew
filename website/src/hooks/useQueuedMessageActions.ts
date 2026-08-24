@@ -2,7 +2,34 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { useAppDispatch } from '../store'
 import { cancelQueuedMessage, editQueuedMessage } from '../store/chatSlice'
+import { restoreQueuedContent } from '../utils/fileTokens'
 import type { ChatMessage } from '../types'
+
+/** Pre-serialization composer state of a send the server QUEUED, written by the
+ *  host's send path when the `queued: true` receipt names the entry. */
+export interface QueuedSendRecord {
+  /** The text exactly as the user typed it. */
+  raw: string
+  /** The staged file paths at send time. */
+  files: string[]
+  /** The exact POSTed LLM-facing text — the edit guard: an entry edited after
+   *  send keeps its queue id but fails this equality, so an edited card falls
+   *  to the parser instead of clobbering the edit with pre-edit state. */
+  sent: string
+}
+
+/** Queued-send stash, keyed by the `queue_id` the send receipt returns (the
+ *  same id `queue_push` broadcasts and the card's cancel button carries).
+ *  Queue identity is the ONLY sound key: the serialization is not injective
+ *  (image @-tokens are erased from the LLM-facing text), so content-keyed
+ *  records can collide across different captions, duplicate sends, and other
+ *  tabs. Module-level so every host's send path (ChatPage, ChatPane) writes
+ *  the one store this hook's cancel consumes — the same one-owner reasoning
+ *  as the hook itself (#5891). Deliberately unevicted: an entry dies on the
+ *  cancel that consumes it, and evicting a live entry would degrade that
+ *  card's cancel to the parser fallback; orphans from normal delivery are
+ *  three small strings bounded by queued sends per tab session. */
+export const queuedSendStash = new Map<string, QueuedSendRecord>()
 
 /** The four queue-card callbacks `QueueStack` takes, plus the in-flight set it
  *  disables its controls from. */
@@ -28,13 +55,21 @@ export interface QueuedMessageActionsOptions {
    *  swaps two ADJACENT VISIBLE cards, so the neighbour is chosen here and then
    *  expressed inside `allQueued`'s full sequence. */
   visibleQueued: ChatMessage[]
-  /** Hand a cancelled card's text back to the host's composer. Each host owns
-   *  its own composer — ChatPage's `input` is draft-persisted per slot, a pane's
-   *  is local state that merges a recovered draft — so the plumbing is injected
-   *  rather than decided here. Omitted, the text is dropped, which is what
-   *  cancelling in a split pane did before #5891 and what no host should do.
+  /** Hand a cancelled card's recovered composer state back to the host. Each
+   *  host owns its own composer — ChatPage's `input` is draft-persisted per
+   *  slot, a pane's is local state that merges a recovered draft — so the
+   *  plumbing is injected rather than decided here. `text` is the TYPED text
+   *  (from the send-time stash when this tab made the send, else inverted
+   *  from the wire serialization by `restoreQueuedContent`), never the raw
+   *  card content — the card holds `prepareSendPayload`'s LLM-facing form
+   *  (`[attached_file N]` markers, image markdown), and restoring it verbatim
+   *  is the marker-in-composer data loss of #560. `files` are the attachment
+   *  paths to re-stage; a host MUST merge them into its pending-files state
+   *  or the recovered text refers to attachments the re-send will not carry.
+   *  Omitted, the recovered state is dropped, which is what cancelling in a
+   *  split pane did before #5891 and what no host should do.
    */
-  restoreDraft?: (text: string) => void
+  restoreDraft?: (text: string, files: string[]) => void
 }
 
 const queueIdOf = (m: ChatMessage): string | undefined => m.meta?.queueId as string | undefined
@@ -147,7 +182,23 @@ export function useQueuedMessageActions({
   const onCancel = useCallback((queueId: string) => {
     if (!slot) return
     const msg = allQueuedRef.current.find(m => queueIdOf(m) === queueId)
-    if (msg?.content) restoreDraftRef.current?.(msg.content)
+    if (msg?.content) {
+      // Restore by QUEUE IDENTITY: the record was stored under the queue id
+      // the send receipt returned, which is the id this cancel carries — so a
+      // hit is this card's own pre-send state by construction, whatever its
+      // content collides with (duplicate texts, erased-image-token captions,
+      // other tabs). The record is consumed either way; `sent` guards the one
+      // same-id hazard (see QueuedSendRecord). No stash hit — a reload,
+      // another tab's card, an edited entry — falls to the strict parser,
+      // which claims only byte-exact round-trippable shapes and is never
+      // worse than the verbatim restore this replaced.
+      const stashed = queuedSendStash.get(queueId)
+      if (stashed) queuedSendStash.delete(queueId)
+      const { text, files } = stashed && stashed.sent === msg.content
+        ? { text: stashed.raw, files: stashed.files }
+        : restoreQueuedContent(msg.content)
+      restoreDraftRef.current?.(text, files)
+    }
     // Optimistically remove the card; the WS echo is a no-op if already gone.
     dispatch(cancelQueuedMessage({ slot, queue_id: queueId }))
     run(queueId, api.cancelQueuedMessage(slot, queueId))

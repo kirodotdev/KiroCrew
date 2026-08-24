@@ -40,7 +40,7 @@ const apiMocks = vi.hoisted(() => ({
 }))
 vi.mock('../api/client', () => ({ api: apiMocks }))
 
-import { useQueuedMessageActions, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash, type QueuedMessageActions } from '../hooks/useQueuedMessageActions'
 
 const queued = (queueId: string, content: string): ChatMessage =>
   ({ role: 'queued', content, cls: 'msg msg-queued', ts: '', meta: { queueId } }) as ChatMessage
@@ -60,7 +60,7 @@ function renderActions(opts: {
   rows?: ChatMessage[]
   /** Rows QueueStack would draw. Defaults to every row (all interactive). */
   visible?: ChatMessage[]
-  restoreDraft?: (text: string) => void
+  restoreDraft?: (text: string, files: string[]) => void
 }) {
   const rows = opts.rows ?? [queued('q1', 'run the tests'), queued('q2', 'then deploy')]
   const slot = opts.slot === undefined ? 'chat-1' : opts.slot
@@ -92,6 +92,9 @@ const queueIdsIn = (store: ReturnType<typeof makeStore>) =>
 
 beforeEach(() => {
   vi.clearAllMocks()
+  // Module-level store: entries would otherwise leak across tests (and across
+  // reused queue ids like 'q1'), making the suite order-dependent.
+  queuedSendStash.clear()
   for (const fn of Object.values(apiMocks)) fn.mockResolvedValue({ ok: true })
 })
 
@@ -100,10 +103,49 @@ describe('useQueuedMessageActions — cancel', () => {
     const restoreDraft = vi.fn()
     const { get, store } = renderActions({ restoreDraft })
     act(() => { get().onCancel('q1') })
-    expect(restoreDraft).toHaveBeenCalledWith('run the tests')
+    // Plain text round-trips the parser unchanged, with nothing to re-stage.
+    expect(restoreDraft).toHaveBeenCalledWith('run the tests', [])
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
     // Optimistic: the card is gone without waiting for the WS echo.
     expect(queueIdsIn(store)).toEqual(['q2'])
+  })
+
+  it('restores the pre-send composer state from the queue-id stash — typed text AND files', () => {
+    // The card content is the LLM-facing serialization; the stash record is
+    // what the user actually composed. A hit restores the raw text and
+    // re-stages the files — lossless even for a spaced path no parser could
+    // reconstruct from the wire text.
+    const spaced = '/Users/me/Desktop/My Report.pdf'
+    const sent = 'summarize this\n[attached_file 1] /Users/me/Desktop/My Report.pdf'
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', sent)]
+    queuedSendStash.set('q1', { raw: 'summarize this', files: [spaced], sent })
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('summarize this', [spaced])
+    // Consumed: a record restores exactly once.
+    expect(queuedSendStash.has('q1')).toBe(false)
+  })
+
+  it('an entry edited after send fails the `sent` guard and falls to the parser', () => {
+    // Same queue id, different content: restoring the pre-edit stash would
+    // silently discard the edit, so the edited text must win.
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', 'actually, deploy instead')]
+    queuedSendStash.set('q1', { raw: 'summarize this', files: ['/tmp/a.pdf'], sent: 'summarize this\n[attached_file 1] /tmp/a.pdf' })
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('actually, deploy instead', [])
+  })
+
+  it('a foreign card (no stash record) decomposes producer markers via the parser', () => {
+    // Reload/another tab: no record exists, but a provably-lossless own-line
+    // marker still comes back as typed text + a re-staged file.
+    const restoreDraft = vi.fn()
+    const rows = [queued('q1', 'summarize the report\n[attached_file 1] /tmp/report.docx')]
+    const { get } = renderActions({ rows, restoreDraft })
+    act(() => { get().onCancel('q1') })
+    expect(restoreDraft).toHaveBeenCalledWith('summarize the report', ['/tmp/report.docx'])
   })
 
   it('restores nothing when the host supplies no composer sink', () => {

@@ -31,6 +31,8 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { prepareSendPayload } from '../utils/fileTokens'
+import { appendSessionRefLinks } from '../utils/sessionRefs'
 import { ThemeProvider } from '../hooks/useTheme'
 import { i18nT } from '../i18n/t'
 import { store as appStore } from '../store'
@@ -38,6 +40,7 @@ import type { RootState } from '../store'
 import type { ChatMessage } from '../types'
 import type { PasteBlock } from '../utils/pasteTokens'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { queuedSendStash } from '../hooks/useQueuedMessageActions'
 
 // --- Stubs whose only job is to keep the render tree small -------------------
 
@@ -116,6 +119,8 @@ vi.mock('../pages/chat/SidePanel', () => ({
 interface InputProps {
   value: string
   onChange: (v: string) => void
+  onSend: () => void
+  onFileSelect?: (path: string, kind?: string, token?: string) => void
   onScreenshot?: () => void
   pendingFiles?: string[]
   uploading?: boolean
@@ -150,7 +155,11 @@ vi.mock('../components/InfoTip', () => ({ default: () => null }))
 vi.mock('../components/SegmentedControl', () => ({ default: () => null }))
 vi.mock('../components/WelcomeView', () => ({ default: () => null }))
 vi.mock('../components/SearchResultsList', () => ({ default: () => null }))
-vi.mock('../pages/ChatSidebar', () => ({ default: () => null, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
+interface SidebarProps {
+  onDropSessionRef?: (ref: { key: string; title: string }) => void
+}
+let sidebarProps: SidebarProps | null = null
+vi.mock('../pages/ChatSidebar', () => ({ default: (props: SidebarProps) => { sidebarProps = props; return null }, SIDEBAR_MIN: 200, SIDEBAR_MAX: 500 }))
 vi.mock('../pages/chat/ActivityViewer', () => ({ default: () => null }))
 vi.mock('../pages/chat/SessionColorPicker', () => ({ default: () => null }))
 vi.mock('../pages/chat/ChatSettings', () => ({
@@ -316,9 +325,14 @@ function renderChatPage(messages: ChatMessage[], opts: RenderOpts = {}) {
 let fetchMock: ReturnType<typeof vi.fn>
 
 beforeEach(() => {
+  // Module-level store shared by every host: entries would otherwise leak
+  // across tests that reuse queue ids ('q1', 'q2'), making the suite
+  // order-dependent.
+  queuedSendStash.clear()
   queueProps = null
   followupProps = null
   sidePanelProps = null
+  sidebarProps = null
   inputProps = null
   openFile.mockClear()
   openFolder.mockClear()
@@ -554,6 +568,197 @@ describe('ChatPage — queued message actions', () => {
     expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
     // Optimistically removed rather than waiting for the WS echo.
     await waitFor(() => expect(queueProps!.messages.map(m => m.meta?.queueId)).toEqual(['q2']))
+  })
+
+  it('cancelling a queued send restores the typed text and chips losslessly from the stash', async () => {
+    // The queued card holds the LLM-facing serialization, not the typed text.
+    // When THIS tab made the send, cancel restores the stashed pre-send
+    // composer state — lossless even for a spaced path no parser could
+    // reconstruct from the wire text.
+    const spaced = '/Users/me/Desktop/My Report.pdf'
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ queued: true, queue_id: 'q1' }) })
+    act(() => { inputProps!.onFileSelect!(spaced) })
+    act(() => { inputProps!.onChange('summarize this for me') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize this for me'))
+    const serialized = prepareSendPayload('summarize this for me', [spaced]).txt
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    // The queue_push echo carries the POSTed text as the card content.
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: 'q-ts', queueId: 'q1' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize this for me'))
+    expect(inputProps!.value).not.toContain('[attached_file')
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([spaced]))
+    expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
+  })
+
+  it('a queued send carrying a session ref skips the stash so cancel keeps the link text', async () => {
+    // `raw` predates the appended ref link, so a stash hit would restore the
+    // typed text WITHOUT the context the user staged. Ref-carrying sends must
+    // fall through to the parser, which keeps the link line verbatim — same
+    // preservation the base behaviour had.
+    const ref = { key: 'log-other', title: 'My other session' }
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    await waitFor(() => expect(sidebarProps).not.toBeNull())
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ queued: true, queue_id: 'q1' }) })
+    act(() => { sidebarProps!.onDropSessionRef!(ref) })
+    act(() => { inputProps!.onChange('continue from there') })
+    await waitFor(() => expect(inputProps!.value).toBe('continue from there'))
+    const serialized = appendSessionRefLinks('continue from there', [ref])
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: 'q-ts', queueId: 'q1' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toContain('continue from there'))
+    expect(inputProps!.value).toContain('[My other session](')
+  })
+
+  it('a stash entry survives any number of later queued sends (no eviction)', async () => {
+    // Evicting a live entry would degrade that card's cancel to the parser
+    // fallback — for a spaced path that is exactly the marker-in-composer data
+    // loss this fix removes. Nine queued sends must not cost the first its
+    // lossless restore.
+    const spaced = '/Users/me/Desktop/My Report.pdf'
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    let qn = 0
+    apiSpy('sendChat').mockImplementation(async () => ({ ok: true, json: async () => ({ queued: true, queue_id: `q${++qn}` }) }))
+    act(() => { inputProps!.onFileSelect!(spaced) })
+    act(() => { inputProps!.onChange('summarize this') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize this'))
+    const serialized = prepareSendPayload('summarize this', [spaced]).txt
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledTimes(1))
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: 'q-ts', queueId: 'q1' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    // Eight more queued sends — enough to overflow the old bounded stash.
+    for (let i = 0; i < 8; i++) {
+      act(() => { inputProps!.onChange(`later thought ${i}`) })
+      await waitFor(() => expect(inputProps!.value).toBe(`later thought ${i}`))
+      await act(async () => { inputProps!.onSend() })
+      await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledTimes(i + 2))
+    }
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([spaced]))
+    expect(inputProps!.value).toBe('summarize this')
+    expect(inputProps!.value).not.toContain('[attached_file')
+  })
+
+  it('two identical queued sends each keep their own restore record', async () => {
+    // Identical texts queue as separate cards with separate queue ids, and
+    // each record is keyed by ITS id — so cancelling both restores losslessly
+    // both times, with no shared-record consumption to race.
+    const spaced = '/Users/me/Desktop/My Report.pdf'
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    let qn = 0
+    apiSpy('sendChat').mockImplementation(async () => ({ ok: true, json: async () => ({ queued: true, queue_id: `q${++qn}` }) }))
+    const serialized = prepareSendPayload('summarize this', [spaced]).txt
+    for (let i = 0; i < 2; i++) {
+      act(() => { inputProps!.onFileSelect!(spaced) })
+      act(() => { inputProps!.onChange('summarize this') })
+      await waitFor(() => expect(inputProps!.value).toBe('summarize this'))
+      await act(async () => { inputProps!.onSend() })
+      await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledTimes(i + 1))
+      act(() => {
+        store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: `q-ts-${i}`, queueId: `q${i + 1}` } })
+      })
+      await waitFor(() => expect(queueProps?.messages?.length).toBe(i + 1))
+    }
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([spaced]))
+    expect(inputProps!.value).toBe('summarize this')
+    // Clear the composer so the second cancel's restore is observable alone.
+    act(() => { inputProps!.onChange('') })
+    act(() => { queueProps!.onCancel('q2') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize this'))
+    expect(inputProps!.value).not.toContain('[attached_file')
+  })
+
+  it('serialization-colliding captions each restore their OWN typed text via queue identity', async () => {
+    // The serialization is not injective: an image @-token is ERASED from the
+    // LLM-facing text, so 'look @pic.png now' and 'look  now' with the same
+    // staged image queue with IDENTICAL content but DIFFERENT raw captions
+    // (send() trims outer whitespace, so the collision lives mid-text). The
+    // stash is keyed by queue id, not content, so each cancel — in ANY order —
+    // restores the caption ITS card was sent with, never the other one's.
+    const img = '/tmp/pic.png'
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    let qn = 0
+    apiSpy('sendChat').mockImplementation(async () => ({ ok: true, json: async () => ({ queued: true, queue_id: `q${++qn}` }) }))
+    const serialized = prepareSendPayload('look  now', [img]).txt
+    expect(prepareSendPayload('look @pic.png now', [img]).txt).toBe(serialized) // the ambiguity is real
+    for (const [i, raw] of (['look @pic.png now', 'look  now'] as const).entries()) {
+      act(() => { inputProps!.onFileSelect!(img) })
+      act(() => { inputProps!.onChange(raw) })
+      await waitFor(() => expect(inputProps!.value).toBe(raw))
+      await act(async () => { inputProps!.onSend() })
+      await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalledTimes(i + 1))
+      act(() => {
+        store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: serialized, ts: `q-ts-${i}`, queueId: `q${i + 1}` } })
+      })
+      await waitFor(() => expect(queueProps?.messages?.length).toBe(i + 1))
+    }
+    // Cancel the SECOND card FIRST — any content- or order-based pick would
+    // hand it the first send's caption ('look @pic.png now').
+    act(() => { queueProps!.onCancel('q2') })
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual([img]))
+    expect(inputProps!.value).toBe('look  now')
+    expect(inputProps!.value).not.toContain('@pic.png')
+    act(() => { inputProps!.onChange('') })
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('look @pic.png now'))
+  })
+
+  it('an entry edited after send falls back to the parser — the pre-edit stash must not clobber the edit', async () => {
+    // Editing a queued card keeps its queue id but changes its content, so a
+    // queue-id stash hit would restore the PRE-edit composer state and
+    // silently discard the edit. The record's `sent` snapshot detects the
+    // mismatch and routes the cancel to the parser on the EDITED content.
+    const spaced = '/Users/me/Desktop/My Report.pdf'
+    const { store } = renderChatPage([msg('user', 'first', { ts: '2026-08-12T07:00:00Z' })], { queue: [] })
+    await waitFor(() => expect(inputProps).not.toBeNull())
+    apiSpy('sendChat').mockResolvedValue({ ok: true, json: async () => ({ queued: true, queue_id: 'q1' }) })
+    act(() => { inputProps!.onFileSelect!(spaced) })
+    act(() => { inputProps!.onChange('summarize this') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize this'))
+    await act(async () => { inputProps!.onSend() })
+    await waitFor(() => expect(apiMocks.sendChat).toHaveBeenCalled())
+    // The card arrives already EDITED relative to what this tab posted.
+    act(() => {
+      store.dispatch({ type: 'chat/appendQueuedMessage', payload: { slot: 'chat-1', content: 'actually, deploy instead', ts: 'q-ts', queueId: 'q1' } })
+    })
+    await waitFor(() => expect(queueProps?.messages?.length).toBe(1))
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('actually, deploy instead'))
+    expect(inputProps!.value).not.toContain('summarize this')
+    expect(inputProps!.pendingFiles ?? []).toEqual([])
+  })
+
+  it('cancelling a foreign queued card falls back to the strict parser', async () => {
+    // No stash entry exists for a card this tab did not send (reload, another
+    // tab). The parser claims only provably-lossless shapes: the own-line
+    // upload marker is stripped and re-staged; nothing else is guessed at.
+    const serialized = prepareSendPayload('summarize the report', ['/tmp/report.docx']).txt
+    expect(serialized).toContain('[attached_file 1] /tmp/report.docx')
+    await renderWithQueue([{ id: 'q1', content: serialized }, { id: 'q2', content: 'then deploy' }])
+    act(() => { queueProps!.onCancel('q1') })
+    await waitFor(() => expect(inputProps!.value).toBe('summarize the report'))
+    expect(inputProps!.value).not.toContain('[attached_file')
+    await waitFor(() => expect(inputProps!.pendingFiles).toEqual(['/tmp/report.docx']))
+    expect(apiMocks.cancelQueuedMessage).toHaveBeenCalledWith('chat-1', 'q1')
   })
 
   it('cancelling two cards in a row keeps both drafts instead of overwriting the first', async () => {

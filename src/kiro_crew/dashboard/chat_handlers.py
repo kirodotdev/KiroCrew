@@ -614,14 +614,17 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # The existing SSE reader will pick up queued messages as _run_chat
         # processes the queue in its finally block. The message is non-empty
         # here (hoisted guard above the busy branch), so `queued: true`
-        # always reports a real enqueue.
-        queue_for_next_turn(
+        # always reports a real enqueue. `queue_id` lets the sender bind its
+        # pre-send composer state to THIS entry (the dashboard's cancel-queued
+        # restore), which no content-based key can do: serialization is not
+        # injective and other tabs can queue colliding content.
+        qid = queue_for_next_turn(
             state,
             slot,
             message,
             directive_user_origin=not bool(request_app),
         )
-        return web.json_response({"ok": True, "queued": True})
+        return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # ── Crew Mode dispatch (RFC orchestrator-chat-sessions) ─────────
     # MUST precede the hold-users gate below: crew topics ARE background
@@ -688,7 +691,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 "queue_id": qid,
             },
         )
-        return web.json_response({"ok": True, "queued": True})
+        # Same receipt contract as the busy-slot queue branch: `queue_id`
+        # binds the sender's pre-send composer state to this exact entry.
+        return web.json_response({"ok": True, "queued": True, "queue_id": qid})
 
     # WS mode: return JSON immediately, chunks delivered via WebSocket
     ws_mode = request.query.get("ws") == "1"

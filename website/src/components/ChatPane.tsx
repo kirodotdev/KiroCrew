@@ -25,7 +25,7 @@ import { useFilteredDropdown } from '../hooks/useFilteredDropdown'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { usePlanActionMutation, isPlanAction } from '../hooks/usePlanActionMutation'
-import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMessageActions'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, setAgentSwitchNotice, pendingQuestionFor } from '../store/chatSlice'
@@ -517,6 +517,19 @@ export default function ChatPane({
         return
       }
       if (receipt.status === 'unknown' || receipt.status === 'response-late') return
+      // The receipt names the queue entry this send became: bind the
+      // pre-send composer state to it so cancelling that card restores the
+      // TYPED text and re-stages the files (issue #560). This matters MORE
+      // here than on ChatPage: the pane sends attachments via `meta.files`,
+      // so the queued row's content carries no markers and the parser
+      // fallback has nothing to recover the files from. `!optionText`
+      // mirrors the composer-consumption gate above -- an option send never
+      // consumed the draft, so there is no pre-send state to bind. An empty
+      // wire text can never reach here (sendTurn classifies it `refused`),
+      // and the guard requires the receipt's `queue_id`.
+      if (receipt.status === 'queued' && typeof receipt.body.queue_id === 'string' && receipt.body.queue_id && !optionText) {
+        queuedSendStash.set(receipt.body.queue_id, { raw: text, files, sent: llm })
+      }
       // The response is the delivery receipt for this pane's optimistic bubble
       // because no `chat_message` echo is coming for a dashboard send. Only
       // an IMMEDIATE dispatch counts: a queued acceptance is not a receipt for

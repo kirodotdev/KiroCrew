@@ -10673,6 +10673,31 @@ class TestPythonStageLoop:
         assert any(i["content"] == "queued mid-plan" for i in slot._queue)
 
     @pytest.mark.asyncio
+    async def test_queued_receipt_carries_the_entry_queue_id(self, tmp_path, monkeypatch):
+        """The `queued: true` receipt names the entry it created: `queue_id`
+        must equal the queue entry's id, because the sender binds its pre-send
+        composer state to that id for the cancel-queued restore (#560) — a
+        content-based key cannot do this (serialization is not injective and
+        other tabs can queue colliding content)."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("busy-chat")
+        slot._in_stage_execution = True  # force the busy queue path
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "queued while busy", "slot": "busy-chat"}
+            )
+            assert resp.status == 200
+            body = await resp.json()
+            assert body.get("queued") is True
+            entry = next(i for i in slot._queue if i["content"] == "queued while busy")
+            assert body.get("queue_id") == entry["id"]
+
+    @pytest.mark.asyncio
     async def test_go_button_uses_stage_loop(self, tmp_path, monkeypatch):
         """Go button via plan-action endpoint uses _stage_loop."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
