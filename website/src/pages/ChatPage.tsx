@@ -188,7 +188,7 @@ import { focusComposerAfter, revealComposer } from './chat/composerFocus'
 import { useHoverIntent } from '../hooks/useHoverIntent'
 import { useKnowledgeFetch, extractKnowledgeQuery, expandKnowledgeBlock } from './chat/useKnowledgeFetch'
 import { KnowledgePicker } from './chat/KnowledgePicker'
-import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, MessageSquareDot, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
+import { BookOpen, EyeOff, Loader, Pen, ChevronDown, ChevronRight, Plug, ArrowDown, MessageSquare, Sparkles, VenetianMask, Clock, Undo2, Columns2, ExternalLink, Paperclip, Folder, X } from 'lucide-react'
 import { PanelLeftSolid, PanelLeftLight, PanelRightSolid } from '../components/icons/panels'
 
 import InfoTip from '../components/InfoTip'
@@ -6731,7 +6731,13 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         {isMobile && !embedded && !sidebarOpen && !inlineSidePanelShowing && !(activeSlot && (messages.length > 0 || slotRunning)) && (
           <div className="fixed top-safe-offset-[42px] left-safe ml-2 z-10">
             <button className="p-2 rounded-lg text-muted hover:text-text bg-bg-elevated border border-border shadow-sm cursor-pointer" onClick={() => setMobileSessions(true)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
-              {effectiveMode === 'orchestrator' ? <MessageSquareDot size={18} /> : <MessageSquare size={18} />}
+              {/* Same glyph as the desktop toggle: a control is named by the SURFACE
+                  it opens, and this opens the sessions panel. Solid rather than
+                  `PanelLeftLight` because this form only renders while that panel is
+                  closed. It carries no conversation-mode variant -- mode belongs to
+                  the conversation, not to the drawer, and the header's own mode
+                  control already shows it. */}
+              <PanelLeftSolid size={18} />
             </button>
           </div>
         )}
@@ -6776,7 +6782,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 )}
                 {embedMode !== 'chat' && isMobile && (
                   <button className="p-1 rounded-md text-muted hover:text-text cursor-pointer bg-transparent border-none pointer-events-auto" onClick={() => setMobileSessions(p => !p)} aria-label={i18nT('pages.chatPage.toggle_sessions')}>
-                    {effectiveMode === 'orchestrator' ? <MessageSquareDot size={16} /> : <MessageSquare size={16} />}
+                    {/* Mirrors the desktop toggle exactly, state included: solid
+                        while the panel is hidden, light while it is showing. */}
+                    {mobileSessions ? <PanelLeftLight size={16} /> : <PanelLeftSolid size={16} />}
                   </button>
                 )}
                 <div className="group/header flex min-w-0 items-stretch gap-0.5 pointer-events-auto">

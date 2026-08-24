@@ -41,7 +41,7 @@ import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Menu, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, LayoutGrid, Fullscreen, SquareTerminal, Bot, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
@@ -2372,20 +2372,26 @@ export default function App() {
           {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
 
           {isMobile && (
-            <button className="p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
-              {/* `Menu` is the one icon in this app whose artwork does NOT fill its
-                  box: lucide draws its three rules from x=4 in a 24-unit viewBox, and
-                  the round cap adds half a stroke, so 3 units of the box are empty on
-                  the left. At size 20 that is 3 * 20/24 = 2.5px, which put the visible
-                  glyph at 18.5px while the button's box sat correctly on the 16px
-                  gutter -- reading as indented against a card border directly below it.
-                  A transform, not a margin: the box, the hit target and the hover pill
-                  stay on the 8px grid, and no sibling in the cluster shifts. Sized off
-                  the icon's own geometry, which `narrowFirstBaseline.test.ts` re-derives
-                  from lucide so a version bump that recentres `Menu` fails loudly.
-                  Icons that DO fill their box need none of this: the chat session
-                  toggle's `MessageSquare` starts at x=2, i.e. 0.67px at size 16. */}
-              <Menu size={20} className="-translate-x-[2.5px]" />
+            <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
+              {/* The product logo, not a generic menu glyph. A narrow layout has exactly
+                  one nav affordance, and it opens the same rail whose header carries this
+                  same `avatar` on a wide one -- so it is the same asset, the same
+                  `rounded-md object-contain` treatment and the same hover tilt, which is
+                  live here because this bar is what a NARROW WINDOW gets, not only a
+                  touch device. Reading `avatar` rather than importing a file is what
+                  keeps a theme-supplied or user-configured logo in step: the branding
+                  registry resolves it once for the whole shell.
+
+                  A full-colour raster mark is an <img>, which is exactly what the
+                  `use-lucide-icons` rule's brand-mark exception prescribes -- a CSS mask
+                  over `currentColor` would flatten the art to one colour.
+
+                  Square box, so no optical correction exists: the art is square and
+                  `object-contain` fills the box, putting the ink on the 16px page gutter
+                  (topbar pl-2 + this button's p-2) that the page title and every card's
+                  left edge below it sit on, with the button's own box at 24 + 16 = 40px
+                  for the tap target. `narrowFirstBaseline.test.ts` re-derives that sum. */}
+              <img src={avatar} alt="" aria-hidden="true" className="w-6 h-6 rounded-md shrink-0 object-contain transition-transform duration-300 group-hover:rotate-[-8deg]" />
             </button>
           )}
           <InstanceTabBar variant="inline" />
