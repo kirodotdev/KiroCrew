@@ -107,6 +107,23 @@ jobs:
           python-version: "3.12"
 
       - name: Install uv
+        # The build script provisions python-build-standalone interpreters
+        # through uv; not every runner image ships it, and the script's
+        # curl|sh fallback is POSIX-shaped.
+        #
+        # Exactly ONE setup-uv per job. Its cache key (restore-cache.ts) is
+        # setup-uv-2-<arch>-<platform>-<os>-<python>-<dep-hash> -- every part
+        # job-invariant, so a SECOND invocation in this job derives the same key
+        # and its post step's save makes this step's post fail reserveCache:
+        # "Failed to save: Unable to reserve cache with key setup-uv-2-...,
+        # another job may be creating this cache."
+        #
+        # That message is why the duplicate survived review for so long: it
+        # reads as benign matrix contention. It is not. The key embeds arch and
+        # OS, so the mac and linux-arm64 legs cannot share one, and the run's
+        # two annotations carried two DIFFERENT keys. Same job, different step.
+        # (The x64 leg stayed quiet only because ci.yml's linux-packaging job
+        # already writes that key, so both post steps hit and skip saving.)
         uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
 
       - name: Stamp version
@@ -123,11 +140,6 @@ jobs:
           # equal the feed version for the auto-updater's compare gate.
           node -e "const fs=require('fs');const f='website/electron/package.json';const p=JSON.parse(fs.readFileSync(f));p.version=process.env.STAMP_VERSION;fs.writeFileSync(f,JSON.stringify(p,null,2)+'\n')"
           echo "Building desktop: ${STAMP_VERSION}"
-
-      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
-        # The build script provisions python-build-standalone interpreters
-        # through uv; not every runner image ships it, and the script's
-        # curl|sh fallback is POSIX-shaped.
 
       - name: Build desktop app
         # The build script is bash. Invoked directly rather than through the

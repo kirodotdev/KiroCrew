@@ -272,11 +272,20 @@ jobs:
       # The existing-tag re-run path is handled by the VERIFY step below.
       - name: Attest image provenance (fresh build)
         if: steps.existing.outputs.exists == 'false' && !inputs.promote
-        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-name: ${{ steps.image.outputs.name }}
           subject-digest: ${{ steps.digest.outputs.value }}
           push-to-registry: true
+          # Pinned to the v2 behaviour this lane was verified with. v3.1.0 added
+          # artifact-metadata storage records and v4 defaults this input to true
+          # whenever push-to-registry is set, so publish-docker is the only site
+          # a bare pin bump would change. The attempt would fail soft (records
+          # need artifact-metadata: write, which this workflow does not grant),
+          # and a soft failure is still a fresh annotation on the one lane
+          # holding a registry-push credential. Adopt records deliberately, not
+          # as a side effect of clearing a Node 20 deprecation warning.
+          create-storage-record: false
 
       # Existing-tag re-run path: require that the already-published digest
       # ALREADY carries provenance attested by THIS repository's workflows.
