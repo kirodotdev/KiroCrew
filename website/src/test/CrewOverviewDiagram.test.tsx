@@ -34,6 +34,7 @@ function renderDiagram(inputs = INPUTS, outputs = OUTPUTS) {
       inputsLabel="Who wakes it"
       outputsLabel="What it works with"
       hub={<span data-testid="hub" />}
+      onNodeSelect={() => {}}
     />,
   )
   const fan = (side: 'in' | 'out') =>

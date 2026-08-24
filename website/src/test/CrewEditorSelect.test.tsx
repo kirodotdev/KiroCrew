@@ -314,3 +314,28 @@ describe('crew editor — keyboard (via a binding select)', () => {
     )
   })
 })
+
+describe('crew editor — overview diagram nodes navigate to their pane', () => {
+  it('clicking the workspace node lands on the workspace/memory pane, focus following', async () => {
+    // The clicked node unmounts with the overview pane, which would drop
+    // keyboard focus to the body — the arriving tabpanel must catch it.
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('crew-wire-workspace'))
+
+    expect(within(sheet).getByTestId('crew-rail-place')).toHaveAttribute('aria-selected', 'true')
+    expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toBeInTheDocument()
+    // Focus is handed to the panel, and the panel must arrive NAMED — an
+    // unnamed tabpanel is announced as nothing but "tab panel".
+    const panel = within(sheet).getByRole('tabpanel', { name: 'Workspace · Memory' })
+    expect(document.activeElement).toBe(panel)
+  })
+
+  it('clicking the unbound webhook ghost lands on the webhook pane', async () => {
+    // The ghost reports a missing binding; its pane is where the binding is made.
+    await renderRoster()
+    const sheet = await openEditor('oncall')
+    fireEvent.click(within(sheet).getByTestId('crew-wire-webhook'))
+    expect(within(sheet).getByTestId('crew-rail-webhook')).toHaveAttribute('aria-selected', 'true')
+  })
+})

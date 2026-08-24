@@ -822,6 +822,29 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
   const [pane, setPane] = useState<CrewPaneKey>('overview')
   useEffect(() => { setPane('overview') }, [sheet])
 
+  /** Pane changes driven from INSIDE a pane (an overview diagram node) rather
+   *  than from the rail. The clicked node unmounts with its pane, which would
+   *  drop keyboard focus to the body — so focus moves to the arriving panel,
+   *  which carries `tabIndex={-1}` for exactly this hand-off. Rail clicks keep
+   *  focus on the rail row and never set this flag. */
+  const paneFocusPending = useRef(false)
+  const goToPane = useCallback((key: CrewPaneKey) => {
+    setPane(prev => {
+      // Arm only on a real change: a same-pane call never reruns the focus
+      // effect, so an armed flag would fire on the NEXT rail-driven change and
+      // steal focus the rail contract says stays on the rail row. The ref
+      // write is idempotent, so a double-invoked updater is harmless.
+      if (prev !== key) paneFocusPending.current = true
+      return key
+    })
+  }, [])
+  const panelId = `crew-editor-pane-${editing || 'new'}`
+  useEffect(() => {
+    if (!paneFocusPending.current) return
+    paneFocusPending.current = false
+    document.getElementById(`${panelId}-${pane}`)?.focus()
+  }, [pane, panelId])
+
   /** The rail's schedule count reads the SAME cached query the wake pane uses, so
    *  opening the editor costs one request rather than two. */
   const wakeQuery = useQuery({
@@ -882,7 +905,6 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
     webhooksUnknown: webhooksQuery.isError,
     dirtyPanes,
   })
-  const panelId = `crew-editor-pane-${editing || 'new'}`
 
   return (
     <>
@@ -1127,6 +1149,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                 <div
                   id={`${panelId}-${pane}`}
                   role="tabpanel"
+                  aria-labelledby={`${panelId}-tab-${pane}`}
                   tabIndex={-1}
                   className="flex min-w-0 flex-1 flex-col gap-3.5 overflow-y-auto px-5 py-4"
                 >
@@ -1148,6 +1171,7 @@ export default function KiroCrewAgentsPage({ embedded }: { embedded?: boolean } 
                       memoryShared={sharingMemoryStore.length > 0}
                       webhookTokens={boundWebhooks}
                       webhooksUnknown={webhooksQuery.isError}
+                      onNavigate={goToPane}
                     />
                   )}
 

@@ -600,7 +600,7 @@ describe('crew editor — save', () => {
     // Save is gated on there being something to save, so make one real edit; the
     // point of this test is the payload's SHAPE, which every other field pins.
     gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByLabelText('Triggers'), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
 
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
@@ -621,11 +621,11 @@ describe('crew editor — save', () => {
 
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
     gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByLabelText('Triggers'), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeEnabled()
 
     // Typing it back is not a pending change.
-    fireEvent.change(within(sheet).getByLabelText('Triggers'), { target: { value: '' } })
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: '' } })
     expect(within(sheet).getByRole('button', { name: 'Save changes' })).toBeDisabled()
   })
 
@@ -634,7 +634,7 @@ describe('crew editor — save', () => {
     const sheet = await openEditor('oncall')
 
     gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByLabelText('Triggers'), {
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), {
       target: { value: 'incident, prod outage' },
     })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
@@ -655,7 +655,7 @@ describe('crew editor — save', () => {
 
     expect(within(sheet).queryByRole('switch')).not.toBeInTheDocument()
     gotoPane(sheet, 'routing')
-    fireEvent.change(within(sheet).getByLabelText('Triggers'), { target: { value: 'pager' } })
+    fireEvent.change(within(sheet).getByRole('textbox', { name: 'Triggers' }), { target: { value: 'pager' } })
     fireEvent.click(within(sheet).getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(mockApi.updateKirocrewAgent).toHaveBeenCalled())
     expect(mockApi.setDefaultAgent).not.toHaveBeenCalled()

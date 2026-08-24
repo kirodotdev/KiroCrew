@@ -7,8 +7,8 @@
  * on its actually-private workspace, and nothing on the shared store. So the
  * inverse case is the one that carries the weight here.
  */
-import { describe, it, expect } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { describe, it, expect, vi } from 'vitest'
+import { render, screen, fireEvent } from '@testing-library/react'
 
 import CrewOverviewPane from '../components/crew/CrewOverviewPane'
 
@@ -29,6 +29,7 @@ function renderPane(over: Partial<React.ComponentProps<typeof CrewOverviewPane>>
       workspaceShared={false}
       memoryShared={false}
       webhookTokens={0}
+      onNavigate={() => {}}
       {...over}
     />,
   )
@@ -105,5 +106,44 @@ describe('crew overview pane — the webhook node reports the binding fact', () 
     const node = screen.getByTestId('crew-wire-webhook')
     expect(node.textContent).not.toContain('0')
     expect(nodeBox().className).toContain('border-dashed')
+  })
+})
+
+describe('crew overview pane — diagram nodes open the pane they describe', () => {
+  const cases: Array<[node: string, pane: string]> = [
+    ['schedules', 'schedules'],
+    ['routing', 'routing'],
+    ['webhook', 'webhook'],
+    ['template', 'template'],
+    // Two nodes, one pane: the editor binds workspace and memory side by side.
+    ['workspace', 'place'],
+    ['memory', 'place'],
+    ['model', 'model'],
+  ]
+
+  it.each(cases)('clicking the %s node navigates to the %s pane', (node, pane) => {
+    const onNavigate = vi.fn()
+    renderPane({ onNavigate })
+    fireEvent.click(screen.getByTestId(`crew-wire-${node}`))
+    expect(onNavigate).toHaveBeenCalledTimes(1)
+    expect(onNavigate).toHaveBeenCalledWith(pane)
+  })
+
+  it('keeps the unbound webhook ghost selectable — its pane is where binding happens', () => {
+    const onNavigate = vi.fn()
+    renderPane({ onNavigate, webhookTokens: 0 })
+    const node = screen.getByTestId('crew-wire-webhook')
+    // Selectable AND still ghosted: navigability must not cost the dashed
+    // reading of absence, or the node stops saying nothing is bound.
+    expect(node.className).toContain('border-dashed')
+    fireEvent.click(node)
+    expect(onNavigate).toHaveBeenCalledWith('webhook')
+  })
+
+  it('renders every node as a real button — an inert node is unrepresentable', () => {
+    renderPane({ onNavigate: vi.fn() })
+    for (const [node] of cases) {
+      expect(screen.getByTestId(`crew-wire-${node}`).tagName).toBe('BUTTON')
+    }
   })
 })

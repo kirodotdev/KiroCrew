@@ -152,19 +152,23 @@ function Fan({ nodes, width, band, colour, toHub }: {
   )
 }
 
-function WireNode({ node, side }: { node: CrewWireNode; side: 'in' | 'out' }) {
+function WireNode({ node, side, onSelect }: {
+  node: CrewWireNode
+  side: 'in' | 'out'
+  /** Selecting the node opens the pane that edits what it shows. Required:
+   *  a box that looks pressable but answers nothing is the affordance bug
+   *  this component exists to prevent, so an inert render is unrepresentable. */
+  onSelect: () => void
+}) {
   const Icon = node.icon
   const accent = side === 'in' ? 'border-aim/60' : 'border-accent/45'
   const chip = side === 'in' ? 'bg-aim-subtle text-aim' : 'bg-accent-subtle text-accent'
-  return (
-    <div
-      className={[
-        'flex items-center gap-2 rounded-lg border bg-bg-elevated px-2.5 py-1.5',
-        node.ghost ? 'border-dashed border-border-strong opacity-60' : accent,
-      ].join(' ')}
-      style={{ height: BOX }}
-      data-testid={`crew-wire-${node.key}`}
-    >
+  const shell = [
+    'flex items-center gap-2 rounded-lg border bg-bg-elevated px-2.5 py-1.5',
+    node.ghost ? 'border-dashed border-border-strong opacity-60' : accent,
+  ]
+  const inner = (
+    <>
       <span
         className={[
           'flex h-[23px] w-[23px] shrink-0 items-center justify-center rounded-md',
@@ -194,7 +198,33 @@ function WireNode({ node, side }: { node: CrewWireNode; side: 'in' | 'out' }) {
           {node.tag}
         </span>
       )}
-    </div>
+    </>
+  )
+  // The button's accessible name is its own text — the label already says what
+  // the pane it opens edits, so a separate string would restate it. A ghost
+  // node stays selectable: its pane is where the missing binding gets made.
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={[
+        ...shell,
+        'w-full text-left focus-ring',
+        // An interactive control must not stay at 60% under the pointer or
+        // focus: the ghost's dimming is a reading of absence, and it yields to
+        // full contrast the moment the control is being operated. The ghost's
+        // hover background also differs from the solid nodes' because its icon
+        // chip is itself `bg-bg-hover` — the same token on the whole button
+        // would melt the chip into it.
+        node.ghost
+          ? 'hover:bg-bg-accent hover:opacity-100 focus-visible:opacity-100'
+          : 'hover:bg-bg-hover',
+      ].join(' ')}
+      style={{ height: BOX }}
+      data-testid={`crew-wire-${node.key}`}
+    >
+      {inner}
+    </button>
   )
 }
 
@@ -207,10 +237,13 @@ export interface CrewOverviewDiagramProps {
   outputsLabel: string
   /** The crew's avatar, rendered in the hub. */
   hub: React.ReactNode
+  /** Called with the node's `key` when a node is selected. Every node renders
+   *  as a button; the map from key to editor pane lives with the caller. */
+  onNodeSelect: (key: string) => void
 }
 
 export default function CrewOverviewDiagram({
-  inputs, outputs, inputsLabel, outputsLabel, hub,
+  inputs, outputs, inputsLabel, outputsLabel, hub, onNodeSelect,
 }: CrewOverviewDiagramProps) {
   const band = Math.max(inputs.length, outputs.length, 1) * ROW
 
@@ -218,7 +251,9 @@ export default function CrewOverviewDiagram({
     <div className="min-w-0 flex-1">
       <div className="mb-1.5 text-[10px] uppercase tracking-[0.08em] text-muted-strong">{label}</div>
       <div className="flex flex-col" style={{ gap: ROW - BOX }}>
-        {nodes.map(n => <WireNode key={n.key} node={n} side={side} />)}
+        {nodes.map(n => (
+          <WireNode key={n.key} node={n} side={side} onSelect={() => onNodeSelect(n.key)} />
+        ))}
       </div>
     </div>
   )

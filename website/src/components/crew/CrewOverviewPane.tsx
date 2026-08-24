@@ -10,6 +10,26 @@
 import { Boxes, Clock, Cpu, Database, FolderOpen, Users, Waypoints, Webhook } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 import CrewOverviewDiagram, { type CrewWireNode } from './CrewOverviewDiagram'
+import type { CrewPaneKey } from './crewEditorSections'
+
+/** Every node the diagram draws. A new node must join this union, and the
+ *  union forces a `NODE_PANE` entry — so an unmapped node is a compile error
+ *  rather than a button that answers nothing, which is the affordance bug
+ *  this pane exists to prevent. */
+type CrewNodeKey =
+  | 'schedules' | 'routing' | 'webhook' | 'template' | 'workspace' | 'memory' | 'model'
+
+/** Which editor pane each diagram node opens. Workspace and memory store are
+ *  two nodes but one pane — the editor binds them side by side. */
+const NODE_PANE: Record<CrewNodeKey, CrewPaneKey> = {
+  schedules: 'schedules',
+  routing: 'routing',
+  webhook: 'webhook',
+  template: 'template',
+  workspace: 'place',
+  memory: 'place',
+  model: 'model',
+}
 
 export interface CrewOverviewPaneProps {
   hub: React.ReactNode
@@ -43,6 +63,10 @@ export interface CrewOverviewPaneProps {
   webhookTokens: number
   /** The webhook store could not be read — unknown rather than zero. */
   webhooksUnknown?: boolean
+  /** Opens the editor pane that edits what a clicked diagram node shows. The
+   *  diagram is the overview's index, so a node that names a surface takes
+   *  the reader there rather than only describing it. */
+  onNavigate: (pane: CrewPaneKey) => void
 }
 
 function Stat({ icon, value, label }: { icon?: React.ReactNode; value: string; label: string }) {
@@ -65,12 +89,12 @@ function Stat({ icon, value, label }: { icon?: React.ReactNode; value: string; l
 export default function CrewOverviewPane({
   hub, templateLabel, template, workspace, memoryStore, modelLabel, modelInherited,
   resolvedModel, activeSchedules, schedulesUnknown, routingWords, sharingCrews,
-  workspaceShared, memoryShared, webhookTokens, webhooksUnknown,
+  workspaceShared, memoryShared, webhookTokens, webhooksUnknown, onNavigate,
 }: CrewOverviewPaneProps) {
   const { t } = useTranslation()
   const unknown = t('components.crewEditor.stat_unknown')
 
-  const inputs: CrewWireNode[] = [
+  const inputs: Array<CrewWireNode & { key: CrewNodeKey }> = [
     {
       key: 'schedules',
       icon: Clock,
@@ -109,7 +133,7 @@ export default function CrewOverviewPane({
     },
   ]
 
-  const outputs: CrewWireNode[] = [
+  const outputs: Array<CrewWireNode & { key: CrewNodeKey }> = [
     {
       key: 'template',
       icon: Boxes,
@@ -167,6 +191,12 @@ export default function CrewOverviewPane({
         inputsLabel={t('components.crewEditor.group_how_work_arrives')}
         outputsLabel={t('components.crewEditor.wire_what_it_works_with')}
         hub={hub}
+        onNodeSelect={key => {
+          // The diagram hands back a plain string; only keys this pane
+          // declared (and therefore mapped) navigate.
+          const pane = NODE_PANE[key as CrewNodeKey]
+          if (pane) onNavigate(pane)
+        }}
       />
     </div>
   )

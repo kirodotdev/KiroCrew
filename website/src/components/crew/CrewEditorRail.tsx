@@ -101,6 +101,10 @@ export default function CrewEditorRail({
               }}
               type="button"
               role="tab"
+              // Names the matching tabpanel via `aria-labelledby` — focus can be
+              // handed to the panel (a diagram-node click does), and an unnamed
+              // panel is announced as nothing but "tab panel".
+              id={`${panelIdPrefix}-tab-${s.key}`}
               aria-selected={isActive}
               aria-disabled={isDisabled || undefined}
               // Roving tabindex. A disabled row stays reachable by arrow key so
