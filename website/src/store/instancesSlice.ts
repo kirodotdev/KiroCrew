@@ -72,6 +72,18 @@ export interface HostModel {
    *  `mc-set-crew-pin` back up so the set stays one shared value across every
    *  pane. A plain array because postMessage cannot carry a Set. */
   pinnedCrews: string[]
+  /** The parent's "keep tab order fixed" preference, relayed so the embedded bar
+   *  applies the same ordering as the local bar instead of always reshuffling on
+   *  switch (its own cross-origin-iframe localStorage the parent can never
+   *  reach). An embedded toggle posts `mc-set-stable-order` back up so the value
+   *  stays one shared preference across every pane.
+   *
+   *  Tri-state on purpose, exactly like `focusMode` above: `null` means the host
+   *  SENT NO OPINION — an older parent whose model predates this field, and which
+   *  therefore also has no `mc-set-stable-order` handler. Coercing that absence
+   *  to `false` would leave the pane offering a toggle the host can never honor,
+   *  so `null` orders by the pre-relay default AND hides the control instead. */
+  stableOrder: boolean | null
 }
 
 interface InstancesState {
