@@ -2805,7 +2805,8 @@
         "retryAgents": "Erneut versuchen",
         "start": "Starten",
         "toggleTasks": "Aufgaben",
-        "unpause": "Fortsetzen"
+        "unpause": "Fortsetzen",
+        "transcribing": "Transkription läuft…"
       },
       "pillBar": {
         "addLink": "Link hinzufügen",
@@ -2887,7 +2888,11 @@
         "taskAddFailed": "Diese Aufgabe konnte nicht hinzugefügt werden.",
         "taskFileFailed": "Diese Aufgabe konnte nicht angelegt werden.",
         "taskFiled": "Aufgabe angelegt.",
-        "untitled": "Besprechung ohne Titel"
+        "untitled": "Besprechung ohne Titel",
+        "recordFailed": "Das Audio der Besprechung konnte nicht aufgenommen werden; die Notizen fehlen.",
+        "recordMicDenied": "Der Zugriff auf das Mikrofon wurde verweigert, daher wird diese Besprechung nicht transkribiert.",
+        "recordUnsupported": "Dieser Browser kann kein Audio aufnehmen, daher wird diese Besprechung nicht transkribiert.",
+        "recordUploadFailed": "Die Aufnahme der Besprechung konnte nicht hochgeladen werden; sie wird nicht transkribiert."
       },
       "settings": {
         "addTerm": "Hinzufügen",

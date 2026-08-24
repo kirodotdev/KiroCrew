@@ -2761,7 +2761,8 @@
         "retryAgents": "再試行",
         "start": "開始",
         "toggleTasks": "アクションアイテム",
-        "unpause": "再開"
+        "unpause": "再開",
+        "transcribing": "文字起こし中…"
       },
       "pillBar": {
         "addLink": "リンクを追加",
@@ -2841,7 +2842,11 @@
         "taskAddFailed": "そのアクションアイテムを追加できませんでした。",
         "taskFileFailed": "そのアクションアイテムをファイルできませんでした。",
         "taskFiled": "アクションアイテムがファイルされました。",
-        "untitled": "無題のミーティング"
+        "untitled": "無題のミーティング",
+        "recordFailed": "ミーティングの音声を録音できませんでした。メモが欠落します。",
+        "recordMicDenied": "マイクへのアクセスが拒否されたため、このミーティングは文字起こしされません。",
+        "recordUnsupported": "このブラウザーは音声を録音できないため、このミーティングは文字起こしされません。",
+        "recordUploadFailed": "ミーティングの録音をアップロードできませんでした。文字起こしされません。"
       },
       "settings": {
         "addTerm": "追加",

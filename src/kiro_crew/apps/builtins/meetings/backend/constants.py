@@ -26,6 +26,13 @@ MAX_TRANSCRIPT_CHARS = 4000  # per dispatched transcription line
 #: for unusually dense speech and typed interventions. Reaching it is a loud
 #: 413; accepted segments are never silently truncated.
 MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024
+#: Ceiling on ONE uploaded meeting recording. An hour of opus at a typical
+#: MediaRecorder bitrate (~24-48 kbps) is only ~10-20 MB, so 200 MB is generous
+#: headroom for a long, dense meeting. Deliberately NOT ``_TRANSCRIBE_MAX_BYTES``
+#: (25 MB): that is AWS Transcribe's per-request API limit, unrelated to the
+#: local-whisper batch path meetings use — reusing it would reject ordinary
+#: hour-long recordings. Reaching this is a loud 413; nothing is truncated.
+MAX_RECORDING_BYTES = 200 * 1024 * 1024
 MAX_BATCH_CHARS = 60_000  # per flushed agent batch
 MAX_ATTACHMENTS = 25
 MAX_DICTIONARY_TERMS = 500
@@ -93,6 +100,10 @@ CALENDAR_CACHE_FILE = "calendar-cache.json"
 SESSION_META_FILE = "session.json"
 TASKS_FILE = "tasks.json"
 TRANSCRIPT_FILE = "transcript.jsonl"
+#: The uploaded meeting audio, transcribed once at stop then DELETED
+#: (transcribe-then-delete retention — see meeting_lifecycle). Only ever one per
+#: meeting; a re-upload overwrites it.
+RECORDING_FILE = "recording.webm"
 
 # Durable transcript entry sources. Speech is a finalized STT segment; typed is
 # a line submitted through the broadcast bar.

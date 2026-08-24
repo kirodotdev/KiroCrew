@@ -367,11 +367,14 @@ export default [
               String.raw`^apps\.[A-Za-z]+\.[A-Za-z]+\.$`,
 
               // MIME type lists for a file picker's `accept`, e.g.
-              // 'application/json,.json' or 'image/png,image/webp,.png'. These are a
-              // browser API contract, not copy: translating one silently stops the
-              // picker matching any file. Shape: a slash-bearing type or a dot-extension,
-              // in a comma-separated list, with no spaces — which prose never has.
-              String.raw`^(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+)(?:,(?:[a-z]+\/[a-z0-9.+*-]+|\.[a-z0-9]+))*$`,
+              // 'application/json,.json' or 'image/png,image/webp,.png', AND the
+              // single MIME types a MediaRecorder is probed with, e.g.
+              // 'audio/webm;codecs=opus'. These are a browser API contract, not copy:
+              // translating one silently stops the picker matching a file or the
+              // recorder selecting a codec. Shape: a slash-bearing type (with an
+              // optional `;param=value` codec clause) or a dot-extension, in a
+              // comma-separated list, with no spaces — which prose never has.
+              String.raw`^(?:[a-z]+\/[a-z0-9.+*-]+(?:;[a-z]+=[a-z0-9.+-]+)?|\.[a-z0-9]+)(?:,(?:[a-z]+\/[a-z0-9.+*-]+(?:;[a-z]+=[a-z0-9.+-]+)?|\.[a-z0-9]+))*$`,
 
               // `window.open` feature strings. 'noopener,noreferrer' is a SECURITY
               // argument — translating it would drop the protection that stops the opened

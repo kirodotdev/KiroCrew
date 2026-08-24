@@ -41,7 +41,7 @@ export const CHUNK_BUDGETS = {
   // `src/i18n/all.ts` — Rolldown names the chunk after that entry. Grows a
   // little with every translated string, which is expected and fine; what this
   // ceiling catches is a NEW library or surface landing in the catalog chunk.
-  all: 9100 * KB, // measured 8666 KB
+  all: 9200 * KB, // measured 9100 KB (grows with every translated string; +5 meetings keys × 12 locales)
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
@@ -69,7 +69,7 @@ export const CHUNK_BUDGETS = {
   // The app-core chunk: the dashboard shell plus everything eagerly imported
   // from it. The vendor split in vite.config.ts already extracts the heaviest
   // libraries; what remains is first-party code with no clean lazy boundary.
-  App: 3200 * KB, // measured 3121 KB
+  App: 3200 * KB, // measured 3132 KB (upstream core growth + meetings batch-transcription hook)
 
   // Markdown/math/syntax rendering stack (katex, highlight.js, remark/rehype)
   // -- one deliberate `manualChunks` bucket, see vite.config.ts.

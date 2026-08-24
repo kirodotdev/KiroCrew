@@ -8,5 +8,6 @@ proposal lands.
 | Document | Covers |
 |---|---|
 | [playwright-cli-migration.md](playwright-cli-migration.md) | Moving browsing onto `playwright-cli`: the capability model, the install flow, snapshot retention, and the dashboard surface. |
+| [local-meeting-transcription-batch.md](local-meeting-transcription-batch.md) | Post-meeting batch transcription for the Meetings app with local Whisper: browser records audio, uploads at stop, the server transcribes the whole file and deletes the audio. |
 
 Indexed from [../README.md](../README.md).

@@ -99,6 +99,10 @@ export interface MeetingMeta {
   created_at?: string
   started_at?: string
   ended_at?: string
+  /** Post-meeting batch transcription state, set once a meeting ends with a
+   *  recording. Absent for meetings that never recorded (typed-only). The
+   *  meeting view polls this until it reaches a terminal value. */
+  transcription?: 'pending' | 'done' | 'failed'
 }
 
 export interface MeetingSummary {
@@ -268,6 +272,37 @@ export const meetingsApi = {
     post<{ status: MeetingStatus }>(`/meetings/${encodeURIComponent(id)}/status`, { status }),
   stop: (id: string) =>
     post<{ status: MeetingStatus; meta: MeetingMeta }>(`/meetings/${encodeURIComponent(id)}/stop`),
+  /**
+   * Upload the recorded meeting audio as multipart under the field `audio`.
+   *
+   * Not routed through `request`: that helper forces
+   * `Content-Type: application/json` on any body, which would corrupt a
+   * multipart upload. A `FormData` body sets its own multipart boundary header,
+   * so no `Content-Type` is passed here.
+   */
+  uploadAudio: async (id: string, blob: Blob): Promise<{ ok: boolean }> => {
+    const form = new FormData()
+    // A filename gives the backend an extension to infer the container from.
+    const ext = blob.type.includes('mp4') ? 'mp4' : blob.type.includes('ogg') ? 'ogg' : 'webm'
+    form.append('audio', blob, `meeting.${ext}`)
+    const res = await fetch(`${API}/meetings/${encodeURIComponent(id)}/audio`, {
+      method: 'POST',
+      body: form,
+    })
+    if (!res.ok) {
+      let detail = res.statusText
+      let code = ''
+      try {
+        const body = await res.json()
+        if (body?.error) detail = String(body.error)
+        if (body?.code) code = String(body.code)
+      } catch {
+        /* non-JSON body */
+      }
+      throw new MeetingsApiError(detail, res.status, code)
+    }
+    return { ok: true }
+  },
   outputs: (id: string) =>
     request<{ outputs: Record<string, string>; tasks: Task[] }>(
       `/meetings/${encodeURIComponent(id)}/outputs`,

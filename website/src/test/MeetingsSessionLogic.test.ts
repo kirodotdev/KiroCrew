@@ -667,6 +667,20 @@ describe('the meeting is polled while a start is still initializing agents', () 
     expect(metaPollInterval({ status: 'paused', startInFlight: false, idleMs: 60_000 })).toBe(60_000)
   })
 
+  it('keeps polling an ended meeting while post-meeting transcription is pending', () => {
+    // Approach A transcribes after stop; the "transcribing…" state resolves only
+    // when a poll sees done/failed, so an ended meeting must keep polling while
+    // pending — and stop once it is no longer pending.
+    expect(metaPollInterval({ status: 'ended', startInFlight: false, transcribing: true })).toBe(1000)
+    expect(metaPollInterval({ status: 'ended', startInFlight: false, transcribing: false })).toBe(false)
+  })
+
+  it('lets a live status win over the transcribing flag', () => {
+    // A still-active meeting keeps its own cadence regardless of a stale flag.
+    expect(metaPollInterval({ status: 'active', startInFlight: false, transcribing: true, activeMs: 5000 }))
+      .toBe(5000)
+  })
+
   it('opens the window before the request and closes it however the start ends', () => {
     // Guards the wiring, not the rule: a window opened in `onSuccess` would miss the
     // wait entirely, and one closed there would poll a failed start forever.
@@ -746,5 +760,70 @@ describe('the microphone waits for transcript ingress, not just for `active`', (
     const startCall = SessionSource.match(/const startMutation[\s\S]*?\n  \}\)/)
     expect(startCall, 'no startMutation found').not.toBeNull()
     expect(startCall![0]).not.toContain('Ingress')
+  })
+})
+
+describe('post-meeting batch recording is wired into the lifecycle', () => {
+  // Approach A: the session records the mic while active and, at stop, uploads
+  // the blob BEFORE calling the stop endpoint (the backend stop hook needs the
+  // audio present). Driving MediaRecorder + getUserMedia through the session hook
+  // for real needs the same harness the recording hook's own suite uses
+  // (UseMeetingRecording.test.tsx); here the wiring is asserted against the source.
+
+  it('starts the recorder on the same gate that opens transcription', () => {
+    const effect = SessionSource.match(
+      /Start the batch recorder[\s\S]*?\n  \}, \[status, ingressReady, transcriptFull, recordingActive, batchTranscriptionActive\]\)/,
+    )
+    expect(effect, 'the recording-start effect was not found').not.toBeNull()
+    expect(effect![0]).toContain('canOpenTranscription({ status, ingressReady, transcriptFull })')
+    expect(effect![0]).toContain('recordingRef.current.start()')
+  })
+
+  it('does not run batch capture when a live streaming STT provider is active (B1)', () => {
+    // A streaming provider (transcribe/apple/whisper_stream) persists finals live,
+    // so batch capture would double-transcribe. The recorder start is gated on
+    // batchTranscriptionActive, which is false for those providers.
+    expect(SessionSource).toContain(
+      "const STREAMING_STT_PROVIDERS = ['transcribe', 'apple', 'whisper_stream']",
+    )
+    expect(SessionSource).toMatch(
+      /const batchTranscriptionActive = Boolean\(\s*config && !STREAMING_STT_PROVIDERS\.includes\(config\.stt_provider\),?\s*\)/,
+    )
+    // The start effect early-returns when batch is not active.
+    const effect = SessionSource.match(
+      /Start the batch recorder[\s\S]*?\n  \}, \[status, ingressReady, transcriptFull, recordingActive, batchTranscriptionActive\]\)/,
+    )
+    expect(effect![0]).toContain('if (!batchTranscriptionActive) return')
+  })
+
+  it('uploads the recording before hitting the stop endpoint', () => {
+    // Order is load-bearing: stopAndUpload must be AWAITED, then stop is called.
+    const stopCall = SessionSource.match(/const stopMutation = useMutation\(\{[\s\S]*?\n  \}\)/)
+    expect(stopCall, 'no stopMutation found').not.toBeNull()
+    const body = stopCall![0]
+    const uploadAt = body.indexOf('stopAndUpload()')
+    const stopAt = body.indexOf('meetingsApi.stop(meetingId)')
+    expect(uploadAt).toBeGreaterThan(-1)
+    expect(stopAt).toBeGreaterThan(-1)
+    // Upload appears before the stop call, and is awaited.
+    expect(uploadAt).toBeLessThan(stopAt)
+    expect(body).toMatch(/await\s+recordingRefForStop\.current\.stopAndUpload\(\)/)
+  })
+
+  it('drives the meta poll from the transcribing flag', () => {
+    expect(SessionSource).toContain("transcribing: query.state.data?.meta?.transcription === 'pending'")
+  })
+
+  it('exposes the transcribing flag off the polled meta', () => {
+    expect(SessionSource).toContain("transcribing: meta?.transcription === 'pending'")
+  })
+
+  it('routes recording errors through a file-scope catalog map', () => {
+    // Same rule as STT_ERROR_KEY: check-i18n-keys collects only file-scope consts.
+    expect(SessionSource).toContain('const RECORDING_ERROR_KEY = {')
+    expect(SessionSource).toContain("upload: 'apps.meetings.session.recordUploadFailed'")
+    expect(EN_CATALOG.apps.meetings.session.recordUploadFailed).toBeTruthy()
+    expect(EN_CATALOG.apps.meetings.session.recordMicDenied).toBeTruthy()
+    expect(EN_CATALOG.apps.meetings.meeting.transcribing).toBeTruthy()
   })
 })

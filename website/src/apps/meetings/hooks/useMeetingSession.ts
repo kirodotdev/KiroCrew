@@ -23,9 +23,18 @@ import {
   type TranscriptSegment,
 } from '../api'
 import { useMeetingTranscription } from './useMeetingTranscription'
+import { useMeetingRecording } from './useMeetingRecording'
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
 const DEDUP_WINDOW_MS = 5000
+
+// The STT providers that transcribe LIVE over /api/ws/stt (mirrors the backend
+// `_STREAMING_PROVIDERS` in dashboard/stt_stream.py). When one of these is active
+// the meeting's finals are dispatched and persisted live, so the post-meeting
+// batch recorder must NOT also run — doing so would transcribe the same speech
+// twice and append a duplicate transcript (GPT B1). Batch capture runs only for
+// the OTHER (batch/local) providers, e.g. `whisper`, `mlx`, `parakeet`.
+const STREAMING_STT_PROVIDERS = ['transcribe', 'apple', 'whisper_stream']
 
 /**
  * Poll cadence while a start is in flight.
@@ -55,6 +64,21 @@ const STT_ERROR_KEY = {
   worklet: 'apps.meetings.session.sttWorkletFailed',
   connection: 'apps.meetings.session.sttConnectionFailed',
   disconnected: 'apps.meetings.session.sttDisconnected',
+} as const
+
+/**
+ * Post-meeting RECORDING failure code -> catalog key.
+ *
+ * File scope, same reason as `STT_ERROR_KEY`: `check-i18n-keys.mjs` collects only
+ * file-scope consts. Recording is best-effort — every one of these means the
+ * meeting still runs and still ends, only the audio (and therefore the
+ * post-meeting transcript) is missing, so the messages say exactly that.
+ */
+const RECORDING_ERROR_KEY = {
+  unsupported: 'apps.meetings.session.recordUnsupported',
+  microphone: 'apps.meetings.session.recordMicDenied',
+  recorder: 'apps.meetings.session.recordFailed',
+  upload: 'apps.meetings.session.recordUploadFailed',
 } as const
 
 /** True when *text* repeats, contains, or is contained by the previous segment. */
@@ -178,13 +202,20 @@ export const ALLOWED_TRANSITIONS: Record<MeetingStatus, MeetingStatus[]> = {
 export function metaPollInterval(opts: {
   status: MeetingStatus | undefined
   startInFlight: boolean
+  transcribing?: boolean
   activeMs?: number
   idleMs?: number
 }): number | false {
-  const { status, startInFlight, activeMs, idleMs } = opts
+  const { status, startInFlight, transcribing, activeMs, idleMs } = opts
   if (status === 'active') return activeMs ?? 5000
   if (status === 'paused' || status === 'reviewing') return idleMs ?? 30_000
   if (startInFlight) return START_POLL_MS
+  // A meeting that ended with a recording transcribes in the background; poll on
+  // the fast start cadence so the "transcribing…" state resolves to done/failed
+  // promptly. Checked after the live statuses so a still-active meeting keeps its
+  // own cadence, and only while genuinely pending so an ended-and-done meeting
+  // stops polling.
+  if (transcribing) return START_POLL_MS
   return false
 }
 
@@ -290,6 +321,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       metaPollInterval({
         status: query.state.data?.meta?.status,
         startInFlight,
+        transcribing: query.state.data?.meta?.transcription === 'pending',
         activeMs: config?.poll_interval_active,
         idleMs: config?.poll_interval_idle,
       }),
@@ -443,6 +475,26 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onError: onTranscriptionError,
   })
 
+  // Post-meeting batch capture (approach A): records the mic while the meeting
+  // is active and uploads the single blob at stop, for the server to transcribe
+  // after the fact. Independent of the live streaming path above and of the
+  // shared chat-dictation hook.
+  const onRecordingError = useCallback(
+    (code: string) => {
+      notify(
+        i18nT(
+          code in RECORDING_ERROR_KEY
+            ? RECORDING_ERROR_KEY[code as keyof typeof RECORDING_ERROR_KEY]
+            : 'apps.meetings.session.recordFailed',
+        ),
+        { type: 'error' },
+      )
+    },
+    [notify],
+  )
+
+  const recording = useMeetingRecording({ meetingId, onError: onRecordingError })
+
   // Bind the microphone to the meeting's status: recording exactly while active
   // AND dispatch-ready — see `canOpenTranscription` for why `active` alone is not
   // enough while a start is still initializing agents.
@@ -471,6 +523,32 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       transcriptionRef.current.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive])
+
+  // Start the batch recorder on the SAME gate that opens live transcription, so
+  // capture begins exactly when dispatch ingress is open. It is never stopped
+  // here: the recording is terminated and uploaded only by the explicit stop
+  // action below, so a pause does not lose the audio. `start()` is idempotent
+  // (guarded), so re-running this effect while already recording is a no-op.
+  //
+  // B1: batch capture runs ONLY when the STT provider is a batch/local one. With
+  // a live STREAMING provider (transcribe / apple / whisper_stream) the meeting's
+  // finals are already dispatched and persisted live, so also uploading the audio
+  // for a post-meeting batch pass would transcribe the SAME speech twice and
+  // append a duplicate transcript. `batchTranscriptionActive` is false for those
+  // providers, so the recorder never starts and there is nothing to upload.
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
+  const recordingActive = recording.recording
+  const batchTranscriptionActive = Boolean(
+    config && !STREAMING_STT_PROVIDERS.includes(config.stt_provider),
+  )
+  useEffect(() => {
+    if (!batchTranscriptionActive) return
+    const mayOpen = canOpenTranscription({ status, ingressReady, transcriptFull })
+    if (mayOpen && !recordingRef.current.recording) {
+      void recordingRef.current.start()
+    }
+  }, [status, ingressReady, transcriptFull, recordingActive, batchTranscriptionActive])
 
   // ── mutations ─────────────────────────────────────────────────────────────
 
@@ -529,8 +607,20 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onError: error => failureNotice(error, i18nT('apps.meetings.session.statusFailed')),
   })
 
+  const recordingRefForStop = useRef(recording)
+  recordingRefForStop.current = recording
+
   const stopMutation = useMutation({
-    mutationFn: () => meetingsApi.stop(meetingId),
+    // Upload the recorded audio BEFORE hitting the stop endpoint. The design
+    // requires the audio to be on the server when the backend stop hook runs, so
+    // the upload must COMPLETE first — `stopAndUpload` resolves only after the
+    // upload finishes (or is skipped for a typed-only meeting). A failed upload
+    // is reported inside the hook and returns false; the meeting still stops so
+    // the user is never trapped in an active meeting by a lost recording.
+    mutationFn: async () => {
+      await recordingRefForStop.current.stopAndUpload()
+      return meetingsApi.stop(meetingId)
+    },
     onSuccess: () => {
       notify(i18nT('apps.meetings.session.ended'), { type: 'info' })
       invalidate()
@@ -648,6 +738,7 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     partialTranscript,
     transcriptFull,
     caption,
+    transcribing: meta?.transcription === 'pending',
     chatViewAgents,
     selectedPreset,
     transcription,

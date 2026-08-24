@@ -1769,6 +1769,7 @@
         "retryAgents": "Retry",
         "start": "Start",
         "toggleTasks": "Action items",
+        "transcribing": "Transcribing…",
         "unpause": "Resume"
       },
       "pillBar": {
@@ -1826,6 +1827,10 @@
         "broadcastSent": "Sent to the listening agents.",
         "ended": "Meeting ended.",
         "messageFailed": "Could not send that message.",
+        "recordFailed": "Could not record the meeting audio; the notes will be missing.",
+        "recordMicDenied": "Microphone access was denied, so this meeting will not be transcribed.",
+        "recordUnsupported": "This browser cannot record audio, so this meeting will not be transcribed.",
+        "recordUploadFailed": "Could not upload the meeting recording; it will not be transcribed.",
         "startFailed": "Could not start the meeting.",
         "started": "Meeting started.",
         "statusFailed": "Could not change the meeting status.",

@@ -60,6 +60,7 @@ export default function MeetingView({
     partialTranscript,
     transcriptFull,
     caption,
+    transcribing,
     chatViewAgents,
     selectedPreset,
     loading,
@@ -144,6 +145,9 @@ export default function MeetingView({
             )}
             {status === 'ended' && (
               <Badge variant="muted">{i18nT('apps.meetings.meeting.ended')}</Badge>
+            )}
+            {transcribing && (
+              <Badge variant="warn">{i18nT('apps.meetings.meeting.transcribing')}</Badge>
             )}
           </div>
 

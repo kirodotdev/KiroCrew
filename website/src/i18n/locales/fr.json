@@ -2849,7 +2849,8 @@
         "retryAgents": "Réessayer",
         "start": "Démarrer",
         "toggleTasks": "Actions à suivre",
-        "unpause": "Reprendre"
+        "unpause": "Reprendre",
+        "transcribing": "Transcription…"
       },
       "pillBar": {
         "addLink": "Ajouter un lien",
@@ -2933,7 +2934,11 @@
         "taskAddFailed": "Impossible d’ajouter cette action.",
         "taskFileFailed": "Impossible d’enregistrer cette action.",
         "taskFiled": "Action enregistrée.",
-        "untitled": "Réunion sans titre"
+        "untitled": "Réunion sans titre",
+        "recordFailed": "Impossible d’enregistrer l’audio de la réunion ; les notes seront manquantes.",
+        "recordMicDenied": "L’accès au microphone a été refusé, donc cette réunion ne sera pas transcrite.",
+        "recordUnsupported": "Ce navigateur ne peut pas enregistrer de son, donc cette réunion ne sera pas transcrite.",
+        "recordUploadFailed": "Impossible d’envoyer l’enregistrement de la réunion ; il ne sera pas transcrit."
       },
       "settings": {
         "addTerm": "Ajouter",

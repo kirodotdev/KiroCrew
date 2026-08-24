@@ -2817,7 +2817,8 @@
         "retryAgents": "Reintentar",
         "start": "Empezar",
         "toggleTasks": "Tareas",
-        "unpause": "Reanudar"
+        "unpause": "Reanudar",
+        "transcribing": "Transcribiendo…"
       },
       "pillBar": {
         "addLink": "Añadir un enlace",
@@ -2901,7 +2902,11 @@
         "taskAddFailed": "No se pudo añadir esa tarea.",
         "taskFileFailed": "No se pudo registrar esa tarea.",
         "taskFiled": "Tarea registrada.",
-        "untitled": "Reunión sin título"
+        "untitled": "Reunión sin título",
+        "recordFailed": "No se pudo grabar el audio de la reunión; faltarán las notas.",
+        "recordMicDenied": "Se denegó el acceso al micrófono, por lo que esta reunión no se transcribirá.",
+        "recordUnsupported": "Este navegador no puede grabar audio, por lo que esta reunión no se transcribirá.",
+        "recordUploadFailed": "No se pudo subir la grabación de la reunión; no se transcribirá."
       },
       "settings": {
         "addTerm": "Añadir",

@@ -2817,7 +2817,8 @@
         "retryAgents": "Tentar de novo",
         "start": "Começar",
         "toggleTasks": "Tarefas",
-        "unpause": "Retomar"
+        "unpause": "Retomar",
+        "transcribing": "Transcrevendo…"
       },
       "pillBar": {
         "addLink": "Adicionar um link",
@@ -2901,7 +2902,11 @@
         "taskAddFailed": "Não foi possível adicionar essa tarefa.",
         "taskFileFailed": "Não foi possível registar essa tarefa.",
         "taskFiled": "Tarefa registada.",
-        "untitled": "Reunião sem título"
+        "untitled": "Reunião sem título",
+        "recordFailed": "Não foi possível gravar o áudio da reunião; as notas ficarão ausentes.",
+        "recordMicDenied": "O acesso ao microfone foi recusado, portanto esta reunião não será transcrita.",
+        "recordUnsupported": "Este navegador não consegue gravar áudio, portanto esta reunião não será transcrita.",
+        "recordUploadFailed": "Não foi possível enviar a gravação da reunião; ela não será transcrita."
       },
       "settings": {
         "addTerm": "Adicionar",

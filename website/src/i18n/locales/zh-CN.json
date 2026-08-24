@@ -2729,7 +2729,8 @@
         "retryAgents": "重试",
         "start": "开始",
         "toggleTasks": "行动项",
-        "unpause": "继续"
+        "unpause": "继续",
+        "transcribing": "转写中…"
       },
       "pillBar": {
         "addLink": "添加链接",
@@ -2809,7 +2810,11 @@
         "taskAddFailed": "无法添加该行动项。",
         "taskFileFailed": "无法提交该行动项。",
         "taskFiled": "行动项已提交。",
-        "untitled": "未命名会议"
+        "untitled": "未命名会议",
+        "recordFailed": "无法录制会议音频；将缺少笔记。",
+        "recordMicDenied": "麦克风访问被拒绝，因此本次会议不会被转写。",
+        "recordUnsupported": "此浏览器无法录制音频，因此本次会议不会被转写。",
+        "recordUploadFailed": "无法上传会议录音；将无法转写。"
       },
       "settings": {
         "addTerm": "添加",

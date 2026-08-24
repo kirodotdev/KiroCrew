@@ -2761,7 +2761,8 @@
         "retryAgents": "재시도",
         "start": "시작",
         "toggleTasks": "액션 아이템",
-        "unpause": "재개"
+        "unpause": "재개",
+        "transcribing": "전사 중…"
       },
       "pillBar": {
         "addLink": "링크 추가",
@@ -2841,7 +2842,11 @@
         "taskAddFailed": "해당 액션 아이템을 추가할 수 없습니다.",
         "taskFileFailed": "해당 액션 아이템을 등록할 수 없습니다.",
         "taskFiled": "액션 아이템을 등록했습니다.",
-        "untitled": "제목 없는 회의"
+        "untitled": "제목 없는 회의",
+        "recordFailed": "회의 오디오를 녹음할 수 없어 메모가 누락됩니다.",
+        "recordMicDenied": "마이크 액세스가 거부되어 이 회의는 전사되지 않습니다.",
+        "recordUnsupported": "이 브라우저는 오디오를 녹음할 수 없어 이 회의는 전사되지 않습니다.",
+        "recordUploadFailed": "회의 녹음을 업로드할 수 없어 전사되지 않습니다."
       },
       "settings": {
         "addTerm": "용어 추가",

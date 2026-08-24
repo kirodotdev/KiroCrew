@@ -40,12 +40,27 @@ from kiro_crew.apps.builtins.meetings.backend.routes._common import (
     sessions_of,
 )
 from kiro_crew.security import redact
+from kiro_crew.transcribe import transcribe_audio
 
 logger = logging.getLogger("kirocrew.app.meetings")
 
 # An attachment is a small, fixed-shape record; anything else is dropped rather
 # than stored, so a malformed entry can never reach an agent prompt.
 _ATTACHMENT_TYPES = ("file", "url")
+
+#: Strong refs to in-flight post-stop transcription tasks. ``asyncio.create_task``
+#: only holds a WEAK reference, so a fire-and-forget task can be garbage-collected
+#: mid-run and silently vanish; keeping it in a module set until its done-callback
+#: discards it is the documented way to keep it alive.
+_TRANSCRIBE_TASKS: set[asyncio.Task[Any]] = set()
+
+#: Meta field the frontend polls (via GET …/{id}) to learn whether the
+#: post-stop transcription has finished. Absent until a recording is found at
+#: stop; then ``pending`` → ``done`` | ``failed``.
+_META_TRANSCRIPTION = "transcription"
+_TRANSCRIPTION_PENDING = "pending"
+_TRANSCRIPTION_DONE = "done"
+_TRANSCRIPTION_FAILED = "failed"
 
 
 def _meeting_id(request: web.Request) -> str:
@@ -479,6 +494,12 @@ async def handle_stop_meeting(request: web.Request) -> web.Response:
     a stop landing mid-start waits for the agents to be ready (the finalize notice
     only means something to an initialized agent), and a start landing mid-stop waits
     for the teardown to complete rather than installing a session the stop then drops.
+
+    After the meeting is ended, if a recording was uploaded (``…/{id}/audio``), a
+    BACKGROUND task transcribes it and persists the transcript — see
+    :func:`_kickoff_transcription`. The stop RESPONSE returns immediately with
+    ``status=ended``; it never awaits transcription, which can take minutes for a
+    long meeting.
     """
     meeting_id = _meeting_id(request)
     root = data_root(request)
@@ -494,8 +515,292 @@ async def handle_stop_meeting(request: web.Request) -> web.Response:
         # `end_meeting_meta` is itself a metadata read-modify-write; one hop keeps it
         # atomic with respect to the loop as well as off it.
         meta = await asyncio.to_thread(sess.end_meeting_meta, meeting_id, root)
+
+    # Only after the meeting is ended (and the live session gone) do we transcribe a
+    # recording, if one was uploaded. Fire-and-forget: the stop response below does
+    # NOT await it. A typed-only meeting has no recording, so this is a clean no-op.
+    await _kickoff_transcription(meeting_id, root)
+
     audit("meetings.stop", meeting_id, outcome="ok")
     return web.json_response({"ok": True, "status": k.STATUS_ENDED, "meta": meta})
+
+
+def _set_transcription_state(meeting_id: str, state: str, root: Any) -> None:
+    """Write the ``transcription`` meta field under the metadata lock. BLOCKING.
+
+    A read-modify-write like every other meta mutation, so it holds
+    ``store.meta_transaction()`` — a concurrent attachment/mute write must not
+    clobber this field and vice-versa. Tolerates a meeting whose metadata has been
+    deleted between stop and here (returns without writing).
+    """
+    with store.meta_transaction():
+        meta = store.read_meeting_meta(meeting_id, root)
+        if meta is None:
+            return
+        meta[_META_TRANSCRIPTION] = state
+        store.write_meeting_meta(meeting_id, meta, root)
+
+
+def _claim_transcription(meeting_id: str, root: Any) -> bool:
+    """Atomically claim a meeting for transcription. BLOCKING.
+
+    Check-and-set under the metadata lock: if ``transcription`` is already
+    ``pending``, another kickoff owns this recording, so return ``False`` and do
+    not touch anything. Otherwise mark it ``pending`` and return ``True``. This is
+    what makes a double-stop (two ``…/stop`` calls before the first task deletes
+    the audio) spawn EXACTLY ONE transcription task rather than two racing on one
+    recording and appending the transcript twice. Returns ``False`` for a meeting
+    whose metadata is already gone (nothing to transcribe into).
+    """
+    with store.meta_transaction():
+        meta = store.read_meeting_meta(meeting_id, root)
+        if meta is None:
+            return False
+        if meta.get(_META_TRANSCRIPTION) == _TRANSCRIPTION_PENDING:
+            return False
+        meta[_META_TRANSCRIPTION] = _TRANSCRIPTION_PENDING
+        store.write_meeting_meta(meeting_id, meta, root)
+        return True
+
+
+def _delete_recording(meeting_id: str, root: Any) -> None:
+    """Delete the uploaded audio. BLOCKING; tolerates an already-absent file.
+
+    Transcribe-then-delete retention: meeting audio is sensitive, so it never
+    outlives the single transcription pass regardless of outcome.
+    """
+    try:
+        path = store.recording_path(meeting_id, root)
+    except store.MeetingsPathError:  # pragma: no cover — id already validated at stop
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("meetings: could not delete recording for %s", meeting_id, exc_info=True)
+
+
+def _persist_transcript_locked(meeting_id: str, text: str | None, root: Any) -> str:
+    """Append the transcript and mark ``done``/``failed`` as ONE fast transaction.
+
+    BLOCKING; the caller offloads it. Runs under BOTH lifecycle locks (see
+    :func:`_transcribe_recording`) so it cannot interleave with a concurrent
+    ``DELETE …/{id}``:
+
+    * Re-check the meeting still exists. If its metadata is gone (a delete landed
+      while the multi-minute transcribe ran), skip the append and the meta-write
+      entirely — the caller still deletes the recording in its ``finally``. This
+      is HIGH-3: ``append_transcript`` would otherwise ``mkdir`` the meeting dir a
+      concurrent delete had just ``rmtree``'d, resurrecting an invisible orphan
+      holding the deleted meeting's transcript.
+    * ``append_transcript`` returns ``None`` when the transcript size ceiling would
+      be exceeded (MEDIUM-1). Treat that as a FAILED transcription, not ``done`` —
+      a swallowed ``None`` marked ``done`` reports success while the transcript was
+      never written.
+
+    Returns the terminal state to record (``done`` | ``failed``). The append and
+    the meta read/write are all local file IO measured in milliseconds; the
+    minutes-long ``transcribe_audio`` call is deliberately OUTSIDE this section.
+    """
+    with store.meta_transaction():
+        if store.read_meeting_meta(meeting_id, root) is None:
+            # Meeting deleted mid-transcribe: do not recreate it. Nothing to persist.
+            return _TRANSCRIPTION_DONE
+        if not (text and text.strip()):
+            # No transcript came back: whisper is disabled/unavailable, errored, or
+            # the audio was silent. A recording that produced nothing did NOT
+            # succeed — mark failed so the UI does not show a done meeting with an
+            # empty transcript and the outcome is distinguishable from a real result.
+            logger.warning("meetings: empty/None transcription for %s — marking failed", meeting_id)
+            state = _TRANSCRIPTION_FAILED
+            _set_transcription_meta_locked(meeting_id, state, root)
+            return state
+        stored = store.append_transcript(meeting_id, text.strip(), k.TRANSCRIPT_SOURCE_SPEECH, root)
+        if stored is None:
+            # Size ceiling hit — the segment was NOT written. Not a success.
+            logger.warning(
+                "meetings: transcript size ceiling hit for %s — marking failed",
+                meeting_id,
+            )
+            state = _TRANSCRIPTION_FAILED
+            _set_transcription_meta_locked(meeting_id, state, root)
+            return state
+        state = _TRANSCRIPTION_DONE
+        _set_transcription_meta_locked(meeting_id, state, root)
+        return state
+
+
+def _set_transcription_meta_locked(meeting_id: str, state: str, root: Any) -> None:
+    """Set the ``transcription`` field; caller ALREADY holds ``meta_transaction``.
+
+    Re-reads under the (re-entrant) lock the caller holds, so it never clobbers a
+    concurrent field. Separate from :func:`_set_transcription_state` because that
+    one takes the lock itself, and taking it again here would still be correct (the
+    lock is an ``RLock``) but re-reading the meta we just validated is wasteful — so
+    this variant assumes the meeting exists because the caller just checked it.
+    """
+    meta = store.read_meeting_meta(meeting_id, root)
+    if meta is None:  # pragma: no cover — caller re-checked under the same lock
+        return
+    meta[_META_TRANSCRIPTION] = state
+    store.write_meeting_meta(meeting_id, meta, root)
+
+
+async def _transcribe_recording(meeting_id: str, root: Any) -> None:
+    """Transcribe the uploaded recording, persist the transcript, delete the audio.
+
+    Runs as a tracked background task kicked off by :func:`handle_stop_meeting`.
+    The meeting is already marked ``transcription=pending`` by :func:`_claim_transcription`
+    before the task is created (the atomic double-stop guard), so this task does
+    NOT re-mark pending. Sequence:
+
+    1. ``transcribe_audio`` the recording via the app's EXISTING batch path (local
+       whisper by default — ``stt_config=None`` lets it load the machine's
+       configured provider). The whisper subprocess is already off-loop inside
+       ``transcribe_audio``; a browser ``audio/webm;codecs=opus`` blob decodes
+       directly (verified end-to-end), so there is NO transcode step here;
+    2. under BOTH lifecycle locks, and only if the meeting still exists,
+       ``append_transcript`` the non-empty result as one ``speech`` segment and
+       mark ``done``/``failed`` — see :func:`_persist_transcript_locked`;
+    3. on any exception, mark ``failed`` (logged — never raised out of the task);
+    4. ALWAYS delete the audio in the ``finally`` (transcribe-then-delete),
+       whether the meeting was ended, deleted, failed, or succeeded.
+
+    HIGH-3 lock discipline: the two locks (``START_LOCK`` and
+    ``store.meta_transaction()``) are held ONLY around step 2 — a few milliseconds
+    of local file IO — never across the minutes-long ``transcribe_audio`` in step
+    1. That is what keeps a ``DELETE …/{id}`` (which takes ``START_LOCK`` then, off
+    the loop, ``store.delete_meeting`` under ``meta_transaction()``) from blocking
+    for the length of a transcription, and it is why the delete-vs-append race is a
+    re-check-under-lock rather than a lock held across the whole task.
+
+    Agent dispatch decision (design 3c): the meeting's agents are NOT re-run over
+    this transcript. By the time this runs the live ``MeetingSession`` has been
+    drained and dropped and the meeting is ``ended``; the durable transcript is the
+    retained artifact and is what this persists.
+    """
+    try:
+        recording = str(store.recording_path(meeting_id, root))
+        text = await transcribe_audio(recording, None)
+        # The fast append + terminal-state write is the ONLY locked section.
+        async with START_LOCK:
+            state = await asyncio.to_thread(_persist_transcript_locked, meeting_id, text, root)
+        if state == _TRANSCRIPTION_FAILED:
+            logger.warning("meetings: transcript not persisted for %s", meeting_id)
+    except Exception:
+        logger.warning("meetings: post-stop transcription failed for %s", meeting_id, exc_info=True)
+        try:
+            await asyncio.to_thread(
+                _set_transcription_state, meeting_id, _TRANSCRIPTION_FAILED, root
+            )
+        except Exception:  # pragma: no cover — defensive; must not escape the task
+            logger.debug("meetings: could not mark transcription failed", exc_info=True)
+    finally:
+        await asyncio.to_thread(_delete_recording, meeting_id, root)
+
+
+async def _kickoff_transcription(meeting_id: str, root: Any) -> None:
+    """Start the background transcription task IFF a recording exists and is unclaimed.
+
+    A typed-only meeting (no mic, broadcast-bar only) has no recording, so this is
+    a clean no-op and the ``transcription`` meta field is never set.
+
+    Double-stop guard (HIGH-2): a meeting is CLAIMED via an atomic check-and-set of
+    ``transcription=pending`` under the metadata lock BEFORE the task is created. A
+    second ``…/stop`` arriving before the first task deletes the audio finds the
+    field already ``pending`` and does not start a second task, so one recording is
+    never transcribed twice into a duplicated transcript. The task ref is held in
+    :data:`_TRANSCRIBE_TASKS` until its done-callback discards it, so it cannot be
+    garbage-collected mid-run — and so ``_on_cleanup`` can await it at shutdown.
+    """
+    try:
+        recording = store.recording_path(meeting_id, root)
+    except store.MeetingsPathError:  # pragma: no cover — id already validated
+        return
+    if not await asyncio.to_thread(recording.is_file):
+        return
+    if not await asyncio.to_thread(_claim_transcription, meeting_id, root):
+        # Already pending — another stop owns this recording. Do not start a second.
+        return
+    task = asyncio.create_task(_transcribe_recording(meeting_id, root))
+    _TRANSCRIBE_TASKS.add(task)
+    task.add_done_callback(_TRANSCRIBE_TASKS.discard)
+
+
+async def drain_transcription_tasks(timeout: float = 30.0) -> None:
+    """Await every in-flight post-stop transcription task, bounded (HIGH-1).
+
+    Called from ``_on_cleanup`` at gateway shutdown. Each task's ``finally``
+    deletes its recording, so awaiting them here is what stops a graceful restart
+    mid-transcription from LEAKING the sensitive audio and leaving meta stuck
+    ``pending`` forever. Bounded by ``timeout`` (``asyncio.wait`` + ``gather`` with
+    ``return_exceptions=True``): a genuinely wedged whisper decode cannot hang
+    shutdown — on timeout we log and proceed, and the STARTUP reconcile
+    (:func:`reconcile_pending_transcriptions`) is the backstop that repairs a task
+    that never reached its ``finally``. Never raises.
+    """
+    tasks = [t for t in _TRANSCRIBE_TASKS if not t.done()]
+    if not tasks:
+        return
+    try:
+        done, pending = await asyncio.wait(tasks, timeout=timeout)
+        if pending:
+            logger.warning(
+                "meetings: %d transcription task(s) still running after %.0fs at "
+                "shutdown; leaving them — startup reconcile will repair any orphan",
+                len(pending),
+                timeout,
+            )
+        # Consume results/exceptions of the finished ones so none are 'never retrieved'.
+        await asyncio.gather(*done, return_exceptions=True)
+    except Exception:  # pragma: no cover — defensive; shutdown must not raise
+        logger.debug("meetings: draining transcription tasks failed", exc_info=True)
+
+
+def reconcile_pending_transcriptions(root: Any) -> list[str]:
+    """Repair transcriptions orphaned by a hard kill mid-run (HIGH-1). BLOCKING.
+
+    Deterministic, no LLM. Runs at STARTUP, where it is provably safe: no
+    transcription task can be in flight in a fresh process, so ANY meeting whose
+    metadata says ``transcription=pending`` was orphaned by a previous run that
+    died before its task's ``finally`` ran (``SIGKILL``, OOM, crash, power loss, or
+    a shutdown-timeout cancellation — the cases ``_on_cleanup`` cannot cover).
+
+    Every such meeting is marked ``failed`` so the frontend's transcription poll
+    terminates, and its recording is deleted if one is still on disk. BOTH cases
+    are resolved: has-recording (the task never ran) and no-recording (the task
+    deleted the audio then died before writing the terminal state). Leaving the
+    no-recording case ``pending`` — the earlier behaviour — polled forever
+    (GPT B4). Returns the ids it repaired.
+    """
+    repaired: list[str] = []
+    for summary in store.list_meetings(root):
+        meeting_id = str(summary.get("event_id") or "")
+        if not meeting_id:
+            continue
+        try:
+            meta = store.read_meeting_meta(meeting_id, root)
+            if meta is None or meta.get(_META_TRANSCRIPTION) != _TRANSCRIPTION_PENDING:
+                continue
+            # A meeting still `pending` at startup was orphaned by a previous run
+            # that died before its task's `finally` (SIGKILL, OOM, crash, power
+            # loss, or a shutdown-timeout cancellation). Mark it `failed` so the
+            # frontend's transcription poll terminates, and delete the recording if
+            # one is still on disk. Both the has-recording case (task never ran)
+            # and the no-recording case (task deleted the audio then died before
+            # writing terminal state) must be resolved — leaving the latter
+            # `pending` polls forever.
+            recording = store.recording_path(meeting_id, root)
+            if recording.is_file():
+                _delete_recording(meeting_id, root)
+            _set_transcription_state(meeting_id, _TRANSCRIPTION_FAILED, root)
+            repaired.append(meeting_id)
+        except Exception:  # pragma: no cover — one bad meeting must not stop the rest
+            logger.debug(
+                "meetings: could not reconcile transcription %s", meeting_id, exc_info=True
+            )
+    return repaired
 
 
 def _collect_outputs(meeting_id: str, root: Any) -> tuple[dict[str, str], list[dict[str, Any]]]:

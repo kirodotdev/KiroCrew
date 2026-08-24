@@ -133,6 +133,59 @@ describe('meetingsApi transport', () => {
   })
 })
 
+describe('meetingsApi uploadAudio', () => {
+  it('POSTs the recording as multipart to the meeting audio endpoint', async () => {
+    fetchMock.mockResolvedValue(response(200, { ok: true, bytes: 9 }))
+    const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'audio/webm;codecs=opus' })
+    await expect(meetingsApi.uploadAudio('standup', blob)).resolves.toEqual({ ok: true })
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/apps/meetings/meetings/standup/audio')
+    expect(init.method).toBe('POST')
+    // Multipart: a FormData body, NOT a JSON Content-Type (which would corrupt it).
+    expect(init.body).toBeInstanceOf(FormData)
+    expect(init.headers?.['Content-Type']).toBeUndefined()
+    // The 'audio' part carries the recording blob. (jsdom's FormData does not
+    // preserve the append() filename, so assert the payload, not the name.)
+    const part = (init.body as FormData).get('audio')
+    expect(part).toBeInstanceOf(Blob)
+    expect((part as Blob).type).toBe('audio/webm;codecs=opus')
+  })
+
+  it('encodes the meeting id and accepts each recognised codec', async () => {
+    for (const type of ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm', '']) {
+      fetchMock.mockClear()
+      fetchMock.mockResolvedValue(response(200, { ok: true }))
+      await expect(
+        meetingsApi.uploadAudio('evt space', new Blob(['x'], { type })),
+      ).resolves.toEqual({ ok: true })
+      expect(fetchMock.mock.calls[0][0]).toBe(
+        '/api/apps/meetings/meetings/evt%20space/audio',
+      )
+    }
+  })
+
+  it('surfaces the backend error message and code on failure', async () => {
+    fetchMock.mockResolvedValue(response(413, {
+      error: 'recording exceeds the size limit',
+      code: 'recording_too_large',
+    }))
+    await expect(
+      meetingsApi.uploadAudio('m', new Blob(['x'], { type: 'audio/webm' })),
+    ).rejects.toMatchObject({
+      name: 'MeetingsApiError',
+      status: 413,
+      code: 'recording_too_large',
+    })
+  })
+
+  it('falls back to the status text when the error body is not JSON', async () => {
+    fetchMock.mockResolvedValue(response(500, '<html>err</html>', { json: false }))
+    await expect(
+      meetingsApi.uploadAudio('m', new Blob(['x'], { type: 'audio/webm' })),
+    ).rejects.toThrow('HTTP 500')
+  })
+})
+
 describe('safeMeetingId', () => {
   it('matches the backend rule for calendar ids', () => {
     // The server's `safe_meeting_id` does exactly this substitution, and the

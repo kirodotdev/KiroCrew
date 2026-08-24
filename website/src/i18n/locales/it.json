@@ -2817,7 +2817,8 @@
         "retryAgents": "Riprova",
         "start": "Avvia",
         "toggleTasks": "Azioni da fare",
-        "unpause": "Riprendi"
+        "unpause": "Riprendi",
+        "transcribing": "Trascrizione in corso…"
       },
       "pillBar": {
         "addLink": "Aggiungi un link",
@@ -2901,7 +2902,11 @@
         "taskAddFailed": "Non è stato possibile aggiungere quell’azione.",
         "taskFileFailed": "Non è stato possibile registrare quell’azione.",
         "taskFiled": "Azione registrata.",
-        "untitled": "Riunione senza titolo"
+        "untitled": "Riunione senza titolo",
+        "recordFailed": "Impossibile registrare l’audio della riunione; le note mancheranno.",
+        "recordMicDenied": "L’accesso al microfono è stato negato, quindi questa riunione non verrà trascritta.",
+        "recordUnsupported": "Questo browser non può registrare l’audio, quindi questa riunione non verrà trascritta.",
+        "recordUploadFailed": "Impossibile caricare la registrazione della riunione; non verrà trascritta."
       },
       "settings": {
         "addTerm": "Aggiungi",

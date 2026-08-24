@@ -467,6 +467,23 @@ def transcript_path(meeting_id: str, root: Path | None = None) -> Path:
     )
 
 
+def recording_path(meeting_id: str, root: Path | None = None) -> Path:
+    """The uploaded audio file for one meeting, containment-checked.
+
+    Mirrors :func:`transcript_path` exactly: the id passes through
+    :func:`safe_meeting_id` (``[A-Za-z0-9._-]`` only, ``..`` and separators
+    impossible) and the derived path through :func:`contain` (resolve + collapse
+    ``..`` + follow symlinks, then assert containment), so a traversal id or a
+    symlink planted inside the data dir cannot redirect the write outside it. The
+    filename is the fixed :data:`~constants.RECORDING_FILE`, never client-supplied.
+    """
+    return contain(
+        meeting_dir(meeting_id, root) / k.RECORDING_FILE,
+        operation="meetings.recording",
+        root=root,
+    )
+
+
 # Final STT callbacks and typed broadcasts can land on worker threads at the same
 # time. A single lock keeps each JSONL record whole and makes the capacity check
 # plus append one transaction. The critical section contains local file IO only.

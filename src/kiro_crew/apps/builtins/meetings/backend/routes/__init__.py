@@ -29,6 +29,7 @@ from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import agents as agents_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import calendar as calendar_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import meeting_lifecycle as lifecycle_routes
+from kiro_crew.apps.builtins.meetings.backend.routes import recording as recording_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import settings as settings_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import tasks as tasks_routes
 from kiro_crew.apps.builtins.meetings.backend.routes._common import ACTIVE, route
@@ -86,14 +87,16 @@ async def _on_startup(app: web.Application) -> None:
     graceful shutdown honest, and this one repairs the case where it never ran.
     """
 
-    def _init() -> tuple[int, list[str]]:
+    def _init() -> tuple[int, list[str], list[str]]:
         root = app.get("_meetings_data_root")
         store.ensure_data_dirs(root)
         terms = len(sess.reload_dictionary(root).terms)
-        return terms, _reconcile_orphaned_meetings(root)
+        orphans = _reconcile_orphaned_meetings(root)
+        pending = lifecycle_routes.reconcile_pending_transcriptions(root)
+        return terms, orphans, pending
 
     try:
-        count, ended = await asyncio.get_running_loop().run_in_executor(
+        count, ended, repaired = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _init
         )
         logger.info("meetings: data dir ready, %d dictionary term(s) loaded", count)
@@ -104,6 +107,15 @@ async def _on_startup(app: web.Application) -> None:
                 "meetings: ended %d meeting(s) orphaned by a previous run: %s",
                 len(ended),
                 ", ".join(ended),
+            )
+        if repaired:
+            # A previous run died mid-transcription: meta was stuck 'pending' and
+            # the recording was leaked. Both are now repaired (failed + deleted).
+            logger.warning(
+                "meetings: reconciled %d orphaned transcription(s) to failed and "
+                "deleted the leaked recording(s): %s",
+                len(repaired),
+                ", ".join(repaired),
             )
     except Exception:  # pragma: no cover — defensive
         logger.warning("meetings: data-dir init failed", exc_info=True)
@@ -133,6 +145,13 @@ async def _on_cleanup(app: web.Application) -> None:
 
     Ordered flush-then-mark: the flush is what saves the queued transcript, and it
     must happen while the session still exists. Neither step may break shutdown.
+
+    Also drains in-flight post-stop transcription tasks (HIGH-1): each such task
+    deletes its recording in a ``finally``, so awaiting them here is what stops a
+    graceful restart mid-transcription from leaking the sensitive audio and leaving
+    a meeting's ``transcription`` meta stuck ``pending``. Bounded, so a wedged
+    decode cannot hang shutdown; the startup reconcile is the backstop for anything
+    still running past the bound.
     """
     try:
         # A restart is not a reason to lose what was said; the drain is bounded and
@@ -147,6 +166,9 @@ async def _on_cleanup(app: web.Application) -> None:
             )
     except Exception:  # pragma: no cover — defensive
         logger.debug("meetings: cleanup failed", exc_info=True)
+    # Bounded-await any post-stop transcription still running, so its recording is
+    # deleted rather than leaked across the restart. Never raises.
+    await lifecycle_routes.drain_transcription_tasks()
 
 
 def register_routes(app: web.Application) -> None:
@@ -201,6 +223,9 @@ def register_routes(app: web.Application) -> None:
     )
     router.add_post(
         BASE + "/meetings/{meeting_id}/stop", route(lifecycle_routes.handle_stop_meeting)
+    )
+    router.add_post(
+        BASE + "/meetings/{meeting_id}/audio", route(recording_routes.handle_upload_recording)
     )
     router.add_get(
         BASE + "/meetings/{meeting_id}/transcript",
