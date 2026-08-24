@@ -19,6 +19,11 @@
  *   import { registerOverviewStatCards } from '@/pages/overviewStatCards'
  *   import { registerOverviewPanel }     from '@/pages/overviewPanel'
  *
+ * plus one SUPPRESSOR, for a built-in surface an edition's environment makes
+ * permanently inapplicable (the registrars above can only add):
+ *
+ *   import { suppressOverviewBuiltin }   from '@/pages/overviewBuiltins'
+ *
  * For edition-owned API methods there is no registrar — the edition imports the
  * blessed `apiTransport` (`@/api/apiTransport`) and builds its own typed API
  * module on it (the core never consumes edition API methods, so a registry would

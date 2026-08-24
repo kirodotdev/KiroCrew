@@ -11,6 +11,7 @@ import { TailnetMobileCard } from '../components/TailnetMobileCard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
+import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
 import { MemoryTab, UsageTab } from './overview'
 import { useProvider } from '../providers'
 import type { NormalizedUsage } from '../providers'
@@ -225,12 +226,21 @@ export default function OverviewPage() {
       {/* Mobile access. Above the summary cards and full width, because it is a
           guided sequence rather than a metric: it owns the one next action, and
           in its terminal state it renders a QR the operator scans off the screen.
-          Isolated so a throwing card cannot take the Overview down with it. */}
-      <ErrorBoundary scope="overview-tailnet-mobile" fallback={null}>
-        <div className="mb-6">
-          <TailnetMobileCard />
-        </div>
-      </ErrorBoundary>
+          Isolated so a throwing card cannot take the Overview down with it.
+
+          Suppressible downstream: a distribution that disables tailnet outright
+          can remove this surface via `suppressOverviewBuiltin('tailnet-mobile')`
+          rather than patching this file on every sync. Gated OUTSIDE the
+          ErrorBoundary and the spacing wrapper so a suppressed build renders no
+          element at all — leaving the `mb-6` div behind would keep a 24px gap
+          where the card used to be. The core suppresses nothing. */}
+      {!isOverviewBuiltinSuppressed('tailnet-mobile') && (
+        <ErrorBoundary scope="overview-tailnet-mobile" fallback={null}>
+          <div className="mb-6">
+            <TailnetMobileCard />
+          </div>
+        </ErrorBoundary>
+      )}
 
       {/* Deep-surface summary cards */}
       <div className="grid gap-3.5 grid-cols-2 max-[760px]:grid-cols-1">
