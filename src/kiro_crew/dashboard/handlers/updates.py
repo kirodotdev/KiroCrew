@@ -224,6 +224,12 @@ def status_update_fields() -> dict[str, object]:
         "update_can_apply": bool(_update_info.get("can_apply")),
         "update_check_status": str(_update_info.get("check_status") or CHECK_UNCHECKED),
         "update_command": remediation_command(_update_info),
+        # The candidate release's version string, so the proactive update popup
+        # can key its per-version snooze/skip without calling the check
+        # endpoint (which runs a full check per request). Empty until a check
+        # has found a newer build. The changelog text stays OFF this hot-path
+        # subset — consumers fetch it on demand.
+        "update_latest_version": str(_update_info.get("latest_version") or ""),
         "update_channel": str(_update_info.get("channel") or ""),
         # The panel needs WHO manages the update to speak honestly: a
         # command-managed host must not render the self-managed installer

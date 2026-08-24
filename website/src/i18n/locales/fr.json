@@ -6823,6 +6823,23 @@
       "no_matches_for": "Aucun résultat pour",
       "no_noun_match": "Aucun(e) {{noun}} correspondant(e)"
     },
+    "updateFoundModal": {
+      "copied": "Copié",
+      "copy_command": "Copier la commande",
+      "could_not_save_choice": "Impossible d'enregistrer ton choix — la question pourra revenir après un rechargement.",
+      "dismiss": "Ignorer",
+      "download": "Télécharger",
+      "nothing_downloads_until_you_choose_to": "Rien n'est téléchargé sans ton accord.",
+      "remind_me_tomorrow": "Me le rappeler demain",
+      "skip_this_version": "Ignorer cette version",
+      "update_available": "Mise à jour disponible",
+      "update_failed": "Échec de la mise à jour. Réessaie depuis Réglages → À propos.",
+      "update_now": "Mettre à jour maintenant",
+      "updating": "Mise à jour…",
+      "updating_and_restarting": "Mise à jour et redémarrage…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> est disponible.",
+      "you_can_update_anytime_from_settings_about": "Mets à jour à tout moment depuis Réglages → À propos."
+    },
     "updateModal": {
       "back_to_dashboard": "Retour au tableau de bord",
       "dismiss": "Ignorer",
@@ -6837,6 +6854,13 @@
       "restart_update": "Redémarrer et mettre à jour",
       "restarting": "Redémarrage...",
       "the_app_will_stop_the_local_gateway_install_the": "L'application va arrêter la passerelle locale, installer la mise à jour et redémarrer.",
+      "update_ready": "Mise à jour prête"
+    },
+    "updatePill": {
+      "downloading": "Téléchargement…",
+      "downloading_percent": "Téléchargement {{percent}} %",
+      "open_update_settings": "Ouvrir les réglages de mise à jour",
+      "update_available": "Mise à jour disponible",
       "update_ready": "Mise à jour prête"
     },
     "voiceDictationPanel": {

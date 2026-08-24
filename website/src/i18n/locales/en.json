@@ -4653,6 +4653,23 @@
       "no_matches_for": "No matches for",
       "no_noun_match": "No {{noun}} match"
     },
+    "updateFoundModal": {
+      "copied": "Copied",
+      "copy_command": "Copy command",
+      "could_not_save_choice": "Couldn't save your choice — it may ask again after a reload.",
+      "dismiss": "Dismiss",
+      "download": "Download",
+      "nothing_downloads_until_you_choose_to": "Nothing downloads until you choose to.",
+      "remind_me_tomorrow": "Remind me tomorrow",
+      "skip_this_version": "Skip this version",
+      "update_available": "Update available",
+      "update_failed": "Update failed. Try again from Settings → About.",
+      "update_now": "Update now",
+      "updating": "Updating…",
+      "updating_and_restarting": "Updating and restarting…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> is available.",
+      "you_can_update_anytime_from_settings_about": "Update anytime from Settings → About."
+    },
     "updateModal": {
       "dismiss": "Dismiss",
       "dismiss_update_dialog": "Dismiss update dialog",
@@ -4660,6 +4677,13 @@
       "kirocrew": "{{productName}}",
       "later": "Later",
       "the_app_will_stop_the_local_gateway_install_the": "The app will stop the local gateway, install the update, and relaunch.",
+      "update_ready": "Update ready"
+    },
+    "updatePill": {
+      "downloading": "Downloading…",
+      "downloading_percent": "Downloading {{percent}}%",
+      "open_update_settings": "Open update settings",
+      "update_available": "Update available",
       "update_ready": "Update ready"
     },
     "voiceDictationPanel": {

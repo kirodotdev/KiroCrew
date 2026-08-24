@@ -6733,6 +6733,23 @@
       "no_matches_for": "কোনো মিল নেই",
       "no_noun_match": "কোনো {{noun}} মিলছে না"
     },
+    "updateFoundModal": {
+      "copied": "কপি হয়েছে",
+      "copy_command": "কমান্ড কপি করুন",
+      "could_not_save_choice": "তোমার পছন্দ সংরক্ষণ করা যায়নি — পুনরায় লোডের পরে আবার জিজ্ঞাসা করা হতে পারে।",
+      "dismiss": "বাতিল করুন",
+      "download": "ডাউনলোড করুন",
+      "nothing_downloads_until_you_choose_to": "আপনার সম্মতি ছাড়া কিছুই ডাউনলোড হবে না।",
+      "remind_me_tomorrow": "আগামীকাল মনে করিয়ে দিন",
+      "skip_this_version": "এই সংস্করণটি এড়িয়ে যান",
+      "update_available": "আপডেট উপলব্ধ",
+      "update_failed": "আপডেট ব্যর্থ হয়েছে। সেটিংস → সম্পর্কে থেকে আবার চেষ্টা করুন।",
+      "update_now": "এখনই আপডেট করুন",
+      "updating": "আপডেট হচ্ছে…",
+      "updating_and_restarting": "আপডেট ও পুনরায় চালু হচ্ছে…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> উপলব্ধ।",
+      "you_can_update_anytime_from_settings_about": "যেকোনো সময় সেটিংস → সম্পর্কে থেকে আপডেট করুন।"
+    },
     "updateModal": {
       "back_to_dashboard": "ড্যাশবোর্ডে ফিরে যান",
       "dismiss": "বন্ধ করুন",
@@ -6747,6 +6764,13 @@
       "restart_update": "রিস্টার্ট করে আপডেট করো",
       "restarting": "রিস্টার্ট হচ্ছে...",
       "the_app_will_stop_the_local_gateway_install_the": "অ্যাপটি লোকাল গেটওয়ে বন্ধ করবে, আপডেট ইনস্টল করবে এবং আবার চালু হবে।",
+      "update_ready": "আপডেট প্রস্তুত"
+    },
+    "updatePill": {
+      "downloading": "ডাউনলোড হচ্ছে…",
+      "downloading_percent": "ডাউনলোড হচ্ছে {{percent}}%",
+      "open_update_settings": "আপডেট সেটিংস খুলুন",
+      "update_available": "আপডেট উপলব্ধ",
       "update_ready": "আপডেট প্রস্তুত"
     },
     "voiceDictationPanel": {

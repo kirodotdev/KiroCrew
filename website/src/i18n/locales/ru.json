@@ -6913,6 +6913,23 @@
       "no_matches_for": "Нет совпадений для",
       "no_noun_match": "Нет совпадающих {{noun}}"
     },
+    "updateFoundModal": {
+      "copied": "Скопировано",
+      "copy_command": "Скопировать команду",
+      "could_not_save_choice": "Не удалось сохранить выбор — после перезагрузки вопрос может появиться снова.",
+      "dismiss": "Закрыть",
+      "download": "Скачать",
+      "nothing_downloads_until_you_choose_to": "Ничего не загружается без вашего согласия.",
+      "remind_me_tomorrow": "Напомнить завтра",
+      "skip_this_version": "Пропустить эту версию",
+      "update_available": "Доступно обновление",
+      "update_failed": "Не удалось обновить. Повторите попытку в разделе «Настройки → О программе».",
+      "update_now": "Обновить сейчас",
+      "updating": "Обновление…",
+      "updating_and_restarting": "Обновление и перезапуск…",
+      "version_is_available": "Доступна версия {{productName}} <0>{{version}}</0>.",
+      "you_can_update_anytime_from_settings_about": "Обновиться можно в любой момент в разделе «Настройки → О программе»."
+    },
     "updateModal": {
       "back_to_dashboard": "Вернуться к панели",
       "dismiss": "Скрыть",
@@ -6927,6 +6944,13 @@
       "restart_update": "Перезапустить и обновить",
       "restarting": "Перезапуск...",
       "the_app_will_stop_the_local_gateway_install_the": "Приложение остановит локальный шлюз, установит обновление и перезапустится.",
+      "update_ready": "Обновление готово"
+    },
+    "updatePill": {
+      "downloading": "Загрузка…",
+      "downloading_percent": "Загрузка {{percent}}%",
+      "open_update_settings": "Открыть настройки обновления",
+      "update_available": "Доступно обновление",
       "update_ready": "Обновление готово"
     },
     "voiceDictationPanel": {

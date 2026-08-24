@@ -6823,6 +6823,23 @@
       "no_matches_for": "Sem correspondências para",
       "no_noun_match": "Nenhum(a) {{noun}} correspondente"
     },
+    "updateFoundModal": {
+      "copied": "Copiado",
+      "copy_command": "Copiar comando",
+      "could_not_save_choice": "Não foi possível salvar sua escolha — pode perguntar novamente após recarregar.",
+      "dismiss": "Dispensar",
+      "download": "Baixar",
+      "nothing_downloads_until_you_choose_to": "Nada é baixado até você decidir.",
+      "remind_me_tomorrow": "Lembrar-me amanhã",
+      "skip_this_version": "Pular esta versão",
+      "update_available": "Atualização disponível",
+      "update_failed": "Falha na atualização. Tente novamente em Configurações → Sobre.",
+      "update_now": "Atualizar agora",
+      "updating": "Atualizando…",
+      "updating_and_restarting": "Atualizando e reiniciando…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> está disponível.",
+      "you_can_update_anytime_from_settings_about": "Atualize a qualquer momento em Configurações → Sobre."
+    },
     "updateModal": {
       "back_to_dashboard": "Voltar ao painel",
       "dismiss": "Descartar",
@@ -6837,6 +6854,13 @@
       "restart_update": "Reiniciar e atualizar",
       "restarting": "Reiniciando...",
       "the_app_will_stop_the_local_gateway_install_the": "O app vai parar o gateway local, instalar a atualização e reiniciar.",
+      "update_ready": "Atualização pronta"
+    },
+    "updatePill": {
+      "downloading": "Baixando…",
+      "downloading_percent": "Baixando {{percent}}%",
+      "open_update_settings": "Abrir configurações de atualização",
+      "update_available": "Atualização disponível",
       "update_ready": "Atualização pronta"
     },
     "voiceDictationPanel": {

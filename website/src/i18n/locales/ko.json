@@ -6643,6 +6643,23 @@
       "no_matches_for": "일치하는 항목 없음:",
       "no_noun_match": "일치하는 {{noun}} 없음"
     },
+    "updateFoundModal": {
+      "copied": "복사됨",
+      "copy_command": "명령 복사",
+      "could_not_save_choice": "선택을 저장하지 못했습니다. 다시 로드하면 또 물어볼 수 있습니다.",
+      "dismiss": "닫기",
+      "download": "다운로드",
+      "nothing_downloads_until_you_choose_to": "동의하기 전에는 아무것도 다운로드되지 않습니다.",
+      "remind_me_tomorrow": "내일 다시 알림",
+      "skip_this_version": "이 버전 건너뛰기",
+      "update_available": "업데이트가 있습니다",
+      "update_failed": "업데이트 실패. 설정 → 정보에서 다시 시도하세요.",
+      "update_now": "지금 업데이트",
+      "updating": "업데이트 중…",
+      "updating_and_restarting": "업데이트 및 다시 시작 중…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> 버전을 사용할 수 있습니다.",
+      "you_can_update_anytime_from_settings_about": "설정 → 정보에서 언제든지 업데이트할 수 있습니다."
+    },
     "updateModal": {
       "back_to_dashboard": "대시보드로 돌아가기",
       "dismiss": "닫기",
@@ -6658,6 +6675,13 @@
       "restarting": "재시작 중…",
       "the_app_will_stop_the_local_gateway_install_the": "앱이 로컬 게이트웨이를 중지하고 업데이트를 설치한 뒤 다시 시작합니다.",
       "update_ready": "업데이트 준비 완료"
+    },
+    "updatePill": {
+      "downloading": "다운로드 중…",
+      "downloading_percent": "다운로드 중 {{percent}}%",
+      "open_update_settings": "업데이트 설정 열기",
+      "update_available": "업데이트 있음",
+      "update_ready": "업데이트 준비됨"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Esc로 취소, 마이크를 클릭하면 완료",

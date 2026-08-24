@@ -5570,6 +5570,7 @@
         "theme_color": "",
         "language": "",
         "recent_tint_count": 0,
+        "update_nudge": {},
         "onboarded": false,
         "import_onboarded": false,
         "privacy_acked": false,
@@ -6125,6 +6126,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 0
+    },
+    {
+      "path": "dashboard.update_nudge",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Update Nudge",
+      "help": "Per-version state for the proactive update popup. Written by the dashboard when the user snoozes or skips a release; a record only suppresses the popup for the version it names. Validated as one atomic record by the PATCH allowlist (dashboard.update_nudge); no Settings control reads it, so it carries no schema properties.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {}
     },
     {
       "path": "dashboard.onboarded",

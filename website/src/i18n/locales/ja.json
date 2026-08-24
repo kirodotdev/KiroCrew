@@ -6643,6 +6643,23 @@
       "no_matches_for": "一致しません:",
       "no_noun_match": "{{noun}}に一致しません"
     },
+    "updateFoundModal": {
+      "copied": "コピーしました",
+      "copy_command": "コマンドをコピー",
+      "could_not_save_choice": "選択を保存できませんでした。再読み込み後に再度表示される場合があります。",
+      "dismiss": "閉じる",
+      "download": "ダウンロード",
+      "nothing_downloads_until_you_choose_to": "同意するまで何もダウンロードされません。",
+      "remind_me_tomorrow": "明日もう一度知らせる",
+      "skip_this_version": "このバージョンをスキップ",
+      "update_available": "アップデートがあります",
+      "update_failed": "アップデートに失敗しました。「設定 → 概要」からもう一度お試しください。",
+      "update_now": "今すぐアップデート",
+      "updating": "アップデート中…",
+      "updating_and_restarting": "アップデートして再起動しています…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> が利用可能です。",
+      "you_can_update_anytime_from_settings_about": "「設定 → 概要」からいつでもアップデートできます。"
+    },
     "updateModal": {
       "back_to_dashboard": "ダッシュボードに戻る",
       "dismiss": "閉じる",
@@ -6658,6 +6675,13 @@
       "restarting": "再起動中…",
       "the_app_will_stop_the_local_gateway_install_the": "アプリはローカルゲートウェイを停止し、更新をインストールして再起動します。",
       "update_ready": "更新準備完了"
+    },
+    "updatePill": {
+      "downloading": "ダウンロード中…",
+      "downloading_percent": "ダウンロード中 {{percent}}%",
+      "open_update_settings": "アップデート設定を開く",
+      "update_available": "アップデートあり",
+      "update_ready": "アップデート準備完了"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "Escキーでキャンセル、マイクをクリックして終了",

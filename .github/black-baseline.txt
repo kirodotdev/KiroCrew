@@ -617,7 +617,6 @@ test/test_computer_use_overlay.py
 test/test_computer_use_skylight.py
 test/test_computer_use_snapshot_macos.py
 test/test_config_meta_stamp.py
-test/test_config_patch.py
 test/test_config_rmw_preserves_settings.py
 test/test_connections_kiro_spec_fields.py
 test/test_connections_l0_probe.py
@@ -690,7 +689,6 @@ test/test_dashboard_sessions_memory.py
 test/test_dashboard_sessions_search.py
 test/test_dashboard_start_site.py
 test/test_dashboard_state_ws.py
-test/test_dashboard_status_snapshot.py
 test/test_dashboard_themes_coverage.py
 test/test_dashboard_updates_coverage.py
 test/test_dashboard_worktree_coverage.py

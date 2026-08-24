@@ -6733,6 +6733,23 @@
       "no_matches_for": "कोई मिलान नहीं",
       "no_noun_match": "कोई {{noun}} मेल नहीं"
     },
+    "updateFoundModal": {
+      "copied": "कॉपी हो गया",
+      "copy_command": "कमांड कॉपी करें",
+      "could_not_save_choice": "तुम्हारी पसंद सहेजी नहीं जा सकी — पुनः लोड के बाद फिर पूछा जा सकता है।",
+      "dismiss": "खारिज करें",
+      "download": "डाउनलोड करें",
+      "nothing_downloads_until_you_choose_to": "तुम्हारी अनुमति के बिना कुछ भी डाउनलोड नहीं होगा।",
+      "remind_me_tomorrow": "कल याद दिलाएँ",
+      "skip_this_version": "यह संस्करण छोड़ें",
+      "update_available": "अपडेट उपलब्ध है",
+      "update_failed": "अपडेट विफल। सेटिंग्स → परिचय से फिर कोशिश करें।",
+      "update_now": "अभी अपडेट करें",
+      "updating": "अपडेट हो रहा है…",
+      "updating_and_restarting": "अपडेट और पुनःआरंभ हो रहा है…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> उपलब्ध है।",
+      "you_can_update_anytime_from_settings_about": "कभी भी सेटिंग्स → परिचय से अपडेट करें।"
+    },
     "updateModal": {
       "back_to_dashboard": "डैशबोर्ड पर वापस जाएँ",
       "dismiss": "खारिज करें",
@@ -6748,6 +6765,13 @@
       "restarting": "रीस्टार्ट हो रहा है...",
       "the_app_will_stop_the_local_gateway_install_the": "ऐप स्थानीय गेटवे रोकेगा, अपडेट इंस्टॉल करेगा और फिर से शुरू होगा।",
       "update_ready": "अपडेट तैयार"
+    },
+    "updatePill": {
+      "downloading": "डाउनलोड हो रहा है…",
+      "downloading_percent": "डाउनलोड हो रहा है {{percent}}%",
+      "open_update_settings": "अपडेट सेटिंग्स खोलें",
+      "update_available": "अपडेट उपलब्ध",
+      "update_ready": "अपडेट तैयार है"
     },
     "voiceDictationPanel": {
       "esc_to_cancel_click_mic_to_finish": "रद्द करने के लिए Esc, समाप्त करने के लिए माइक पर क्लिक करें",

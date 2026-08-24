@@ -5189,6 +5189,7 @@ class DashboardState:
         update_can_apply: bool = False,
         update_check_status: str = "unchecked",
         update_command: str = "",
+        update_latest_version: str = "",
         update_channel: str = "",
         update_managed_by: str = "",
         update_commits_ahead: int = 0,
@@ -5225,6 +5226,11 @@ class DashboardState:
             # user on something actionable. Deriving it only from a manual check
             # left the badge pointing at an Update button that 409s.
             "update_command": update_command,
+            # The candidate release's version string ("" until a check finds a
+            # newer build). The proactive update popup keys its per-version
+            # snooze/skip on this, so it rides the hot-path subset; the
+            # changelog text deliberately does not.
+            "update_latest_version": update_latest_version,
             # The release channel this INSTALL follows (the ``channel`` file
             # cli.sh wrote), empty when the layout has no channel at all (a git
             # checkout tracks a remote; a desktop bundle or container is updated

@@ -1794,6 +1794,21 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "auto_update": {"type": "bool"},
     "dashboard.mcp_probe_timeout_secs": {"type": "int", "min": 5, "max": 120},
     "dashboard.recent_tint_count": {"type": "int", "min": 0, "max": 10},
+    # Per-version snooze/skip verdict for the proactive update popup, written
+    # as ONE atomic record: the three fields only mean anything together, so
+    # per-field writes would open both a crash window (old verdict paired
+    # with a new version) and a two-client interleave that reassembles a
+    # verdict nobody expressed. Persisted in gateway config (not browser
+    # storage) so the decision holds across browsers and the desktop app's
+    # embedded dashboard.
+    "dashboard.update_nudge": {
+        "type": "dict",
+        "keys": {
+            "version": {"type": "str", "max_len": 128},
+            "snoozed_until": {"type": "float", "min": 0.0, "max": 4102444800.0},
+            "skipped": {"type": "bool"},
+        },
+    },
     # Default shell for the built-in terminal panel (Settings → Display →
     # Terminal). "" = unset, use $SHELL / the platform default. The executable
     # check lives as an off-loop special case in the PATCH handler (a PATH
@@ -2041,6 +2056,54 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             reason = validate_fn(value, request)
             if reason:
                 return _deny(reason, f"{path_key}={value}")
+    elif spec["type"] == "dict":
+        # One-level record written ATOMICALLY as a single value, for settings
+        # where multiple scalar fields form one verdict and a partial write is
+        # itself the bug (e.g. the update popup's version+snooze+skip record).
+        # Strict by design: every declared key present, no undeclared keys,
+        # each value validated against its scalar subspec — so this cannot
+        # become a generic JSON passthrough.
+        if not isinstance(value, dict):
+            return _deny("must be an object", f"{path_key}={value}")
+        keys_spec = spec["keys"]
+        unknown = set(value) - set(keys_spec)
+        if unknown:
+            return _deny(f"unknown key(s): {sorted(unknown)}", f"{path_key}={value}")
+        missing = set(keys_spec) - set(value)
+        if missing:
+            return _deny(f"missing key(s): {sorted(missing)}", f"{path_key}={value}")
+        validated: dict = {}
+        for sub_key, sub_spec in keys_spec.items():
+            sub_val = value[sub_key]
+            if sub_spec["type"] == "str":
+                if not isinstance(sub_val, str):
+                    return _deny(f"{sub_key} must be a string", f"{path_key}={value}")
+                if len(sub_val) > sub_spec.get("max_len", 256):
+                    return _deny(
+                        f"{sub_key} must be at most {sub_spec.get('max_len', 256)} characters",
+                        f"{path_key}={value}",
+                    )
+            elif sub_spec["type"] == "bool":
+                if not isinstance(sub_val, bool):
+                    return _deny(f"{sub_key} must be a boolean", f"{path_key}={value}")
+            elif sub_spec["type"] == "float":
+                # bool is an int subclass; refuse it before coercion so
+                # `true` cannot silently store 1.0.
+                if isinstance(sub_val, bool):
+                    return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
+                try:
+                    sub_val = float(sub_val)
+                except (TypeError, ValueError):
+                    return _deny(f"{sub_key} must be a number", f"{path_key}={value}")
+                if not math.isfinite(sub_val):
+                    return _deny(f"{sub_key} must be a finite number", f"{path_key}={value}")
+                lo, hi = sub_spec.get("min", 0.0), sub_spec.get("max", 999999.0)
+                if sub_val < lo or sub_val > hi:
+                    return _deny(f"{sub_key} must be between {lo} and {hi}", f"{path_key}={value}")
+            else:
+                return _deny("unsupported config type", f"{path_key}={value}", 500)
+            validated[sub_key] = sub_val
+        value = validated
     else:
         return _deny("unsupported config type", f"{path_key}={value}", 500)
 

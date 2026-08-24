@@ -6643,6 +6643,23 @@
       "no_matches_for": "没有匹配",
       "no_noun_match": "没有匹配的{{noun}}"
     },
+    "updateFoundModal": {
+      "copied": "已复制",
+      "copy_command": "复制命令",
+      "could_not_save_choice": "无法保存你的选择——重新加载后可能会再次询问。",
+      "dismiss": "忽略",
+      "download": "下载",
+      "nothing_downloads_until_you_choose_to": "在你确认之前不会下载任何内容。",
+      "remind_me_tomorrow": "明天提醒我",
+      "skip_this_version": "跳过此版本",
+      "update_available": "发现新版本",
+      "update_failed": "更新失败。请到“设置 → 关于”重试。",
+      "update_now": "立即更新",
+      "updating": "更新中…",
+      "updating_and_restarting": "正在更新并重启…",
+      "version_is_available": "{{productName}} <0>{{version}}</0> 可以更新。",
+      "you_can_update_anytime_from_settings_about": "可随时在“设置 → 关于”中更新。"
+    },
     "updateModal": {
       "back_to_dashboard": "返回仪表板",
       "dismiss": "忽略",
@@ -6657,6 +6674,13 @@
       "restart_update": "重启并更新",
       "restarting": "正在重启…",
       "the_app_will_stop_the_local_gateway_install_the": "应用将停止本地网关、安装更新并重新启动。",
+      "update_ready": "更新已就绪"
+    },
+    "updatePill": {
+      "downloading": "下载中…",
+      "downloading_percent": "下载中 {{percent}}%",
+      "open_update_settings": "打开更新设置",
+      "update_available": "有可用更新",
       "update_ready": "更新已就绪"
     },
     "voiceDictationPanel": {
