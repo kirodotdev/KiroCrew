@@ -3752,7 +3752,7 @@ class _ChatSlot:
         self._deferred_notes.clear()
         live_session = effective_session_key(self)
         written = 0
-        for note in held:
+        for _idx, note in enumerate(held):
             # A held note carries the session it was authorized against. An
             # unbound slot can acquire a foreign binding while the note waits
             # (a cron result or workflow injection claims an empty
@@ -3782,17 +3782,30 @@ class _ChatSlot:
             # drain runs inside the turn: an entry queued while that turn was
             # starting is consumed by it, so the note shapes the request it was
             # written after and the next turn never sees it at all.
-            ctx = note.get("context")
-            if ctx is not None:
-                ctx["noteSession"] = live_session
-                self.append_pending_context(ctx)
-            self.append(
-                role="inject",
-                content=note["content"],
-                cls=note["cls"],
-                broadcast=True,
-                meta={"noteSession": live_session},
-            )
+            # Popped rather than read: the two halves are written in sequence, so
+            # if the visible line below raises after this succeeded, the retry
+            # this note is restored for must not queue the context a second time.
+            ctx = note.pop("context", None)
+            try:
+                if ctx is not None:
+                    ctx["noteSession"] = live_session
+                    self.append_pending_context(ctx)
+                self.append(
+                    role="inject",
+                    content=note["content"],
+                    cls=note["cls"],
+                    broadcast=True,
+                    meta={"noteSession": live_session},
+                )
+            except Exception:
+                # The list was cleared above, and ``held`` is a local -- so an
+                # unwritten note dies with this frame unless it is put back.
+                # Restore this note and everything after it, AHEAD of anything
+                # queued since (they are older), then let the raise reach the
+                # caller's guard: every seam logs it and carries on, and the next
+                # seam retries these. Delivery is delayed, never lost.
+                self._deferred_notes[:0] = held[_idx:]
+                raise
             written += 1
         return written
 

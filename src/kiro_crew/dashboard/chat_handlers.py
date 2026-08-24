@@ -2505,9 +2505,7 @@ async def api_chat_slot_stop(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     force = request.query.get("force", "").lower() == "true"
-    return web.json_response(
-        await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key)
-    )
+    return web.json_response(await stop_slot_turn(state, slot, force=force, cancel_key=cancel_key))
 
 
 async def api_chat_slot_continue(request: web.Request) -> web.Response:
@@ -3474,13 +3472,26 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 await asyncio.wait_for(asyncio.shield(removed.task), timeout=2.0)
             except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
-        removed.flush_deferred_notes()
         try:
+            # Order is unchanged and load-bearing: the cancel above, then the
+            # flush, then the save. What the guard adds is failure handling, and
+            # the flush shares the save's ``except`` arm rather than logging and
+            # falling through. ``_deferred_notes`` is in-memory only -- it is a
+            # ``__slots__`` attribute and the persistence layer never reads it --
+            # so once the slot is popped, the only place a note put back by a
+            # partial flush can live is this slot object. Falling through would
+            # write the transcript WITHOUT that note, discard the slot, and still
+            # report the key in ``archived``: data loss reported as success.
+            # Sharing the arm restores the slot with its notes still held and
+            # reports the key in ``failed`` instead.
+            removed.flush_deferred_notes()
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
             )
         except Exception:
-            logger.error("Cleanup: failed to archive slot %s", name, exc_info=True)
+            logger.error(
+                "Cleanup: failed to flush held notes or archive slot %s", name, exc_info=True
+            )
             state._slots[name] = removed
             # Restoring the slot does not undo the cancel above, and ``running`` is
             # derived from the task, so a cancel that already completed reads False:

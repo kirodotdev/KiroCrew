@@ -698,7 +698,20 @@ async def _stage_loop(
         # loop's own task, so defer only to a live task that is someone else's.
         _note_owner = slot.task
         if _note_owner is None or _note_owner is asyncio.current_task() or _note_owner.done():
-            slot.flush_deferred_notes()
+            try:
+                slot.flush_deferred_notes()
+            except Exception:
+                # Worst-placed of the flush seams: this is a ``finally``, so a raise
+                # here both skips the rest of it -- the queued-work handoff, the
+                # done row, chat_done, and clearing slot.task, leaving the slot
+                # wedged with its spinner up -- AND replaces any exception the loop
+                # was already unwinding, hiding the original failure. Held notes are
+                # delivered by the next seam instead.
+                logger.warning(
+                    "Stage loop: held-note delivery failed at exit for slot %s",
+                    slot.key,
+                    exc_info=True,
+                )
         if (
             not _cancelled
             and not slot.running

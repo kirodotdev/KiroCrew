@@ -4179,7 +4179,18 @@ async def _start_next_queued_turn(state: DashboardState, slot: _ChatSlot) -> boo
     # into stage N+1 before the dequeue gate ever holds that message back.
     # _stage_loop's exit flush is the seam that delivers it.
     if not slot._in_stage_execution and not (slot._queue and slot._queue[0].get("kind")):
-        slot.flush_deferred_notes()
+        try:
+            slot.flush_deferred_notes()
+        except Exception:
+            # Everything below this point is the successor handoff -- the dequeue,
+            # the row append and spawn_guarded_turn. A raise here would return
+            # without dispatching, leaving the queued work stranded, so degrade to
+            # "the held note waits for the next seam" and carry on.
+            logger.warning(
+                "flush_deferred_notes failed before the queue drain for slot %s",
+                slot.key,
+                exc_info=True,
+            )
 
     if not slot._queue:
         return False
@@ -4539,7 +4550,21 @@ def _finish_queue_cycle(state: DashboardState, slot: _ChatSlot) -> None:
     # _run_chat finally, while _in_stage_execution is still set. Each has a later
     # seam that flushes: the cycle after synthesis, _stage_loop's exit for a plan.
     if not will_synthesize and not slot._in_stage_execution:
-        slot.flush_deferred_notes()
+        try:
+            slot.flush_deferred_notes()
+        except Exception:
+            # Below this are the two ways a cycle ends: the synthesis dispatch and
+            # the terminal append("done") / slot.task = None / chat_done. A raise
+            # reaches _run_pending_synthesis, whose only handler is a narrow
+            # (asyncio.TimeoutError, TimeoutError) around its await and a finally
+            # that clears _synthesis_inflight -- neither emits done -- and it is
+            # dispatched fire-and-forget, so the error is discarded and the slot
+            # wedges with its spinner up. Log and let the cycle finish.
+            logger.warning(
+                "flush_deferred_notes failed at the queue-cycle end for slot %s",
+                slot.key,
+                exc_info=True,
+            )
 
     if not slot._queue:
         slot._stopping = False
