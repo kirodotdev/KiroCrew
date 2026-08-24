@@ -401,3 +401,47 @@ export function phaseLabel(phase: string): string {
     ? i18nT(PHASE_LABEL_KEY[phase])
     : phase
 }
+
+// ── detail poll cadence ──────────────────────────────────────────────────────
+// The Tasks panel is a progress view over tasks.md. That file is also written by
+// the agent and by hand in an editor, neither of which goes through a Spec
+// Builder mutation — so a poll armed only by last-dispatch / slot.running sits
+// idle while checkboxes flip on disk. These constants are the single owner of
+// the cadences SpecDetail reads.
+
+/** Fast poll while a turn is in flight, the Tasks tab is open, or tasks.md just changed. */
+export const SPEC_DETAIL_FAST_POLL_MS = 2500
+/** Catch the worker slot coming up after a dispatch (running is still false). */
+export const SPEC_DETAIL_DISPATCH_POLL_MS = 1200
+/** Idle poll when nothing is writing and the user is not watching Tasks. */
+export const SPEC_DETAIL_IDLE_POLL_MS = 6000
+/** How long a dispatch or an observed tasks.md hash change keeps the fast window. */
+export const SPEC_DETAIL_FOLLOWUP_MS = 20000
+
+export interface SpecDetailPollInput {
+  running?: boolean
+  status?: string
+  /** True while the document tab showing the checklist is selected. */
+  watchingTasks?: boolean
+  msSinceDispatch?: number
+  msSinceTasksChange?: number
+}
+
+/** Interval for the spec-detail React Query poll.
+ *
+ *  Fast while the worker is active, for a follow-up window after THIS view
+ *  dispatched an instruction, while the user is looking at the Tasks panel,
+ *  and for the same follow-up window after tasks.md's content hash changes
+ *  (an agent or a hand edit that never hit lastSendAt). Otherwise idle.
+ */
+export function specDetailPollMs(input: SpecDetailPollInput): number {
+  if (input.running || input.status === 'executing') return SPEC_DETAIL_FAST_POLL_MS
+  if ((input.msSinceDispatch ?? Number.POSITIVE_INFINITY) < SPEC_DETAIL_FOLLOWUP_MS) {
+    return SPEC_DETAIL_DISPATCH_POLL_MS
+  }
+  if (input.watchingTasks) return SPEC_DETAIL_FAST_POLL_MS
+  if ((input.msSinceTasksChange ?? Number.POSITIVE_INFINITY) < SPEC_DETAIL_FOLLOWUP_MS) {
+    return SPEC_DETAIL_FAST_POLL_MS
+  }
+  return SPEC_DETAIL_IDLE_POLL_MS
+}

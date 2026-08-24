@@ -66,7 +66,7 @@ vi.mock('../apps/spec-builder/components/SpecStatePanel', () => ({
 }))
 
 import SpecDetail from '../apps/spec-builder/components/SpecDetail'
-import { LS } from '../apps/spec-builder/api'
+import { LS, SPEC_DETAIL_FAST_POLL_MS, SPEC_DETAIL_IDLE_POLL_MS } from '../apps/spec-builder/api'
 
 interface Call { url: string; method: string; body: string }
 
@@ -688,5 +688,49 @@ describe('SpecDetail error surfacing', () => {
     // No detail: the chat stays withheld and the phase pill falls back.
     expect(screen.queryByTestId('chat-column')).not.toBeInTheDocument()
     expect(screen.getByText('…')).toBeInTheDocument()
+  })
+})
+
+describe('SpecDetail tasks-panel poll (#5361)', () => {
+  const withTasks = {
+    ...BASE,
+    files: { 'requirements.md': '# r', 'tasks.md': '- [ ] one' },
+    docs: { 'tasks.md': { hash: 'b'.repeat(64) } },
+    tasks: [{ index: 0, text: 'one', done: false, hash: 'c'.repeat(64) }],
+  }
+
+  it('refetches as soon as the Tasks tab opens, then keeps the fast cadence while idle', async () => {
+    let gets = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      gets += 1
+      return Promise.resolve(okRes(JSON.stringify(withTasks)))
+    }))
+    renderDetail()
+    await screen.findByTestId('chat-column')
+    const afterMount = gets
+
+    await selectTab('Tasks')
+    await waitFor(() => expect(gets).toBeGreaterThan(afterMount))
+    const afterOpen = gets
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBeGreaterThan(afterOpen)
+  })
+
+  it('stays on the idle cadence on Requirements when nothing is running', async () => {
+    let gets = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      gets += 1
+      return Promise.resolve(okRes(JSON.stringify(BASE)))
+    }))
+    renderDetail()
+    await screen.findByTestId('chat-column')
+    const afterMount = gets
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBe(afterMount)
+
+    await vi.advanceTimersByTimeAsync(SPEC_DETAIL_IDLE_POLL_MS - SPEC_DETAIL_FAST_POLL_MS)
+    expect(gets).toBeGreaterThan(afterMount)
   })
 })

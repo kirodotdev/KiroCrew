@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import { ADVANCE_PROMPT } from '../prompts'
 import {
-  specApi, LS, phaseLabel, PHASE_BUILDING_KEY,
+  specApi, LS, phaseLabel, PHASE_BUILDING_KEY, specDetailPollMs,
   type SpecDetail as SpecDetailData, type SpecTask,
 } from '../api'
 import { Input } from '../../../components/ui'
@@ -51,11 +51,6 @@ const DOC_TABS = [
 
 type DocTabId = (typeof DOC_TABS)[number]['id']
 
-/** How long after a dispatched instruction the detail poll stays fast. The slot's
- *  ``running`` flag is what normally selects the fast cadence, and it is still
- *  false when the POST returns, so this window covers the gap. */
-const SEND_FOLLOWUP_MS = 20000
-
 // The button label is copy and is translated; ``msg`` is the instruction sent to
 // the agent and lives in prompts.ts, deliberately untranslated. ``target`` is the
 // document the agent will write next: approving switches to it, so the drafting
@@ -94,30 +89,57 @@ export default function SpecDetail({ name, setErr, onDuplicated }: SpecDetailPro
   // so a slow 2.5s request landing after a faster later one reverted the docs
   // pane and the phase pill to stale content. React Query keeps one in-flight
   // request per key and discards superseded results. The poll stays fast while
-  // the agent works and slows down when it is idle.
+  // the agent works, while the Tasks tab is open, and for a follow-up window
+  // after a dispatch or a tasks.md hash change; otherwise it idles.
   // The identity every mutation carries: what THIS view rendered.
   const specId = () => ({ spec_dir: detail?.spec_dir, slot_key: detail?.slot_key })
 
   // When this view last dispatched an instruction. ``running`` is derived from the
   // worker slot, and the slot is not running yet when the POST returns — the turn
-  // is dispatched, not awaited. On the idle 6s cadence the whole UI therefore sat
+  // is dispatched, not awaited. On the idle cadence the whole UI therefore sat
   // unchanged for seconds after a click, so the approval looked like it had not
   // registered. A ref, not state: refetchInterval is read per fetch and this must
   // not itself trigger a render.
   const lastSendAt = useRef(0)
+  // tasks.md is written by the agent and by hand, neither of which hits lastSendAt.
+  // Remember the last hash we rendered so a disk change re-arms the fast window
+  // even when the user is not on the Tasks tab (they come back to a fresh list).
+  const lastTasksHash = useRef<string | undefined>(undefined)
+  const lastTasksChangeAt = useRef(0)
 
   const detailQuery = useQuery({
     queryKey: ['spec-builder', 'spec', name],
     queryFn: ({ signal }) => specApi.get(name, signal),
+    // An agent editing tasks.md from the main chat (or an editor) does not
+    // focus this window. The default pauses the interval in the background, so
+    // the progress view froze until a focus event that Electron does not always
+    // deliver.
+    refetchIntervalInBackground: true,
     refetchInterval: (q) => {
       const d = q.state.data
-      if (d?.running || d?.status === 'executing') return 2500
-      // Catch the slot coming up after a dispatch, then fall back to idle.
-      if (Date.now() - lastSendAt.current < SEND_FOLLOWUP_MS) return 1200
-      return 6000
+      const hash = d?.docs?.['tasks.md']?.hash
+      if (hash && lastTasksHash.current && hash !== lastTasksHash.current) {
+        lastTasksChangeAt.current = Date.now()
+      }
+      if (hash) lastTasksHash.current = hash
+      return specDetailPollMs({
+        running: d?.running,
+        status: d?.status,
+        watchingTasks: tab === 'tasks',
+        msSinceDispatch: Date.now() - lastSendAt.current,
+        msSinceTasksChange: Date.now() - lastTasksChangeAt.current,
+      })
     },
   })
   const detail: SpecDetailData | null = detailQuery.data ?? null
+
+  // Opening the progress view is itself a reason to read disk now, not at the
+  // next idle tick. The interval below keeps it fresh; this is the first look.
+  const prevTab = useRef(tab)
+  useEffect(() => {
+    if (tab === 'tasks' && prevTab.current !== 'tasks') void detailQuery.refetch()
+    prevTab.current = tab
+  }, [tab, detailQuery])
 
   // Surface a fetch error without clobbering the last good document content.
   useEffect(() => {
