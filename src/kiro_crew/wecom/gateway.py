@@ -11,11 +11,13 @@ gateway.
 The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction +
 tool-approval ladder + SEL audit) via the dispatcher -- no hand-rolled loop.
 
-``warn_if_wecom_uncredentialed`` is the diagnostic companion: the channel
-registry's enabled-only gate never calls the factory when ``_wecom_enabled``
-is False, so ``_start_channel_transports`` logs the enabled-but-uncredentialed
+``warn_if_channel_uncredentialed`` is the diagnostic companion, generalized
+over every collapsed-flag channel (issue #5418): the channel registry's
+enabled-only gate never calls a factory when ``_<channel>_enabled`` is False,
+so ``_start_channel_transports`` logs each channel's enabled-but-uncredentialed
 skip reason through this helper at the start decision point, after
-``KIROCREW_READY`` (issue #304).
+``KIROCREW_READY``. ``warn_if_wecom_uncredentialed`` remains as the
+WeCom-shaped wrapper pinning the original contract (issue #304).
 """
 
 from __future__ import annotations
@@ -30,6 +32,8 @@ from kiro_crew.wecom.transport import WeComTransport
 from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -58,36 +62,67 @@ def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
     return out
 
 
-def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
-    """Log WHY WeCom will not start when enabled but missing credentials.
+def warn_if_channel_uncredentialed(
+    channel_type: str,
+    settings_name: str,
+    cfg_enabled: bool,
+    credentials: "Sequence[tuple[str, str]]",
+) -> None:
+    """Log WHY a channel will not start when enabled but missing credentials.
 
-    ``_wecom_enabled`` is computed as ``cfg.wecom.enabled AND bot_id AND
-    secret`` (see GatewayOrchestrator), which collapses "channel disabled" and
-    "channel enabled but uncredentialed" into one boolean -- and the channel
-    registry's enabled-only gate then skips :func:`maybe_start_wecom` entirely
-    for BOTH states, so no code inside the factory can ever report the
-    difference. This helper is therefore called by
+    Every ``_<channel>_enabled`` flag is computed as ``cfg.<channel>.enabled
+    AND <credential operands>`` (see GatewayOrchestrator), which collapses
+    "channel disabled" and "channel enabled but uncredentialed" into one
+    boolean -- and the channel registry's enabled-only gate then skips the
+    channel factory entirely for BOTH states, so no code inside a factory can
+    ever report the difference. This helper is therefore called by
     ``_start_channel_transports`` at the start decision point (after
-    ``KIROCREW_READY``, off the boot-path window), from the raw ingredients
-    the collapsed flag was computed from. When the operator enabled WeCom but
-    a credential is absent it
-    emits exactly one WARNING (visible at the default log level) naming the
+    ``KIROCREW_READY``, off the boot-path window), once per collapsed-flag
+    channel, from the raw ingredients each flag was computed from (issue
+    #5418, generalizing the WeCom fix from issue #304).
+
+    ``credentials`` holds ``(name, value)`` pairs for exactly the operands the
+    channel's enabled-flag predicate reads -- no more (a name that does not
+    gate the flag would send the operator to configure something that cannot
+    start the channel) and no fewer. When the operator enabled the channel but
+    at least one operand is absent, it emits exactly one WARNING (visible at
+    the default log level) on the channel's own gateway logger, naming the
     missing credential NAME(s), never values; when the channel is disabled, or
     fully credentialed, it stays completely silent.
     """
-    if not cfg_enabled or (bot_id and secret):
+    if not cfg_enabled or all(value for _, value in credentials):
         return
-    missing = " and ".join(
-        name for name, value in (("WECOM_BOT_ID", bot_id), ("WECOM_SECRET", secret)) if not value
-    )
+    missing = " and ".join(name for name, value in credentials if not value)
+    channel_logger = logging.getLogger(f"kiro_crew.{channel_type}.gateway")
     # The rule keys on the word "credential" in the format string; the call
-    # logs only the MISSING credential variable name(s) ("WECOM_BOT_ID",
-    # "WECOM_SECRET") and a static remediation hint — no credential value is
-    # in scope here, and the tests pin that present values never appear.
-    logger.warning(  # nosemgrep: python-logger-credential-disclosure
-        "wecom: enabled but not credentialed (missing %s) — skipping. "
-        "Set the missing credential(s) in the dashboard WeCom settings.",
+    # logs only the MISSING credential variable name(s) and a static
+    # remediation hint — no credential value is among the format arguments,
+    # and the tests pin that present values never appear.
+    channel_logger.warning(  # nosemgrep: python-logger-credential-disclosure
+        "%s: enabled but not credentialed (missing %s) — skipping. "
+        "Set the missing credential(s) in the dashboard %s settings.",
+        channel_type,
         missing,
+        settings_name,
+    )
+
+
+def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
+    """WeCom-shaped wrapper over :func:`warn_if_channel_uncredentialed`.
+
+    Preserves the public contract issue #304 introduced (pinned by
+    ``test_wecom_gateway.py::TestSkipReasonWarning``): exactly one WARNING on
+    this module's logger naming the missing credential name(s)
+    (``WECOM_BOT_ID`` / ``WECOM_SECRET``), values never logged, silence when
+    disabled or fully credentialed. Production routes through the
+    six-channel table in ``_start_channel_transports`` (issue #5418), which
+    feeds the generic helper the same ``(name, value)`` pairs.
+    """
+    warn_if_channel_uncredentialed(
+        "wecom",
+        "WeCom",
+        cfg_enabled,
+        (("WECOM_BOT_ID", bot_id), ("WECOM_SECRET", secret)),
     )
 
 
@@ -100,8 +135,8 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
 
     The enabled-but-uncredentialed diagnostic does NOT live here: the channel
     registry only calls this factory when ``_wecom_enabled`` is already true,
-    so the skip reason is logged by :func:`warn_if_wecom_uncredentialed` from
-    ``_start_channel_transports`` instead.
+    so the skip reason is logged by :func:`warn_if_channel_uncredentialed`
+    from ``_start_channel_transports`` instead.
     """
     if not getattr(orch, "_wecom_enabled", False):
         return None

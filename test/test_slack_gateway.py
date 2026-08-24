@@ -7099,65 +7099,280 @@ class TestMandatoryUpdateOnWheelInstall:
         apply_called.assert_awaited_once()
 
 
-# ─── WeCom skip-reason warning on the PRODUCTION start path (issue #304) ─────
+# ─── Channel skip-reason warning on the PRODUCTION start path (#304, #5418) ──
 
 
-class TestWeComSkipReasonAtTransportStart:
+# One row per collapsed-flag channel the enabled-but-uncredentialed WARNING
+# covers: (channel_type, names the WARNING must carry, names it must NOT carry,
+# creds entries + cfg mutations that make the channel FULLY credentialed).
+# The name lists are spelled exactly as the warning must emit them, i.e. the
+# credential operands each _<channel>_enabled predicate actually reads.
+_UNCREDENTIALED_CHANNEL_ROWS = (
+    pytest.param(
+        "wecom",
+        ("WECOM_BOT_ID", "WECOM_SECRET"),
+        (),
+        {"WECOM_BOT_ID": "wecom-bot-value", "WECOM_SECRET": "wecom-secret-value"},
+        (),
+        id="wecom",
+    ),
+    pytest.param(
+        "telegram",
+        ("TELEGRAM_BOT_TOKEN",),
+        (),
+        {"TELEGRAM_BOT_TOKEN": "telegram-token-value"},
+        (),
+        id="telegram",
+    ),
+    pytest.param(
+        "weixin",
+        # account_id is not a secret (it comes from the QR setup flow) but the
+        # predicate reads it, so it is named like any other missing operand.
+        ("WEIXIN_TOKEN", "weixin.account_id"),
+        (),
+        {"WEIXIN_TOKEN": "weixin-token-value"},
+        (("weixin", "account_id", "weixin-account-value"),),
+        id="weixin",
+    ),
+    pytest.param(
+        "discord",
+        ("DISCORD_BOT_TOKEN",),
+        (),
+        {"DISCORD_BOT_TOKEN": "discord-token-value"},
+        (),
+        id="discord",
+    ),
+    pytest.param(
+        "webex",
+        ("WEBEX_BOT_TOKEN",),
+        (),
+        {"WEBEX_BOT_TOKEN": "webex-token-value"},
+        (),
+        id="webex",
+    ),
+    pytest.param(
+        "teams",
+        ("MICROSOFT_APP_ID", "MICROSOFT_APP_PASSWORD"),
+        # _teams_enabled never reads the tenant id, so the warning must not
+        # send the operator to a field that cannot start the channel.
+        ("MICROSOFT_APP_TENANT_ID",),
+        {
+            "MICROSOFT_APP_ID": "teams-app-id-value",
+            "MICROSOFT_APP_PASSWORD": "teams-password-value",
+        },
+        (),
+        id="teams",
+    ),
+)
+
+_UNCREDENTIALED_CHANNEL_TYPES = ("wecom", "telegram", "weixin", "discord", "webex", "teams")
+
+
+class TestChannelSkipReasonAtTransportStart:
     """The enabled-but-uncredentialed WARNING must fire on the real start path.
 
-    The channel registry's enabled-only gate never calls ``maybe_start_wecom``
-    when ``_wecom_enabled`` is False — for a disabled AND for an
-    enabled-but-uncredentialed channel alike — so a factory-level log can never
-    be reached in production. The skip reason is therefore logged by
+    The channel registry's enabled-only gate never calls a channel factory
+    when ``_<channel>_enabled`` is False — for a disabled AND for an
+    enabled-but-uncredentialed channel alike — so a factory-level log can
+    never be reached in production. The skip reason is therefore logged by
     ``_start_channel_transports`` at the decision point, which runs AFTER
-    ``KIROCREW_READY`` (outside the boot-path window). These pin that wiring;
-    the helper's message contract is pinned in ``test_wecom_gateway.py``.
+    ``KIROCREW_READY`` (outside the boot-path window), via the six-channel
+    table feeding ``warn_if_channel_uncredentialed``. These pin that wiring
+    for every collapsed-flag channel (issue #5418, generalizing the
+    WeCom-only class issue #304 introduced); the helper's message contract is
+    pinned in ``test_wecom_gateway.py``.
 
-    Every scenario here keeps ``_wecom_enabled`` False (and all other channels
-    config-off), so the registry starts nothing and no network is touched.
+    Rows that make a ``_<channel>_enabled`` flag True (fully-credentialed
+    cases) stub the governance gate to deny, so ``registry.start_channels``
+    skips every factory and no transport or network is ever touched; the
+    WARNING under test fires before either.
+
+    Capture is scoped to WARNING+: the wiring contract here is the
+    warning-level diagnostic (exactly one, or none), so an unrelated DEBUG/INFO
+    line some channel module may grow on the skip path must not flake these.
+    Helper-level COMPLETE silence (no records at any level) stays pinned in
+    ``test_wecom_gateway.py``.
     """
 
-    def _build(self, *, wecom_enabled: bool, creds: dict[str, str]) -> GatewayOrchestrator:
+    def _build(
+        self,
+        *,
+        creds: dict[str, str],
+        cfg_mut: tuple[tuple[str, str, object], ...] = (),
+    ) -> GatewayOrchestrator:
         cfg = KiroCrewConfig()
-        cfg.wecom.enabled = wecom_enabled
+        for section, attr, value in cfg_mut:
+            setattr(getattr(cfg, section), attr, value)
         with patch.object(cfg, "load_credentials", return_value=creds):
             return GatewayOrchestrator(cfg)
 
-    def _wecom_records(self, caplog) -> list[logging.LogRecord]:
-        return [r for r in caplog.records if r.name == "kiro_crew.wecom.gateway"]
+    async def _start(self, orch: GatewayOrchestrator, monkeypatch) -> None:
+        from kiro_crew.slack import gateway as gw
+
+        monkeypatch.setattr(gw, "_channel_transport_permitted", lambda member: False)
+        await orch._start_channel_transports()
+
+    def _channel_records(self, caplog) -> list[logging.LogRecord]:
+        names = {f"kiro_crew.{c}.gateway" for c in _UNCREDENTIALED_CHANNEL_TYPES}
+        return [r for r in caplog.records if r.name in names]
 
     @pytest.mark.asyncio
-    async def test_enabled_without_credentials_warns_at_default_level(self, caplog) -> None:
-        orch = self._build(wecom_enabled=True, creds={"KIROCREW_OWNER_ID": "U_OWNER"})
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
-            await orch._start_channel_transports()
-        records = self._wecom_records(caplog)
-        assert len(records) == 1
-        assert records[0].levelno == logging.WARNING
-        msg = records[0].getMessage()
-        assert "WECOM_BOT_ID" in msg
-        assert "WECOM_SECRET" in msg
-
-    @pytest.mark.asyncio
-    async def test_a_partial_configuration_names_only_the_missing_credential(
-        self, caplog
+    @pytest.mark.parametrize(
+        "channel,names,forbidden,full_creds,full_cfg_mut", _UNCREDENTIALED_CHANNEL_ROWS
+    )
+    async def test_enabled_without_credentials_warns_at_default_level(
+        self, caplog, monkeypatch, channel, names, forbidden, full_creds, full_cfg_mut
     ) -> None:
         orch = self._build(
-            wecom_enabled=True,
-            creds={"KIROCREW_OWNER_ID": "U_OWNER", "WECOM_BOT_ID": "bot-1"},
+            creds={"KIROCREW_OWNER_ID": "U_OWNER"},
+            cfg_mut=((channel, "enabled", True),),
         )
-        with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
-            await orch._start_channel_transports()
-        records = self._wecom_records(caplog)
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        records = self._channel_records(caplog)
+        # Exactly one WARNING, on this channel's own gateway logger, and no
+        # cross-talk onto any sibling channel's logger.
         assert len(records) == 1
+        assert records[0].name == f"kiro_crew.{channel}.gateway"
+        assert records[0].levelno == logging.WARNING
         msg = records[0].getMessage()
-        assert "WECOM_SECRET" in msg
-        assert "WECOM_BOT_ID" not in msg
-        assert "bot-1" not in msg
+        for name in names:
+            assert name in msg
+        for name in forbidden:
+            assert name not in msg
 
     @pytest.mark.asyncio
-    async def test_a_disabled_channel_is_completely_silent(self, caplog) -> None:
-        orch = self._build(wecom_enabled=False, creds={"KIROCREW_OWNER_ID": "U_OWNER"})
-        with caplog.at_level(logging.DEBUG, logger="kiro_crew.wecom.gateway"):
-            await orch._start_channel_transports()
-        assert self._wecom_records(caplog) == []
+    @pytest.mark.parametrize(
+        "channel,creds,cfg_mut,named,not_named,present_values",
+        (
+            pytest.param(
+                "wecom",
+                {"WECOM_BOT_ID": "wecom-bot-value"},
+                (),
+                ("WECOM_SECRET",),
+                ("WECOM_BOT_ID",),
+                ("wecom-bot-value",),
+                id="wecom-secret-missing",
+            ),
+            pytest.param(
+                "weixin",
+                {"WEIXIN_TOKEN": "weixin-token-value"},
+                (),
+                ("weixin.account_id",),
+                ("WEIXIN_TOKEN",),
+                ("weixin-token-value",),
+                id="weixin-account-id-missing",
+            ),
+            pytest.param(
+                "weixin",
+                {},
+                (("weixin", "account_id", "weixin-account-value"),),
+                ("WEIXIN_TOKEN",),
+                ("weixin.account_id",),
+                ("weixin-account-value",),
+                id="weixin-token-missing",
+            ),
+            pytest.param(
+                "teams",
+                {"MICROSOFT_APP_ID": "teams-app-id-value"},
+                (),
+                ("MICROSOFT_APP_PASSWORD",),
+                ("MICROSOFT_APP_ID",),
+                ("teams-app-id-value",),
+                id="teams-password-missing",
+            ),
+        ),
+    )
+    async def test_a_partial_configuration_names_only_the_missing_credential(
+        self, caplog, monkeypatch, channel, creds, cfg_mut, named, not_named, present_values
+    ) -> None:
+        orch = self._build(
+            creds={"KIROCREW_OWNER_ID": "U_OWNER", **creds},
+            cfg_mut=((channel, "enabled", True), *cfg_mut),
+        )
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        records = self._channel_records(caplog)
+        assert len(records) == 1
+        msg = records[0].getMessage()
+        for name in named:
+            assert name in msg
+        for name in not_named:
+            assert name not in msg
+        # Credential VALUES must never be logged, only the variable names.
+        for value in present_values:
+            assert value not in msg
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "channel,names,forbidden,full_creds,full_cfg_mut", _UNCREDENTIALED_CHANNEL_ROWS
+    )
+    async def test_a_disabled_channel_is_completely_silent(
+        self, caplog, monkeypatch, channel, names, forbidden, full_creds, full_cfg_mut
+    ) -> None:
+        # Even with every credential present: disabled means silence.
+        orch = self._build(
+            creds={"KIROCREW_OWNER_ID": "U_OWNER", **full_creds},
+            cfg_mut=full_cfg_mut,
+        )
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        assert self._channel_records(caplog) == []
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "channel,names,forbidden,full_creds,full_cfg_mut", _UNCREDENTIALED_CHANNEL_ROWS
+    )
+    async def test_a_fully_credentialed_channel_is_silent(
+        self, caplog, monkeypatch, channel, names, forbidden, full_creds, full_cfg_mut
+    ) -> None:
+        orch = self._build(
+            creds={"KIROCREW_OWNER_ID": "U_OWNER", **full_creds},
+            cfg_mut=((channel, "enabled", True), *full_cfg_mut),
+        )
+        assert getattr(orch, f"_{channel}_enabled") is True  # flag really computed
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        assert self._channel_records(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_teams_tenant_id_is_not_a_credential_operand(
+        self, caplog, monkeypatch
+    ) -> None:
+        # The trap the table must not fall into: the tenant id sits in config
+        # right next to the two operands that count, but _teams_enabled never
+        # reads it — app id + password present with NO tenant is fully
+        # credentialed, so the probe must stay SILENT rather than send the
+        # operator to a field that does not gate the channel.
+        orch = self._build(
+            creds={
+                "KIROCREW_OWNER_ID": "U_OWNER",
+                "MICROSOFT_APP_ID": "teams-app-id-value",
+                "MICROSOFT_APP_PASSWORD": "teams-password-value",
+            },
+            cfg_mut=(("teams", "enabled", True),),
+        )
+        assert orch._teams_enabled is True
+        assert orch._teams_tenant_id == ""
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        assert self._channel_records(caplog) == []
+
+    @pytest.mark.asyncio
+    async def test_telegram_deprecated_accounts_suppress_the_warning(
+        self, caplog, monkeypatch
+    ) -> None:
+        # With telegram.accounts set the channel is stopped by DEPRECATED
+        # CONFIG, not by the missing token, and that state already has its own
+        # warning at config-load time — pointing the operator at
+        # TELEGRAM_BOT_TOKEN here would misname the actual blocker.
+        orch = self._build(
+            creds={"KIROCREW_OWNER_ID": "U_OWNER"},
+            cfg_mut=(
+                ("telegram", "enabled", True),
+                ("telegram", "accounts", {"legacy-bot": object()}),
+            ),
+        )
+        with caplog.at_level(logging.WARNING):
+            await self._start(orch, monkeypatch)
+        assert self._channel_records(caplog) == []

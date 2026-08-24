@@ -255,7 +255,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_final_meta,
 )
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.wecom.gateway import warn_if_wecom_uncredentialed
+from kiro_crew.wecom.gateway import warn_if_channel_uncredentialed
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import _ChatSlot
@@ -9516,11 +9516,66 @@ class GatewayOrchestrator:
         # The enabled-only gate below never calls a factory whose flag is
         # False — for a disabled and an enabled-but-uncredentialed channel
         # alike — so a factory-level skip-reason log can never be reached.
-        # Say WHY WeCom is being skipped here, at the decision point (issue
-        # #304). Runs after KIROCREW_READY, outside the boot-path window.
-        warn_if_wecom_uncredentialed(
-            self._cfg.wecom.enabled, self._wecom_bot_id, self._wecom_secret
+        # Say WHY each channel is being skipped here, at the decision point
+        # (issues #304, #5418). Runs after KIROCREW_READY, outside the
+        # boot-path window. Each row lists exactly the credential operands its
+        # _<channel>_enabled predicate reads: telegram folds in the
+        # deprecated-accounts stop (which already has its own warning at
+        # config-load time, so pointing at the token would misname the actual
+        # blocker), and teams deliberately omits the tenant id its predicate
+        # never reads. whatsapp/imessage enablement is config-only (no
+        # credential operand), so they have no row.
+        uncredentialed_probe_rows: tuple[
+            tuple[str, str, bool, tuple[tuple[str, str], ...]], ...
+        ] = (
+            (
+                "wecom",
+                "WeCom",
+                self._cfg.wecom.enabled,
+                (
+                    (CRED_WECOM_BOT_ID, self._wecom_bot_id),
+                    (CRED_WECOM_SECRET, self._wecom_secret),
+                ),
+            ),
+            (
+                "telegram",
+                "Telegram",
+                bool(self._cfg.telegram.enabled and not self._cfg.telegram.accounts),
+                ((CRED_TELEGRAM_BOT_TOKEN, self._telegram_bot_token),),
+            ),
+            (
+                "weixin",
+                "WeChat",
+                self._cfg.weixin.enabled,
+                (
+                    (CRED_WEIXIN_TOKEN, self._weixin_token),
+                    ("weixin.account_id", self._weixin_account_id),
+                ),
+            ),
+            (
+                "discord",
+                "Discord",
+                self._cfg.discord.enabled,
+                ((CRED_DISCORD_BOT_TOKEN, self._discord_bot_token),),
+            ),
+            (
+                "webex",
+                "Webex",
+                self._cfg.webex.enabled,
+                ((CRED_WEBEX_BOT_TOKEN, self._webex_bot_token),),
+            ),
+            (
+                "teams",
+                "Teams",
+                self._cfg.teams.enabled,
+                (
+                    (CRED_MICROSOFT_APP_ID, self._teams_app_id),
+                    (CRED_MICROSOFT_APP_PASSWORD, self._teams_app_password),
+                ),
+            ),
         )
+        for channel_type, settings_name, cfg_enabled, credentials in uncredentialed_probe_rows:
+            warn_if_channel_uncredentialed(channel_type, settings_name, cfg_enabled, credentials)
         loop = asyncio.get_running_loop()
         permitted = await loop.run_in_executor(
             maintenance_executor(),

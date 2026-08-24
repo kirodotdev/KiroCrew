@@ -4,7 +4,8 @@ One registry entry per channel carries the host's per-channel LIFECYCLE seams â€
 the members tuple, the start call, the shutdown gather. The other per-channel
 seams (the ``orch._<channel>_*`` hoist in ``slack/gateway.py``, the ``loader.py``
 config dataclass, the ``sandbox.py`` credential denylist, the
-``dashboard/state.py`` connected fields) are still hand-edited.
+``dashboard/state.py`` connected fields, the uncredentialed-skip probe table in
+``_start_channel_transports``) are still hand-edited.
 
 This module owns the TYPES and the LOOPS
 only â€” it must not import any channel package (``dispatch.py`` pins the
