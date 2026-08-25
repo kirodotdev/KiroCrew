@@ -51,11 +51,11 @@ class RenderProbe extends Component<
 vi.mock('../api/client', () => ({
   api: {
     tailnetMobile: vi.fn(),
+    restartGateway: vi.fn(),
     tailnetMobilePublish: vi.fn(),
     tailnetMobileUnpublish: vi.fn(),
     tailnetMobileQr: vi.fn(),
     patchConfig: vi.fn(),
-    restartGateway: vi.fn(),
   },
 }))
 
@@ -259,6 +259,7 @@ describe('TailnetMobileCard — step badges', () => {
     ['pinned', 'Needs attention'],
     ['publish', 'Setup needed'],
     ['sign_in', 'Setup needed'],
+    ['enable_https', 'Setup needed'],
   ]
   for (const [step, badge] of cases) {
     it(`shows "${badge}" for ${step}`, async () => {
@@ -514,13 +515,13 @@ describe('TailnetMobileCard — mutating actions', () => {
     expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
   })
 
-  it('labels the full operation as private HTTPS setup while it is running', async () => {
+  it('labels the full operation as phone access setup while it is running', async () => {
     mockApi.patchConfig.mockReturnValue(new Promise<void>(() => {}))
     await mount(data({ step: 'trust_off', trusted: false }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
-    const pending = await screen.findByRole('button', { name: /Setting up private HTTPS/ })
+    const pending = await screen.findByRole('button', { name: /Setting up phone access/ })
     expect(pending).toBeDisabled()
   })
 
@@ -557,5 +558,16 @@ describe('TailnetMobileCard — terminal steps', () => {
     const link = screen.getByRole('link', { name: /Open Tailscale DNS settings/ })
     expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/dns')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('requires tailnet HTTPS consent before offering one-click setup', async () => {
+    await mount(data({ step: 'enable_https', published: false }))
+
+    expect(screen.getByText('Enable HTTPS certificates in Tailscale')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Set up & show QR' })).toBeNull()
+    expect(screen.queryByRole('img', { name: /QR code/i })).toBeNull()
+    expect(
+      screen.getByRole('link', { name: 'Open Tailscale HTTPS settings' }),
+    ).toHaveAttribute('href', 'https://login.tailscale.com/admin/dns')
   })
 })

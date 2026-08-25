@@ -8,6 +8,7 @@ import {
   Download,
   ExternalLink,
   Globe,
+  LockKeyhole,
   LogIn,
   Play,
   QrCode,
@@ -74,6 +75,7 @@ const STEP_ICON: Record<TailnetMobileStep, typeof Smartphone> = {
   start_daemon: Play,
   sign_in: LogIn,
   enable_magicdns: Globe,
+  enable_https: LockKeyhole,
   trust_off: ShieldCheck,
   restart_gateway: RefreshCw,
   occupied: AlertTriangle,
@@ -90,6 +92,7 @@ const STEP_TITLE_KEY: Record<TailnetMobileStep, string> = {
   start_daemon: 'components.tailnetMobile.start_daemon_title',
   sign_in: 'components.tailnetMobile.sign_in_title',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_title',
+  enable_https: 'components.tailnetMobile.enable_https_title',
   trust_off: 'components.tailnetMobile.trust_off_title',
   restart_gateway: 'components.tailnetMobile.restart_gateway_title',
   occupied: 'components.tailnetMobile.occupied_title',
@@ -103,6 +106,7 @@ const STEP_BODY_KEY: Record<TailnetMobileStep, string> = {
   start_daemon: 'components.tailnetMobile.start_daemon_body',
   sign_in: 'components.tailnetMobile.sign_in_body',
   enable_magicdns: 'components.tailnetMobile.enable_magicdns_body',
+  enable_https: 'components.tailnetMobile.enable_https_body',
   trust_off: 'components.tailnetMobile.trust_off_body',
   restart_gateway: 'components.tailnetMobile.restart_gateway_body',
   occupied: 'components.tailnetMobile.occupied_body',
@@ -142,11 +146,12 @@ const INVITE_EXPANDED_LS_KEY = 'mc-tailnet-mobile-invite-expanded'
 
 /** Steps the dashboard can finish without sending the operator elsewhere.
  *
- * Tailscale installation, daemon startup, sign-in, and MagicDNS remain explicit
- * prerequisites because the gateway cannot safely complete them on a user's
- * behalf. Once those are satisfied, these three steps are one operation from the
- * operator's point of view: trust the daemon-derived name, restart if the running
- * origin set predates it, publish through Tailscale Serve, and mint the QR.
+ * Tailscale installation, daemon startup, sign-in, MagicDNS, and tailnet-wide
+ * HTTPS consent remain explicit prerequisites because the gateway cannot safely
+ * complete them on a user's behalf. Once those are satisfied, these three steps
+ * are one operation from the operator's point of view: trust the daemon-derived
+ * name, restart through the formal single-flight path, publish through Tailscale
+ * Serve, and mint the QR after the replacement gateway proves readiness.
  */
 const ONE_CLICK_SETUP_STEPS = new Set<TailnetMobileStep>([
   'trust_off',
@@ -558,7 +563,7 @@ export function TailnetMobileCard() {
             </div>
           ) : null}
 
-          {step === 'enable_magicdns' ? (
+          {step === 'enable_magicdns' || step === 'enable_https' ? (
             <a
               className="mt-2 inline-flex items-center gap-1 text-accent"
               href="https://login.tailscale.com/admin/dns"
@@ -566,7 +571,11 @@ export function TailnetMobileCard() {
               rel="noopener noreferrer"
             >
               <ExternalLink className="lucide-inline" />
-              {i18nT('components.tailnetMobile.open_dns_admin')}
+              {i18nT(
+                step === 'enable_https'
+                  ? 'components.tailnetMobile.open_https_admin'
+                  : 'components.tailnetMobile.open_dns_admin',
+              )}
             </a>
           ) : null}
         </div>

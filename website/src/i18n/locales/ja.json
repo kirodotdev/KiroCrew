@@ -7003,6 +7003,8 @@
       "sign_in_body": "Tailscale は実行中ですが、このコンピューターはまだネットワークにサインインしていません。スマートフォンで使用しているアカウントでサインインしてから、再確認してください。",
       "enable_magicdns_title": "MagicDNS をオンにする",
       "enable_magicdns_body": "このコンピューターはサインイン済みですが、ネットワークにこのコンピューター用の MagicDNS 名がないため、スマートフォンから指定できるアドレスがありません。Tailscale 管理コンソールで MagicDNS を有効にしてから、再確認してください。",
+      "enable_https_title": "Tailscale で HTTPS 証明書を有効にする",
+      "enable_https_body": "Serve が証明書を発行する前に、tailnet 管理者による 1 回限りの承認が必要です。Tailscale 管理コンソールで HTTPS を有効にしてから、再確認してください。",
       "trust_off_title": "このコンピューターのネットワーク名によるアクセスを許可する",
       "trust_off_body": "ダッシュボードは認識できないアドレスからのリクエストを拒否します。スマートフォンからアクセスできるよう、このコンピューター自身のプライベートネットワーク名を許可してください。これによりインターネットへのポートは開かれず、サインイン方法も変わりません。",
       "restart_gateway_title": "完了するには Kiro Crew を再起動してください",
@@ -7016,8 +7018,6 @@
       "copy": "コピー",
       "copy_link": "リンクをコピー",
       "download": "Tailscale をダウンロード",
-      "enable_trust": "許可する",
-      "publish_action": "スマートフォンアクセスを有効化",
       "show_qr": "QR コードを表示",
       "hide_qr": "非表示",
       "stop": "オフにする",
@@ -7026,16 +7026,15 @@
       "qr_warning": "{{minutes}} 分以内にスキャンしてください。このコードにはサインインリンクが含まれており — 入手した人は誰でも {{hours}} 時間ダッシュボードを開けます。共有したりスクリーンショットを投稿したりしないでください。",
       "keep_awake_note": "スマートフォンアクセスがオンの間、ダッシュボードにアクセスできるよう、このコンピューターはスリープしません。画面はオフになる場合があります。",
       "open_dns_admin": "Tailscale の DNS 設定を開く",
+      "open_https_admin": "Tailscale の HTTPS 設定を開く",
       "install_teaser": "スマートフォンで使う",
       "install_teaser_hint": "Tailscale が必要",
-      "restart_action": "今すぐ再起動",
-      "restarting": "再起動中です。このページは自動的に再接続します。",
       "no_peers": "この Tailscale ネットワークにはまだ他の端末が参加していないため、このアドレスを開ける端末がありません。スマートフォンに Tailscale をインストールし、同じアカウントでサインインしてください。",
       "peers_offline": "他の端末はこのネットワークに参加していますが、現在どれもオンラインではないため、いずれかが接続するまでこのアドレスは読み込めません。",
-      "automatic_https": "Tailscale がプライベート HTTPS 証明書を自動で作成・更新するため、証明書の設定は不要です。",
-      "setting_up": "プライベート HTTPS を設定中…",
+      "automatic_https": "この tailnet で HTTPS を有効にすると、Tailscale がプライベート証明書を自動で作成・更新します。",
+      "setting_up": "スマートフォンからのアクセスを設定中…",
       "setup_action": "設定して QR を表示",
-      "setup_timeout": "{{productName}} が時間内にオンラインへ復帰しませんでした。Gateway を再確認して、もう一度お試しください。"
+      "setup_timeout": "スマートフォンアクセスの準備が完了しませんでした。設定を確認して、もう一度お試しください。"
     }
   },
   "hooks": {

@@ -7003,6 +7003,8 @@
       "sign_in_body": "Tailscale 正在运行，但这台电脑还没有登录到任何网络。用你手机使用的账号登录，然后重新检查。",
       "enable_magicdns_title": "开启 MagicDNS",
       "enable_magicdns_body": "这台电脑已登录，但所在网络没有为它分配 MagicDNS 名称，也就没有可以让手机访问的地址。请在 Tailscale 管理后台开启 MagicDNS，然后重新检查。",
+      "enable_https_title": "在 Tailscale 中启用 HTTPS 证书",
+      "enable_https_body": "Tailscale Serve 签发证书前，需要 tailnet 管理员进行一次授权。请在 Tailscale 管理后台启用 HTTPS，然后重新检查。",
       "trust_off_title": "允许通过这台电脑的网络名称访问",
       "trust_off_body": "仪表板会拒绝来自它不认识的地址的请求。允许它自己的专用网络名称，手机才能访问。这不会向互联网开放任何端口，也不会改变你的登录方式。",
       "restart_gateway_title": "重启 Kiro Crew 以完成设置",
@@ -7016,8 +7018,6 @@
       "copy": "复制",
       "copy_link": "复制链接",
       "download": "下载 Tailscale",
-      "enable_trust": "允许",
-      "publish_action": "开启手机访问",
       "show_qr": "显示二维码",
       "hide_qr": "隐藏",
       "stop": "关闭",
@@ -7026,16 +7026,15 @@
       "qr_warning": "请在 {{minutes}} 分钟内扫码。该二维码内含登录链接——任何拿到它的人都能在 {{hours}} 小时内打开你的仪表板，所以不要分享，也不要发截图。",
       "keep_awake_note": "手机访问开启期间，这台电脑不会进入睡眠，以保持仪表板可访问。屏幕仍然可以关闭。",
       "open_dns_admin": "打开 Tailscale DNS 设置",
+      "open_https_admin": "打开 Tailscale HTTPS 设置",
       "install_teaser": "在手机上使用",
       "install_teaser_hint": "需要 Tailscale",
-      "restart_action": "立即重启",
-      "restarting": "正在重启——本页会自动重新连接。",
       "no_peers": "这个 Tailscale 网络里还没有加入别的设备，因此没有任何设备能打开这个地址。请在手机上安装 Tailscale 并用同一个账号登录。",
       "peers_offline": "你的其他设备已加入这个网络，但当前都不在线，因此在有设备连上之前这个地址不会加载。",
-      "automatic_https": "Tailscale 会自动创建并续期专用 HTTPS 证书，无需手动配置证书。",
-      "setting_up": "正在配置专用 HTTPS…",
+      "automatic_https": "为此 tailnet 启用 HTTPS 后，Tailscale 会自动创建并续期专用证书。",
+      "setting_up": "正在配置手机访问…",
       "setup_action": "一键设置并显示二维码",
-      "setup_timeout": "{{productName}} 未能及时恢复在线。请重新检查 Gateway，然后再试一次。"
+      "setup_timeout": "手机访问未能进入就绪状态。请重新检查配置，然后再试一次。"
     }
   },
   "hooks": {

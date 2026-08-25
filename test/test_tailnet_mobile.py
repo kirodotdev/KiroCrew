@@ -20,10 +20,9 @@ the wrong thing would be destructive rather than merely unhelpful.
   holds the mount. So an undeterminable state must land on ``occupied`` (refuse,
   print the manual command), never on ``publish``. Rendering "could not tell" as
   "free" is how an operator's own serve mapping gets silently overwritten.
-* :class:`TestRestartGatewayIsNotReady` pins the boot race the logs already knew
-  about and the UI never showed: a name resolvable NOW, absent at startup, is
-  genuinely NOT in the live origin allowlist. Reporting it as ready would be the
-  checked-but-never-ran defect.
+* :class:`TestRestartIsNotReady` pins the boot race the logs already knew
+  about and the UI never showed: a name resolvable NOW, absent from the running
+  allowlist, is genuinely not trusted. It must be activated before it is ready.
 * :class:`TestQrRefusals` pins that a credential is never minted for a URL
   nothing answers, and that the TTL cannot be talked upward past either ceiling.
 * :class:`TestRestrictedSessionRefused` pins that an app-scoped session cannot
@@ -36,6 +35,7 @@ the wrong thing would be destructive rather than merely unhelpful.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import get_args
@@ -57,6 +57,7 @@ def _probe(
     installed: bool = True,
     reachable: bool = True,
     logged_in: bool = True,
+    https_enabled: bool | None = True,
     detail: str = "",
 ) -> DaemonProbe:
     return DaemonProbe(
@@ -65,6 +66,7 @@ def _probe(
         reachable=reachable,
         logged_in=logged_in,
         detail=detail,
+        https_enabled=https_enabled,
     )
 
 
@@ -139,6 +141,48 @@ class TestProbeDistinguishesCauses:
             p = tailnet.probe_daemon()
         assert p.name == _HOST
         assert p.detail == ""
+
+    def test_matching_cert_domain_reports_https_enabled(self) -> None:
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(
+                tailnet,
+                "_run_json_detail",
+                return_value=(
+                    {"BackendState": "Running", "CertDomains": [_HOST]},
+                    False,
+                ),
+            ),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.https_enabled is True
+
+    def test_explicit_empty_cert_domains_reports_https_disabled(self) -> None:
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(
+                tailnet,
+                "_run_json_detail",
+                return_value=({"BackendState": "Running", "CertDomains": []}, False),
+            ),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.https_enabled is False
+
+    @pytest.mark.parametrize("cert_domains", [None, {}, "unexpected"])
+    def test_missing_or_malformed_cert_domains_stays_unknown(self, cert_domains: object) -> None:
+        status = {"BackendState": "Running"}
+        if cert_domains is not None:
+            status["CertDomains"] = cert_domains
+        with (
+            patch.object(tailnet, "_cli_path", return_value="/usr/bin/tailscale"),
+            patch.object(tailnet, "_run_json_detail", return_value=(status, False)),
+            patch.object(tailnet, "self_dns_name", return_value=_HOST),
+        ):
+            p = tailnet.probe_daemon()
+        assert p.https_enabled is None
 
 
 class TestPeerCounting:
@@ -243,6 +287,15 @@ class TestStepPrecedence:
     def test_no_name_while_signed_in_asks_for_magicdns(self) -> None:
         assert _step(probe=_probe(name="")) == "enable_magicdns"
 
+    def test_explicit_missing_cert_domain_requires_https_consent(self) -> None:
+        assert _step(probe=_probe(https_enabled=False), published=False) == "enable_https"
+
+    def test_unknown_cert_capability_defers_to_the_serve_write(self) -> None:
+        assert _step(probe=_probe(https_enabled=None), published=False) == "publish"
+
+    def test_existing_publication_is_stronger_than_a_stale_cert_snapshot(self) -> None:
+        assert _step(probe=_probe(https_enabled=False), published=True) == "ready"
+
     def test_trust_off_precedes_publishing(self) -> None:
         """Publishing an untrusted origin yields a reachable dashboard that answers
         403 — the confusing state this feature removes, so config comes first."""
@@ -265,16 +318,19 @@ class TestUndeterminedIsNotFree:
         assert _step(published=None) != "ready"
 
 
-class TestRestartGatewayIsNotReady:
-    """The boot race: resolvable now, absent at startup, so NOT trusted yet."""
+class TestRestartIsNotReady:
+    """The boot race: resolvable now, absent from the startup allowlist."""
 
     def test_missing_startup_host_blocks_ready(self) -> None:
         assert _step(startup_host="") == "restart_gateway"
 
     def test_restart_step_beats_the_serve_state(self) -> None:
         """Even an already-published dashboard is not reachable if the running
-        server never put the name in its origin allowlist."""
+        server has not put the name in its origin allowlist."""
         assert _step(startup_host="", published=True) == "restart_gateway"
+
+    def test_a_changed_name_requires_a_restart(self) -> None:
+        assert _step(startup_host="old.tail-abc.ts.net") == "restart_gateway"
 
 
 _OWNER = "owner@example.com"
@@ -301,11 +357,9 @@ def _request(
     configured owner so the success paths read normally; pass a different id to
     model a NON-owner dashboard user (a messaging-channel user who was handed a
     presigned dashboard link), and ``None`` for no resolved subject at all.
-    ``tailnet_host`` models ``app["tailnet_host"]`` — the name the RUNNING server
-    resolved at startup. Empty (the default) is a server that resolved none, which
-    ``_derive_step`` reports as ``restart_gateway``: the origin genuinely is not
-    trusted yet, however resolvable the name is now. The ``ready`` paths must set
-    it.
+    ``tailnet_host`` models the name the RUNNING server trusted at startup. Empty
+    (the default) means the fixed allowlist does not carry the resolvable name,
+    so ``_derive_step`` reports ``restart_gateway``. Ready paths must set it.
     """
 
     class _Req:
@@ -314,6 +368,7 @@ def _request(
                 "port": port,
                 "state": SimpleNamespace(owner_id="owner@example.com"),
                 "tailnet_host": tailnet_host,
+                "tailnet_resolved_at": 1 if tailnet_host else 0,
             }
             self.remote = "127.0.0.1"
             self.headers: dict[str, str] = {}
@@ -367,6 +422,7 @@ def _machine(
     installed: bool = True,
     reachable: bool = True,
     logged_in: bool = True,
+    https_enabled: bool | None = True,
     published: bool | None = True,
     trusted: bool = True,
     qr_session_until_restart: bool = True,
@@ -392,6 +448,7 @@ def _machine(
         reachable=reachable,
         logged_in=logged_in,
         detail=detail,
+        https_enabled=https_enabled,
     )
     with (
         patch.object(tailnet_mobile.KiroCrewConfig, "load", classmethod(lambda cls: cfg)),
@@ -467,11 +524,10 @@ class TestQrRefusals:
         assert b"origin_not_trusted" in resp.body
 
     @pytest.mark.asyncio
-    async def test_server_that_resolved_no_name_at_startup_refuses(
+    async def test_server_without_a_startup_origin_refuses(
         self, _unrestricted, _quiet_audit
     ) -> None:
-        """Resolvable now, but this process booted before tailscaled, so it does not
-        trust the name yet — the link would 403 until a restart."""
+        """Resolvable now, but the startup boundary does not trust the name yet."""
         with _machine(published=True):
             resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=""))
         assert resp.status == 409
@@ -949,6 +1005,23 @@ class TestStatusIsOwnerOnly:
         assert resp.status == 403
         assert audit.call_args is not None
         assert audit.call_args.args[2] == "denied"
+
+    @pytest.mark.asyncio
+    async def test_cold_denial_audit_is_offloaded(self, _unrestricted) -> None:
+        """SEL initialization and DACL work must never run on aiohttp's loop."""
+        real_to_thread = asyncio.to_thread
+        with (
+            patch.object(tailnet_mobile, "_audit") as audit,
+            patch.object(
+                tailnet_mobile.asyncio,
+                "to_thread",
+                side_effect=real_to_thread,
+            ) as offload,
+        ):
+            resp = await self._status(user="telegram-11893")
+
+        assert resp.status == 403
+        assert any(call.args and call.args[0] is audit for call in offload.call_args_list)
 
     @pytest.mark.asyncio
     async def test_successful_read_is_not_audited(self, _unrestricted) -> None:

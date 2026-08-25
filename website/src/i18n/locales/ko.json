@@ -7003,6 +7003,8 @@
       "sign_in_body": "Tailscale이 실행 중이지만 이 컴퓨터가 아직 네트워크에 로그인되어 있지 않습니다. 휴대폰에서 사용하는 계정으로 로그인한 다음 다시 확인하세요.",
       "enable_magicdns_title": "MagicDNS 켜기",
       "enable_magicdns_body": "이 컴퓨터는 로그인되어 있지만 네트워크에 이 컴퓨터를 위한 MagicDNS 이름이 없어, 휴대폰이 가리킬 주소가 없습니다. Tailscale 관리 콘솔에서 MagicDNS를 활성화한 다음 다시 확인하세요.",
+      "enable_https_title": "Tailscale에서 HTTPS 인증서 활성화",
+      "enable_https_body": "Serve에서 인증서를 발급하려면 tailnet 관리자의 일회성 동의가 필요합니다. Tailscale 관리 콘솔에서 HTTPS를 활성화한 다음 다시 확인하세요.",
       "trust_off_title": "이 컴퓨터의 네트워크 이름으로 접속 허용",
       "trust_off_body": "대시보드는 인식하지 못하는 주소의 요청을 거부합니다. 휴대폰이 접속할 수 있도록 이 컴퓨터의 사설 네트워크 이름을 허용하세요. 이 작업은 인터넷으로 어떤 포트도 열지 않으며 로그인 방식도 바꾸지 않습니다.",
       "restart_gateway_title": "완료하려면 Kiro Crew 재시작",
@@ -7016,8 +7018,6 @@
       "copy": "복사",
       "copy_link": "링크 복사",
       "download": "Tailscale 다운로드",
-      "enable_trust": "허용",
-      "publish_action": "휴대폰 접속 켜기",
       "show_qr": "QR 코드 표시",
       "hide_qr": "숨기기",
       "stop": "끄기",
@@ -7026,16 +7026,15 @@
       "qr_warning": "{{minutes}}분 이내에 스캔하세요. 이 코드에는 로그인 링크가 들어 있어 — 이를 획득하는 사람은 누구나 {{hours}}시간 동안 대시보드를 열 수 있으므로, 공유하거나 스크린샷을 게시하지 마세요.",
       "keep_awake_note": "휴대폰 접속이 켜져 있는 동안에는 대시보드에 계속 접속할 수 있도록 이 컴퓨터가 잠자기 모드로 전환되지 않습니다. 화면은 꺼질 수 있습니다.",
       "open_dns_admin": "Tailscale DNS 설정 열기",
+      "open_https_admin": "Tailscale HTTPS 설정 열기",
       "install_teaser": "휴대폰에서 사용하기",
       "install_teaser_hint": "Tailscale 필요",
-      "restart_action": "지금 재시작",
-      "restarting": "재시작 중입니다. 이 페이지는 자동으로 다시 연결됩니다.",
       "no_peers": "이 Tailscale 네트워크에 아직 다른 기기가 참여하지 않아 이 주소를 열 수 있는 기기가 없습니다. 휴대폰에 Tailscale을 설치하고 같은 계정으로 로그인하세요.",
       "peers_offline": "다른 기기가 이 네트워크에 참여했지만 지금은 모두 오프라인이므로, 하나가 연결될 때까지 주소가 열리지 않습니다.",
-      "automatic_https": "Tailscale이 비공개 HTTPS 인증서를 자동으로 만들고 갱신하므로 인증서를 따로 설정할 필요가 없습니다.",
-      "setting_up": "비공개 HTTPS 설정 중…",
+      "automatic_https": "이 tailnet에 HTTPS가 활성화되면 Tailscale이 비공개 인증서를 자동으로 만들고 갱신합니다.",
+      "setting_up": "휴대폰 액세스를 설정하는 중…",
       "setup_action": "설정하고 QR 표시",
-      "setup_timeout": "{{productName}}이(가) 제시간에 다시 온라인 상태가 되지 않았습니다. Gateway를 다시 확인한 후 재시도하세요."
+      "setup_timeout": "휴대폰 액세스가 준비되지 않았습니다. 설정을 확인한 후 다시 시도하세요."
     }
   },
   "hooks": {

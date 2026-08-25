@@ -121,9 +121,7 @@ class TestGovernancePin:
         _install_policy(monkeypatch, _PIN_DOC)
         assert tailnet.is_governance_pinned_off() is True
 
-    def test_a_transient_profile_race_is_not_an_admin_pin(
-        self, isolated_home, monkeypatch
-    ) -> None:
+    def test_a_transient_profile_race_is_not_an_admin_pin(self, isolated_home, monkeypatch) -> None:
         """A deny-all PROFILE on an UNGOVERNED host must not read as a policy pin.
 
         ``resolve_active_scope`` hands back a synthetic ``_deny_all_unloaded:…``
