@@ -9,6 +9,8 @@ otherwise. Both take an injectable clock so expiry paths are deterministic.
 
 from __future__ import annotations
 
+import pytest
+
 from kiro_crew.whatsapp.commands import parse_command
 from kiro_crew.whatsapp.echo import EchoTracker
 from kiro_crew.whatsapp.group_gate import (
@@ -157,3 +159,73 @@ class TestCommands:
         assert parse_command("  /COMPACT ") == "compact"
         assert parse_command("hello") is None
         assert parse_command("") is None
+
+
+class TestGroupGateKeyNormalization:
+    """One group JID must hash to one key on every path that touches it.
+
+    The transport hands ``evaluate()`` a fully ``normalize_jid``-ed value, while
+    the config side used a bare ``.strip()``. So a group the operator HAD
+    configured -- written with an uppercase server, or carrying a device suffix --
+    was stored under a key the lookup could never produce, and every message from
+    it was dropped as ``group_not_configured``. Fail-closed in direction (the gate
+    decides IF the agent may speak, so this over-denied rather than admitting an
+    unauthorized group) but still a real defect: the operator configured a group
+    and the agent sat silent in it, with no surface saying why.
+
+    The DM allow-list has always normalized both sides; this is the group path
+    catching up to it.
+    """
+
+    NORMALIZED = "1203630000000@g.us"
+
+    @pytest.mark.parametrize(
+        "configured_as",
+        [
+            "1203630000000@G.US",  # an uppercase server is valid per JID semantics
+            "1203630000000@G.us",
+            "  1203630000000@g.us  ",  # copied out of a config file with padding
+            "1203630000000:5@g.us",  # device suffix, which lives in the USER part
+        ],
+    )
+    def test_a_config_entry_written_any_of_these_ways_matches(self, configured_as):
+        gate = GroupGate([{"jid": configured_as, "mode": "mention"}])
+        assert gate.configured(self.NORMALIZED)
+        verdict = gate.evaluate(self.NORMALIZED, sender_is_operator=False, addressed=True)
+        assert verdict.respond
+        assert verdict.reason == ""
+
+    @pytest.mark.parametrize(
+        "looked_up_as",
+        ["1203630000000@G.US", "  1203630000000@g.us  ", "1203630000000:9@g.us"],
+    )
+    def test_an_un_normalized_lookup_also_matches(self, looked_up_as):
+        """Normalized on the way IN as well as on the way in to ``_entries``.
+
+        The transport already normalizes, but the invariant belongs to the module
+        that owns the key rather than to each caller -- otherwise a second caller
+        added later reintroduces exactly this bug.
+        """
+        gate = GroupGate([{"jid": self.NORMALIZED, "mode": "mention"}])
+        assert gate.configured(looked_up_as)
+        assert gate.evaluate(looked_up_as, sender_is_operator=False, addressed=True).respond
+
+    def test_normalizing_does_not_widen_the_gate(self):
+        """The one property a normalization fix can break: groups are still opt-in.
+
+        A DIFFERENT group must remain invisible. If normalization had collapsed
+        distinct JIDs onto one key, this fix would have turned an over-denial into
+        an authorization hole, which is the opposite trade.
+        """
+        gate = GroupGate([{"jid": "1203630000000@g.us", "mode": "mention"}])
+        for other in ("1203639999999@g.us", "1203630000000@s.whatsapp.net", "@g.us", ""):
+            assert not gate.configured(other), other
+            verdict = gate.evaluate(other, sender_is_operator=True, addressed=True)
+            assert not verdict.respond
+            assert verdict.reason == "group_not_configured"
+
+    def test_an_entry_that_normalizes_to_nothing_is_skipped(self):
+        """A junk entry must not become a key that an empty lookup then matches."""
+        gate = GroupGate([{"jid": "   "}, {"name": "no jid at all"}])
+        assert not gate.configured("")
+        assert not gate.evaluate("", sender_is_operator=True, addressed=True).respond

@@ -64,7 +64,9 @@ _MAX_GRANT_ENTRIES = 512
 #: on the event loop during dashboard listing, so re-parsing the store on every
 #: skill would be a syscall per row; a stat signature is one syscall total.
 _StoreSignature = tuple[int, int, int, int, int]
-_cache: tuple[_StoreSignature, frozenset[str]] | None = None
+#: Cached ``(stat_signature, granted_paths, enforcement_tokens)``. Both sets are
+#: derived from one parse -- see :func:`_parse_store` for why they differ.
+_cache: tuple[_StoreSignature, frozenset[str], frozenset[str]] | None = None
 
 
 class TrustStoreUnreadable(RuntimeError):
@@ -142,6 +144,72 @@ def canonical_key(project_dir: str | Path | None) -> str | None:
     return real
 
 
+#: Separator between a grant's path and its instance identity in the membership
+#: token. NUL cannot appear in a path on any supported platform, so a crafted
+#: directory name cannot make one half read as the other.
+_TOKEN_SEP = "\x00"
+
+
+def _instance_identity(project_key: str) -> str | None:
+    """The directory's non-reusable instance identity, or ``None`` if unreadable.
+
+    A grant is consent for the CONTENT the operator reviewed, but a path is a
+    reusable name. Delete the reviewed repository and create a different one at
+    the same canonical path -- a routine move on a shared dev host, and the normal
+    life of a CI checkout directory -- and a path-only grant is inherited by
+    content nobody reviewed, whose ``SKILL.md`` then enters the agent context with
+    instruction authority the operator never gave it. Binding an identity the new
+    directory cannot forge turns that silent inheritance into a consent re-prompt.
+
+    ``st_dev``/``st_ino`` name the directory INSTANCE rather than its name.
+    ``st_birthtime`` is folded in where the platform exposes it (macOS, the BSDs,
+    Windows) because an inode number can itself be reused after a delete, which is
+    the very case being closed; on Linux, where CPython does not expose a birth
+    time, ``dev:ino`` alone still discriminates every recreate that lands on a
+    different inode -- which a fresh clone and a moved tree both do.
+
+    Deliberately NOT a content fingerprint of the ``.kiro/skills`` tree, and
+    deliberately not ``st_ctime``: both change when the operator edits their own
+    skills, so either would re-prompt on ordinary work instead of on a
+    substitution, and a consent prompt that fires routinely is one that gets
+    clicked through.
+
+    Two residuals, stated rather than implied closed, both specific to a platform
+    that exposes no birth time (Linux, where ``dev:ino`` stands alone):
+
+    * The ACCIDENTAL case -- a different repository at a path the operator happens
+      to have granted -- is fully closed, because a fresh clone or a moved tree
+      lands on a different inode. The ADVERSARIAL case is closed only
+      best-effort: a local actor who can already write that path can grind
+      create/delete until the filesystem reuses the inode. Narrowing that needs a
+      real birth time (``statx`` ``STATX_BTIME``), which CPython does not surface
+      on Linux today; folding it in when it does is the fix.
+    * ``st_dev`` is not stable across remounts on btrfs subvolumes, NFS, and some
+      container bind mounts, so a bound grant can stop matching after a reboot
+      with the content unchanged. That direction is fail-closed -- the operator is
+      re-asked, never over-trusted -- but it is a re-prompt they did not earn, and
+      so the same habituation risk this docstring rejects a content fingerprint
+      for. If it shows up in practice the answer is to compare the inode plus a
+      content-independent tie-break, not to relax the check.
+    """
+    try:
+        st = os.stat(project_key)
+    except OSError:
+        return None
+    parts = [str(st.st_dev), str(st.st_ino)]
+    birth = getattr(st, "st_birthtime_ns", None)
+    if birth is None:
+        birth = getattr(st, "st_birthtime", None)
+    if birth is not None:
+        parts.append(str(birth))
+    return ":".join(parts)
+
+
+def _binding_token(project_key: str, identity: str) -> str:
+    """The enforcement-set membership token for an identity-bound grant."""
+    return f"{project_key}{_TOKEN_SEP}{identity}"
+
+
 def _project_skills_enabled() -> bool:
     """The operator's hard off switch.
 
@@ -172,20 +240,35 @@ def _store_signature(path: Path) -> _StoreSignature | None:
     return (st.st_mtime_ns, st.st_ctime_ns, st.st_size, st.st_ino, st.st_mode)
 
 
-def _parse_store(text: str) -> frozenset[str]:
-    """Parse store *text* into a set of canonical keys, failing closed.
+def _parse_store(text: str) -> tuple[frozenset[str], frozenset[str]]:
+    """Parse store *text* into ``(granted_paths, enforcement_tokens)``, failing closed.
 
-    Every malformed shape yields the empty set: a store we cannot understand
-    grants nothing.
+    Two sets, because they answer two different questions.
+
+    ``granted_paths`` is what the operator granted, for display and inspection,
+    and includes every well-formed row. ``enforcement_tokens`` is what a caller has
+    to MATCH, and includes ONLY identity-bound rows: a row written before grants
+    carried an identity grants nothing until it is re-granted, because the whole
+    point of the binding is that a path alone cannot establish which directory the
+    operator reviewed -- and that is no less true of a row this build inherited
+    than of one it wrote.
+
+    Keeping the two apart is what makes that fail-closed without being
+    destructive: the row stays listed, so the operator SEES the grant and can
+    re-grant or revoke it, rather than having it silently deleted or silently
+    honored. :func:`list_trusted_projects` reports ``bound`` for exactly this.
+
+    Every malformed shape yields empty sets: a store we cannot understand grants
+    nothing.
     """
     try:
         data = json.loads(text)
     except ValueError as exc:
         logger.error("%s: not valid JSON (%s); ignoring every grant", _STORE_FILENAME, exc)
-        return frozenset()
+        return frozenset(), frozenset()
     if not isinstance(data, dict):
         logger.error("%s: not a JSON object; ignoring every grant", _STORE_FILENAME)
-        return frozenset()
+        return frozenset(), frozenset()
     version = data.get("version")
     if version != _SCHEMA_VERSION:
         logger.error(
@@ -194,11 +277,11 @@ def _parse_store(text: str) -> frozenset[str]:
             version,
             _SCHEMA_VERSION,
         )
-        return frozenset()
+        return frozenset(), frozenset()
     raw = data.get("granted")
     if not isinstance(raw, list):
         logger.error("%s: 'granted' is not an array; ignoring every grant", _STORE_FILENAME)
-        return frozenset()
+        return frozenset(), frozenset()
     if len(raw) > _MAX_GRANT_ENTRIES:
         logger.error(
             "%s: %d entries exceeds the %d cap; considering only the first %d",
@@ -208,7 +291,8 @@ def _parse_store(text: str) -> frozenset[str]:
             _MAX_GRANT_ENTRIES,
         )
         raw = raw[:_MAX_GRANT_ENTRIES]
-    keys: set[str] = set()
+    paths: set[str] = set()
+    tokens: set[str] = set()
     for entry in raw:
         if not isinstance(entry, dict):
             continue
@@ -216,37 +300,60 @@ def _parse_store(text: str) -> frozenset[str]:
         # Stored keys are already canonical, but an absolute-path check still
         # applies: a relative entry in a hand-edited store must not match a
         # caller's canonical project_key by accident.
-        if isinstance(path, str) and path and os.path.isabs(path):
-            keys.add(path)
-    return frozenset(keys)
+        if not (isinstance(path, str) and path and os.path.isabs(path)):
+            continue
+        paths.add(path)
+        identity = entry.get("identity")
+        if isinstance(identity, str) and identity:
+            # Identity-bound: ONLY the directory instance the operator reviewed
+            # matches. The bare path is deliberately NOT also a token -- adding it
+            # would make the binding decorative.
+            tokens.add(_binding_token(path, identity))
+        # A row with no identity contributes NO token: it is listed but not
+        # enforced. It cannot say WHICH directory was reviewed, so honoring it
+        # would leave open exactly the replacement path this binding closes.
+    return frozenset(paths), frozenset(tokens)
 
 
-def trusted_keys() -> frozenset[str]:
-    """Every canonical directory the operator has granted, or an empty set.
+def _read_store() -> tuple[frozenset[str], frozenset[str]]:
+    """``(granted_paths, enforcement_tokens)`` from the store, or two empty sets.
 
-    Result is cached against the store's stat signature, so repeated
-    enforcement reads within one listing cost a single ``stat``.
+    Result is cached against the store's stat signature, so repeated enforcement
+    reads within one listing cost a single ``stat``.
     """
     global _cache
     if not _project_skills_enabled():
-        return frozenset()
+        return frozenset(), frozenset()
     path = store_path()
     signature = _store_signature(path)
     if signature is None:
         _cache = None
-        return frozenset()
+        return frozenset(), frozenset()
     cached = _cache
     if cached is not None and cached[0] == signature:
-        return cached[1]
+        return cached[1], cached[2]
     try:
         text = path.read_text(encoding="utf-8")
     except OSError as exc:
         logger.error("%s: unreadable (%s); ignoring every grant", _STORE_FILENAME, exc)
         _cache = None
-        return frozenset()
-    keys = _parse_store(text)
-    _cache = (signature, keys)
-    return keys
+        return frozenset(), frozenset()
+    paths, tokens = _parse_store(text)
+    _cache = (signature, paths, tokens)
+    return paths, tokens
+
+
+def trusted_keys() -> frozenset[str]:
+    """Every canonical directory the operator has granted, or an empty set.
+
+    The granted PATHS, for display and inspection. Deliberately NOT the
+    enforcement oracle: a grant is bound to the directory INSTANCE the operator
+    reviewed, so membership here does not by itself mean a directory may be
+    loaded. Enforcement goes through :func:`is_key_trusted`, which compares that
+    binding -- see :func:`_instance_identity` for what a path-only check lets
+    through.
+    """
+    return _read_store()[0]
 
 
 def is_project_trusted(project_dir: str | Path | None) -> bool:
@@ -254,18 +361,37 @@ def is_project_trusted(project_dir: str | Path | None) -> bool:
     project_key = canonical_key(project_dir)
     if project_key is None:
         return False
-    return project_key in trusted_keys()
+    return is_key_trusted(project_key)
 
 
 def is_key_trusted(project_key: str | None) -> bool:
     """Membership test for an already-canonical project_key.
 
     Split out so a hot path can resolve the project_key once off the event loop and
-    then test membership without further syscalls.
+    then test membership without re-reading the store.
+
+    Costs one ``stat`` of *project_key* on top of the store's cached signature
+    read. That is the price of the binding: a grant names the directory INSTANCE
+    the operator reviewed, not just its name, so the instance has to be read to be
+    compared -- see :func:`_instance_identity` for what a path-only grant lets
+    through. One extra ``stat`` per key derivation, not per skill; the caller in
+    ``skills.py`` already pays a ``realpath`` beside it.
+
+    Fails CLOSED on a row with no recorded identity (one written before grants
+    carried one) and on a directory that can no longer be read. Neither can
+    establish WHICH directory the operator reviewed, and an unenforced row is not a
+    deleted one: it stays listed and is reported unbound, so the operator is
+    re-ASKED rather than silently un-consented. See :func:`_parse_store`.
     """
     if not project_key:
         return False
-    return project_key in trusted_keys()
+    granted = _read_store()[1]
+    if not granted:
+        return False
+    identity = _instance_identity(project_key)
+    if identity is None:
+        return False
+    return _binding_token(project_key, identity) in granted
 
 
 def _trust_dir() -> Path:
@@ -423,13 +549,28 @@ def grant_project_trust(
         not isinstance(expected_key, str) or expected_key != project_key
     ):
         raise ReviewedProjectChanged(str(expected_key or ""))
+    # Read before the lock so an unreadable directory refuses without taking it.
+    # A grant that cannot be bound is not recorded unbound: that would write
+    # exactly the path-only row this binding exists to stop producing.
+    identity = _instance_identity(project_key)
+    if identity is None:
+        raise ValueError(f"not a readable directory: {project_dir!r}")
     with _locked_store():
         # Read BEFORE auditing: an unreadable store refuses here, and auditing
         # first would leave an "allowed" record for consent that never landed.
         entries = _read_entries_unlocked()
         for entry in entries:
-            if entry.get("path") == project_key:
+            if entry.get("path") != project_key:
+                continue
+            if entry.get("identity") == identity:
                 return project_key
+            # Same path, a different directory instance -- or a legacy row with
+            # no identity at all. The operator is granting THIS content, so
+            # rebind rather than short-circuit: returning early here would
+            # leave the new tree untrusted even after an explicit re-grant,
+            # with no surface saying why.
+            entries = [e for e in entries if e.get("path") != project_key]
+            break
         if len(entries) >= _MAX_GRANT_ENTRIES:
             raise TrustStoreFull(
                 f"project-skills trust store is full ({_MAX_GRANT_ENTRIES} grants); "
@@ -448,7 +589,13 @@ def grant_project_trust(
             reason="operator granted project-skills trust for this directory",
             critical=True,
         )
-        entries.append({"path": project_key, "granted_at": int(time.time())})
+        entries.append(
+            {
+                "path": project_key,
+                "identity": identity,
+                "granted_at": int(time.time()),
+            }
+        )
         _write_entries_unlocked(entries)
     return project_key
 
@@ -573,11 +720,17 @@ def list_trusted_projects() -> list[dict[str, Any]]:
         path = entry.get("path")
         if not isinstance(path, str) or not path:
             continue
+        identity = entry.get("identity")
         rows.append(
             {
                 "path": path,
                 "granted_at": _as_epoch(entry.get("granted_at")),
                 "exists": os.path.isdir(path),
+                # Whether this row is bound to the directory INSTANCE reviewed,
+                # or is a pre-binding row still matching on the path alone.
+                # Reported rather than inferred so an operator can see which of
+                # their grants a same-path replacement would still inherit.
+                "bound": bool(isinstance(identity, str) and identity),
             }
         )
     # Rows carry an already-normalized int, so the sort cannot meet a string

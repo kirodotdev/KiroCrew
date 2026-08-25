@@ -25,14 +25,18 @@ succeed, the object is gone.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import logging
 from typing import Any
+from urllib.parse import urlsplit
 
 import aiohttp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+from kiro_crew import link_unfurl
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,83 @@ def decrypt_media(ciphertext: bytes, key: bytes) -> bytes:
         raise WeComMediaError("decrypt failed (wrong aeskey, or a truncated object)") from exc
 
 
+#: Schemes an inbound media URL may use. WeCom serves its CDN over TLS, so
+#: anything else is either a cleartext hop for a body we are about to decrypt or
+#: not a network download at all (``file://``).
+_ALLOWED_MEDIA_SCHEMES = ("https",)
+
+#: The only port an https CDN object is served from. The shared vet allows
+#: {80, 443} because it also serves plain-http link unfurling; this caller is
+#: https-only, so 443 is the stated scope.
+_MEDIA_PORT = 443
+
+
+def _vet_media_url(url: str) -> str:
+    """Vet an inbound media URL for fetching and return its normalized form.
+
+    The ``url`` arrives in the callback body, so it is platform-*supplied* but not
+    platform-*guaranteed*: nothing in the frame proves the host is one WeCom
+    operates. Unvetted, the fetch is a server-side request forgery primitive — a
+    crafted URL (or a redirect from a legitimate one) points the gateway at an
+    internal service or the cloud metadata endpoint, and the response flows on
+    into the attachment pipeline. Every sibling channel vets its platform-provided
+    download URL for this reason; this path was the one that did not.
+
+    The scheme rule is this module's; the ADDRESS vet is
+    :func:`link_unfurl.vet_unfurl_url`, reused rather than reimplemented. It
+    resolves the host once and checks EVERY answer, so a name resolving to both a
+    public and a private address is refused whichever one aiohttp would have
+    picked, and its refusal set is pinned against the IANA special-purpose-range
+    table by that module's own suite — which a local check would not inherit.
+
+    Two controls the sibling channels carry are deliberately NOT here, both
+    because adding them as written would cost more than it buys:
+
+    * A CDN host allow-list, as ``discord/client.py`` keeps for its two documented
+      CDN hosts and ``slack/client.py`` for ``slack.com``. WeCom documents no
+      stable media-host set, so an allow-list here would be a guess, and a wrong
+      guess silently drops legitimate media. The destination vet above closes the
+      same class without having to name hosts.
+    * A pinned resolver, the anti-rebinding mechanism in ``teams/client.py`` and
+      the meetings calendar provider. This path takes an operator ``proxy``, and
+      under a proxy aiohttp never resolves the target host, so the pin would go
+      unconsulted on exactly the deployments that configure one. The residual is
+      the rebinding window between this resolution and the socket; closing it
+      needs the proxy case answered first, which is its own change.
+
+    The proxy also splits this vet from the egress it is judging, in both
+    directions, and neither direction is fixed here. Resolution happens locally
+    while a proxied request is resolved and dialed by the proxy, so on
+    split-horizon DNS this can REFUSE a URL the proxy would have fetched from a
+    perfectly public address, and conversely it approves addresses the proxy never
+    dials. Vetting what we can see is still strictly better than vetting nothing
+    -- an internal target named directly is refused either way -- but a proxied
+    deployment should read this as a scheme-and-destination soundness check rather
+    than a guarantee about the egress path.
+
+    Blocking: performs one ``getaddrinfo``. Call it from a worker thread.
+    """
+    candidate = (url or "").strip()
+    try:
+        scheme = urlsplit(candidate).scheme.lower()
+    except ValueError as exc:
+        # `urlsplit` RAISES on a malformed authority (`https://[`) rather than
+        # returning empty parts, so a hostile body would surface as an uncaught
+        # ValueError instead of this module's own error type.
+        raise WeComMediaError("media url is malformed") from exc
+    if scheme not in _ALLOWED_MEDIA_SCHEMES:
+        raise WeComMediaError(f"media url must use https:// (got {scheme or 'no'} scheme)")
+    try:
+        vetted = link_unfurl.vet_unfurl_url(candidate)
+    except link_unfurl.UnfurlRejected as exc:
+        raise WeComMediaError(f"refusing media url ({exc.code})") from None
+    if vetted.port != _MEDIA_PORT:
+        # `https://host:80` passes the shared vet and would then fail the TLS
+        # handshake with a message that does not name the cause.
+        raise WeComMediaError("refusing media url (blocked_url)")
+    return vetted.url
+
+
 async def download_media(
     session: aiohttp.ClientSession,
     url: str,
@@ -139,13 +220,27 @@ async def download_media(
     """
     if not url:
         raise WeComMediaError("media item carries no url")
+    # Off the loop: the vet performs one `getaddrinfo`, which blocks.
+    url = await asyncio.to_thread(_vet_media_url, url)
     key = decode_aes_key(aeskey)
     chunks: list[bytes] = []
     total = 0
     try:
         async with session.get(
-            url, proxy=proxy, timeout=aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECS)
+            url,
+            proxy=proxy,
+            timeout=aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECS),
+            # Refused rather than followed, matching `discord/client.py` and
+            # `slack/client.py`. aiohttp follows redirects by default, and a
+            # followed hop is one the vet above never saw — the host check would
+            # have been true only of the hop that did not carry the bytes. If
+            # WeCom is ever observed to redirect a media URL, the answer is
+            # per-hop re-vetting (`teams/client.py::_stream_attachment` is the
+            # shape), not re-enabling blind following.
+            allow_redirects=False,
         ) as resp:
+            if 300 <= resp.status < 400:
+                raise WeComMediaError("refusing redirected media url")
             if resp.status != 200:
                 raise WeComMediaError(f"media download returned HTTP {resp.status}")
             async for chunk in resp.content.iter_chunked(64 * 1024):

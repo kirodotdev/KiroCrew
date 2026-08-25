@@ -291,7 +291,7 @@ def _warnings(caplog) -> list[str]:
 
 def test_configured_group_jids_skips_junk_entries():
     """A hand-edited config reaches this unchanged, and it is read exactly as
-    ``GroupGate`` reads it: ``str(entry["jid"]).strip()``, non-empty."""
+    ``GroupGate`` reads it: ``normalize_jid(str(entry["jid"]))``, non-empty."""
     assert _configured_group_jids(
         [{"jid": "a@g.us"}, {"jid": "  "}, {"name": "no jid"}, "junk", None, {"jid": " b@g.us "}]
     ) == ["a@g.us", "b@g.us"]
@@ -496,3 +496,38 @@ def test_a_state_change_after_the_loop_closed_is_not_an_error(monkeypatch, caplo
 
     assert _warnings(caplog) == []
     assert "loop closed" in caplog.text
+
+
+def test_configured_group_jids_keys_the_way_the_gate_keys():
+    """The membership diagnostic must agree with the gate, or it lies.
+
+    It compares configured JIDs against the JIDs the linked account reports, which
+    ARE normalized. Reading the operator's raw text meant an entry written
+    ``@G.US`` looked configured-and-joined from here while the gate was dropping
+    every message from it -- so the one surface that could have named the problem
+    reported everything fine. Now that both sides normalize, this has to keep
+    matching or the diagnostic starts lying in the other direction.
+    """
+    assert _configured_group_jids(
+        [
+            {"jid": "1203630000001@G.US"},  # server case is folded
+            {"jid": "1203630000002:5@g.us"},  # user-part device suffix is dropped
+            {"jid": " 1203630000003@g.us "},  # padding is trimmed
+        ]
+    ) == [
+        "1203630000001@g.us",
+        "1203630000002@g.us",
+        "1203630000003@g.us",
+    ]
+
+
+def test_configured_group_jids_leaves_the_user_part_case_alone():
+    """Only the SERVER is case-insensitive in a JID; the user part is not.
+
+    Group ids are numeric in practice, so this is not a shape an operator hits --
+    it is here to pin that the normalizer folds the half it is allowed to fold and
+    no more. Lower-casing the user part would make two distinct JIDs collide, which
+    for a gate keyed on this value would be an authorization hole rather than the
+    over-denial being fixed.
+    """
+    assert _configured_group_jids([{"jid": "AbC@G.US"}]) == ["AbC@g.us"]

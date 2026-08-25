@@ -17,9 +17,12 @@ import pytest
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
+from kiro_crew import link_unfurl
+from kiro_crew.wecom import media as media_mod
 from kiro_crew.wecom.attachments import to_attachments
 from kiro_crew.wecom.media import (
     WeComMediaError,
+    _vet_media_url,
     decode_aes_key,
     decrypt_media,
     media_items,
@@ -189,10 +192,14 @@ class TestAttachmentAdapter:
 
 
 class TestDownloadCaps:
-    def test_the_size_cap_is_enforced_while_reading(self) -> None:
+    def test_the_size_cap_is_enforced_while_reading(self, monkeypatch) -> None:
         # Enforced on BYTES READ, never on Content-Length: a header is
         # attacker-influenced, and a lying one would let an unbounded body through.
-        from kiro_crew.wecom import media as media_mod
+        #
+        # The URL has to clear the SSRF vet before the cap is reachable at all, so
+        # the resolver is stubbed to a public address. Kept as a stub rather than a
+        # real lookup so this test still opens no socket.
+        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
 
         class FakeContent:
             async def iter_chunked(self, _n):
@@ -217,7 +224,7 @@ class TestDownloadCaps:
             asyncio.run(
                 media_mod.download_media(
                     FakeSession(),
-                    "https://cdn/big",
+                    "https://cdn.example/big",
                     base64.b64encode(os.urandom(32)).decode(),
                     max_bytes=4096,
                 )
@@ -228,3 +235,142 @@ class TestDownloadCaps:
             asyncio.run(
                 __import__("kiro_crew.wecom.media", fromlist=["x"]).download_media(None, "", "k")
             )
+
+
+class TestMediaUrlVetting:
+    """The inbound ``url`` is platform-SUPPLIED but not platform-GUARANTEED.
+
+    Nothing in a callback frame proves the host is one WeCom operates, and the
+    fetched body flows on into the attachment pipeline -- so an unvetted fetch is a
+    server-side request forgery READ primitive, not a blind one. Every sibling
+    channel vets its download URL; this path was the one that did not.
+    """
+
+    @staticmethod
+    def _public(_host, _port):
+        return ["93.184.216.34"]
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://cdn.example/o",  # a cleartext hop for a body we then decrypt
+            "file:///etc/passwd",  # not a download at all
+            "ftp://cdn.example/o",
+            "//cdn.example/o",  # scheme-relative: no scheme at all
+            "cdn.example/o",
+        ],
+    )
+    def test_only_https_is_accepted(self, url) -> None:
+        with pytest.raises(WeComMediaError, match="https"):
+            _vet_media_url(url)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://127.0.0.1/o",
+            "https://169.254.169.254/latest/meta-data/",  # instance metadata
+            "https://10.1.2.3/o",
+            "https://100.64.0.1/o",  # RFC 6598 CGNAT -- a tailnet address
+            "https://[::1]/o",
+            "https://[fec0::1]/o",
+            "https://0x7f000001/o",  # alternate encoding the OS resolver accepts
+        ],
+    )
+    def test_an_internal_destination_is_refused(self, url) -> None:
+        """Delegated to `link_unfurl`, so the refusal set is the pinned one."""
+        with pytest.raises(WeComMediaError, match="refusing media url"):
+            _vet_media_url(url)
+
+    def test_a_public_name_resolving_inward_is_refused(self, monkeypatch) -> None:
+        """A name the attacker controls needs no internal-looking host at all."""
+        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["127.0.0.1"])
+        with pytest.raises(WeComMediaError, match="refusing media url"):
+            _vet_media_url("https://harmless.example/o")
+
+    def test_a_malformed_authority_raises_this_module_s_error(self) -> None:
+        """`urlsplit` RAISES on `https://[`, so without the guard a hostile body
+        surfaced as an uncaught ValueError instead of a WeCom media error."""
+        with pytest.raises(WeComMediaError, match="malformed"):
+            _vet_media_url("https://[")
+
+    def test_a_legitimate_cdn_url_still_passes(self, monkeypatch) -> None:
+        """The half of the property that keeps the fix from being an outage.
+
+        No CDN host allow-list is applied on purpose: WeCom documents no stable
+        media-host set, so an invented list would silently drop real media. The
+        destination vet closes the same class without naming hosts.
+        """
+        monkeypatch.setattr(link_unfurl, "_default_resolve", self._public)
+        out = _vet_media_url("https://wework.qpic.cn/media/abc?sig=xyz")
+        assert out.startswith("https://wework.qpic.cn/media/abc")
+        assert "sig=xyz" in out, "the signature query must survive normalization"
+
+    def test_port_80_on_an_https_url_is_refused(self, monkeypatch) -> None:
+        """The shared vet allows {80, 443} because it also serves plain-http
+        unfurling; this caller is https-only, so 443 is the stated scope."""
+        monkeypatch.setattr(link_unfurl, "_default_resolve", self._public)
+        with pytest.raises(WeComMediaError, match="refusing media url"):
+            _vet_media_url("https://cdn.example:80/o")
+
+
+class TestMediaDownloadRedirects:
+    """A followed redirect is a hop the vet never saw."""
+
+    class _Resp:
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        class content:  # noqa: N801 - matches aiohttp's attribute shape
+            @staticmethod
+            async def iter_chunked(_n):
+                yield b""
+
+    class _Session:
+        def __init__(self, status):
+            self.status = status
+            self.kwargs = {}
+
+        def get(self, *_a, **kw):
+            self.kwargs = kw
+            return TestMediaDownloadRedirects._Resp(self.status)
+
+    def _run(self, session):
+        return asyncio.run(
+            media_mod.download_media(
+                session,
+                "https://cdn.example/o",
+                base64.b64encode(os.urandom(32)).decode(),
+            )
+        )
+
+    def test_redirects_are_disabled_on_the_request(self, monkeypatch) -> None:
+        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
+        session = self._Session(200)
+        with pytest.raises(WeComMediaError):
+            self._run(session)  # empty body fails to decrypt; the kwarg is the point
+        assert session.kwargs.get("allow_redirects") is False
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_a_redirect_response_is_refused_rather_than_followed(self, monkeypatch, status) -> None:
+        monkeypatch.setattr(link_unfurl, "_default_resolve", lambda *_a: ["93.184.216.34"])
+        with pytest.raises(WeComMediaError, match="redirected"):
+            self._run(self._Session(status))
+
+    def test_the_vet_runs_before_any_request(self, monkeypatch) -> None:
+        """An internal URL must never reach the session at all."""
+        session = self._Session(200)
+        with pytest.raises(WeComMediaError):
+            asyncio.run(
+                media_mod.download_media(
+                    session,
+                    "https://169.254.169.254/latest/meta-data/",
+                    base64.b64encode(os.urandom(32)).decode(),
+                )
+            )
+        assert session.kwargs == {}, "refused before the fetch, not after"

@@ -14,6 +14,7 @@ from kiro_crew.whatsapp.client import (
     default_db_path,
     neonize_available,
 )
+from kiro_crew.whatsapp.jids import normalize_jid
 from kiro_crew.whatsapp.transport import WhatsAppTransport
 from kiro_crew.whatsapp.transport_dispatch import WhatsAppDispatcher
 
@@ -33,10 +34,15 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
 def _configured_group_jids(groups: object) -> list[str]:
     """The non-empty ``jid`` of each group entry, keyed exactly as the gate keys it.
 
-    ``GroupGate`` indexes its entries by ``str(entry["jid"]).strip()`` and looks
-    them up by exact string, so this reads the same value the same way: a JID that
-    differs from the gate's key by case or a ``:device`` suffix is one the gate
-    never matches either, and normalizing here would call it fine.
+    ``GroupGate`` indexes its entries through :func:`normalize_jid`, so this reads
+    the same value the same way. It previously replicated a bare ``.strip()``, on
+    the reasoning that a JID differing by case or a ``:device`` suffix was one the
+    gate never matched either -- true at the time, and precisely why this check
+    could not see the defect: it compared the operator's raw text against
+    membership answers that ARE normalized, so a group the gate was silently
+    dropping looked configured and joined from here. Both sides normalize now, and
+    this has to keep matching the gate or the diagnostic starts lying in the other
+    direction.
     """
     if not isinstance(groups, list):
         return []
@@ -44,7 +50,7 @@ def _configured_group_jids(groups: object) -> list[str]:
     for entry in groups:
         if not isinstance(entry, dict):
             continue
-        jid = str(entry.get("jid", "")).strip()
+        jid = normalize_jid(str(entry.get("jid", "")))
         if jid:
             out.append(jid)
     return out

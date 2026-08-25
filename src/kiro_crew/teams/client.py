@@ -35,6 +35,7 @@ from typing import Any, Awaitable, Callable
 import aiohttp
 from aiohttp import web
 
+from kiro_crew import link_unfurl
 from kiro_crew.sel import sel
 from kiro_crew.teams.attachments import quoted_reply_text
 from kiro_crew.teams.commands import STOP_ALIASES
@@ -1180,18 +1181,25 @@ class TeamsClient:
         except OSError as exc:
             raise ValueError("refusing unresolvable Teams attachment host") from exc
         for resolved in resolved_addresses:
-            try:
-                address = ipaddress.ip_address(resolved)
-            except ValueError:  # pragma: no cover - getaddrinfo returns literals
-                raise ValueError("refusing unparseable Teams attachment address")
-            if (
-                address.is_private
-                or address.is_loopback
-                or address.is_link_local
-                or address.is_reserved
-                or address.is_multicast
-                or address.is_unspecified
-            ):
+            # `link_unfurl`'s vet, not a local flag list. The category flags this
+            # used to enumerate approved two ranges that are plainly not public:
+            # `100.64.0.0/10` (RFC 6598 shared space -- what a Tailscale tailnet
+            # and most carrier NAT hand out, which CPython's `is_private` table
+            # omits and only `is_global` rejects) and `fec0::/10` (deprecated IPv6
+            # site-local, which reports `is_global=True`). It also evaluated the
+            # ipv4-mapped and 6to4 encodings as written, so `::ffff:127.0.0.1`
+            # passed a check whose whole purpose was to refuse loopback. That
+            # module already owns this decision for link unfurling and for the
+            # meetings calendar fetch, and its
+            # `test_vet_rejects_every_special_purpose_range` pins the refusal set
+            # against a table of IANA special-purpose prefixes -- so the next gap
+            # is found by the suite instead of by a reviewer, which a second
+            # implementation here would not inherit.
+            #
+            # It also subsumes the unparseable-address guard: it fails CLOSED on a
+            # literal it cannot read, which is the same refusal this reached the
+            # long way round via `ipaddress.ip_address`.
+            if link_unfurl.address_is_not_public(resolved):
                 raise ValueError("refusing local-network Teams attachment URL")
         return resolved_addresses
 

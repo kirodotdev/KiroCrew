@@ -1646,3 +1646,102 @@ def test_route_is_registered_on_the_app() -> None:
     lm.setup_link_meta_routes(app)
     routes = {(r.method, r.resource.canonical) for r in app.router.routes()}
     assert ("GET", "/api/link-meta") in routes
+
+
+# --- address_is_not_public: the vet for a caller holding a resolution result ---
+#
+# The channels' attachment downloads consult this instead of enumerating category
+# flags locally, so a gap here is a server-side request forgery in each of them.
+
+
+@pytest.mark.parametrize(
+    "address",
+    [
+        # The two ranges every hand-rolled category-flag list has missed. Both were
+        # APPROVED by the check this function replaced in `teams/client.py`.
+        "100.64.0.1",  # RFC 6598 shared space: absent from CPython's is_private
+        "100.127.255.254",  # last usable address of the same block
+        "fec0::1",  # deprecated IPv6 site-local: reports is_global True
+        # Tunnel encodings, which that check evaluated as WRITTEN.
+        "::ffff:127.0.0.1",  # v4-mapped loopback: is_loopback is False on the wrapper
+        "::ffff:169.254.169.254",
+        "2002:0a00:0001::1",  # 6to4 naming the v4 tunnel endpoint 10.0.0.1
+        # Classics, which must stay refused.
+        "127.0.0.1",
+        "169.254.169.254",  # the cloud instance-metadata endpoint
+        "10.1.2.3",
+        "192.168.0.9",
+        "::1",
+        "fe80::1",
+        "0.0.0.0",
+        "224.0.0.1",
+        "ff02::1",
+        # Alternate IPv4 encodings the OS resolver accepts but `ipaddress` rejects,
+        # folded by `canonicalize_ip` so the verdict does not ride on getaddrinfo's
+        # reading of a string the vet declined to parse.
+        "0x7f000001",
+        "2130706433",
+        "127.1",
+    ],
+)
+def test_address_is_not_public_refuses_every_non_public_form(address: str) -> None:
+    assert lu.address_is_not_public(address) is True
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["93.184.216.34", "1.1.1.1", "8.8.8.8", "2606:4700::1111"],
+)
+def test_address_is_not_public_allows_globally_routable_addresses(address: str) -> None:
+    """A vet that refused real addresses would break every inbound attachment.
+
+    The refusal half is only half the property: this is the half that keeps the
+    fix from being a channel-wide outage.
+    """
+    assert lu.address_is_not_public(address) is False
+
+
+@pytest.mark.parametrize("address", ["", "   ", "not-an-ip", "example.com", "::gg"])
+def test_address_is_not_public_fails_closed_on_an_unreadable_value(address: str) -> None:
+    """The OPPOSITE default to :func:`_reject_if_internal_ip`, deliberately.
+
+    That function passes a non-literal through because for it a non-literal is a
+    hostname still to be resolved. Here the value is already a resolution result
+    about to reach a socket, so one that cannot be parsed must not be approved --
+    otherwise an unreadable answer reaches the pin unchecked.
+    """
+    assert lu.address_is_not_public(address) is True
+
+
+def test_the_url_vet_still_treats_a_non_literal_as_a_hostname() -> None:
+    """Pins the refactor: extracting the shared helper must not change this contract.
+
+    `_reject_if_internal_ip` returning silently for a hostname is what lets
+    `vet_unfurl_url` fall through to its DNS branch. If the extraction had given it
+    the fail-closed default, every named host would be refused.
+    """
+    lu._reject_if_internal_ip("example.com")  # must not raise
+    with pytest.raises(lu.UnfurlRejected) as exc:
+        lu._reject_if_internal_ip("127.0.0.1")
+    assert exc.value.code == "blocked_url"
+
+
+@pytest.mark.parametrize("address", ["100.64.0.1", "fec0::1"])
+def test_the_replaced_category_flag_list_would_have_approved_these(address: str) -> None:
+    """Proves the finding's premise rather than assuming it.
+
+    Reconstructs the exact six-flag check `teams/client.py::_vet_resolved_address`
+    used to run and shows it says "fine" for both ranges. Without this, a future
+    reader cannot tell whether the delegation fixed a real hole or was cosmetic.
+    """
+    ip = ipaddress.ip_address(address)
+    old_verdict = (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+    assert old_verdict is False, "the old check already caught this; premise is wrong"
+    assert lu.address_is_not_public(address) is True

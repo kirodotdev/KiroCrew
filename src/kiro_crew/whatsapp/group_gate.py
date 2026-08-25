@@ -22,6 +22,12 @@ session (commands like /new) — only the operator may.
 
 This module is pure decision logic (no I/O, no neonize types) so the whole
 matrix is unit-testable; the transport feeds it normalized values.
+
+Group JIDs are keyed through :func:`normalize_jid` on BOTH sides -- the config
+entries when they are indexed, and the lookup value -- so the same group hashes
+to the same key no matter which path produced it. ``jids`` is pure string logic
+with no dependencies, so importing it here keeps this module's own I/O-free
+property intact.
 """
 
 from __future__ import annotations
@@ -29,6 +35,8 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Callable, Mapping
+
+from kiro_crew.whatsapp.jids import normalize_jid
 
 #: Exact reply the model returns (alone) to decline an unprompted rules-mode
 #: turn. Chosen to be un-typable-by-accident and trivially detectable.
@@ -69,13 +77,21 @@ class GroupGate:
         self._cooldown_default_s = cooldown_default_s
         self._entries: dict[str, dict] = {}
         for entry in groups or []:
-            jid = str(entry.get("jid", "")).strip()
+            # `normalize_jid`, not a bare `.strip()`. The transport hands
+            # `evaluate()` a fully normalized value, so a config entry written
+            # `123456@G.US` (an uppercase server is valid per JID semantics) or
+            # `123456@g.us:5` (a device suffix) was stored verbatim and never
+            # matched -- the operator configured a group and the agent stayed
+            # silent in it, with `group_not_configured` as the only clue. The DM
+            # allow-list has always normalized both sides
+            # (`transport.py`); this is the group path catching up.
+            jid = normalize_jid(str(entry.get("jid", "")))
             if jid:
                 self._entries[jid] = entry
         self._last_unprompted: dict[str, float] = {}
 
     def configured(self, group_jid: str) -> bool:
-        return group_jid in self._entries
+        return normalize_jid(group_jid) in self._entries
 
     def evaluate(
         self,
@@ -90,6 +106,11 @@ class GroupGate:
         targets the agent: an @-mention of the linked account, or a reply to
         one of the agent's own messages.
         """
+        # Normalized on the way IN as well as on the way in to `_entries`.
+        # The transport already normalizes, but the invariant "the same
+        # identifier hashes to the same value" belongs to the module that owns
+        # the key rather than to each of its callers.
+        group_jid = normalize_jid(group_jid)
         entry = self._entries.get(group_jid)
         if entry is None:
             return GroupVerdict(respond=False, reason="group_not_configured")
