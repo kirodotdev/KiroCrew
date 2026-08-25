@@ -16980,7 +16980,18 @@ async def test_create_refuses_a_macos_case_alias_for_the_same_directory(tmp_path
     statuses = [response.status for response in responses]
     assert sorted(statuses) == [201, 409], list(zip(statuses, bodies))
     refusal = bodies[statuses.index(409)]
-    assert refusal["code"] == "decision_directory_alias_conflict"
+    # The loser's refusal code depends on the filesystem, not on the race: the
+    # casefolded turn lock serializes both creates, and when the two spellings
+    # survive as distinct resolved paths (case-sensitive volumes) the loser hits
+    # the ``samefile`` alias probe and is refused as
+    # ``decision_directory_alias_conflict``. When the volume collapses the second
+    # spelling onto the winner's directory (case-insensitive volumes, as on the
+    # Windows CI shard), the resolved keys become lexically equal, the alias scan
+    # skips them, and the lexical duplicate check refuses as ``spec_dir_in_use``.
+    # Both refusals satisfy the invariant this test locks in — exactly one create
+    # succeeds and both spellings map to one directory — so either code is a
+    # correct outcome.
+    assert refusal["code"] in {"spec_dir_in_use", "decision_directory_alias_conflict"}
     assert len(routes._load_index()) == 1
     assert dispatched == ["x"]
 
