@@ -441,6 +441,22 @@ function slugify(children: React.ReactNode): string | undefined {
   return raw || undefined
 }
 
+/**
+ * True for the markdown subtree rendered INSIDE an anchor's own text.
+ *
+ * `InlineCode` consults it so a code span used as a link label —
+ * ``[`https://example.com/x`](https://example.com/x)`` — stays inert instead of
+ * becoming a click-to-copy chip. The chip's handler calls `preventDefault`, and
+ * that cancels the anchor's default action from anywhere in propagation, so
+ * without this the label copied and the link silently stopped navigating (a
+ * regression from #4433, which gave non-path spans a primary-click copy).
+ *
+ * Provided only where `MdAnchor` places `children` inside an `<a>`. The Jira and
+ * forge chips render a parsed label instead of `children`, and a `LinkOverride`
+ * owns its element outright, so neither needs it.
+ */
+const InsideLinkCtx = createContext(false)
+
 /** Default markdown anchor, unless a `LinkOverrideCtx` provider claims the href.
  *
  * Extracted from the inline `MD_COMPONENTS.a` so it can read context (it is a
@@ -552,7 +568,13 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       </span>
     )
   }
-  if (target && meta) return <LinkChip meta={meta} href={target}>{children}</LinkChip>
+  if (target && meta) {
+    return (
+      <LinkChip meta={meta} href={target}>
+        <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
+      </LinkChip>
+    )
+  }
   let ext = false
   try { ext = !!href && ALLOWED_PROTOCOLS.has(new URL(href, 'http://x').protocol) } catch { /* not a URL */ }
   return (
@@ -563,7 +585,7 @@ function MdAnchor({ node, href, children }: React.AnchorHTMLAttributes<HTMLAncho
       {...(ext ? {} : { target: '_blank', rel: 'noopener noreferrer' })}
       className="text-accent underline underline-offset-2 decoration-accent/40 hover:decoration-accent"
     >
-      {children}
+      <InsideLinkCtx.Provider value={true}>{children}</InsideLinkCtx.Provider>
     </a>
   )
 }
@@ -742,6 +764,7 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
   const codeStr = String(children).replace(/\n$/, '')
   const probeEnabled = useContext(PathProbeCtx)
   const actions = useContext(PathActionCtx)
+  const insideLink = useContext(InsideLinkCtx)
   const gatewayPlatform = useGatewayPlatform()
   const raw = codeStr.trim()
   const pathResolution = usePathResolution(raw, probeEnabled)
@@ -757,6 +780,10 @@ function InlineCode({ children, ...props }: { children?: React.ReactNode } & Rec
 
   if (pathResolution.probePending
     || (pathResolution.kind !== 'file' && pathResolution.kind !== 'dir')) {
+    // Inside an anchor the link owns the click, so stay the inert span this was
+    // before #4433 rather than cancelling the navigation to copy. Nothing is
+    // lost: the browser's own "Copy link address" still reaches the URL.
+    if (insideLink) return <code className={CHIP_BASE} {...safeProps}>{children}</code>
     return <CopyableCode className={CHIP_BASE} safeProps={safeProps} text={codeStr}>{children}</CopyableCode>
   }
   const isDir = pathResolution.kind === 'dir'
