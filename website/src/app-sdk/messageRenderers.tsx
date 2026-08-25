@@ -15,6 +15,8 @@
 import React, { memo } from 'react'
 import { Clock, LoaderCircle, CircleSlash, CircleAlert, CircleDot, Lock, PanelRight } from 'lucide-react'
 import { i18nT } from '../i18n/t'
+import { isNoteRow } from '../lib/noteContract'
+import { parseOptions } from './protocol'
 import { extractToolFilePath } from '../utils/toolFilePath'
 import { isSafePath } from '../utils/safePath'
 import AssistantMessage, { type TurnStats } from '../pages/chat/AssistantMessage'
@@ -302,9 +304,12 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['inject'],
     render: (m, ctx) => {
       const cronLabel = (m.meta?.cronLabel as string) || ''
-      const cleanContent = cronLabel
+      const stripped = cronLabel
         ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
         : m.content
+      // A note's marker is consumed into the pill row, so rendering it too would show the
+      // same choices twice. Non-note inject rows keep it: there it is prose, not syntax.
+      const cleanContent = isNoteRow(m) ? parseOptions(stripped).text : stripped
       return ctx.wrapper(
         <>
           {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock size={11} className="inline mr-0.5" />{cronLabel}</span>}
