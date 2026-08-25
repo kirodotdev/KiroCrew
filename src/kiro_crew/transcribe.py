@@ -805,7 +805,6 @@ async def _run_whisper_cli(
     two CLIs use hyphenated vs underscored option names).
     """
     out_dir = await asyncio.to_thread(tempfile.mkdtemp)
-    proc = None
     try:
         clean_env = _thread_capped_env()
         proc = await asyncio.create_subprocess_exec(
@@ -815,7 +814,47 @@ async def _run_whisper_cli(
             stderr=asyncio.subprocess.PIPE,
             env=clean_env,
         )
-        _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        try:
+            _stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            else:
+                # Reap via communicate(), not wait(): it drains the PIPEs, so a
+                # child that died with a full pipe buffer cannot deadlock the
+                # reap. Deliberately ``except Exception`` (narrower than the
+                # cancellation arm's ``BaseException`` swallow below): a
+                # cancellation arriving during THIS reap should win over the
+                # ``return None``, and the ``finally`` still removes the
+                # directory either way.
+                try:
+                    await proc.communicate()
+                except Exception:
+                    logger.debug("%s wait after kill failed", label, exc_info=True)
+            logger.error("%s transcription timed out after %ds", label, timeout_secs)
+            return None
+        except BaseException:
+            # A cancellation mid-``communicate`` is a ``BaseException``, which
+            # the ``except asyncio.TimeoutError`` arm above never sees — the
+            # whisper child kept running as an orphan (#5821). Kill AND reap it
+            # before re-raising: Windows keeps the output files locked until
+            # the child fully exits, and on POSIX a live child can race the
+            # directory removal in the ``finally`` below.
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            else:
+                try:
+                    await proc.communicate()
+                except BaseException:
+                    # A repeat cancellation can land on the reap await; swallow
+                    # it so the directory removal still runs and the ORIGINAL
+                    # exception is the one that propagates.
+                    pass
+            raise
         return await asyncio.to_thread(
             _collect_whisper_output,
             proc.returncode,
@@ -823,17 +862,18 @@ async def _run_whisper_cli(
             out_dir,
             label,
         )
-    except asyncio.TimeoutError:
-        if proc is not None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-            await proc.wait()
-        logger.error("%s transcription timed out after %ds", label, timeout_secs)
-        return None
     finally:
-        await asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
+        # The removal stays OFF the event loop, and scheduling it as its own
+        # task BEFORE awaiting is what closes the #5821 leak: a repeat
+        # cancellation (or KeyboardInterrupt) landing on this await abandons
+        # only the wait — the already-scheduled task still runs the removal to
+        # completion in its worker thread. ``shield`` keeps that cancellation
+        # from propagating INTO the removal task, while the exception itself
+        # still reaches the awaiter.
+        rm = asyncio.ensure_future(
+            asyncio.to_thread(shutil.rmtree, out_dir, ignore_errors=True)
+        )
+        await asyncio.shield(rm)
 
 
 # Defense in depth: ``mlx_model`` is read from config.json. The dashboard PUT

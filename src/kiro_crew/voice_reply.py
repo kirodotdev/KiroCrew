@@ -323,10 +323,11 @@ async def _synthesize_piper(
                     proc.communicate(text.encode("utf-8")),
                     timeout=60,
                 )
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
-                # asyncio.wait_for cancels communicate() on timeout — and a
-                # caller cancellation (client disconnect) arrives here as
-                # CancelledError — but neither terminates the child process:
+            except BaseException as exc:
+                # ``asyncio.wait_for`` cancels ``communicate()`` on timeout —
+                # and a caller cancellation (client disconnect) arrives here as
+                # CancelledError, as do interpreter-exit signals such as
+                # KeyboardInterrupt — but none of them terminate the child:
                 # kill it explicitly to avoid a zombie piper consuming CPU
                 # after we exit. Temp-file discard is owned by the ``finally``
                 # invariant below.
@@ -335,14 +336,25 @@ async def _synthesize_piper(
                     logger.error("piper timed out after 60s; killing subprocess")
                 try:
                     proc.kill()
-                except ProcessLookupError:
+                except OSError:
                     pass
+                # Reap via communicate(), not wait(): wait_for already
+                # cancelled the pipe readers, so a killed child blocked on a
+                # full PIPE would never be drained and wait() would hang.
                 try:
-                    await proc.wait()
+                    await proc.communicate()
                 except Exception:
                     logger.debug("piper wait after kill failed", exc_info=True)
+                except BaseException:
+                    # A repeat cancellation can land on the reap await. When we
+                    # are already propagating (non-timeout path) swallow it so
+                    # the ORIGINAL exception is the one that propagates; on the
+                    # timeout path it is a genuinely new cancellation, so let
+                    # it out.
+                    if timed_out:
+                        raise
                 if not timed_out:
-                    raise  # CancelledError must propagate to the caller
+                    raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error(
@@ -532,26 +544,39 @@ async def _synthesize_polly(
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+            except BaseException as exc:
                 # ``asyncio.wait_for`` cancels ``proc.communicate()`` on
                 # timeout — and a caller cancellation (client disconnect)
-                # arrives here as CancelledError — but neither terminates the
-                # child: kill it explicitly to avoid a hung ``aws polly``
-                # process consuming resources after we exit. Temp-file discard
-                # is owned by the ``finally`` invariant below.
+                # arrives here as CancelledError, as do interpreter-exit
+                # signals such as KeyboardInterrupt — but none of them
+                # terminate the child: kill it explicitly to avoid a hung
+                # ``aws polly`` process consuming resources after we exit.
+                # Temp-file discard is owned by the ``finally`` invariant
+                # below.
                 timed_out = isinstance(exc, asyncio.TimeoutError)
                 if timed_out:
                     logger.error("Polly timed out after 30s; killing subprocess")
                 try:
                     proc.kill()
-                except ProcessLookupError:
+                except OSError:
                     pass
+                # Reap via communicate(), not wait(): wait_for already
+                # cancelled the pipe readers, so a killed child blocked on a
+                # full PIPE would never be drained and wait() would hang.
                 try:
-                    await proc.wait()
+                    await proc.communicate()
                 except Exception:
                     logger.debug("polly wait after kill failed", exc_info=True)
+                except BaseException:
+                    # A repeat cancellation can land on the reap await. When we
+                    # are already propagating (non-timeout path) swallow it so
+                    # the ORIGINAL exception is the one that propagates; on the
+                    # timeout path it is a genuinely new cancellation, so let
+                    # it out.
+                    if timed_out:
+                        raise
                 if not timed_out:
-                    raise  # CancelledError must propagate to the caller
+                    raise  # cancellation/interrupt must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error("Polly failed: %s", stderr.decode())
