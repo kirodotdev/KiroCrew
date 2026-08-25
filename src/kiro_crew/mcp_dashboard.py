@@ -77,6 +77,7 @@ from kiro_crew.mcp_core import (
     _post,
     _resolve_session_key,
     _resolve_session_key_strict,
+    strict_identity_diagnosis,
 )
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
@@ -716,6 +717,7 @@ def _visible_chat_slots() -> tuple[list[dict], str | None]:
         return [], (
             "cannot verify which session is calling, so the session list is "
             "withheld — these tools scope what they show to the caller"
+            + strict_identity_diagnosis(SERVER_NAME)
         )
     scope = _caller_app_scope(caller_key, rows)
     if scope is None:
@@ -760,6 +762,7 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
             f"Error: cannot verify which session is calling, so {verb} is "
             "refused — reshaping the shared folder tree requires a caller "
             "identity the gateway can vouch for."
+            + strict_identity_diagnosis(SERVER_NAME)
         )
     rows, err = _get_rows("/api/chat/slots")
     if err:
@@ -817,6 +820,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 "Error: this session cannot be identified well enough to control another "
                 "session. Session control authorizes on the calling session's identity, and "
                 "only a gateway-issued key counts — a spawned subagent has none of its own."
+                + strict_identity_diagnosis(SERVER_NAME)
             )
 
     if name == "session_create":
@@ -1087,7 +1091,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return (
                 "Error: cannot verify which session is calling, so this move is "
                 "refused — filing another session requires a caller identity the "
-                "gateway can vouch for."
+                "gateway can vouch for." + strict_identity_diagnosis(SERVER_NAME)
             )
         # The verified key is passed through unchanged: re-resolving inside the
         # helper would let the write carry a different session's authority than

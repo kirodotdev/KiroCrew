@@ -139,7 +139,7 @@ def _strict_session_key() -> tuple[str, str]:
             "Error: this session's identity could not be verified strictly, "
             "so the ledger is not reachable from here. Subagents inherit no "
             "session identity of their own — record ledger updates from the "
-            "parent session instead."
+            "parent session instead." + mcp_core.strict_identity_diagnosis()
         )
     return sk, ""
 

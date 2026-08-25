@@ -676,6 +676,47 @@ def _resolve_session_key_strict() -> str:
     return ""
 
 
+def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
+    """Return the machine-specific reason strict identity is unavailable, or "".
+
+    Every strict refusal already says *what* was refused; none of them says why
+    THIS install cannot answer "which session is calling", so the reader has no
+    next step. This inspects the same three sources
+    :func:`_resolve_session_key_strict` accepts and names the missing channel.
+
+    The distinction that matters to an operator: on the kiro backend a session's
+    kiro-cli process is an ``AcpRuntime``, which is deliberately
+    session-UNBOUND (one process multiplexes N sessions, so it cannot carry a
+    single session's key in its environment — ``acp/runtime.py`` injects none).
+    The gateway's per-call caller injection is therefore the ONLY identity
+    channel for that backend, and it exists only for servers listed in
+    ``mcp_gateway.stub_servers``. An unrouted server on kiro has no channel at
+    all, which is a topology gap an operator can close in one line — not a bug
+    in the calling session.
+
+    Returns "" when identity IS resolvable (the caller should not be refusing),
+    so a caller can append this unconditionally.
+    """
+    if _resolve_session_key_strict():
+        return ""
+    if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
+        # The sandbox launcher declared a host pid, so the channel exists and
+        # the sidecar is what failed — a signing/trust-root problem, not routing.
+        return (
+            f" No identity channel: the signed pid mapping for this session did not "
+            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
+            f"routing when this channel works."
+        )
+    return (
+        f" No identity channel on this install: {server} is not in "
+        f"mcp_gateway.stub_servers, so the gateway injects no per-call caller, and "
+        f"the kiro backend's AcpRuntime is session-unbound (it carries no session "
+        f"key in its environment by design). Route {server} from MCP Management "
+        f"(or add it to mcp_gateway.stub_servers and restart) to give this session "
+        f"a verifiable identity. `kirocrew doctor` reports the same check."
+    )
+
+
 def _deny_channel_agent_messaging(caller_session: str, tool_name: str) -> str | None:
     """Return an ``Error:`` denial when a channel agent calls a messaging tool.
 

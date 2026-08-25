@@ -38,7 +38,11 @@ from kiro_crew.cron import (
 from kiro_crew.cron_script import resolve_script_path
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.mcp_caller import current_caller
-from kiro_crew.mcp_core import _resolve_session_key, _resolve_session_key_strict
+from kiro_crew.mcp_core import (
+    _resolve_session_key,
+    _resolve_session_key_strict,
+    strict_identity_diagnosis,
+)
 from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import current_context
 from kiro_crew.platform import redact_via_context as redact
@@ -1561,7 +1565,7 @@ def _unidentified_caller_refusal(tool_name: str) -> str:
     return (
         "Error: cannot determine which session is calling, so this write is "
         "refused. Manage jobs from the CLI (`kirocrew cron ...`), which carries "
-        "admin authority."
+        "admin authority." + strict_identity_diagnosis("kirocrew-cron")
     )
 
 

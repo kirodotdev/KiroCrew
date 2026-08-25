@@ -35,7 +35,7 @@
 1 src/kiro_crew/builtin_skills/browser-recording/scripts/record_browser.py
 2 src/kiro_crew/builtin_skills/ios-simulator-preview/scripts/sim_mirror.py
 1 src/kiro_crew/cli.py
-6 src/kiro_crew/cli_doctor.py
+5 src/kiro_crew/cli_doctor.py
 1 src/kiro_crew/cli_perf.py
 2 src/kiro_crew/cli_setup.py
 1 src/kiro_crew/cloud/aws.py

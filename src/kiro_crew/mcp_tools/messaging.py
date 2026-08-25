@@ -408,6 +408,7 @@ def send_message(name: str, args: dict[str, Any]) -> str:
                 "Error: cannot verify caller identity for a channel_type send "
                 "(no gateway-injected session key or HMAC-verified pid). "
                 "Refusing to post into a conversation that cannot be attributed."
+                + mcp_core.strict_identity_diagnosis()
             )
     # ``gov_session`` is the identity every gate below is keyed on. It is the
     # STRICT key whenever one was required, so the identity that is checked is
@@ -551,6 +552,7 @@ def send_notification(name: str, args: dict[str, Any]) -> str:
             "Error: cannot verify caller identity for send_notification "
             "(no gateway-injected session key or HMAC-verified pid). "
             "Refusing to publish without a trusted governance identity."
+            + mcp_core.strict_identity_diagnosis()
         )
     # Channel-agent containment: same boundary
     # as send_message — an auto-approved call emits no permission event,
