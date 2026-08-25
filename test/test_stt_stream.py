@@ -367,6 +367,51 @@ class TestAppleStreamingSession:
             assert "Command Line Tools" in msg["message"]
             await ws.close()
 
+    @pytest.mark.asyncio
+    async def test_cancelled_start_still_closes_the_session(self, monkeypatch):
+        """`await session.start()` runs BEFORE the teardown `finally` exists.
+
+        A cancellation landing there (client gone, gateway shutdown) therefore
+        has no caller-side owner: without the call-site guard, the helper
+        session — and the sandbox launcher it may hold — is never closed, and
+        the `stt_stream_start` already emitted gets no matching end audit. The
+        guard must close the session, balance the trail, and re-raise.
+        """
+        started = asyncio.Event()
+        closed: list[bool] = []
+        outcomes: list[str] = []
+
+        class HangingSession:
+            def __init__(self, **kwargs):
+                pass
+
+            async def start(self):
+                started.set()
+                await asyncio.sleep(60)
+                return ""
+
+            async def close(self):
+                closed.append(True)
+
+        self._install(monkeypatch, session=HangingSession)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.stt_stream._emit_end_audit",
+            lambda caller, *, outcome: outcomes.append(outcome),
+        )
+        from kiro_crew.dashboard import stt_stream
+
+        task = asyncio.create_task(
+            stt_stream._run_apple_session(
+                MagicMock(), _cfg(provider="apple"), MagicMock(), "test-caller"
+            )
+        )
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert closed == [True]
+        assert outcomes == ["error"]
+
 
 @pytest.fixture()
 def transcribe_consented(tmp_path_factory, monkeypatch):

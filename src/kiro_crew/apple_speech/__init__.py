@@ -23,6 +23,7 @@ otherwise.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -385,6 +386,38 @@ def _drop_sandbox_launcher(path: str | None) -> None:
         pass
 
 
+async def _sandboxed_off_loop(argv: list[str]) -> tuple[list[str], dict[str, str], str | None]:
+    """Offload :func:`_sandboxed` to a worker thread without a cancellation leak.
+
+    A plain ``asyncio.to_thread`` hop is the leak: cancelling the awaiting
+    coroutine abandons the hop while the worker thread is still inside
+    ``sandboxed_spawn_argv``, the thread goes on to materialize the
+    launcher/profile, and the returned tuple is never bound — so no ``finally``
+    and no session field can ever reach the cleanup path. Shielding the hop
+    keeps the worker's result recoverable: on cancellation, wait for it to
+    settle, drop the launcher it made, then re-raise. Same shape as
+    ``kiro_prerequisite``'s sandboxed-spawn preparation.
+
+    ``SandboxUnavailableError`` still propagates to the caller unchanged — the
+    shield only intercepts cancellation, and that raise carries no tuple and
+    hence no file to drop.
+    """
+    task = asyncio.create_task(asyncio.to_thread(_sandboxed, argv))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        cleanup: str | None = None
+        # `BaseException`, not `Exception`: a repeat cancellation can land on
+        # this recovery await, and letting it out of the handler would skip the
+        # drop below — the exact leak this helper exists to close. Swallow it
+        # so the drop still runs and the ORIGINAL cancellation is the one that
+        # propagates (same shape as `_to_native_audio`'s reap-on-cancel).
+        with contextlib.suppress(BaseException):
+            _, _, cleanup = await task
+        _drop_sandbox_launcher(cleanup)
+        raise
+
+
 def _mkstemp_path(suffix: str) -> str:
     """Create an empty temp file and return its path, descriptor already closed.
 
@@ -623,7 +656,7 @@ async def transcribe(
         argv.append(native_path)
 
         try:
-            argv, spawn_env, sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
+            argv, spawn_env, sb_cleanup = await _sandboxed_off_loop(argv)
         except sandbox.SandboxUnavailableError as exc:
             logger.warning("apple_speech: %s%s", _NO_SANDBOX_HINT, exc)
             return None, {"error": f"{_NO_SANDBOX_HINT}{exc}"}
@@ -684,9 +717,7 @@ async def inventory() -> dict:
     inv_cleanup: str | None = None
     try:
         try:
-            inv_argv, inv_env, inv_cleanup = await asyncio.to_thread(
-                _sandboxed, [helper, "--inventory"]
-            )
+            inv_argv, inv_env, inv_cleanup = await _sandboxed_off_loop([helper, "--inventory"])
         except sandbox.SandboxUnavailableError as exc:
             return {"error": f"{_NO_SANDBOX_HINT}{exc}"}
         proc = await asyncio.create_subprocess_exec(
@@ -769,9 +800,8 @@ class StreamingSession:
             return "streaming speech helper could not be built"
         try:
             try:
-                stream_argv, stream_env, self._sb_cleanup = await asyncio.to_thread(
-                    _sandboxed,
-                    [helper, "--locale", self.locale, "--sample-rate", str(self.sample_rate)],
+                stream_argv, stream_env, self._sb_cleanup = await _sandboxed_off_loop(
+                    [helper, "--locale", self.locale, "--sample-rate", str(self.sample_rate)]
                 )
             except sandbox.SandboxUnavailableError as exc:
                 return f"{_NO_SANDBOX_HINT}{exc}"
@@ -788,6 +818,15 @@ class StreamingSession:
             cleanup, self._sb_cleanup = self._sb_cleanup, None
             _drop_sandbox_launcher(cleanup)
             return f"could not start streaming helper: {exc}"
+        except BaseException:
+            # Cancellation between the tuple binding and the spawn completing:
+            # `CancelledError` is a `BaseException`, so the `OSError` drop above
+            # never sees it, and the caller's teardown only exists after start()
+            # returns. close() is the right teardown even though `_proc` is
+            # still unbound here — it kills+reaps whatever was spawned before
+            # unlinking, and is a no-op for the parts that never came up.
+            await self.close()
+            raise
 
         self._pump = asyncio.create_task(self._read_events())
         try:
@@ -795,6 +834,13 @@ class StreamingSession:
         except asyncio.TimeoutError:
             await self.close()
             return "streaming helper did not become ready"
+        except BaseException:
+            # Cancellation anywhere in the readiness wait leaves a live helper
+            # and a held launcher with no owner yet; run the session's own
+            # teardown — kill+reap, then unlink — before the cancellation
+            # surfaces.
+            await self.close()
+            raise
         if first is None:
             await self.close()
             return "streaming helper exited before becoming ready"
