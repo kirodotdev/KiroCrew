@@ -241,6 +241,22 @@ cron_add(
 - `note` — one line of context echoed into the wake brief. Put the worktree
   and branch here so the woken turn starts oriented; if this session keeps a
   work ledger, the brief also tells the woken turn to read it.
+- `coalesce_secs` — optional convergence window, default 240, `0` disables it.
+  Reds arriving while checks are still running are **coalesced into one
+  wake** instead of one wake each. This matters on a repository whose checks
+  finish over many minutes: a 34-second body gate and a five-minute reviewer
+  lane both flipping red on one head used to be two separate wakes, each
+  arriving before the other checks had even started. The window opens on the
+  first anomaly and fires once `coalesce_secs` has elapsed AND either everything
+  has settled or a 30-minute hard cap is hit — so a `pending` count that
+  never drains costs a delayed wake, never a lost one.
+- **A grace-gated wake always costs at least one extra tick**, because a
+  window cannot open and fire within the same tick. On a 60s cron that is at
+  least 60s of added latency. Set `coalesce_secs: 0` when latency matters more
+  than coalescing.
+- A merge conflict and a merged/closed PR **bypass the window** and fire
+  immediately: a dirty PR dispatches no checks, so `pending` never drains and
+  waiting observes nothing at all.
 - Wakes are deduplicated **per head SHA**: one wake per conflict, per new red
   check name, per all-green. A force-push resets the memory, so the next
   anomaly on the new head wakes again. Quiet ticks deliver nothing at all.

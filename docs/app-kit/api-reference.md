@@ -314,6 +314,100 @@ WebSocket event types: `chat_chunk`, `chat_done`, `chat_message`, `chat_error`,
 | `pauseCron(id)` | `Promise<void>` | Pause without deleting |
 | `resumeCron(id)` | `Promise<void>` | Resume a paused job |
 
+#### Watching something without paying for a model call (`kiro_crew.irq`)
+
+> **Provisional surface.** `kiro_crew.irq` has exactly one probe today
+> (`pr_watch`). The ~15 sibling pollers this abstraction was derived from
+> cannot migrate onto it yet, so a second real consumer has not yet tested the
+> contract. Treat the shapes below as subject to change until one has: build on
+> them, but expect `Observation` / `Tick` to gain fields, and pin the Kiro Crew
+> version your app was tested against.
+
+An app that needs to keep an eye on an external thing — a deploy, a ticket, a
+queue depth — should not schedule an **agent** cron to go look. That spends a
+full model turn per check, and on a quiet subject every one of those turns says
+"nothing changed".
+
+Schedule a **script** cron instead and build it on `kiro_crew.irq`, the
+interrupt controller. The script runs in a subprocess with no model call at
+all; a quiet tick is free. Only an unexpected observation raises a wake, and the
+wake is delivered into the session that armed the cron as a real agent turn.
+Full design: `docs/system-specs/features/agent-interrupt-controller.md`.
+
+You write the two things that are your domain knowledge — what to poll, and
+what counts as an anomaly — and the module owns masking (so one condition wakes
+once), coalescing (so several anomalies arrive as one wake), epoch resets (so a
+re-triggered subject forgets stale alerts), atomic per-watch state, and a
+consecutive-error backstop (so a broken probe says so instead of skipping
+quietly forever). Those are the four things a hand-rolled poller gets wrong,
+and each failure looks like success.
+
+```python
+import json
+
+from kiro_crew.irq import Observation, Probe, Severity, Tick, run
+
+
+class DeployProbe(Probe):
+    def identity(self, ctx):
+        """Return (subject_kind, subject_id); raise ValueError to self-remove."""
+        self.env = (json.loads(ctx.message or "{}") or {}).get("env") or ""
+        if not self.env:
+            raise ValueError('needs {"env": "..."}')
+        return ("deploy", self.env)
+
+    def observe(self, ctx):
+        """One bounded call per tick. Never raise Skip/Report/Done."""
+        status = read_deploy_status(self.env)
+        if status is None:
+            return Tick(fetch_ok=False)          # the kernel owns the backstop
+        if status.finished:
+            return Tick(epoch=status.id, observations=[
+                Observation("done", Severity.TERMINAL, f"{self.env} deployed."),
+            ])
+        obs = []
+        if status.rolled_back:
+            # Nothing improves by waiting -> NMI bypasses coalescing.
+            obs.append(Observation("rollback", Severity.NMI,
+                                   f"{self.env} rolled back."))
+        for stage in status.failed_stages:
+            obs.append(Observation(f"stage:{stage}", Severity.WAKE,
+                                   f"{self.env}: stage {stage} failed."))
+        return Tick(epoch=status.id, observations=obs,
+                    pending=status.running_stages)
+
+
+def watch(ctx):                                   # cron entry point
+    run(ctx, DeployProbe())
+```
+
+Register it with `addCron(name, { script: "<crons dir>/your_probe.py:watch",
+every: 300, timeout: 120, message: JSON.stringify({ env: "prod" }) })`. Cron
+scripts must live under the config directory's `crons/`, and the cron must be
+armed **from the session that should receive the wake** — the cron system
+captures the calling session at creation time.
+
+Rules:
+
+- **Never raise `Skip` / `Report` / `Done`.** Return data; the kernel decides.
+  It is the only place a verdict is raised.
+- A failed observation returns `Tick(fetch_ok=False)`, never an empty `Tick` —
+  an empty tick reads as "nothing is wrong".
+- Use `Severity.NMI` only for what genuinely cannot improve by waiting. Using
+  it to mean "important" defeats coalescing.
+- Supply an `epoch` when the subject has an identity token. Without one there
+  are no resets, so a re-triggered subject inherits the previous run's masks.
+- Filter out conditions the operator already knows about (a check red on the
+  base branch, a known-degraded dependency) in your own `observe()` — do not
+  return them. An earlier revision carried an `expected=True` flag for this; it
+  was removed because nothing read the state it recorded.
+- Keep `observe()` to one bounded call. This half must stay fast and cheap.
+- `coalesce_secs=0` turns coalescing off — pass it to `run()`, or return it from
+  your probe's `tuning()` when it should come from the cron message. Do that when
+  you would rather be woken early than woken once: coalescing costs at least one
+  cron interval of latency, because a window cannot open and fire within the
+  same tick.
+
 ### Lessons
 
 | Method | Returns | Description |
