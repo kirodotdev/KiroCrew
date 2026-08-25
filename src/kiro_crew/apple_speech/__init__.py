@@ -800,8 +800,25 @@ class StreamingSession:
             return "streaming speech helper could not be built"
         try:
             try:
+                # `--fast` inserts `.frequentFinalization` into the transcriber's
+                # reporting options so the helper emits mid-stream FINAL segments
+                # while the audio stream is still open. Without it the default
+                # DictationTranscriber produces only volatile partials until the
+                # stream closes, so the dashboard's semantic endpointer — which
+                # schedules its utterance-complete judgment exclusively from
+                # note_final() — never fires and auto-submit is impossible. The
+                # one-shot batch path deliberately omits it: its final arrives
+                # when the stream closes, and frequent finalization can trade
+                # accuracy for latency it has no use for.
                 stream_argv, stream_env, self._sb_cleanup = await _sandboxed_off_loop(
-                    [helper, "--locale", self.locale, "--sample-rate", str(self.sample_rate)]
+                    [
+                        helper,
+                        "--locale",
+                        self.locale,
+                        "--sample-rate",
+                        str(self.sample_rate),
+                        "--fast",
+                    ]
                 )
             except sandbox.SandboxUnavailableError as exc:
                 return f"{_NO_SANDBOX_HINT}{exc}"

@@ -16,6 +16,7 @@ import platform
 import sys
 import threading
 from contextlib import ExitStack
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
@@ -770,6 +771,78 @@ class TestStreamingSession:
         session = apple_speech.StreamingSession()
         await session.close()
         await session.close()
+
+
+class TestHelperArgvPinsFast:
+    """Pin the ``--fast`` flag in the STREAMING helper argv (#5896).
+
+    ``--fast`` inserts ``.frequentFinalization`` into the transcriber's reporting
+    options; without it the helper emits only volatile partials for the whole open
+    stream and never a mid-stream final, so the endpointer's ``note_final()``-driven
+    auto-submit can never fire. The live helper is macOS-only with no CI runner
+    coverage, so the spawned argv IS the verifiable contract: these tests pin the
+    flag's presence on the streaming path and its deliberate absence on the one-shot
+    batch path (where the final arrives at stream close and frequent finalization
+    would only trade accuracy for unneeded latency).
+    """
+
+    @pytest.mark.asyncio
+    async def test_streaming_argv_includes_fast(self):
+        """StreamingSession.start() must pass --fast to the helper."""
+        session = apple_speech.StreamingSession(locale="en-US")
+        # Failing the spawn keeps the test on the argv contract alone: by the
+        # time create_subprocess_exec is called the argv is fully built, and no
+        # pump/ready plumbing needs to be faked.
+        spawn = Mock(side_effect=OSError("argv pin: no real spawn"))
+        with (
+            patch.object(
+                apple_speech, "availability", return_value=apple_speech.Availability(True)
+            ),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/stream-helper"),
+            patch("asyncio.create_subprocess_exec", spawn),
+            _passthrough_sandbox(),
+        ):
+            problem = await session.start()
+        assert "could not start streaming helper" in problem
+        argv = list(spawn.call_args.args)
+        assert argv[0] == "/fake/stream-helper"
+        assert "--fast" in argv
+        # The helper's parser treats --fast as a bare switch; it must not have
+        # swallowed a neighbouring option's value.
+        assert argv[argv.index("--locale") + 1] == "en-US"
+        assert argv[argv.index("--sample-rate") + 1] == str(apple_speech.STREAM_SAMPLE_RATE_HZ)
+
+    @pytest.mark.asyncio
+    async def test_one_shot_argv_excludes_fast(self):
+        """The batch path must NOT opt into frequent finalization."""
+        spawn = Mock(side_effect=OSError("argv pin: no real spawn"))
+        with (
+            patch.object(
+                apple_speech, "availability", return_value=apple_speech.Availability(True)
+            ),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", spawn),
+            _passthrough_sandbox(),
+        ):
+            text, meta = await apple_speech.transcribe("/tmp/x.wav")
+        assert text is None
+        assert "could not run speech helper" in meta["error"]
+        argv = list(spawn.call_args.args)
+        assert argv[0] == "/fake/helper"
+        assert "--fast" not in argv
+
+    def test_swift_helper_still_accepts_fast(self):
+        """Pin the OTHER side of the cross-process contract, by source inspection.
+
+        The helper is never compiled in CI (macOS-only), so the argv pins above
+        cannot see a Swift-side regression: renaming or dropping the ``--fast``
+        case would leave every Python test green while the helper dies at
+        startup with ``unexpected argument: --fast``. The helper source ships in
+        the same package directory ``_build_helper`` reads it from, so anchor on
+        the module rather than a CWD-relative path.
+        """
+        swift_src = Path(apple_speech.__file__).with_name("StreamTranscribe.swift")
+        assert 'case "--fast":' in swift_src.read_text(encoding="utf-8")
 
 
 class TestSandboxCleanupPathIsDropped:
