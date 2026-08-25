@@ -341,6 +341,36 @@ about. The only reachable way to break the link was `DELETE /api/sessions/{key}`
 which destroys the record in order to reset the pointer — so "start over" and
 "erase this" were the same button.
 
+**`replay` is what the caller means by "fresh", and it has to be asked for.**
+Clearing the sid stops the provider resuming its own conversation — and "the
+provider has no history" is precisely the condition that makes the next cold
+start rebuild one from `conversation_log` as a `[CONVERSATION HISTORY]` block
+(`chat_runner`, injected OUTSIDE the capped session context). So the two
+mechanisms work against each other by construction: the caller discards the
+conversation and the next turn is handed a reconstruction of it. Measured on one
+app-owned session, that replay was 80,359 characters — 76% of the first turn's
+injected context, and most of what discarding the conversation was meant to
+reclaim. `discard_conversation(key, replay=False)` records a ONE-SHOT
+suppression, consumed at the replay gate inside the cold-start branch so a warm
+turn cannot spend it, and the route threads it from an optional `replay` field on
+the request body. The default is `True`, which keeps every existing caller and
+the dashboard's own copy ("Conversation history is preserved — your next message
+starts a fresh process") true. Only the RE-INJECTION is suppressed: the
+transcript is untouched, so the conversation stays readable in the dashboard and
+on disk.
+
+The flag cannot live on the session object the way `needs_context_reinjection`
+does, because `discard_conversation` POPS that session — the decision is made by
+the turn that tears the conversation down and acted on by the next turn, which
+builds a new one. It is therefore a manager-level set, process-scoped on purpose:
+a gateway restart also cold-starts the session, but there the replay is
+legitimate, since nobody asked for a fresh conversation and re-anchoring is what
+that surface has always done. Every teardown path that already clears the
+compaction cooldown clears it too (`reset`, `remove`,
+`retire_kiro_identity_sessions`, `remove_if_unclaimed`, `destroy`, and
+`close_all`), because slot keys ARE reused and a leaked flag would starve the
+NEXT holder of that key of its re-anchor.
+
 Three properties the route holds, each of which fails silently if broken:
 
 - The key comes from `effective_session_key(slot)`, never a derived

@@ -106,6 +106,70 @@ async def _post(app: web.Application, slot: str):
         return resp.status, body
 
 
+class TestTheReplayParameter:
+    """``replay`` decides whether the next cold start re-injects the old
+    conversation as a ``[CONVERSATION HISTORY]`` block. Default True keeps the
+    route's existing behaviour and its own copy true."""
+
+    @pytest.mark.asyncio
+    async def test_replay_false_threads_through(self):
+        state = _state(_slot("chat-1-foo"))
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/chat-1-foo/reset-conversation",
+                json={"replay": False},
+            )
+            body = await resp.json()
+
+        assert resp.status == 200
+        assert body["replay"] is False
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=False
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_body_less_post_still_works(self):
+        """The route took no body before this parameter existed."""
+        state = _state(_slot("chat-1-foo"))
+
+        status, body = await _post(_make_app(state), "chat-1-foo")
+
+        assert status == 200
+        assert body["replay"] is True
+
+    def test_the_body_is_read_before_the_busy_guards(self):
+        """Source-order guard: reading the body must not widen the teardown race.
+
+        ``await request.json()`` is a suspension whose duration the CLIENT
+        controls. Every busy guard below it protects work that can START during a
+        suspension — a turn admitted after ``has_active_turn()`` answered False is
+        then torn down mid-write by the discard. Parsing the body after the guards
+        would stretch that window from one event-loop hop to however long a slow
+        body takes to arrive, so the guards must be the LAST thing before the
+        teardown.
+
+        Asserted on the source rather than on behaviour because the failure is an
+        interleaving: a test that posts a slow body and races a concurrent turn
+        would be exactly the timing-dependent flake the testing conventions
+        forbid, and it would pass on a fast machine with the bug present.
+        """
+        import inspect
+
+        from kiro_crew.dashboard import chat_handlers
+
+        src = inspect.getsource(chat_handlers.api_chat_slot_reset_conversation)
+        body_read = src.index("await request.json()")
+        first_guard = src.index("state.sessions.get_provider(key)")
+        discard = src.index("discard_conversation(key, replay=")
+
+        assert body_read < first_guard, (
+            "the body is parsed after the first busy guard, so a slow body widens "
+            "the window in which a concurrent turn can start and be torn down"
+        )
+        assert first_guard < discard, "the guards must sit between the body read and the teardown"
+
+
 class TestItClearsTheRightThing:
     @pytest.mark.asyncio
     async def test_it_clears_the_slot_s_own_session(self):
@@ -115,7 +179,9 @@ class TestItClearsTheRightThing:
 
         assert status == 200
         assert body["reset"] is True
-        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:chat-1-foo")
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=True
+        )
 
     @pytest.mark.asyncio
     async def test_a_channel_born_slot_clears_its_channel_session(self):
@@ -131,7 +197,7 @@ class TestItClearsTheRightThing:
         status, _ = await _post(_make_app(state), "slack_123.456")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("slack:123.456")
+        state.sessions.discard_conversation.assert_awaited_once_with("slack:123.456", replay=True)
 
     @pytest.mark.asyncio
     async def test_it_keeps_the_entry_rather_than_deleting_it(self):
@@ -196,7 +262,9 @@ class TestItRefusesWhenItCannotBeSafe:
         status, _ = await _post(_make_app(state), "chat-1-foo")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:chat-1-foo")
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=True
+        )
 
     @pytest.mark.asyncio
     async def test_a_plan_between_stages_blocks_the_reset(self):
@@ -236,7 +304,9 @@ class TestItRefusesWhenItCannotBeSafe:
         status, _ = await _post(_make_app(state), "chat-1-foo")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:chat-1-foo")
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:chat-1-foo", replay=True
+        )
 
 
 class TestAppScope:
@@ -247,7 +317,9 @@ class TestAppScope:
         status, _ = await _post(_make_app(state, declared_app=OWNER), "acme-obj-1")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:acme-obj-1")
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:acme-obj-1", replay=True
+        )
 
     @pytest.mark.asyncio
     async def test_an_app_cannot_reset_another_app_s_slot(self):
@@ -298,4 +370,6 @@ class TestAppScope:
         status, _ = await _post(_make_app(state, declared_app=""), "acme-obj-1")
 
         assert status == 200
-        state.sessions.discard_conversation.assert_awaited_once_with("dashboard:acme-obj-1")
+        state.sessions.discard_conversation.assert_awaited_once_with(
+            "dashboard:acme-obj-1", replay=True
+        )

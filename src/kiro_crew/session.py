@@ -1030,6 +1030,19 @@ class SessionManager:
         # cold-start).
         self._recycling: dict[str, "_Session"] = {}
         self._compact_cooldown_until: dict[str, float] = {}
+        #: Session keys whose NEXT cold start must not replay prior history.
+        #:
+        #: Set by ``discard_conversation(replay=False)`` and consumed one-shot at
+        #: the replay gate. It cannot live on the session object the way
+        #: ``needs_context_reinjection`` does, because ``discard_conversation``
+        #: POPS that session — the decision is made by the turn that tears the
+        #: conversation down and acted on by the NEXT turn, which builds a new one.
+        #:
+        #: Process-scoped on purpose. A gateway restart also cold-starts the
+        #: session, but there the replay is legitimate: nobody asked for a fresh
+        #: conversation, the process simply went away, and re-anchoring is the
+        #: behaviour that surface has always had.
+        self._suppress_replay: set[str] = set()
         # Compactions whose effect could not be measured at completion time
         # (post-compaction stats reset to unknown, or telemetry not refreshed
         # yet): key -> the pct that triggered the attempt. Settled by the
@@ -3310,6 +3323,7 @@ class SessionManager:
             # The new process is a fresh start — drop any stale failure
             # cooldown so it isn't inherited.
             self._compact_cooldown_until.pop(key, None)
+            self._suppress_replay.discard(key)
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         if clear_conversation and session is not None:
@@ -3520,6 +3534,25 @@ class SessionManager:
             return False
         sess.needs_context_reinjection = False
         return True
+
+    def consume_replay_suppression(self, key: str) -> bool:
+        """Read *and clear* whether *key*'s next cold start must skip replay.
+
+        One-shot by construction, the same shape as
+        :meth:`consume_needs_reinjection`: the flag is cleared as it is read, so
+        exactly the FIRST cold start after ``discard_conversation(replay=False)``
+        starts empty. Leaving it set would make every later cold start on that
+        key — an idle-timeout expiry, a gateway restart — silently amnesiac,
+        which nobody asked for.
+        """
+        if key in self._suppress_replay:
+            self._suppress_replay.discard(key)
+            return True
+        folded = self._fold_key(key)
+        if folded in self._suppress_replay:
+            self._suppress_replay.discard(folded)
+            return True
+        return False
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register a callback fired when the watchdog recycles a session.
@@ -4129,6 +4162,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._suppress_replay.discard(key)
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         if session:
@@ -4241,6 +4275,7 @@ class SessionManager:
                             continue
                         del self._sessions[key]
                         self._compact_cooldown_until.pop(key, None)
+                        self._suppress_replay.discard(key)
                         self._origin_links.pop(key, None)
                         doomed.append((key, sess.provider))
             finally:
@@ -4453,6 +4488,7 @@ class SessionManager:
                 return False
             del self._sessions[key]
             self._compact_cooldown_until.pop(key, None)
+            self._suppress_replay.discard(key)
             self._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
         await asyncio.to_thread(_unlink_session_queue, session)
@@ -4471,6 +4507,7 @@ class SessionManager:
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
+            self._suppress_replay.discard(key)
             self._compact_pending_verdict.pop(key, None)
         try:
             if session:
@@ -4482,7 +4519,7 @@ class SessionManager:
             self._session_map.delete(key, reason=UNBIND_REASON_SESSION_DESTROYED)
             logger.info("Destroyed session (map deleted): %s", key)
 
-    async def discard_conversation(self, key: str) -> None:
+    async def discard_conversation(self, key: str, *, replay: bool = True) -> None:
         """Tear down the live session and drop ONLY its native conversation.
 
         Like :meth:`destroy`, the provider is shut down and the resume sid is
@@ -4495,12 +4532,35 @@ class SessionManager:
         conversation. Used by the poisoned-conversation escalation in
         chat_runner, where the conversation is unusable but the session's
         channel identity must persist.
+
+        ``replay`` is what "fresh" MEANS to the caller, and the default keeps
+        every existing caller's behaviour. Clearing the sid stops the provider
+        resuming its own conversation — and "the provider has no history" is
+        precisely the condition that makes the next cold start rebuild one from
+        ``conversation_log`` as a ``[CONVERSATION HISTORY]`` block. So the two
+        mechanisms work against each other: the caller discards the
+        conversation and the next turn is handed a reconstruction of it.
+        Measured on one app-owned session, that replay was 80,359 characters —
+        76% of the first turn's injected context — which is most of what
+        discarding the conversation was meant to reclaim.
+
+        Pass ``replay=False`` when a fresh conversation is the point rather than
+        a side effect (an app rotating a long-running session at a clean
+        boundary). The transcript is untouched either way: this suppresses the
+        RE-INJECTION, it does not delete history, so the conversation stays
+        readable in the dashboard and on disk.
         """
         key = self._fold_key(key)
         async with self._lock:
             session = self._sessions.pop(key, None)
             self._compact_cooldown_until.pop(key, None)
             self._compact_pending_verdict.pop(key, None)
+            # Recorded under the same lock that pops the session, so the next
+            # turn cannot observe a torn-down session with the flag not yet set.
+            if replay:
+                self._suppress_replay.discard(key)
+            else:
+                self._suppress_replay.add(key)
         try:
             if session:
                 await asyncio.to_thread(_unlink_session_queue, session)
@@ -4739,6 +4799,7 @@ class SessionManager:
             sessions = dict(self._sessions)
             self._sessions.clear()
             self._compact_cooldown_until.clear()
+            self._suppress_replay.clear()
             self._compact_pending_verdict.clear()
 
         # Bound concurrent shutdowns: each provider.shutdown() -> _kill_process()

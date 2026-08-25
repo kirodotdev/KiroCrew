@@ -3216,6 +3216,25 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if denied is not None:
         return denied
 
+    # Read the body HERE — after authorization, before the busy guards. Reading it
+    # is an await the CLIENT controls the duration of, and every guard below
+    # protects work that can START during a suspension: a turn admitted after
+    # ``has_active_turn()`` answered False is torn down mid-write by the discard.
+    # Parsing after the guards would widen that window from one event-loop hop to
+    # however long a slow body takes to arrive. The guards must be the last thing
+    # that happens before the teardown.
+    #
+    # A malformed or absent body is not an error. This route took no body before,
+    # so refusing one would break every existing caller for a parameter they do
+    # not send.
+    replay = True
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    if isinstance(body, dict) and "replay" in body:
+        replay = bool(body.get("replay"))
+
     # A turn in flight on the SESSION, which ``slot.running`` cannot see: that
     # flag tracks this slot's own task, while an inbound channel message runs a
     # turn on the linked session with no dashboard task at all. Tearing the
@@ -3253,14 +3272,14 @@ async def api_chat_slot_reset_conversation(request: web.Request) -> web.Response
     if attached is not None:
         return attached
 
-    await state.sessions.discard_conversation(key)
+    await state.sessions.discard_conversation(key, replay=replay)
     sel().log_api_access(
         caller=request.get("app", "") or "dashboard",
         operation="slot_reset_conversation",
         outcome="completed",
-        resources=f"slot={name}",
+        resources=f"slot={name} replay={replay}",
     )
-    return web.json_response({"slot": name, "reset": True})
+    return web.json_response({"slot": name, "reset": True, "replay": replay})
 
 
 async def api_chat_slot_delete(request: web.Request) -> web.Response:

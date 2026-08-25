@@ -5648,33 +5648,43 @@ async def _run_chat(
                 if isinstance(client, AcpProvider) and client.client.resumed:
                     _provider_has_history = True
             if is_new and not _provider_has_history and state.context_builder.conversation_log:
-                from kiro_crew.context import (  # circular: context -> chat
-                    build_session_replay,
-                    window_for_provider_client,
-                )
+                # Consumed HERE rather than before the branch, so only a real cold
+                # start can spend the flag: a warm turn that never rebuilds history
+                # must not burn the one chance the reset asked for.
+                if state.sessions.consume_replay_suppression(session_key):
+                    logger.info(
+                        "Session replay suppressed by an explicit conversation reset: %s",
+                        session_key,
+                    )
+                    compressed = None
+                else:
+                    from kiro_crew.context import (  # circular: context -> chat
+                        build_session_replay,
+                        window_for_provider_client,
+                    )
 
-                # drop the just-flushed current-turn user message
-                # from replay. chat_handlers.py:146 (or queue dequeue at L1898)
-                # always appended exactly one message before _run_chat fires,
-                # and the periodic flush_loop may have already written it to
-                # disk during the kiro-cli cold spawn (~5s flush vs ≥15s spawn).
-                # Scale the replay budget to the model window (client is live here).
-                # Offloaded: resolving this chat's tab id globs and opens every
-                # session file sharing it to rebuild an index, then reads each
-                # chained file in full — unbounded file IO on the hottest path in
-                # the gateway, where it would block every other request.
-                compressed = await asyncio.to_thread(
-                    build_session_replay,
-                    state.context_builder.conversation_log,
-                    session_key,
-                    exclude_last_n=1,
-                    model_window=window_for_provider_client(client),
-                )
-                logger.info(
-                    "Session replay: key=%s result=%s",
-                    session_key,
-                    f"{len(compressed)} chars" if compressed else "None (no history)",
-                )
+                    # drop the just-flushed current-turn user message
+                    # from replay. chat_handlers.py:146 (or queue dequeue at L1898)
+                    # always appended exactly one message before _run_chat fires,
+                    # and the periodic flush_loop may have already written it to
+                    # disk during the kiro-cli cold spawn (~5s flush vs ≥15s spawn).
+                    # Scale the replay budget to the model window (client is live here).
+                    # Offloaded: resolving this chat's tab id globs and opens every
+                    # session file sharing it to rebuild an index, then reads each
+                    # chained file in full — unbounded file IO on the hottest path in
+                    # the gateway, where it would block every other request.
+                    compressed = await asyncio.to_thread(
+                        build_session_replay,
+                        state.context_builder.conversation_log,
+                        session_key,
+                        exclude_last_n=1,
+                        model_window=window_for_provider_client(client),
+                    )
+                    logger.info(
+                        "Session replay: key=%s result=%s",
+                        session_key,
+                        f"{len(compressed)} chars" if compressed else "None (no history)",
+                    )
             # After a soft-cancel, kiro-cli drops the cancelled turn from its
             # conversation log — but everything BEFORE the cancel is preserved.
             # Re-inject just the cancelled turn (user prompt + partial assistant)
