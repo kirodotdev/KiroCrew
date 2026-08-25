@@ -3436,6 +3436,83 @@ class TestAutoApplyUpdateVenvPath:
         ds.push_update_progress.assert_any_call("pulling", "Fetching latest changes…")
         ds.push_update_progress.assert_any_call("building", "Building frontend…")
 
+    @pytest.mark.asyncio
+    async def test_kiro_cli_update_timeout_kills_child_and_stays_nonfatal(self):
+        """A hung `kiro-cli update` is tree-killed AND the update stays non-fatal.
+
+        Both halves matter (issue #4210). Before the fix, the 120s timeout was
+        swallowed by the bare ``except Exception`` → DEBUG, so the run fell
+        through to the frontend build and dep reinstall while the ABANDONED
+        `kiro-cli update` kept mutating the installation concurrently — the
+        same half-replaced-install race the wheel path's CancelledError branch
+        exists to prevent. A kill-only assertion would pass on a fix that
+        turned the timeout fatal; the non-fatal half pins that the surrounding
+        contract (log at DEBUG, continue the update) is unchanged.
+        """
+        orch = _make_orchestrator()
+        ds = _mock_dashboard_state()
+        orch.dashboard_state = ds
+        orch.sessions = _mock_sessions()
+
+        _git_fake = _git_exec_fake()
+        kiro_procs: list = []
+
+        async def _fake_exec(*args, **kwargs):
+            argv = [a for a in args if isinstance(a, str)]
+            if argv and argv[0] == "kiro-cli":
+                proc = AsyncMock()
+                proc.kill = MagicMock()
+                proc.returncode = None
+                # The wait never completes inside its 120s budget; raising the
+                # timeout from the awaited side is this file's precedent for
+                # an expired `asyncio.wait_for` (the arm under test catches
+                # the same exception either way).
+                proc.wait = AsyncMock(side_effect=asyncio.TimeoutError())
+                proc.communicate = AsyncMock(return_value=(b"", b""))
+                kiro_procs.append(proc)
+                return proc
+            return await _git_fake(*args, **kwargs)
+
+        killed: list = []
+
+        async def _fake_kill_and_reap(proc):
+            killed.append(proc)
+
+        with patch("kiro_crew.env.is_toolbox_install", return_value=False):
+            with patch.dict("os.environ", {"KIROCREW_PROJECT_DIR": "/tmp/proj"}):
+                with patch("asyncio.create_subprocess_exec", side_effect=_fake_exec):
+                    with patch(
+                        "kiro_crew.dep_sync.sync_or_reinstall", return_value=0
+                    ) as mock_install:
+                        with patch.object(
+                            GatewayOrchestrator, "_is_brazil_install", return_value=False
+                        ):
+                            with patch(
+                                "kiro_crew.slack.gateway.build_frontend_async",
+                                new_callable=AsyncMock,
+                            ) as mock_build:
+                                with patch("os.execv", side_effect=OSError("test")):
+                                    # Truthy: the optional kiro-cli step runs.
+                                    with patch(
+                                        "shutil.which", return_value="/usr/bin/kiro-cli"
+                                    ):
+                                        # The gateway resolves _kill_and_reap
+                                        # function-locally on every call, so
+                                        # patching the source module reaches it.
+                                        with patch(
+                                            "kiro_crew.platform.update_provider._kill_and_reap",
+                                            side_effect=_fake_kill_and_reap,
+                                        ):
+                                            await orch._auto_apply_update()
+
+        # Half 1: the hung child was killed (tree kill + bounded reap).
+        assert kiro_procs, "the kiro-cli update spawn never happened"
+        assert killed == kiro_procs
+        # Half 2: the timeout stayed NON-FATAL — the update continued into the
+        # frontend build and the dependency install exactly as before.
+        mock_build.assert_awaited_once()
+        assert mock_install.call_count == 1
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Tests: Subagent Slack injection timeout
