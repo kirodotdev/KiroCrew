@@ -777,6 +777,7 @@ function initAutoUpdate(deps) {
 
     let foundVersion = null; // last version discovered by the checkCommand, awaiting apply
     let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
+    let managedInstalling = false; // an apply is in progress — pause the poll
 
     // Mirror emitError's renderer contract (emitError itself is defined further
     // down, after this early return, so it is out of scope here): a failure
@@ -899,6 +900,7 @@ function initAutoUpdate(deps) {
       }
       event.preventDefault();
       (async () => {
+        managedInstalling = true;
         emit("installing", { version: foundVersion });
         try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
         try { if (stopGateway) await stopGateway(); } catch (err) {
@@ -996,6 +998,7 @@ function initAutoUpdate(deps) {
     }
 
     async function managedInstall() {
+      managedInstalling = true;
       emit("installing", { version: foundVersion });
       try { if (onInstallDispatched) onInstallDispatched(); } catch { /* advisory */ }
       try { if (stopGateway) await stopGateway(); } catch (err) {
@@ -1012,6 +1015,24 @@ function initAutoUpdate(deps) {
       try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
       emitManagedError("install", new Error(`managed update command exited ${code}`));
     }
+
+    // Auto-check on launch and on the same interval as the feed path, so a
+    // managed install DISCOVERS updates without the user clicking Check
+    // (auto-update is on by default). Background checks only discover — an
+    // apply still requires the auto-download preference or an explicit install.
+    // The poll skips windows where an apply is already in flight, and both
+    // timers are unref'd so they never hold the process open (Electron quit,
+    // tests).
+    const managedLaunchTimer = setTimeout(() => {
+      managedCheck().catch((err) => log.error("[update] managed launch check threw", err));
+    }, LAUNCH_CHECK_DELAY_MS);
+    const managedPollTimer = setInterval(() => {
+      if (!managedInstalling) {
+        managedCheck().catch((err) => log.error("[update] managed poll check threw", err));
+      }
+    }, CHECK_INTERVAL_MS);
+    if (typeof managedLaunchTimer.unref === "function") managedLaunchTimer.unref();
+    if (typeof managedPollTimer.unref === "function") managedPollTimer.unref();
 
     return {
       check: () => managedCheck(),

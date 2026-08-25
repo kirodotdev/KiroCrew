@@ -846,6 +846,33 @@ test("managed download() lights the Install action (downloaded) without applying
   assert.ok(!commands.includes("apply"), "download must NOT run the apply command");
 });
 
+test("managed updater auto-checks on launch + arms a poll (no user action needed)", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const realST = global.setTimeout;
+  const realSI = global.setInterval;
+  let launchCb = null;
+  let pollArmed = false;
+  // Capture the scheduling done DURING synchronous init; the managed updater
+  // returns before the feed path, so these are its only timers. Restore the
+  // real timers immediately after init, before running the captured callback.
+  global.setTimeout = (fn) => { launchCb = fn; return { unref() {} }; };
+  global.setInterval = () => { pollArmed = true; return { unref() {} }; };
+  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.6" });
+  t.after(() => { global.setTimeout = realST; global.setInterval = realSI; restore(); });
+  initAutoUpdate(deps);
+  global.setTimeout = realST;
+  global.setInterval = realSI;
+  assert.strictEqual(typeof launchCb, "function", "a launch check must be scheduled automatically");
+  assert.ok(pollArmed, "a background polling interval must be armed");
+  launchCb();
+  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  assert.deepStrictEqual(commands, ["check"], "the scheduled launch check shells checkCommand");
+  const found = states.find((s) => s.state === "found");
+  assert.ok(found && found.version === "0.5.0.6", "the background check discovers the update on its own");
+});
+
 test("readExternallyManaged: absent marker -> null", (t) => {
   const fs = require("node:fs");
   const os = require("node:os");
