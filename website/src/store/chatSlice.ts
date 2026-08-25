@@ -1087,7 +1087,7 @@ const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
  *  read-only selector twin of the internal `getSlotSubs`. Exists so the
  *  Activity panel can subscribe to this itself instead of having ChatPage hold
  *  the subscription and pass it down: ChatPage renders on every streamed token,
- *  and `sseSubagentChunk` bumps this reference per sub-agent chunk, so a
+ *  and `sseSubagentBatchChunks` bumps this reference per sub-agent chunk, so a
  *  ChatPage-level subscription re-rendered the whole page for a panel that is
  *  closed by default. */
 export const selectSlotSubagents = (state: RootState, slot: string | null): Record<string, SubagentActivity> =>
@@ -3316,18 +3316,6 @@ const chatSlice = createSlice({
         toolCount: 0, stalled: false,
       }
     },
-    sseSubagentChunk(state, action: PayloadAction<{ slot: string; id: string; text: string }>) {
-      // Prototype-pollution guard is centralized in getSlotSub (fail-closed on
-      // __proto__/constructor/prototype ids) so no call site can forget it.
-      const a = getSlotSub(state, action.payload.slot, action.payload.id)
-      if (a) {
-        a.retrying = false
-        a.streaming += action.payload.text
-        if (a.streaming.length > 50_000) {
-          a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
-        }
-      }
-    },
     sseSubagentTool(state, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number }>) {
       const { slot, id } = action.payload
       // Prototype-pollution guard is centralized in getSlotSub.
@@ -3386,8 +3374,7 @@ const chatSlice = createSlice({
         }
       }
     },
-    /** One coalesced ~1s frame of concatenated streaming text per agent
-     *  (subscriber-only, mirrors sseSubagentChunk semantics). */
+    /** One coalesced ~1s frame of concatenated streaming text per agent. */
     sseSubagentBatchChunks(state, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
       for (const c of action.payload.chunks || []) {
         const a = getSlotSub(state, c.slot, c.id)
@@ -4985,7 +4972,7 @@ export const {
   setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, startLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
-  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentChunk, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
+  toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,
   sseSubagentBatchUpdate, sseSubagentBatchChunks, selectSubagent, clearTerminalSubagents,
   setGoalLoops, sseGoalLoop,
   sseSubagentSnapshot, sseToolActivity, sseToolResult, sseActivityEvent,

@@ -5,7 +5,7 @@ import chatReducer, {
   sseChatMessage,
   hydrateSlotMessages,
   sseSubagentSpawn,
-  sseSubagentChunk,
+  sseSubagentBatchChunks,
   sseToolActivity,
   sseToolResult,
   switchSlot,
@@ -24,7 +24,7 @@ function makeStore() {
   })
 }
 
-describe('sseSubagentChunk — prototype-pollution guard (bug chatSlice.ts:931)', () => {
+describe('sseSubagentBatchChunks — prototype-pollution guard (bug chatSlice.ts:931)', () => {
   it('ignores a poisoned __proto__ id and does not pollute Object.prototype', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('active'))
@@ -33,15 +33,15 @@ describe('sseSubagentChunk — prototype-pollution guard (bug chatSlice.ts:931)'
     // Failure scenario: a subagent_chunk event whose id === '__proto__' would,
     // without the guard, resolve `state.subagents['__proto__']` to
     // Object.prototype and write `streaming` onto it — polluting every object.
-    store.dispatch(sseSubagentChunk({ slot: 'active', id: '__proto__', text: 'poison' }))
-    store.dispatch(sseSubagentChunk({ slot: 'active', id: 'constructor', text: 'poison' }))
-    store.dispatch(sseSubagentChunk({ slot: 'active', id: 'prototype', text: 'poison' }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'active', id: '__proto__', text: 'poison' }] }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'active', id: 'constructor', text: 'poison' }] }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'active', id: 'prototype', text: 'poison' }] }))
 
     expect('streaming' in ({} as Record<string, unknown>)).toBe(false)
     expect((Object.prototype as Record<string, unknown>).streaming).toBeUndefined()
 
     // A legitimate chunk still appends to the real subagent.
-    store.dispatch(sseSubagentChunk({ slot: 'active', id: 'real', text: 'hello' }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'active', id: 'real', text: 'hello' }] }))
     expect(store.getState().chat.subagents.real.streaming).toBe('hello')
   })
 })

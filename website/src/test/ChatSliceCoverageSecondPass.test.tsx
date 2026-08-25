@@ -53,7 +53,6 @@ import chatReducer, {
   sseChatMessageUpdate,
   sseSideResult,
   sseSubagentBatchChunks,
-  sseSubagentChunk,
   sseSubagentDone,
   sseSubagentPending,
   sseSubagentSpawn,
@@ -1252,7 +1251,7 @@ describe('chatSlice sub-agent cards', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('A'))
     store.dispatch(sseSubagentSpawn({ slot: 'A', id: 'ag-1', task: 't', agent: 'kirocrew' }))
-    store.dispatch(sseSubagentChunk({ slot: 'A', id: 'ag-1', text: 'x'.repeat(50_001) }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'A', id: 'ag-1', text: 'x'.repeat(50_001) }] }))
     const streamed = chat(store).subagents['ag-1'].streaming
     expect(streamed.length).toBeLessThan(50_001)
     expect(streamed.endsWith('x')).toBe(true)

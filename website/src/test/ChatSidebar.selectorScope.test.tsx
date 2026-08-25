@@ -9,7 +9,7 @@ import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { sseSubagentChunk, sseSubagentSpawn } from '../store/chatSlice'
+import { sseSubagentBatchChunks, sseSubagentSpawn } from '../store/chatSlice'
 
 // Counts renders of ChatSidebar.
 const { sidebarRenders } = vi.hoisted(() => ({ sidebarRenders: { n: 0 } }))
@@ -151,7 +151,7 @@ describe('ChatSidebar store subscription scope', () => {
 
     // Cross-slot: chunk for slot-b should not re-render when slot-a is active.
     const delta = await rendersDuring(() => {
-      store.dispatch(sseSubagentChunk({ slot: 'slot-b', id: 'sub-1', text: 'token' }))
+      store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'slot-b', id: 'sub-1', text: 'token' }] }))
     })
 
     expect(delta).toBe(0)
@@ -173,7 +173,7 @@ describe('ChatSidebar store subscription scope', () => {
 
     // Same-slot streaming: count unchanged so derived selector should not re-render.
     const delta = await rendersDuring(() => {
-      store.dispatch(sseSubagentChunk({ slot: 'slot-a', id: 'sub-1', text: 'token' }))
+      store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: 'slot-a', id: 'sub-1', text: 'token' }] }))
     })
 
     expect(delta).toBe(0)

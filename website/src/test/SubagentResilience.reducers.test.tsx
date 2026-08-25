@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import { createTestStore } from './helpers'
-import { sseSubagentSpawn, sseSubagentTool, sseSubagentChunk, sseSubagentRetrying, sseSubagentDone } from '../store/chatSlice'
+import { sseSubagentSpawn, sseSubagentTool, sseSubagentBatchChunks, sseSubagentRetrying, sseSubagentDone } from '../store/chatSlice'
 
 const ID = 'a1b2c3d4'
 
@@ -40,7 +40,7 @@ describe('subagent turn-resilience reducers', () => {
     const store = createTestStore()
     const SLOT = spawn(store)
     store.dispatch(sseSubagentRetrying({ slot: SLOT, id: ID }))
-    store.dispatch(sseSubagentChunk({ slot: SLOT, id: ID, text: 'back alive' }))
+    store.dispatch(sseSubagentBatchChunks({ chunks: [{ slot: SLOT, id: ID, text: 'back alive' }] }))
     expect(sub(store).retrying).toBe(false)
   })
 

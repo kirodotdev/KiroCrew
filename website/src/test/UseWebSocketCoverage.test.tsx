@@ -660,6 +660,8 @@ describe('useWebSocket frame router', () => {
       ws.simulateMessage({ type: 'subagent_chunk', data: { slot: ACTIVE, id: 'ag-1', text: 'partial ' } })
       ws.simulateMessage({ type: 'subagent_tool', data: { slot: ACTIVE, id: 'ag-1', tool: 'fs_read', tool_count: 2 } })
     })
+    // Subagent chunks are now buffered and flushed per animation frame (PR #5945).
+    act(() => { const pending = rafCbs; rafCbs = []; pending.forEach(cb => cb(0)) })
     expect(chat().subagents['ag-1']?.streaming).toBe('partial ')
     expect(chat().subagents['ag-1']?.lastTool).toBe('fs_read')
 

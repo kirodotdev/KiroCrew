@@ -3,7 +3,7 @@
  * `getSlotSubs`, so the Activity panel can subscribe to the subagent map
  * directly instead of ChatPage holding the subscription and passing it down.
  *
- * `sseSubagentChunk` mutates this map per streamed sub-agent chunk, so a
+ * `sseSubagentBatchChunks` mutates this map per streamed sub-agent chunk, so a
  * ChatPage-level subscription would re-render the whole page for a panel that is
  * closed by default. These tests pin the selector's slot routing and its
  * reference stability, which is what keeps the subscription cheap.

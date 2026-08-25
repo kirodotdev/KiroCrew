@@ -21,7 +21,7 @@ import reducer, {
   warmSlotCache,
   sseSubagentPending,
   sseSubagentSpawn,
-  sseSubagentChunk,
+  sseSubagentBatchChunks,
   sseSubagentTool,
   sseSubagentDone,
   sseSubagentSnapshot,
@@ -1293,15 +1293,15 @@ describe('subagent reducers', () => {
     expect(state.subagents['a1']).toBeUndefined()
   })
 
-  it('sseSubagentChunk appends streaming text', () => {
+  it('sseSubagentBatchChunks appends streaming text', () => {
     let state = reducer(withSlot, sseSubagentSpawn({ slot: 'slot-1', id: 'a1', task: 'task', agent: '' }))
-    state = reducer(state, sseSubagentChunk({ slot: 'slot-1', id: 'a1', text: 'hello ' }))
-    state = reducer(state, sseSubagentChunk({ slot: 'slot-1', id: 'a1', text: 'world' }))
+    state = reducer(state, sseSubagentBatchChunks({ chunks: [{ slot: 'slot-1', id: 'a1', text: 'hello ' }] }))
+    state = reducer(state, sseSubagentBatchChunks({ chunks: [{ slot: 'slot-1', id: 'a1', text: 'world' }] }))
     expect(state.subagents['a1'].streaming).toBe('hello world')
   })
 
-  it('sseSubagentChunk ignores unknown agent', () => {
-    const state = reducer(withSlot, sseSubagentChunk({ slot: 'slot-1', id: 'unknown', text: 'data' }))
+  it('sseSubagentBatchChunks ignores unknown agent', () => {
+    const state = reducer(withSlot, sseSubagentBatchChunks({ chunks: [{ slot: 'slot-1', id: 'unknown', text: 'data' }] }))
     expect(state.subagents['unknown']).toBeUndefined()
   })
 
