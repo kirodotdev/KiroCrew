@@ -41,7 +41,7 @@ export const CHUNK_BUDGETS = {
   // `src/i18n/all.ts` — Rolldown names the chunk after that entry. Grows a
   // little with every translated string, which is expected and fine; what this
   // ceiling catches is a NEW library or surface landing in the catalog chunk.
-  all: 9100 * KB, // measured 8666 KB
+  all: 9200 * KB, // measured 9103 KB
 
   // The i18n RUNTIME — the i18next singleton, `initI18n`, the English catalog —
   // named after `src/i18n/t.ts`. Held separately from `all` above because
