@@ -105,6 +105,7 @@
   "pages.chat.collapsibleToolGroup.tool_call",
   "pages.chat.sessionSummary.open_items",
   "pages.chat.sideChat.turn",
+  "pages.chat.subagentProgressBar.tool",
   "pages.chatPage.knowledge_item",
   "pages.chatSidebar.day",
   "pages.chatSidebar.more_pull_request_in_this_session",

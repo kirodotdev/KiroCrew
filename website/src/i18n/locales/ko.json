@@ -8213,6 +8213,7 @@
         "stop_running_subagent": "실행 중인 서브에이전트 중지",
         "stop_subagent": "서브에이전트 {{name}} 중지",
         "stop_this_subagent": "이 서브에이전트 중지",
+        "tool_other": "도구 {{count}}개",
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다"
       },
       "subagentRunCard": {

@@ -8423,6 +8423,9 @@
         "stop_running_subagent": "Arresta il subagente in esecuzione",
         "stop_subagent": "Arresta il subagente {{name}}",
         "stop_this_subagent": "Arresta questo subagente",
+        "tool_many": "{{count}} strumenti",
+        "tool_one": "{{count}} strumento",
+        "tool_other": "{{count}} strumenti",
         "waiting_to_start_queued_behind_the_concurrency_l": "In attesa di avvio — in coda a causa del limite di concorrenza"
       },
       "subagentRunCard": {

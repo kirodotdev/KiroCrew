@@ -8213,6 +8213,7 @@
         "stop_running_subagent": "実行中のサブエージェントを停止",
         "stop_subagent": "サブエージェント {{name}} を停止",
         "stop_this_subagent": "このサブエージェントを停止",
+        "tool_other": "ツール {{count}} 個",
         "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
       },
       "subagentRunCard": {

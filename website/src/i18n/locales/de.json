@@ -8318,6 +8318,8 @@
         "stop_running_subagent": "Laufenden Subagenten stoppen",
         "stop_subagent": "Subagent {{name}} stoppen",
         "stop_this_subagent": "Diesen Subagenten stoppen",
+        "tool_one": "{{count}} Werkzeug",
+        "tool_other": "{{count}} Werkzeuge",
         "waiting_to_start_queued_behind_the_concurrency_l": "Warten auf den Start — in der Warteschlange hinter der Parallelitätsgrenze"
       },
       "subagentRunCard": {

@@ -8528,6 +8528,10 @@
         "stop_running_subagent": "Остановить запущенный субагент",
         "stop_subagent": "Остановить субагента {{name}}",
         "stop_this_subagent": "Остановить этот субагент",
+        "tool_few": "{{count}} инструмента",
+        "tool_many": "{{count}} инструментов",
+        "tool_one": "{{count}} инструмент",
+        "tool_other": "{{count}} инструмента",
         "waiting_to_start_queued_behind_the_concurrency_l": "Ожидает запуска — в очереди из-за лимита параллельности"
       },
       "subagentRunCard": {

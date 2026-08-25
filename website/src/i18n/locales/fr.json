@@ -8423,6 +8423,9 @@
         "stop_running_subagent": "Arrêter le sous-agent en cours",
         "stop_subagent": "Arrêter le sous-agent {{name}}",
         "stop_this_subagent": "Arrêter ce sous-agent",
+        "tool_many": "{{count}} outils",
+        "tool_one": "{{count}} outil",
+        "tool_other": "{{count}} outils",
         "waiting_to_start_queued_behind_the_concurrency_l": "En attente de démarrage — mis en file derrière la limite de concurrence"
       },
       "subagentRunCard": {

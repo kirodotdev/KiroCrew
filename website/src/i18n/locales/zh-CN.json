@@ -8213,6 +8213,7 @@
         "stop_running_subagent": "停止运行中的子代理",
         "stop_subagent": "停止子代理 {{name}}",
         "stop_this_subagent": "停止此子代理",
+        "tool_other": "{{count}} 个工具",
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
       },
       "subagentRunCard": {

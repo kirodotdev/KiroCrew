@@ -8318,6 +8318,8 @@
         "stop_running_subagent": "চলমান সাবএজেন্ট থামাও",
         "stop_subagent": "সাবএজেন্ট {{name}} থামাও",
         "stop_this_subagent": "এই সাবএজেন্টটি থামান",
+        "tool_one": "{{count}}টি টুল",
+        "tool_other": "{{count}}টি টুল",
         "waiting_to_start_queued_behind_the_concurrency_l": "শুরুর অপেক্ষায় — কনকারেন্সি সীমার পেছনে সারিতে আছে"
       },
       "subagentRunCard": {

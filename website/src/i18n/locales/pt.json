@@ -8423,6 +8423,9 @@
         "stop_running_subagent": "Parar o subagente em execução",
         "stop_subagent": "Parar o subagente {{name}}",
         "stop_this_subagent": "Parar este subagente",
+        "tool_many": "{{count}} ferramentas",
+        "tool_one": "{{count}} ferramenta",
+        "tool_other": "{{count}} ferramentas",
         "waiting_to_start_queued_behind_the_concurrency_l": "Aguardando para iniciar — na fila devido ao limite de simultaneidade"
       },
       "subagentRunCard": {

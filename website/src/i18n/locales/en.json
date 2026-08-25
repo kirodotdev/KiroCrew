@@ -5628,6 +5628,8 @@
         "s": "s",
         "stop": "Stop",
         "stop_this_subagent": "Stop this subagent",
+        "tool_one": "{{count}} tool",
+        "tool_other": "{{count}} tools",
         "waiting_to_start_queued_behind_the_concurrency_l": "Waiting to start — queued behind the concurrency limit"
       },
       "subagentRunCard": {
