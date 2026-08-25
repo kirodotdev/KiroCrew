@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, fireEvent } from '@testing-library/react'
+import { screen, fireEvent, act } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { createAudioSample } from '../hooks/mic'
+import { HOLD_MS_DEFAULT } from '../lib/pushToTalk'
 
 /**
  * Hold-to-talk mode: the WeChat-style swap where the mic becomes a mode switch
@@ -13,6 +14,14 @@ import { createAudioSample } from '../hooks/mic'
  * ChatInput owns: which surface is mounted, and — the part a reviewer caught —
  * that a draft arriving mid-capture does not tear the hold target out from under
  * the finger.
+ *
+ * Cases that claim a gesture DRIVE one, via the pointer helpers below. Hold-mode
+ * survival over a draft is gated on the hook's exported ownership now, and
+ * ownership is recorded only by the hook's own pointerdown — simulating capture
+ * through props leaves the hook owning nothing, which is a DIFFERENT scenario
+ * (the keyboard binding, or the mic-as-record-button). Two earlier tests here
+ * asserted the wrong outcome precisely because their prop-only setup could not
+ * tell the two apart (#5753).
  */
 
 vi.mock('../components/Strands', () => ({
@@ -49,6 +58,22 @@ function stubTouch(coarse: boolean) {
     removeEventListener: vi.fn(),
   }))
 }
+
+/** Where the test finger starts, in client coords. Well clear of the cancel zone. */
+const ORIGIN_Y = 400
+
+/** One real pointer event on the hold target — the hook listens natively, so
+ *  these are dispatched, not fired through React's synthetic layer. */
+function pointer(el: Element, type: string, init: PointerEventInit = {}) {
+  act(() => {
+    el.dispatchEvent(new PointerEvent(type, {
+      pointerId: 1, pointerType: 'touch', isPrimary: true,
+      bubbles: true, cancelable: true, clientX: 100, clientY: ORIGIN_Y, ...init,
+    }))
+  })
+}
+const pressHoldTarget = (el: Element) => pointer(el, 'pointerdown')
+const releaseHoldTarget = (el: Element) => pointer(el, 'pointerup')
 
 beforeEach(() => {
   vi.restoreAllMocks()
@@ -96,45 +121,152 @@ describe('ChatInput — hold-to-talk mode', () => {
   // hypothesis into the composer WHILE the finger is still down, so suspending on
   // that draft would unmount the hold target mid-gesture — taking the pointer
   // listeners with it, so the release and the slide-up land on nothing while
-  // capture keeps running.
-  it('keeps the hold target mounted when a streaming partial lands mid-capture', () => {
-    localStorage.setItem('mc-voice-mode', '1')
-    const { rerender } = renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceRecording />,
-    )
-    expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
+  // capture keeps running. The finger goes down FOR REAL here: hold-mode survival
+  // is gated on the hook's ownership, and only the hook's own pointerdown records
+  // it — rendering with capture props alone is the not-owned scenario below.
+  it('keeps the hold target mounted when a streaming partial lands mid-hold', () => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-voice-mode', '1')
+      voiceProps.onVoiceStart.mockClear()
+      voiceProps.onVoiceStop.mockClear()
+      const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+      const bar = screen.getByTestId('hold-to-talk')
 
-    // A partial arrives: the composer now holds text, but the finger is still down.
-    rerender(<ChatInput {...base} {...voiceProps} voiceRecording value="arm auto merge on" />)
-    expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Switch to keyboard' })).toBeTruthy()
+      pressHoldTarget(bar)
+      expect(voiceProps.onVoiceStart).toHaveBeenCalledTimes(1)
+      // Past the hold threshold: the press is a recognised HOLD, not a tap.
+      act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
 
-    // Capture ends — only now may the draft reclaim the textarea.
-    rerender(<ChatInput {...base} {...voiceProps} value="arm auto merge on" />)
-    expect(screen.queryByTestId('hold-to-talk')).toBeNull()
+      // Capture goes live and a partial arrives: the composer now holds text, but
+      // the finger is still down — the bar must not be unmounted from under it.
+      rerender(<ChatInput {...base} {...voiceProps} voiceRecording value="arm auto merge on" />)
+      expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Switch to keyboard' })).toBeTruthy()
+
+      // The finger lifts, committing the capture. Ownership ends AT the release,
+      // so the draft reclaims the textarea immediately; the drain that remains
+      // belongs to the mic, which is a record toggle again and can stop it —
+      // instead of a disabled `settling` bar owning the surface for it.
+      releaseHoldTarget(bar)
+      expect(voiceProps.onVoiceStop).toHaveBeenCalledTimes(1)
+      expect(screen.queryByTestId('hold-to-talk')).toBeNull()
+      const mic = screen.getByRole('button', { name: 'Stop recording' })
+      expect((mic as HTMLButtonElement).disabled).toBe(false)
+
+      // Capture ends — the draft keeps the textarea.
+      rerender(<ChatInput {...base} {...voiceProps} value="arm auto merge on" />)
+      expect(screen.queryByTestId('hold-to-talk')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
-  // `voiceRecording` is ownership-gated (`owned && recording`) and ownership lands
-  // only after the streaming handshake, so during that window capture is real and
-  // the gated flag still reads false. The hold target must not vanish there — that
+  // `voiceRecording` is ownership-gated (`owned && recording`) and lands only
+  // after the streaming handshake, so during that window capture is real and the
+  // gated flag still reads false. The hold target must not vanish there — that
   // is the mid-gesture unmount hazard, and it would also make the hook's commit
-  // veto answer "no capture" for audio that exists.
-  it('keeps the hold target mounted on ungated capture, before ownership lands', () => {
+  // veto answer "no capture" for audio that exists. The gesture's own ownership
+  // is already held (it is recorded at the pointerdown, before any handshake),
+  // so what this case exercises is the UNGATED capture flag being the one the
+  // hold-mode predicate pairs it with.
+  it('keeps the hold target mounted on ungated capture, while the handshake is pending', () => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-voice-mode', '1')
+      const { rerender } = renderWithProviders(
+        <ChatInput {...base} {...voiceProps} voiceRecording={false} />,
+      )
+      pressHoldTarget(screen.getByTestId('hold-to-talk'))
+      // Past the hold threshold: the press is a recognised HOLD, as the name says.
+      act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
+
+      // Ownership held, handshake pending (`voiceRecording` still false) while a
+      // partial already fills the composer: the bar must survive on the gesture's
+      // ownership plus the ungated flag alone.
+      rerender(
+        <ChatInput {...base} {...voiceProps} voiceRecording={false} voiceCaptureActive value="a streaming partial" />,
+      )
+      expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The scenario #5753 exists for: a coarse-pointer device that ALSO has a
+  // hardware keyboard (an iPad with a keyboard case). Hold mode is on and the
+  // composer empty, so the bar is mounted — and dictation starts from the
+  // keyboard push-to-talk binding, which this composer's touch hook never sees.
+  // The capture is real, but the gesture owns nothing, and a mounted bar must no
+  // longer stand in for ownership: the old proxy (`holdTarget !== null`) kept
+  // hold mode alive when the streaming partial landed, rendering a disabled
+  // `settling` bar beside a disabled mode switch — two dead touch controls
+  // describing a capture neither of them owned.
+  it('does not keep a keyboard-binding capture in hold mode once its partial lands', () => {
     localStorage.setItem('mc-voice-mode', '1')
-    // Hold mode must be established FIRST. Rendering straight into a draft with
-    // capture live is the *other* scenario — dictation started from the mic over a
-    // draft — and asserting the bar there is what locked in an unstoppable mic.
-    const { rerender } = renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceRecording={false} voiceCaptureActive />,
-    )
+    const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
 
-    // Ownership has not landed yet (`voiceRecording` still false) while a partial
-    // already fills the composer: the bar must survive on the ungated flag alone.
-    rerender(
-      <ChatInput {...base} {...voiceProps} voiceRecording={false} voiceCaptureActive value="a streaming partial" />,
-    )
+    // Keyboard PTT starts capture: no pointer ever touches the bar. While the
+    // composer is still empty there is no draft to read, so hold mode
+    // legitimately stays — the bar doubles as a "one mic at a time" stop target.
+    rerender(<ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive />)
     expect(screen.getByTestId('hold-to-talk')).toBeTruthy()
+
+    // A streaming partial lands. The draft suspends hold mode exactly as if no
+    // capture were running, because the touch gesture owns none of it: the
+    // keyboard dictation keeps the ordinary composer surface.
+    rerender(<ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a keyboard partial" />)
+    expect(screen.queryByTestId('hold-to-talk')).toBeNull()
+    // ...and the capture keeps its own live stop control: the mic is a record
+    // toggle again, enabled, labelled for the session it can actually end.
+    const stop = screen.getByRole('button', { name: 'Stop recording' })
+    expect((stop as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  // The dictation panel OUTLIVES the gesture: its gate reads `voiceRecording`,
+  // which stays true through the streaming drain after the release, while hold
+  // mode has already dropped with the draft. The keyboard hint must stay
+  // suppressed for that window — the drain is the gesture's own, and a thumb
+  // has no Esc key — which is what the `settling` term in `gestureDriven`
+  // carries.
+  it("keeps the dictation panel keyboard hint suppressed through the gesture's own drain", () => {
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-voice-mode', '1')
+      const { rerender } = renderWithProviders(
+        <ChatInput {...base} {...voiceProps} voiceDictationPanel />,
+      )
+      pressHoldTarget(screen.getByTestId('hold-to-talk'))
+      act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
+      rerender(
+        <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a streaming partial" />,
+      )
+
+      // Release with the draft present: hold mode drops, capture keeps draining.
+      releaseHoldTarget(screen.getByTestId('hold-to-talk'))
+      rerender(
+        <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a streaming partial" />,
+      )
+
+      expect(screen.getByTestId('voice-dictation-panel')).toBeTruthy()
+      expect(screen.queryByText(/Esc to cancel/)).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // ...and the same panel over a capture the gesture does NOT own keeps the
+  // hint: a keyboard-binding dictation has a real Esc key and a mic that
+  // finishes the recording, so suppressing the row there would hide a working
+  // affordance.
+  it('keeps the dictation panel keyboard hint for a keyboard-binding capture', () => {
+    localStorage.setItem('mc-voice-mode', '1')
+    renderWithProviders(
+      <ChatInput {...base} {...voiceProps} voiceDictationPanel voiceRecording value="a keyboard partial" />,
+    )
+    expect(screen.getByTestId('voice-dictation-panel')).toBeTruthy()
+    expect(screen.getByText(/Esc to cancel/)).toBeTruthy()
   })
 
   it('does not promote a draft composer into hold mode when dictation starts from the mic', () => {
@@ -159,22 +291,29 @@ describe('ChatInput — hold-to-talk mode', () => {
   // keyboard" (hold mode is still on, capture overrides the draft) while the click
   // stopped the recording instead.
   it('keeps the mic label and its action in agreement during streaming capture', () => {
-    localStorage.setItem('mc-voice-mode', '1')
-    // Establish hold mode before the draft exists, so this is a transcript landing
-    // mid-gesture rather than dictation started over a draft.
-    const { rerender } = renderWithProviders(
-      <ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive />,
-    )
-    rerender(
-      <ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a streaming partial" />,
-    )
+    vi.useFakeTimers()
+    try {
+      localStorage.setItem('mc-voice-mode', '1')
+      // The gesture is REAL, so this is a transcript landing mid-gesture rather
+      // than dictation started over a draft — only ownership tells them apart.
+      const { rerender } = renderWithProviders(<ChatInput {...base} {...voiceProps} />)
+      pressHoldTarget(screen.getByTestId('hold-to-talk'))
+      // Past the hold threshold: the press is a recognised HOLD.
+      act(() => { vi.advanceTimersByTime(HOLD_MS_DEFAULT) })
+      rerender(
+        <ChatInput {...base} {...voiceProps} voiceRecording voiceCaptureActive value="a streaming partial" />,
+      )
 
-    // Hold mode survives the draft while capture is live, so this is still a switch.
-    const mic = screen.getByRole('button', { name: 'Switch to keyboard' })
-    // ...and a mode cannot be changed mid-capture, so the switch is disabled rather
-    // than silently doing the other job.
-    expect((mic as HTMLButtonElement).disabled).toBe(true)
-    expect(screen.queryByRole('button', { name: 'Stop recording' })).toBeNull()
+      // Hold mode survives the draft while the gesture owns the capture, so this is
+      // still a switch.
+      const mic = screen.getByRole('button', { name: 'Switch to keyboard' })
+      // ...and a mode cannot be changed mid-capture, so the switch is disabled rather
+      // than silently doing the other job.
+      expect((mic as HTMLButtonElement).disabled).toBe(true)
+      expect(screen.queryByRole('button', { name: 'Stop recording' })).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('disables the voice controls while ANOTHER session is still transcribing', () => {

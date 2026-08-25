@@ -2322,14 +2322,8 @@ function ChatInput({
    * cannot do. Suspending hands the textarea back for exactly as long as there is
    * something in it, then returns the hold bar without the user re-choosing it.
    *
-   * `voiceRecording` OVERRIDES the draft check, and that clause is load-bearing
-   * rather than defensive. Under streaming STT the transcript does not wait for
-   * the release — `onPartial` writes each hypothesis into the composer WHILE the
-   * finger is still down. Suspending on that draft would unmount the hold target
-   * mid-gesture, and unmounting it takes the pointer listeners with it: the
-   * release and the slide-up would both land on nothing while capture kept
-   * running, stranding an open microphone under a button that no longer exists.
-   * A draft may only reclaim the textarea once no capture is in flight.
+   * When a capture the touch gesture OWNS is in flight, the draft check is
+   * overridden — the mechanics and the reason live with `voiceHoldMode` below.
    */
   /** "Is capture in flight at all" — see the `voiceCaptureActive` prop doc. Falls
    *  back to the gated flag so the prop stays optional for other callers. */
@@ -2339,26 +2333,8 @@ function ChatInput({
   const transcribeInFlight = voiceTranscribeActive ?? voiceTranscribing
   /** State, not a ref: the hold target mounts only once hold mode is on, and the
    *  gesture hook can only bind its listeners when that arrival is observable.
-   *  Declared above `voiceHoldMode` because that predicate reads it — see there. */
+   *  Declared above `touchPtt` because the hook binds to it. */
   const [holdTarget, setHoldTarget] = useState<HTMLButtonElement | null>(null)
-  /*
-   * A draft suspends hold mode, EXCEPT while the gesture's own capture is still
-   * running — otherwise a transcript landing in the composer would unmount the
-   * bar from under the finger that is still holding it.
-   *
-   * `holdTarget !== null` is what distinguishes the gesture's capture from any
-   * other, and it has to be asked: `captureInFlight` alone also matches capture
-   * started from the mic-as-record-button, which is the ONLY dictation route a
-   * draft leaves open. That capture would then promote a draft composer into
-   * hold mode, where the bar renders `settling` (disabled) and the mic renders a
-   * disabled mode switch — an open microphone with nothing on screen that can
-   * stop it. The bar only exists while hold mode is already on, so its target is
-   * the memory of which route opened this capture, and it survives into the
-   * render that observes `captureInFlight` because unmounting it is what clears
-   * it.
-   */
-  const voiceHoldMode = voiceModeAvailable && voiceModePref
-    && (!composerHasDraft || (captureInFlight && holdTarget !== null))
   const touchVoice = useMemo(
     () => ({
       recording: captureInFlight,
@@ -2368,10 +2344,49 @@ function ChatInput({
     }),
     [captureInFlight, onVoiceStart, onVoiceStop, onVoiceCancel],
   )
+  /*
+   * `disabled` deliberately omits `!voiceHoldMode`, and that omission is what
+   * lets `voiceHoldMode` read the hook's ownership below without a cycle. The
+   * term is implied rather than lost: the hook binds only to `holdTarget`, the
+   * only writer of `holdTarget` is the hold bar's ref, and the bar renders under
+   * `voiceHoldMode &&` — so outside hold mode the hook has no element, no
+   * listeners, and nothing left to disable. Leaving hold mode unmounts the bar,
+   * which clears the target and runs the hook's own abandon path.
+   */
   const touchPtt = useTouchPushToTalk(touchVoice, {
     target: holdTarget,
-    disabled: !voiceHoldMode || disabled || transcribeInFlight || optimizing,
+    disabled: disabled || transcribeInFlight || optimizing,
   })
+  /*
+   * A draft suspends hold mode, EXCEPT while the touch gesture's own capture is
+   * still running — otherwise a transcript landing in the composer would unmount
+   * the bar from under the finger that is still holding it.
+   *
+   * `touchPtt.owns` is what distinguishes the gesture's capture from any other,
+   * and it has to be asked: `captureInFlight` alone also matches capture opened
+   * elsewhere — the mic-as-record-button, or the keyboard push-to-talk binding
+   * on a coarse-pointer device that also has a hardware keyboard. The previous
+   * proxy, `holdTarget !== null`, could not tell those apart either: the bar is
+   * mounted for EVERY capture that happens while hold mode is on, so a keyboard
+   * dictation whose streaming partial landed in the composer kept hold mode
+   * alive and rendered a disabled `settling` bar beside a disabled mode switch —
+   * two dead touch controls describing a capture neither of them owned (#5753).
+   * Ownership comes from the hook's own state machine instead, recorded at the
+   * pointerdown that opens capture and relinquished when the gesture resolves.
+   *
+   * Relinquished AT THE RELEASE, deliberately: a draft the gesture itself
+   * streamed in drops hold mode the moment the finger lifts, and the mic — a
+   * record toggle again once hold mode drops — is the live stop control for
+   * whatever drain remains. The old proxy instead held the surface as a
+   * disabled `settling` bar until capture fully ended: a window where nothing
+   * on screen was pressable. (What is VISIBLE through that drain depends on the
+   * dictation panel: its own gate reads `voiceRecording`, so when enabled — the
+   * default — it stays up and the textarea returns when capture ends; the
+   * panel's `gestureDriven` carries the settling term for the same window, see
+   * the render site.)
+   */
+  const voiceHoldMode = voiceModeAvailable && voiceModePref
+    && (!composerHasDraft || (captureInFlight && touchPtt.owns))
   /**
    * True when the mic press changes MODE rather than starting a recording.
    *
@@ -2890,7 +2905,15 @@ function ChatInput({
 
 
         {showDictation ? (
-          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode} />
+          /* `gestureDriven` carries the settling term because ownership ends at
+             the release while this panel outlives it: `showDictation` is gated
+             on `voiceRecording`, which stays true through the streaming drain.
+             `bar === 'settling'` can only name the gesture's OWN drain (the
+             hook records `draining` solely on its own commit path), so the
+             keyboard hint stays suppressed for exactly the drain the finger
+             just committed — and stays SHOWN for a keyboard-binding capture,
+             where Esc/Enter genuinely work. */
+          <VoiceDictationPanel sampleRef={showDictation} value={value} partial={voicePartial} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} streaming={voiceStreaming} gestureDriven={voiceHoldMode || touchPtt.bar === 'settling'} />
         ) : (
           <VoiceStatusBar recording={voiceRecording} level={voiceLevel} deviceLabel={voiceDeviceLabel} deviceId={voiceDeviceId} error={voiceError} onDismissError={onClearVoiceError} onSelectDevice={onSelectVoiceDevice || noopSelectDevice} deviceSwitchIsLive={voiceDeviceSwitchIsLive} />
         )}

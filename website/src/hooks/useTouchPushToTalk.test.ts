@@ -523,4 +523,56 @@ describe('useTouchPushToTalk', () => {
     upInCancelZone()
     expect(voice.calls).toEqual(['start', 'cancel'])
   })
+
+  // Ownership is EXPORTED (#5753): the consumer's hold-mode predicate asks "does
+  // the capture in flight belong to this gesture?", and `owns` is the hook's own
+  // answer, from `ownerRef` — never inferred out there from a mounted DOM node or
+  // a recording flag, both of which also match captures opened elsewhere.
+  it('exports ownership for exactly the pointerdown → resolution window', () => {
+    const voice = makeVoice()
+    // A stop that DRAINS (like the real streaming stop), so the post-release
+    // window is observable: ownership must already be gone while `settling`
+    // still names the leftover drain.
+    voice.stop = vi.fn(() => { voice.calls.push('stop') })
+    const { result } = mount(voice)
+    expect(result.current.owns).toBe(false)
+
+    down()
+    expect(result.current.owns).toBe(true)
+
+    passThreshold()
+    expect(result.current.owns).toBe(true)
+
+    // Commit relinquishes AT the release: the drain that remains is `settling`,
+    // not ownership — a consumer gating on `owns` hands the surface back here.
+    up()
+    expect(result.current.owns).toBe(false)
+    expect(result.current.bar).toBe('settling')
+  })
+
+  it('relinquishes exported ownership on a cancel-zone discard', () => {
+    const voice = makeVoice()
+    const { result } = mount(voice)
+    down()
+    passThreshold()
+    expect(result.current.owns).toBe(true)
+
+    upInCancelZone()
+    expect(result.current.owns).toBe(false)
+  })
+
+  // A rejected start() must disown too: ownership without a session would hold
+  // the consumer's hold-mode gate open over a draft with no capture behind it.
+  it('relinquishes exported ownership when the start() it launched rejects', async () => {
+    let reject: (e: Error) => void = () => {}
+    const voice = makeVoice({
+      start: vi.fn(() => new Promise<void>((_, rej) => { reject = rej })),
+    })
+    const { result } = mount(voice)
+    down()
+    expect(result.current.owns).toBe(true)
+
+    await act(async () => { reject(new Error('handshake failed')); await Promise.resolve() })
+    expect(result.current.owns).toBe(false)
+  })
 })

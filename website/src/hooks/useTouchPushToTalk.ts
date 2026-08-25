@@ -97,6 +97,20 @@ export interface TouchPushToTalkState {
   /** True while the finger is inside the cancel zone — release will DISCARD. */
   armedCancel: boolean
   /**
+   * True while a live gesture owns the capture session: set at the pointerdown
+   * that opens capture, relinquished when the gesture resolves — release,
+   * cancel, failed start, abandon. Exported from `ownerRef` itself so the
+   * consumer never has to infer ownership from a mounted DOM node or from a
+   * recording flag: both proxies also match captures opened elsewhere (the mic
+   * button, the keyboard binding on a device that has both inputs), which is the
+   * defect class this export closes (#5753).
+   *
+   * Deliberately NOT true through the post-release drain — a commit relinquishes
+   * ownership at the release, and `bar === 'settling'` is the name for what
+   * remains of that session.
+   */
+  owns: boolean
+  /**
    * Every visible state of the hold bar, named by the state machine that owns
    * them. The consumer renders one label and one appearance per value and does
    * NOT reassemble them: reconstructing `settling` out here as
@@ -132,6 +146,8 @@ export function useTouchPushToTalk(
     setArmedCancelState(v)
   }, [])
 
+  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const capTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   /**
    * Whether this gesture owns the capture session.
    *
@@ -144,9 +160,16 @@ export function useTouchPushToTalk(
    * state cleared on some exit paths and not others is the exact defect class
    * this hook has already been fixed for twice.
    */
-  const armTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const capTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const ownerRef = useRef<'gesture' | null>(null)
+  /**
+   * Render-visible mirror of `ownerRef`, exported as `owns`. Written ONLY by
+   * `setOwner`, so the ref keeps its sole-writer property and stays the
+   * synchronous authority the handlers read; this is the same fact at render
+   * time. A ref alone cannot be exported — reading it during render is
+   * unobservable, so a consumer's predicate would not recompute when ownership
+   * changes. Mirrored the same way `phase` is, and for the same reason.
+   */
+  const [owns, setOwns] = useState(false)
   const startPendingRef = useRef(false)
   /**
    * This gesture committed and its capture has not finished draining yet.
@@ -252,6 +275,7 @@ export function useTouchPushToTalk(
    *  anything. */
   const setOwner = useCallback((owner: 'gesture' | null) => {
     ownerRef.current = owner
+    setOwns(owner !== null)
     if (owner === null) {
       startSeqRef.current++
       startPendingRef.current = false
@@ -502,5 +526,5 @@ export function useTouchPushToTalk(
           ? 'tap-too-short'
           : 'idle'
 
-  return { phase, holding: phase === 'holding', armedCancel, bar }
+  return { phase, holding: phase === 'holding', armedCancel, owns, bar }
 }
