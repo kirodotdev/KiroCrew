@@ -404,6 +404,47 @@ class TestTranscribePlumbing:
         assert (path, is_temp) == ("/tmp/voice.webm", False)
 
     @pytest.mark.asyncio
+    async def test_transcode_spawn_failure_removes_owned_temp(self, tmp_path):
+        """A failed ffmpeg spawn never transfers ownership of its output path."""
+        owned = tmp_path / "owned.wav"
+        owned.write_bytes(b"")
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch.object(apple_speech, "_mkstemp_path", return_value=str(owned)),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("spawn failed")),
+            pytest.raises(OSError, match="spawn failed"),
+        ):
+            await apple_speech._to_native_audio("/tmp/voice.webm")
+
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_sandbox_rejection_removes_owned_native_temp(self, tmp_path):
+        """A pre-helper rejection still retires the transcode result we own."""
+        owned = tmp_path / "owned.wav"
+        owned.write_bytes(b"native")
+        with (
+            patch.object(
+                apple_speech, "availability", return_value=apple_speech.Availability(True)
+            ),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch.object(apple_speech, "_to_native_audio", return_value=(str(owned), True)),
+            patch.object(
+                apple_speech,
+                "_sandboxed",
+                side_effect=apple_speech.sandbox.SandboxUnavailableError(
+                    "unavailable", "no_backend", "test"
+                ),
+            ),
+        ):
+            text, meta = await apple_speech.transcribe("/tmp/voice.webm")
+
+        assert text is None
+        assert "unavailable" in meta["error"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
     async def test_helper_error_json_is_propagated(self):
         """The helper reports failures as JSON on stdout; that payload is the
         diagnostic the caller logs, so it must survive intact."""

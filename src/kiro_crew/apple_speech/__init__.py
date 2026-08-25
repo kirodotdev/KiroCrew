@@ -508,30 +508,36 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
     # `tempfile.mkstemp` is the heavier half — it creates a file — and leaving it
     # on the loop while offloading only the close would be the worse split.
     out = await asyncio.to_thread(_mkstemp_path, ".wav")
-    proc = await asyncio.create_subprocess_exec(
-        ffmpeg,
-        "-y",
-        "-i",
-        audio_path,
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        out,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, err = await proc.communicate()
-    if proc.returncode != 0:
-        logger.warning(
-            "apple_speech: ffmpeg transcode failed: %s", err.decode(errors="replace")[-300:]
+    transfer_temp = False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-y",
+            "-i",
+            audio_path,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            out,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
         )
-        try:
-            os.unlink(out)
-        except OSError:
-            pass
-        return audio_path, False
-    return out, True
+        _, err = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "apple_speech: ffmpeg transcode failed: %s",
+                err.decode(errors="replace")[-300:],
+            )
+            return audio_path, False
+        transfer_temp = True
+        return out, True
+    finally:
+        if not transfer_temp:
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
 
 
 async def transcribe(
@@ -565,6 +571,11 @@ async def transcribe(
         argv, spawn_env, _sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
     except sandbox.SandboxUnavailableError as exc:
         logger.warning("apple_speech: %s%s", _NO_SANDBOX_HINT, exc)
+        if is_temp:
+            try:
+                os.unlink(native_path)
+            except OSError:
+                pass
         return None, {"error": f"{_NO_SANDBOX_HINT}{exc}"}
     try:
         proc = await asyncio.create_subprocess_exec(
