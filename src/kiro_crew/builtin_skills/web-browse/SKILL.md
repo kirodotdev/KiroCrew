@@ -109,23 +109,53 @@ gesture. That makes judgement, not permission, the thing to get right:
 - `localhost` is exempt from all of the above. A dev server holds no third-party
   session, so it is ordinary.
 
-## `attach` binds a named session, and every later command needs it
+## Your PROCESS owns its browser, and `attach` binds to it
 
-`playwright-cli attach --extension=chrome` reports `Session \`chrome\` created` and
-binds that name. A bare command afterwards addresses the `default` session instead
-and answers:
+Kiro Crew gives every agent process its own `PLAYWRIGHT_CLI_SESSION`, so a command
+with no `-s=` reaches YOUR process's browser, never a `default` shared with other
+chats. You do not need `-s=` to isolate yourself from another chat session, and you
+do not need to remember a name.
 
-```
-The browser 'default' is not open, please run open first
-```
+**The exception: one browser per session FAMILY, not per agent.** The name is per
+PROCESS, and with session sharing on (the default) an eligible subagent's session
+is created on the PARENT's process — so a chat session, the subagents it spawns,
+and those subagents' siblings normally share ONE browser. A task-runner run is its
+own separate family: it has no live parent session, so it cold-starts one
+run-scoped process that every step of that run shares. What this isolates is one
+family from another (the corruption #5952 reported); it does NOT isolate you from
+your parent or your siblings. Some subagent spawns do get their own process — a
+per-spawn model or reasoning-effort override, `allowed_tools` or a bare spawn, a
+continuable spawn, or a Claude-Code-backed parent — so from inside a subagent you
+cannot tell which case you are in; assume you are sharing. If you are a subagent
+and your parent or a sibling may browse concurrently, choose ONE distinct
+`-s=<name>` for yourself (a short slug of your own task, not a shared word like
+`tmp`) and pass it on every command, `attach` / `open` included. Otherwise your
+`goto` moves their page and your `close` destroys their browser. Reuse that one
+name rather than inventing a new one per command — each new name leaves behind a
+browser nothing reclaims.
 
-That message is about the wrong session, not about a failed attach, and re-attaching
-in response to it is the trap. Carry the session on every subsequent command:
+`playwright-cli attach --extension=chrome` therefore binds your session's name, not
+`chrome`. Keep using bare commands afterwards:
 
 ```bash
-playwright-cli --s=chrome tab-list
-playwright-cli --s=chrome snapshot
+playwright-cli tab-list
+playwright-cli snapshot
 ```
+
+A hand-written `--s=chrome` after that attach answers
+
+```
+The browser 'chrome' is not open, please run open first
+```
+
+because the attached browser is under your session's own name. That message is
+about the wrong session, not a failed attach — re-attaching in response to it is
+the trap. Pass `-s=<name>` only when you deliberately want a SECOND browser
+alongside your own, and then pass the same name to every command including the
+`attach` or `open` that created it.
+
+`playwright-cli list` shows every browser on the machine, including other
+sessions'. Only close one you opened.
 
 Never `close` an attached session: it closes the windows the user is working in.
 Leave the connection open instead, which costs them nothing.
@@ -136,8 +166,9 @@ Leave the connection open instead, which costs them nothing.
    conversation; the user does not have to paste it. `file:`, `data:`, and
    `javascript:` are not view targets.
 2. Call `browser(op="navigate", args={"url": "<url>"})`. Only if it reports no
-   native panel, fall back to `playwright-cli open <url>` (add `-s=<name>` for its
-   own session).
+   native panel, fall back to a bare `playwright-cli open <url>` — your process
+   already has its own browser, so no `-s=` is needed (unless you are a subagent
+   sharing your parent's process and it or a sibling may browse too; see above).
 3. Tell the user it is showing in the Browser panel, in one line.
 4. Do not screenshot to "prove" it opened. The user is watching the live view.
 
