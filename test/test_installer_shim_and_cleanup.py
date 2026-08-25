@@ -367,6 +367,86 @@ def test_first_run_is_best_effort(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# Default-on builtin backfill — runs ONCE, and must reach EXISTING installs
+# --------------------------------------------------------------------------
+def _spy_backfill(monkeypatch, calls, *, raises=None):
+    """Replace the backfill with a spy recording each invocation."""
+
+    def _fake() -> list[str]:
+        calls.append(True)
+        if raises is not None:
+            raise raises
+        return ["command-bar"]
+
+    monkeypatch.setattr("kiro_crew.apps.manager.backfill_default_on_builtins", _fake)
+
+
+def test_first_run_runs_the_default_on_backfill(tmp_path, monkeypatch):
+    """First-run invokes the backfill on every start.
+
+    The one-shot guarantee is NOT first-run's job: it lives on the app record
+    itself (``InstalledApp.defaultOnBackfilled``, written in the same atomic write
+    that flips ``enabled``), so calling unconditionally is correct and there is no
+    marker file for this layer to own. See test_builtin_app_optional_enable.py for
+    the once-only property.
+    """
+    exe = _fake_bundle_launcher(tmp_path)
+    _sandbox_first_run(tmp_path, monkeypatch, exe)
+    calls: list[bool] = []
+    _spy_backfill(monkeypatch, calls)
+
+    agent.run_first_run_setup()
+
+    assert calls == [True]
+
+
+def test_first_run_backfills_on_an_install_that_already_purged_mcp(tmp_path, monkeypatch):
+    """An install holding the stale-MCP marker still gets the backfill.
+
+    Existing installs are the ONLY ones this step has anything to do, and every
+    one of them already holds that marker. A backfill placed after the
+    stale-MCP early return would therefore run for nobody.
+    """
+    exe = _fake_bundle_launcher(tmp_path)
+    marker, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
+    _seed_global_mcp(mcp)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text("done\n")
+    calls: list[bool] = []
+    _spy_backfill(monkeypatch, calls)
+
+    agent.run_first_run_setup()
+
+    assert calls == [True]
+
+
+def test_first_run_survives_a_failing_backfill(tmp_path, monkeypatch):
+    """A raising backfill must not break gateway startup.
+
+    Continuation is asserted through the stale-MCP purge, a LATER step, rather
+    than through the `~/.local/bin` shim: that shim is POSIX-only (Windows uses
+    pip's `Scripts\\kirocrew.exe`), and skipping the whole case on Windows would
+    drop coverage of the one property here that is not platform-specific.
+    """
+    exe = _fake_bundle_launcher(tmp_path)
+    _, mcp = _sandbox_first_run(tmp_path, monkeypatch, exe)
+    _seed_global_mcp(mcp)
+    _install_superseded(
+        managed_mcp_names=("predecessor-core", "predecessor-cron"),
+        stale_mcp_binaries=("predecessor",),
+    )
+    calls: list[bool] = []
+    _spy_backfill(monkeypatch, calls, raises=RuntimeError("backfill boom"))
+
+    agent.run_first_run_setup()
+
+    assert calls == [True]
+    # A step AFTER the failing one still ran, so the failure did not abort setup.
+    remaining = set(json.loads(mcp.read_text(encoding="utf-8"))["mcpServers"])
+    assert "predecessor-core" not in remaining
+
+
+# --------------------------------------------------------------------------
 # Resolver: the running interpreter is never the answer
 # --------------------------------------------------------------------------
 def test_resolver_never_returns_the_interpreter(tmp_path, monkeypatch):

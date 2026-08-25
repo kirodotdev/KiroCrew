@@ -1002,7 +1002,7 @@ def run_first_run_setup() -> None:
     """Deliver the install-time steps the desktop app needs without a terminal.
 
     The Electron app only runs ``kirocrew gateway`` — never ``kirocrew
-    setup`` — yet two concerns aren't covered by the gateway's agent-config
+    setup`` — yet several concerns aren't covered by the gateway's agent-config
     rebuild. This is invoked from gateway startup to close that gap:
 
     * **PATH shim** — ``ensure_kirocrew_on_path()`` is idempotent and only
@@ -1010,6 +1010,10 @@ def run_first_run_setup() -> None:
       WITHOUT ``claim_existing`` for exactly that reason: running unattended on
       every start, it must fill an empty or broken slot only, never take the
       command away from another install that still works.
+    * **Default-on builtin backfill** — ``defaultEnabled`` is applied only on an
+      app's FIRST registration, so a builtin promoted to default-on later never
+      reaches installs that already registered it. Runs ONCE, guarded by its own
+      marker file, because re-running it would override a user's own disable.
     * **Stale predecessor MCP purge** — ``clean_stale_managed_mcp()`` mutates
       the user's *global* ``~/.kiro/settings/mcp.json``, so it runs ONCE,
       guarded by a marker file, to honor the "KiroCrew owns only the agent
@@ -1037,7 +1041,25 @@ def run_first_run_setup() -> None:
     except Exception:
         logger.warning("First-run: admission policy seed failed", exc_info=True)
 
-    # 3. Stale managed-MCP purge — one-time, marker-guarded.
+    # 3. Default-on builtin backfill — one-shot per app, self-recorded on the
+    #    app's own installed.json (no marker file: the flag and the state it
+    #    guards must land in one atomic write). Placed BEFORE the stale-MCP early
+    #    return for the same reason step 2 is, and here the reason is the whole
+    #    point: an EXISTING install already holds the stale-MCP marker, and an
+    #    existing install is the ONLY kind this step has anything to do (a fresh
+    #    one registers these apps enabled and already flagged).
+    try:
+        from kiro_crew.apps.manager import (  # noqa: PLC0415
+            backfill_default_on_builtins,
+        )
+
+        flipped = backfill_default_on_builtins()
+        if flipped:
+            logger.info("First-run: enabled default-on builtin(s): %s", flipped)
+    except Exception:
+        logger.warning("First-run: default-on builtin backfill failed", exc_info=True)
+
+    # 4. Stale managed-MCP purge — one-time, marker-guarded.
     stale_marker = _stale_mcp_purge_marker()
     if stale_marker.exists():
         return

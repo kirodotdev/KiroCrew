@@ -475,6 +475,49 @@ persisted at first registration and never routes through `enable_app`, so the
 governance `apps` activation allowlist is re-applied at that write: a
 governance-denied app registers disabled.
 
+`defaultEnabled` is read on FIRST registration only — every later start preserves
+the user's own state — so ADDING a name to the exemption reaches new installs
+alone. An install that registered the app while it was still default-off keeps
+`enabled: false` through every restart, update and version bump, because the
+record lives in the user's data home and a code update does not touch it. For a
+builtin that replaces a host surface that is terminal rather than inconvenient:
+it has no page, so it is absent from the launcher's own app list, and it is
+absent from Discover unless the published catalog carries a row, which leaves a
+disabled row in Library as the only trace of an app the user never heard of.
+
+`manager.backfill_default_on_builtins()` closes that gap, invoked from
+`agent.run_first_run_setup()`. It reads a SECOND set, `_DEFAULT_ON_BACKFILL`, and
+the separation is load-bearing rather than bookkeeping: `_DEFAULT_ON_BUILTINS`
+answers "what does a fresh install enable", while this one answers "which
+promotion has not yet reached installs that predate it". Reading the first for the
+second question reverses deliberate opt-outs — `projects` has shipped
+`defaultEnabled: true` since it was aligned with the other builtins, long before
+the allowlist existed, so it has been enabled and visible in the sidebar on every
+existing install and a disabled record for it is a user who found it and turned it
+off. A name qualifies only when a fresh install enables it AND existing installs
+were never in a position to choose; a ratchet test pins both halves.
+
+The backfill is ONE-SHOT, and the record of that is
+`InstalledApp.defaultOnBackfilled`, written in the SAME atomic record write that
+flips `enabled`. One document deliberately: a separate marker file has no correct
+ordering, because whichever of the two writes goes first leaves a window the other
+one owns — marker-last loses the record of an enable that happened, so every later
+start re-applies the promotion and reverses the user's own disable forever;
+marker-first can outlive a flip that failed, so the app is skipped forever and the
+promotion is never delivered. Both are real failures; neither is reachable when the
+flag and the state it guards land or fail together. A record created under the
+promoted default is born `True`, because a first registration with `defaultEnabled`
+IS the promotion being received — without that, "install, disable the app in the
+same session, restart" would re-enable it, and no write ordering can fix that since
+on a fresh install the record may not exist yet when first-run setup runs.
+Disabling the app must survive, since it is the only thing that gives a replaced
+host surface back. Both the `_builtin_owns_install` boundary (a user's own install
+under the same name is never touched) and the governance activation gate are
+re-applied, and a governance-denied app is deliberately left unflagged so the
+promotion is still delivered if policy later permits. The activation is recorded in
+the SEL, because it moves an app from inactive to active with no user request
+behind it.
+
 `hidden: true` on a builtin manifest removes it from the Discover catalog while
 leaving its code and routes fully intact. It stays installable and enablable by
 name from the CLI, and remains visible in the Library once enabled. **Channels**
@@ -497,7 +540,8 @@ deterministic order (hero art, then verified publishers, then name), so the
 surface is never empty and never arbitrary.
 
 Writers: `apps/manager.py` (`_BUILTIN_APPS`, `_DEFAULT_ON_BUILTINS`,
-`register_builtin_apps`), `apps/discovery.py::discover_builtin_apps`,
+`_DEFAULT_ON_BACKFILL`, `register_builtin_apps`, `backfill_default_on_builtins`),
+`agent.py::run_first_run_setup`, `apps/discovery.py::discover_builtin_apps`,
 `apps/registry.py::_apply_trust_fields`;
 consumers: `website/src/pages/AppsPage.tsx` (`pickFeatured`),
 `website/src/components/appstore/types.ts` (`isVerified`, `sourceLabel`).
