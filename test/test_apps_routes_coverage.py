@@ -1251,8 +1251,11 @@ class TestUpdateApp:
             data = await resp.json()
         assert data["ok"] is True
         assert "registration" in data
-        # Old resources are only swapped out AFTER the re-install succeeded.
-        assert calls == ["deregister", "stop", "start"]
+        # Old resources are only swapped out AFTER the re-install succeeded — and the
+        # backend is stopped BEFORE they are scrubbed, so the health watch has lost its
+        # tracking record and cannot re-register the old manifest's MCP servers in
+        # between (see app-kit-platform §17).
+        assert calls == ["stop", "deregister", "start"]
 
     @pytest.mark.asyncio
     async def test_local_update_failure_restores_registration(
@@ -4133,3 +4136,72 @@ def test_disable_route_normalizes_the_name_before_the_builtin_lookup():
     assert 'name.replace("-", "_")' in src, (
         "the disable handler must normalize the manifest name before testing "
         "membership in BUILTIN_NAMES / importing the package")
+
+
+@pytest.mark.asyncio
+async def test_update_stops_the_backend_before_deregistering_resources(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Teardown order is load-bearing, not cosmetic (#5726 review).
+
+    `stop_app_backend` pops the tracking record, which is what stops the health watch
+    from reconciling MCP for the app. Deregistering first leaves a window in which a
+    recovering backend re-registers the OLD manifest's servers, so entries the update
+    removed survive it. Uninstall and the disable rollback already stop first; these are
+    the paths that did not.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    order: list[str] = []
+
+    async def _fake_deregister(name: str):
+        order.append("deregister")
+        return SimpleNamespace(to_dict=lambda: {})
+
+    monkeypatch.setattr(routes_mod, "_deregister_app_off_loop", _fake_deregister)
+    monkeypatch.setattr(
+        routes_mod, "stop_app_backend", lambda name: order.append("stop") or True
+    )
+    monkeypatch.setattr(
+        routes_mod, "update_app", lambda *a, **k: {"success": False, "error": "stop here"}
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        await client.post(f"/api/apps/{APP}/update", json={"source": str(tmp_path / "src")})
+
+    assert order[:2] == ["stop", "deregister"], (
+        f"backend must be stopped before its resources are scrubbed, got {order}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_enable_does_not_re_register_after_the_backend_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enable must not re-register MCP after start_app_backend returns (#5726 review).
+
+    A call made here is queued behind the handler, so the adopted backend's watch can
+    demote and scrub in between — and the queued write would then restore the dead url,
+    without updating `mcp_healthy`, so the watch would never notice the disagreement.
+    The adoption path registers through the serialized transition instead, before its
+    watch is armed.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    called: list[str] = []
+    import kiro_crew.apps.bridges as bridges_mod
+    monkeypatch.setattr(
+        bridges_mod, "reregister_app_mcp_servers",
+        lambda name, live_port=None, io_failures=None: called.append(name) or [],
+    )
+    monkeypatch.setattr(
+        routes_mod, "start_app_backend",
+        lambda name: SimpleNamespace(
+            healthy=True, port=7999, to_dict=lambda: {"port": 7999}
+        ),
+    )
+
+    async with TestClient(TestServer(_make_app())) as client:
+        await client.post(f"/api/apps/{APP}/enable", json={})
+
+    assert called == [], "enable re-registered after start; the adoption path owns that"

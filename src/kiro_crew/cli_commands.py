@@ -682,8 +682,22 @@ def _handle_app(args: argparse.Namespace) -> None:
 
     elif action == "disable":
         _cleanup_app_crons_from_scheduler(args.name)
-        deregister_app(args.name)
+        # Flip the authoritative flag BEFORE tearing resources down. A running gateway
+        # is a DIFFERENT process: it watches this app's backend and re-registers its MCP
+        # servers and agents on a health recovery, gated on the enabled flag it reads
+        # from installed.json. Deregistering first leaves a window where that flag still
+        # says enabled and the resources are already gone — and a recovery landing there
+        # puts them back for an app the operator is disabling. The gateway's own disable
+        # path has no such window because it stops the backend first, which ends the
+        # watch; the CLI cannot do that from out here, so it closes the window by
+        # ordering instead.
+        #
+        # If the deregistration below then fails, the app is still correctly marked
+        # disabled and the failure is reported to an operator already at the terminal —
+        # which is the better of the two error shapes, because the alternative is a
+        # silent re-registration nobody sees.
         result = disable_app(args.name)
+        deregister_app(args.name)
         if result.ok:
             print(f"✅ {result.message}")
         else:

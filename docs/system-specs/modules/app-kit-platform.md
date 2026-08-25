@@ -1068,7 +1068,160 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
 - **Both directions move the MCP entry**, through the same
   `_gate_mcp_registration` branches the startup phase uses: a demotion scrubs the
   app's HTTP MCP url so kiro-cli does not dial a dead port on every session, and a
-  recovery re-registers it.
+  recovery re-registers it. The scrub goes through the **no-live-port registration**
+  path, not a blanket deregister: an app's stdio/command servers are launched by kiro-cli
+  itself and have no port to be dead, so removing them because an HTTP backend died would
+  take working tools away for a reason unrelated to them. That path pops each HTTP entry
+  and keeps the rest, and its port lookup is health-gated, so it cannot resurrect the
+  port it is removing. It calls `_register_mcp_servers` DIRECTLY rather than
+  `reregister_app_mcp_servers`, because the latter also re-materializes the app's agents
+  — an ungated write that would land before the caller's enablement check and make a
+  disabled app's agents dispatchable in the gap. The scrub owns the mcp.json half only;
+  the agent refresh belongs to the caller, which gates it. The admission gate is applied
+  explicitly here so a denied app still gets a FULL removal rather than the selective
+  keep-stdio treatment. It falls back to removing EVERY entry for the app when the
+  manifest cannot be resolved or declares no servers: that case cannot tell a
+  backend-dependent server from an independent one, and the dead url must not survive on
+  the strength of not knowing. The fallback **never deletes the app's materialized
+  agents**. Deleting them is unrecoverable — it takes the user-owned fields
+  `_preserve_user_agent_edits` carries across every refresh — whereas what it would
+  prevent, an agent naming a server that is gone, costs failed tool calls until the next
+  refresh with a readable manifest rewrites it. An unreadable manifest is frequently
+  TRANSIENT, so destroying data over it trades a temporary fault for a permanent one.
+  `deregister_app` is the path that legitimately owns removing those files.
+
+**An adopted backend registers through the serialized transition BEFORE its watch is
+armed.** Registering afterwards — from a caller that returns and leaves the work queued —
+lets the watch demote and scrub in between, after which the queued write restores the
+dead url and, having bypassed `_set_backend_health`, leaves `mcp_healthy` agreeing with a
+state that is no longer on disk, so nothing retries. **The scrub also re-materializes the app's agents**, because
+  an agent JSON COPIES the server's launch spec and the agent config is what kiro-cli
+  loads — clearing the global map alone leaves the dead url one file over. Registration
+  already refreshes agents for this reason; the scrub mirrors it by calling the SAME
+  `refresh_app_agents`, which carries the two guards this path must honour: an app with
+  `resources="app"` publishes its own agents and the gateway must not duplicate them, and
+  a denied app's agents are scrubbed rather than rewritten back into dispatchable
+  existence. Both return an empty list, which is "nothing to do" rather than a failure.
+  **Registration owes the same guarantee**: it writes the same agent JSONs, so an agent
+  write that failed there leaves the app's agent without the MCP tools the registration
+  was supposed to make reachable. Both directions collect I/O failures and report the
+  reconcile unlanded, so the watch retries either way. A FAILED refresh makes
+  the whole reconcile unlanded, so the watch retries it. Registration treats its own
+  refresh as non-fatal, but that path has no retry behind it — there, non-fatal means
+  "do not fail the registration". Here a re-scrub is idempotent and cheap, and the
+  alternative is a dead url left permanently in the file kiro-cli actually reads. An app
+  with no resolvable manifest has nothing materialized to correct and counts as
+  reconciled, since retrying that would never converge. The same distinction applies
+  WITHIN the refresh: `_register_agents` skips a failing agent and continues, so it
+  reports the agents it could not read or write for **I/O** reasons and only those make
+  the reconcile unlanded. Its other skips — a path escaping the app root, an unsafe agent
+  name, malformed JSON, an unresolved placeholder — are permanent refusals, and treating
+  "declared minus registered" as the retry signal would spin forever on an app that can
+  never converge.
+- **The probe treats a malformed HTTP response as a failed probe, not an error.**
+  `http.client.HTTPException` is NOT an `OSError` or `URLError` subclass (only
+  `RemoteDisconnected` is, via `ConnectionResetError`), and `urllib` re-raises
+  `getresponse()` failures unwrapped — so a `BadStatusLine` from a port answering with a
+  non-HTTP first line escapes a socket-errors-only catch. An app backend is arbitrary
+  third-party code, including `exec` backends and adopted processes, so that is a real
+  condition rather than a hypothetical one. Both probes catch it. The watch additionally
+  survives an unexpected fault in any single sweep, because the failure MODE is the bug
+  itself: a dead watch thread freezes `healthy` at its last value and silently restores
+  the write-once behaviour, with the proxy still routing to a port nothing serves.
+- **Every writer of an app's MCP and agent state shares one serialization.** Two
+  independent families write it: the lifecycle paths in `apps/bridges.py` (enable,
+  update, boot reconcile) and the backend's health watch. Unserialized they interleave
+  their DECISIONS — each performing a correct read-modify-write, with the stale one
+  landing last — so `_register_mcp_servers`, `_deregister_mcp_servers` and
+  `_register_agents` all acquire `health_reconcile_lock()`. It is an **RLock**, because
+  the health path already holds it before calling into those writers; a plain Lock
+  deadlocks the watch thread there. Agent materialization holds it across the READ as
+  well as the write, since an agent copies the ambient server spec and a read taken
+  before a scrub could otherwise be written after it. The order is always this lock
+  first, then `_lock` or `_mcp_lock` — never the reverse — which is what keeps the two
+  families from deadlocking against each other.
+- **A promotion requires a positively confirmed ENABLED app; a demotion never does.**
+  `kirocrew app disable` runs in its own process: it deregisters the app's resources and
+  never touches the gateway's tracking table, so the record survives and a later health
+  recovery would re-register the MCP servers and agents the operator just removed. The
+  check fails CLOSED — an unreadable enabled-state refuses the promotion rather than
+  guessing, because guessing wrong makes a disabled app dispatchable again. Demotion is
+  deliberately ungated: refusing a scrub because enablement could not be read would
+  strand the dead url this whole mechanism exists to remove.
+
+  The flag has to be flipped BEFORE the resources come down, or the check reads a stale
+  `enabled` while they are already gone. The gateway's own disable path has no such
+  window — `teardown_app_runtime` stops the backend first, which pops the record and ends
+  the watch — but `kirocrew app disable` runs in ANOTHER process and cannot pop it, so it
+  closes the window by ordering: `disable_app` then `deregister_app`.
+
+  Ordering closes one interleave; it cannot close the other, where the check passes and
+  the disable completes before the write lands. There is no lock to share across
+  processes, so the promotion is **verified after the write** and undone through
+  `deregister_app` when the app turns out to have been disabled meanwhile. Check-act-
+  verify is the convergence available here, and the undo is idempotent with the CLI's own
+  deregistration. `deregister_app` reports most problems SOFTLY, in
+  `RegistrationResult.errors` rather than by raising, so the undo reads that list and
+  moves `mcp_healthy` to False only on a complete removal — otherwise a failed cleanup
+  would read as done and a disabled app would stay dispatchable with nothing left to
+  retry. The refused-promotion path retries an unlanded undo on every sweep, because
+  nothing else revisits a disabled app.
+
+  A demotion's **scrub** is never gated or verified, for the same reason: removing a
+  disabled app's entry is the desired outcome, not something to roll back. Its **agent
+  refresh is**, and the distinction is the point — the scrub REMOVES, while the refresh
+  RE-MATERIALIZES, so for a disabled app it writes back the very files a concurrent
+  `deregister_app` just removed. That refresh is checked before and after and undone if
+  the disable wins, and the cleanup's OWN result is the reconcile's result, since
+  `deregister_app` reports softly and discarding it would record a removal that never
+  happened.
+
+  The identity guard runs BEFORE the enablement check, because the undo deregisters by
+  app NAME: an unreadable enabled state is exactly what would otherwise send a retired
+  watcher into deleting the SUCCESSOR's resources.
+
+  Enablement is **tri-state** — enabled, disabled, or unreadable — read through
+  `manager.app_enabled_state`, NOT `is_app_enabled`. That distinction is the whole
+  mechanism: `_read_installed` returns None for both a missing file and a caught read
+  error, so `is_app_enabled` collapses "unreadable" into False WITHOUT raising. Building
+  the tri-state on it left the unknown branch unreachable for precisely the transient
+  fault it exists to catch. The two callers want opposite defaults on that third state. Refusing to ADD when it is unknown is
+  safe: the app stays as it is. DELETING when it is unknown is not, since the cleanup
+  unlinks materialized agents and `installed.json` can fail to read transiently, so
+  collapsing "unknown" into "disabled" would destroy user edits over a temporary fault.
+  Unknown therefore refuses a promotion AND refuses a deletion, reporting unlanded so the
+  watch retries. That applies at **every** deletion site — the demotion path and both
+  undo calls in `_set_backend_health` — since all three reach the same
+  `deregister_app` → `_deregister_agents` → unlink. A demotion does not even read the
+  state: it is a file access with no bearing on a scrub.
+
+  A **transition always reconciles**, even when `healthy` and `mcp_healthy` agree. That
+  flag can be stale in the other direction after a partial reconcile — an MCP write that
+  landed followed by an agent write that did not leaves it unmoved while the entry is on
+  disk — so matching it across a flip would skip the scrub and strand the dead url. The
+  short-circuit is valid only when the verdict did not change, which is what keeps a
+  settled backend from rewriting `mcp.json` every sweep.
+
+  An **unreadable manifest leaves the scrub unlanded.** Keeping the agents there is
+  right, but it leaves them naming the server just removed, and `refresh_app_agents`
+  gives up on the same condition — so nothing else revisits those files. Reporting it
+  unlanded makes the watch retry until the manifest is readable and the refresh can
+  correct them, instead of recording a job that was only half done.
+- **Teardown participates in the same serialization.** `stop_app_backend` takes
+  `_health_reconcile_lock` across its pop, so it and a reconcile are mutually exclusive:
+  either the reconcile finishes and the pop follows it (the caller's subsequent
+  `deregister_app` then wins), or the pop lands first and the reconcile's identity check
+  fails. Without that, a watcher already past its identity check could still be inside
+  the MCP write when the caller scrubbed, and its write would land after — restoring the
+  dead url this gate exists to keep out of `mcp.json`.
+- **An ADOPTED recovery re-binds ownership before it promotes.** `adopted_pids` is what
+  `stop_app_backend` signals and what uninstall acts behind, and it was captured at
+  adoption. A recovery means the EXTERNAL supervisor put something back, possibly a
+  different process — so the owner set is re-captured through the same consistency
+  sandwich adoption uses, and the promotion is REFUSED when ownership cannot be
+  confirmed. Unhealthy-but-serving is recoverable on the next sweep; a record that claims
+  freshly-valid ownership of a process that is gone is not, because stop would then
+  signal the wrong PIDs while the live replacement keeps running.
 - **The watch is bound to the RECORD, not the app name.** A stop/start installs a
   new `AppProcess` under the same name with its own watch, so every transition is
   guarded by `_processes.get(name) is ap`. Resolving by name instead would let a
@@ -1076,6 +1229,54 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   watch terminates — `stop_app_backend` pops the record — so it needs no separate
   teardown, and a stale watcher exits before it can probe a port some other
   backend has since taken.
+- **A reconcile that did not land is retried, not stranded.** The health flag moves
+  whether or not the mcp.json write succeeded, so gating the reconcile on the health
+  *transition* alone would leave a transient failure uncorrected until the next
+  transition — which for a backend that then stays put never arrives, leaving either a
+  dead URL kiro-cli dials every session or a live backend with no MCP entry.
+  `AppProcess.mcp_healthy` records the value last SUCCESSFULLY written — **tri-state**,
+  where `None` means *unknown* (no write has been confirmed) and only `False` means
+  confirmed-scrubbed, so it must never be read as a plain boolean. Each sweep
+  reconciles when the verdict changed **or** when that record is behind the verdict.
+  The terminal exited-process path consults it too, and does not return until the entry
+  is reconciled or the record is dropped. That path is the one place where giving up is
+  permanent — nothing revisits an exited backend — so returning on an unlanded scrub
+  would strand the dead URL for kiro-cli to dial on every session.
+- **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
+  handed the `AppProcess` itself and derives both name and port from it; every attempt
+  re-checks that the record is still the tracked one. A name plus a port are two
+  independent inputs that can DISAGREE — a restart landing between the record's insertion
+  and the supervisor thread's first statement would give a name lookup the successor
+  while the port argument still named the predecessor, and the poll would then act on a
+  backend whose port it never probed. Re-resolving by name — even per attempt — lets a stop/start inside the ~30s
+  startup window hand a later attempt the successor, which the poll would then promote,
+  or on exhaustion scrub, on evidence gathered entirely about its predecessor, having
+  never probed the successor's port. The exhaustion scrub is identity-guarded for the
+  same reason: it deregisters by app NAME, and because a bypassing scrub never touches
+  the successor's record, its `mcp_healthy` would still read True and the retry above
+  would never fire to put the entry back.
+- **That identity guard has to stay effective THROUGH the MCP reconcile**, which is
+  why every health transition goes through `_set_backend_health`. The MCP writers key
+  on the app NAME, not on the record — `_deregister_mcp_servers` removes every
+  `<app>:` entry — so checking identity only alongside the flag write would leave a
+  window in which a retiring watcher scrubs the SUCCESSOR's live servers, or
+  republishes its own dead port. `_lock` cannot just be held across the reconcile: it
+  does manifest and config file I/O, so the reverse proxy's `get_app_backend_port`
+  would block behind it on every request, and the `bridges ↔ backend` import cycle
+  makes it a deadlock risk. The ordering is established with a separate
+  `_health_reconcile_lock` that every health-driven reconcile takes, including the
+  startup registration. That is what makes it sufficient: passing the identity check
+  proves the successor is not yet in `_processes` and so has not registered, and its
+  own registration must then queue behind the retiring one — so the last write always
+  belongs to the live record.
+
+**Teardown stops the backend before scrubbing its resources.** `stop_app_backend` pops
+the tracking record, and that pop is what ends the watch's authority to reconcile MCP for
+the app — so it has to happen BEFORE `deregister_app`. Scrubbing first leaves a window in
+which a backend that recovers re-registers the OLD manifest's servers, and entries the
+update removed survive it. Uninstall and the disable rollback already ordered it this
+way; the two update paths in `apps/routes.py` now match them, and
+`test_update_stops_the_backend_before_deregistering_resources` pins it.
 
 `backend_status.running` on `/api/apps` is likewise read off the record
 (`AppProcess.is_running`) rather than asserted from the record merely existing.

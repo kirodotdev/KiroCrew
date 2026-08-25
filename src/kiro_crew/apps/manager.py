@@ -1624,6 +1624,32 @@ def get_app_manifest(name: str) -> AppManifest | None:
         return None
 
 
+def app_enabled_state(name: str) -> bool | None:
+    """Tri-state enablement: True, False, or None when the metadata cannot be READ.
+
+    :func:`is_app_enabled` collapses "not installed" and "unreadable" into a single
+    False, because :func:`_read_installed` returns None for both. That is the right
+    answer for a caller deciding whether to ACT on an app, and the wrong one for a caller
+    deciding whether to DELETE its files: a transient read fault (EMFILE, EIO, a Windows
+    AV lock) would be indistinguishable from a deliberate disable, and the deletion is
+    unrecoverable. This keeps the two apart.
+
+    A missing metadata file is a definite False — the app is not installed — not a
+    failure to read one.
+    """
+    meta_path = app_dir(name) / INSTALLED_META_FILENAME
+    try:
+        if not meta_path.is_file():
+            return False
+        data = json.loads(meta_path.read_text(encoding="utf-8"))
+        return bool(InstalledApp.from_dict(data).enabled)
+    # No `json.JSONDecodeError` member: it subclasses ValueError, so pairing the two is
+    # redundant and the repo ratchets against it (see #5287).
+    except (OSError, ValueError, TypeError, KeyError) as exc:
+        logger.warning("Could not determine enabled state from %s: %s", meta_path, exc)
+        return None
+
+
 def is_app_enabled(name: str) -> bool:
     """Read-only enablement check: True only for an installed, enabled app.
 

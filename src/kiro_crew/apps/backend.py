@@ -6,6 +6,7 @@ the backend process lifecycle: spawn on enable, health-check, stop on disable.
 from __future__ import annotations
 
 import concurrent.futures
+import http.client
 import json
 import logging
 import os
@@ -65,6 +66,15 @@ _HEALTH_WATCH_INTERVAL = 15.0
 # would take a working app offline; an exited process needs no threshold at all because
 # it cannot recover. See _watch_backend_health.
 _HEALTH_WATCH_FAILURES = 3
+# Serializes health-driven MCP reconciliation (see _set_backend_health). Deliberately
+# NOT `_lock`: the reconcile does manifest + config file I/O, and holding `_lock` across
+# it would block the reverse proxy's get_app_backend_port on every request and risk a
+# deadlock through the bridges <-> backend import cycle.
+# RE-ENTRANT: the health path acquires this and then calls into bridges, whose MCP and
+# agent writers acquire it too (see health_reconcile_lock). A plain Lock would deadlock
+# on that re-entry, and dropping it from either side would leave the two families of
+# writer unordered again.
+_health_reconcile_lock = threading.RLock()
 
 # Spawn survival check: poll the freshly-spawned child over a short grace window to
 # confirm it survived its initial bind (an immediate exit -> EADDRINUSE crash-loop must
@@ -206,7 +216,8 @@ def _probe_adoption_health(port: int, health_path: str) -> bool:
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
             return bool(resp.status < 400)
-    except (urllib.error.URLError, OSError):
+    # HTTPException is not an OSError — see _health_probe for why that matters.
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
         return False
 
 
@@ -365,6 +376,11 @@ class AppProcess:
     proc: subprocess.Popen | None = field(default=None, repr=False)
     log_fh: Any = field(default=None, repr=False)
     healthy: bool = False
+    # The `healthy` value last SUCCESSFULLY reconciled into mcp.json, or None if nothing
+    # has been written for this record yet. Distinct from `healthy` because the flag
+    # moves even when the mcp.json write fails; the gap between them is what the watch
+    # retries. Deliberately absent from to_dict(): internal bookkeeping, not API.
+    mcp_healthy: bool | None = None
     started_at: float = 0.0
     log_path: str = ""
     adopted_pids: list[int] = field(default_factory=list)
@@ -776,6 +792,13 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 with _lock:
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
+                # Register through the SERIALIZED transition, before the watch is armed.
+                # Registering afterwards — from a caller that returns and queues the work
+                # — leaves a window in which the watch demotes and scrubs first and the
+                # queued registration lands after it, restoring the dead url. Going
+                # through _set_backend_health also records `mcp_healthy`, so the watch
+                # can tell whether what it believes matches what is on disk.
+                _set_backend_health(ap, healthy=True)
                 _start_adopted_health_watch(ap, manifest.backend.healthCheck)
                 return ap
             else:
@@ -1229,7 +1252,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
 
     # Health check in background, then a standing liveness watch for as long as the
     # backend is tracked — see _supervise_backend_health.
-    _start_health_supervisor(app_name, port, manifest.backend.healthCheck)
+    _start_health_supervisor(ap, manifest.backend.healthCheck)
 
     return ap
 
@@ -1262,9 +1285,18 @@ def _wait_for_pids(pids: list[int], timeout: float = 2.0) -> None:
 
 def stop_app_backend(app_name: str) -> bool:
     """Stop an app's backend process."""
-    with _lock:
-        ap = _processes.pop(app_name, None)
-        _allocated_ports.pop(app_name, None)
+    # Teardown participates in the health serialization, so the pop cannot land in the
+    # middle of a reconcile. Without this, a watcher that had already passed its identity
+    # check could still be inside `_gate_mcp_registration` when the caller's subsequent
+    # `deregister_app` scrubs — and its write would land AFTER, restoring the dead url
+    # this whole gate exists to keep out of mcp.json. Holding it across the pop makes the
+    # two mutually exclusive: either the reconcile completes and this pop follows it (the
+    # caller's scrub then wins), or this pop lands first and the reconcile's identity
+    # check fails. Lock order matches `_set_backend_health`: reconcile lock, then `_lock`.
+    with _health_reconcile_lock:
+        with _lock:
+            ap = _processes.pop(app_name, None)
+            _allocated_ports.pop(app_name, None)
 
     _forget_app_pid(app_name)
 
@@ -1531,7 +1563,21 @@ def unstopped_backend_port(app_name: str, *, port_hint: int | None = None) -> in
 # Health checking
 # ---------------------------------------------------------------------------
 
-def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> None:
+def health_reconcile_lock() -> Any:
+    """The serialization every writer of an app's MCP + agent state must hold.
+
+    Exported for ``apps/bridges.py``, which acquires it around its mcp.json and agent
+    materialization so a lifecycle registration and a health transition cannot interleave
+    their decisions. Held re-entrantly: the health path already owns it before it calls
+    into those writers.
+
+    Ordering is always this lock FIRST, then ``_lock`` or bridges' ``_mcp_lock`` — never
+    the reverse — so the two families of writer cannot deadlock against each other.
+    """
+    return _health_reconcile_lock
+
+
+def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> bool:
     """Register the app's MCP servers once its backend is healthy, or scrub them if not.
 
     Called from the health-check loop so the global mcp.json never carries an HTTP MCP url
@@ -1539,72 +1585,169 @@ def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> None:
     pre-health port would leave a dead url for an enabled app whose backend never
     became healthy, breaking every kiro-cli session). On
     health success we (re)register with the confirmed live port; on failure we deregister
-    so no dead entry survives. Never raises — registration must not crash the health loop."""
+    so no dead entry survives. Never raises — registration must not crash the health loop.
+
+    Returns whether the reconcile landed. The caller records that, because the health
+    FLAG moves whether or not mcp.json could be written: without a success signal a
+    transient write failure would strand a dead (or missing) entry until the next health
+    transition, which for a backend that then stays put never comes."""
     try:
         if healthy:
             # circular import: bridges imports backend.get_app_backend_port, so deferring
             # this import to call time breaks the backend ↔ bridges module cycle.
             from kiro_crew.apps.bridges import reregister_app_mcp_servers
 
-            reregister_app_mcp_servers(app_name, live_port=port)
+            # Symmetric with the scrub below: the agent JSONs carry the server spec, so a
+            # registration whose agent half failed has not made the tools reachable — and
+            # letting `mcp_healthy` advance on it would strand the app's agent without
+            # its MCP tools, with nothing left to retry.
+            register_io_failures: list[str] = []
+            reregister_app_mcp_servers(
+                app_name, live_port=port, io_failures=register_io_failures
+            )
+            if register_io_failures:
+                logger.warning(
+                    "App %s: %d agent(s) could not be rewritten after MCP registration "
+                    "(%s); reporting the reconcile unlanded so the watch retries",
+                    app_name, len(register_io_failures), ", ".join(register_io_failures),
+                )
+                return False
         else:
             # circular import: see above — bridges ↔ backend cycle, deferred to call time.
-            from kiro_crew.apps.bridges import _deregister_mcp_servers
+            from kiro_crew.apps.bridges import scrub_backend_mcp_url
 
-            removed = _deregister_mcp_servers(app_name)
-            if removed:
+            # NOT a blanket deregister. An app's stdio MCP servers are launched by
+            # kiro-cli itself and have no port to be dead, so dropping them because an
+            # HTTP backend died takes working tools away for a reason that has nothing to
+            # do with them. scrub_backend_mcp_url pops the HTTP entry and keeps the rest
+            # — falling back to removing everything when the manifest cannot say which is
+            # which, since the dead url must not survive on the strength of not knowing.
+            scrub_unreconciled: list[str] = []
+            kept = scrub_backend_mcp_url(app_name, unreconciled=scrub_unreconciled)
+            if scrub_unreconciled:
                 logger.warning(
-                    "Scrubbed %d MCP server(s) for app %s after backend failed health check",
-                    removed, app_name,
+                    "App %s: the scrub could not be completed (%s); reporting it "
+                    "unlanded so the watch retries",
+                    app_name, "; ".join(scrub_unreconciled),
                 )
+                return False
+            if kept:
+                logger.info(
+                    "App %s: kept %d backend-independent MCP server(s) after the scrub",
+                    app_name, len(kept),
+                )
+            # The scrub is only half the removal: an app's materialized agent JSONs COPY
+            # the server's launch spec, and the agent config is what kiro-cli loads. So
+            # clearing the global map alone leaves the agents still naming the dead url —
+            # the exact outage this gate exists to prevent, just one file over.
+            # Registration already refreshes agents for this reason; mirror it here.
+            #
+            # A failed refresh makes the whole reconcile UNLANDED rather than being
+            # swallowed. Registration treats its own refresh as non-fatal, but that path
+            # has no retry behind it, so non-fatal there means "do not fail the
+            # registration". Here the watch retries, an idempotent re-scrub is cheap, and
+            # the alternative is a dead url left permanently in the file kiro-cli reads.
+            from kiro_crew.apps.bridges import refresh_app_agents
+
+            # refresh_app_agents, NOT a hand-rolled re-materialization: it already
+            # carries the two guards this path must honour — a `resources="app"` app
+            # registers its own agents and the gateway must not publish duplicates, and
+            # a denied app's agents must be SCRUBBED rather than rewritten back into
+            # dispatchable existence. Both return an empty list, which is "nothing for us
+            # to do" rather than a failure; only the io_failures collector means retry.
+            # The agent refresh RE-MATERIALIZES this app's agent configs. Unlike the
+            # scrub above — always safe, and therefore never gated — that is a WRITE, and
+            # for an app the operator has disabled it puts back the very files a
+            # concurrent `deregister_app` just removed. Checked BEFORE and AFTER: the CLI
+            # runs in another process, so neither check can be atomic with the write, and
+            # only the pair converges.
+            # Deleting happens only on a CONFIRMED disable. `_drop_disabled_app_resources`
+            # unlinks materialized agents, taking user-owned fields with them, and
+            # `installed.json` can fail to read transiently — so an UNKNOWN state must
+            # not be collapsed into "disabled". It reports unlanded instead and the watch
+            # retries. The cleanup's own result is the reconcile's result, because
+            # deregister_app reports softly and discarding it would record a removal that
+            # never happened.
+            enabled = _app_enabled_state(app_name)
+            if enabled is False:
+                return _drop_disabled_app_resources(app_name)
+            if enabled is None:
+                return False  # unknown: neither refresh nor delete; try again next sweep
+            scrub_io_failures: list[str] = []
+            refresh_app_agents(app_name, io_failures=scrub_io_failures)
+            enabled = _app_enabled_state(app_name)
+            if enabled is False:
+                return _drop_disabled_app_resources(app_name)
+            if enabled is None:
+                return False
+            if scrub_io_failures:
+                logger.warning(
+                    "App %s: %d agent(s) could not be rewritten after the MCP scrub (%s); "
+                    "reporting the reconcile unlanded so the watch retries",
+                    app_name, len(scrub_io_failures), ", ".join(scrub_io_failures),
+                )
+                return False
+        return True
     except Exception as exc:  # noqa: BLE001 — health loop must never crash on reconcile
         logger.warning("Health-gated MCP registration failed for app %s: %s", app_name, exc)
+        return False
 
 
 def _health_probe(url: str) -> bool:
-    """Whether the health endpoint answers below 400. Never raises."""
+    """Whether the health endpoint answers below 400. Never raises.
+
+    `http.client.HTTPException` is caught alongside the socket errors because it is NOT
+    an `OSError` or `URLError` subclass (only `RemoteDisconnected` is, via
+    `ConnectionResetError`), and `urllib`'s `do_open` re-raises `getresponse()` failures
+    unwrapped. An app backend is arbitrary third-party code — an `exec` backend, or an
+    adopted process we do not own — so a non-HTTP first line on the port is a real
+    condition, and `BadStatusLine` escaping here would kill the standing watch thread
+    and freeze `healthy` at its last value: silently reinstating the write-once bug this
+    module's watch exists to prevent.
+    """
     try:
         req = urllib.request.Request(url, method="GET")
         with urllib.request.urlopen(req, timeout=_HEALTH_CHECK_TIMEOUT) as resp:
             return bool(resp.status < 400)
-    except (urllib.error.URLError, OSError):
+    except (urllib.error.URLError, OSError, http.client.HTTPException):
         return False
 
 
-def _health_check_loop(app_name: str, port: int, health_path: str) -> AppProcess | None:
+def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
     """Poll the health endpoint until it responds or we give up.
 
-    Returns the tracking record this call promoted to healthy, or None if the backend
-    never answered (or stopped being tracked mid-check). The record — not the app name —
-    is what :func:`_watch_backend_health` needs to keep watching it: a later
-    stop/start replaces the entry under the same name, and a watch that re-resolved by
-    name could demote a NEWER generation it never observed.
+    Takes the RECORD rather than a name and a port, which is what binds the whole poll to
+    one generation. A name plus a port are two independent inputs that can disagree: a
+    stop/start landing between the spawn and this thread's first statement would hand a
+    name lookup the SUCCESSOR while the port argument still named the predecessor, and
+    the poll would then promote — or on exhaustion scrub — a backend whose port it never
+    probed. Deriving both from the record leaves nothing to disagree.
+
+    Returns the record if this call promoted it to healthy, else None (never answered, or
+    no longer the tracked entry).
     """
+    app_name = ap.app_name
+    port = ap.port
     url = f"http://127.0.0.1:{port}{health_path}"
     for attempt in range(_HEALTH_CHECK_RETRIES):
         time.sleep(_HEALTH_CHECK_INTERVAL)
         with _lock:
-            if app_name not in _processes:
-                return None  # stopped while we were checking
+            if _processes.get(app_name) is not ap:
+                return None  # replaced or stopped — this poll is a retired generation
         if _health_probe(url):
-            with _lock:
-                # Stopped/disabled between the health poll and here: do NOT
-                # register MCP for a backend that's no longer tracked — that would
-                # write the exact dead-URL entry this guard prevents.
-                # Mirror the top-of-loop guard.
-                ap = _processes.get(app_name)
-                if ap is None:
-                    return None
-                ap.healthy = True
-            logger.info(
-                "App %s backend healthy (port %d, attempt %d)",
-                app_name, port, attempt + 1,
-            )
             # Health-gated MCP registration: only now that the
             # backend has passed /health do we write its HTTP MCP url (live port) to
             # global mcp.json. Registering before this could leave a dead-but-enabled
             # url for an app whose backend never became healthy — the kiro-cli outage.
-            _gate_mcp_registration(app_name, port, healthy=True)
+            # Routed through the shared transition, which re-checks that `ap` is still
+            # the tracked record, so this is ordered against the watch's demotions
+            # rather than racing them.
+            if not _set_backend_health(ap, healthy=True):
+                return None
+            logger.info(
+                "App %s backend healthy (port %d, attempt %d)",
+                app_name, port, attempt + 1,
+            )
             return ap
 
     logger.warning(
@@ -1613,11 +1756,73 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> AppProcess
     )
     # Backend never became healthy: scrub any optimistic/stale MCP entry so kiro-cli does
     # not keep dialing a dead port on every session (the reverted-outage shape).
-    _gate_mcp_registration(app_name, port, healthy=False)
+    #
+    # Identity-guarded like every other transition, on the one record this loop probed.
+    # `_deregister_mcp_servers` removes by app NAME, so a restart during the startup
+    # window — whose successor may already have come up and registered — would otherwise
+    # have this retiring loop scrub the healthy successor's entry. That scrub also
+    # bypasses the record, so the successor's `mcp_healthy` would still read True and the
+    # watch's retry condition would never fire to put it back.
+    _set_backend_health(ap, healthy=False)
     return None
 
 
+def _rebind_adopted_owners(ap: AppProcess, health_path: str) -> bool:
+    """Re-capture an adopted backend's owning PIDs, or refuse to confirm ownership.
+
+    Reuses the adoption-time consistency sandwich (:func:`_capture_adopted_owners`), so a
+    responder that exits mid-capture cannot hand ownership to a bystander. Returns False
+    when ownership cannot be established, which the caller treats as "do not promote".
+    """
+    try:
+        captured = _capture_adopted_owners(ap.app_name, ap.port, health_path)
+    except Exception as exc:  # noqa: BLE001 — the watch must never die on a probe
+        logger.warning(
+            "App %s: could not re-capture adopted owners on port %d: %s",
+            ap.app_name, ap.port, exc,
+        )
+        return False
+    if captured is None:
+        logger.warning(
+            "App %s: adopted backend on port %d answered again but its ownership could "
+            "not be confirmed — leaving it unhealthy", ap.app_name, ap.port,
+        )
+        return False
+    pids, start_times = captured
+    with _lock:
+        if _processes.get(ap.app_name) is not ap:
+            return False
+        ap.adopted_pids = pids
+        ap.adopted_start_times = start_times
+    return True
+
+
 def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
+    """Run the liveness watch, surviving an unexpected fault in any single sweep.
+
+    The whole point of the guard is the failure MODE: an exception escaping the sweep
+    kills this daemon thread, and a dead watch freezes ``healthy`` at its last value —
+    silently restoring the write-once behaviour this watch exists to remove, with the
+    proxy still routing to a port nothing serves. A logged fault that costs one sweep is
+    strictly better. Restarting resets the consecutive-failure counter, which is the
+    conservative direction (it delays a demotion rather than causing a spurious one), and
+    the inner loop sleeps before its first probe, so a persistent fault cannot spin.
+    """
+    while True:
+        try:
+            _watch_backend_health_sweeps(ap, health_path)
+            return
+        except Exception:  # noqa: BLE001 — see the docstring; a dying watch is the bug
+            logger.warning(
+                "App %s: health watch sweep failed on port %d; restarting the watch",
+                ap.app_name, ap.port, exc_info=True,
+            )
+            with _lock:
+                if _processes.get(ap.app_name) is not ap:
+                    return  # no longer tracked — nothing left to watch
+
+
+def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
     """Keep re-checking an already-healthy backend so ``healthy`` can go back to False.
 
     Without this the startup poll would leave ``healthy`` a write-once cache: a backend
@@ -1651,63 +1856,282 @@ def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
             if _processes.get(ap.app_name) is not ap:
                 return
             was_healthy = ap.healthy
+            mcp_healthy = ap.mcp_healthy
             proc = ap.proc
 
         if proc is not None and proc.poll() is not None:
+            # A dead Popen never revives, so there is no health verdict left to reach —
+            # but the watch may not leave until the MCP entry is actually out. This is
+            # the one place where giving up strands the dead URL permanently: nothing
+            # else revisits an exited backend, so a scrub that did not land would stay
+            # unlanded and kiro-cli would keep dialing it every session. Keep sweeping
+            # (one attempt per interval) until the entry is reconciled or the record is
+            # dropped by stop_app_backend.
+            #
+            # `mcp_healthy` gates this as well as `healthy`: an entry that still says
+            # healthy has to come out even when the flag was moved without the write
+            # landing. It is TRI-STATE, and only `False` means "confirmed scrubbed" —
+            # `None` is *unknown*, which is what a failed startup reconcile leaves
+            # behind, and treating it as "nothing to unwind" would abandon exactly the
+            # entry that most needs removing.
             if was_healthy:
                 _demote(ap, reason=f"process exited (rc={proc.returncode})")
-            return  # decisive: a dead Popen never revives
+            elif mcp_healthy is not False:
+                _retry_mcp_reconcile(ap, healthy=False)
+            else:
+                return  # confirmed scrubbed — nothing to unwind
+            with _lock:
+                dropped = _processes.get(ap.app_name) is not ap
+                reconciled = ap.mcp_healthy is False
+            if dropped or reconciled:
+                return
+            continue
 
         if _health_probe(url):
             consecutive_failures = 0
-            if not was_healthy:
-                _promote(ap)
-            continue
+            healthy = True
+        else:
+            consecutive_failures += 1
+            healthy = was_healthy and consecutive_failures < _HEALTH_WATCH_FAILURES
 
-        consecutive_failures += 1
-        if was_healthy and consecutive_failures >= _HEALTH_WATCH_FAILURES:
-            _demote(ap, reason=f"{consecutive_failures} consecutive failed health probes")
+        if healthy != was_healthy:
+            if healthy:
+                # An ADOPTED record carries the PIDs `stop_app_backend` will signal and
+                # `uninstall` will act behind. Those were captured at adoption, and a
+                # recovery means the EXTERNAL supervisor put something back — quite
+                # possibly a different process. Promoting without re-binding ownership
+                # would mark the record freshly-valid while its identities name a process
+                # that is gone, so stop would signal the wrong PIDs (or none) and leave
+                # the live replacement running while its files are mutated or removed.
+                # Refuse the promotion instead: unhealthy-but-serving is recoverable on
+                # the next sweep, a mis-bound owner set is not.
+                if ap.proc is None and not _rebind_adopted_owners(ap, health_path):
+                    continue
+                _promote(ap)
+            else:
+                _demote(ap, reason=f"{consecutive_failures} consecutive failed health probes")
+        elif mcp_healthy != healthy:
+            # The verdict is unchanged but mcp.json never caught up — a previous
+            # reconcile failed. Retry it here rather than waiting for the next health
+            # transition, which for a backend that now stays put would never arrive.
+            _retry_mcp_reconcile(ap, healthy=healthy)
+
+
+def _app_enabled_state(app_name: str) -> bool | None:
+    """Tri-state enablement: True, False, or None when it could not be read.
+
+    The distinction is load-bearing, because the two callers want OPPOSITE defaults on an
+    unreadable state. Refusing to ADD resources when enablement is unknown is safe — the
+    app stays as it is. DELETING them when it is unknown is not: `_drop_disabled_app_resources`
+    unlinks materialized agents, taking the user-owned fields `_preserve_user_agent_edits`
+    carries, and `installed.json` can fail to read transiently. Collapsing "unknown" into
+    "disabled" would destroy data over a temporary fault.
+    """
+    try:
+        # circular import: manager imports from this module's package at call time.
+        #
+        # `app_enabled_state`, NOT `is_app_enabled`: the latter returns False for BOTH a
+        # deliberate disable and an unreadable metadata file, because `_read_installed`
+        # answers None to both. Trusting that collapsed False would make this whole
+        # tri-state a no-op for the transient fault it exists to catch — the read error
+        # never raises, so the `except` below would never see it.
+        from kiro_crew.apps.manager import app_enabled_state
+
+        return app_enabled_state(app_name)
+    except Exception as exc:  # noqa: BLE001 — unknown is a state, not a crash
+        logger.warning(
+            "App %s: could not read its enabled state: %s", app_name, exc,
+        )
+        return None
+
+
+def _drop_disabled_app_resources(app_name: str) -> bool:
+    """Remove everything registered for an app that turned out to be disabled.
+
+    Returns whether the removal COMPLETED. ``deregister_app`` reports most problems
+    softly, in ``RegistrationResult.errors`` rather than by raising, so a failed removal
+    looks identical to a clean one unless that list is read. Idempotent with the CLI's
+    own deregistration, so running it a second time costs nothing.
+    """
+    try:
+        # circular import: bridges ↔ backend, deferred to call time.
+        from kiro_crew.apps.bridges import deregister_app
+
+        result = deregister_app(app_name)
+    except Exception as exc:  # noqa: BLE001 — must not crash the watch
+        logger.warning("App %s: could not drop a disabled app's resources: %s", app_name, exc)
+        return False
+    errors = list(getattr(result, "errors", None) or [])
+    if errors:
+        logger.warning(
+            "App %s: dropping a disabled app's resources did not complete (%s)",
+            app_name, "; ".join(errors),
+        )
+        return False
+    return True
+
+
+def _undo_promotion_of_disabled_app(ap: AppProcess) -> bool:
+    """Remove what a promotion registered for an app disabled while it was being written.
+
+    The enabled check and the write CANNOT be atomic: ``kirocrew app disable`` runs in
+    another process, so there is no lock to share with it. Ordering closes the interleave
+    where the flag is read after the resources come down; this closes the other one,
+    where the check passes and the disable completes before the write lands. Verifying
+    afterwards and undoing is the convergence that is actually available.
+
+    ``deregister_app`` is idempotent and removes exactly what the promotion put back, so
+    running it a second time after the CLI's own call costs nothing.
+
+    Returns whether the removal COMPLETED. ``deregister_app`` reports most problems
+    softly, in ``RegistrationResult.errors`` rather than by raising, so a failed removal
+    looks identical to a clean one unless that list is read. ``mcp_healthy`` therefore
+    only moves to False on a complete success — leaving it otherwise is what makes the
+    next sweep try again, instead of recording a removal that did not happen and letting
+    a disabled app stay dispatchable.
+    """
+    with _lock:
+        if _processes.get(ap.app_name) is ap:
+            ap.healthy = False
+    if not _drop_disabled_app_resources(ap.app_name):
+        logger.warning(
+            "App %s: undoing the registration of a now-disabled app did not complete; "
+            "retrying on the next sweep", ap.app_name,
+        )
+        return False
+    with _lock:
+        if _processes.get(ap.app_name) is ap:
+            ap.mcp_healthy = False
+    logger.warning(
+        "App %s was disabled while its recovery was being registered; the registration "
+        "has been undone", ap.app_name,
+    )
+    return True
+
+
+def _set_backend_health(ap: AppProcess, *, healthy: bool) -> bool:
+    """Flip ``ap.healthy`` and move its MCP entry, only while ``ap`` is still tracked.
+
+    The identity re-check has to stay effective THROUGH the reconcile, not merely
+    alongside the flag write, because the MCP writers key on the app NAME rather than on
+    this record: `_deregister_mcp_servers` removes every ``<app>:`` entry, so a verdict
+    formed about a record that has since been replaced would scrub the SUCCESSOR's live
+    servers, and a stale re-register would publish the predecessor's dead port — the
+    dead-URL outage the health gating exists to prevent.
+
+    `_lock` cannot simply be held across the reconcile (it does manifest and config file
+    I/O, and the proxy's get_app_backend_port must not block behind it), so the ordering
+    is established with `_health_reconcile_lock` instead. That is sufficient because
+    every health-driven reconcile takes it: passing the identity check proves the
+    successor is not yet in `_processes`, hence has not registered, and its own
+    registration must then queue behind this one — so the last write is always the
+    live record's.
+
+    Returns True if the transition was applied.
+    """
+    with _health_reconcile_lock:
+        # IDENTITY FIRST. The undo below deregisters by app NAME, so running it for a
+        # record that is no longer the tracked one would delete the SUCCESSOR's
+        # resources — and an unreadable enabled state is exactly the case that would
+        # send a retired watcher down that path.
+        with _lock:
+            if _processes.get(ap.app_name) is not ap:
+                return False
+        # Only a promotion is gated; a demotion's scrub must never be blocked — and must
+        # not even READ the enabled state, which is a file access it has no use for.
+        enabled = _app_enabled_state(ap.app_name) if healthy else True
+        if enabled is not True:
+            # Undo ONLY on a CONFIRMED disable. The undo deregisters, which unlinks
+            # materialized agents and takes the user-owned fields with them, and
+            # `installed.json` can fail to read transiently — an unknown state must not
+            # be allowed to destroy data over a temporary fault. Unknown simply refuses
+            # the promotion and tries again next sweep.
+            #
+            # When it IS confirmed disabled and the record still believes something of
+            # ours is registered, an earlier undo did not land; this is where it is
+            # retried, because nothing else revisits a disabled app.
+            if enabled is False and ap.mcp_healthy is not False:
+                _undo_promotion_of_disabled_app(ap)
+            return False
+        with _lock:
+            if _processes.get(ap.app_name) is not ap:
+                return False
+            unchanged = ap.healthy == healthy
+            ap.healthy = healthy
+            # Short-circuit ONLY when the verdict did not change. `mcp_healthy` can be
+            # stale in the other direction after a partial reconcile — an MCP write that
+            # landed followed by an agent write that did not leaves it unmoved — so on a
+            # TRANSITION the reconcile has to run even when the two happen to agree, or
+            # a demotion would skip the scrub and leave the dead url registered.
+            if unchanged and ap.mcp_healthy == healthy:
+                return True  # already reconciled — nothing to rewrite
+        if _gate_mcp_registration(ap.app_name, ap.port, healthy=healthy):
+            with _lock:
+                # Only a reconcile that LANDED updates the record, so a transient
+                # failure leaves `mcp_healthy` out of step with `healthy` and the
+                # watch's next sweep tries again. Re-check identity: the write
+                # happened outside `_lock`.
+                if _processes.get(ap.app_name) is ap:
+                    ap.mcp_healthy = healthy
+        # VERIFY, because the check above could not be atomic with the write: a disable
+        # in the CLI's process can complete in between, and leaving the registration
+        # would keep a disabled app dispatchable.
+        # Same asymmetry on the verify: only a CONFIRMED disable undoes. An unknown
+        # state here leaves the registration standing — the pre-check had confirmed the
+        # app enabled, so the likely reading is a momentary read fault, and deleting on
+        # that basis is the unrecoverable direction.
+        if healthy and _app_enabled_state(ap.app_name) is False:
+            _undo_promotion_of_disabled_app(ap)
+            return False
+        return True
 
 
 def _demote(ap: AppProcess, *, reason: str) -> None:
     """Mark a backend unhealthy and scrub its MCP entry. Reversible — see _promote."""
-    with _lock:
-        if _processes.get(ap.app_name) is not ap:
-            return
-        ap.healthy = False
-    logger.warning(
-        "App %s backend went unhealthy on port %d — %s", ap.app_name, ap.port, reason,
-    )
-    # Same reason the startup failure path scrubs: an enabled app must not leave a dead
-    # HTTP MCP url behind for kiro-cli to dial on every session.
-    _gate_mcp_registration(ap.app_name, ap.port, healthy=False)
+    if _set_backend_health(ap, healthy=False):
+        logger.warning(
+            "App %s backend went unhealthy on port %d — %s", ap.app_name, ap.port, reason,
+        )
 
 
 def _promote(ap: AppProcess) -> None:
     """Mark a backend healthy again after a demotion and re-register its MCP servers."""
-    with _lock:
-        if _processes.get(ap.app_name) is not ap:
-            return
-        ap.healthy = True
-    logger.info("App %s backend recovered on port %d", ap.app_name, ap.port)
-    _gate_mcp_registration(ap.app_name, ap.port, healthy=True)
+    if _set_backend_health(ap, healthy=True):
+        logger.info("App %s backend recovered on port %d", ap.app_name, ap.port)
 
 
-def _supervise_backend_health(app_name: str, port: int, health_path: str) -> None:
+def _retry_mcp_reconcile(ap: AppProcess, *, healthy: bool) -> None:
+    """Re-attempt a reconcile that did not land, without re-announcing its transition.
+
+    The health verdict has not changed here — only mcp.json is behind — so this logs at
+    debug rather than repeating the demote/recover line every sweep until it succeeds.
+    """
+    if _set_backend_health(ap, healthy=healthy):
+        logger.debug(
+            "App %s: retried MCP reconcile (healthy=%s) on port %d",
+            ap.app_name, healthy, ap.port,
+        )
+
+
+def _supervise_backend_health(ap: AppProcess, health_path: str) -> None:
     """Thread target: wait for the backend to come up, then watch it for as long as it
     stays tracked."""
-    ap = _health_check_loop(app_name, port, health_path)
-    if ap is not None:
+    if _health_check_loop(ap, health_path) is not None:
         _watch_backend_health(ap, health_path)
 
 
-def _start_health_supervisor(app_name: str, port: int, health_path: str) -> None:
-    """Run :func:`_supervise_backend_health` on this backend's own daemon thread."""
+def _start_health_supervisor(ap: AppProcess, health_path: str) -> None:
+    """Run :func:`_supervise_backend_health` on this backend's own daemon thread.
+
+    The record is handed over directly, so the supervisor is bound to this generation
+    from the moment of the spawn — there is no window between inserting the record and
+    the thread resolving it in which a restart could substitute a different one.
+    """
     threading.Thread(
         target=_supervise_backend_health,
-        args=(app_name, port, health_path),
+        args=(ap, health_path),
         daemon=True,
-        name=f"app-health-{app_name}",
+        name=f"app-health-{ap.app_name}",
     ).start()
 
 
@@ -2266,6 +2690,9 @@ def _start_backends_concurrently(names: list[str]) -> list[str]:
                 # dead url for an enabled-but-never-healthy app and break every
                 # kiro-cli session. EXCEPTION: an adopted already-healthy instance
                 # runs no health loop, so register it synchronously now.
+                # Routed through the shared transition so this shares one order with
+                # the watch that _start_adopted_health_watch has by now armed on the
+                # same record — the two must not interleave their mcp.json writes.
                 if ap.healthy:
-                    _gate_mcp_registration(name, ap.port, healthy=True)
+                    _set_backend_health(ap, healthy=True)
     return started

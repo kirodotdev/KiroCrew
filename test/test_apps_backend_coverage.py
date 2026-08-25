@@ -654,6 +654,11 @@ class TestAdoptExistingInstance:
         monkeypatch.setattr(
             bmod, "popen_limited", lambda *_a, **_k: pytest.fail("spawned onto a taken port")
         )
+        # The adoption path registers through the serialized transition, which is gated
+        # on the app being enabled. "adoptee" is fabricated and so is not in
+        # installed.json; in production start_app_backend only ever runs for an enabled
+        # app. The gate itself is pinned by TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         return spawn_root
 
     def _run(self, port: int) -> AppProcess | None:
@@ -1538,7 +1543,7 @@ class TestGateMcpRegistration:
         seen: list[tuple[str, int]] = []
         monkeypatch.setattr(
             "kiro_crew.apps.bridges.reregister_app_mcp_servers",
-            lambda name, live_port: seen.append((name, live_port)),
+            lambda name, live_port, io_failures=None: seen.append((name, live_port)),
         )
         bmod._gate_mcp_registration("app", 9133, healthy=True)
         assert seen == [("app", 9133)]
@@ -1589,7 +1594,7 @@ class TestHealthCheckLoop:
         monkeypatch.setattr(bmod.urllib.request, "urlopen", _urlopen)
         with bmod._lock:
             bmod._processes["sick"] = AppProcess(app_name="sick", port=9134)
-        bmod._health_check_loop("sick", 9134, "/health")
+        bmod._health_check_loop(bmod._processes.get("sick") or bmod.AppProcess(app_name="sick", port=9134), "/health")
         assert attempts["n"] == 2
         assert gate == [("sick", 9134, False)]
 
@@ -1614,7 +1619,7 @@ class TestHealthCheckLoop:
         monkeypatch.setattr(bmod.urllib.request, "urlopen", _urlopen)
         with bmod._lock:
             bmod._processes["racy"] = AppProcess(app_name="racy", port=9135)
-        bmod._health_check_loop("racy", 9135, "/health")
+        bmod._health_check_loop(bmod._processes.get("racy") or bmod.AppProcess(app_name="racy", port=9135), "/health")
         assert gate == []
 
 

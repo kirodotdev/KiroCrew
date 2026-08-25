@@ -395,6 +395,30 @@ class TestAppCli:
         dereg.assert_called_once_with("demo")
         assert "off" in capsys.readouterr().out
 
+    def test_disable_flips_the_flag_before_deregistering(self) -> None:
+        """Order is a security control, not cosmetics (#5726 review).
+
+        A running gateway is a DIFFERENT process: it watches this app's backend and
+        re-registers its MCP servers and agents on a health recovery, gated on the
+        enabled flag it reads from installed.json. Deregistering first leaves a window
+        where that flag still says enabled and the resources are already gone — a
+        recovery landing there puts them back for the app being disabled.
+        """
+        order: list[str] = []
+        with (
+            patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),
+            patch(
+                "kiro_crew.cli_commands.deregister_app",
+                side_effect=lambda n: order.append("deregister"),
+            ),
+            patch(
+                "kiro_crew.cli_commands.disable_app",
+                side_effect=lambda n: order.append("disable") or _result(True, message="off"),
+            ),
+        ):
+            cc._handle_app(_ns(app_action="disable", name="demo"))
+        assert order == ["disable", "deregister"], order
+
     def test_disable_failure_exits_1(self) -> None:
         with (
             patch("kiro_crew.cli_commands._cleanup_app_crons_from_scheduler"),

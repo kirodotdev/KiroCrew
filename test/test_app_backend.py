@@ -220,6 +220,11 @@ class TestFixedAndAutoPortIsolation:
         """
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         fixed = bmod._MIN_PORT + 3
         manifests = {
             "fixed-app": SimpleNamespace(
@@ -257,6 +262,11 @@ class TestFixedAndAutoPortIsolation:
         """Pre-claiming is best-effort: it must never itself fail boot."""
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         manifests = {
             "no-manifest": None,
             "bad-port": SimpleNamespace(backend=SimpleNamespace(port="not-a-number")),
@@ -282,6 +292,11 @@ class TestFixedAndAutoPortIsolation:
         already be reserved by the time the spawn body runs.
         """
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
         # Stub the OS sandbox: these tests are about PORT bookkeeping, and
         # wrap_argv() fail-closes before that code on hosts without a backend
@@ -326,6 +341,11 @@ class TestFixedAndAutoPortIsolation:
         that port — and a gateway retrying a broken app would leak one per attempt.
         """
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
         # Stub the OS sandbox: these tests are about PORT bookkeeping, and
         # wrap_argv() fail-closes before that code on hosts without a backend
@@ -437,6 +457,11 @@ class TestBootSpawnLatency:
 
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         # OUR child owns the listener — the very bind whose failure this guards.
         monkeypatch.setattr(bmod, "_port_is_listening", lambda port: True)
         monkeypatch.setattr(bmod, "_spawn_owns_listener", lambda port, pid: True)
@@ -463,6 +488,11 @@ class TestBootSpawnLatency:
         positive evidence that its own bind succeeded — may short-circuit.
         """
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
         monkeypatch.setattr(bmod, "time", _frozen_spawn_time())
         monkeypatch.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: True)
@@ -491,6 +521,11 @@ class TestBootSpawnLatency:
         """
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         monkeypatch.setattr(bmod, "time", _frozen_spawn_time())
         # Something is listening, but it is not our child (nor its descendant).
         monkeypatch.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: True)
@@ -518,6 +553,11 @@ class TestBootSpawnLatency:
         is the launcher's child, not the pid Popen returned).
         """
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
         monkeypatch.setattr(bmod, "time", _frozen_spawn_time())
         monkeypatch.setattr(bmod.platform_compat, "listening_pid_tool_available", lambda: True)
@@ -598,6 +638,11 @@ class TestBootSpawnLatency:
 
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         monkeypatch.setattr(
             bmod.platform_compat, "listening_pid_tool_available", lambda: False
         )
@@ -628,6 +673,11 @@ class TestBootSpawnLatency:
 
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         names = [f"par-app-{i}" for i in range(4)]
         concurrent = threading.Barrier(len(names), timeout=10)
 
@@ -644,6 +694,11 @@ class TestBootSpawnLatency:
     def test_concurrent_boot_isolates_a_single_app_failure(self, monkeypatch):
         """One app's spawn failure must never take down the others (or boot)."""
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
 
         def _fake_start(app_name: str):
             if app_name == "bad-app":
@@ -995,6 +1050,11 @@ class TestBackendLifecycle:
         # verifies the child survived its bind; an immediate exit → None + cleared state.
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         # Widen the survival-check grace window for this test only. The boom.py child
         # exits immediately ONCE it runs, but under heavy pytest-xdist parallelism
         # (-n auto, ~32 workers) the sandboxed interpreter can take well over the default
@@ -1265,6 +1325,11 @@ class TestBootAdmissionRevet:
     def _boot_env(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
         started: list[str] = []
 
@@ -1313,6 +1378,11 @@ class TestBootAdmissionRevet:
         skips the failing app, and still boots the healthy one."""
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         monkeypatch.setattr(bmod, "_reap_stale_app_backends", lambda: 0)
         monkeypatch.setattr(bmod, "get_app_manifest", lambda name: None)
         started: list[str] = []
@@ -1341,6 +1411,30 @@ class TestBootAdmissionRevet:
         assert "boom-app" not in result
 
 
+def _reconcile_lock_held() -> bool:
+    """Whether the health reconcile lock is held right now.
+
+    Probed from a SEPARATE thread on purpose: the lock is an RLock, so a same-thread
+    acquire would succeed by re-entrancy and report False no matter who holds it.
+    """
+    import threading
+
+    import kiro_crew.apps.backend as bmod
+
+    result: list[bool] = []
+
+    def _probe() -> None:
+        got = bmod._health_reconcile_lock.acquire(blocking=False)
+        result.append(not got)
+        if got:
+            bmod._health_reconcile_lock.release()
+
+    t = threading.Thread(target=_probe)
+    t.start()
+    t.join()
+    return result[0]
+
+
 class _FakeHealthResp:
     """Minimal urlopen() stand-in: a 200 response usable as a context manager."""
 
@@ -1367,6 +1461,11 @@ class TestHealthGatedMcpRegistration:
 
     def test_registers_when_healthy_and_still_tracked(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",
@@ -1377,7 +1476,7 @@ class TestHealthGatedMcpRegistration:
         with bmod._lock:
             bmod._processes["hg-app"] = AppProcess(app_name="hg-app", port=9150, healthy=False)
         try:
-            bmod._health_check_loop("hg-app", 9150, "/health")
+            bmod._health_check_loop(bmod._processes["hg-app"], "/health")
             assert calls == [("hg-app", 9150, True)]  # registered exactly once, healthy
             assert bmod._processes["hg-app"].healthy is True
         finally:
@@ -1388,6 +1487,11 @@ class TestHealthGatedMcpRegistration:
         # review-bot race finding: app removed from _processes between the poll and the lock →
         # must NOT register MCP for a now-dead backend.
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",
@@ -1398,11 +1502,16 @@ class TestHealthGatedMcpRegistration:
         with bmod._lock:
             bmod._processes.clear()  # ensure absent
 
-        bmod._health_check_loop("gone-app", 9151, "/health")
+        bmod._health_check_loop(AppProcess(app_name="gone-app", port=9151), "/health")
         assert calls == []  # never registered — no dead-URL entry written
 
     def test_scrubs_when_never_healthy(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         self._fast_health(bmod, monkeypatch)
         calls = []
         monkeypatch.setattr(bmod, "_gate_mcp_registration",
@@ -1415,7 +1524,7 @@ class TestHealthGatedMcpRegistration:
         with bmod._lock:
             bmod._processes["sick-app"] = AppProcess(app_name="sick-app", port=9152, healthy=False)
         try:
-            bmod._health_check_loop("sick-app", 9152, "/health")
+            bmod._health_check_loop(bmod._processes["sick-app"], "/health")
             # Never healthy → scrub (healthy=False), never register.
             assert calls == [("sick-app", 9152, False)]
         finally:
@@ -1679,15 +1788,22 @@ class TestBackendLivenessWatch:
         """
         import kiro_crew.apps.backend as bmod
 
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
         monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
         gate_calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
             bmod, "_gate_mcp_registration",
-            lambda name, port, *, healthy: gate_calls.append((name, port, healthy)),
+            lambda name, port, *, healthy: (gate_calls.append((name, port, healthy)), True)[1],
         )
 
+        # mcp_healthy=True models the real precondition: a record only reaches the
+        # watch after a promotion has already reconciled mcp.json for it.
         ap = AppProcess(app_name="watched", port=9160, pid=4242,
-                        proc=_FakeProc(), healthy=True)
+                        proc=_FakeProc(), healthy=True, mcp_healthy=True)
         with bmod._lock:
             bmod._processes.clear()
             bmod._processes["watched"] = ap
@@ -1816,25 +1932,35 @@ class TestHealthSupervisorHandoff:
 
     def test_watch_runs_when_the_backend_came_up(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         ap = AppProcess(app_name="up", port=9170, healthy=True)
         watched: list[tuple[AppProcess, str]] = []
         monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: ap)
         monkeypatch.setattr(bmod, "_watch_backend_health",
                             lambda rec, path: watched.append((rec, path)))
 
-        bmod._supervise_backend_health("up", 9170, "/health")
+        bmod._supervise_backend_health(ap, "/health")
 
         assert watched == [(ap, "/health")]
 
     def test_no_watch_when_the_backend_never_came_up(self, monkeypatch):
         # Nothing to watch: the startup path already scrubbed the MCP entry and gave up.
         import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
         watched: list[Any] = []
         monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: None)
         monkeypatch.setattr(bmod, "_watch_backend_health",
                             lambda rec, path: watched.append(rec))
 
-        bmod._supervise_backend_health("down", 9171, "/health")
+        bmod._supervise_backend_health(AppProcess(app_name="down", port=9171), "/health")
 
         assert watched == []
 
@@ -1853,7 +1979,7 @@ class TestHealthTransitionsRefuseAStaleRecord:
         calls: list[tuple[str, int, bool]] = []
         monkeypatch.setattr(
             bmod, "_gate_mcp_registration",
-            lambda name, port, *, healthy: calls.append((name, port, healthy)),
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
         )
         with bmod._lock:
             bmod._processes.clear()
@@ -1880,3 +2006,1530 @@ class TestHealthTransitionsRefuseAStaleRecord:
 
         assert ap.healthy is False
         assert calls == []
+
+
+class TestMcpReconcileHonoursRecordIdentity:
+    """A stale watcher must not move the SUCCESSOR's MCP entry (review finding).
+
+    The MCP writers key on the app NAME, not on the record: `_deregister_mcp_servers`
+    removes every `<app>:` entry. So the identity guard has to stay effective through
+    the reconcile, not merely alongside the flag write — otherwise a demotion decided
+    about a retired record scrubs the live successor's servers, and a stale promotion
+    republishes the predecessor's dead port.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
+        )
+        with bmod._lock:
+            bmod._processes.clear()
+        try:
+            yield bmod, calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_retired_record_cannot_scrub_the_successors_servers(self, wired):
+        bmod, calls = wired
+        old = AppProcess(app_name="app", port=9180, healthy=True)
+        new = AppProcess(app_name="app", port=9181, healthy=True)
+        with bmod._lock:
+            bmod._processes["app"] = new  # a stop/start already replaced `old`
+
+        bmod._demote(old, reason="its own process exited")
+
+        assert calls == []  # the successor's `app:` entries are untouched
+        assert new.healthy is True
+        assert bmod.get_app_backend_port("app") == 9181
+
+    def test_a_retired_record_cannot_republish_its_dead_port(self, wired):
+        bmod, calls = wired
+        old = AppProcess(app_name="app", port=9182, healthy=False)
+        new = AppProcess(app_name="app", port=9183, healthy=True)
+        with bmod._lock:
+            bmod._processes["app"] = new
+
+        bmod._promote(old)
+
+        assert calls == []  # never re-registers 9182, which nothing serves any more
+
+    def test_the_reconcile_runs_under_the_serialization_lock(self, wired):
+        # The ordering guarantee depends on the reconcile happening INSIDE
+        # _health_reconcile_lock, not merely after the identity check. Observe it from
+        # the reconcile itself, which is the only place the property is visible.
+        bmod, calls = wired
+        ap = AppProcess(app_name="app", port=9184, healthy=False)
+        with bmod._lock:
+            bmod._processes["app"] = ap
+        held: list[bool] = []
+
+        def _observe(name, port, *, healthy):
+            held.append(_reconcile_lock_held())
+            return True
+
+        monkey = pytest.MonkeyPatch()
+        monkey.setattr(bmod, "_gate_mcp_registration", _observe)
+        monkey.setattr(bmod, "_app_enabled_state", lambda name: True)
+        try:
+            bmod._promote(ap)
+        finally:
+            monkey.undo()
+
+        assert held == [True]
+
+    def test_startup_registration_takes_the_same_lock_as_the_watch(self, monkeypatch):
+        # Serializing only the watch would not be enough: the successor's own startup
+        # registration has to queue behind a retiring watcher's reconcile, or the two
+        # can still interleave and leave the dead port as the last write.
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
+        monkeypatch.setattr(bmod.urllib.request, "urlopen", lambda *a, **k: _FakeHealthResp())
+        held: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (held.append(_reconcile_lock_held()), True)[1],
+        )
+        ap = AppProcess(app_name="boot", port=9185, healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["boot"] = ap
+        try:
+            assert bmod._health_check_loop(ap, "/health") is ap
+            assert held == [True]
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestStartupProbeCannotPromoteAReplacement:
+    """The startup poll must promote only the record it actually probed (review finding).
+
+    Resolving the record by name AFTER the probe let a stop/start landing mid-probe hand
+    back the successor, which was then marked healthy — and therefore routed to, and MCP
+    registered — on evidence gathered about its predecessor, without ever having
+    answered a probe itself.
+    """
+
+    def test_a_successor_installed_mid_probe_is_not_promoted(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
+        )
+
+        original = AppProcess(app_name="app", port=9190, healthy=False)
+        successor = AppProcess(app_name="app", port=9191, healthy=False)
+
+        def _probe_then_swap(_url):
+            # The stop/start lands while the probe is in flight.
+            with bmod._lock:
+                bmod._processes["app"] = successor
+            return True
+
+        monkeypatch.setattr(bmod, "_health_probe", _probe_then_swap)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = original
+        try:
+            result = bmod._health_check_loop(original, "/health")
+
+            assert result is None  # nothing promoted, so no watch is armed either
+            assert successor.healthy is False  # never answered a probe of its own
+            assert calls == []  # and its MCP entry was not written from a stale port
+            assert bmod.get_app_backend_port("app") is None
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestFailedMcpReconcileIsRetried:
+    """A reconcile that did not land must be retried (review finding).
+
+    The health FLAG moves whether or not mcp.json could be written. Gating the
+    reconcile on the health *transition* alone therefore stranded a failed write until
+    the next transition — which, for a backend that then stays put, never comes: a dead
+    URL kiro-cli dials on every session, or a live backend with no MCP entry at all.
+    """
+
+    @pytest.fixture
+    def watched(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        ap = AppProcess(app_name="w", port=9200, pid=1, proc=_FakeProc(),
+                        healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["w"] = ap
+        probes: list[bool] = []
+
+        def _scripted(_url):
+            if not probes:
+                with bmod._lock:
+                    bmod._processes.pop("w", None)
+                return False
+            return probes.pop(0)
+        monkeypatch.setattr(bmod, "_health_probe", _scripted)
+        try:
+            yield bmod, ap, probes
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_failed_scrub_is_reattempted_on_the_next_sweep(self, monkeypatch, watched):
+        bmod, ap, probes = watched
+        attempts: list[bool] = []
+
+        def _gate(name, port, *, healthy):
+            attempts.append(healthy)
+            return len(attempts) > 1  # the first write fails, the retry lands
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
+
+        # Demote on sweep 3, then two more sweeps with the verdict unchanged.
+        probes.extend([False] * (bmod._HEALTH_WATCH_FAILURES + 2))
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False, False]  # retried once, then stopped once it landed
+        assert ap.mcp_healthy is False  # record only advances on a write that landed
+
+    def test_a_landed_reconcile_is_not_rewritten_every_sweep(self, monkeypatch, watched):
+        bmod, ap, probes = watched
+        attempts: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
+        )
+
+        probes.extend([False] * (bmod._HEALTH_WATCH_FAILURES + 3))
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False]  # one scrub; the steady state writes nothing further
+
+    def test_an_exited_process_scrubs_an_entry_the_flag_had_already_left_behind(
+        self, monkeypatch, watched
+    ):
+        # healthy=False but mcp_healthy=True is exactly the state a failed scrub leaves.
+        # The terminal exit path has to consult the entry, not just the flag, or the
+        # dead URL survives the watch's own shutdown.
+        bmod, ap, probes = watched
+        attempts: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
+        )
+        ap.healthy = False
+        ap.mcp_healthy = True
+        ap.proc = _FakeProc(returncode=1)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False]
+        assert ap.mcp_healthy is False
+
+
+class TestStartupPollBelongsToOneGeneration:
+    """The whole startup poll is bound to the record it started on (design review).
+
+    Pinning per ATTEMPT is not enough: a stop/start between attempts hands a later
+    attempt the successor, and this poll then acts on it — promoting it, or on
+    exhaustion scrubbing it — on evidence gathered entirely about its predecessor,
+    having never probed the successor's port.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 4)
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
+        )
+        with bmod._lock:
+            bmod._processes.clear()
+        try:
+            yield bmod, calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_exhaustion_does_not_scrub_a_successor_that_replaced_it(
+        self, monkeypatch, wired
+    ):
+        # The harmful shape the design review named: the retiring poll's terminal scrub
+        # deregisters by app name, taking the healthy successor's entry with it — and
+        # because that bypasses the record, the successor's mcp_healthy still reads True,
+        # so the watch's retry never fires and the live backend stays MCP-less.
+        bmod, calls = wired
+        original = AppProcess(app_name="a", port=9210, healthy=False)
+        successor = AppProcess(app_name="a", port=9211, healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes["a"] = original
+
+        swapped = {"done": False}
+
+        def _never_answers(_url):
+            if not swapped["done"]:  # the restart lands between attempts
+                swapped["done"] = True
+                with bmod._lock:
+                    bmod._processes["a"] = successor
+            return False
+        monkeypatch.setattr(bmod, "_health_probe", _never_answers)
+
+        assert bmod._health_check_loop(original, "/health") is None
+        assert calls == []  # the successor's `a:` entries survive
+        assert successor.mcp_healthy is True
+        assert bmod.get_app_backend_port("a") == 9211
+
+    def test_a_successor_is_not_promoted_by_a_later_attempt(self, monkeypatch, wired):
+        bmod, calls = wired
+        original = AppProcess(app_name="a", port=9212, healthy=False)
+        successor = AppProcess(app_name="a", port=9213, healthy=False)
+        with bmod._lock:
+            bmod._processes["a"] = original
+
+        state = {"n": 0}
+
+        def _probe(_url):
+            state["n"] += 1
+            if state["n"] == 1:
+                with bmod._lock:
+                    bmod._processes["a"] = successor
+                return False
+            return True  # a later attempt would "succeed" against the OLD port
+        monkeypatch.setattr(bmod, "_health_probe", _probe)
+
+        assert bmod._health_check_loop(original, "/health") is None
+        assert successor.healthy is False  # never probed on its own port
+        assert calls == []
+
+
+class TestTerminalScrubIsRetriedUntilItLands:
+    """The exit path may not leave the dead URL behind (review finding).
+
+    This is the one place where giving up is permanent: nothing revisits an exited
+    backend, so a scrub that did not land stays unlanded and kiro-cli keeps dialing the
+    dead url every session. The retry the watch does elsewhere was useless here, because
+    the terminal path returned before it could run.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        ap = AppProcess(app_name="x", port=9220, pid=3,
+                        proc=_FakeProc(returncode=1), healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["x"] = ap
+        monkeypatch.setattr(bmod, "_health_probe", lambda _u: False)
+        try:
+            yield bmod, ap
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_failed_terminal_scrub_is_retried(self, monkeypatch, wired):
+        bmod, ap = wired
+        attempts: list[bool] = []
+
+        def _gate(name, port, *, healthy):
+            attempts.append(healthy)
+            return len(attempts) >= 3  # the first two writes fail
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False, False, False]  # retried until it landed
+        assert ap.mcp_healthy is False
+
+    def test_it_stops_as_soon_as_the_scrub_lands(self, monkeypatch, wired):
+        bmod, ap = wired
+        attempts: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
+        )
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False]  # one scrub, then the watch is done
+
+    def test_it_gives_up_when_the_record_is_dropped_mid_retry(self, monkeypatch, wired):
+        # stop_app_backend popping the record ends the watch even with the scrub
+        # unlanded — that path owns the teardown from there, and a watch that spun on a
+        # record nobody tracks would never exit.
+        bmod, ap = wired
+        attempts: list[bool] = []
+
+        def _gate(name, port, *, healthy):
+            attempts.append(healthy)
+            with bmod._lock:
+                bmod._processes.pop("x", None)
+            return False  # never lands
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == [False]  # did not spin
+
+    def test_nothing_registered_means_nothing_to_unwind(self, monkeypatch, wired):
+        bmod, ap = wired
+        ap.healthy = False
+        ap.mcp_healthy = False
+        attempts: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
+        )
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert attempts == []
+
+
+class TestTeardownParticipatesInTheReconcileSerialization:
+    """stop_app_backend takes the reconcile lock (review finding).
+
+    A watcher that had already passed its identity check could still be inside
+    `_gate_mcp_registration` when the caller's `deregister_app` scrubs — its write would
+    land after, restoring the dead url the gate exists to keep out of mcp.json.
+    """
+
+    def test_stop_holds_the_reconcile_lock_across_the_pop(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        ap = AppProcess(app_name="s", port=9230, healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["s"] = ap
+        held: list[bool] = []
+        real_lock = bmod._lock
+
+        class _SpyLock:
+            """Records whether the reconcile lock is held whenever `_lock` is entered.
+
+            Observing the nesting directly is the point: the guarantee is that the pop
+            happens INSIDE the serialization, and only the lock state at the moment
+            `_lock` is taken can show that.
+            """
+
+            def __enter__(self):
+                held.append(_reconcile_lock_held())
+                return real_lock.__enter__()
+
+            def __exit__(self, *exc):
+                return real_lock.__exit__(*exc)
+
+        monkeypatch.setattr(bmod, "_lock", _SpyLock())
+        try:
+            bmod.stop_app_backend("s")
+        finally:
+            monkeypatch.setattr(bmod, "_lock", real_lock)
+            with bmod._lock:
+                bmod._processes.clear()
+
+        assert held and held[0] is True, held
+
+
+class TestAdoptedRecoveryRebindsOwnership:
+    """An adopted recovery must re-bind its owning PIDs (review finding).
+
+    `adopted_pids` is what `stop_app_backend` signals and what uninstall acts behind. A
+    recovery means the EXTERNAL supervisor put something back, possibly a different
+    process — so promoting on the adoption-time identities would mark the record
+    freshly-valid while naming a process that is gone.
+    """
+
+    @pytest.fixture
+    def watched(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
+        )
+        ap = AppProcess(app_name="ad", port=9240, pid=0, proc=None, healthy=False,
+                        mcp_healthy=False, adopted_pids=[111],
+                        adopted_start_times={111: "old"})
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["ad"] = ap
+        probes: list[bool] = []
+
+        def _scripted(_url):
+            if not probes:
+                with bmod._lock:
+                    bmod._processes.pop("ad", None)
+                return False
+            return probes.pop(0)
+        monkeypatch.setattr(bmod, "_health_probe", _scripted)
+        try:
+            yield bmod, ap, probes
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_recovery_recaptures_the_owner_set(self, monkeypatch, watched):
+        bmod, ap, probes = watched
+        monkeypatch.setattr(
+            bmod, "_capture_adopted_owners",
+            lambda name, port, path: ([222], {222: "new"}),
+        )
+        probes.append(True)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is True
+        assert ap.adopted_pids == [222]  # rebound to the replacement
+        assert ap.adopted_start_times == {222: "new"}
+
+    def test_unconfirmable_ownership_refuses_the_promotion(self, monkeypatch, watched):
+        # Unhealthy-but-serving is recoverable next sweep; a mis-bound owner set is not,
+        # because stop would signal the wrong PIDs while the replacement keeps running.
+        bmod, ap, probes = watched
+        monkeypatch.setattr(
+            bmod, "_capture_adopted_owners", lambda name, port, path: None
+        )
+        probes.append(True)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is False  # refused
+        assert ap.adopted_pids == [111]  # untouched, not silently half-updated
+        assert bmod.get_app_backend_port("ad") is None
+
+    def test_a_spawned_backend_does_not_pay_the_recapture(self, monkeypatch, watched):
+        # Only the adopted shape has external ownership to re-bind; a spawned backend
+        # holds its own Popen and must not take this path.
+        bmod, ap, probes = watched
+        called: list[str] = []
+        monkeypatch.setattr(
+            bmod, "_capture_adopted_owners",
+            lambda name, port, path: called.append(name) or ([9], {9: "x"}),
+        )
+        ap.proc = _FakeProc()
+        probes.append(True)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert called == []
+        assert ap.healthy is True
+
+
+class TestUnknownMcpStateStillGetsScrubbed:
+    """`mcp_healthy` is tri-state; only False means confirmed-scrubbed (review finding).
+
+    A startup reconcile that failed leaves `healthy=True, mcp_healthy=None` — the entry
+    may well be on disk, and None records only that we never confirmed a write. Treating
+    that as "nothing was ever registered" abandoned precisely the entry most in need of
+    removal, one sweep after the process exited.
+    """
+
+    def test_a_none_mcp_state_keeps_retrying_the_terminal_scrub(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        attempts: list[bool] = []
+
+        def _gate(name, port, *, healthy):
+            attempts.append(healthy)
+            return len(attempts) >= 3  # the first two scrubs fail
+        monkeypatch.setattr(bmod, "_gate_mcp_registration", _gate)
+        monkeypatch.setattr(bmod, "_health_probe", lambda _u: False)
+
+        # The state a failed startup reconcile leaves: promoted, never confirmed written.
+        ap = AppProcess(app_name="u", port=9250, pid=5,
+                        proc=_FakeProc(returncode=1), healthy=True, mcp_healthy=None)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["u"] = ap
+        try:
+            bmod._watch_backend_health(ap, "/health")
+            assert attempts == [False, False, False]  # kept going past sweep 2
+            assert ap.mcp_healthy is False
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_confirmed_scrub_still_ends_the_watch(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        attempts: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (attempts.append(healthy), True)[1],
+        )
+        monkeypatch.setattr(bmod, "_health_probe", lambda _u: False)
+
+        ap = AppProcess(app_name="u", port=9251, pid=5,
+                        proc=_FakeProc(returncode=0), healthy=False, mcp_healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["u"] = ap
+        try:
+            bmod._watch_backend_health(ap, "/health")
+            assert attempts == []  # nothing to unwind, and it does not spin
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestProbeSurvivesAMalformedHttpResponse:
+    """`http.client.HTTPException` is not an `OSError` (review finding).
+
+    An app backend is arbitrary third-party code — an `exec` backend, or an adopted
+    process we do not own — so a non-HTTP first line on the port is a real condition.
+    `BadStatusLine` escaping `_health_probe` would kill the standing daemon watch and
+    freeze `healthy` at its last value: the write-once behaviour this PR removes,
+    silently restored.
+    """
+
+    def _serve_garbage(self, payload: bytes) -> int:
+        import socket
+        import threading
+        srv = socket.socket()
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        port = srv.getsockname()[1]
+        srv.listen(1)
+
+        def _serve():
+            try:
+                conn, _ = srv.accept()
+                conn.recv(4096)
+                conn.sendall(payload)
+                conn.close()
+            except OSError:
+                pass
+            finally:
+                srv.close()
+
+        threading.Thread(target=_serve, daemon=True).start()
+        return port
+
+    def test_a_malformed_status_line_is_a_failed_probe_not_a_raise(self):
+        # Drives a REAL socket rather than a stubbed exception: the whole finding is
+        # about which concrete exception urllib lets through, so faking it would beg
+        # the question.
+        import kiro_crew.apps.backend as bmod
+        port = self._serve_garbage(b"NOT-HTTP garbage\r\n\r\n")
+
+        assert bmod._health_probe(f"http://127.0.0.1:{port}/health") is False
+
+    def test_the_adoption_probe_survives_it_too(self):
+        # Same class of bug in the sibling probe — fixed together so one does not sit
+        # next to the other still wrong.
+        import kiro_crew.apps.backend as bmod
+        port = self._serve_garbage(b"\x00\x01binary noise\r\n\r\n")
+
+        assert bmod._probe_adoption_health(port, "/health") is False
+
+
+class TestWatchSurvivesAnUnexpectedSweepFault:
+    """A dying watch silently restores write-once, so a sweep fault must not kill it."""
+
+    def test_the_watch_restarts_after_an_unexpected_exception(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
+        )
+        ap = AppProcess(app_name="w", port=9260, proc=_FakeProc(),
+                        healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["w"] = ap
+
+        calls = {"n": 0}
+
+        def _probe(_url):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("something nobody anticipated")
+            with bmod._lock:  # second sweep: end the watch cleanly
+                bmod._processes.pop("w", None)
+            return True
+        monkeypatch.setattr(bmod, "_health_probe", _probe)
+        try:
+            bmod._watch_backend_health(ap, "/health")
+            assert calls["n"] == 2  # survived the fault and swept again
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_it_does_not_restart_once_the_record_is_gone(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        ap = AppProcess(app_name="w", port=9261, proc=_FakeProc(),
+                        healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["w"] = ap
+
+        calls = {"n": 0}
+
+        def _probe(_url):
+            calls["n"] += 1
+            with bmod._lock:
+                bmod._processes.pop("w", None)
+            raise RuntimeError("faults while being torn down")
+        monkeypatch.setattr(bmod, "_health_probe", _probe)
+        try:
+            bmod._watch_backend_health(ap, "/health")
+            assert calls["n"] == 1  # did not spin on a record nobody tracks
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestScrubAlsoRefreshesMaterializedAgents:
+    """Removing a server from the global map is only half the removal (review finding).
+
+    An app's materialized agent JSONs COPY the server's launch spec, and the agent config
+    is what kiro-cli actually loads — so scrubbing `mcp.json` alone leaves the agents
+    still naming the dead url. The refresh goes through `bridges.refresh_app_agents`,
+    which already carries the guards this path must honour: a `resources="app"` app
+    publishes its own agents, and a denied app's are scrubbed rather than rewritten.
+    """
+
+    def test_an_unhealthy_reconcile_refreshes_the_apps_agents(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        seen: list[str] = []
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(
+            brmod, "refresh_app_agents",
+            lambda name, io_failures=None: (seen.append(name), [])[1],
+        )
+
+        # The demotion path's agent refresh is gated on the app still being
+        # enabled — it re-materializes files a disable would have removed. The
+        # gate itself is pinned by TestDemotionRefreshIsGatedOnEnablement.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
+        assert bmod._gate_mcp_registration("a", 9270, healthy=False) is True
+        assert seen == ["a"]
+
+    def test_a_healthy_reconcile_does_not_take_the_scrub_path(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        seen: list[str] = []
+        monkeypatch.setattr(brmod, "reregister_app_mcp_servers",
+                            lambda name, live_port=None, io_failures=None: [])
+        monkeypatch.setattr(
+            brmod, "refresh_app_agents",
+            lambda name, io_failures=None: (seen.append(name), [])[1],
+        )
+
+        assert bmod._gate_mcp_registration("a", 9271, healthy=True) is True
+        # reregister_app_mcp_servers does its own agent refresh; this must not double it.
+        assert seen == []
+
+    def test_an_agent_io_failure_makes_the_reconcile_unlanded(self, monkeypatch):
+        # The agent JSON is the file kiro-cli reads, so a scrub whose agent half failed
+        # has NOT achieved what the scrub exists for. Reporting it landed would let
+        # `mcp_healthy` advance and strand the dead url there permanently.
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+
+        def _refresh(name, io_failures=None):
+            if io_failures is not None:
+                io_failures.append("a--agent.json")
+            return []
+        monkeypatch.setattr(brmod, "refresh_app_agents", _refresh)
+
+        # The demotion path's agent refresh is gated on the app still being
+        # enabled — it re-materializes files a disable would have removed. The
+        # gate itself is pinned by TestDemotionRefreshIsGatedOnEnablement.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
+        assert bmod._gate_mcp_registration("a", 9272, healthy=False) is False
+
+    def test_nothing_to_refresh_is_not_a_failure(self, monkeypatch):
+        # A self-managed app, a denied one, and an app with no declared agents all return
+        # an empty list. None is a failed write, and retrying them never converges — only
+        # the io_failures collector means retry.
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
+
+        # The demotion path's agent refresh is gated on the app still being
+        # enabled — it re-materializes files a disable would have removed. The
+        # gate itself is pinned by TestDemotionRefreshIsGatedOnEnablement.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
+        assert bmod._gate_mcp_registration("selfmanaged", 9273, healthy=False) is True
+
+
+class TestSupervisorIsBoundAtSpawn:
+    """The supervisor carries its record, not a name to re-resolve (review finding).
+
+    A name and a port are two independent inputs that can disagree. A stop/restart
+    landing between the spawn inserting the record and the supervisor thread's first
+    statement would hand a name lookup the SUCCESSOR while the port argument still named
+    the predecessor — and the poll would then promote, or on exhaustion scrub, a backend
+    whose port it never probed.
+    """
+
+    def test_the_starter_hands_over_the_record_itself(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        captured: list[object] = []
+        monkeypatch.setattr(
+            bmod.threading, "Thread",
+            lambda **kw: SimpleNamespace(start=lambda: captured.append(kw["args"])),
+        )
+        ap = AppProcess(app_name="s", port=9290)
+
+        bmod._start_health_supervisor(ap, "/health")
+
+        assert captured == [(ap, "/health")]  # the record, not ("s", 9290)
+
+    def test_a_restart_before_the_thread_runs_cannot_divert_the_poll(self, monkeypatch):
+        # Simulates the window: the successor is installed before the supervisor's first
+        # statement. Binding to the record means the poll retires instead of acting on a
+        # generation it never probed.
+        import kiro_crew.apps.backend as bmod
+
+        # These exercise promotion logic, not enablement: their app names are
+        # fabricated and so are not in installed.json. The real gate is pinned by
+        # TestPromotionRequiresAConfirmedEnabledApp.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_INTERVAL", 0)
+        monkeypatch.setattr(bmod, "_HEALTH_CHECK_RETRIES", 2)
+        gate: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (gate.append((name, port, healthy)), True)[1],
+        )
+        monkeypatch.setattr(bmod, "_health_probe", lambda _u: True)
+
+        original = AppProcess(app_name="s", port=9291, healthy=False)
+        successor = AppProcess(app_name="s", port=9292, healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["s"] = successor  # the restart already landed
+        try:
+            bmod._supervise_backend_health(original, "/health")
+            assert successor.healthy is False  # never promoted on the old port's evidence
+            assert gate == []
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestRegistrationReportsAgentIoFailuresToo:
+    """The healthy branch owes the same guarantee as the scrub (review finding).
+
+    Both directions write the agent JSONs, and both let `mcp_healthy` advance on success.
+    Reporting a failed agent write as landed on RECOVERY strands the app's agent without
+    its MCP tools exactly as reporting one on demotion stranded the dead url — the same
+    defect, mirrored, and fixing only one half was an oversight rather than a decision.
+    """
+
+    def test_a_failed_agent_write_on_recovery_is_unlanded(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        def _reregister(app_name, live_port=None, io_failures=None):
+            if io_failures is not None:
+                io_failures.append("a--agent.json")
+            return ["a:backend"]
+        monkeypatch.setattr(brmod, "reregister_app_mcp_servers", _reregister)
+
+        assert bmod._gate_mcp_registration("a", 9300, healthy=True) is False
+
+    def test_a_clean_registration_still_lands(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "reregister_app_mcp_servers",
+            lambda app_name, live_port=None, io_failures=None: ["a:backend"],
+        )
+
+        assert bmod._gate_mcp_registration("a", 9301, healthy=True) is True
+
+    def test_the_live_port_is_still_threaded_through(self, monkeypatch):
+        # The collector must not displace the argument that makes the url reachable.
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        seen: dict[str, object] = {}
+
+        def _reregister(app_name, live_port=None, io_failures=None):
+            seen["port"] = live_port
+            return []
+        monkeypatch.setattr(brmod, "reregister_app_mcp_servers", _reregister)
+
+        assert bmod._gate_mcp_registration("a", 9302, healthy=True) is True
+        assert seen == {"port": 9302}
+
+
+class TestPromotionRequiresAConfirmedEnabledApp:
+    """A disabled app must not be resurrected by a health recovery (#5726 review).
+
+    `kirocrew app disable` runs in its OWN process: it deregisters the app's resources
+    and never touches this process's tracking table. The record survives, so a later
+    recovery would re-register the MCP servers and agents the operator just removed.
+    Demotion is never gated — scrubbing is always safe.
+    """
+
+    @pytest.fixture
+    def tracked(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
+        )
+        ap = AppProcess(app_name="app", port=9310, healthy=False, mcp_healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            yield bmod, ap, calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_disabled_app_is_not_promoted(self, monkeypatch, tracked):
+        bmod, ap, calls = tracked
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert ap.healthy is False
+        assert calls == []  # nothing re-registered for an app the operator disabled
+
+    def test_an_enabled_app_is_promoted(self, monkeypatch, tracked):
+        bmod, ap, calls = tracked
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
+        assert bmod._set_backend_health(ap, healthy=True) is True
+        assert ap.healthy is True
+        assert calls == [("app", 9310, True)]
+
+    def test_demotion_is_never_gated(self, monkeypatch, tracked):
+        # Refusing a scrub because enablement cannot be confirmed would strand the dead
+        # url — the exact failure this whole gate exists to prevent.
+        bmod, ap, calls = tracked
+        ap.healthy = True
+        ap.mcp_healthy = True
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+
+        assert bmod._set_backend_health(ap, healthy=False) is True
+        assert ap.healthy is False
+        assert calls == [("app", 9310, False)]
+
+    # The unreadable-state case is covered by
+    # TestEnabledStateDistinguishesUnreadableFromDisabled, which drives REAL files. A
+    # stub of `is_app_enabled` cannot test it: the defect was that the reader collapses
+    # a read failure into False without raising, so stubbing it to raise would assert a
+    # path production never takes.
+
+
+class TestPromotionIsVerifiedAfterTheWrite:
+    """The enabled check cannot be atomic with the write (#5726 review).
+
+    `kirocrew app disable` runs in another process, so there is no lock to share. Ordering
+    closes the interleave where the flag is read after the resources come down; this
+    covers the other one — the check passes, the disable completes, and the write lands
+    afterwards, leaving a disabled app dispatchable.
+    """
+
+    @pytest.fixture
+    def tracked(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append((name, port, healthy)), True)[1],
+        )
+        ap = AppProcess(app_name="app", port=9320, healthy=False, mcp_healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            yield bmod, ap, calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_disable_landing_mid_write_is_undone(self, monkeypatch, tracked):
+        bmod, ap, calls = tracked
+        # Enabled at the pre-check, disabled by the time the write has landed.
+        states = iter([True, False])
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
+        undone: list[str] = []
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(brmod, "deregister_app", lambda n: undone.append(n))
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert undone == ["app"]  # what the promotion registered is removed again
+        assert ap.healthy is False
+        assert ap.mcp_healthy is False
+
+    def test_a_still_enabled_app_is_left_registered(self, monkeypatch, tracked):
+        bmod, ap, calls = tracked
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(
+            brmod, "deregister_app",
+            lambda n: pytest.fail("must not undo a promotion that is still valid"),
+        )
+
+        assert bmod._set_backend_health(ap, healthy=True) is True
+        assert ap.healthy is True
+        assert calls == [("app", 9320, True)]
+
+    def test_a_demotion_is_never_verified_or_undone(self, monkeypatch, tracked):
+        # Demotion is ungated going in and must stay ungated coming out: scrubbing a
+        # disabled app's entry is exactly what should happen.
+        bmod, ap, calls = tracked
+        ap.healthy = True
+        ap.mcp_healthy = True
+        monkeypatch.setattr(
+            bmod, "_app_enabled_state",
+            lambda name: pytest.fail("a demotion must not consult enablement"),
+        )
+
+        assert bmod._set_backend_health(ap, healthy=False) is True
+        assert calls == [("app", 9320, False)]
+
+
+class TestUndoIsRetriedUntilItCompletes:
+    """`deregister_app` reports softly, so a failed undo must not look clean (#5726 review).
+
+    It returns problems in `RegistrationResult.errors` rather than raising, so recording
+    the removal without reading that list leaves a disabled app's resources registered
+    while the record claims otherwise — and the retry condition then sees agreement and
+    never fires.
+    """
+
+    @pytest.fixture
+    def disabled(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
+        )
+        ap = AppProcess(app_name="app", port=9330, healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            yield bmod, ap
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_a_soft_failure_leaves_the_record_unreconciled(self, monkeypatch, disabled):
+        bmod, ap = disabled
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(
+            brmod, "deregister_app",
+            lambda n: SimpleNamespace(errors=["could not remove agent: ENOSPC"]),
+        )
+
+        assert bmod._undo_promotion_of_disabled_app(ap) is False
+        assert ap.healthy is False
+        assert ap.mcp_healthy is True, "a removal that failed must not read as done"
+
+    def test_a_clean_removal_is_recorded(self, monkeypatch, disabled):
+        bmod, ap = disabled
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(brmod, "deregister_app", lambda n: SimpleNamespace(errors=[]))
+
+        assert bmod._undo_promotion_of_disabled_app(ap) is True
+        assert ap.mcp_healthy is False
+
+    def test_a_raising_deregister_also_leaves_it_unreconciled(self, monkeypatch, disabled):
+        bmod, ap = disabled
+        import kiro_crew.apps.bridges as brmod
+
+        def _boom(n):
+            raise OSError("agents dir unwritable")
+        monkeypatch.setattr(brmod, "deregister_app", _boom)
+
+        assert bmod._undo_promotion_of_disabled_app(ap) is False
+        assert ap.mcp_healthy is True
+
+    def test_a_refused_promotion_retries_the_undo(self, monkeypatch, disabled):
+        # Nothing else revisits a disabled app and the watch will not promote it, so the
+        # refusal path is where an unlanded undo gets another attempt.
+        bmod, ap = disabled
+        attempts: list[str] = []
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(
+            brmod, "deregister_app",
+            lambda n: (attempts.append(n), SimpleNamespace(errors=["still failing"]))[1],
+        )
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert attempts == ["app", "app"]  # retried, not recorded and forgotten
+
+    def test_a_completed_undo_is_not_retried(self, monkeypatch, disabled):
+        bmod, ap = disabled
+        ap.mcp_healthy = False  # already reconciled
+        import kiro_crew.apps.bridges as brmod
+        monkeypatch.setattr(
+            brmod, "deregister_app",
+            lambda n: pytest.fail("nothing of ours is registered; nothing to undo"),
+        )
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+
+
+class TestDemotionRefreshIsGatedOnEnablement:
+    """The demotion's agent refresh must not restore a disabled app (#5726 review).
+
+    A demotion does two things: it scrubs the MCP entry — always safe, and deliberately
+    ungated — and it re-materializes the agent configs. The second is a WRITE, so for an
+    app the operator has disabled it puts back the very files a concurrent
+    `deregister_app` just removed.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        scrubbed: list[str] = []
+        refreshed: list[str] = []
+        dropped: list[str] = []
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url",
+            lambda name, unreconciled=None: (scrubbed.append(name), [])[1],
+        )
+        monkeypatch.setattr(
+            brmod, "refresh_app_agents",
+            lambda name, io_failures=None: (refreshed.append(name), [])[1],
+        )
+        monkeypatch.setattr(
+            bmod, "_drop_disabled_app_resources",
+            lambda name: (dropped.append(name), True)[1],
+        )
+        return bmod, scrubbed, refreshed, dropped
+
+    def test_a_disabled_app_is_scrubbed_but_never_refreshed(self, monkeypatch, wired):
+        bmod, scrubbed, refreshed, dropped = wired
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+
+        assert bmod._gate_mcp_registration("app", 9340, healthy=False) is True
+        assert scrubbed == ["app"]  # the scrub still happens — that is the desired outcome
+        assert refreshed == []  # ...but nothing is written back
+        assert dropped == ["app"]
+
+    def test_a_disable_landing_mid_refresh_is_dropped(self, monkeypatch, wired):
+        # Enabled at the pre-check, disabled by the time the refresh has landed. Neither
+        # check can be atomic with the write, so only the pair converges.
+        bmod, scrubbed, refreshed, dropped = wired
+        states = iter([True, False])
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
+
+        assert bmod._gate_mcp_registration("app", 9341, healthy=False) is True
+        assert refreshed == ["app"]  # it did run
+        assert dropped == ["app"]  # ...and was undone
+
+    def test_an_enabled_app_is_refreshed_and_not_dropped(self, monkeypatch, wired):
+        bmod, scrubbed, refreshed, dropped = wired
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+
+        assert bmod._gate_mcp_registration("app", 9342, healthy=False) is True
+        assert refreshed == ["app"]
+        assert dropped == []
+
+
+class TestDisabledCleanupResultIsTheReconcileResult:
+    """A failed disabled-app cleanup is not a completed reconcile (#5726 review)."""
+
+    def test_a_failed_cleanup_reports_unlanded(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        monkeypatch.setattr(bmod, "_drop_disabled_app_resources", lambda name: False)
+
+        assert bmod._gate_mcp_registration("app", 9350, healthy=False) is False
+
+    def test_a_clean_cleanup_reports_landed(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        monkeypatch.setattr(bmod, "_drop_disabled_app_resources", lambda name: True)
+
+        assert bmod._gate_mcp_registration("app", 9351, healthy=False) is True
+
+
+class TestTheUndoNeverTouchesASuccessor:
+    """Identity is checked BEFORE enablement (#5726 review).
+
+    The undo deregisters by app NAME, so running it for a record that is no longer the
+    tracked one deletes the SUCCESSOR's resources — and an unreadable enabled state is
+    precisely what would send a retired watcher down that path.
+    """
+
+    def test_a_retired_record_with_unreadable_enablement_undoes_nothing(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        old = AppProcess(app_name="app", port=9360, healthy=False, mcp_healthy=True)
+        successor = AppProcess(app_name="app", port=9361, healthy=True, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = successor
+        monkeypatch.setattr(
+            bmod, "_app_enabled_state",
+            lambda name: pytest.fail("identity must be checked first"),
+        )
+        monkeypatch.setattr(
+            bmod, "_undo_promotion_of_disabled_app",
+            lambda ap: pytest.fail("must never deregister on behalf of a retired record"),
+        )
+        try:
+            assert bmod._set_backend_health(old, healthy=True) is False
+            assert successor.mcp_healthy is True
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestUnreadableManifestKeepsTheScrubUnlanded:
+    """Keeping the agents is right, but it leaves them stale (#5726 review).
+
+    `refresh_app_agents` gives up on the same unreadable manifest, so nothing else
+    revisits those files. Recording the scrub as done would strand an agent config
+    dialing the dead url forever; reporting it unlanded makes the watch retry until the
+    manifest is readable and the refresh can correct them.
+    """
+
+    def test_an_unreadable_manifest_reports_unlanded(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        def _scrub(name, unreconciled=None):
+            if unreconciled is not None:
+                unreconciled.append(f"{name}: manifest unreadable")
+            return []
+        monkeypatch.setattr(brmod, "scrub_backend_mcp_url", _scrub)
+
+        assert bmod._gate_mcp_registration("app", 9370, healthy=False) is False
+
+    def test_a_readable_manifest_reports_landed(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: True)
+        monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
+
+        assert bmod._gate_mcp_registration("app", 9371, healthy=False) is True
+
+
+class TestUnknownEnablementNeverDeletes:
+    """Fail-closed is right for ADDING and wrong for DELETING (#5726 review).
+
+    `installed.json` can fail to read transiently. Refusing to register when enablement
+    is unknown is safe — the app stays as it is. Deregistering when it is unknown unlinks
+    materialized agents and takes the user-owned fields `_preserve_user_agent_edits`
+    carries, permanently, over a temporary fault.
+    """
+
+    @pytest.fixture
+    def wired(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        dropped: list[str] = []
+        monkeypatch.setattr(
+            brmod, "scrub_backend_mcp_url", lambda name, unreconciled=None: []
+        )
+        monkeypatch.setattr(brmod, "refresh_app_agents", lambda name, io_failures=None: [])
+        monkeypatch.setattr(
+            bmod, "_drop_disabled_app_resources",
+            lambda name: (dropped.append(name), True)[1],
+        )
+        return bmod, dropped
+
+    def test_unknown_enablement_does_not_deregister(self, monkeypatch, wired):
+        bmod, dropped = wired
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+
+        assert bmod._gate_mcp_registration("app", 9380, healthy=False) is False
+        assert dropped == [], "an unreadable state must never destroy user-edited agents"
+
+    def test_a_confirmed_disable_does_deregister(self, monkeypatch, wired):
+        bmod, dropped = wired
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+
+        assert bmod._gate_mcp_registration("app", 9381, healthy=False) is True
+        assert dropped == ["app"]
+
+    def test_unknown_enablement_still_refuses_a_promotion(self, monkeypatch):
+        # The other direction is unchanged: not-confirmed means do not add. Asserted
+        # through the transition rather than a predicate, because what matters is that
+        # the promotion does not happen AND nothing is deleted on the way.
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+        monkeypatch.setattr(
+            brmod, "deregister_app",
+            lambda n: pytest.fail("an unknown state must never delete"),
+        )
+        ap = AppProcess(app_name="app", port=9382, healthy=False, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            assert bmod._set_backend_health(ap, healthy=True) is False
+            assert ap.healthy is False
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestATransitionAlwaysReconciles:
+    """`mcp_healthy` can be stale in the other direction (#5726 review).
+
+    An MCP write that landed followed by an agent write that did not leaves `mcp_healthy`
+    unmoved while the entry IS on disk. If the verdict then flips, matching that stale
+    value would skip the scrub and leave the dead url registered.
+    """
+
+    def test_a_demotion_reconciles_even_when_the_flags_agree(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+
+        calls: list[bool] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: (calls.append(healthy), True)[1],
+        )
+        # healthy=True with mcp_healthy=False is exactly what a partial reconcile leaves.
+        ap = AppProcess(app_name="app", port=9390, healthy=True, mcp_healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            assert bmod._set_backend_health(ap, healthy=False) is True
+            assert calls == [False], "the transition must scrub, not trust the stale flag"
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_an_unchanged_verdict_still_short_circuits(self, monkeypatch):
+        # The fast path has to survive: without it a settled backend would rewrite
+        # mcp.json on every sweep.
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: pytest.fail("nothing changed; nothing to write"),
+        )
+        ap = AppProcess(app_name="app", port=9391, healthy=False, mcp_healthy=False)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            assert bmod._set_backend_health(ap, healthy=False) is True
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+
+class TestTheUndoPathsAlsoRefuseAnUnknownState:
+    """The tri-state rule applies to ALL THREE deletion sites (#5726 review).
+
+    The demotion path was fixed first; the two undo calls inside `_set_backend_health`
+    were not, and they reach the same `deregister_app` → `_deregister_agents` → unlink.
+    A transient `installed.json` fault must not destroy user-edited agent configs from
+    any of them.
+    """
+
+    @pytest.fixture
+    def tracked(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        import kiro_crew.apps.bridges as brmod
+
+        deleted: list[str] = []
+        monkeypatch.setattr(brmod, "deregister_app", lambda n: deleted.append(n))
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration", lambda name, port, *, healthy: True
+        )
+        ap = AppProcess(app_name="app", port=9400, healthy=False, mcp_healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["app"] = ap
+        try:
+            yield bmod, ap, deleted
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_the_pre_check_undo_refuses_an_unknown_state(self, monkeypatch, tracked):
+        bmod, ap, deleted = tracked
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert deleted == [], "unknown must not delete user-edited agents"
+
+    def test_the_pre_check_undo_still_fires_on_a_confirmed_disable(self, monkeypatch, tracked):
+        bmod, ap, deleted = tracked
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert deleted == ["app"]
+
+    def test_the_post_write_verify_refuses_an_unknown_state(self, monkeypatch, tracked):
+        # Enabled at the pre-check, unreadable by the verify: the registration stands,
+        # because the pre-check confirmed it and deleting is the unrecoverable direction.
+        bmod, ap, deleted = tracked
+        states = iter([True, None])
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
+
+        assert bmod._set_backend_health(ap, healthy=True) is True
+        assert deleted == []
+        assert ap.healthy is True
+
+    def test_the_post_write_verify_still_fires_on_a_confirmed_disable(
+        self, monkeypatch, tracked
+    ):
+        bmod, ap, deleted = tracked
+        states = iter([True, False])
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: next(states))
+
+        assert bmod._set_backend_health(ap, healthy=True) is False
+        assert deleted == ["app"]
+
+
+class TestEnabledStateDistinguishesUnreadableFromDisabled:
+    """The tri-state has to be real, not nominal (#5726 review).
+
+    `is_app_enabled` returns False for BOTH a deliberate disable and an unreadable
+    metadata file, because `_read_installed` answers None to both and never raises. Built
+    on that, the "unknown" branch was unreachable for exactly the transient fault it
+    exists to catch — so a momentary read blip during a demotion still deleted a
+    still-enabled app's user-edited agents. Driven against REAL files, since the whole
+    defect was a collapsed return value that a stubbed reader would hide.
+    """
+
+    def _meta(self, monkeypatch, tmp_path):
+        import kiro_crew.apps.manager as mgr
+        app = tmp_path / "probe"
+        app.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(mgr, "app_dir", lambda name: app)
+        return mgr, app / mgr.INSTALLED_META_FILENAME
+
+    def test_an_unreadable_file_is_unknown_not_disabled(self, monkeypatch, tmp_path):
+        mgr, meta = self._meta(monkeypatch, tmp_path)
+        meta.write_text("{ not json", encoding="utf-8")
+
+        assert mgr.is_app_enabled("probe") is False  # the collapsed answer
+        assert mgr.app_enabled_state("probe") is None  # ...kept apart here
+
+    def test_a_deliberate_disable_is_false(self, monkeypatch, tmp_path):
+        mgr, meta = self._meta(monkeypatch, tmp_path)
+        meta.write_text(json.dumps({"name": "probe", "enabled": False}), encoding="utf-8")
+
+        assert mgr.app_enabled_state("probe") is False
+
+    def test_an_enabled_app_is_true(self, monkeypatch, tmp_path):
+        mgr, meta = self._meta(monkeypatch, tmp_path)
+        meta.write_text(json.dumps({"name": "probe", "enabled": True}), encoding="utf-8")
+
+        assert mgr.app_enabled_state("probe") is True
+
+    def test_a_missing_file_is_a_definite_false(self, monkeypatch, tmp_path):
+        # Not installed is an ANSWER, not a failure to read one — deleting an
+        # uninstalled app's leftovers is correct.
+        mgr, _meta = self._meta(monkeypatch, tmp_path)
+
+        assert mgr.app_enabled_state("probe") is False
+
+    def test_the_backend_predicate_reports_unknown_for_an_unreadable_file(
+        self, monkeypatch, tmp_path
+    ):
+        # The path that matters: backend must see None, or no deletion is ever refused.
+        import kiro_crew.apps.backend as bmod
+        mgr, meta = self._meta(monkeypatch, tmp_path)
+        meta.write_text("{ not json", encoding="utf-8")
+
+        assert bmod._app_enabled_state("probe") is None

@@ -39,7 +39,6 @@ from kiro_crew.apps.bridges import (
     deregister_app,
     deregister_app_crons_from_service,
     register_app,
-    reregister_app_mcp_servers,
 )
 from kiro_crew.apps.builtins import BUILTIN_NAMES
 from kiro_crew.apps.dependencies import clean_dependencies
@@ -787,11 +786,16 @@ async def handle_update_app(request: web.Request) -> web.Response:
                     error=reg_install.get("error", ""),
                 )
                 return web.json_response(reg_install, status=400)
-            # Install succeeded — now safe to swap resources
-            await _deregister_app_off_loop(name)
+            # Install succeeded — now safe to swap resources. Stop the backend BEFORE
+            # deregistering, matching uninstall and the disable rollback: stopping pops
+            # the tracking record, which is what stops the health watch from
+            # re-registering the OLD manifest's MCP servers in the window between the
+            # two (see app-kit-platform §17). Deregistering first leaves that window
+            # open, and the entries the update removed would survive it.
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), stop_app_backend, name
             )
+            await _deregister_app_off_loop(name)
             if info.get("enabled"):
                 reg_result = await _register_app_off_loop(name)
                 await asyncio.get_running_loop().run_in_executor(
@@ -821,11 +825,14 @@ async def handle_update_app(request: web.Request) -> web.Response:
         if startup_refusal is not None:
             return startup_refusal
 
-        # Deregister old resources before update
-        await _deregister_app_off_loop(name)
+        # Stop the backend, then deregister old resources — same order as uninstall and
+        # the disable rollback. Stopping pops the tracking record, so the health watch
+        # can no longer re-register the OLD manifest's MCP servers after the scrub
+        # (see app-kit-platform §17).
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
         )
+        await _deregister_app_off_loop(name)
 
         # Off-loop: blocking filesystem copy (see handle_install_app).
         # expected_name makes update_app itself reject a source whose
@@ -1444,20 +1451,16 @@ async def handle_enable_app(request: web.Request) -> web.Response:
             backend = await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
             )
-            # MCP re-registration is HEALTH-GATED. register_app ran before
-            # the backend was up, so an HTTP MCP server with backend.port:"auto" carries the
-            # manifest's illustrative port. The backend's health-check loop calls
-            # _gate_mcp_registration once /health passes, rewriting the url to the real allocated
-            # port (and scrubbing it if the backend never becomes healthy — the dead-url shape
-            # that broke kiro-cli). EXCEPTION: an adopted already-healthy instance runs no health
-            # loop, so register it synchronously here.
-            if backend is not None and getattr(backend, "healthy", False):
-                try:
-                    reregister_app_mcp_servers(name, live_port=getattr(backend, "port", None))
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning(
-                        "MCP re-registration after backend start failed for %s: %s", name, exc
-                    )
+            # MCP re-registration is HEALTH-GATED and happens inside start_app_backend,
+            # not here. register_app ran before the backend was up, so an HTTP MCP server
+            # with backend.port:"auto" still carries the manifest's illustrative port; the
+            # health-check loop rewrites it to the real allocated port once /health passes
+            # (and scrubs it if the backend never becomes healthy — the dead-url shape
+            # that broke kiro-cli). An ADOPTED instance runs no health loop, so the
+            # adoption path registers it through the same serialized transition before
+            # arming its watch. Re-registering here instead would race that watch: the
+            # call is queued after this handler returns, so a demotion could scrub in
+            # between and the queued write would restore the dead url.
             resp["registration"] = reg.to_dict()
             if backend:
                 resp["backend"] = backend.to_dict()
