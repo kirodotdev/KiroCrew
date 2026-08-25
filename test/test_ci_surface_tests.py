@@ -375,3 +375,56 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
         "explicit argument now honours collect_ignore -- the selector-side "
         "filter may no longer be required"
     )
+
+
+# ---------------------------------------------------------------------------
+# The Windows filter must be scoped the way conftest's own exclusion is
+# ---------------------------------------------------------------------------
+
+
+def _seed(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> None:
+    """The ignore list governs ``test/`` only, so the filter must too.
+
+    The list holds BARE filenames and ``test/conftest.py`` resolves its
+    ``collect_ignore`` entries relative to its own directory -- so the exclusion
+    covers ``test/<name>`` and nothing else. Matching the emitted paths on their
+    basename instead also drops a same-named suite under ``transfer/`` or the
+    apps-builtins tree, which no conftest excludes and Windows collects fine.
+    That is a silently skipped cross-surface guard, which is the one outcome
+    this selector's deny-by-default contract forbids: a heuristic mistake is
+    supposed to cost CI time, never coverage.
+
+    Loads its own selector instance rather than taking the module-scoped
+    ``selector`` fixture, whose ``collect`` memo is keyed only on
+    ``(surface, _is_windows())`` and would otherwise be shared with -- and
+    poisoned by -- this synthetic repo root.
+    """
+    selector = _load_selector()
+    monkeypatch.setattr(selector, "_repo_root", lambda: tmp_path)
+    monkeypatch.setattr(selector, "_is_windows", lambda: True)
+
+    _seed(
+        tmp_path / "test" / "windows-collect-ignore.txt",
+        "test_snapshot.py    # POSIX-only replace-while-open semantics\n",
+    )
+    # Both name the frontend tree, so both are cross-surface and would other-
+    # wise be must-run: the only difference between them is where they live.
+    guard = "assert Path('website/src/utils/sanitize.ts').is_file()\n"
+    _seed(tmp_path / "test" / "test_snapshot.py", guard)
+    app_suite = "src/kiro_crew/apps/builtins/demo/tests/test_snapshot.py"
+    _seed(tmp_path / app_suite, guard)
+
+    selected = selector.collect("backend")
+
+    assert (
+        "test/test_snapshot.py" not in selected
+    ), "the POSIX-only suite conftest names must still be filtered out"
+    assert app_suite in selected, (
+        "a same-named suite outside test/ is not covered by conftest's "
+        f"collect_ignore and must keep running on Windows; got {selected}"
+    )

@@ -189,11 +189,20 @@ def collect(surface: str) -> list[str]:
         # protect this path, and emitting a POSIX-only suite here collects it and
         # fails the Windows shards on any diff that takes the reduced scope.
         #
-        # Split the string rather than going through pathlib: these are already
+        # Rebuild the entries as `test/`-relative paths rather than matching on
+        # the bare filename. The list is consumed by `test/conftest.py`, and
+        # pytest resolves `collect_ignore` relative to the conftest's own
+        # directory -- so the exclusion covers `test/<name>` and nothing else.
+        # A basename match would also drop a same-named suite under `transfer/`
+        # or the apps-builtins tree, which no conftest excludes and Windows
+        # collects fine: a silently skipped guard, the one outcome this
+        # selector's deny-by-default contract forbids.
+        #
+        # Join the string rather than going through pathlib: these are already
         # `as_posix()` forms, so the separator is known, and it keeps the filter
         # independent of which Path flavour the host provides.
-        ignored = _windows_collect_ignore(root)
-        must_run = [rel for rel in must_run if rel.rsplit("/", 1)[-1] not in ignored]
+        excluded = {f"test/{name}" for name in _windows_collect_ignore(root)}
+        must_run = [rel for rel in must_run if rel not in excluded]
 
     return sorted(set(must_run))
 
