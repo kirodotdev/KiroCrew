@@ -260,6 +260,7 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
     ToolApprovalCallback,
+    _injection_notice_outcome,
     resolve_max_subagents,
 )
 from kiro_crew.subagent_completion_meta import (
@@ -7484,14 +7485,18 @@ class GatewayOrchestrator:
                     task_preview, _ = redact_credentials(task_preview)
                     error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
                     error_text, _ = redact_credentials(error_text)
+                    # The visible transcript card must state the run's real
+                    # outcome, same as the queued LLM copy: this event fires for
+                    # every terminal state whose report could not be injected,
+                    # not only successful completions.
+                    outcome_line = _injection_notice_outcome(info)
                     slot.append(
                         "assistant",
                         f"{SUBAGENT_COMPLETION_PREFIX}\n"
                         f"Agent `{info.id}` ❌\n"
                         f"Task: {task_preview}\n\n"
                         f"Error: {error_text}\n"
-                        f"⚠️ Result delivery timed out — the subagent finished but "
-                        f"its result could not be injected into this session.",
+                        f"⚠️ Result delivery failed — {outcome_line}",
                         "msg msg-a",
                         meta={
                             SUBAGENT_COMPLETION_META_KEY: single_completion_meta(
