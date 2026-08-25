@@ -171,8 +171,9 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 className="shrink-0 flex items-center gap-1 text-[11px] px-1.5 py-0.5 rounded border border-accent/40 text-accent/80 hover:bg-accent/10 hover:text-accent cursor-pointer transition-all bg-transparent disabled:opacity-50"
                 onClick={retryFailed}
                 disabled={retrying}
-                aria-label={`Retry ${failedIds.length} failed subagent${failedIds.length > 1 ? 's' : ''}`}
               >
+                {/* No aria-label: the accessible name IS the visible text below,
+                    so WCAG 2.5.3 (Label in Name) holds by construction. */}
                 <RotateCcw size={11} className={retrying ? 'animate-spin' : ''} /> {i18nT('pages.chat.subagentProgressBar.retry_failed_count', { count: failedIds.length })}
               </button>
             )}
@@ -182,7 +183,7 @@ const SubagentProgressBar = memo(function SubagentProgressBar({ slot }: { slot: 
                 onClick={stopAll}
                 aria-label={stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all_running_subagents') : i18nT('pages.chat.subagentProgressBar.stop_running_subagent')}
               >
-                <X size={11} /> {i18nT('pages.chat.subagentProgressBar.stop')}{stoppableCount > 1 ? ' all' : ''}
+                <X size={11} /> {stoppableCount > 1 ? i18nT('pages.chat.subagentProgressBar.stop_all') : i18nT('pages.chat.subagentProgressBar.stop')}
               </button>
             )}
           </span>

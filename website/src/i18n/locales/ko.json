@@ -7760,6 +7760,7 @@
       "folder_actions": "폴더 작업",
       "folder_breadcrumb": "폴더 경로",
       "folder_color": "폴더 색상",
+      "folder_other": "폴더 {{count}}개",
       "from_your_chats": "대화에서 생성된 항목",
       "gallery": "갤러리",
       "image_could_not_be_loaded": "이미지를 불러올 수 없습니다",
@@ -7843,6 +7844,7 @@
       "add_agent": "+ 에이전트 추가",
       "agent": "에이전트",
       "agent_2_other": "에이전트 {{count}}개",
+      "agent_joining_other": "에이전트 {{count}}개 참여 중",
       "agents": "에이전트",
       "cancel": "취소",
       "channels": "채널",
@@ -8243,6 +8245,7 @@
         "retry_failed_count": "실패 재시도({{count}})",
         "s": "초",
         "stop": "중지",
+        "stop_all": "모두 중지",
         "stop_all_running_subagents": "실행 중인 모든 서브에이전트 중지",
         "stop_running_subagent": "실행 중인 서브에이전트 중지",
         "stop_subagent": "서브에이전트 {{name}} 중지",
@@ -8251,6 +8254,11 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "시작 대기 중 — 동시 실행 한도로 대기열에 있습니다"
       },
       "subagentRunCard": {
+        "agent_finished_other": "에이전트 {{count}}개 완료",
+        "agent_launched_other": "에이전트 {{count}}개 시작됨",
+        "agent_other": "에이전트 {{count}}개",
+        "agent_queued_other": "에이전트 {{count}}개 대기 중",
+        "agent_running_other": "에이전트 {{count}}개 실행 중",
         "open_in_the_subagents_panel": "서브에이전트 패널에서 열기",
         "open_subagents_panel": "서브에이전트 패널 열기",
         "waiting": "대기 중",
@@ -8297,6 +8305,10 @@
         "render_escaped_whitespace_as_real_line_breaks": "이스케이프된 공백을 실제 줄바꿈으로 표시",
         "show_the_exact_payload_escaping_preserved": "이스케이프를 유지한 채 정확한 페이로드 표시",
         "waiting_for_approval": "승인 대기 중"
+      },
+      "turnBlock": {
+        "hide_tool_calls": "도구 호출 숨기기",
+        "worked_through_step_other": "{{count}}개 단계 수행"
       },
       "userMessage": {
         "cancel": "취소",
@@ -8505,6 +8517,7 @@
       "also_show_sessions_that_have_no_tags_at_all": "태그가 전혀 없는 세션도 표시",
       "also_shows_untagged_sessions": "태그 없는 세션도 표시합니다",
       "archive_failed": "아카이브 실패",
+      "archive_session_other": "세션 {{count}}개 아카이브",
       "archive_sessions_with_no_activity_in_the_last": "다음 기간 동안 활동이 없는 세션 아카이브:",
       "archiving": "아카이브 중…",
       "are_you_sure_you_want_to_delete_this_history_ses": "이 기록 세션을 삭제하시겠습니까?",
@@ -8639,6 +8652,7 @@
       "search_older_sessions": "이전 세션 검색…",
       "search_sessions": "세션 검색…",
       "session_dropped_into_itself": "세션을 자기 자신에 놓을 수는 없습니다… 자기 자신에… 자기 자신에…",
+      "session_failed_to_switch_other": "세션 {{count}}개 전환 실패",
       "session_other": "{{count}}개 세션",
       "session_source": "세션",
       "sessions": "세션",
@@ -8646,6 +8660,7 @@
       "show_all_folders": "모든 폴더 표시",
       "show_collapsed_folders": "접힌 폴더 표시:",
       "show_folder": "폴더 표시",
+      "show_hidden_folder_other": "숨긴 폴더 {{count}}개 표시",
       "show_in_flat_view": "플랫 보기에 {{name}} 표시",
       "show_only_sessions_tagged": "{{name}} 태그가 지정된 세션만 표시",
       "show_the_folder_list": "폴더 목록 표시",
@@ -8664,9 +8679,11 @@
       "started_in_direct_message": "이 대화는 다이렉트 메시지에서 시작되었습니다.",
       "stop_filtering_by_tag": "{{name}} 필터 해제",
       "streaming": "스트리밍 중",
+      "sub_agent_needs_approval_other": "서브에이전트 {{count}}개 승인 대기 중",
       "switch_all_sessions": "모든 세션 전환",
       "switch_all_to_model": "모두 다른 모델로 전환…",
       "switch_failed": "전환 실패",
+      "switch_session_other": "세션 {{count}}개 전환",
       "switch_to_board_view": "보드 보기로 전환",
       "switch_to_flat_view_all_chats_without_folders": "플랫 보기로 전환 (폴더 없이 모든 채팅 표시)",
       "switch_to_folder_view": "폴더 보기로 전환",
@@ -8695,7 +8712,8 @@
       "add_state_lanes": "자동 칼럼 추가",
       "lane_seed_failed": "자동 칼럼을 추가할 수 없습니다.",
       "lane_seed_retry": "다시 시도",
-      "lane_legacy_column_hint": "모든 세션 표시"
+      "lane_legacy_column_hint": "모든 세션 표시",
+      "workflow_running_other": "워크플로 {{count}}개 실행 중"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",
@@ -9760,6 +9778,7 @@
         "actions": "동작",
         "add_custom": "사용자 지정 추가",
         "add_server": "서버 추가",
+        "applied_change_other": "변경 사항 {{count}}개 적용됨",
         "apply": "적용",
         "apply_commits_to_kirocrew_mcp_json_provider_glob": "— 적용하면 ~/.kiro/crew/mcp.json과 옵트인한 제공자 전역 설정에 반영됩니다.",
         "applying": "적용 중…",
@@ -10415,6 +10434,7 @@
       "h_ago": "{{n}}시간 전",
       "hide_message": "메시지 숨기기",
       "id": "ID",
+      "job_could_not_be_deleted_other": "작업 {{count}}개 중 {{failed}}개를 삭제하지 못했습니다",
       "jobs_noun": "작업",
       "just_now": "방금",
       "last_error": "마지막 오류",

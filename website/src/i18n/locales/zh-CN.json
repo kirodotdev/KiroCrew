@@ -7760,6 +7760,7 @@
       "folder_actions": "文件夹操作",
       "folder_breadcrumb": "文件夹面包屑",
       "folder_color": "文件夹颜色",
+      "folder_other": "{{count}} 个文件夹",
       "from_your_chats": "来自你的聊天",
       "gallery": "画廊",
       "image_could_not_be_loaded": "无法加载图片",
@@ -7843,6 +7844,7 @@
       "add_agent": "+ 添加代理",
       "agent": "代理",
       "agent_2_other": "{{count}} 个代理",
+      "agent_joining_other": "{{count}} 个代理正在加入",
       "agents": "代理",
       "cancel": "取消",
       "channels": "频道",
@@ -8243,6 +8245,7 @@
         "retry_failed_count": "重试失败项（{{count}}）",
         "s": "s",
         "stop": "停止",
+        "stop_all": "全部停止",
         "stop_all_running_subagents": "停止所有运行中的子代理",
         "stop_running_subagent": "停止运行中的子代理",
         "stop_subagent": "停止子代理 {{name}}",
@@ -8251,6 +8254,11 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "等待开始 — 受并发上限限制正在排队"
       },
       "subagentRunCard": {
+        "agent_finished_other": "{{count}} 个代理已完成",
+        "agent_launched_other": "{{count}} 个代理已启动",
+        "agent_other": "{{count}} 个代理",
+        "agent_queued_other": "{{count}} 个代理已排队",
+        "agent_running_other": "{{count}} 个代理运行中",
         "open_in_the_subagents_panel": "在“子代理”面板中打开",
         "open_subagents_panel": "打开子代理面板",
         "waiting": "等待中",
@@ -8297,6 +8305,10 @@
         "render_escaped_whitespace_as_real_line_breaks": "将转义的空白字符渲染为真实换行",
         "show_the_exact_payload_escaping_preserved": "显示精确载荷，保留转义",
         "waiting_for_approval": "等待审批"
+      },
+      "turnBlock": {
+        "hide_tool_calls": "隐藏工具调用",
+        "worked_through_step_other": "已完成 {{count}} 个步骤"
       },
       "userMessage": {
         "cancel": "取消",
@@ -8505,6 +8517,7 @@
       "also_show_sessions_that_have_no_tags_at_all": "同时显示完全没有标签的会话",
       "also_shows_untagged_sessions": "同时显示无标签的会话",
       "archive_failed": "归档失败",
+      "archive_session_other": "归档 {{count}} 个会话",
       "archive_sessions_with_no_activity_in_the_last": "归档在以下时间内没有活动的会话：",
       "archiving": "正在归档…",
       "are_you_sure_you_want_to_delete_this_history_ses": "确定要删除此历史会话吗？",
@@ -8639,6 +8652,7 @@
       "search_older_sessions": "搜索较早的会话…",
       "search_sessions": "搜索会话…",
       "session_dropped_into_itself": "无法将会话拖到它自己上… 它自己上… 它自己上…",
+      "session_failed_to_switch_other": "{{count}} 个会话切换失败",
       "session_other": "{{count}} 个会话",
       "session_source": "会话",
       "sessions": "会话",
@@ -8646,6 +8660,7 @@
       "show_all_folders": "显示所有文件夹",
       "show_collapsed_folders": "显示折叠的文件夹：",
       "show_folder": "显示文件夹",
+      "show_hidden_folder_other": "显示 {{count}} 个隐藏的文件夹",
       "show_in_flat_view": "在平铺视图中显示 {{name}}",
       "show_only_sessions_tagged": "仅显示带有 {{name}} 标签的会话",
       "show_the_folder_list": "展开文件夹列表",
@@ -8664,9 +8679,11 @@
       "started_in_direct_message": "此对话开始于私信。",
       "stop_filtering_by_tag": "取消按 {{name}} 筛选",
       "streaming": "流式输出中",
+      "sub_agent_needs_approval_other": "{{count}} 个子代理待审批",
       "switch_all_sessions": "切换所有会话",
       "switch_all_to_model": "全部切换到模型…",
       "switch_failed": "切换失败",
+      "switch_session_other": "切换 {{count}} 个会话",
       "switch_to_board_view": "切换到看板视图",
       "switch_to_flat_view_all_chats_without_folders": "切换到平铺视图（所有聊天，不分文件夹）",
       "switch_to_folder_view": "切换到文件夹视图",
@@ -8695,7 +8712,8 @@
       "add_state_lanes": "添加自动栏",
       "lane_seed_failed": "无法添加自动栏。",
       "lane_seed_retry": "重试",
-      "lane_legacy_column_hint": "显示所有会话"
+      "lane_legacy_column_hint": "显示所有会话",
+      "workflow_running_other": "{{count}} 个工作流运行中"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",
@@ -9760,6 +9778,7 @@
         "actions": "操作",
         "add_custom": "添加自定义",
         "add_server": "添加服务器",
+        "applied_change_other": "已应用 {{count}} 项更改",
         "apply": "应用更改",
         "apply_commits_to_kirocrew_mcp_json_provider_glob": "— 应用会按已选内容写入 ~/.kiro/crew/mcp.json 和提供方全局配置。",
         "applying": "正在应用…",
@@ -10418,6 +10437,7 @@
       "h_ago": "{{n}} 小时前",
       "hide_message": "隐藏消息",
       "id": "ID",
+      "job_could_not_be_deleted_other": "{{count}} 个任务中有 {{failed}} 个无法删除",
       "jobs_noun": "任务",
       "just_now": "刚刚",
       "last_error": "最近一次错误",

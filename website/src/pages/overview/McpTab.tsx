@@ -305,7 +305,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
       return r
     },
     onSuccess: (r) => {
-      setApplyMsg(`Applied ${r.applied ?? 0} change${(r.applied ?? 0) === 1 ? '' : 's'}`)
+      setApplyMsg(i18nT('pages.overview.mcpTab.applied_change', { count: r.applied ?? 0 }))
       setPending({})
       setPendingTools({})
       queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })

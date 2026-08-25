@@ -449,7 +449,10 @@ export default function SchedulePage() {
       if (failed.length) {
         // Keep the failures selected so the user can retry; surface the count.
         setSelectedIds(new Set(failed))
-        setBatchError(`${failed.length} of ${ids.length} job${ids.length === 1 ? '' : 's'} could not be deleted`)
+        // `count` (the total) drives plural-category selection; `{{failed}}` is
+        // interpolation-only. Catalog values must keep the noun agreeing with
+        // {{count}}, not {{failed}}.
+        setBatchError(i18nT('pages.schedulePage.job_could_not_be_deleted', { count: ids.length, failed: failed.length }))
       } else {
         setSelectedIds(new Set())
         setBatchConfirm(false)

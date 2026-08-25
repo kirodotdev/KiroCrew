@@ -7760,6 +7760,7 @@
       "folder_actions": "フォルダーアクション",
       "folder_breadcrumb": "フォルダーブレッドクラム",
       "folder_color": "フォルダーの色",
+      "folder_other": "{{count}}個のフォルダー",
       "from_your_chats": "チャットから",
       "gallery": "ギャラリー",
       "image_could_not_be_loaded": "画像を読み込めませんでした",
@@ -7843,6 +7844,7 @@
       "add_agent": "+ エージェントを追加",
       "agent": "エージェント",
       "agent_2_other": "{{count}}個のエージェント",
+      "agent_joining_other": "{{count}} 個のエージェントが参加中",
       "agents": "エージェント",
       "cancel": "キャンセル",
       "channels": "チャネル",
@@ -8243,6 +8245,7 @@
         "retry_failed_count": "再試行に失敗 ({{count}})",
         "s": "秒",
         "stop": "停止",
+        "stop_all": "すべて停止",
         "stop_all_running_subagents": "実行中のすべてのサブエージェントを停止",
         "stop_running_subagent": "実行中のサブエージェントを停止",
         "stop_subagent": "サブエージェント {{name}} を停止",
@@ -8251,6 +8254,11 @@
         "waiting_to_start_queued_behind_the_concurrency_l": "開始待ち — 同時実行数の上限により待機中"
       },
       "subagentRunCard": {
+        "agent_finished_other": "{{count}} 個のエージェントが完了",
+        "agent_launched_other": "{{count}} 個のエージェントを起動",
+        "agent_other": "{{count}} 個のエージェント",
+        "agent_queued_other": "{{count}} 個のエージェントが待機中",
+        "agent_running_other": "{{count}} 個のエージェントが実行中",
         "open_in_the_subagents_panel": "サブエージェントパネルで開く",
         "open_subagents_panel": "サブエージェントパネルを開く",
         "waiting": "待機中",
@@ -8297,6 +8305,10 @@
         "render_escaped_whitespace_as_real_line_breaks": "エスケープされた空白を実際の改行として表示",
         "show_the_exact_payload_escaping_preserved": "エスケープを維持して正確なペイロードを表示",
         "waiting_for_approval": "承認待ち"
+      },
+      "turnBlock": {
+        "hide_tool_calls": "ツール呼び出しを非表示",
+        "worked_through_step_other": "{{count}} ステップを処理"
       },
       "userMessage": {
         "cancel": "キャンセル",
@@ -8505,6 +8517,7 @@
       "also_show_sessions_that_have_no_tags_at_all": "タグがまったくないセッションも表示",
       "also_shows_untagged_sessions": "タグなしのセッションも表示します",
       "archive_failed": "アーカイブに失敗しました",
+      "archive_session_other": "{{count}} セッションをアーカイブ",
       "archive_sessions_with_no_activity_in_the_last": "次の期間にアクティビティがないセッションをアーカイブ:",
       "archiving": "アーカイブ中…",
       "are_you_sure_you_want_to_delete_this_history_ses": "この履歴セッションを削除してもよいですか？",
@@ -8638,6 +8651,7 @@
       "search_older_sessions": "以前のセッションを検索…",
       "search_sessions": "セッションを検索…",
       "session_dropped_into_itself": "セッションをそれ自身にはドロップできません… それ自身に… それ自身に…",
+      "session_failed_to_switch_other": "{{count}} セッションの切り替えに失敗しました",
       "session_other": "{{count}} セッション",
       "session_source": "セッション",
       "sessions": "セッション",
@@ -8645,6 +8659,7 @@
       "show_all_folders": "すべてのフォルダーを表示",
       "show_collapsed_folders": "折りたたんだフォルダーを表示:",
       "show_folder": "フォルダーを表示",
+      "show_hidden_folder_other": "非表示フォルダー {{count}} 件を表示",
       "show_in_flat_view": "フラット表示に {{name}} を表示",
       "show_only_sessions_tagged": "{{name}} タグが付いたセッションのみ表示",
       "show_the_folder_list": "フォルダー一覧を表示",
@@ -8662,9 +8677,11 @@
       "started_in_direct_message": "この会話はダイレクトメッセージで始まりました。",
       "stop_filtering_by_tag": "{{name}} でのフィルターを解除",
       "streaming": "ストリーミング中",
+      "sub_agent_needs_approval_other": "{{count}} 個のサブエージェントが承認待ち",
       "switch_all_sessions": "すべてのセッションを切り替え",
       "switch_all_to_model": "すべてのモデルを切り替え…",
       "switch_failed": "切り替えに失敗しました",
+      "switch_session_other": "{{count}} セッションを切り替え",
       "switch_to_board_view": "ボード表示に切り替え",
       "switch_to_flat_view_all_chats_without_folders": "フラット表示に切り替え (フォルダーを使わず全チャットを表示)",
       "switch_to_folder_view": "フォルダー表示に切り替え",
@@ -8695,7 +8712,8 @@
       "add_state_lanes": "自動カラムを追加",
       "lane_seed_failed": "自動カラムを追加できませんでした。",
       "lane_seed_retry": "再試行",
-      "lane_legacy_column_hint": "すべてのセッションを表示"
+      "lane_legacy_column_hint": "すべてのセッションを表示",
+      "workflow_running_other": "{{count}} 件のワークフローが実行中"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",
@@ -9760,6 +9778,7 @@
         "actions": "アクション",
         "add_custom": "カスタムを追加",
         "add_server": "サーバーを追加",
+        "applied_change_other": "{{count}} 件の変更を適用しました",
         "apply": "適用",
         "apply_commits_to_kirocrew_mcp_json_provider_glob": "— ~/.kiro/crew/mcp.json とプロバイダーグローバルへのコミットを適用（オプトイン済みの場合）。",
         "applying": "適用中…",
@@ -10418,6 +10437,7 @@
       "h_ago": "{{n}} 時間前",
       "hide_message": "メッセージを非表示",
       "id": "ID",
+      "job_could_not_be_deleted_other": "{{count}} 件中 {{failed}} 件のジョブを削除できませんでした",
       "jobs_noun": "ジョブ",
       "just_now": "たった今",
       "last_error": "最後のエラー",
