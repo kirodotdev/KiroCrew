@@ -69,7 +69,7 @@ describe('FolderPanel search', () => {
 
     await waitFor(() => expect(search).toHaveBeenCalled())
     // Scoped to cwd, and files-only, both server-side.
-    expect(search).toHaveBeenCalledWith('app', ROOT, expect.anything(), 'files')
+    expect(search).toHaveBeenCalledWith('app', ROOT, expect.anything(), 'files', 15)
 
     // The subfolder is shown, so a hit outside the current level is locatable.
     const row = await screen.findByTitle(`${ROOT}/src/deep/nested/App.tsx`)
@@ -149,7 +149,79 @@ describe('FolderPanel search', () => {
     await type('f')  // one char: no request
     await type('s')  // now two
 
-    expect(await screen.findByText(/Showing the first 15 matches/)).toBeInTheDocument()
+    // The notice is the expand control: a real <button> whose accessible name
+    // is the notice text itself (#5639), not an inert <div>.
+    expect(await screen.findByRole('button', { name: /Showing the first 15 matches/ })).toBeInTheDocument()
+  })
+
+  it('expands to the next tier when the notice is activated', async () => {
+    // The server honours `limit`: 15 -> a full page, 30 -> 25 matches (no longer
+    // truncated). Match 16+ must become reachable after activating the control.
+    const all = Array.from({ length: 25 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const expand = await screen.findByRole('button', { name: /Showing the first 15 matches/ })
+    expect(screen.queryByTitle(`${ROOT}/src/f15.ts`)).not.toBeInTheDocument()
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(expand)
+
+    // The next tier is requested from the SERVER (the cap is server-side
+    // truncation, not a client render ceiling)...
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fs', ROOT, expect.anything(), 'files', 30))
+    // ...and a match past the old cap is now reachable.
+    expect(await screen.findByTitle(`${ROOT}/src/f15.ts`)).toBeInTheDocument()
+    expect(screen.getByTitle(`${ROOT}/src/f24.ts`)).toBeInTheDocument()
+    // 25 < 30: the page is no longer truncated, so no notice and no control.
+    await waitFor(() => expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument())
+  })
+
+  it('renders the notice as plain text once the server ceiling is reached', async () => {
+    // Every tier comes back full: 15 -> 30 -> 60 (the server clamp). At 60 a
+    // button could not fetch more, so the notice must degrade to text rather
+    // than recreate the inert-affordance bug.
+    const all = Array.from({ length: 60 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(await screen.findByRole('button', { name: /Showing the first 15 matches/ }))
+    await user.click(await screen.findByRole('button', { name: /Showing the first 30 matches/ }))
+
+    // Ceiling tier: honest count, but no button.
+    expect(await screen.findByText(/Showing the first 60 matches/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Showing the first/ })).not.toBeInTheDocument()
+  })
+
+  it('resets to the default tier when the query changes', async () => {
+    const all = Array.from({ length: 40 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    const search = vi.spyOn(api, 'fileSearch').mockImplementation(
+      (_q, _p, _s, _k, limit) => Promise.resolve({ results: all.slice(0, limit ?? 15), root: ROOT } as never),
+    )
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(await screen.findByRole('button', { name: /Showing the first 15 matches/ }))
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fs', ROOT, expect.anything(), 'files', 30))
+
+    // Typing more is a NEW search: it must start back at the default tier, not
+    // inherit the expansion of the set the user was previously looking at.
+    await type('x')
+    await waitFor(() => expect(search).toHaveBeenCalledWith('fsx', ROOT, expect.anything(), 'files', 15))
   })
 
   it('says so when nothing matches', async () => {

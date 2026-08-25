@@ -772,6 +772,13 @@ _MAX_UPLOAD_FILES = 20  # max files per request
 _WALK_MAX_SCAN_SCOPED = 50_000
 _WALK_MAX_SCAN_UNSCOPED = 5_000
 _WALK_MAX_DIRS_VISITED = 20_000
+
+# Hard ceiling on the caller-supplied ``limit`` of /api/file-search. The walk
+# collects ``max_results * 10`` candidates per kind, so the limit multiplies real
+# filesystem work; a fixed server-side ceiling keeps a hostile ``?limit=`` from
+# turning the endpoint into a filesystem-walk amplifier. Mirrored client-side as
+# SEARCH_RESULT_LIMIT_MAX in FolderPanel.tsx.
+_SEARCH_LIMIT_CEILING = 60
 _ALLOWED_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
 _ALLOWED_TEXT_EXT = {
     ".txt",
@@ -2283,7 +2290,15 @@ async def api_file_search(request: web.Request) -> web.Response:
     if len(query) < 2:
         return web.json_response({"results": []})
 
-    max_results = 15
+    # Result page size. Default mirrors SEARCH_RESULT_CAP in FolderPanel.tsx;
+    # the caller may raise it via ``limit`` (the folder panel's expand control),
+    # clamped to ``_SEARCH_LIMIT_CEILING`` server-side. Non-integer input falls
+    # back to the default, mirroring how ``kinds`` handles unknown values.
+    try:
+        max_results = int(request.query.get("limit", "15"))
+    except ValueError:
+        max_results = 15
+    max_results = max(1, min(max_results, _SEARCH_LIMIT_CEILING))
 
     # kinds: "all" (default) returns both files and directories; "files" or
     # "dirs" restricts the result set. Unknown values fall back to "all".

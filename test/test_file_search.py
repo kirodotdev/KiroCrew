@@ -258,3 +258,47 @@ class TestFileSearch:
         async with TestClient(TestServer(_make_app())) as client:
             resp = await client.get(f"/api/file-search?q=xyz&project={tmp_path}")
             assert (await resp.json())["results"] == []
+
+    # ---- caller-supplied ``limit`` (#5639) ----------------------------------
+
+    @pytest.mark.asyncio
+    async def test_limit_param_honoured(self, tmp_path, mock_sel):
+        """?limit= raises the page size past the default of 15."""
+        for i in range(25):
+            (tmp_path / f"match_{i:02d}.txt").write_text("x")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-search?q=match&project={tmp_path}&limit=20")
+            assert len((await resp.json())["results"]) == 20
+
+    @pytest.mark.asyncio
+    async def test_limit_clamped_at_server_ceiling(self, tmp_path, mock_sel):
+        """SECURITY: an absurd limit is clamped to _SEARCH_LIMIT_CEILING, never
+        passed to the walk -- max_collect multiplies it 10x, so an unclamped
+        value would amplify server-side filesystem work."""
+        from kiro_crew.dashboard.handlers.files import _SEARCH_LIMIT_CEILING
+        for i in range(_SEARCH_LIMIT_CEILING + 10):
+            (tmp_path / f"match_{i:03d}.txt").write_text("x")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-search?q=match&project={tmp_path}&limit=999999")
+            assert len((await resp.json())["results"]) == _SEARCH_LIMIT_CEILING
+
+    @pytest.mark.asyncio
+    async def test_limit_non_integer_falls_back_to_default(self, tmp_path, mock_sel):
+        """A non-integer limit is rejected in favour of the default, not 500."""
+        for i in range(20):
+            (tmp_path / f"match_{i:02d}.txt").write_text("x")
+        async with TestClient(TestServer(_make_app())) as client:
+            for bad in ("abc", "1e9", "15.5", ""):
+                resp = await client.get(f"/api/file-search?q=match&project={tmp_path}&limit={bad}")
+                assert resp.status == 200
+                assert len((await resp.json())["results"]) == 15, bad
+
+    @pytest.mark.asyncio
+    async def test_limit_negative_or_zero_clamped_to_floor(self, tmp_path, mock_sel):
+        """A negative/zero limit is clamped to 1, never passed to the walk."""
+        for i in range(5):
+            (tmp_path / f"match_{i}.txt").write_text("x")
+        async with TestClient(TestServer(_make_app())) as client:
+            for bad in ("-5", "0"):
+                resp = await client.get(f"/api/file-search?q=match&project={tmp_path}&limit={bad}")
+                assert len((await resp.json())["results"]) == 1, bad

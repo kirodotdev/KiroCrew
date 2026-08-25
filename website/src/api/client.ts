@@ -2751,11 +2751,13 @@ export const api = {
    *  `kinds` narrows the result set server-side — 'files' or 'dirs'; omitted returns both.
    *  Filtering server-side rather than dropping unwanted hits here matters because the
    *  backend caps results BEFORE the response, so a client-side filter would silently
-   *  shrink an already-capped list. */
-  fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs') => {
+   *  shrink an already-capped list. `limit` raises the server's result cap (default 15);
+   *  the server clamps it to a fixed ceiling, so a large value cannot amplify the walk. */
+  fileSearch: (q: string, project?: string, signal?: AbortSignal, kinds?: 'files' | 'dirs', limit?: number) => {
     const p = new URLSearchParams({ q })
     if (project) p.set('project', project)
     if (kinds) p.set('kinds', kinds)
+    if (limit) p.set('limit', String(limit))
     return fetch(`/api/file-search?${p}`, signal ? { signal } : undefined).then(j) as Promise<{ results: Array<{ path: string; name: string; size: number; mtime: number; kind?: 'file' | 'dir' }>; root: string }>
   },
   /** Upload files via browser File API (cross-platform) */

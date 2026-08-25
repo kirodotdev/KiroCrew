@@ -28,11 +28,18 @@ function relativeDir(full: string, root: string): string {
  *  set under 2 characters), so dispatching one spends a walk that cannot match. */
 const MIN_QUERY_LEN = 2
 
-/** Mirrors `max_results` in `dashboard/handlers/files.py`, which truncates BEFORE
- *  responding. Used only to say the list was cut off — if the server's value ever
- *  rises, a full page simply stops carrying the note rather than stating a wrong
- *  total. */
+/** Mirrors the DEFAULT `max_results` in `dashboard/handlers/files.py`, which
+ *  truncates BEFORE responding. The first page always uses this size; expansion
+ *  is an explicit user action on the notice below the list. If the server's
+ *  default ever rises, a full page simply stops carrying the note rather than
+ *  stating a wrong total. */
 const SEARCH_RESULT_CAP = 15
+
+/** Mirrors `_SEARCH_LIMIT_CEILING` in `dashboard/handlers/files.py` — the hard
+ *  server-side clamp on the `limit` param. At this tier the notice renders as
+ *  plain text again: a button that cannot fetch more would recreate the inert
+ *  affordance this control replaces. */
+const SEARCH_RESULT_LIMIT_MAX = 60
 
 /** Idle gap before a keystroke becomes a request. The search walks a real
  *  directory tree server-side, so per-keystroke dispatch would queue walks for
@@ -68,6 +75,12 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   const [cwd, setCwd] = useState(path)
   const [query, setQuery] = useState('')
   const [debouncedQuery, setDebouncedQuery] = useState('')
+  const [searchLimit, setSearchLimit] = useState(SEARCH_RESULT_CAP)
+
+  // A different query is a different search: expansion applies to the result set
+  // the user was looking at, not to whatever they type next. Also covers
+  // navigation and re-targeting, both of which clear the query.
+  useEffect(() => { setSearchLimit(SEARCH_RESULT_CAP) }, [debouncedQuery, cwd])
 
   // Re-sync when the tab is re-targeted from outside (a second chip click on a
   // different directory reuses this tab when the id matches). A query typed for
@@ -98,11 +111,14 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   } = useQuery({
     // react-query hands `queryFn` an AbortSignal and aborts it when the key
     // changes, so a superseded search is cancelled rather than raced.
-    queryKey: ['folder-file-search', cwd, debouncedQuery],
-    queryFn: ({ signal }) => api.fileSearch(debouncedQuery, cwd, signal, 'files'),
+    queryKey: ['folder-file-search', cwd, debouncedQuery, searchLimit],
+    queryFn: ({ signal }) => api.fileSearch(debouncedQuery, cwd, signal, 'files', searchLimit),
     enabled: searching,
     retry: false,
     staleTime: 5_000,
+    // Keep the current rows on screen while a wider (or new) page is fetched:
+    // expansion should widen the list in place, not blank it to a spinner.
+    placeholderData: (prev) => prev,
   })
 
   const navigate = (next: string) => {
@@ -222,11 +238,25 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
                 />
               )
             })}
-            {matches.length >= SEARCH_RESULT_CAP && (
+            {matches.length >= searchLimit && (searchLimit < SEARCH_RESULT_LIMIT_MAX ? (
+              // The notice IS the control: clicking "showing first N" is the
+              // natural gesture (#5639), so the text itself requests the next
+              // tier. Reusing the notice string keeps the accessible name honest
+              // and adds zero i18n keys.
+              <button
+                type="button"
+                onClick={() => setSearchLimit(l => Math.min(l * 2, SEARCH_RESULT_LIMIT_MAX))}
+                className="block w-full text-left px-2 py-1.5 text-[10.5px] text-muted/80 underline decoration-dotted underline-offset-2 hover:text-fg transition-colors"
+              >
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: searchLimit })}
+              </button>
+            ) : (
+              // At the server ceiling a button could not fetch more; plain text
+              // avoids recreating the inert affordance this control replaces.
               <div className="px-2 py-1.5 text-[10.5px] text-muted/80">
-                {t('pages.chat.folderPanel.showing_first_matches', { shown: SEARCH_RESULT_CAP })}
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: searchLimit })}
               </div>
-            )}
+            ))}
           </>
         ) : (
           <>
