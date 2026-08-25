@@ -94,6 +94,25 @@ class TestContextBuilder:
         # backwards once clicked.
         assert "in the USER's voice" in ctx
 
+    def test_url_backtick_carve_out_follows_the_path_rule(self, tmp_path):
+        """A backticked URL is a click-to-copy chip, not a link.
+
+        `InlineCode` upgrades a backticked span to a click-to-open chip only for
+        a backend-confirmed path; everything else -- a URL included -- becomes a
+        `CopyableCode` chip whose click copies. So the always-backtick-paths rule
+        needs an explicit URL exclusion, and it must come AFTER the rule it
+        qualifies or it reads as a standalone contradiction.
+        """
+        builder = ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+        ctx = builder.build_session_context()
+        assert "Backtick file PATHS only" in ctx
+        assert "NEVER a URL" in ctx
+        assert ctx.index("inside inline `code` backticks") < ctx.index("Backtick file PATHS only")
+
     def test_diff_rule_is_runtime_selected(self, tmp_path):
         """The diff-block rule is selected server-side from the trusted runtime
         resolution: a dashboard session (tool cards render) gets the
