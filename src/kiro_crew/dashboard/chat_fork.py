@@ -107,6 +107,8 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # The inherit-copy near the end prunes an id the committed vocabulary does not hold
+    # NOW; an UNKNOWN vocabulary keeps it. No pre-await observation is taken.
 
     # Rate/resource guard: reject if we're already at the cap. Counts slots still
     # under construction too (``live_slot_count``): the import path retracts a
@@ -965,10 +967,29 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI.
+    # VALIDATED AT THE PRODUCER, not merely swept downstream. This is the one
+    # inherit-from-another-slot copy in the tree, and it was the sole vocabulary
+    # adoption not routed through the shared validators while eight sibling sites
+    # were. That asymmetry is what made this the one producer a downstream sweep
+    # had to chase: the parent is resolved from ``state._slots`` before several
+    # awaits, so a delete landing in that window leaves ``slot`` naming a folder or
+    # tag that is already gone, and the copy made it durable on a NEW record
+    # outside every snapshot the delete swept.
+    #
+    # The TAG copy routes through ``tag_ids_for_restore``, which holds the UNKNOWN-vs-KNOWN
+    # rule. The folder id is inherited verbatim; a deleted one renders as Unfiled.
+    #
+    # THE TAG GUARD IS LOCAL TO THIS SITE. Do not read a
+    # downstream sweep into the delete handlers: neither ``api_chat_folder_delete`` nor
+    # ``api_chat_tag_delete`` re-sweeps the live view after its awaits, and validating
+    # here is what allowed both to drop that pass. A NEW writer that adopts a TAG id must
+    # therefore validate at its own source; nothing later
+    # will catch a mid-await write. Protocol in
+    # ``docs/system-specs/modules/history.md``.
     new_slot.folder_id = slot.folder_id
-    # Inherit tags (copied, so later edits to either slot's list stay independent).
-    new_slot.tags = list(slot.tags)
+    # Inherit tags (copied, so later edits to either slot's list stay independent), pruned
+    # against the committed vocabulary. ONLY tags: the folder id above is verbatim.
+    new_slot.tags = state.tag_ids_for_restore(list(slot.tags))
     # "tags changed => revision changed": the slot was constructed with an empty
     # list under its birth revision; a snapshot of that newborn state (a slot
     # fetch racing the fork) must not share a revision with the inherited list,
