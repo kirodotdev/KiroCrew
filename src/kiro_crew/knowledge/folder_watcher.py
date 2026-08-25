@@ -9,7 +9,7 @@ import logging
 import math
 import os
 from datetime import datetime
-from fnmatch import fnmatch
+from fnmatch import fnmatch, fnmatchcase
 from pathlib import Path
 from typing import Callable
 
@@ -629,7 +629,17 @@ class FolderWatcher:
                 # Patterns are written with "/" separators, so the path has to be
                 # normalized before matching or every pattern containing a
                 # separator silently never matches on Windows.
-                if any(fnmatch(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
+                #
+                # `fnmatchcase`, NOT `fnmatch`: `fnmatch` runs both operands
+                # through `os.path.normcase`, which folds case on Windows and is
+                # the identity on POSIX. These patterns are persisted source
+                # configuration, so that made one stored property select
+                # different files depending on which supported host ran the scan
+                # -- `SECURITY.md` also swallowed `security.md`, but only on
+                # Windows. The pattern is authoritative on every host instead.
+                # (The line above is what keeps separators working: `normcase`
+                # used to fold "/" to a backslash on both sides, and no longer does.)
+                if any(fnmatchcase(rel_path.replace(os.sep, "/"), pat) for pat in ignore_patterns):
                     continue
                 if kiroignore is not None and kiroignore.is_ignored(
                         _rel_posix(rel_dir, fname), is_dir=False):
