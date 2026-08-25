@@ -1302,7 +1302,7 @@
       },
       "categories": {
         "agents_automation": "Agents & Automation",
-        "designer_tools": "Designer Tools",
+        "designer_tools": "Design Tools",
         "developer_tools": "Developer Tools",
         "oncall_ops": "On-call & Ops",
         "other": "Other",
