@@ -510,9 +510,9 @@ test("dev (unpackaged) build returns disabled:'dev'", () => {
 // panel gets the marker's metadata to display instead.
 // ---------------------------------------------------------------------------
 
-test("externally-managed install returns disabled:'externally-managed' and never arms the updater", () => {
+test("externally-managed BARE marker returns disabled:'externally-managed' and never arms the updater", () => {
   const { deps, calls } = makeDeps({
-    externallyManaged: { managedBy: "internal-registry", updateCommand: "pkgtool update kirocrew" },
+    externallyManaged: { managedBy: "internal-registry", updateCommand: "", checkCommand: "" },
   });
   const u = initAutoUpdate(deps);
   assert.strictEqual(u.disabled, "externally-managed");
@@ -554,6 +554,298 @@ test("externally-managed wins over the dev gate (intentional operator override)"
   assert.strictEqual(initAutoUpdate(deps).disabled, "externally-managed");
 });
 
+// ---------------------------------------------------------------------------
+// MANAGED AUTO-UPDATE (marker-driven). A marker that ALSO carries an
+// updateCommand no longer disables the updater: it shells the marker's own
+// commands to check and apply, never arming electron-updater or the feed. The
+// commands come from the keystone-protected marker, so shelling them is trusted
+// (like the Python security_policy update pins).
+//
+// child_process is required inside auto-update.js, so these tests stub
+// child_process.spawn on the real module for the duration of the test.
+// ---------------------------------------------------------------------------
+
+const cpModule = require("node:child_process");
+
+// Install a fake spawn that records the command and drives a scripted
+// {code, out}. Returns a restore fn + the recorded command list.
+function stubSpawn(script) {
+  const commands = [];
+  const orig = cpModule.spawn;
+  const { EventEmitter } = require("node:events");
+  cpModule.spawn = (command, _opts) => {
+    commands.push(command);
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    const spec = (typeof script === "function" ? script(command) : script) || {};
+    const { code = 0, out = "", err = "", error = false, signal = null } = spec;
+    // Emit asynchronously so listeners attached after spawn() still catch it.
+    setImmediate(() => {
+      // `error: true` models a spawn failure (ENOENT / no shell); a `signal`
+      // with a null code models a timeout kill. Both must read as "could not
+      // run", distinct from a normal non-zero exit.
+      if (error) { child.emit("error", new Error("spawn failed")); return; }
+      if (out) child.stdout.emit("data", Buffer.from(out));
+      if (err) child.stderr.emit("data", Buffer.from(err));
+      child.emit("close", error ? null : code, signal);
+    });
+    return child;
+  };
+  return { commands, restore: () => { cpModule.spawn = orig; } };
+}
+
+test("managed check() with updateCommand+checkCommand emits found with the printed version", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: {
+      managedBy: "internal-registry",
+      updateCommand: "pkgtool update kirocrew",
+      checkCommand: "pkgtool check kirocrew",
+    },
+  });
+  // Sibling contract: exit 0 and stdout IS the version (the packager authors
+  // checkCommand to print the target version alone).
+  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5\n" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  assert.strictEqual(u.disabled, undefined, "a marker with an updateCommand is NOT disabled");
+  await u.check();
+  assert.deepStrictEqual(commands, ["pkgtool check kirocrew"], "check must shell the checkCommand");
+  const found = states.find((s) => s.state === "found");
+  assert.ok(found, "an available update must surface a 'found' state");
+  assert.strictEqual(found.version, "0.5.0.5", "trimmed stdout is the version");
+});
+
+test("managed check(): non-zero exit -> not-available (ran, nothing new)", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 1, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.ok(states.some((s) => s.state === "not-available"), "a non-zero check is up-to-date");
+  assert.ok(!states.some((s) => s.state === "found"));
+});
+
+test("managed check(): exit 0 but no version printed -> check error (not 'latest')", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 0, out: "   \n" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "check", "an exit-0 empty check is a broken command, not 'latest'");
+  assert.ok(!states.some((s) => s.state === "not-available"));
+  assert.ok(!states.some((s) => s.state === "found"));
+});
+
+test("managed check(): command that cannot run (spawn error) -> check error (not 'latest')", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ error: true });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "check", "a check that could not run is an error, not 'up to date'");
+  assert.ok(!states.some((s) => s.state === "not-available"));
+});
+
+test("managed check(): a discovered update that later clears disarms the quit-apply", async (t) => {
+  let phase = "found";
+  const relaunches = [];
+  const { deps, appOnce, appRemoved } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.app.relaunch = () => relaunches.push(true);
+  const { restore } = stubSpawn(() =>
+    phase === "found" ? { code: 0, out: "0.5.0.5" } : { code: 1, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check(); // discovers -> arms before-quit
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "first check arms the quit-apply");
+  phase = "clear";
+  await u.check(); // external manager applied/withdrew it -> nothing new
+  assert.ok(appRemoved.some((r) => r.ev === "before-quit"), "the stale quit-apply must be removed");
+  // The captured handler now runs, but disarm cleared foundVersion: a normal
+  // quit must NOT relaunch into an update that is no longer pending.
+  let prevented = false;
+  quit.fn({ preventDefault: () => { prevented = true; } });
+  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  assert.strictEqual(relaunches.length, 0, "a cleared update must not relaunch on quit");
+});
+
+test("managed check(): no checkCommand -> check error (cannot discover, not 'latest')", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "" },
+  });
+  const { commands, restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.deepStrictEqual(commands, [], "no checkCommand -> nothing is shelled");
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "check", "no way to check must surface an error, not a green 'latest'");
+  assert.ok(!states.some((s) => s.state === "not-available"));
+});
+
+test("managed install() runs updateCommand then relaunch+exit", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "pkgtool update kirocrew", checkCommand: "check" },
+  });
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.ok(commands.includes("pkgtool update kirocrew"), "install must shell the updateCommand");
+  assert.ok(states.some((s) => s.state === "installing"));
+  assert.strictEqual(relaunches.length, 1, "a successful install relaunches");
+  assert.deepStrictEqual(exits, [0], "a successful install exits(0)");
+});
+
+test("managed install() failure emits an install-phase error and calls onInstallFailed", async (t) => {
+  const failed = [];
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => { throw new Error("must not relaunch on failure"); };
+  const { restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 7, out: "boom" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  await u.install();
+  assert.strictEqual(failed.length, 1, "onInstallFailed must fire on a non-zero apply");
+  const err = states.find((s) => s.state === "error");
+  assert.ok(err && err.phase === "install", "a failed apply emits an install-phase error");
+});
+
+test("managed auto-on-restart: pref true + found arms before-quit that runs updateCommand", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "pkgtool update kirocrew", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found must arm a before-quit handler");
+  const event = { preventDefault: () => {} };
+  quit.fn(event);
+  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  assert.ok(commands.includes("pkgtool update kirocrew"), "before-quit must run the updateCommand");
+  assert.strictEqual(relaunches.length, 1);
+  assert.deepStrictEqual(exits, [0]);
+});
+
+test("managed auto-on-restart: pref false does NOT arm before-quit", async (t) => {
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => false;
+  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  assert.ok(!appOnce.some((r) => r.ev === "before-quit"),
+    "pref off -> nothing automatic; manual Install still works");
+});
+
+test("managed auto-on-restart: pref flipped OFF between check and quit is honored at quit", async (t) => {
+  let pref = true;
+  const relaunches = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => pref;
+  deps.app.relaunch = () => relaunches.push(true);
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "armed while pref was true");
+  pref = false; // user toggled off before quitting
+  let prevented = false;
+  quit.fn({ preventDefault: () => { prevented = true; } });
+  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  assert.strictEqual(prevented, false, "pref read fresh at quit -> quit proceeds normally");
+  assert.ok(!commands.includes("apply"), "the updateCommand must NOT run when pref is off at quit");
+  assert.strictEqual(relaunches.length, 0);
+});
+
+test("managed auto-on-restart: a FAILED apply on quit exits without relaunching", async (t) => {
+  const relaunches = [];
+  const exits = [];
+  const failed = [];
+  const { deps, appOnce } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  deps.getAutoDownloadPreference = () => true;
+  deps.onInstallFailed = () => failed.push(true);
+  deps.app.relaunch = () => relaunches.push(true);
+  deps.app.exit = (c) => exits.push(c);
+  const { restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 7, out: "boom" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const quit = appOnce.find((r) => r.ev === "before-quit");
+  assert.ok(quit, "pref true + found arms the quit-apply");
+  quit.fn({ preventDefault: () => {} });
+  await new Promise((r) => setImmediate(() => setImmediate(r)));
+  assert.strictEqual(relaunches.length, 0, "a failed apply must NOT relaunch into an uninstalled version");
+  assert.deepStrictEqual(exits, [0], "the quit is still honored (exit 0)");
+  assert.strictEqual(failed.length, 1, "onInstallFailed fires on a failed quit-apply");
+});
+
+test("managed check(): the version comes from stdout only, ignoring stderr warnings", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { restore } = stubSpawn({ code: 0, out: "0.5.0.5\n", err: "WARNING: config deprecated\n" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.check();
+  const found = states.find((s) => s.state === "found");
+  assert.ok(found, "an exit-0 check with a version on stdout is 'found'");
+  assert.strictEqual(found.version, "0.5.0.5", "a stderr warning must not leak into the version");
+});
+
+test("managed download() lights the Install action (downloaded) without applying", async (t) => {
+  const { deps, states } = makeDeps({
+    externallyManaged: { managedBy: "m", updateCommand: "apply", checkCommand: "check" },
+  });
+  const { commands, restore } = stubSpawn((cmd) =>
+    cmd === "check" ? { code: 0, out: "0.5.0.5" } : { code: 0, out: "" });
+  t.after(restore);
+  const u = initAutoUpdate(deps);
+  await u.download(); // no prior check -> discovers first
+  const dl = states.find((s) => s.state === "downloaded");
+  assert.ok(dl && dl.version === "0.5.0.5", "download surfaces 'downloaded' with the found version");
+  assert.ok(!commands.includes("apply"), "download must NOT run the apply command");
+});
+
 test("readExternallyManaged: absent marker -> null", (t) => {
   const fs = require("node:fs");
   const os = require("node:os");
@@ -576,6 +868,7 @@ test("readExternallyManaged: JSON marker carries metadata", (t) => {
   assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
     managedBy: "internal-registry",
     updateCommand: "pkgtool update kirocrew",
+    checkCommand: "",
   });
 });
 
@@ -589,6 +882,7 @@ test("readExternallyManaged: bare/unparsable marker still means managed", (t) =>
   assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dir }), {
     managedBy: "",
     updateCommand: "",
+    checkCommand: "",
   });
 });
 
@@ -603,6 +897,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
   assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: big }), {
     managedBy: "",
     updateCommand: "",
+    checkCommand: "",
   });
   // Symlink (even dangling): lstat'ed, never followed — a link into a FIFO or
   // device must not be able to stall this startup-path read.
@@ -613,6 +908,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
     assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: sym }), {
       managedBy: "",
       updateCommand: "",
+      checkCommand: "",
     });
   } catch (err) {
     // Ordinary Windows accounts may lack SeCreateSymbolicLinkPrivilege. Keep
@@ -630,6 +926,7 @@ test("readExternallyManaged: degenerate markers (oversized, symlink, directory) 
   assert.deepStrictEqual(readExternallyManaged({ env: {}, resourcesPath: dirCase }), {
     managedBy: "",
     updateCommand: "",
+    checkCommand: "",
   });
 });
 
@@ -641,11 +938,12 @@ test("readExternallyManaged: metadata fields are length-capped", (t) => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   fs.writeFileSync(
     path.join(dir, "EXTERNALLY-MANAGED"),
-    JSON.stringify({ managedBy: "m".repeat(500), updateCommand: "c".repeat(2000) }),
+    JSON.stringify({ managedBy: "m".repeat(500), updateCommand: "c".repeat(2000), checkCommand: "k".repeat(2000) }),
   );
   const got = readExternallyManaged({ env: {}, resourcesPath: dir });
   assert.strictEqual(got.managedBy.length, 128);
   assert.strictEqual(got.updateCommand.length, 512);
+  assert.strictEqual(got.checkCommand.length, 512);
 });
 
 test("readExternallyManaged: env override points at a marker file", (t) => {
@@ -660,7 +958,7 @@ test("readExternallyManaged: env override points at a marker file", (t) => {
     env: { KIROCREW_EXTERNALLY_MANAGED: marker },
     resourcesPath: "/nonexistent",
   });
-  assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "" });
+  assert.deepStrictEqual(got, { managedBy: "harness", updateCommand: "", checkCommand: "" });
 });
 
 // ---------------------------------------------------------------------------
