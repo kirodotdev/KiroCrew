@@ -52,6 +52,20 @@ _HEALTH_CHECK_TIMEOUT = 5
 _HEALTH_CHECK_RETRIES = 15
 _HEALTH_CHECK_INTERVAL = 2.0
 
+# Post-startup liveness watch (see _watch_backend_health). The startup poll above only
+# establishes that a backend CAME UP; without a standing watch `healthy` would be a
+# write-once cache and a backend that died later would keep the reverse proxy routing to
+# a dead port. The interval is far coarser than the startup one because it runs for the
+# whole life of every backend, and nothing is waiting on it — a demotion that lands one
+# interval late costs a few refused requests, whereas a tight poll costs one HTTP round
+# trip per backend forever.
+_HEALTH_WATCH_INTERVAL = 15.0
+# Consecutive failed probes of a process that is still ALIVE before it is demoted. A
+# backend can be briefly busy (a slow request, a GC pause), so demoting on a single miss
+# would take a working app offline; an exited process needs no threshold at all because
+# it cannot recover. See _watch_backend_health.
+_HEALTH_WATCH_FAILURES = 3
+
 # Spawn survival check: poll the freshly-spawned child over a short grace window to
 # confirm it survived its initial bind (an immediate exit -> EADDRINUSE crash-loop must
 # be caught, see _start_app_backend_body). The loop breaks as soon as the process exits,
@@ -365,12 +379,26 @@ class AppProcess:
     # popped on failure. Concurrent start_app_backend calls see it and skip duplicate spawn.
     starting: bool = False
 
+    def is_running(self) -> bool:
+        """Whether the tracked process is still alive.
+
+        A backend we spawned answers from its own already-reaped exit status, so this
+        costs no syscall to the app and cannot block. An ADOPTED backend belongs to
+        another supervisor and we hold no handle for it, so the only honest answer is
+        that we still track it — there, ``healthy`` (kept current by
+        :func:`_watch_backend_health`) is the load-bearing signal.
+        """
+        if self.proc is None:
+            return True
+        return self.proc.poll() is None
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "app_name": self.app_name,
             "port": self.port,
             "pid": self.pid,
             "healthy": self.healthy,
+            "running": self.is_running(),
             "started_at": self.started_at,
             "log_path": self.log_path,
         }
@@ -748,6 +776,7 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
                 with _lock:
                     _processes[app_name] = ap
                     _allocated_ports[app_name] = port
+                _start_adopted_health_watch(ap, manifest.backend.healthCheck)
                 return ap
             else:
                 try:
@@ -1198,12 +1227,9 @@ def _start_app_backend_body(app_name: str, manifest) -> AppProcess | None:
     # Persist identity for the startup stale-reap (see _reap_stale_app_backends).
     _record_app_pid(app_name, proc.pid, port)
 
-    # Health check in background
-    threading.Thread(
-        target=_health_check_loop,
-        args=(app_name, port, manifest.backend.healthCheck),
-        daemon=True,
-    ).start()
+    # Health check in background, then a standing liveness watch for as long as the
+    # backend is tracked — see _supervise_backend_health.
+    _start_health_supervisor(app_name, port, manifest.backend.healthCheck)
 
     return ap
 
@@ -1535,38 +1561,51 @@ def _gate_mcp_registration(app_name: str, port: int, *, healthy: bool) -> None:
         logger.warning("Health-gated MCP registration failed for app %s: %s", app_name, exc)
 
 
-def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
-    """Poll the health endpoint until it responds or we give up."""
+def _health_probe(url: str) -> bool:
+    """Whether the health endpoint answers below 400. Never raises."""
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=_HEALTH_CHECK_TIMEOUT) as resp:
+            return bool(resp.status < 400)
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _health_check_loop(app_name: str, port: int, health_path: str) -> AppProcess | None:
+    """Poll the health endpoint until it responds or we give up.
+
+    Returns the tracking record this call promoted to healthy, or None if the backend
+    never answered (or stopped being tracked mid-check). The record — not the app name —
+    is what :func:`_watch_backend_health` needs to keep watching it: a later
+    stop/start replaces the entry under the same name, and a watch that re-resolved by
+    name could demote a NEWER generation it never observed.
+    """
     url = f"http://127.0.0.1:{port}{health_path}"
     for attempt in range(_HEALTH_CHECK_RETRIES):
         time.sleep(_HEALTH_CHECK_INTERVAL)
         with _lock:
             if app_name not in _processes:
-                return  # stopped while we were checking
-        try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=_HEALTH_CHECK_TIMEOUT) as resp:
-                if resp.status < 400:
-                    with _lock:
-                        # Stopped/disabled between the health poll and here: do NOT
-                        # register MCP for a backend that's no longer tracked — that would
-                        # write the exact dead-URL entry this guard prevents.
-                        # Mirror the top-of-loop guard.
-                        if app_name not in _processes:
-                            return
-                        _processes[app_name].healthy = True
-                    logger.info(
-                        "App %s backend healthy (port %d, attempt %d)",
-                        app_name, port, attempt + 1,
-                    )
-                    # Health-gated MCP registration: only now that the
-                    # backend has passed /health do we write its HTTP MCP url (live port) to
-                    # global mcp.json. Registering before this could leave a dead-but-enabled
-                    # url for an app whose backend never became healthy — the kiro-cli outage.
-                    _gate_mcp_registration(app_name, port, healthy=True)
-                    return
-        except (urllib.error.URLError, OSError):
-            pass
+                return None  # stopped while we were checking
+        if _health_probe(url):
+            with _lock:
+                # Stopped/disabled between the health poll and here: do NOT
+                # register MCP for a backend that's no longer tracked — that would
+                # write the exact dead-URL entry this guard prevents.
+                # Mirror the top-of-loop guard.
+                ap = _processes.get(app_name)
+                if ap is None:
+                    return None
+                ap.healthy = True
+            logger.info(
+                "App %s backend healthy (port %d, attempt %d)",
+                app_name, port, attempt + 1,
+            )
+            # Health-gated MCP registration: only now that the
+            # backend has passed /health do we write its HTTP MCP url (live port) to
+            # global mcp.json. Registering before this could leave a dead-but-enabled
+            # url for an app whose backend never became healthy — the kiro-cli outage.
+            _gate_mcp_registration(app_name, port, healthy=True)
+            return ap
 
     logger.warning(
         "App %s backend failed health check after %d attempts",
@@ -1575,6 +1614,117 @@ def _health_check_loop(app_name: str, port: int, health_path: str) -> None:
     # Backend never became healthy: scrub any optimistic/stale MCP entry so kiro-cli does
     # not keep dialing a dead port on every session (the reverted-outage shape).
     _gate_mcp_registration(app_name, port, healthy=False)
+    return None
+
+
+def _watch_backend_health(ap: AppProcess, health_path: str) -> None:
+    """Keep re-checking an already-healthy backend so ``healthy`` can go back to False.
+
+    Without this the startup poll would leave ``healthy`` a write-once cache: a backend
+    that died an hour later would still be routed to by the reverse proxy
+    (:func:`get_app_backend_port` gates purely on the flag) and still reported
+    ``healthy`` by ``/api/apps``.
+
+    Liveness is checked cheapest-first. For a backend we spawned, ``Popen.poll()``
+    answers from an already-reaped exit status with no syscall to the app at all and is
+    DECISIVE — an exited process cannot come back on its own, so one observation demotes
+    it and the watch stops. An adopted backend has no ``Popen`` handle (it belongs to
+    another supervisor) and is judged by the health endpoint alone.
+
+    An HTTP failure from a process that is still alive is NOT decisive: it may be a slow
+    request or a GC pause, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses
+    and stays REVERSIBLE — the watch keeps running and re-promotes on the next success,
+    which is what lets an app that wedged briefly heal without operator action.
+
+    Exits when the record is no longer the tracked one for its app: ``stop_app_backend``
+    pops it and a restart replaces it, so this needs no separate teardown — the same
+    "no longer tracked" guard the startup poll already uses.
+    """
+    url = f"http://127.0.0.1:{ap.port}{health_path}"
+    consecutive_failures = 0
+    while True:
+        time.sleep(_HEALTH_WATCH_INTERVAL)
+        with _lock:
+            # Identity, not name: a stop/start under the same name installs a NEW record
+            # with its own watch, and demoting that one from here would take a backend
+            # offline on evidence gathered about its predecessor.
+            if _processes.get(ap.app_name) is not ap:
+                return
+            was_healthy = ap.healthy
+            proc = ap.proc
+
+        if proc is not None and proc.poll() is not None:
+            if was_healthy:
+                _demote(ap, reason=f"process exited (rc={proc.returncode})")
+            return  # decisive: a dead Popen never revives
+
+        if _health_probe(url):
+            consecutive_failures = 0
+            if not was_healthy:
+                _promote(ap)
+            continue
+
+        consecutive_failures += 1
+        if was_healthy and consecutive_failures >= _HEALTH_WATCH_FAILURES:
+            _demote(ap, reason=f"{consecutive_failures} consecutive failed health probes")
+
+
+def _demote(ap: AppProcess, *, reason: str) -> None:
+    """Mark a backend unhealthy and scrub its MCP entry. Reversible — see _promote."""
+    with _lock:
+        if _processes.get(ap.app_name) is not ap:
+            return
+        ap.healthy = False
+    logger.warning(
+        "App %s backend went unhealthy on port %d — %s", ap.app_name, ap.port, reason,
+    )
+    # Same reason the startup failure path scrubs: an enabled app must not leave a dead
+    # HTTP MCP url behind for kiro-cli to dial on every session.
+    _gate_mcp_registration(ap.app_name, ap.port, healthy=False)
+
+
+def _promote(ap: AppProcess) -> None:
+    """Mark a backend healthy again after a demotion and re-register its MCP servers."""
+    with _lock:
+        if _processes.get(ap.app_name) is not ap:
+            return
+        ap.healthy = True
+    logger.info("App %s backend recovered on port %d", ap.app_name, ap.port)
+    _gate_mcp_registration(ap.app_name, ap.port, healthy=True)
+
+
+def _supervise_backend_health(app_name: str, port: int, health_path: str) -> None:
+    """Thread target: wait for the backend to come up, then watch it for as long as it
+    stays tracked."""
+    ap = _health_check_loop(app_name, port, health_path)
+    if ap is not None:
+        _watch_backend_health(ap, health_path)
+
+
+def _start_health_supervisor(app_name: str, port: int, health_path: str) -> None:
+    """Run :func:`_supervise_backend_health` on this backend's own daemon thread."""
+    threading.Thread(
+        target=_supervise_backend_health,
+        args=(app_name, port, health_path),
+        daemon=True,
+        name=f"app-health-{app_name}",
+    ).start()
+
+
+def _start_adopted_health_watch(ap: AppProcess, health_path: str) -> None:
+    """Watch an ADOPTED backend, which skipped the startup poll by already being healthy.
+
+    Adoption proves the instance is serving right now, so there is nothing to wait for —
+    but that made ``healthy`` write-once on this path too, and an external instance is
+    exactly the kind we do not control the lifetime of. It has no ``Popen`` handle, so
+    the watch judges it by its health endpoint alone.
+    """
+    threading.Thread(
+        target=_watch_backend_health,
+        args=(ap, health_path),
+        daemon=True,
+        name=f"app-health-{ap.app_name}",
+    ).start()
 
 
 # ---------------------------------------------------------------------------

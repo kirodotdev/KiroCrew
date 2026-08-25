@@ -321,7 +321,10 @@ async def handle_list_apps(request: web.Request) -> web.Response:
         proc = procs.get(app["name"])
         if proc:
             app["backend_status"] = {
-                "running": True,
+                # Both flags come from the tracking record rather than being asserted
+                # from its mere presence: a tracked backend can have exited (running) or
+                # stopped answering its health endpoint (healthy) since it was started.
+                "running": proc["running"],
                 "port": proc["port"],
                 "healthy": proc["healthy"],
                 "pid": proc["pid"],

@@ -308,8 +308,12 @@ async def test_list_apps_enriches_running_backend(
         routes_mod,
         "list_app_processes",
         lambda: [
-            {"app_name": APP, "port": 7999, "healthy": True, "pid": 4242},
-            {"app_name": "other-app", "port": 7998, "healthy": False, "pid": 1},
+            # Mirrors AppProcess.to_dict(): `running` is a real observation of the
+            # tracked process, not something the handler asserts from the row existing.
+            {"app_name": APP, "port": 7999, "healthy": True, "pid": 4242,
+             "running": True},
+            {"app_name": "other-app", "port": 7998, "healthy": False, "pid": 1,
+             "running": True},
         ],
     )
     async with TestClient(TestServer(_make_app())) as client:
@@ -503,6 +507,34 @@ async def test_get_app_keeps_genuinely_local_app_repositoryless(
         entry = await resp.json()
 
     assert "trustRepository" not in entry
+
+
+@pytest.mark.asyncio
+async def test_list_apps_reports_a_tracked_but_exited_backend_as_not_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record outliving its process must not be reported as running (#5726).
+
+    The handler used to hardcode ``running: True`` for anything present in the process
+    table, so a backend that exited was reported as up until something popped its entry.
+    """
+    _setup_env(tmp_path, monkeypatch)
+    _install(tmp_path)
+    monkeypatch.setattr(
+        routes_mod,
+        "list_app_processes",
+        lambda: [
+            {"app_name": APP, "port": 7999, "healthy": False, "pid": 4242,
+             "running": False},
+        ],
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.get("/api/apps")
+        assert resp.status == 200
+        rows = await resp.json()
+    entry = next(a for a in rows if a["name"] == APP)
+    assert entry["backend_status"]["running"] is False
+    assert entry["backend_status"]["healthy"] is False
 
 
 # ---------------------------------------------------------------------------

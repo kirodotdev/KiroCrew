@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -1643,3 +1644,239 @@ class TestTheCacheOnlyChildCanSeeTheCacheItMustBootFrom:
         bmod.start_app_backend("plain-app")
 
         assert seen.get("visible") == ()
+
+
+# =============================================================================
+# Post-startup liveness watch (#5726)
+# =============================================================================
+
+
+class _FakeProc:
+    """Popen stand-in for the watch's liveness check: alive until it is given an rc."""
+
+    def __init__(self, returncode=None):
+        self.returncode = returncode
+
+    def poll(self):
+        return self.returncode
+
+
+class TestBackendLivenessWatch:
+    """``healthy`` must be able to go back to False (#5726).
+
+    Before the watch, the startup poll wrote ``healthy = True`` once and nothing ever
+    unwrote it, so a backend that died later kept the reverse proxy routing to its dead
+    port and kept ``/api/apps`` reporting it healthy.
+    """
+
+    @pytest.fixture
+    def watched(self, monkeypatch):
+        """A tracked, healthy backend plus the seams the watch runs through.
+
+        Yields ``(bmod, ap, probes, gate_calls)``. ``probes`` is the scripted probe
+        result list — the watch stops by untracking the record once the script runs out,
+        which is the same guard ``stop_app_backend`` exits it through in production.
+        """
+        import kiro_crew.apps.backend as bmod
+
+        monkeypatch.setattr(bmod, "_HEALTH_WATCH_INTERVAL", 0)
+        gate_calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: gate_calls.append((name, port, healthy)),
+        )
+
+        ap = AppProcess(app_name="watched", port=9160, pid=4242,
+                        proc=_FakeProc(), healthy=True)
+        with bmod._lock:
+            bmod._processes.clear()
+            bmod._processes["watched"] = ap
+
+        probes: list[bool] = []
+
+        def _scripted(_url):
+            if not probes:
+                # Script exhausted: untrack so the watch exits at its top-of-loop guard.
+                with bmod._lock:
+                    bmod._processes.pop("watched", None)
+                return False
+            return probes.pop(0)
+
+        monkeypatch.setattr(bmod, "_health_probe", _scripted)
+        try:
+            yield bmod, ap, probes, gate_calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_survives_transient_failures_below_the_threshold(self, watched):
+        # A backend that misses one probe and answers the next is briefly busy, not
+        # dead: demoting there would take a working app offline.
+        bmod, ap, probes, gate_calls = watched
+        probes.extend([False] * (bmod._HEALTH_WATCH_FAILURES - 1) + [True])
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is True
+        assert gate_calls == []  # never demoted, so the MCP entry was never scrubbed
+
+    def test_demotes_after_consecutive_failures_and_scrubs_mcp(self, watched):
+        bmod, ap, probes, gate_calls = watched
+        probes.extend([False] * bmod._HEALTH_WATCH_FAILURES)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is False
+        assert ("watched", 9160, False) in gate_calls
+
+    def test_a_demoted_backend_is_no_longer_routable(self, watched):
+        # The load-bearing consequence: get_app_backend_port gates the reverse proxy
+        # purely on this flag, so before the watch the proxy kept dialing a dead port.
+        bmod, ap, probes, gate_calls = watched
+        assert bmod.get_app_backend_port("watched") == 9160
+
+        probes.extend([False] * bmod._HEALTH_WATCH_FAILURES)
+        bmod._watch_backend_health(ap, "/health")
+
+        assert bmod.get_app_backend_port("watched") is None
+
+    def test_demotion_is_reversible(self, watched):
+        # An app that wedged briefly must heal without operator action.
+        bmod, ap, probes, gate_calls = watched
+        probes.extend([False] * bmod._HEALTH_WATCH_FAILURES + [True])
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is True
+        assert gate_calls == [("watched", 9160, False), ("watched", 9160, True)]
+
+    def test_an_exited_process_demotes_on_one_observation(self, watched):
+        # No threshold: a dead Popen cannot recover, so waiting for three misses would
+        # only keep routing to it for longer. The probe list stays untouched, pinning
+        # that liveness is answered from the exit status without an HTTP round trip.
+        bmod, ap, probes, gate_calls = watched
+        ap.proc = _FakeProc(returncode=1)
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert ap.healthy is False
+        assert gate_calls == [("watched", 9160, False)]
+        assert probes == []  # never consulted the health endpoint
+
+    def test_does_not_demote_a_newer_generation_under_the_same_name(self, watched):
+        # A stop/start replaces the record; the old watch must not carry its verdict
+        # over to a backend it never observed.
+        bmod, ap, probes, gate_calls = watched
+        replacement = AppProcess(app_name="watched", port=9161, pid=99,
+                                 proc=_FakeProc(), healthy=True)
+        with bmod._lock:
+            bmod._processes["watched"] = replacement
+        ap.proc = _FakeProc(returncode=1)  # the OLD generation is dead
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert replacement.healthy is True
+        assert gate_calls == []
+        assert bmod.get_app_backend_port("watched") == 9161
+
+    def test_an_untracked_record_is_never_probed(self, watched):
+        # stop_app_backend pops the record; the watch exits before touching the network,
+        # so a stale watcher can never probe a port another backend has since taken.
+        bmod, ap, probes, gate_calls = watched
+        probes.append(True)
+        with bmod._lock:
+            bmod._processes.pop("watched")
+
+        bmod._watch_backend_health(ap, "/health")
+
+        assert probes == [True]  # untouched
+        assert gate_calls == []
+
+
+class TestBackendRunningReflectsTheProcess:
+    """``/api/apps`` must not report an exited backend as running (#5726)."""
+
+    def test_running_is_false_once_the_process_exits(self):
+        ap = AppProcess(app_name="gone", port=9162, pid=7, proc=_FakeProc(returncode=0))
+        assert ap.to_dict()["running"] is False
+
+    def test_running_is_true_while_the_process_lives(self):
+        ap = AppProcess(app_name="live", port=9163, pid=7, proc=_FakeProc())
+        assert ap.to_dict()["running"] is True
+
+    def test_an_adopted_backend_has_no_handle_to_poll(self):
+        # proc=None is the adopted shape: the instance belongs to another supervisor, so
+        # "we still track it" is the only honest answer and `healthy` carries the signal.
+        ap = AppProcess(app_name="adopted", port=9164, pid=0, proc=None, healthy=True)
+        assert ap.to_dict()["running"] is True
+
+
+class TestHealthSupervisorHandoff:
+    """The startup poll must hand the watch its record, or the whole watch is dead wiring."""
+
+    def test_watch_runs_when_the_backend_came_up(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        ap = AppProcess(app_name="up", port=9170, healthy=True)
+        watched: list[tuple[AppProcess, str]] = []
+        monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: ap)
+        monkeypatch.setattr(bmod, "_watch_backend_health",
+                            lambda rec, path: watched.append((rec, path)))
+
+        bmod._supervise_backend_health("up", 9170, "/health")
+
+        assert watched == [(ap, "/health")]
+
+    def test_no_watch_when_the_backend_never_came_up(self, monkeypatch):
+        # Nothing to watch: the startup path already scrubbed the MCP entry and gave up.
+        import kiro_crew.apps.backend as bmod
+        watched: list[Any] = []
+        monkeypatch.setattr(bmod, "_health_check_loop", lambda *_a, **_k: None)
+        monkeypatch.setattr(bmod, "_watch_backend_health",
+                            lambda rec, path: watched.append(rec))
+
+        bmod._supervise_backend_health("down", 9171, "/health")
+
+        assert watched == []
+
+
+class TestHealthTransitionsRefuseAStaleRecord:
+    """stop_app_backend can land between a probe and its verdict.
+
+    Both transitions re-check identity under the lock, so a verdict formed about a
+    record that has since been popped or replaced cannot be written — and cannot move
+    the MCP entry of whatever holds the name now.
+    """
+
+    @pytest.fixture
+    def gate_calls(self, monkeypatch):
+        import kiro_crew.apps.backend as bmod
+        calls: list[tuple[str, int, bool]] = []
+        monkeypatch.setattr(
+            bmod, "_gate_mcp_registration",
+            lambda name, port, *, healthy: calls.append((name, port, healthy)),
+        )
+        with bmod._lock:
+            bmod._processes.clear()
+        try:
+            yield bmod, calls
+        finally:
+            with bmod._lock:
+                bmod._processes.clear()
+
+    def test_demote_refuses_an_untracked_record(self, gate_calls):
+        bmod, calls = gate_calls
+        ap = AppProcess(app_name="stale", port=9172, healthy=True)  # never tracked
+
+        bmod._demote(ap, reason="test")
+
+        assert ap.healthy is True  # untouched
+        assert calls == []  # no scrub of a name this record no longer owns
+
+    def test_promote_refuses_an_untracked_record(self, gate_calls):
+        bmod, calls = gate_calls
+        ap = AppProcess(app_name="stale", port=9173, healthy=False)
+
+        bmod._promote(ap)
+
+        assert ap.healthy is False
+        assert calls == []

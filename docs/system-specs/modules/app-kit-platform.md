@@ -1036,3 +1036,53 @@ Writers: builtin `app.json` manifests, `apps/registry.py` (`_merge_manifest`),
 `website/src/components/appstore/appManifest.ts`,
 `website/src/pages/AppDetailPage.tsx`, and
 `website/scripts/check-app-manifest-sync.mjs`.
+
+## 17. A backend's health is a standing observation, not a startup verdict
+
+`healthy` on the `AppProcess` record is what the reverse proxy gates on
+(`get_app_backend_port` returns the port ONLY while the flag is set) and what
+`/api/apps` reports. Establishing it once at startup would make it a write-once
+cache: a backend that died an hour later would keep collecting proxied requests
+into a dead port, and the dashboard would keep calling it healthy, with no
+transition anywhere in the tree able to say otherwise.
+
+So the per-backend daemon thread that waits for the backend to come up does not
+exit when it does — it keeps watching, at the much coarser
+`_HEALTH_WATCH_INTERVAL`, for as long as the record stays tracked. The two phases
+are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
+(unbounded watch), joined by `_supervise_backend_health`.
+
+- **Liveness is cheapest-first, and only a dead process is decisive.** A backend
+  we spawned is judged first by `Popen.poll()`, which answers from an
+  already-reaped exit status without touching the app. An exited process cannot
+  recover on its own, so one observation demotes it and the watch stops. An
+  **adopted** backend has no `Popen` handle — it belongs to another supervisor —
+  and is judged by its health endpoint alone.
+- **An HTTP failure from a live process is not decisive.** A backend can be
+  briefly busy, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses;
+  demoting on a single miss would let one slow response take a working app
+  offline.
+- **Demotion is reversible.** The watch keeps running after it demotes and
+  re-promotes on the next successful probe, which is what lets a backend that
+  wedged briefly heal with no operator action.
+- **Both directions move the MCP entry**, through the same
+  `_gate_mcp_registration` branches the startup phase uses: a demotion scrubs the
+  app's HTTP MCP url so kiro-cli does not dial a dead port on every session, and a
+  recovery re-registers it.
+- **The watch is bound to the RECORD, not the app name.** A stop/start installs a
+  new `AppProcess` under the same name with its own watch, so every transition is
+  guarded by `_processes.get(name) is ap`. Resolving by name instead would let a
+  retiring watch demote a successor it never observed. The same guard is how the
+  watch terminates — `stop_app_backend` pops the record — so it needs no separate
+  teardown, and a stale watcher exits before it can probe a port some other
+  backend has since taken.
+
+`backend_status.running` on `/api/apps` is likewise read off the record
+(`AppProcess.is_running`) rather than asserted from the record merely existing.
+For an adopted backend, where we hold no handle to poll, "we still track it"
+is the only honest answer and `healthy` is the load-bearing signal.
+
+Writers: `apps/backend.py` (`_health_check_loop`, `_watch_backend_health`,
+`_demote`, `_promote`, `_supervise_backend_health`, `_start_health_supervisor`,
+`_start_adopted_health_watch`, `AppProcess.is_running`), `apps/routes.py`
+(`handle_list_apps`).
