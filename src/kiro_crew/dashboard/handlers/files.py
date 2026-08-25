@@ -3209,12 +3209,18 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             updates["use_builtin_browser"] = val
         if "verbosity" in body:
             val = body["verbosity"]
-            if val not in ("default", "concise", "ultra"):
+            if val not in ("default", "concise", "ultra", "answer_only"):
                 _sel().log_tool_invocation(
                     session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
                 )
                 return web.json_response(
-                    {"error": "verbosity must be 'default', 'concise' or 'ultra'"}, status=400
+                    {
+                        "error": (
+                            "verbosity must be 'default', 'concise', 'ultra' "
+                            "or 'answer_only'"
+                        )
+                    },
+                    status=400,
                 )
             updates["verbosity"] = val
         if "tail_fork_enabled" in body:

@@ -108,7 +108,7 @@ export interface DashboardConfig {
   merge_queued_messages: boolean
   widget_density: 'more' | 'less'
   use_builtin_browser: boolean
-  verbosity: 'default' | 'concise' | 'ultra'
+  verbosity: 'default' | 'concise' | 'ultra' | 'answer_only'
   quick_send: boolean
   session_grid: boolean
   tail_fork_enabled: boolean

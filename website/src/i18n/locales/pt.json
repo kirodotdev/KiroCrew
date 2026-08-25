@@ -11166,6 +11166,7 @@
       },
       "chatPanel": {
         "about_you": "Sobre você",
+        "answer_only_details_on_request": "Somente a resposta — detalhes a pedido ou se crítico",
         "auto_add_documents": "Adicionar documentos automaticamente",
         "auto_add_saved_artifacts": "Adicionar artefatos salvos automaticamente",
         "auto_compact_threshold": "Limite de compactação automática",
@@ -11243,7 +11244,7 @@
         "how_long_models_think_before_answering_by_defaul": "Por quanto tempo os modelos pensam antes de responder, por padrão. Valores maiores são mais lentos e custam mais. Disponível apenas em modelos com capacidade de raciocínio (Opus, Sonnet, Fable, GPT-5.x).",
         "how_long_to_wait_for_the_agent_to_honor_a_stop_p": "Quanto tempo esperar que o agente atenda a um comando de Parar antes de encerrar a sessão à força. Orçamentos maiores preservam o estado da sessão com mais frequência, mas fazem as paradas parecerem lentas quando os agentes ficam presos em chamadas de ferramenta longas.",
         "how_much_an_automatically_registered_source_may_i": "Quanto uma fonte registrada automaticamente pode absorver em uma passagem. Cada parte de um documento custa uma chamada de extração, então é isso que limita o custo; os documentos mais recentes entram primeiro e o resto vem nas passagens seguintes. 0 remove o limite. Padrão: {{count}}.",
-        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Quão sucinta é a prosa do agente. \"Ultraconciso\" mantém toda a resposta curta: primeiro o resultado, tópicos em vez de parágrafos, sem enchimento. Código, comandos e mensagens de erro permanecem literais em qualquer nível, e avisos de segurança e instruções de vários passos mantêm todo o detalhe.",
+        "how_terse_the_agent_s_prose_is_ultra_concise_cap": "Quão sucinta é a prosa do agente. \"Ultraconciso\" mantém toda a resposta curta: primeiro o resultado, tópicos em vez de parágrafos, sem enchimento. Código, comandos e mensagens de erro permanecem literais em qualquer nível, e avisos de segurança e instruções de vários passos mantêm todo o detalhe. “Somente a resposta” vai além e elimina a explicação por completo: no máximo uma frase, e detalhes apenas quando você pedir — ou quando uma decisão for importante o bastante (segurança, exposição, perda de dados, custo, qualquer coisa difícil de desfazer) para que você precise do raciocínio para escolher certo.",
         "i_write_code": "Eu escrevo código",
         "immediate": "Imediato",
         "immediate_mode_shows_raw_chunks_as_they_arrive_s": "O modo imediato mostra os blocos brutos conforme chegam. O modo suave usa buffer e faz o texto aparecer gradualmente em ritmo constante.",

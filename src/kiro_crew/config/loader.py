@@ -2950,10 +2950,17 @@ class DashboardConfig:
             "'concise' injects brevity guidelines (lead with the answer, cut "
             "filler, keep code/errors verbatim); 'ultra' writes for an ADHD "
             "reader — the answer lands in a 3-sentence opening, and any detail "
-            "after it must be scannable bullets rather than prose. Both levels "
-            "preserve full detail for security warnings, irreversible-action "
-            "confirmations, and ordered multi-step instructions.",
-            enum=["default", "concise", "ultra"],
+            "after it must be scannable bullets rather than prose; "
+            "'answer_only' drops explanation altogether — the answer or "
+            "artifact alone, with at most one sentence of context, and detail "
+            "only when the user asks for it, when the decision is "
+            "consequential enough (security, exposure, data loss, spend, "
+            "anything hard to undo) that they cannot choose correctly without "
+            "the reasoning, or as the undo path that rides along with a "
+            "destructive command. Every level preserves full detail "
+            "for security warnings, irreversible-action confirmations, and "
+            "ordered multi-step instructions.",
+            enum=["default", "concise", "ultra", "answer_only"],
         ),
     )
     link_previews: bool = field(

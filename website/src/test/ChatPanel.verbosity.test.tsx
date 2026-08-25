@@ -17,7 +17,7 @@ const BASE_DASH = {
 
 const { dashboardConfigMock, selectProps } = vi.hoisted(() => ({
   dashboardConfigMock: vi.fn(),
-  selectProps: [] as { label: string; value: unknown }[],
+  selectProps: [] as { label: string; value: unknown; options?: readonly string[]; optionLabels?: readonly string[] }[],
 }))
 
 vi.mock('../api/client', () => ({
@@ -48,7 +48,7 @@ vi.mock('../components/settings', async importOriginal => {
   return {
     ...actual,
     SettingsSelect: (props: Parameters<typeof actual.SettingsSelect>[0]) => {
-      selectProps.push({ label: props.label, value: props.value })
+      selectProps.push({ label: props.label, value: props.value, options: props.options, optionLabels: props.optionLabels })
       return actual.SettingsSelect(props)
     },
   }
@@ -87,8 +87,24 @@ describe('ChatPanel settings – Response Verbosity is narrowed before render', 
     ['default', 'default'],
     ['concise', 'concise'],
     ['ultra', 'ultra'],
+    ['answer_only', 'answer_only'],
   ])('passes through the known level %s', async (persisted, expected) => {
     expect(await verbosityValueAfterLoad(persisted)).toBe(expected)
+  })
+
+  // Every level the backend enum accepts needs a row here, and a label for it —
+  // an option list short by one entry renders that level as a bare enum value,
+  // and a level missing from the list cannot be selected at all.
+  it('offers a labelled option for every level the config enum accepts', async () => {
+    dashboardConfigMock.mockResolvedValue({ ...BASE_DASH, verbosity: 'answer_only' })
+    wrap(<ChatPanel />)
+    await screen.findByText('Response Verbosity')
+    await waitFor(() => expect(selectProps.some(p => p.label === 'Response Verbosity')).toBe(true))
+    const seen = selectProps.filter(p => p.label === 'Response Verbosity')
+    const row = seen[seen.length - 1]
+    expect(row.options).toEqual(['default', 'concise', 'ultra', 'answer_only'])
+    expect(row.optionLabels).toHaveLength(4)
+    expect(row.optionLabels?.every(label => !!label && label.trim().length > 0)).toBe(true)
   })
 
   // `an object` is the exact shape from the report: {"dashboard":{"verbosity":{}}}.
