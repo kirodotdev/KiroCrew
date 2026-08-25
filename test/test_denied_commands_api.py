@@ -620,11 +620,67 @@ async def test_non_object_json_body_is_400_not_500(home: Path, mock_sel):
 async def test_user_add_redos_pattern_is_400(home: Path, mock_sel):
     # A catastrophic-backtracking regex must be rejected at add-time — it would
     # otherwise freeze the event loop when the gate runs it synchronously.
+    from kiro_crew.security import _DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN
+
     async with _client() as client:
         resp = await client.post("/api/security/denied-commands/user", json={"pattern": "(a+)+$"})
         assert resp.status == 400
         body = await resp.json()
         assert "unsafe" in body["error"].lower()
+        # No flag-run fragment in the pattern, so no fragment hint either — the
+        # hint must name the actual trigger, not decorate every rejection.
+        assert _DANGEROUS_AWS_FLAG_RUN not in body["error"]
+        assert _LINEARIZED_AWS_FLAG_RUN not in body["error"]
+    assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_user_add_wrapped_builtin_fragment_rejection_names_the_trigger(
+    home: Path, mock_sel
+):
+    # A user who copies a built-in pattern and tweaks it embeds the flag-run
+    # fragment verbatim; the fragment is exempt from the backtracking check only
+    # as part of a complete built-in, so the tweaked copy is rejected. The
+    # rejection must name the fragment so the dead end is self-explanatory
+    # instead of a generic "unsafe regex" (#5837).
+    from kiro_crew.security import _DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN
+
+    async with _client() as client:
+        for fragment in (_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN):
+            pattern = "aws s3" + fragment + r" rm .*my-bucket"
+            resp = await client.post(
+                "/api/security/denied-commands/user", json={"pattern": pattern}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert "unsafe" in body["error"].lower()
+            assert fragment in body["error"], body["error"]
+    assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+async def test_user_add_fragment_hint_withheld_when_not_the_trigger(home: Path, mock_sel):
+    # The hint says "remove or rewrite that fragment" — advice that must be
+    # TRUE before it is given. A pattern that embeds the fragment but also
+    # carries its own catastrophic quantifier stays rejected after the fragment
+    # is removed, so hinting at the fragment would send the user to an
+    # identical 400. The hint is gated on the fragment-scrubbed residue
+    # actually passing (#5837).
+    from kiro_crew.security import _DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN
+
+    async with _client() as client:
+        for pattern in (
+            "(x+)+" + _DANGEROUS_AWS_FLAG_RUN,  # own nested quantifier
+            "a|b" + _DANGEROUS_AWS_FLAG_RUN,  # own top-level alternation
+        ):
+            resp = await client.post(
+                "/api/security/denied-commands/user", json={"pattern": pattern}
+            )
+            assert resp.status == 400
+            body = await resp.json()
+            assert "unsafe" in body["error"].lower()
+            assert _DANGEROUS_AWS_FLAG_RUN not in body["error"], body["error"]
+            assert _LINEARIZED_AWS_FLAG_RUN not in body["error"], body["error"]
     assert mock_sel.log_api_access.call_args.kwargs["outcome"] == "denied"
 
 

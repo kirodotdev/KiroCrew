@@ -581,14 +581,45 @@ async def api_denied_command_user_add(request: web.Request) -> web.Response:
     # Reject catastrophic-backtracking (ReDoS) patterns before they can enter the
     # effective set: the gate runs user regexes synchronously on the event loop,
     # so an unsafe pattern like ``(a+)+$`` would freeze the gateway.
-    from kiro_crew.security import is_safe_user_regex
+    from kiro_crew.security import (
+        _DANGEROUS_AWS_FLAG_RUN,
+        _LINEARIZED_AWS_FLAG_RUN,
+        is_safe_user_regex,
+    )
 
     if not is_safe_user_regex(pattern):
-        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
-        return web.json_response(
-            {"error": "pattern rejected: unsafe (catastrophic-backtracking) regex"},
-            status=400,
+        error = "pattern rejected: unsafe (catastrophic-backtracking) regex"
+        # A user who copies a built-in pattern and tweaks it embeds the dangerous
+        # flag-run fragment verbatim and hits a dead end: the fragment is exempt
+        # from the backtracking check only as part of a COMPLETE built-in pattern
+        # (the scrub in ``is_safe_user_regex`` is builtin-gated), and a complete
+        # built-in never reaches this branch, so any pattern here is
+        # user-authored. Name the fragment so the trigger is self-explanatory --
+        # but only when it really is the trigger: the hint is emitted only if
+        # the pattern with both fragments scrubbed would pass, mirroring the
+        # builtin scrub (the linearized form is checked too for symmetry with
+        # it). ``is_safe_user_regex`` returns False on a non-compiling residue,
+        # so a misleading hint fails safe to the generic message.
+        embedded = next(
+            (
+                frag
+                for frag in (_DANGEROUS_AWS_FLAG_RUN, _LINEARIZED_AWS_FLAG_RUN)
+                if frag in pattern
+            ),
+            None,
         )
+        if embedded is not None:
+            scrubbed = pattern.replace(_DANGEROUS_AWS_FLAG_RUN, "").replace(
+                _LINEARIZED_AWS_FLAG_RUN, ""
+            )
+            if is_safe_user_regex(scrubbed):
+                error += (
+                    f"; the embedded built-in flag-run fragment '{embedded}' is"
+                    " the trigger. It is exempt only inside a complete built-in"
+                    " pattern, so remove or rewrite that fragment"
+                )
+        _audit(request, operation=op, outcome="denied", resources="redos_unsafe")
+        return web.json_response({"error": error}, status=400)
 
     # Optional operator note. Absent is the norm (and the pre-existing shape), so
     # a missing key is NOT an error — but a present-and-wrong-typed one is, to
