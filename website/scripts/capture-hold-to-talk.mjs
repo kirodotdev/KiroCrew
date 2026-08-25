@@ -23,6 +23,10 @@
  *  - a draft hands the textarea back and leaves the mic an ENABLED record
  *    control, so dictating onto existing text still works
  *  - a sub-threshold tap discards and says so, leaving nothing running
+ *  - a voice round-trip leaves an EMPTY composer at its resting height (the
+ *    textarea is parked in a 1px `sr-only` box in voice mode, and measuring it
+ *    there pinned the composer at its 140px ceiling for good)
+ *  - no drag-resize handle exists under a finger
  *
  * Usage:
  *   npx vite --host 127.0.0.1 --port 6822 --strictPort   # in another shell
@@ -46,7 +50,7 @@ mkdirSync(OUT, { recursive: true })
 const FRAMES = [
   '01-keyboard-mode', '02-hold-mode', '03-holding', '04-armed-cancel', '05-after-discard',
   '06-holding-again', '07-transcript-in-composer', '08-after-tap', '09-draft-mic-records',
-  '10-draft-dictation-stoppable',
+  '10-draft-dictation-stoppable', '11-mode-roundtrip',
 ]
 const VIDEO_NAME = 'hold-to-talk.webm'
 
@@ -77,6 +81,8 @@ const VIEWPORT = { width: 390, height: 844 }
 const DRAG_UP_PX = 74
 /** Comfortably past the default holdMs (500) so the press resolves as a hold. */
 const HOLD_MS = 950
+/** ChatInput's INPUT_MIN_H — the collapsed one-line height of the textarea. */
+const INPUT_MIN_H = 44
 const TRANSCRIPT = 'Arm auto-merge on that PR and keep an eye on it'
 /** The isolated capture entry. Warm-up and the recorded run must load the same URL. */
 const CAPTURE_URL = `${BASE}/capture/hold-to-talk.html?theme=dark`
@@ -152,6 +158,8 @@ const composer = page.locator('textarea[data-composer-input]')
 const placeholder = await composer.getAttribute('placeholder')
 if (placeholder === 'Send a message, or tap the mic for voice') ok('keyboard mode promises only what the tap delivers')
 else fail(`placeholder was ${JSON.stringify(placeholder)}`)
+/** The empty composer's resting height, which section 8 requires it to return to. */
+const baselineWrapperH = Math.round((await page.locator('[data-testid="input-wrapper"]').boundingBox()).height)
 await shot('01-keyboard-mode')
 
 // ── 2. Switch to hold mode ──────────────────────────────────────────────────
@@ -304,6 +312,59 @@ if (await stopControl.count() >= 1 && !(await stopControl.first().isDisabled()))
 } else fail('draft-started dictation has no enabled control that can stop it')
 await shot('10-draft-dictation-stoppable')
 await page.waitForTimeout(700)
+
+// ── 8. The mode round-trip must not INFLATE the composer ─────────────────────
+// The textarea stays mounted through voice mode, clipped inside `sr-only` — a 1px
+// box. The auto-size pass measured it there anyway, read a `scrollHeight` of most
+// of a viewport, clamped it to the 140px ceiling and wrote that back as an inline
+// height that outlived the parking. So a voice round-trip handed the user back a
+// permanently tall empty composer, on the one surface with no way to shrink it
+// (the reset is a double-click, and the drag handle is gone under a finger).
+// Only observable over real layout: happy-dom computes no `scrollHeight`.
+await stopControl.first().click()
+await page.waitForTimeout(1200)
+await page.evaluate(() => {
+  const ta = document.querySelector('textarea[data-composer-input]')
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set
+  setValue.call(ta, '')
+  ta.dispatchEvent(new Event('input', { bubbles: true }))
+})
+// Clearing the draft is what hands the surface back to hold mode, so the composer
+// is parked again — with the empty value whose height the bug measured.
+await holdBar.waitFor({ state: 'visible' })
+await page.waitForTimeout(400)
+await page.getByRole('button', { name: 'Switch to keyboard', exact: true }).click()
+await composer.waitFor({ state: 'visible' })
+await page.waitForTimeout(400)
+
+const roundTrip = await page.evaluate(() => {
+  const w = document.querySelector('[data-testid="input-wrapper"]')
+  const ta = document.querySelector('textarea[data-composer-input]')
+  return { wrapper: Math.round(w.getBoundingClientRect().height), inline: ta.style.height, value: ta.value }
+})
+if (roundTrip.value === '') ok('the round-trip left the composer empty')
+else fail(`composer was not empty: ${JSON.stringify(roundTrip.value)}`)
+if (roundTrip.wrapper === baselineWrapperH) {
+  ok(`an empty composer is back at its resting ${baselineWrapperH}px after a voice round-trip`)
+} else {
+  fail(`empty composer is ${roundTrip.wrapper}px after a voice round-trip, was ${baselineWrapperH}px at rest`
+    + ` (textarea inline height ${JSON.stringify(roundTrip.inline)})`)
+}
+// Named separately: the wrapper check above is the symptom, this is the mechanism,
+// and a future hider of the textarea would break this one first.
+if (roundTrip.inline === `${INPUT_MIN_H}px`) ok('the textarea was not measured while parked')
+else fail(`textarea inline height is ${JSON.stringify(roundTrip.inline)}, expected ${INPUT_MIN_H}px`)
+// Both forms, deliberately. The testid is this script's handle on the element; the
+// class is the affordance itself, and is what the element had BEFORE it carried a
+// testid — so a revert of the fix fails here rather than passing vacuously.
+const handleByTestId = await page.getByTestId('composer-resize-handle').count()
+const handleByClass = await page.locator('.input-area .cursor-row-resize').count()
+if (handleByTestId === 0 && handleByClass === 0) {
+  ok('no drag handle under a finger')
+} else fail(`the drag handle renders on a touch device (testid ${handleByTestId}, class ${handleByClass})`
+  + ' — a tap can pin the height with no way back')
+await shot('11-mode-roundtrip')
+await page.waitForTimeout(500)
 
 /*
  * Hold this run's own video handle. Playwright names the file by a random id, so

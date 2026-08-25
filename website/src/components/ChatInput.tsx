@@ -27,6 +27,7 @@ import TrustDropdown from './TrustDropdown'
 import AutoNudgePopover, { type AutoNudgeLoop } from './AutoNudgePopover'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { isTouchDevice } from '../utils/isTouchDevice'
+import { useIsTouchDevice } from '../hooks/useIsTouchDevice'
 import { Btn } from './ui'
 import { useTouchPushToTalk } from '../hooks/useTouchPushToTalk'
 import { consumeComposerRelease } from '../pages/chat/composerFocus'
@@ -222,12 +223,24 @@ function stripTrailingBlankLines(s: string): string {
 /** Auto-size textarea to fit content (only when not manually sized).
  *  Sets overflow:hidden during measurement so the parent flex container
  *  never sees the collapsed (height:0) intermediate state — prevents the
- *  Virtuoso message list above from reflowing and causing visible vibration. */
+ *  Virtuoso message list above from reflowing and causing visible vibration.
+ *
+ *  `parked` is a hard precondition, not an optimisation. Voice hold mode and the
+ *  dictation panel both keep the textarea mounted inside an `sr-only` box (value,
+ *  caret and IME state have to survive the swap), and `sr-only` is a 1px clip — a
+ *  textarea one pixel wide reports a `scrollHeight` of the better part of a
+ *  viewport, which this function would then clamp to `cap` and WRITE BACK as an
+ *  inline height. That height outlives the parking (nothing re-measures until
+ *  `value` changes again), so a single voice round-trip left the composer stuck
+ *  at the 140px ceiling with an empty box, on a surface whose only way to shrink
+ *  it — the drag handle's double-click — does not exist under a finger. */
 function applyHeight(
   el: HTMLTextAreaElement,
   manualHeight: number | null,
   prefillHint?: boolean,
+  parked?: boolean,
 ) {
+  if (parked) return // clipped out of layout — there is nothing valid to measure
   if (manualHeight !== null) return // manual height — wrapper controls size
   const cap = prefillHint ? INPUT_PREFILL_MAX_H : INPUT_DEFAULT_MAX_H
   const prev = el.style.height
@@ -1279,11 +1292,33 @@ function ChatInput({
     requestAnimationFrame(() => { const e2 = inputRef.current; if (e2) { e2.focus(); e2.setSelectionRange(next.caret, next.caret) } })
   }, [value, onChange])
   const chatMessages = useAppSelector(s => s.chat.messages)
-  const [manualHeight, setManualHeight] = useState<number | null>(() => {
+  /** The persisted drag-to-resize preference. Read `manualHeight` below instead —
+   *  this is the raw stored value and is not what the composer renders at. */
+  const [manualHeightPref, setManualHeight] = useState<number | null>(() => {
     const saved = localStorage.getItem(INPUT_HEIGHT_LS_KEY)
     const n = saved ? parseInt(saved, 10) : NaN
     return !isNaN(n) && n >= INPUT_MIN_H ? n : null
   })
+  /**
+   * Drag-to-resize is pointer-only, so on a touch device the composer always
+   * auto-sizes and the persisted preference is ignored outright.
+   *
+   * Nobody drags a phone's message box, and the affordance is not merely unused
+   * there — it is a trap. The handle is a 6px strip with `touch-action:none` and a
+   * zero-px drag threshold sitting directly above the input, so a thumb that lands
+   * short pins the height on the spot; and the only way back out is a
+   * double-click, which no finger can produce. One stray tap and the box was that
+   * size for good, across reloads.
+   *
+   * Derived rather than baked into the state's seed so a pointer-class change
+   * mid-session (a tablet gaining a trackpad) is honoured in both directions:
+   * the preference is never destroyed, only disregarded while there is no pointer
+   * to have set it. Every consumer below — the wrapper's height, the textarea's
+   * `flex-1`, the manual-resize floor, `applyHeight`'s bail — reads this and so
+   * follows automatically.
+   */
+  const isTouch = useIsTouchDevice()
+  const manualHeight = isTouch ? null : manualHeightPref
 
   // Drag-to-resize refs — resize wrapper div via direct DOM writes, commit on mouseup.
   // Resizing the wrapper (not the textarea) avoids layout thrashing: the textarea
@@ -1292,6 +1327,11 @@ function ChatInput({
   const dragging = useRef(false)
   const dragStartY = useRef(0)
   const dragStartH = useRef(0)
+  /** Mirrors `textareaParked` (defined with the voice-mode derivations, far below)
+   *  for the handlers declared above it. Assigned during render, like the other
+   *  prop/state mirrors in this file, so it is already current by the time any
+   *  effect or event handler reads it. */
+  const parkedRef = useRef(false)
 
   // Prompt history navigation: -1 = draft (not in history), else index into sentMessages.
   // Refs keep the handler stable across re-renders while preserving state between keystrokes.
@@ -1478,20 +1518,11 @@ function ChatInput({
     }
   }, [manualHeight, pendingFiles.length, pendingSessions.length])
 
-  // Auto-resize textarea to fit content
-  useEffect(() => {
-    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint)
-  }, [value, prefillHint, manualHeight])
-
-  // Keep the paste-highlight mirror's scroll aligned with the textarea after
-  // value/height changes (applyHeight mutates scrollTop programmatically, which
-  // doesn't fire the textarea's onScroll). rAF lets layout settle first.
-  useEffect(() => {
-    const id = requestAnimationFrame(() => {
-      if (mirrorRef.current && inputRef.current) mirrorRef.current.scrollTop = inputRef.current.scrollTop
-    })
-    return () => cancelAnimationFrame(id)
-  }, [value, prefillHint, manualHeight])
+  // The two effects that MEASURE the textarea (auto-size, and the paste-mirror
+  // scroll sync that reads the scrollTop auto-size just wrote) are declared much
+  // further down, immediately below `textareaParked` — they must not run while the
+  // textarea is clipped out of layout, and a dep can only name a variable already
+  // in scope. Do not move them back up here.
 
   // Reset manual height when input is cleared (new message sent)
   const prevValueRef = useRef(value)
@@ -1593,7 +1624,7 @@ function ChatInput({
   }, [value, autoFocusKey])
 
   const handleInput = useCallback((e: React.FormEvent<HTMLTextAreaElement>) => {
-    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint)
+    if (!dragging.current) applyHeight(e.target as HTMLTextAreaElement, manualHeight, prefillHint, parkedRef.current)
   }, [manualHeight, prefillHint])
 
   const setTextUndoable = useCallback((text: string) => {
@@ -2427,6 +2458,34 @@ function ChatInput({
    * pointer events, so the gesture cannot start from a bar that is switched off.
    */
   const voiceSettling = voiceHoldMode && touchPtt.bar === 'settling'
+  /**
+   * The textarea is PARKED: still mounted, but clipped out of layout by the
+   * `sr-only` box the hold bar and the dictation panel both put it in.
+   *
+   * Anything that measures the textarea has to ask this first — see `applyHeight`
+   * for what a 1px-wide measurement did to the composer's height. It also has to
+   * be a dep of those effects, so the height is recomputed on the way BACK: the
+   * value that was streamed in while parked is exactly the value whose height was
+   * never measurable.
+   */
+  const textareaParked = !!showDictation || voiceHoldMode
+  parkedRef.current = textareaParked
+
+  // Auto-resize textarea to fit content. Moved down here from the other composer
+  // effects so it can name `textareaParked` — see the note at that site.
+  useEffect(() => {
+    if (inputRef.current && !dragging.current) applyHeight(inputRef.current, manualHeight, prefillHint, textareaParked)
+  }, [value, prefillHint, manualHeight, textareaParked])
+
+  // Keep the paste-highlight mirror's scroll aligned with the textarea after
+  // value/height changes (applyHeight mutates scrollTop programmatically, which
+  // doesn't fire the textarea's onScroll). rAF lets layout settle first.
+  useEffect(() => {
+    const id = requestAnimationFrame(() => {
+      if (mirrorRef.current && inputRef.current) mirrorRef.current.scrollTop = inputRef.current.scrollTop
+    })
+    return () => cancelAnimationFrame(id)
+  }, [value, prefillHint, manualHeight, textareaParked])
   const toggleVoiceMode = useCallback(() => {
     setVoiceModePref(prev => {
       const next = !prev
@@ -2549,13 +2608,19 @@ function ChatInput({
           push it away from the box. */}
       {aboveComposer}
 
-      {/* Drag handle — always visible, sits above approval bar or input */}
+      {/* Drag handle — sits above approval bar or input, on pointer devices only */}
       {/* Pointer-drag resize handle for the message input (double-click resets).
           Resize is a pure visual enhancement — the textarea already auto-sizes to
           its content and there is no per-pixel keyboard resize gesture — so the
-          handle is aria-hidden and carries no interactive semantics. */}
-      {!showGhost && <div
+          handle is aria-hidden and carries no interactive semantics.
+
+          Absent under a finger, and its absence is the feature: the reset is a
+          double-click, so on touch the gesture could only ever pin the height, never
+          undo it. See `manualHeight` for why the persisted value is disregarded
+          there too. */}
+      {!showGhost && !isTouch && <div
         aria-hidden="true"
+        data-testid="composer-resize-handle"
         className="flex items-center justify-center h-[6px] cursor-row-resize group/drag"
         style={{ touchAction: 'none' }}
         {...inputResize}
