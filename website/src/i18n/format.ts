@@ -18,9 +18,13 @@
  * two are used side by side without ceremony: formatting happens inside
  * `.map()` callbacks, in comparator functions passed to `.sort()`, and in plain
  * helper modules with no component around them — all positions a hook cannot
- * legally go. A language switch remounts the tree (`<App>` is keyed on the
- * active language in `main.tsx`), so a function that reads the language at call
- * time re-evaluates on switch without subscribing to anything.
+ * legally go. A language switch repaints the tree (`LanguageProvider` re-renders
+ * via `cloneElement` after the catalog swap — an update, not a remount), so a
+ * function that reads the language at call time re-evaluates on switch without
+ * subscribing to anything. The one shape that repaint cannot reach is a
+ * `React.memo` boundary, whose props-equality bailout swallows it —
+ * `MemoI18nSubscriptionRatchet.test.ts` pins the subscription every such
+ * boundary needs.
  *
  * ## Why `localeMatcher: 'lookup'`
  *
