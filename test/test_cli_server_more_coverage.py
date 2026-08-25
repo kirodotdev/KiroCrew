@@ -1232,6 +1232,121 @@ class TestUpdateGitPath:
         assert "Agent config refresh failed" in out
 
 
+class TestUpdateSubprocessHardening:
+    """The six ``subprocess.run`` calls in ``_update()`` (issue #5648).
+
+    Two gap classes: (a) every captured-output call must also pass
+    ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
+    the parent terminal; (b) ``TimeoutExpired`` — which ``subprocess.run``
+    RAISES rather than returns — must land on the same branch that the site's
+    existing failure path already takes, never escape ``_update()``.
+    """
+
+    @staticmethod
+    def _timeout_on(prefix, inner):
+        """A subprocess.run stand-in raising TimeoutExpired for one argv prefix."""
+
+        def _run(argv, **kw):
+            if list(argv[: len(prefix)]) == list(prefix):
+                raise subprocess.TimeoutExpired(cmd=argv, timeout=kw.get("timeout", 0))
+            return inner(argv, **kw)
+
+        return _run
+
+    def test_all_six_calls_pass_stdin_devnull(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Gap class (a): assert on the kwargs actually passed to subprocess.run."""
+        stub = _GitStub()
+        recorded: list[tuple[list[str], dict]] = []
+
+        def _run(argv, **kw):
+            recorded.append((list(argv), kw))
+            return stub(argv, **kw)
+
+        monkeypatch.setattr(subprocess, "run", _run)
+        # A findable kiro-cli makes the sixth (best-effort) site reachable.
+        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        cli_server._update()
+        assert "Kiro Crew updated!" in capsys.readouterr().out
+
+        six = [
+            ["git", "rev-parse"],
+            ["git", "fetch"],
+            ["git", "diff"],
+            ["git", "status"],
+            ["git", "reset"],
+            ["kiro-cli", "update"],
+        ]
+        for prefix in six:
+            matching = [kw for argv, kw in recorded if argv[: len(prefix)] == prefix]
+            assert matching, f"call {prefix} never ran"
+            for kw in matching:
+                assert (
+                    kw.get("stdin") is subprocess.DEVNULL
+                ), f"{prefix} ran without stdin=DEVNULL"
+
+    def test_fetch_timeout_takes_the_existing_failure_branch(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Gap class (b), exit-1 sites: a timeout must not traceback out.
+
+        RED-BEFORE: on unmodified main this raises TimeoutExpired straight
+        through ``kirocrew update`` instead of the SystemExit(1) the fetch
+        failure path already defines.
+        """
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["git", "fetch"], _GitStub())
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert "git fetch timed out" in capsys.readouterr().out
+
+    def test_diff_timeout_proceeds_like_a_nonzero_exit(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """A diff timeout takes the branch a non-zero exit already takes —
+        proceed to the divergence guard — rather than tracing back or lying
+        "up to date"."""
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", self._timeout_on(["git", "diff"], stub))
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert "git diff timed out" in out
+        # The update still completed through the guard + reset path.
+        assert "Kiro Crew updated!" in out
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_status_timeout_refuses_the_reset(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The status call guards the hard reset's data discard: an unreadable
+        answer fails closed, mirroring the unreadable-divergence guard."""
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", self._timeout_on(["git", "status"], stub))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert "git status timed out" in capsys.readouterr().out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_kiro_cli_update_timeout_degrades_best_effort(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The backend update's result is not inspected today, so its timeout
+        warns and the update continues — the #5637 handler shape."""
+        stub = _GitStub()
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub)
+        )
+        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        cli_server._update()
+        out = capsys.readouterr().out
+        assert "kiro-cli update timed out" in out
+        assert "Kiro Crew updated!" in out
+
+
 class TestUpdateWheelDispatch:
     """No git checkout means the wheel path gets a correctly shaped layout."""
 
