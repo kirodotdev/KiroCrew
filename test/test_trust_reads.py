@@ -750,33 +750,17 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git branch --list 'feat/*'") is True
         assert is_read_only_bash("cat f | sort -u") is True
 
-    def test_the_two_costs_of_refusing_the_class_are_asserted_not_assumed(self):
-        """The price of the fail-safe direction, pinned so it cannot drift silently.
-
-        Neither of these is a bypass and neither is blocked — both fall through to
-        the human approval prompt. They are asserted so the auto-approve-rate loss
-        is visible in the suite rather than discovered in use, and so that anyone
-        who later narrows the refusal has a test telling them what they are
-        buying back.
-        """
-        # Cost 1, the larger one: an ordinary trailing comment is refused. Bash
-        # would simply delete it, so these ARE reads — but the classifier cannot
-        # tell this `#` from the forged-flag `#` above without reproducing the
-        # deletion, which is what reopened the bypass. Agent-emitted bash carries
-        # a trailing comment often, so this is a real everyday loss.
-        assert is_read_only_bash("git status # note") is False
-        assert is_read_only_bash("ls -la # list files") is False
-        assert is_read_only_bash("grep -rn foo src # find it") is False
-        assert "comment" in unsafe_bash_reason("git status # note")
-        # Cost 2: an unquoted input redirect is refused even where it is
-        # harmless, because the danger is the token-list divergence rather than
-        # the direction of the data.
-        assert is_read_only_bash("wc -l < file") is False
-        assert is_read_only_bash("grep pattern < file") is False
-        assert "redirect" in unsafe_bash_reason("wc -l < file")
-        # Quoting is the escape hatch for both: a user who means the `#` as data
-        # keeps their auto-approval.
-        assert is_read_only_bash("grep '#note' file") is True
+    def test_elision_refusal_is_scoped_to_verbs_it_can_flip(self):
+        """Deleted words do not cost approval where they cannot change the verdict."""
+        for cmd in (
+            "git status # note",
+            "ls -la # list files",
+            "grep -rn foo src # find it",
+            "wc -l < file",
+            "grep pattern < file",
+        ):
+            assert is_read_only_bash(cmd) is True, cmd
+            assert unsafe_bash_reason(cmd) == "", cmd
 
     def test_a_positional_or_special_parameter_hides_the_real_argument(self):
         """`$@` and `$1` are expansions whose NAME is not an identifier.

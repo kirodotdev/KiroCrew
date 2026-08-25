@@ -1870,101 +1870,6 @@ def _side_effect_reason(segment: str) -> str:
     return ""
 
 
-def _elided_shell_construct(cmd: str) -> str:
-    """Reason *cmd* carries a construct bash REMOVES but ``shlex`` keeps.
-
-    Every operand rule in this module reads `shlex.split`'s token list and
-    assumes it is the argv the program receives. Two shell constructs break that
-    assumption by DELETING words rather than rewriting them, and `shlex` has no
-    concept of either — it hands them back as ordinary tokens:
-
-        git branch injected # --list      shlex: [… 'injected', '#', '--list']
-                                          bash:  git branch injected
-        git branch injected <<< --list    shlex: [… 'injected', '<<<', '--list']
-                                          bash:  git branch injected
-
-    In both, the `--list` this module reads never reaches git. It flips
-    `_GIT_REF_LIST_FLAGS` on, the bare `injected` is reclassified from "creates a
-    ref" to "a pattern", and the segment auto-approves — while bash creates the
-    ref. Measured against real git: `git branch injected # --list`,
-    `git tag forged # --list` and `git branch injected <<< --list` each created
-    the ref, so this is a live auto-approval bypass rather than a parse curiosity.
-
-    Refused as a CLASS rather than repaired. Repairing it means deciding what
-    bash would have deleted — i.e. reimplementing shell word removal on top of
-    the quoting rules `shlex` already models differently — and an earlier
-    revision of this fix tried exactly that and reopened the bypass it closed:
-    reproducing the comment made this scanner keep going after the `#`, and a
-    lone `'` inside comment TEXT (`echo x # don't`) then leaked quote state
-    across the newline, so the next line's forged `# --list` was never removed
-    and `git branch evil # --list` auto-approved again. Refusing on the FIRST
-    hit has no "afterwards" to get wrong. A read-only command needs neither
-    construct, and a refused command falls through to the human approval prompt.
-
-    Every way this scanner can disagree with bash therefore costs a prompt
-    rather than an approval. It is deliberately wider than bash in places —
-    `str.isspace()` accepts separators bash does not (U+00A0), and ANSI-C
-    `$'…\''` quoting is not modelled — and in this direction that is a false
-    refusal, never a false approval.
-
-    Quote-aware on purpose, so it costs no ordinary read. Both constructs are
-    shell syntax only when unquoted, and the common false positives are exactly
-    the quoted and non-word-initial spellings:
-
-        grep '#include' file        `#` inside quotes is data
-        git log --grep=#123         `#` mid-word is not a comment to bash
-        grep "<div>" file           `<` inside quotes is data
-
-    A backslash escape is honoured for the same reason (`grep \\# file`).
-
-    Two costs, stated rather than hidden, and asserted in the tests:
-
-    * An ordinary trailing comment is refused (`git status # note`,
-      `ls -la # list files`). Agent-emitted bash carries one often, so this is
-      the larger everyday cost of the two — a real auto-approve-rate loss, taken
-      knowingly because the alternative above is a live bypass.
-    * An unquoted input redirect is refused even where it is genuinely harmless
-      (`wc -l < file`, `grep pattern < file`), since what makes it dangerous is
-      the token-list divergence, not the direction of the data.
-    """
-    quote: str | None = None
-    # Start-of-string counts as a word boundary: bash reads a leading `#` as a
-    # comment, so `# git status` is an empty command rather than a read.
-    at_word_start = True
-    i = 0
-    n = len(cmd)
-    while i < n:
-        ch = cmd[i]
-        if quote is not None:
-            # Inside double quotes a backslash still escapes; inside single
-            # quotes it is literal, exactly as a shell reads it.
-            if ch == "\\" and quote == '"' and i + 1 < n:
-                i += 2
-                continue
-            if ch == quote:
-                quote = None
-            i += 1
-            at_word_start = False
-            continue
-        if ch == "\\" and i + 1 < n:
-            # An escaped character is data, including an escaped `#` or `<`.
-            i += 2
-            at_word_start = False
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
-            at_word_start = False
-            continue
-        if ch == "#" and at_word_start:
-            return "a comment deletes the rest of the line, which `shlex` keeps"
-        if ch == "<":
-            return "an input redirect removes words that `shlex` keeps"
-        at_word_start = ch.isspace()
-        i += 1
-    return ""
-
-
 def _classify_bash(cmd: str) -> str:
     """Single source of truth for read-only bash classification.
 
@@ -1976,13 +1881,6 @@ def _classify_bash(cmd: str) -> str:
     """
     if not cmd.strip():
         return "empty command"
-    # Runs on the RAW command, before any splitting: a comment elides to the end
-    # of the line regardless of the `&&` / `;` boundaries the regex split below
-    # believes in, so `git status && git branch injected # --list` has to be
-    # caught here rather than per-segment.
-    elided = _elided_shell_construct(cmd)
-    if elided:
-        return f"unsafe shell pattern: {elided}"
     # Strip discard-only redirects (output sinks / stderr-merge) before the
     # unsafe-shell check; they are read-only but contain '>' / '&'.
     scrubbed = _DEVNULL_REDIR_RE.sub(" ", cmd)

@@ -3965,7 +3965,7 @@
         "co_author_conflict": "सह-लेखक ने यह फ़ाइल बदली",
         "co_author_conflict_discard": "मेरे बदलाव छोड़ें और फिर लोड करें",
         "co_author_conflict_discard_button": "बदलाव छोड़ें",
-        "co_author_conflict_discard_confirm": "“{{file}}” में आपके सहेजे न गए बदलाव छोड़कर सह-लेखक का संस्करण लोड किया जाएगा। इसे पूर्ववत नहीं किया जा सकता।",
+        "co_author_conflict_discard_confirm": "“{{file}}” में तुम्हारे सहेजे न गए बदलाव छोड़कर सह-लेखक का संस्करण लोड किया जाएगा। इसे पूर्ववत नहीं किया जा सकता।",
         "co_author_conflict_discard_title": "सहेजे न गए बदलाव छोड़ें?",
         "commit_and_push": "कमिट करें और पुश करें",
         "commit_message_prompt": "इस कमिट का वर्णन करें। इसमें पेपर के सभी बदलाव शामिल होंगे।",
@@ -4453,7 +4453,7 @@
     "commandBar": {
       "action_ask": "पूंरें",
       "ask_agent": "ऐजेंट से पूंरें: “{{query}}”",
-      "group_attention": "आपकी ज़रूरत है",
+      "group_attention": "तुम्हारी ज़रूरत है",
       "action_enter": "व्यू खोलें",
       "action_open": "खोलें",
       "action_open_app": "ऐप पेज खोलें",

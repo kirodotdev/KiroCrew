@@ -502,7 +502,7 @@ class TestWindowsCliStore:
         usage_body = {"usageBreakdownList": [
             {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 100.0}]}
 
-        def fake_post(token, target, payload):
+        def fake_post(token, target, payload, **_kwargs):
             if target == api._TARGET_LIST_PROFILES:
                 return _resp(200, {"profiles": []})
             return _resp(200, usage_body)
