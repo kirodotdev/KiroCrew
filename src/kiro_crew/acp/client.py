@@ -109,6 +109,9 @@ from kiro_crew.acp.types import (
     TurnUsage,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.browser_cli.launch import SESSION_ENV as BROWSER_SESSION_ENV
+from kiro_crew.browser_cli.launch import browser_session_env
+from kiro_crew.browser_cli.reap import record_session as record_browser_session
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import (
     COMPACT_WAIT_TIMEOUT_SECS,
@@ -2104,6 +2107,9 @@ class AcpClient:
         self._audit_source = audit_source
         self._channel_id = channel_id
         self._extra_env = extra_env or {}
+        # Set at spawn from the child's own env; the anchor the browser sweep
+        # keys on. Empty until then, and when an operator named the session.
+        self._browser_session = ""
         # MCP gateway overlay: when set, the broker stubs in its rewritten specs
         # are injected into this session at ACP session/new, where they outrank
         # the same-named entries in the agent spec. Nothing is written to the
@@ -2814,6 +2820,11 @@ class AcpClient:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Own browser session per agent process: the CLI resolves a nameless
+        # command to one shared ``default`` browser, so without this two agents
+        # navigate and close each other's pages (see browser_session_env).
+        env.update(browser_session_env(env))
+        self._browser_session = env.get(BROWSER_SESSION_ENV, "")
         # Per-process scratch containment (#5063) -- see acp/runtime.py's
         # twin block. Allocated off-loop, fail-open; owner recorded after
         # spawn; reclamation is liveness-keyed, never age-keyed.
@@ -2891,6 +2902,14 @@ class AcpClient:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
                 functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+            )
+        if self._browser_session:
+            # Liveness anchor for the browser sweep, on the same doctrine as the
+            # scratch owner above: a browser outlives the command that opened it,
+            # so a recycled process would leave a Chromium nothing addresses.
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(record_browser_session, self._browser_session, self._pid),
             )
         logger.info("Spawned %s (PID %d)", _spawn_label, self._pid)
         # Track root PID and do an early descendant scan.  kiro-cli forks

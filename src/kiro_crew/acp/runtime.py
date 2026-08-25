@@ -92,6 +92,9 @@ from kiro_crew.acp.types import (
     JsonRpcRequest,
 )
 from kiro_crew.agent import ensure_agent_materialized
+from kiro_crew.browser_cli.launch import SESSION_ENV as BROWSER_SESSION_ENV
+from kiro_crew.browser_cli.launch import browser_session_env
+from kiro_crew.browser_cli.reap import record_session as record_browser_session
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.env import augmented_path, resolve_krb5_ccname
@@ -648,6 +651,9 @@ class AcpRuntime:
         self._model = model
         self._sandbox_mode = sandbox_mode
         self._extra_env = extra_env or {}
+        # Set at spawn from the child's own env; the anchor the browser sweep
+        # keys on. Empty until then, and when an operator named the session.
+        self._browser_session = ""
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_settings_mcp_json = (
             str(mcp_gateway_settings_mcp_json) if mcp_gateway_settings_mcp_json else None
@@ -1045,6 +1051,11 @@ class AcpRuntime:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Own browser session per agent process, matching AcpClient._spawn: a
+        # subagent driving the browser must not land in the parent's page (see
+        # browser_session_env).
+        env.update(browser_session_env(env))
+        self._browser_session = env.get(BROWSER_SESSION_ENV, "")
         # Per-process scratch containment (#5063): the agent's temp AND its
         # prompt-guided work products land in an owned directory instead of
         # the shared system temp dir. Allocated off-loop (mkdir + config read)
@@ -1119,6 +1130,13 @@ class AcpRuntime:
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(),
                 functools.partial(agent_scratch.record_owner, self._scratch_dir, self._pid),
+            )
+        if self._browser_session:
+            # Same doctrine for the browser this process may open: recorded here,
+            # released by the sweep once this pid's group is gone.
+            await asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(),
+                functools.partial(record_browser_session, self._browser_session, self._pid),
             )
         logger.info(
             "AcpRuntime spawned backend=%s agent=%s (PID %d)",

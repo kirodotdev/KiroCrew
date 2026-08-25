@@ -70,7 +70,11 @@ class TestOperatorConfigIsNotOurs:
         #                writes, reads, or supersedes the operator's
         #                .playwright/cli.config.json; see
         #                test_the_operator_config_path_is_never_written.
-        sanctioned = {"token.py", "launch.py"}
+        #   reap.py   -- persists ``browser session name -> owner pid`` under the
+        #                data home. Liveness-keyed reclamation cannot work from
+        #                memory alone: the gateway that has to release a browser
+        #                is usually a LATER process than the one that opened it.
+        sanctioned = {"token.py", "launch.py", "reap.py"}
         pkg = Path(install.__file__).parent
         writes = []
         for source in sorted(pkg.glob("*.py")):
@@ -88,6 +92,9 @@ class TestOperatorConfigIsNotOurs:
         # browser channel, which Kiro Crew does not install.
         assert any(w.startswith("token.py:") for w in writes), "token.py must persist the token"
         assert any(w.startswith("launch.py:") for w in writes), "launch.py must write the config"
+        # A registry that stopped being written would silently stop every browser
+        # reclamation: the sweep would find nothing to check liveness against.
+        assert any(w.startswith("reap.py:") for w in writes), "reap.py must record its owners"
 
     def test_the_operator_config_path_is_never_written(self, home: Path):
         """Ours goes under the data home, never at the CLI's discovered path."""

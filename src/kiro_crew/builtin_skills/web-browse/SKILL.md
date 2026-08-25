@@ -109,23 +109,34 @@ gesture. That makes judgement, not permission, the thing to get right:
 - `localhost` is exempt from all of the above. A dev server holds no third-party
   session, so it is ordinary.
 
-## `attach` binds a named session, and every later command needs it
+## Your session owns its browser, and `attach` binds to it
 
-`playwright-cli attach --extension=chrome` reports `Session \`chrome\` created` and
-binds that name. A bare command afterwards addresses the `default` session instead
-and answers:
+Kiro Crew gives every agent process its own `PLAYWRIGHT_CLI_SESSION`, so a command
+with no `-s=` reaches YOUR browser, never a `default` shared with other chats. You
+do not need `-s=` to isolate yourself, and you do not need to remember a name.
 
-```
-The browser 'default' is not open, please run open first
-```
-
-That message is about the wrong session, not about a failed attach, and re-attaching
-in response to it is the trap. Carry the session on every subsequent command:
+`playwright-cli attach --extension=chrome` therefore binds your session's name, not
+`chrome`. Keep using bare commands afterwards:
 
 ```bash
-playwright-cli --s=chrome tab-list
-playwright-cli --s=chrome snapshot
+playwright-cli tab-list
+playwright-cli snapshot
 ```
+
+A hand-written `--s=chrome` after that attach answers
+
+```
+The browser 'chrome' is not open, please run open first
+```
+
+because the attached browser is under your session's own name. That message is
+about the wrong session, not a failed attach — re-attaching in response to it is
+the trap. Pass `-s=<name>` only when you deliberately want a SECOND browser
+alongside your own, and then pass the same name to every command including the
+`attach` or `open` that created it.
+
+`playwright-cli list` shows every browser on the machine, including other
+sessions'. Only close one you opened.
 
 Never `close` an attached session: it closes the windows the user is working in.
 Leave the connection open instead, which costs them nothing.
@@ -136,8 +147,8 @@ Leave the connection open instead, which costs them nothing.
    conversation; the user does not have to paste it. `file:`, `data:`, and
    `javascript:` are not view targets.
 2. Call `browser(op="navigate", args={"url": "<url>"})`. Only if it reports no
-   native panel, fall back to `playwright-cli open <url>` (add `-s=<name>` for its
-   own session).
+   native panel, fall back to a bare `playwright-cli open <url>` — your session
+   already has its own browser, so no `-s=` is needed.
 3. Tell the user it is showing in the Browser panel, in one line.
 4. Do not screenshot to "prove" it opened. The user is watching the live view.
 

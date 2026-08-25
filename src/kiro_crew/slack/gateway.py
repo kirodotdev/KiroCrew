@@ -56,6 +56,7 @@ from kiro_crew.autonudge import (
     runtime_budget_exceeded,
 )
 from kiro_crew.beacon import distribution
+from kiro_crew.browser_cli import reap as browser_cli_reap
 from kiro_crew.channel_history import ChannelHistory
 from kiro_crew.channels import builtin_channel_descriptors
 from kiro_crew.config import KiroCrewConfig
@@ -10401,6 +10402,12 @@ async def run_gateway(
                     await asyncio.to_thread(agent_scratch.sweep_dead_scratch)
                 except Exception:
                     logging.getLogger(__name__).debug("agent-scratch sweep failed", exc_info=True)
+                try:
+                    # Same cadence and same liveness rule, for the browser a
+                    # recycled process may have left open (browser_cli.reap).
+                    await asyncio.to_thread(browser_cli_reap.sweep_dead_sessions)
+                except Exception:
+                    logging.getLogger(__name__).debug("browser-reap sweep failed", exc_info=True)
 
         _AGENT_SCRATCH_SWEEP_TASK = asyncio.create_task(
             _run_agent_scratch_sweep(), name="agent-scratch-sweep"

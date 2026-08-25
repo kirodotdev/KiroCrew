@@ -2546,10 +2546,11 @@ _BROWSER_CLI_BARE_ONLY_VERBS = frozenset({"video-start"})
 _BROWSER_CLI_SAFE_FLAGS = frozenset(
     {
         # MEASURED against the installed CLI: `-s=`, `--s=` and `--session=`
-        # are all accepted and all name the same session. Only `-s` was listed,
-        # so the named-session form this repo's own prompt.md tells the agent to
-        # use (`--s=chrome`) fell through to interactive approval on EVERY
-        # command after `attach` -- the documented primary workflow.
+        # are all accepted and all name the same session. All three spellings
+        # belong here because a command that deliberately addresses a SECOND
+        # browser alongside the session's own carries one of them on every call,
+        # and a spelling missing from this set costs an interactive approval per
+        # command.
         "-s",
         "--s",
         "--session",

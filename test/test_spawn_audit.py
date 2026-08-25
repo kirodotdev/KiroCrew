@@ -735,6 +735,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         #   * ``view.py::_spawn`` runs ``playwright-cli show --port <n>`` where
         #     the port comes from our own bind probe, and the host is the
         #     hardcoded loopback constant.
+        #   * ``reap.py::_cli_json`` / ``reap.py::_release`` run
+        #     ``playwright-cli list --json`` and ``playwright-cli -s=<name>
+        #     close|detach`` to release a browser whose owner process is gone.
+        #     Every token is ours: the verb is one of two constants and the name
+        #     comes from our own generated ``kc-`` registry, never from the agent
+        #     (a name the agent could choose is refused by the ``kc-`` prefix
+        #     gate in ``record_session``, so it is never in the registry to
+        #     begin with).
         # ``view.py::stop`` spawns nothing: it reaps its own child's process
         # group rather than issuing a global ``show --kill``, which would take
         # an operator's independent session down with ours.
@@ -742,6 +750,8 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # runs them as ordinary shell tool calls, which the approval path gates
         # (see chat_runner._is_browser_cli_command).
         "browser_cli/install.py::_run",
+        "browser_cli/reap.py::_cli_json",
+        "browser_cli/reap.py::_release",
         "browser_cli/view.py::_spawn",
         "cli.py::_consolidate_cmd",
         "cli.py::_ensure_node",

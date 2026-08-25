@@ -291,10 +291,9 @@ def test_route_list_stays_approved():
 def test_every_session_flag_spelling_the_cli_accepts_is_approved():
     """MEASURED against the installed CLI: all three name the same session.
 
-    Only `-s` was listed at first, so `--s=chrome` -- the form this repo's own
-    prompt.md tells the agent to use after `attach` -- fell through to
-    interactive approval on every subsequent command, defeating auto-approval
-    for its documented primary workflow.
+    A command addressing a second browser alongside the session's own carries a
+    session flag on every call, so a spelling absent from the safe set costs an
+    interactive approval per command rather than once.
     """
     for command in (
         "playwright-cli -s=chrome tab-list",
