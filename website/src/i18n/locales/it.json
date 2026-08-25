@@ -5901,8 +5901,6 @@
       "toggle_word_wrap": "Attiva/disattiva il ritorno a capo automatico",
       "tracking_description": "Monitoraggio di {{path}}",
       "unsaved_changes": "Modifiche non salvate",
-      "view_preview": "Vedi l'anteprima",
-      "view_source": "Vedi il sorgente",
       "word_wrap": "Ritorno a capo automatico"
     },
     "markdownRenderer": {

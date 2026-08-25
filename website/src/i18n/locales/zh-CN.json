@@ -5735,8 +5735,6 @@
       "toggle_word_wrap": "切换自动换行",
       "tracking_description": "正在跟踪 {{path}}",
       "unsaved_changes": "未保存的更改",
-      "view_preview": "查看预览",
-      "view_source": "查看源码",
       "word_wrap": "自动换行"
     },
     "markdownRenderer": {

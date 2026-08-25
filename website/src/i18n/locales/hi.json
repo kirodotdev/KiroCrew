@@ -5818,8 +5818,6 @@
       "toggle_word_wrap": "वर्ड रैप टॉगल करें",
       "tracking_description": "{{path}} को ट्रैक किया जा रहा है",
       "unsaved_changes": "बिना सहेजे बदलाव",
-      "view_preview": "प्रीव्यू देखें",
-      "view_source": "सोर्स देखें",
       "word_wrap": "वर्ड रैप"
     },
     "markdownRenderer": {

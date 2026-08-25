@@ -5818,8 +5818,6 @@
       "toggle_word_wrap": "Zeilenumbruch umschalten",
       "tracking_description": "Verfolgt {{path}}",
       "unsaved_changes": "Nicht gespeicherte Änderungen",
-      "view_preview": "Vorschau anzeigen",
-      "view_source": "Quelltext anzeigen",
       "word_wrap": "Zeilenumbruch"
     },
     "markdownRenderer": {

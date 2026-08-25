@@ -5901,8 +5901,6 @@
       "toggle_word_wrap": "Alternar quebra de linha",
       "tracking_description": "Acompanhando {{path}}",
       "unsaved_changes": "Alterações não salvas",
-      "view_preview": "Ver prévia",
-      "view_source": "Ver código-fonte",
       "word_wrap": "Quebra de linha"
     },
     "markdownRenderer": {

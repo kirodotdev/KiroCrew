@@ -1827,9 +1827,7 @@
       "snapshotting": "Snapshotting…",
       "split_view": "Split view",
       "toggle_file_browser": "Toggle file browser",
-      "tracking_description": "Tracking {{path}}",
-      "view_preview": "View Preview",
-      "view_source": "View Source"
+      "tracking_description": "Tracking {{path}}"
     },
     "markdownRenderer": {
       "click_to_browse_shift_click_to_open_in_file_explorer": "Click to browse / Shift+click to open in File Explorer",

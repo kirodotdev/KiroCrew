@@ -834,7 +834,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const qc = useQueryClient()
   // Code files (non-rich, non-markdown) have no meaningful preview — their
   // "preview" was just a read-only render of the same text. They open
-  // straight in source mode and the View Preview toggle is hidden for them.
+  // straight in source mode and the Edit/Preview toggle is hidden for them.
   //
   // A requested line forces source mode: a line number only means something
   // against the source, and the rendered markdown preview has no per-line element
@@ -1655,7 +1655,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         /* Single-bar toolbar: the tab chip owns
            identity + close, so this bar carries a static breadcrumb + dirty
            dot + diff stats on the left, and library actions (star /
-           knowledge), View Source/Preview toggle, diff toggle, and the ⋯
+           knowledge), Edit/Preview toggle, diff toggle, and the ⋯
            overflow on the right. In source mode a second row pops down
            (grid-rows transition — compositor-friendly in Electron, unlike
            height auto) with the editor options and Save / Cancel so the
@@ -1690,7 +1690,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
                 className="px-2.5 h-[26px] rounded-md text-[11.5px] font-medium text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none cursor-pointer transition-colors shrink-0"
                 onClick={() => setEditing(!editing)}
                 aria-pressed={editing}
-              >{editing ? i18nT('components.markdownPanel.view_preview') : i18nT('components.markdownPanel.view_source')}</button>
+              >{editing ? i18nT('components.markdownPanel.preview') : i18nT('components.markdownPanel.edit')}</button>
             )}
             {!isRichType && (
               <button className={barIconBtn(diffMode)} onClick={toggleDiffMode} title={i18nT('components.markdownPanel.toggle_diff_view')} aria-label={i18nT('components.markdownPanel.toggle_diff_view')} aria-pressed={diffMode}><FileDiff size={14} /></button>

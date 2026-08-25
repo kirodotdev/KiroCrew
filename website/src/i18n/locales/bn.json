@@ -5818,8 +5818,6 @@
       "toggle_word_wrap": "ওয়ার্ড র‍্যাপ চালু/বন্ধ করুন",
       "tracking_description": "{{path}} ট্র্যাক করা হচ্ছে",
       "unsaved_changes": "অসংরক্ষিত পরিবর্তন",
-      "view_preview": "প্রিভিউ দেখো",
-      "view_source": "সোর্স দেখো",
       "word_wrap": "ওয়ার্ড র‍্যাপ"
     },
     "markdownRenderer": {

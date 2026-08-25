@@ -5901,8 +5901,6 @@
       "toggle_word_wrap": "Activar o desactivar el ajuste de línea",
       "tracking_description": "Siguiendo {{path}}",
       "unsaved_changes": "Cambios sin guardar",
-      "view_preview": "Ver la vista previa",
-      "view_source": "Ver el código fuente",
       "word_wrap": "Ajuste de línea"
     },
     "markdownRenderer": {

@@ -5901,8 +5901,6 @@
       "toggle_word_wrap": "Activer/désactiver le retour à la ligne",
       "tracking_description": "Suivi de {{path}}",
       "unsaved_changes": "Modifications non enregistrées",
-      "view_preview": "Voir l’aperçu",
-      "view_source": "Voir la source",
       "word_wrap": "Retour à la ligne"
     },
     "markdownRenderer": {

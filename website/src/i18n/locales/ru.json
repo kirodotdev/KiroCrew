@@ -5984,8 +5984,6 @@
       "toggle_word_wrap": "Включить/выключить перенос строк",
       "tracking_description": "Отслеживание {{path}}",
       "unsaved_changes": "Несохранённые изменения",
-      "view_preview": "Показать просмотр",
-      "view_source": "Показать исходный текст",
       "word_wrap": "Перенос строк"
     },
     "markdownRenderer": {

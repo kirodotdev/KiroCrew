@@ -5735,8 +5735,6 @@
       "toggle_word_wrap": "ワードラップを切り替え",
       "tracking_description": "{{path}} を追跡中",
       "unsaved_changes": "保存されていない変更",
-      "view_preview": "プレビューを表示",
-      "view_source": "ソースを表示",
       "word_wrap": "ワードラップ"
     },
     "markdownRenderer": {
