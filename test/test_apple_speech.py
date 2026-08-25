@@ -14,6 +14,7 @@ import json
 import os
 import platform
 import sys
+import threading
 from contextlib import ExitStack
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -130,10 +131,17 @@ class TestHelperBuild:
 
         The backend probe runs `sandbox-exec` on macOS (measured 17.7ms cold, 0.3ms
         cached) and all three call sites are `async`. Keeping the probe out of
-        `availability()` was necessary but NOT sufficient. Pinned at the source level
-        so a new async call site that forgets `asyncio.to_thread` fails here instead
-        of stalling the gateway's loop in production.
+        `availability()` was necessary but NOT sufficient. Every async caller must
+        route through `_sandboxed_off_loop`, which owns both halves of the
+        invariant: the worker-thread hop (loop safety) and the shield around it
+        (a cancelled awaiter can still recover and drop the launcher the thread
+        made). Pinned at the source level so a new async call site that reaches
+        `_sandboxed` any other way fails here instead of stalling the gateway's
+        loop — or leaking one launcher per cancelled call — in production.
         """
+        hop = inspect.getsource(apple_speech._sandboxed_off_loop)
+        assert "to_thread" in hop, "the hop must stay off the event loop"
+        assert "shield" in hop, "the hop must stay recoverable under cancellation"
         for fn in (
             apple_speech.transcribe,
             apple_speech.inventory,
@@ -142,10 +150,10 @@ class TestHelperBuild:
             body = inspect.getsource(fn)
             if "_sandboxed" not in body:
                 continue
-            assert "to_thread" in body, fn.__name__
+            assert "_sandboxed_off_loop(" in body, fn.__name__
             for line in body.splitlines():
                 stripped = line.strip()
-                if "_sandboxed(" in stripped and "to_thread" not in stripped:
+                if "_sandboxed(" in stripped:
                     raise AssertionError(f"{fn.__name__} calls _sandboxed inline: {stripped}")
 
     def test_every_helper_execution_is_sandboxed(self):
@@ -919,6 +927,163 @@ class TestSandboxCleanupPathIsDropped:
             problem = await session.start()
         assert problem == "streaming helper did not become ready"
         assert created and not any(f.exists() for f in created)
+
+
+class TestSandboxCancellationWindows:
+    """Cancellation around the launcher lifecycle must not orphan the temp.
+
+    `asyncio.CancelledError` is a `BaseException`, so the `except Exception` /
+    `except OSError` paths that own the unlink never see it. Two window shapes
+    are pinned here, at each await point: (1) cancellation DURING the
+    worker-thread `_sandboxed` hop — the thread still creates the launcher, but
+    the returned tuple is never bound, so no `finally` and no session field can
+    ever reach it; (2) `StreamingSession.start()` cancelled AFTER the tuple is
+    bound (mid-spawn, or anywhere in the readiness wait). The caller-side
+    guarantee at the `await session.start()` call site is pinned in
+    test_stt_stream.py.
+    """
+
+    @staticmethod
+    def _availability_ok():
+        return patch.object(
+            apple_speech, "availability", return_value=apple_speech.Availability(True)
+        )
+
+    @staticmethod
+    def _blocking_sandbox(tmp_path):
+        """A `_sandboxed` stub that parks the worker thread until released.
+
+        Reproduces the race deterministically: the awaiting coroutine is
+        cancelled while the thread is still inside `sandboxed_spawn_argv`, and
+        the launcher only comes into being AFTER the cancellation landed.
+        """
+        entered = threading.Event()
+        release = threading.Event()
+        created: list = []
+
+        def _fake(argv):
+            entered.set()
+            assert release.wait(timeout=10), "test never released the worker thread"
+            launcher = tmp_path / f"sb-launcher-{len(created)}"
+            launcher.write_text("# fake sandbox launcher/profile")
+            created.append(launcher)
+            return argv, {}, str(launcher)
+
+        patcher = patch.object(apple_speech, "_sandboxed", side_effect=_fake)
+        return patcher, entered, release, created
+
+    @staticmethod
+    async def _cancel_during_hop(task, entered, release):
+        """Cancel *task* while the worker thread is parked inside `_sandboxed`.
+
+        The thread entering the stub implies the awaiter is already suspended at
+        the shielded hop: the executor submission happens inside the inner task,
+        which only runs once the awaiting coroutine has yielded.
+        """
+        await asyncio.to_thread(entered.wait, 10)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_transcribe_cancelled_in_sandbox_hop_drops_launcher(self, tmp_path):
+        sandbox_patch, entered, release, created = self._blocking_sandbox(tmp_path)
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            sandbox_patch,
+        ):
+            task = asyncio.create_task(apple_speech.transcribe("/tmp/x.wav"))
+            await self._cancel_during_hop(task, entered, release)
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_inventory_cancelled_in_sandbox_hop_drops_launcher(self, tmp_path):
+        sandbox_patch, entered, release, created = self._blocking_sandbox(tmp_path)
+        with (
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            sandbox_patch,
+        ):
+            task = asyncio.create_task(apple_speech.inventory())
+            await self._cancel_during_hop(task, entered, release)
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_cancelled_in_sandbox_hop_drops_launcher(self, tmp_path):
+        sandbox_patch, entered, release, created = self._blocking_sandbox(tmp_path)
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            sandbox_patch,
+        ):
+            task = asyncio.create_task(session.start())
+            await self._cancel_during_hop(task, entered, release)
+        assert created and not any(f.exists() for f in created)
+        assert session._sb_cleanup is None
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_cancelled_mid_spawn_drops_launcher(self, tmp_path):
+        """After the tuple is bound, a cancelled spawn must still drop the
+        launcher: `CancelledError` is not `OSError`, so the in-place drop on the
+        spawn-failure path never sees it."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        spawn_entered = asyncio.Event()
+
+        async def hanging_spawn(*_a, **_k):
+            spawn_entered.set()
+            await asyncio.sleep(60)
+
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", side_effect=hanging_spawn),
+            sandbox_patch,
+        ):
+            task = asyncio.create_task(session.start())
+            await spawn_entered.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert created and not any(f.exists() for f in created)
+        assert session._sb_cleanup is None
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_cancelled_in_ready_wait_reaps_then_drops(self, tmp_path):
+        """Cancellation in the ~20s readiness wait leaves a LIVE helper riding
+        along with the launcher; the teardown must kill+reap it before the
+        unlink (Windows keeps the file locked until the child exits)."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+
+        async def never_ready(*_a, **_k):
+            await asyncio.sleep(60)
+            return b""
+
+        proc.stdout.readline = never_ready
+        proc.kill = Mock()
+        proc.returncode = None
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            task = asyncio.create_task(session.start())
+            # The pump task is created immediately before the readiness wait, so
+            # its appearance means start() is suspended at that wait (create_task
+            # does not yield; the wait_for is the next suspension point).
+            while session._pump is None:
+                await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        proc.kill.assert_called_once()
+        assert created and not any(f.exists() for f in created)
+        assert session._sb_cleanup is None
 
 
 class TestStreamingEndpointGate:
