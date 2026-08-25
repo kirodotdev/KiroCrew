@@ -27,6 +27,16 @@ installed by the caller should just forward into ``stop_event.set()``.
 
 from __future__ import annotations
 
+# Ensure SSL certs are found before any library caches its SSL context.
+# This daemon is spawned directly as ``python -m kiro_crew.mcp_gateway.gatewayd``
+# (see manager.py), so it bypasses both ``__main__.py`` and ``cli.py`` and never
+# runs their ``_ensure_ssl_certs()`` prelude. Its module-scope imports below pull
+# in aiohttp-touching modules (e.g. ``.backend``), so this must run BEFORE them —
+# once a library caches its default SSL context, a later fix is too late.
+from kiro_crew._ssl_compat import _ensure_ssl_certs
+
+_ensure_ssl_certs()
+
 import argparse
 import asyncio
 import contextlib

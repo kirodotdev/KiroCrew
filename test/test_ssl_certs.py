@@ -173,3 +173,22 @@ class TestEnsureSslCerts:
 
             importlib.reload(kiro_crew.cli)
         mock_fn.assert_called()
+
+    def test_gatewayd_invokes_ensure_ssl_certs(self):
+        """Reloading gatewayd.py must trigger _ensure_ssl_certs().
+
+        The gateway daemon is spawned directly as
+        ``python -m kiro_crew.mcp_gateway.gatewayd`` (see manager.py), bypassing
+        both cli.py and __main__.py, so it must run the prelude itself or TLS to
+        MCP endpoints validates against the wrong CA store (regression: #5602).
+        """
+        import importlib
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as _patch
+
+        mock_fn = MagicMock()
+        with _patch("kiro_crew._ssl_compat._ensure_ssl_certs", mock_fn):
+            import kiro_crew.mcp_gateway.gatewayd
+
+            importlib.reload(kiro_crew.mcp_gateway.gatewayd)
+        mock_fn.assert_called()
