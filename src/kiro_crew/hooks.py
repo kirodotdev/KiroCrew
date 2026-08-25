@@ -793,7 +793,8 @@ class HookManager:
         # so a top-level import here would create a boot import cycle.
         if is_shell:
             # A shell read-only classification uses the deny-by-default bash
-            # classifier (rejects redirects/substitution/backgrounding). When the
+            # classifier (rejects output redirects/substitution/backgrounding;
+            # input redirects are judged per verb). When the
             # command could not be recovered we already denied above; a present
             # command that is not read-only falls through to interactive approval.
             from kiro_crew.dashboard.state import is_read_only_bash

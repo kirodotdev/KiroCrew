@@ -693,9 +693,14 @@ class TestIsReadOnlyBash:
         against real git: `git branch injected # --list`, `git tag forged # --list`
         and `git branch injected <<< --list` each created the ref.
 
-        Refused as a class rather than repaired, since repairing it means deciding
-        what bash would have deleted — reimplementing word removal on top of
-        quoting rules `shlex` already models differently.
+        Refused rather than repaired, since repairing means deciding what bash
+        would have deleted — reimplementing word removal on top of quoting rules
+        `shlex` already models differently. The comment is refused on the RAW
+        command (`_elided_shell_construct`: it elides past segment boundaries);
+        the redirect and here-string forms bind to one simple command, so they
+        are refused per verb (`_ELISION_SENSITIVE_KEYS`) — see
+        `test_a_word_bash_deletes_cannot_forge_a_read_mode` for the read verbs
+        that keep `<`.
         """
         assert is_read_only_bash("git branch injected # --list") is False
         assert is_read_only_bash("git tag forged # --list") is False
@@ -734,10 +739,10 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("$'x\\' # y' ; git branch injected") is False
 
     def test_an_elided_construct_is_detected_quote_aware(self):
-        """Both constructs are shell syntax only when unquoted, so quoting is honoured.
+        """A comment is shell syntax only when unquoted, so quoting is honoured.
 
-        Scanning for a bare `#` or `<` would have cost the ordinary reads that
-        carry one as DATA, which is most of the ones that carry one at all.
+        Scanning for a bare `#` would have cost the ordinary reads that carry
+        one as DATA, which is most of the ones that carry one at all.
         """
         # `#` inside quotes, and `#` mid-word, are not comments to bash.
         assert is_read_only_bash("grep '#include' file") is True
@@ -750,32 +755,35 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git branch --list 'feat/*'") is True
         assert is_read_only_bash("cat f | sort -u") is True
 
-    def test_the_two_costs_of_refusing_the_class_are_asserted_not_assumed(self):
+    def test_the_cost_of_refusing_the_class_is_asserted_not_assumed(self):
         """The price of the fail-safe direction, pinned so it cannot drift silently.
 
-        Neither of these is a bypass and neither is blocked — both fall through to
-        the human approval prompt. They are asserted so the auto-approve-rate loss
-        is visible in the suite rather than discovered in use, and so that anyone
-        who later narrows the refusal has a test telling them what they are
-        buying back.
+        The trailing comment is not a bypass and is not blocked — it falls
+        through to the human approval prompt. It is asserted so the
+        auto-approve-rate loss is visible in the suite rather than discovered in
+        use, and so that anyone who later narrows the refusal has a test telling
+        them what they are buying back.
         """
-        # Cost 1, the larger one: an ordinary trailing comment is refused. Bash
-        # would simply delete it, so these ARE reads — but the classifier cannot
-        # tell this `#` from the forged-flag `#` above without reproducing the
-        # deletion, which is what reopened the bypass. Agent-emitted bash carries
-        # a trailing comment often, so this is a real everyday loss.
+        # The cost: an ordinary trailing comment is refused. Bash would simply
+        # delete it, so these ARE reads — but the classifier cannot tell this
+        # `#` from the forged-flag `#` above without reproducing the deletion,
+        # which is what reopened the bypass. Agent-emitted bash carries a
+        # trailing comment often, so this is a real everyday loss.
         assert is_read_only_bash("git status # note") is False
         assert is_read_only_bash("ls -la # list files") is False
         assert is_read_only_bash("grep -rn foo src # find it") is False
         assert "comment" in unsafe_bash_reason("git status # note")
-        # Cost 2: an unquoted input redirect is refused even where it is
-        # harmless, because the danger is the token-list divergence rather than
-        # the direction of the data.
-        assert is_read_only_bash("wc -l < file") is False
-        assert is_read_only_bash("grep pattern < file") is False
-        assert "redirect" in unsafe_bash_reason("wc -l < file")
-        # Quoting is the escape hatch for both: a user who means the `#` as data
-        # keeps their auto-approval.
+        # An input redirect is NOT this scanner's cost: it binds to one simple
+        # command and never crosses a segment boundary, so it is refused per
+        # verb (`_ELISION_SENSITIVE_KEYS`) rather than on the raw command. Into
+        # a flag-decided read verb it keeps the auto-approval; into a verb a
+        # phantom word can flip it still prompts.
+        assert is_read_only_bash("wc -l < file") is True
+        assert is_read_only_bash("grep pattern < file") is True
+        assert is_read_only_bash("git branch injected < --list") is False
+        assert "word bash removes" in unsafe_bash_reason("git branch injected < --list")
+        # Quoting is the escape hatch for the comment: a user who means the `#`
+        # as data keeps their auto-approval.
         assert is_read_only_bash("grep '#note' file") is True
 
     def test_a_positional_or_special_parameter_hides_the_real_argument(self):
@@ -1545,6 +1553,20 @@ class TestIsReadOnlyBash:
             "uniq in # out",
             "date < f",
             "hostname < f",
+        ):
+            assert is_read_only_bash(cmd) is False, cmd
+
+        # The per-verb spelling of the refusal is safe only because a redirect
+        # binds to one simple command: it cannot elide across a `&&`/`;`
+        # boundary the way a comment does. Pinned here so the boundary half of
+        # that argument cannot drift silently -- the flippable segment refuses
+        # whatever segment it sits in, and a quoted separator fails closed on
+        # `shlex` rather than fusing two segments into one.
+        for cmd in (
+            "git status && git branch injected < --list",
+            "git branch injected ';' < --list",
+            "uniq f < -o victim",
+            "git remote < set-url origin https://evil",
         ):
             assert is_read_only_bash(cmd) is False, cmd
 
