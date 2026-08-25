@@ -99,7 +99,10 @@ export function __resetCatalogCache(): void {
 type PanelTargetSingle = string | { tab: string; params: Record<string, string>; labelSuffix?: string }
 type PanelTarget = PanelTargetSingle | PanelTargetSingle[]
 
-const PANEL_TAB_MAP: Record<string, PanelTarget> = {
+/** Exported for the coverage gate (settingsCoverage.test.ts): a panel file
+ *  that renders Settings* primitives but is absent from this map is silently
+ *  dropped from search, so the gate cross-checks every panel file against it. */
+export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'OverviewPanel.tsx': 'overview',
   'ChatPanel.tsx': 'chat',
   'VoicePanel.tsx': 'voice',
@@ -130,6 +133,7 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'TeamsPanel.tsx': { tab: 'channels', params: { channel: 'teams' }, labelSuffix: 'Teams' },
   'WeixinPanel.tsx': { tab: 'channels', params: { channel: 'weixin' }, labelSuffix: 'WeChat' },
   'IMessagePanel.tsx': { tab: 'channels', params: { channel: 'imessage' }, labelSuffix: 'iMessage' },
+  'WhatsAppPanel.tsx': { tab: 'channels', params: { channel: 'whatsapp' }, labelSuffix: 'WhatsApp' },
   // The shared bot-token panel: one source file whose labels render for the
   // channels that mount it, so each extracted primitive fans out into one
   // entry per channel. Webex is deliberately absent: ChannelsPanel routes
@@ -143,6 +147,10 @@ const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'DeveloperPanel.tsx': 'developer',
   'AboutPanel.tsx': 'about',
   'SttSettings.tsx': 'voice',
+  // The `instances` tab mounts RemoteCrewPanel (SettingsPage.tsx), which also
+  // renders InstancesPanel.tsx's AddInstanceForm — both files map to the same
+  // tab so a primitive added to either lands on the right deep link.
+  'RemoteCrewPanel.tsx': 'instances',
 }
 
 /** Map component name → our type enum. */
@@ -156,9 +164,23 @@ const PRIMITIVE_MAP: Record<string, SettingPrimitiveType> = {
   SettingsInput: 'input',
   SettingsStepper: 'stepper',
   SettingsButtonGroup: 'buttonGroup',
+  // Shared composite controls that behave as settings rows and carry a `label`
+  // prop: a credential field with reveal/replace/clear affordances, and a
+  // string-list editor. Both render `data-setting-label` on their root, so
+  // deep-link highlighting works exactly like the Settings* primitives. To
+  // every consumer of this registry they are inputs (nothing branches on the
+  // distinction), so they map onto 'input' rather than minting reader-less
+  // type values.
+  SecretField: 'input',
+  TagListEditor: 'input',
 }
 
 const PRIMITIVES = Object.keys(PRIMITIVE_MAP)
+
+/** The extractable tag names, exported (like PANEL_TAB_MAP) for the coverage
+ *  gate: a hand-copied list there would silently miss a ninth primitive added
+ *  here — the exact drift class the gate exists to catch. */
+export const EXTRACTABLE_PRIMITIVE_TAGS: readonly string[] = PRIMITIVES
 
 /** Convert a label to a kebab-case id segment. */
 function toKebab(s: string): string {

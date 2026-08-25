@@ -5,6 +5,7 @@ import { RefreshCw, Scale, CheckCircle2, AlertCircle, Bug, GitBranch, GitCommitH
 import { Link } from 'react-router-dom'
 import { Progress } from '@/components/ui/progress'
 import { Card, CardTitle, Btn, Toggle } from '../../components/ui'
+import { SettingsToggle } from '../../components/settings'
 import { useBranding } from '../../hooks/useBranding'
 import { useAppSelector } from '../../store'
 import { codeBrowserBranchUrl, codeBrowserCommitUrl } from '../../lib/codeBrowser'
@@ -843,7 +844,7 @@ export function AboutPanel() {
 
         {isDesktop && channel && !isExternallyManaged && (
           info?.channelSwitchable && desktopApi?.setChannel ? (
-            <div className="flex flex-col" data-testid="channel-switcher">
+            <div className="flex flex-col" data-testid="channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
               <div className="flex items-center justify-between py-1.5 text-sm gap-3">
                 <div className="flex flex-col items-start min-w-0">
                   <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
@@ -914,7 +915,7 @@ export function AboutPanel() {
           // Switching persists the preference and re-checks; it never installs.
           // The new lane's build then arrives through the normal Update surface
           // below, so a channel change is never an unconsented version jump.
-          <div className="flex flex-col" data-testid="gateway-channel-switcher">
+          <div className="flex flex-col" data-testid="gateway-channel-switcher" data-setting-label={i18nT('pages.settings.aboutPanel.update_channel')}>
             <div className="flex items-center justify-between py-1.5 text-sm gap-3">
               <div className="flex flex-col items-start min-w-0">
                 <span className="text-muted">{i18nT('pages.settings.aboutPanel.update_channel')}</span>
@@ -1129,11 +1130,12 @@ export function AboutPanel() {
                   update installs on the next restart/quit, which is exactly what
                   it says. */}
               {desktopApi?.setAutoDownload && (
-                <div className="flex items-center justify-between pt-2.5 border-t border-border">
-                  <span className="text-sm text-text">{i18nT('pages.settings.aboutPanel.auto_update_on_restart')}</span>
-                  <Toggle checked={info?.autoDownload !== false}
+                <div className="pt-1 border-t border-border">
+                  <SettingsToggle
                     label={i18nT('pages.settings.aboutPanel.auto_update_on_restart')}
-                    onChange={next => autoDownloadMutation.mutate(next)} />
+                    checked={info?.autoDownload !== false}
+                    onChange={next => autoDownloadMutation.mutate(next)}
+                  />
                 </div>
               )}
             </div>
@@ -1276,6 +1278,7 @@ export function AboutPanel() {
                 pull and apply" tooltip here would accept input for something that
                 cannot happen. Say what it will actually do instead. */}
             <div className="flex items-center justify-between pt-2.5 border-t border-border"
+              data-setting-label={i18nT('pages.settings.aboutPanel.notify_when_an_update_is_available')}
               title={gwSelfUpdate
                 ? i18nT('pages.settings.aboutPanel.automatically_pull_and_apply_updates_when_the_ga')
                 : i18nT('pages.settings.aboutPanel.auto_update_notify_only_on_this_install')}>

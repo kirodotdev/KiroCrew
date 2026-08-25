@@ -308,7 +308,7 @@ export function BrowserPanel() {
             about to drive their logged-in browser.
           */}
           <SettingsCard>
-            <div className="flex items-start gap-3">
+            <div className="flex items-start gap-3" data-setting-label={i18nT('pages.settings.browserPanel.token_label')}>
               <KeyRound size={18} className="text-muted shrink-0 mt-[2px]" />
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 flex-wrap">

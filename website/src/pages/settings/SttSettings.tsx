@@ -206,7 +206,7 @@ function PushToTalkConfig() {
       </div>
 
       <SettingsSelect
-        label={keyFieldLabel}
+        label={i18nT('pages.settings.sttSettings.ptt_key')}
         description={i18nT(keyDescKey)}
         value={bare ? cfg.binding.code : '__chord__'}
         options={options}

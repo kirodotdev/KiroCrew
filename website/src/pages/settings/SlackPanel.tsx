@@ -90,7 +90,7 @@ export function TagListEditor({ label, description, values, placeholder, onChang
     setErr('')
   }
   return (
-    <div className="flex flex-col gap-1.5 py-1.5">
+    <div data-setting-label={label} className="flex flex-col gap-1.5 py-1.5">
       <span className="text-[13px] font-semibold text-text">{label}</span>
       {description && <div className="text-[12px] text-muted">{description}</div>}
       {values.length > 0 && (
