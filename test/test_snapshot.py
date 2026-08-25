@@ -1189,3 +1189,25 @@ class TestMergeRestoreLocksBeforePublish:
         monkeypatch.setattr(snapshot_mod.os, "link", _link)
         snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
         assert not (home / "telemetry_salt").exists()
+
+    def test_a_failed_close_does_not_abort_merge(self, tmp_path, monkeypatch):
+        snap = tmp_path / "snap"
+        home = tmp_path / "home"
+        snap.mkdir()
+        home.mkdir()
+        (snap / "telemetry_salt").write_bytes(self._SALT)
+
+        real_close = os.close
+        fired = False
+
+        def _close(fdnum):
+            nonlocal fired
+            real_close(fdnum)
+            if fired:
+                return
+            fired = True
+            raise OSError("close: delayed writeback")
+
+        monkeypatch.setattr(snapshot_mod.os, "close", _close)
+        snapshot_mod._do_merge(snap, home, ["security"], allow_unpinned=True)
+        assert not (home / "telemetry_salt").exists()

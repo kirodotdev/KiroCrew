@@ -1137,19 +1137,29 @@ def _copy_locked(src: Path, dst: Path) -> bool:
             if written == 0:
                 raise OSError(f"short write restoring {src.name}")
             view = view[written:]
-        os.close(fd)
+        # Drop the fd from finally before close: a close-time writeback
+        # error must not be retried on an already-released descriptor,
+        # because a second OSError in finally would replace the skip and
+        # abort merge after earlier components were applied.
+        pending = fd
         fd = -1
+        os.close(pending)
         os.link(str(tmp_path), str(dst))
         return True
     except OSError:
         # FileExistsError: live dest won. EXDEV / EPERM / no-hardlink /
-        # restrict / short write: dest stays missing and `_get_telemetry_salt`
-        # regenerates. Raising here aborts merge after earlier components
-        # were already applied.
+        # restrict / short write / close: dest stays missing and
+        # `_get_telemetry_salt` regenerates. Raising here aborts merge
+        # after earlier components were already applied.
         return False
     finally:
         if fd >= 0:
-            os.close(fd)
+            pending = fd
+            fd = -1
+            try:
+                os.close(pending)
+            except OSError:
+                pass
         try:
             tmp_path.unlink(missing_ok=True)
         except OSError:
