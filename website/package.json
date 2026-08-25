@@ -39,6 +39,7 @@
     "verify:path-chips": "node scripts/capture-path-chips.mjs",
     "verify:registry-pinned-row": "node scripts/capture-registry-pinned-row.mjs",
     "verify:reveal-fade": "node scripts/probe-reveal-fade.mjs",
+    "verify:tool-row-narrow-stack": "node scripts/capture-tool-row-narrow-stack.mjs",
     "verify:topbar-badge-overhang": "node scripts/capture-topbar-badge-overhang.mjs",
     "verify:user-bubble-mobile-overflow": "node scripts/capture-user-bubble-mobile-overflow.mjs",
     "pretest": "npm run jscpd"
