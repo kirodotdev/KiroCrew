@@ -165,6 +165,7 @@
       "gateway-liveness.js",
       "gateway-recovery.js",
       "renderer-recovery.js",
+      "native-logging.js",
     "pierre-perf-log.js",
       "pyspy-dump.js",
       "perf-metrics.js",

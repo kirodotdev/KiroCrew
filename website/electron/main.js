@@ -1,4 +1,4 @@
-const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen } = require("electron");
+const { app, BaseWindow, BrowserWindow, WebContentsView, shell, dialog, Tray, Menu, nativeImage, nativeTheme, Notification, ipcMain, webContents, session, desktopCapturer, systemPreferences, screen, crashReporter } = require("electron");
 const Store = require("electron-store");
 const fs = require("fs");
 const os = require("os");
@@ -140,6 +140,8 @@ const { migrateRemoteHostConfig, getRemoteHostConfig, setRemoteHostConfig } = re
 const { seedRenamedStore } = require("./store-rename");
 
 const { isLocalGatewayEnabled, setLocalGatewayEnabled, classifyStartFailure } = require("./local-gateway");
+
+const { initNativeLogging } = require("./native-logging");
 
 // Carry settings across the npm `name` rename, by writing the new store's file
 // BEFORE electron-store opens it. Order is load-bearing: construction writes the
@@ -289,6 +291,28 @@ if (IS_WIN) {
 if (!app.requestSingleInstanceLock()) {
   app.exit(0);
 } else {
+  // Arm native diagnostic capture as the FIRST thing the winning instance does:
+  // early enough that Chromium still reads the logging switches (it reads them
+  // during initialization, so a call after app-ready is accepted and ignored),
+  // but strictly INSIDE the lock-won branch. A rejected second instance must not
+  // reach this: it would rotate `chromium.log` out from under the primary — the
+  // primary's open fd follows the renamed inode, and the genuine previous
+  // generation is destroyed — so double-clicking the icon of a running app would
+  // wipe exactly the retained evidence this capture exists to keep. `app.exit(0)`
+  // above is synchronous, so placing it here is what makes that unreachable
+  // rather than merely unlikely.
+  //
+  // `gatewayLogPath` is a hoisted function declaration needing only the modules
+  // required at the top of this file, so calling it here reuses its logs-dir
+  // resolution (including the tmpdir fallback) rather than duplicating it.
+  initNativeLogging({
+    logsDir: path.dirname(gatewayLogPath()),
+    appendSwitch: (name, value) => app.commandLine.appendSwitch(name, value),
+    startCrashReporter: (opts) => crashReporter.start(opts),
+    fs,
+    log: (m) => glog(m),
+  });
+
   app.on("second-instance", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       // Relaunching the app is a request for the window back; it must win over
