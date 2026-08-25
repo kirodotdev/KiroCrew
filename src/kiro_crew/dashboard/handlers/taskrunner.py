@@ -638,9 +638,14 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
         if task_id:
             run = await state.task_runner.update_plan(task_id, steps)
         else:
-            new_id = f"plan_{uuid.uuid4().hex[:8]}"
-            task_dir = state.task_runner._work_dir / new_id
-            task_dir.mkdir(parents=True, exist_ok=True)
+            while True:
+                new_id = f"plan_{uuid.uuid4().hex[:8]}"
+                task_dir = state.task_runner._work_dir / new_id
+                try:
+                    task_dir.mkdir(parents=True, exist_ok=False)
+                    break
+                except FileExistsError:
+                    continue
             run = Project(
                 spec_path="",
                 spec_content="",
@@ -655,6 +660,10 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
                 run = await state.task_runner.update_plan(new_id, steps)
             except ValueError:
                 state.task_runner._runs.pop(new_id, None)
+                try:
+                    task_dir.rmdir()
+                except OSError:
+                    logger.warning("Failed to remove rejected chat plan directory %s", task_dir)
                 raise
     except ValueError as exc:
         return web.json_response({"error": str(exc)}, status=400)

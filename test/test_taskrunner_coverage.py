@@ -280,6 +280,7 @@ class TestPlan:
             with pytest.raises(ValueError, match="timed out"):
                 await runner.plan(input_text="go", source="text")
         assert runner._runs == {}
+        assert list(tmp_path.glob("plan_*")) == []
 
     @pytest.mark.asyncio
     async def test_decompose_cancelled_becomes_value_error(self, tmp_path: Path) -> None:
@@ -289,6 +290,7 @@ class TestPlan:
         ):
             with pytest.raises(ValueError, match="cancelled"):
                 await runner.plan(input_text="go", source="text")
+        assert list(tmp_path.glob("plan_*")) == []
 
     @pytest.mark.asyncio
     async def test_empty_plan_rejected(self, tmp_path: Path) -> None:
@@ -296,6 +298,23 @@ class TestPlan:
         with patch.object(TaskRunner, "_decompose", AsyncMock(return_value=[])):
             with pytest.raises(ValueError, match="Could not generate a plan"):
                 await runner.plan(input_text="go", source="text")
+        assert list(tmp_path.glob("plan_*")) == []
+
+    @pytest.mark.asyncio
+    async def test_failed_plan_preserves_caller_workspace(self, tmp_path: Path) -> None:
+        workspace = tmp_path / "caller-owned"
+        workspace.mkdir()
+        marker = workspace / "keep.txt"
+        marker.write_text("owned by caller", encoding="utf-8")
+        runner = _runner(tmp_path / "runner")
+        with patch.object(TaskRunner, "_decompose", AsyncMock(return_value=[])):
+            with pytest.raises(ValueError, match="Could not generate a plan"):
+                await runner.plan(
+                    input_text="go",
+                    source="text",
+                    workspace_dir=str(workspace),
+                )
+        assert marker.read_text(encoding="utf-8") == "owned by caller"
 
     def test_cancel_plan_cancels_live_task_only(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)

@@ -280,6 +280,9 @@ Loaded on `__init__` — survives gateway restarts.
 - Persisted on: task completion, task delete
 - Each run stores: task_id, spec_path, status, timestamps, error, tokens, replans, step_details (result truncated to 2K)
 - Delete via `DELETE /api/taskrunner/{task_id}` removes from memory and disk
+- A plan's default work directory is provisional until the plan is accepted. A
+  failed attempt removes that taskrunner-owned directory; an explicit caller
+  workspace is never removed.
 
 ## Access Paths
 

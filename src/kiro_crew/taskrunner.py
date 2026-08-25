@@ -332,8 +332,17 @@ class TaskRunner:
         task_id = f"plan_{int(time.time())}"
         _override = _resolve_workspace_dir(workspace_dir)
         _effective_ws = _override or self._workspace_dir
+        owns_task_dir = not _effective_ws
         task_dir = Path(_effective_ws) if _effective_ws else self._work_dir / f"plan_{task_id}"
-        task_dir.mkdir(parents=True, exist_ok=True)
+        created_task_dir = False
+        if owns_task_dir:
+            try:
+                task_dir.mkdir(parents=True, exist_ok=False)
+                created_task_dir = True
+            except FileExistsError:
+                pass
+        else:
+            task_dir.mkdir(parents=True, exist_ok=True)
         run = Project(
             spec_path=spec_path or "",
             spec_content=spec_content,
@@ -344,20 +353,30 @@ class TaskRunner:
             work_dir=str(task_dir),
             name=auto_name(spec_content or original_input, spec_path),
         )
-        if source == "yaml":
-            run.tasks = _decompose_yaml_with_audit(decompose_input, task_id)
-        else:
-            try:
-                run.tasks = await asyncio.wait_for(
-                    self._decompose(decompose_input, run.work_dir, task_id),
-                    timeout=180,
-                )
-            except asyncio.TimeoutError:
-                raise ValueError("Planning timed out. Try simplifying.")
-            except asyncio.CancelledError:
-                raise ValueError("Planning was cancelled.")
-        if not run.tasks:
-            raise ValueError("Could not generate a plan. Try rephrasing.")
+        try:
+            if source == "yaml":
+                run.tasks = _decompose_yaml_with_audit(decompose_input, task_id)
+            else:
+                try:
+                    run.tasks = await asyncio.wait_for(
+                        self._decompose(decompose_input, run.work_dir, task_id),
+                        timeout=180,
+                    )
+                except asyncio.TimeoutError:
+                    raise ValueError("Planning timed out. Try simplifying.")
+                except asyncio.CancelledError:
+                    raise ValueError("Planning was cancelled.")
+            if not run.tasks:
+                raise ValueError("Could not generate a plan. Try rephrasing.")
+        except Exception:
+            # Only the default plan directory belongs to this attempt. A caller's
+            # workspace is an input and must survive a rejected plan unchanged.
+            if created_task_dir:
+                try:
+                    task_dir.rmdir()
+                except OSError:
+                    logger.warning("Failed to remove rejected plan directory %s", task_dir)
+            raise
         self._runs[task_id] = run
         await self._apersist_runs()
         return run
