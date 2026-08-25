@@ -16,7 +16,7 @@ import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
-import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal } from '../store/chatSlice'
+import { switchSlot, createSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, clearSlotReveal, selectSidebarSubagentCounts, selectSidebarApprovalCounts } from '../store/chatSlice'
 import { sseSlotTitle, setSidebarOrder } from '../store/dashboardSlice'
 import { useDigitModifierHeld, jumpLabelFor } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
@@ -59,7 +59,7 @@ import { DndDraggable, DndDroppable, pointerWithinDeepest, closestEdge } from '.
 import { collectFolderSubtreeIds } from '../utils/folderTree'
 import { runBelongsToSlot } from '../apps/workflows/runModel'
 import { sanitizeLlmOutput } from '../utils/sanitize'
-import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SubagentActivity, SessionLink } from '../types'
+import type { ChatFolder, ChatTag, TagColumn, TagColumnMode, SessionLink } from '../types'
 import { SESSION_LANES, inferLane } from './chat/sessionLane'
 import { decideUnreadDrain } from './unreadDrain'
 import {
@@ -1630,75 +1630,12 @@ function ChatSidebar({
   const uiLang = useLanguage().resolved
   // Presence in this map means "this session is in an active goal loop".
   const goalLoops = useAppSelector(s => s.chat.goalLoops)
-  // Live subagent activity per slot, for the sidebar row's "N agents running"
-  // subtitle. Mirrors SubagentProgressBar's source of truth: chatSlice.subagents
-  // for the store's active slot, slotActivity[slot].subagents for background
-  // slots (both populated by the globally-subscribed subagent_spawn/tool/done WS
-  // events). We deliberately do NOT use dashboardSlice.subagentRunning — that
-  // count is only broadcast on the subagent_status "done" event
-  // (gateway._broadcast_subagent_status), never on spawn, so it under-reports
-  // while agents are still running.
-  const storeActiveSlot = useAppSelector(s => s.chat.activeSlot)
-  const activeSlotSubagents = useAppSelector(s => s.chat.subagents)
-  const slotActivity = useAppSelector(s => s.chat.slotActivity)
-  // Queued-but-not-started agents have no entry in the per-slot subagents map,
-  // so a slot whose whole wave is still behind the concurrency cap counted 0
-  // and showed no subtitle at all — the window in which a user is most likely
-  // to wonder whether their spawn did anything. Fold the queue depth in.
+  // NOT dashboardSlice.subagentRunning — that only broadcasts on "done", not spawn.
+  const subagentCounts = useAppSelector(selectSidebarSubagentCounts, shallowEqual)
+  // Spawn approvals (pending + approval_id) — surfaced here since background chats have no inline prompt.
+  const subagentApprovalCounts = useAppSelector(selectSidebarApprovalCounts, shallowEqual)
+  // Queued agents (behind concurrency cap) — ensures subtitle shows even when no agents started yet.
   const subagentQueued = useAppSelector(s => s.chat.subagentQueued)
-  const subagentCounts = useMemo(() => {
-    const countActive = (m?: Record<string, SubagentActivity>) => {
-      if (!m) return 0
-      let n = 0
-      for (const a of Object.values(m)) {
-        if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
-      }
-      return n
-    }
-    const counts: Record<string, number> = {}
-    if (storeActiveSlot) { const n = countActive(activeSlotSubagents); if (n > 0) counts[storeActiveSlot] = n }
-    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
-      // Load-bearing: on switchSlot the active slot's subagents map is aliased
-      // into BOTH state.subagents and slotActivity[active].subagents (same
-      // object reference), so skipping the active slot here is what prevents
-      // double-counting it. Do not drop this guard.
-      if (slot === storeActiveSlot) continue
-      const n = countActive(act.subagents)
-      if (n > 0) counts[slot] = n
-    }
-    for (const [slot, q] of Object.entries(subagentQueued ?? {})) {
-      if (q > 0) counts[slot] = (counts[slot] || 0) + q
-    }
-    return counts
-  }, [storeActiveSlot, activeSlotSubagents, slotActivity, subagentQueued])
-  // Sub-agents blocked on a SPAWN approval, per slot. Mirrors
-  // selectSlotPendingSpawnApprovals (status 'pending' + an approval_id), but
-  // across every slot rather than the viewed one: a spawn approval raised by a
-  // background chat has no inline prompt and no notification, so without this
-  // the sidebar was the only place it could have surfaced and it showed
-  // "N agents running" instead — an owed decision rendered as work in
-  // progress. Counted separately from `subagentCounts` so the running subtitle
-  // can subtract them (an agent waiting on approval is not running).
-  const subagentApprovalCounts = useMemo(() => {
-    const countPending = (m?: Record<string, SubagentActivity>) => {
-      if (!m) return 0
-      let n = 0
-      for (const a of Object.values(m)) {
-        if (a.status === 'pending' && a.approval_id) n++
-      }
-      return n
-    }
-    const counts: Record<string, number> = {}
-    if (storeActiveSlot) { const n = countPending(activeSlotSubagents); if (n > 0) counts[storeActiveSlot] = n }
-    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
-      // Same aliasing guard as countActive above: the active slot's map is the
-      // same object in both places, so skipping it here avoids double-counting.
-      if (slot === storeActiveSlot) continue
-      const n = countPending(act.subagents)
-      if (n > 0) counts[slot] = n
-    }
-    return counts
-  }, [storeActiveSlot, activeSlotSubagents, slotActivity])
   // Live dynamic-workflow runs per slot, for the sidebar row's "workflow
   // running" subtitle. Mirrors WorkflowProgressBar's source of truth:
   // chatSlice.workflowRuns (populated by the globally-subscribed

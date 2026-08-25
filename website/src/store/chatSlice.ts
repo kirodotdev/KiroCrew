@@ -2153,6 +2153,32 @@ export const selectSlotSubagentsActive = (state: RootState, slot: string): boole
   return false
 }
 
+// Shared subagent-counting helpers — single implementations for both sidebar and aggregate selectors.
+
+/** Counts active subagents (running + tool + pending) in a subagent map. */
+const countActiveSubagents = (m?: Record<string, SubagentActivity>) => {
+  if (!m) return 0
+  let n = 0
+  for (const a of Object.values(m)) {
+    if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
+  }
+  return n
+}
+
+/** Predicate: subagent is blocked awaiting a spawn approval. */
+const isAwaitingSpawnApproval = (a: SubagentActivity) =>
+  a.status === 'pending' && !!a.approval_id
+
+/** Counts subagents pending spawn approval in a subagent map. */
+const countPendingApprovals = (m?: Record<string, SubagentActivity>) => {
+  if (!m) return 0
+  let n = 0
+  for (const a of Object.values(m)) {
+    if (isAwaitingSpawnApproval(a)) n++
+  }
+  return n
+}
+
 // Stable empty result so the selector is referentially stable (with shallowEqual)
 // when a slot has no pending spawn approvals — avoids needless re-renders.
 const _EMPTY_PENDING_SPAWNS: SubagentActivity[] = []
@@ -2173,7 +2199,7 @@ export const selectSlotPendingSpawnApprovals = (state: RootState, slot: string |
   if (!slot) return _EMPTY_PENDING_SPAWNS
   const subs = getSlotSubs(state.chat, slot)
   if (!subs) return _EMPTY_PENDING_SPAWNS
-  const out = Object.values(subs).filter(a => a.status === 'pending' && !!a.approval_id)
+  const out = Object.values(subs).filter(isAwaitingSpawnApproval)
   return out.length ? out : _EMPTY_PENDING_SPAWNS
 }
 
@@ -2195,24 +2221,70 @@ export const selectSubagentActivityCount = createSelector(
     (state: RootState) => state.chat.subagentQueued,
   ],
   (activeSlot, activeSubs, slotActivity, queued) => {
-    const countActive = (m?: Record<string, SubagentActivity>) => {
-      if (!m) return 0
-      let n = 0
-      for (const a of Object.values(m)) {
-        if (a.status === 'running' || a.status === 'tool' || a.status === 'pending') n++
-      }
-      return n
-    }
-    let total = activeSlot ? countActive(activeSubs) : 0
+    let total = activeSlot ? countActiveSubagents(activeSubs) : 0
     for (const [slot, act] of Object.entries(slotActivity ?? {})) {
       // On switchSlot the active slot's map is aliased into both
       // state.subagents and slotActivity[active].subagents (same reference),
       // so this guard is what prevents double-counting it.
       if (slot === activeSlot) continue
-      total += countActive(act.subagents)
+      total += countActiveSubagents(act.subagents)
     }
     for (const q of Object.values(queued ?? {})) total += q > 0 ? q : 0
     return total
+  },
+)
+
+/** Per-slot subagent counts for sidebar. Reuses shared counting helpers above. */
+
+/** Total active subagents per slot (running + tool + pending). */
+export const selectSidebarSubagentCounts = createSelector(
+  [
+    (state: RootState) => state.chat.activeSlot,
+    (state: RootState) => state.chat.subagents,
+    (state: RootState) => state.chat.slotActivity,
+    (state: RootState) => state.chat.subagentQueued,
+  ],
+  (activeSlot, activeSubs, slotActivity, queued) => {
+    const counts: Record<string, number> = {}
+    if (activeSlot) {
+      const n = countActiveSubagents(activeSubs)
+      if (n > 0) counts[activeSlot] = n
+    }
+    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+      // Load-bearing: active slot's map is aliased in both places; skip to avoid double-count.
+      if (slot === activeSlot) continue
+      const n = countActiveSubagents(act.subagents)
+      if (n > 0) counts[slot] = n
+    }
+    // Fold in queued counts.
+    for (const [slot, q] of Object.entries(queued ?? {})) {
+      if (q > 0) counts[slot] = (counts[slot] || 0) + q
+    }
+    return counts
+  },
+)
+
+/** Subagents pending approval per slot (status=pending + has approval_id). */
+export const selectSidebarApprovalCounts = createSelector(
+  [
+    (state: RootState) => state.chat.activeSlot,
+    (state: RootState) => state.chat.subagents,
+    (state: RootState) => state.chat.slotActivity,
+  ],
+  (activeSlot, activeSubs, slotActivity) => {
+    const approvalCounts: Record<string, number> = {}
+    if (activeSlot) {
+      const p = countPendingApprovals(activeSubs)
+      if (p > 0) approvalCounts[activeSlot] = p
+    }
+    for (const [slot, act] of Object.entries(slotActivity ?? {})) {
+      // Same aliasing guard as countActive above: the active slot's map is the
+      // same object in both places, so skipping it here avoids double-counting.
+      if (slot === activeSlot) continue
+      const p = countPendingApprovals(act.subagents)
+      if (p > 0) approvalCounts[slot] = p
+    }
+    return approvalCounts
   },
 )
 
