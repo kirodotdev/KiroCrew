@@ -1420,10 +1420,34 @@ async def _prepare_sandboxed_spawn(
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        cleanup_path: str | None = None
-        with contextlib.suppress(Exception):
-            _, _, cleanup_path = await task
-        await _unlink_off_loop(cleanup_path)
+        # A repeat cancellation landing on a bare recovery ``await`` is a
+        # ``BaseException``: it would escape a ``suppress(Exception)`` guard
+        # before the unlink runs, leaking the materialized launcher (#5841).
+        # The settle-then-unlink therefore runs as its own task, shielded
+        # from cancellations aimed at this caller; each absorbed repeat is
+        # ``uncancel()``-ed so an enclosing ``asyncio.timeout`` still reports
+        # ``TimeoutError``, and the ORIGINAL cancellation is re-raised once
+        # the launcher is gone.
+        async def _settle_then_unlink() -> None:
+            cleanup_path: str | None = None
+            with contextlib.suppress(Exception, asyncio.CancelledError):
+                _, _, cleanup_path = await task
+            await _unlink_off_loop(cleanup_path)
+
+        current = asyncio.current_task()
+        recovery = asyncio.create_task(_settle_then_unlink())
+        while not recovery.done():
+            try:
+                await asyncio.shield(recovery)
+            except asyncio.CancelledError:
+                uncancel = getattr(current, "uncancel", None)  # 3.11+
+                if uncancel is not None:
+                    uncancel()
+            except Exception:
+                logger.warning(
+                    "sandbox launcher cleanup failed after cancellation",
+                    exc_info=True,
+                )
         raise
 
 

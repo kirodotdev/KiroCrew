@@ -2672,6 +2672,123 @@ class TestKiroPrerequisiteWorkflow:
         assert (await process_task).ok is True
 
     @pytest.mark.asyncio
+    async def test_cancelled_sandbox_preparation_unlinks_the_launcher(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """First-cancellation semantics: the recovery waits for the worker to
+        settle, removes the launcher it materialized, and re-raises."""
+        preparation_started = threading.Event()
+        release_preparation = threading.Event()
+        cleanup_path = tmp_path / "sandbox-launcher"
+        cleanup_path.write_text("launcher", encoding="utf-8")
+
+        def sandbox(
+            argv: list[str],
+            **_kwargs: Any,
+        ) -> tuple[list[str], dict[str, str], str]:
+            preparation_started.set()
+            assert release_preparation.wait(timeout=5)
+            return argv, {}, str(cleanup_path)
+
+        monkeypatch.setattr(prerequisite_module, "sandboxed_spawn_argv", sandbox)
+
+        outer = asyncio.create_task(
+            prerequisite_module._prepare_sandboxed_spawn(
+                ["/fixed/tool"],
+                mode=prerequisite_module._UNVERIFIED_SANDBOX_MODE,
+                env={},
+                extra_hidden_dirs=(),
+                extra_visible_dirs=(),
+            )
+        )
+        assert await asyncio.to_thread(preparation_started.wait, 5)
+        outer.cancel()
+        await asyncio.sleep(0)
+        release_preparation.set()
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+        assert not cleanup_path.exists()
+
+    @pytest.mark.asyncio
+    async def test_repeat_cancellation_in_sandbox_recovery_still_unlinks(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A REPEAT cancellation landing on the recovery await is a
+        ``BaseException``, so it escaped the old ``suppress(Exception)``
+        before ``_unlink_off_loop`` ran, leaking the materialized launcher
+        (#5841). The recovery must absorb repeat cancellations in BOTH of
+        its phases — while the worker settles and while the unlink runs —
+        still remove the launcher, and let the ORIGINAL cancellation (pinned
+        by its message) propagate rather than a repeat."""
+        preparation_started = threading.Event()
+        release_preparation = threading.Event()
+        unlink_started = threading.Event()
+        release_unlink = threading.Event()
+        cleanup_path = tmp_path / "sandbox-launcher"
+        cleanup_path.write_text("launcher", encoding="utf-8")
+        real_unlink = os.unlink
+
+        def sandbox(
+            argv: list[str],
+            **_kwargs: Any,
+        ) -> tuple[list[str], dict[str, str], str]:
+            preparation_started.set()
+            assert release_preparation.wait(timeout=5)
+            return argv, {}, str(cleanup_path)
+
+        def slow_unlink(path: str) -> None:
+            if path == str(cleanup_path):
+                unlink_started.set()
+                assert release_unlink.wait(timeout=5)
+            real_unlink(path)
+
+        monkeypatch.setattr(prerequisite_module, "sandboxed_spawn_argv", sandbox)
+        monkeypatch.setattr(prerequisite_module.os, "unlink", slow_unlink)
+
+        outer = asyncio.create_task(
+            prerequisite_module._prepare_sandboxed_spawn(
+                ["/fixed/tool"],
+                mode=prerequisite_module._UNVERIFIED_SANDBOX_MODE,
+                env={},
+                extra_hidden_dirs=(),
+                extra_visible_dirs=(),
+            )
+        )
+        assert await asyncio.to_thread(preparation_started.wait, 5)
+        # First cancellation: delivered at the shielded hop; the coroutine
+        # enters its recovery block. Its message pins exception identity: if
+        # a repeat cancellation were the one to propagate (or to merge into
+        # the first delivery), the message assertion below goes red.
+        outer.cancel("original-cancellation-5841")
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        # REPEAT cancellation while the worker is still settling — the
+        # launcher must still exist for the repeat to be able to leak it.
+        assert cleanup_path.exists()
+        outer.cancel()
+        await asyncio.sleep(0)
+        release_preparation.set()
+        # REPEAT cancellation while the unlink itself is in flight.
+        assert await asyncio.to_thread(unlink_started.wait, 5)
+        assert cleanup_path.exists()
+        outer.cancel()
+        await asyncio.sleep(0)
+        release_unlink.set()
+        with pytest.raises(asyncio.CancelledError) as exc_info:
+            await outer
+        if sys.version_info >= (3, 11):
+            # 3.10's Task rebuilds the awaiter-visible CancelledError from the
+            # task's LAST cancel message (message-less repeats blank it), so
+            # the original's args are only observable from 3.11, where the
+            # coroutine's actual exception object propagates.
+            assert exc_info.value.args == ("original-cancellation-5841",)
+        assert not cleanup_path.exists()
+
+    @pytest.mark.asyncio
     async def test_process_timeout_escalates_while_supervisor_anchors_group(
         self,
         monkeypatch: pytest.MonkeyPatch,
