@@ -1996,12 +1996,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 resources=f"count={len(jobs)}",
             )
         try:
-            removed, _missing = svc.remove_jobs_sync(
+            # Distinct from the ``removed: bool`` that ``cron_remove``'s
+            # single-job path binds above: this is the batch's removed-id LIST,
+            # and reusing the name would rebind one variable to two types.
+            removed_ids, _missing = svc.remove_jobs_sync(
                 [j.id for j in jobs], actor=session_key or "mcp", source="mcp"
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
-        return f"Removed {len(removed)} job(s)."
+        return f"Removed {len(removed_ids)} job(s)."
 
     if name == "cron_pause":
         jid = args["job_id"]
