@@ -92,6 +92,10 @@ Current status:
   open the existing native Electron menus from the left of that row, the command
   palette remains centered on the window, and native minimize/maximize/close
   controls remain on the right.
+- **Cold-start-aware gateway handoff** — a live bundled backend keeps the loading
+  screen and progress updates through the longer Windows import window instead of
+  presenting a false failure that succeeds on Retry. A child exit or spawn error
+  still fails immediately and includes the launch-log cause.
 
 The source install below remains the fully supported path.
 

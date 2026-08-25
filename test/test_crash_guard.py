@@ -142,6 +142,62 @@ class TestUnclosedConnectionDowngrade:
         assert "Some other problem" in crash_log.read_text()
 
 
+class TestWindowsProactorShutdownDowngrade:
+    """A reset repeated by Proactor's close callback is disconnect noise."""
+
+    def test_connection_lost_callback_reset_is_warning_only(self, tmp_path, monkeypatch, caplog):
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        crash_guard._CRASH_LOG = None
+        loop = asyncio.new_event_loop()
+        try:
+            crash_guard.install_loop_handler(loop)
+        finally:
+            loop.close()
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.crash_guard"):
+            crash_guard._asyncio_exception_handler(
+                loop,
+                {
+                    "message": (
+                        "Exception in callback "
+                        "_ProactorBasePipeTransport._call_connection_lost(None)"
+                    ),
+                    "exception": ConnectionResetError(10054, "peer reset"),
+                },
+            )
+
+        assert any("noise" in record.message for record in caplog.records)
+        assert all(record.levelno <= logging.WARNING for record in caplog.records)
+        assert not (tmp_path / "home" / "logs" / "crash.log").exists()
+
+    def test_other_connection_reset_stays_an_error(self, tmp_path, monkeypatch, caplog):
+        """A task-level reset may be a real defect and must retain crash evidence."""
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+        crash_guard._CRASH_LOG = None
+        loop = asyncio.new_event_loop()
+        try:
+            crash_guard.install_loop_handler(loop)
+        finally:
+            loop.close()
+
+        import logging
+
+        with caplog.at_level(logging.ERROR, logger="kiro_crew.crash_guard"):
+            crash_guard._asyncio_exception_handler(
+                loop,
+                {
+                    "message": "Task exception was never retrieved",
+                    "exception": ConnectionResetError(10054, "peer reset"),
+                },
+            )
+
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+        crash_log = tmp_path / "home" / "logs" / "crash.log"
+        assert "Task exception was never retrieved" in crash_log.read_text()
+
+
 class TestInstallIdempotent:
     """``install()`` is documented "Idempotent." — pin the early-return contract.
 
