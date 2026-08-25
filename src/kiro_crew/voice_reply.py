@@ -646,10 +646,13 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             shutil.copy2(paths[0], output)
             return output
         return paths[0]
+    owns_output = False
     if output is None:
+        owns_output = True
         fd, output = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
     concat = "|".join(paths)
+    transfer_output = False
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
@@ -665,10 +668,17 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
         await asyncio.wait_for(proc.communicate(), timeout=30)
         if proc.returncode != 0 or not os.path.exists(output):
             return None
+        transfer_output = True
         return output
     except Exception:
         logger.exception("ffmpeg stitch failed")
         return None
+    finally:
+        if owns_output and not transfer_output:
+            try:
+                os.unlink(output)
+            except OSError:
+                pass
 
 
 async def streaming_voice_reply(

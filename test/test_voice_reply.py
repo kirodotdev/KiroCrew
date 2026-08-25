@@ -25,6 +25,7 @@ from kiro_crew.voice_reply import (
     _validate_rate,
     is_available,
     split_sentences,
+    stitch_mp3s,
     strip_markdown,
     synthesize_speech,
     text_to_ssml,
@@ -32,6 +33,34 @@ from kiro_crew.voice_reply import (
     validate_length_scale,
     voice_reply,
 )
+
+
+class TestStitchMp3sOwnership:
+    @pytest.mark.asyncio
+    async def test_spawn_failure_removes_internally_allocated_output(self, tmp_path) -> None:
+        owned = tmp_path / "owned.mp3"
+        fd = os.open(owned, os.O_CREAT | os.O_WRONLY)
+        with (
+            patch("kiro_crew.voice_reply.tempfile.mkstemp", return_value=(fd, str(owned))),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("ffmpeg missing")),
+        ):
+            assert await stitch_mp3s(["first.mp3", "second.mp3"]) is None
+
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_preserves_caller_owned_output(self, tmp_path) -> None:
+        caller_output = tmp_path / "caller.mp3"
+        caller_output.write_bytes(b"keep")
+        with patch("asyncio.create_subprocess_exec", side_effect=OSError("ffmpeg missing")):
+            assert (
+                await stitch_mp3s(
+                    ["first.mp3", "second.mp3"], output=str(caller_output)
+                )
+                is None
+            )
+
+        assert caller_output.read_bytes() == b"keep"
 
 
 class TestStripMarkdown:
