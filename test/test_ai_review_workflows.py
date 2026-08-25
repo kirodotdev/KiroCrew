@@ -1281,6 +1281,12 @@ class TestAdvisoryVerdictRequiresCurrentHeadMarker:
 # (lane file, check-run name, external_id prefix, finalize step name)
 FORK_SWEEP_LANES = (
     ("fork-design-review.yml", "Design Review", "design", "Finalize check-run (advisory)"),
+    (
+        "fork-first-principles-review.yml",
+        "First Principles Review",
+        "first-principles",
+        "Finalize check-run (advisory)",
+    ),
     ("fork-gpt-review.yml", "GPT 5.6 Review", "gpt", "Finalize check-run (fail closed)"),
     ("fork-opus-review.yml", "Opus 4.8 Review", "opus", "Finalize check-run (fail closed)"),
     ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
@@ -1290,10 +1296,12 @@ FORK_SWEEP_LANES = (
 class TestForkLaneStrandedRunSweeps:
     """#3447 defect 1, second half: the retry alone still loses when BOTH
     attempts fail, and it cannot touch a run stranded by a PREVIOUS workflow
-    run. fork-first-principles-review.yml pairs the retry with a sweep that
-    lists still-incomplete check-runs of the lane's name on the head and
-    completes every one THIS pull request created; these tests port that pin
-    to the other four fork lanes.
+    run. fork-first-principles-review.yml introduced the sweep that lists
+    still-incomplete check-runs of the lane's name on the head and completes
+    every one THIS pull request created; the other four fork lanes ported it.
+    All five lanes are pinned here, including the reference lane itself --
+    #5949 fixed its sweep to pass the run's computed verdict instead of a
+    hardcoded neutral, the shape the ported lanes already had.
     """
 
     @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
@@ -1331,6 +1339,25 @@ class TestForkLaneStrandedRunSweeps:
         assert '[ -n "${PR:-}" ]' in script, f"{lane}: sweep runs without a resolved PR"
         assert 'select(.status != "completed") | .id' not in script, (
             f"{lane}: unscoped sweep must not come back"
+        )
+
+    @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
+    def test_sweep_completes_with_the_computed_verdict(
+        self, lane: str, check_name: str, prefix: str, finalize: str
+    ) -> None:
+        # #5949: a hardcoded neutral at the sweep site either outvotes a
+        # genuine green re-run under pr-readiness's fail-precedence, or
+        # launders a genuine BLOCK whose own PATCH lost both attempts into an
+        # un-gated neutral. The sweep must pass the run's computed verdict --
+        # with no verdict, $conclusion already holds the lane's
+        # incomplete/advisory posture, so a genuinely-stranded run's behavior
+        # is unchanged.
+        script = _step_script(_workflow(lane), finalize)
+        assert 'complete "$id" "$conclusion" "$title"' in script, (
+            f"{lane}: sweep does not pass the computed verdict"
+        )
+        assert 'complete "$id" "neutral"' not in script, (
+            f"{lane}: hardcoded-neutral sweep must not come back"
         )
 
 

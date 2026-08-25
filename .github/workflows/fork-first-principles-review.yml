@@ -666,6 +666,10 @@ jobs:
           # on this head can belong to another PR that shares the commit, and
           # completing that one would publish a verdict computed from a different
           # diff -- the wedge is closed without ever touching a sibling's review.
+          # Completed with THIS run's computed verdict, not a hardcoded neutral:
+          # a genuine BLOCK whose own PATCH lost both attempts must not be
+          # swept into a verdict pr-readiness no longer gates on. With no
+          # verdict, $conclusion is already neutral/"review incomplete".
           if [ -n "${HEAD:-}" ] && [ -n "${PR:-}" ]; then
             enc="$(jq -rn '"First Principles Review" | @uri')"
             stranded="$(gh api --method GET \
@@ -676,6 +680,6 @@ jobs:
                     | .id" 2>/dev/null || true)"
             for id in $stranded; do
               echo "completing stranded check-run $id for $HEAD (PR #$PR)"
-              complete "$id" "neutral" "review incomplete (advisory)" || true
+              complete "$id" "$conclusion" "$title" || true
             done
           fi
