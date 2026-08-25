@@ -1278,6 +1278,62 @@ class TestAdvisoryVerdictRequiresCurrentHeadMarker:
             assert out.stdout.strip() == want, f"{summary!r} -> {out.stdout!r}"
 
 
+# (lane file, check-run name, external_id prefix, finalize step name)
+FORK_SWEEP_LANES = (
+    ("fork-design-review.yml", "Design Review", "design", "Finalize check-run (advisory)"),
+    ("fork-gpt-review.yml", "GPT 5.6 Review", "gpt", "Finalize check-run (fail closed)"),
+    ("fork-opus-review.yml", "Opus 4.8 Review", "opus", "Finalize check-run (fail closed)"),
+    ("fork-ux-review.yml", "UX Review", "ux", "Finalize check-run (advisory)"),
+)
+
+
+class TestForkLaneStrandedRunSweeps:
+    """#3447 defect 1, second half: the retry alone still loses when BOTH
+    attempts fail, and it cannot touch a run stranded by a PREVIOUS workflow
+    run. fork-first-principles-review.yml pairs the retry with a sweep that
+    lists still-incomplete check-runs of the lane's name on the head and
+    completes every one THIS pull request created; these tests port that pin
+    to the other four fork lanes.
+    """
+
+    @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
+    def test_check_run_is_created_with_a_pr_scoped_external_id(
+        self, lane: str, check_name: str, prefix: str, finalize: str
+    ) -> None:
+        # Without an external_id at CREATION the sweep has nothing safe to
+        # match on: a check-run of this name on this head can belong to a
+        # different PR that shares the commit.
+        opened = _step_script(_workflow(lane), "Open check-run (in progress)")
+        assert f'-f external_id="{prefix}-pr-$PR"' in opened, (
+            f"{lane}: check-run created without a PR-scoped external_id"
+        )
+
+    @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
+    def test_finalize_sweeps_stranded_check_runs(
+        self, lane: str, check_name: str, prefix: str, finalize: str
+    ) -> None:
+        script = _step_script(_workflow(lane), finalize)
+        assert "completing stranded check-run" in script, (
+            f"{lane}: no stranded-run sweep -- a doubly-failed finalize wedges the PR"
+        )
+        assert "check-runs?check_name=$enc&per_page=100" in script, lane
+
+    @pytest.mark.parametrize(("lane", "check_name", "prefix", "finalize"), FORK_SWEEP_LANES)
+    def test_sweep_only_completes_check_runs_this_pr_created(
+        self, lane: str, check_name: str, prefix: str, finalize: str
+    ) -> None:
+        # Two open PRs can share a head commit; an unscoped sweep would publish
+        # a verdict computed from another PR's diff.
+        script = _step_script(_workflow(lane), finalize)
+        assert f'select(.external_id == \\"{prefix}-pr-$PR\\")' in script, (
+            f"{lane}: sweep is not scoped by external_id"
+        )
+        assert '[ -n "${PR:-}" ]' in script, f"{lane}: sweep runs without a resolved PR"
+        assert 'select(.status != "completed") | .id' not in script, (
+            f"{lane}: unscoped sweep must not come back"
+        )
+
+
 class TestPreparePrPreSubmitReview:
     def test_two_read_only_reviewers_run_before_the_first_push(self) -> None:
         skill = _prepare_pr_skill()
