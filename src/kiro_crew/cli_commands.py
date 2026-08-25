@@ -602,9 +602,15 @@ def _run_app_mcp_server(app_name: str) -> None:
     module_name = f"kiro_crew.apps.builtins.{app_name.replace('-', '_')}.mcp_server"
     try:
         mod = importlib.import_module(module_name)
-    except ImportError as exc:
-        print(f"App {app_name!r} has no MCP server ({module_name}): {exc}", file=sys.stderr)
-        sys.exit(1)
+    except ModuleNotFoundError as exc:
+        # Only the TARGET module (or one of its parent packages) missing means
+        # "this app has no MCP server". A missing dependency imported INSIDE
+        # mcp_server.py — or any other ImportError — is a real defect and must
+        # keep its traceback rather than exit with a misleading diagnosis.
+        if exc.name and (exc.name == module_name or module_name.startswith(exc.name + ".")):
+            print(f"App {app_name!r} has no MCP server ({module_name}): {exc}", file=sys.stderr)
+            sys.exit(1)
+        raise
     runner = getattr(mod, "run_mcp_server", None)
     if runner is None:
         print(f"{module_name} defines no run_mcp_server()", file=sys.stderr)

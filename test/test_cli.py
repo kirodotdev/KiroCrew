@@ -4380,6 +4380,9 @@ class TestMcpBuiltinDispatch:
         builtin_name = "fakebuiltin"
         # Patch the registry the CLI reads when building subparsers and dispatching.
         monkeypatch.setattr(cli_mod, "_BUILTIN_NAMES", [builtin_name])
+        # The verb is only registered (and dispatched) when the builtin's
+        # mcp_server module resolves (#5901) — make the synthetic one resolve.
+        monkeypatch.setattr(cli_mod, "_builtin_mcp_server_available", lambda _name: True)
         mock_module = MagicMock()
 
         monkeypatch.setattr(sys, "argv", ["kirocrew", f"mcp-{builtin_name}"])
