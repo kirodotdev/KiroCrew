@@ -38,5 +38,14 @@
         "icon": "ClipboardCheck"
       }
     ]
-  }
+  },
+  "useCases": [
+    "Plan and run a dependency-aware multi-agent job from plain language, an existing specification, or deterministic YAML."
+  ],
+  "configuration": [
+    "Open Task Runner, choose Compose, From Spec, or From YAML, select an agent and optional absolute workspace, then review with Plan or start immediately with Run."
+  ],
+  "screenshots": [
+    "/app-assets/projects/screenshot-main.png"
+  ]
 }

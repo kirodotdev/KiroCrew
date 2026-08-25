@@ -35,6 +35,7 @@ _ASSET_FIELDS = (
     "heroImageDetail",
     "heroImageDetailDark",
 )
+_ASSET_LIST_FIELDS = ("screenshots", "screenshotsDark")
 
 #: A reference the client can serve AND the published catalog can carry.
 #: Deliberately stricter than "starts with /app-assets/": the store's catalog
@@ -54,6 +55,14 @@ def _asset_refs(app: dict) -> list[tuple[str, str]]:
         val = app.get(field)
         if isinstance(val, str) and val.startswith("/app-assets/"):
             refs.append((field, val))
+    for field in _ASSET_LIST_FIELDS:
+        values = app.get(field, [])
+        if isinstance(values, list):
+            refs.extend(
+                (field, val)
+                for val in values
+                if isinstance(val, str) and val.startswith("/app-assets/")
+            )
     return refs
 
 
@@ -153,6 +162,21 @@ def test_every_builtin_declares_an_icon() -> None:
         "builtins with no iconUrl (they render the gradient + Package "
         f"placeholder): {sorted(map(str, iconless))}"
     )
+
+
+def test_every_discovered_builtin_declares_a_real_screenshot() -> None:
+    """A hero is marketing art, not proof of the product surface.
+
+    Every manifest-backed builtin must give its detail page at least one real UI
+    capture. Keeping this on discovered manifests avoids the legacy static
+    registration records, which are runtime shims rather than Store listings.
+    """
+    missing = [
+        app.get("name")
+        for app in discover_builtin_apps()
+        if not isinstance(app.get("screenshots"), list) or not app["screenshots"]
+    ]
+    assert not missing, f"builtin manifests with no screenshots: {sorted(map(str, missing))}"
 
 
 def test_builtin_svg_icons_are_themeable() -> None:

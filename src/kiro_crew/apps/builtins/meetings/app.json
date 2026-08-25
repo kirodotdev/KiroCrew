@@ -53,5 +53,14 @@
   },
   "iconUrl": "/app-assets/meetings/icon.svg",
   "heroImage": "/app-assets/meetings/hero-light.svg",
-  "heroImageDark": "/app-assets/meetings/hero-dark.svg"
+  "heroImageDark": "/app-assets/meetings/hero-dark.svg",
+  "useCases": [
+    "Capture a live meeting while parallel agents build the transcript, structured notes, diagram, and action-item review."
+  ],
+  "configuration": [
+    "Allow browser microphone access for live capture; optionally configure an iCalendar path or URL, the local task ledger, agent roles, and speech-correction terms in Settings."
+  ],
+  "screenshots": [
+    "/app-assets/meetings/screenshot-main.png"
+  ]
 }

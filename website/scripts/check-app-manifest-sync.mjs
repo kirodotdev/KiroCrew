@@ -47,6 +47,11 @@ const TABLE = join(WEB, 'src', 'components', 'appstore', 'appManifest.ts')
 const EN = join(WEB, 'src', 'i18n', 'locales', 'en.json')
 
 const fail = []
+const unknownArgs = process.argv.slice(2)
+if (unknownArgs.length) {
+  process.stderr.write(`unknown argument(s): ${unknownArgs.join(', ')}\n`)
+  process.exit(2)
+}
 const note = m => process.stdout.write(`${m}\n`)
 
 /** Read the manifests the gateway would discover: a dir with an `app.json`. */
@@ -70,6 +75,8 @@ function manifests() {
       description: m.description || '',
       pageLabel: (pages[0] && pages[0].label) || '',
       highlights: m.highlights || [],
+      useCases: m.useCases || [],
+      configuration: m.configuration || [],
     })
   }
   return out
@@ -97,25 +104,30 @@ const camel = id => {
   return head + rest.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join('')
 }
 
-function expectedKeys(name, highlightCount) {
+function expectedKeys(name, highlightCount, useCaseCount, configurationCount) {
   const ns = `apps.${camel(name)}.manifest`
   return {
     displayName: `${ns}.display_name`,
     description: `${ns}.description`,
     pageLabel: `${ns}.page_label`,
     highlights: Array.from({ length: highlightCount }, (_, i) => `${ns}.highlight_${i + 1}`),
+    useCases: Array.from({ length: useCaseCount }, (_, i) => `${ns}.use_case_${i + 1}`),
+    configuration: Array.from(
+      { length: configurationCount }, (_, i) => `${ns}.configuration_${i + 1}`,
+    ),
   }
 }
 
 const lookup = (cat, key) => key.split('.').reduce((o, p) => (o == null ? undefined : o[p]), cat)
-
 const apps = manifests()
 const en = JSON.parse(readFileSync(EN, 'utf8'))
 
 // Every built-in's expected keys must exist in en.json and hold the manifest's own
 // words. Coverage of `APP_MANIFEST_KEY` itself is `src/test/appManifest.test.ts`.
 for (const [name, app] of apps) {
-  const keys = expectedKeys(name, app.highlights.length)
+  const keys = expectedKeys(
+    name, app.highlights.length, app.useCases.length, app.configuration.length,
+  )
   const check = (key, expected, what) => {
     if (!key) { fail.push(`${name}: APP_MANIFEST_KEY is missing a '${what}' key`); return }
     const actual = lookup(en, key)
@@ -135,9 +147,16 @@ for (const [name, app] of apps) {
   // case. Requiring the key there would force an empty catalog value that means nothing.
   if (app.pageLabel) check(keys.pageLabel, app.pageLabel, 'pageLabel')
   keys.highlights.forEach((k, i) => check(k, app.highlights[i], `highlight_${i + 1}`))
+  keys.useCases.forEach((k, i) => check(k, app.useCases[i], `use_case_${i + 1}`))
+  keys.configuration.forEach(
+    (k, i) => check(k, app.configuration[i], `configuration_${i + 1}`),
+  )
 }
 
-const strings = [...apps.values()].reduce((n, a) => n + 3 + a.highlights.length, 0)
+const strings = [...apps.values()].reduce(
+  (n, a) => n + 3 + a.highlights.length + a.useCases.length + a.configuration.length,
+  0,
+)
 if (fail.length) {
   note(`\n[app-manifest-sync] FAIL — ${fail.length} problem(s)\n`)
   for (const f of fail) note(`    ${f}`)

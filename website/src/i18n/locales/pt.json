@@ -135,7 +135,9 @@
         "highlight_3": "Abra em uma janela separada para um segundo monitor; a escolha da cena continua sincronizada",
         "highlight_4": "Lembra a cena que você escolheu entre visitas",
         "highlight_5": "É apenas uma visualização — nunca muda o que seus agentes fazem",
-        "page_label": "Mundos"
+        "page_label": "Mundos",
+        "use_case_1": "Mantenha em uma segunda tela uma visão rápida dos agentes ativos, tarefas cron e subagentes enquanto a equipe trabalha.",
+        "configuration_1": "Ative o app, abra o Agent Worlds, escolha uma cena e, se quiser, abra-a em uma janela separada; não são necessárias credenciais nem serviços externos."
       }
     },
     "autoImprovement": {
@@ -156,7 +158,9 @@
         "highlight_4": "Redige pull requests do GitHub — apenas rascunhos, nunca publicados nem mesclados por você",
         "highlight_5": "Funciona em um clone sem push, então nada escapa da sandbox sem revisão",
         "highlight_6": "Uma sessão de conversa retomável por pull request, achado e execução",
-        "page_label": "Auto-Improve"
+        "page_label": "Auto-Improve",
+        "use_case_1": "Comprove ganhos mensuráveis de desempenho ou correções reproduzíveis de bugs antes de transformar os candidatos aprovados em alterações do GitHub prontas para revisão.",
+        "configuration_1": "O host do gateway precisa de Git e da CLI gh autenticada; conecte um repositório do GitHub, escolha a branch base e calibre uma medida antes dos testes de desempenho."
       },
       "setupPanel": {
         "https_github_com_owner_repo": "https://github.com/owner/repo"
@@ -191,7 +195,9 @@
         "highlight_5": "Acrescente perguntas de acompanhamento no meio da campanha, sem começar de novo",
         "highlight_6": "Inicie, pause e retome qualquer campanha pelo painel",
         "highlight_7": "Exporte o relatório final para a sua biblioteca de Conhecimento ou para um artefato compartilhável",
-        "page_label": "Research Lab"
+        "page_label": "Research Lab",
+        "use_case_1": "Execute uma investigação em vários ciclos que expande uma pergunta ampla, transmite evidências e produz um relatório reutilizável.",
+        "configuration_1": "Crie uma campanha, escolha o modo Agent ou Dynamic Workflow, expanda a pergunta e defina ciclos, intervalo, workers e operação supervisionada ou autônoma."
       },
       "researchLabPage": {
         "120s": "120s",
@@ -355,7 +361,9 @@
       "manifest": {
         "description": "Visão em página inteira do próprio pipeline de auto-triagem do Kiro Crew: uma faixa horizontal por item de trabalho do crew ao longo do enum de fases, para que um operador veja num relance em que fase está cada item, onde eles se acumulam e quais estagnaram. Lê o ledger do crew através da costura crew-fabric do Issue Radar: o desenho de faixas responde 'onde está este item?', um resumo da fila responde 'como está a fila?'.",
         "display_name": "Pipeline de auto-triagem do Kiro Crew",
-        "page_label": "Pipeline de auto-triagem"
+        "page_label": "Pipeline de auto-triagem",
+        "use_case_1": "Veja onde o trabalho da equipe do Issue Radar está se acumulando, sendo reaberto ou aguardando em todo o pipeline de entrega.",
+        "configuration_1": "Conecte um repositório no Issue Radar e deixe o ledger da equipe coletar eventos de fase; depois ative este app e escolha esse repositório."
       },
       "pipeline": {
         "subtitle": "Uma faixa por item de trabalho do crew, em todas as fases — veja em que fase está cada item e onde eles estão se acumulando.",
@@ -446,7 +454,9 @@
         "highlight_3": "Você continua sendo o aprovador final de qualquer operação que altere o estado",
         "highlight_4": "Os agentes permanecem no canal até serem dispensados ou expirarem",
         "highlight_5": "Oculto na grade da App Store; ative com `kirocrew app enable channels`",
-        "page_label": "Canais"
+        "page_label": "Canais",
+        "use_case_1": "Conduza resposta a incidentes, pesquisa ou revisão de código com vários papéis de agente nomeados em uma transcrição compartilhada e auditável.",
+        "configuration_1": "Ative o app oculto com kirocrew app enable channels, crie um canal a partir de um modelo ou com Custom, atribua agentes e modos de escuta e use @menções para repassar o trabalho."
       }
     },
     "codeReviewSage": {
@@ -870,7 +880,9 @@
         "highlight_3": "As revisões são lidas no app — nada é publicado no seu pull request a menos que você peça",
         "highlight_4": "Aprende por repositório com correções entregues, comentários de revisão e discussões de design",
         "highlight_5": "Revisa pull requests do GitHub; precisa de uma CLI `gh` autenticada no host do gateway",
-        "page_label": "Code Review Sage"
+        "page_label": "Code Review Sage",
+        "use_case_1": "Revise uma ou várias pull requests do GitHub por risco, examine descobertas específicas e prepare apenas os comentários que valem a pena publicar.",
+        "configuration_1": "Instale e autentique a CLI gh no host do gateway, adicione um repositório e escolha em Configurações o modelo de revisão, o nível de raciocínio e a concorrência."
       },
       "views": {
         "learningView": {
@@ -1091,7 +1103,9 @@
         "highlight_3": "Um exercício curto de respiração para se recompor quando precisar",
         "highlight_4": "Avisa quando uma sessão termina, falha ou precisa do seu OK",
         "highlight_5": "Flutua na sua área de trabalho com um avatar que você pode trocar",
-        "page_label": "Crew Companion"
+        "page_label": "Crew Companion",
+        "use_case_1": "Use um companheiro de desktop para lembretes de pausa, lembretes em linguagem simples, exercícios de respiração e notificações de sessões.",
+        "configuration_1": "Use o Kiro Crew Desktop, ative o app e defina na página dele o intervalo das pausas e as notificações de conclusão; os avatares ficam na Gallery do companheiro."
       },
       "memories": {
         "days_together_many": "{{count}} dias juntos",
@@ -1387,7 +1401,9 @@
         "highlight_6": "Diz o que não conseguiu ver, em vez de criticar uma tela em branco ou bloqueada",
         "highlight_7": "Não mexe no projeto que revisa: nunca instala as dependências dele, executa os seus scripts, inicia o seu servidor de desenvolvimento nem edita os seus arquivos",
         "highlight_8": "Para capturar imagens, usa um navegador headless, baixado uma única vez para um cache no seu diretório pessoal no primeiro uso e nunca dentro do projeto",
-        "page_label": "Design Critique"
+        "page_label": "Design Critique",
+        "use_case_1": "Avalie uma tela ou um fluxo de produto completo com descobertas classificadas por gravidade, baseadas em heurísticas e ligadas às regiões visíveis.",
+        "configuration_1": "Adicione capturas de tela para uma análise sem configuração ou forneça um arquivo do Figma, repositório, pasta local ou URL já em execução; fontes privadas do GitHub podem exigir gh auth login."
       },
       "scopingPicker": {
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
@@ -1427,7 +1443,9 @@
         "highlight_5": "Acompanhe os logs do pod e emita tokens de acesso ao pod pela interface",
         "highlight_6": "Feito para quem desenvolve o próprio Kiro Crew — não é necessário no uso diário",
         "highlight_7": "Os pods rodam em Linux (systemd --user) e macOS (launchd) — mas o pod do macOS não tem limite de memória/CPU aplicado; Make Live continua só no Linux; a visão da frota, o status de PR, a sincronização, o rebase e a limpeza funcionam em qualquer plataforma",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "use_case_1": "Opere worktrees de recursos do Kiro Crew e pods isolados de pré-visualização sem alterar o gateway ativo.",
+        "configuration_1": "Aponte o app para um checkout do Kiro Crew; ações de PR precisam do gh autenticado, enquanto pods precisam de systemd --user no Linux ou launchd no macOS e devem ser provisionados primeiro."
       }
     },
     "designTweak": {
@@ -1564,7 +1582,9 @@
       "manifest": {
         "display_name": "Design Tweak",
         "description": "Selecione visualmente elementos na pré-visualização em tempo real do seu app e transforme-os em solicitações de edição delimitadas e vinculadas ao código-fonte para o agente — como comentários do Figma, mas para código.",
-        "page_label": "Design Tweak"
+        "page_label": "Design Tweak",
+        "use_case_1": "Anote elementos da interface em tempo real no contexto e envie a um agente de programação um lote de alterações visuais vinculado ao código-fonte.",
+        "configuration_1": "Carregue um projeto web local, inicie o servidor de desenvolvimento detectado ou informe uma URL existente, mude para o modo Edit, clique nos elementos com o botão direito e envie o lote."
       }
     },
     "fileExplorer": {
@@ -1602,7 +1622,9 @@
         "highlight_4": "A árvore de diretórios mostra o status git de cada arquivo na própria linha",
         "highlight_5": "Pesquise em um diretório inteiro, com correspondências por linha e uma prévia do entorno",
         "highlight_6": "Os caminhos acessíveis se limitam ao seu diretório pessoal, /tmp e /opt — links simbólicos para fora são recusados",
-        "page_label": "Arquivos"
+        "page_label": "Arquivos",
+        "use_case_1": "Leia, pesquise, visualize, baixe ou discuta arquivos no host do gateway sem conceder acesso de gravação à página.",
+        "configuration_1": "Ative o app e abra um diretório permitido pela barra de caminho; nenhuma conta é necessária, e Git ou ripgrep apenas acrescentam recursos opcionais de status e pesquisa."
       },
       "pathBar": {
         "click_to_edit_path": "Clique para editar o caminho",
@@ -2130,7 +2152,9 @@
         "highlight_7": "Mostra os repositórios em que você contribuiu recentemente, para conectar um deles com um clique",
         "highlight_8": "Guarda issues, rótulos e membros em cache local, atualizados quando você pedir",
         "highlight_9": "Funciona com GitHub, GitLab e Azure DevOps; precisa de uma CLI autenticada do provedor que você conectar (`gh`, `glab` ou `az`) no host do gateway — nenhuma CLI específica é necessária para instalar",
-        "page_label": "Issue Radar"
+        "page_label": "Issue Radar",
+        "use_case_1": "Faça a triagem de issues e pull requests entre provedores conectados, preservando resumos, rótulos sugeridos e o histórico de investigação.",
+        "configuration_1": "Conecte um repositório e autentique a CLI do provedor no host do gateway: gh para GitHub, glab para GitLab ou az com a extensão do Azure DevOps no macOS, Linux ou WSL."
       },
       "views": {
         "comingSoon": {
@@ -2636,7 +2660,9 @@
         "highlight_6": "A sincronização em um passo faz commit, pull e push; um conflito de merge lista as notas em conflito e não sobrescreve nada",
         "highlight_7": "Um salvamento é recusado se o arquivo mudou no disco desde que você o abriu, para que edições feitas em outro lugar nunca sejam destruídas",
         "highlight_8": "Opcionalmente, indexe um cofre na biblioteca de Conhecimento para que os agentes possam pesquisar as suas notas",
-        "page_label": "Notas"
+        "page_label": "Notas",
+        "use_case_1": "Edite um vault Markdown portátil com wikilinks, backlinks, pesquisa, histórico do Git e indexação opcional no Knowledge.",
+        "configuration_1": "Clone um repositório Git ou anexe uma pasta local existente e, se quiser, ative o Knowledge e a sincronização agendada; clones privados do GitHub precisam de um PAT ou do gh autenticado."
       },
       "panel": {
         "connectVault": "Conectar um cofre",
@@ -2799,7 +2825,9 @@
         "highlight_3": "Corrija os erros recorrentes do reconhecimento de fala uma vez, com um dicionário do domínio, e todas as reuniões seguintes acertam",
         "highlight_4": "Revise os itens de ação extraídos antes de qualquer registro — arquive o ruído, registre o resto",
         "highlight_5": "Provedores de tarefas e de calendário conectáveis: já inclui um registro local de tarefas e um leitor de iCalendar (.ics), e uma organização pode registrar os seus próprios",
-        "page_label": "Reuniões"
+        "page_label": "Reuniões",
+        "use_case_1": "Capture uma reunião ao vivo enquanto agentes paralelos produzem a transcrição, notas estruturadas, diagrama e revisão dos itens de ação.",
+        "configuration_1": "Permita que o navegador acesse o microfone para a captura ao vivo; configure opcionalmente em Configurações um caminho ou URL do iCalendar, o ledger local de tarefas, papéis de agente e termos de correção de fala."
       },
       "meeting": {
         "agentsPaused": "Os agentes pararam após várias falhas.",
@@ -3151,7 +3179,9 @@
         "highlight_4": "Lembra a relação de vocês — sequências, dias mais movimentados, marcos celebrados exatamente uma vez",
         "highlight_5": "Discreto por princípio: as notificações se agrupam, o modo silencioso as retém e as reuniões são respeitadas",
         "highlight_6": "O núcleo autônomo roda inteiramente no processo — sem um segundo aplicativo, sem runtime extra",
-        "page_label": "Mochi"
+        "page_label": "Mochi",
+        "use_case_1": "Mantenha um pet de desktop discreto que conversa, acompanha lembretes e mudanças em páginas públicas e se adapta aos eventos do calendário conectado.",
+        "configuration_1": "Use o Kiro Crew Desktop, ative o Mochi, escolha a aparência e o comportamento e adicione alvos de acompanhamento no chat ou no painel; o planejamento conforme a agenda exige uma ferramenta MCP de calendário conectada."
       },
       "menu": {
         "clear_screen": "Limpar tela",
@@ -3604,7 +3634,9 @@
         "highlight_4": "Conecta AWS CloudWatch, PagerDuty, Datadog, GitHub Issues ou qualquer sistema capaz de fazer POST de JSON assinado — incluindo corpos no formato do Alertmanager, desdobrados em um incidente por alerta",
         "highlight_5": "Somente leitura por padrão — as ações de escrita precisam da sua liberação para cada padrão de sinal, e todas elas são auditadas",
         "highlight_6": "Segue a escala de plantão: o nível de automação se arma e se desarma sozinho",
-        "page_label": "Mission Control"
+        "page_label": "Mission Control",
+        "use_case_1": "Monitore sinais operacionais, investigue incidentes, reutilize correções comprovadas e entregue uma trilha de auditoria local completa.",
+        "configuration_1": "Adicione provedores em Configurações usando credenciais de ambiente ou tokens, mantenha Observe para uso somente leitura e habilite explicitamente as ações Propose ou Act permitidas; a saída para o Slack reutiliza uma conexão existente do Kiro Crew."
       },
       "opsMissionControlPage": {
         "act": "Act",
@@ -3975,7 +4007,9 @@
         "highlight_5": "Chat de coautor de IA delimitado ao artigo — ele lê e edita o LaTeX que você está vendo",
         "highlight_6": "Clone um artigo de qualquer remoto git e faça commit, pull e push pela barra de ferramentas",
         "highlight_7": "Nunca executa o compilador com shell escape, então um arquivo .tex hostil não consegue executar comandos",
-        "page_label": "Papyrus"
+        "page_label": "Papyrus",
+        "use_case_1": "Escreva um artigo em LaTeX ao lado do PDF compilado, vá dos erros de build para o código-fonte e colabore com um agente restrito ao artigo.",
+        "configuration_1": "Instale o Tectonic gerenciado pelo app ou coloque tectonic ou pdflatex no PATH; depois crie um artigo ou clone um repositório com credenciais Git não interativas já configuradas."
       },
       "page": {
         "actions": "Ações",
@@ -4062,7 +4096,9 @@
         "highlight_3": "Pesquisa apenas as lojas que você indicar, e avisa que os preços vêm de páginas públicas, não da sua conta",
         "highlight_4": "Ele não tem como chegar ao carrinho ou ao checkout",
         "highlight_5": "Organize suas preferências salvas em grupos na aba Preferências",
-        "page_label": "Personal Shopper"
+        "page_label": "Personal Shopper",
+        "use_case_1": "Pesquise produtos nas lojas públicas indicadas, mantendo decisão, carrinho, conta e checkout sob seu controle.",
+        "configuration_1": "Não são necessárias credenciais das lojas; salve opcionalmente Preferences e Sites para sua referência e cole na conversa com o consultor as restrições e os nomes de lojas relevantes."
       },
       "historyTab": {
         "liked": "Curti",
@@ -4191,7 +4227,9 @@
         "highlight_4": "Importe o seu próprio estilo em HTML ou um modelo .pptx existente e o agente segue as cores, as fontes e os layouts dele",
         "highlight_5": "Abra o arquivo final ou mostre a pasta dele sem sair do painel",
         "highlight_6": "Encapsula o motor público spec-driven-presentation-maker, obtido em uma versão fixada por sha256; nada para instalar à mão",
-        "page_label": "PPTX Maker"
+        "page_label": "PPTX Maker",
+        "use_case_1": "Transforme uma ideia, URL ou texto de origem em uma apresentação real com prévias de slides ao vivo e estilos visuais reutilizáveis.",
+        "configuration_1": "Instale o motor com versão fixada no primeiro uso e, se quiser, o LibreOffice para mais prévias; escolha um diretório de saída e importe os estilos HTML ou modelos PPTX que deseja reutilizar."
       },
       "pptxMakerPage": {
         "deck_output_directory": "Pasta de saída das apresentações",
@@ -4252,7 +4290,9 @@
         "highlight_3": "As execuções acontecem sem supervisão, com o progresso passo a passo na página da própria execução",
         "highlight_4": "Pause, retome, tente novamente ou pare uma execução a qualquer momento",
         "highlight_5": "Mantém um histórico das execuções anteriores e dos resultados delas",
-        "page_label": "Task Runner"
+        "page_label": "Task Runner",
+        "use_case_1": "Planeje e execute um trabalho multiagente com dependências a partir de linguagem natural, uma especificação existente ou YAML determinístico.",
+        "configuration_1": "Abra o Task Runner, escolha Compose, From Spec ou From YAML, selecione um agente e, se quiser, um workspace absoluto; depois revise com Plan ou inicie imediatamente com Run."
       }
     },
     "specBuilder": {
@@ -4443,7 +4483,9 @@
       "manifest": {
         "description": "Desenvolvimento orientado a specs dentro do Kiro Crew: transforme a ideia de um recurso em Requisitos → Design → Tarefas com um agente integrado, revise o markdown no próprio app e depois entregue o plano aprovado a uma sessão de execução autônoma.",
         "display_name": "Spec Builder",
-        "page_label": "Spec Builder"
+        "page_label": "Spec Builder",
+        "use_case_1": "Transforme um recurso, bug ou tarefa rápida em requisitos, design e etapas de implementação ligados ao repositório e prontos para revisão.",
+        "configuration_1": "Escolha uma pasta de projeto e o modo Feature, Bug ou Quick, crie opcionalmente um novo worktree e revise e aprove cada etapa gerada antes de iniciar a build."
       },
       "specBuilderPage": {
         "dismiss_error": "Dispensar o erro",
@@ -4460,7 +4502,9 @@
         "highlight_3": "Os scripts se limitam a uma API de workflow em sandbox, em vez de Python arbitrário",
         "highlight_4": "Normalmente escritos para você a partir de um objetivo em linguagem simples e depois editáveis à mão",
         "highlight_5": "Já vem com exemplos executáveis para você partir deles",
-        "page_label": "Workflows"
+        "page_label": "Workflows",
+        "use_case_1": "Valide e inspecione scripts restritos de workflow ou monitore fase a fase as principais execuções de workflows multiagente.",
+        "configuration_1": "Ative o app oculto com kirocrew app enable workflows; valide Python DSL em Author ou use as ferramentas de workflow do chat ou MCP para uma orquestração real de agentes e monitore-a em Runs."
       },
       "workflowRunTree": {
         "agent_many": "{{count}} agentes",
@@ -4536,7 +4580,9 @@
       "leave_scope": "Voltar para todos os comandos",
       "manifest": {
         "display_name": "Barra de comandos",
-        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, artefatos, habilidades e prompts -- desative para recuperar."
+        "description": "Substitui a busca rapida (Cmd+K / Ctrl+K) por um lancador: digite um comando, nao uma busca. A primeira pagina traz comandos de aplicativos, destinos e configuracoes do sistema e nao faz nenhuma requisicao, entao digitar nao custa nada. As sessoes passam a ser uma linha em que voce entra; enquanto estiver ativo nao e possivel buscar em conhecimento, artefatos, habilidades e prompts -- desative para recuperar.",
+        "use_case_1": "Acesse apps, configurações, sessões que precisam de atenção ou uma nova solicitação para o agente sem tirar as mãos do teclado.",
+        "configuration_1": "O app vem ativado por padrão: pressione Cmd+K ou Ctrl+K em qualquer lugar, digite um comando e use o escopo Sessions para conversas recentes ou correspondentes."
       },
       "no_matches": "Nenhum resultado",
       "no_sessions": "Nenhuma sessão corresponde",
@@ -7524,6 +7570,8 @@
       "failed_to_load_app": "Falha ao carregar o app",
       "failed_to_uninstall": "Falha ao desinstalar",
       "features": "Funcionalidades",
+      "use_cases": "Casos de uso",
+      "configuration": "Configuração",
       "fix_with_ai": "Corrigir com IA",
       "install": "Instalar",
       "install_complete": "Instalação concluída",

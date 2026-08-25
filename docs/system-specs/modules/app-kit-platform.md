@@ -959,3 +959,31 @@ Writers: `apps/registry.py` (`_effective_registries`, `_pinned_registries`,
 `anonymous_git_env`), `platform/interfaces.py`
 (`AppsLoader.default_registries`), `config/loader.py`
 (`ExternalRegistryConfig.trust`), `apps/routes.py` (`handle_registries`).
+
+## 16. Store guidance and product screenshots are manifest-owned
+
+An App detail page carries three different kinds of information and does not
+substitute one for another:
+
+- `highlights` describes capabilities;
+- `useCases` says when an operator should reach for the App;
+- `configuration` says how to make it usable, including prerequisites that live
+  outside the page (provider CLIs, credentials, desktop shell, or another App).
+
+All three remain English in `app.json` so catalog-less consumers such as the CLI
+print meaningful copy. Builtins resolve them through the frontend catalogs; the
+manifest/catalog sync gate derives `use_case_N` and `configuration_N` keys and
+requires the English values to stay byte-identical. External apps fall back to
+their manifest copy because a third-party app id is not first-party provenance.
+
+Store artwork and proof are likewise distinct. `heroImage*` is illustrative
+banner art, while `screenshots*` must be a capture of the real App UI. The detail
+page prefers the wide `heroImageDetail*` banner when present and renders the
+screenshot gallery independently. Registry manifests project `useCases` and
+`configuration` as display metadata and rewrite repo-relative screenshot and
+hero paths through the same-origin blob proxy.
+
+Writers: builtin `app.json` manifests, `apps/registry.py` (`_merge_manifest`),
+`website/src/components/appstore/appManifest.ts`,
+`website/src/pages/AppDetailPage.tsx`, and
+`website/scripts/check-app-manifest-sync.mjs`.

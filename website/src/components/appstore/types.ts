@@ -24,6 +24,8 @@ export type RegistryApp = {
   iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
+  useCases?: string[]
+  configuration?: string[]
   screenshots?: string[]
   heroImage?: string
   heroImageDark?: string
@@ -118,6 +120,8 @@ export type InstalledApp = {
     heroImageDetail?: string
     heroImageDetailDark?: string
     highlights?: string[]
+    useCases?: string[]
+    configuration?: string[]
     license?: string
     iconUrl?: string
     iconUrlDark?: string
@@ -282,6 +286,8 @@ export function normalizeInstalledApp<T extends InstalledApp>(raw: T): T {
       tags: strings(manifest.tags),
       jobFamilies: strings(manifest.jobFamilies),
       highlights: strings(manifest.highlights),
+      useCases: strings(manifest.useCases),
+      configuration: strings(manifest.configuration),
       // Art fields, coerced here for the reason in this function's docstring: the
       // payload's entry point is where a wrong TYPE stops being every consumer's
       // problem. `screenshots` was coerced and its dark sibling was not, which is

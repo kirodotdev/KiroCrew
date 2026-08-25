@@ -135,7 +135,9 @@
         "highlight_3": "Aprila in una finestra separata per un secondo monitor; la scena scelta resta sincronizzata",
         "highlight_4": "Ricorda la scena scelta tra una visita e l’altra",
         "highlight_5": "È solo una visualizzazione — non cambia mai ciò che fanno i tuoi agenti",
-        "page_label": "Worlds"
+        "page_label": "Worlds",
+        "use_case_1": "Tieni sotto controllo su un secondo schermo agenti attivi, attività cron e subagenti mentre la squadra lavora.",
+        "configuration_1": "Attiva l'app, apri Agent Worlds, scegli una scena e, se vuoi, spostala in una finestra separata; non servono credenziali o servizi esterni."
       }
     },
     "autoImprovement": {
@@ -156,7 +158,9 @@
         "highlight_4": "Redige pull request GitHub: solo bozze, mai pubblicate né unite per te",
         "highlight_5": "Lavora su un clone senza push, così nulla esce dalla sandbox senza revisione",
         "highlight_6": "Una sessione di chat riprendibile per ogni pull request, risultato ed esecuzione",
-        "page_label": "Auto-Improve"
+        "page_label": "Auto-Improve",
+        "use_case_1": "Dimostra miglioramenti misurabili delle prestazioni o correzioni di bug riproducibili prima di trasformare i candidati riusciti in modifiche GitHub da revisionare.",
+        "configuration_1": "L'host del gateway deve avere Git e la CLI gh autenticata; collega un repository GitHub, scegli il branch di base e calibra una misura prima dei test delle prestazioni."
       },
       "setupPanel": {
         "https_github_com_owner_repo": "https://github.com/owner/repo"
@@ -191,7 +195,9 @@
         "highlight_5": "Aggiungi domande di approfondimento a campagna in corso senza ricominciare",
         "highlight_6": "Avvia, metti in pausa e riprendi qualsiasi campagna dalla dashboard",
         "highlight_7": "Esporta il report finito nella libreria Conoscenza o in un artefatto condivisibile",
-        "page_label": "Research Lab"
+        "page_label": "Research Lab",
+        "use_case_1": "Esegui un'indagine in più cicli che sviluppa una domanda ampia, trasmette le prove e produce un report riutilizzabile.",
+        "configuration_1": "Crea una campagna, scegli la modalità Agent o Dynamic Workflow, sviluppa la domanda, quindi imposta cicli, intervallo, worker e funzionamento supervisionato o autonomo."
       },
       "researchLabPage": {
         "120s": "120 s",
@@ -355,7 +361,9 @@
       "manifest": {
         "description": "Una vista a pagina intera della pipeline di auto-triage di Kiro Crew: una corsia orizzontale per ogni elemento di lavoro crew lungo l'enum delle fasi, così un operatore vede a colpo d'occhio in quale fase si trova ogni elemento, dove gli elementi si accumulano e quali sono bloccati. Legge il registro crew tramite la giuntura Crew Fabric di Issue Radar -- il disegno delle corsie risponde a 'dov'è questo elemento', un riepilogo della coda risponde a 'come va la coda'.",
         "display_name": "Pipeline di auto-triage Kiro Crew",
-        "page_label": "Pipeline di auto-triage"
+        "page_label": "Pipeline di auto-triage",
+        "use_case_1": "Individua dove il lavoro della squadra di Issue Radar si accumula, viene riaperto o resta in attesa nell'intera pipeline di consegna.",
+        "configuration_1": "Collega un repository in Issue Radar e lascia che il relativo registro della squadra raccolga gli eventi di fase, quindi attiva questa app e seleziona quel repository."
       },
       "pipeline": {
         "subtitle": "Una corsia per elemento di lavoro della crew, in tutte le fasi: vedi in quale fase si trova ogni elemento e dove si accumulano.",
@@ -446,7 +454,9 @@
         "highlight_3": "Resti tu l’ultimo ad approvare qualsiasi operazione che modifica lo stato",
         "highlight_4": "Gli agenti restano nel canale finché non vengono congedati o scadono",
         "highlight_5": "Nascosta dalla griglia dell’App Store; attivala con `kirocrew app enable channels`",
-        "page_label": "Canali"
+        "page_label": "Canali",
+        "use_case_1": "Gestisci risposta agli incidenti, ricerca o revisione del codice con più ruoli agente nominati in una trascrizione condivisa e verificabile.",
+        "configuration_1": "Attiva l'app nascosta con kirocrew app enable channels, crea un canale da un modello o con Custom, assegna agenti e modalità di ascolto, quindi usa le @menzioni per passare il lavoro."
       }
     },
     "codeReviewSage": {
@@ -870,7 +880,9 @@
         "highlight_3": "Le revisioni si leggono nell’app: nulla viene pubblicato nella tua pull request se non lo chiedi",
         "highlight_4": "Impara per singolo repository dalle correzioni rilasciate, dai commenti di revisione e dalle discussioni di design",
         "highlight_5": "Revisiona le pull request di GitHub; richiede una CLI `gh` autenticata sull’host del gateway",
-        "page_label": "Code Review Sage"
+        "page_label": "Code Review Sage",
+        "use_case_1": "Revisiona una o più pull request GitHub in base al rischio, esamina i risultati mirati e prepara solo i commenti che vale la pena pubblicare.",
+        "configuration_1": "Installa e autentica la CLI gh sull'host del gateway, aggiungi un repository, quindi scegli in Impostazioni il modello di revisione, il livello di ragionamento e la concorrenza."
       },
       "views": {
         "learningView": {
@@ -1091,7 +1103,9 @@
         "highlight_3": "Un breve esercizio di respirazione per ricaricarti quando ne hai bisogno",
         "highlight_4": "Ti dice quando una sessione finisce, va in errore o attende un tuo OK",
         "highlight_5": "Galleggia sulla scrivania con un avatar sostituibile",
-        "page_label": "Crew Companion"
+        "page_label": "Crew Companion",
+        "use_case_1": "Usa un compagno desktop per promemoria delle pause, promemoria in linguaggio semplice, esercizi di respirazione e notifiche delle sessioni.",
+        "configuration_1": "Usa Kiro Crew Desktop, attiva l'app, quindi imposta nella sua pagina l'intervallo delle pause e le notifiche di completamento; gli avatar si scelgono nella Gallery del compagno."
       },
       "memories": {
         "days_together_many": "{{count}} giorni insieme",
@@ -1387,7 +1401,9 @@
         "highlight_6": "Ti dice cosa non è riuscito a vedere invece di criticare una schermata vuota o bloccata",
         "highlight_7": "Non tocca il progetto che esamina: non installa mai le sue dipendenze, non esegue i suoi script, non avvia il suo dev server e non modifica i suoi file",
         "highlight_8": "Per catturare le immagini usa un browser headless, scaricato una sola volta al primo utilizzo in una cache nella tua home e mai dentro il progetto",
-        "page_label": "Design Critique"
+        "page_label": "Design Critique",
+        "use_case_1": "Valuta una schermata o un flusso di prodotto completo con risultati ordinati per gravità, basati su euristiche e collegati alle aree visibili.",
+        "configuration_1": "Trascina screenshot per una revisione senza configurazione oppure fornisci un file Figma, un repository, una cartella locale o un URL già attivo; le fonti GitHub private possono richiedere gh auth login."
       },
       "scopingPicker": {
         "critique_this_flow_count_screens": "Critique this flow · {{count}} screens",
@@ -1427,7 +1443,9 @@
         "highlight_5": "Segui i log dei pod e genera le chiavi di accesso ai pod dall’interfaccia",
         "highlight_6": "Pensata per chi sviluppa Kiro Crew stesso — non serve per l’uso quotidiano",
         "highlight_7": "I pod funzionano su Linux (systemd --user) e macOS (launchd) — ma il pod su macOS non ha un limite di memoria/CPU imposto; Make Live resta solo per Linux; vista della flotta, stato della PR, sincronizzazione, rebase ed eliminazione funzionano su qualsiasi piattaforma",
-        "page_label": "Dev Fleet"
+        "page_label": "Dev Fleet",
+        "use_case_1": "Gestisci i worktree delle funzionalità di Kiro Crew e pod di anteprima isolati senza modificare il gateway live.",
+        "configuration_1": "Indica all'app un checkout di Kiro Crew; le azioni sulle PR richiedono gh autenticato, mentre i pod richiedono systemd --user su Linux o launchd su macOS e devono prima essere predisposti."
       }
     },
     "designTweak": {
@@ -1564,7 +1582,9 @@
       "manifest": {
         "display_name": "Design Tweak",
         "description": "Seleziona visivamente gli elementi nell'anteprima live della tua app e trasformali in richieste di modifica mirate e collegate al codice sorgente per l'agente — come i commenti di Figma, ma per il codice.",
-        "page_label": "Design Tweak"
+        "page_label": "Design Tweak",
+        "use_case_1": "Annota gli elementi dell'interfaccia live nel loro contesto e invia a un agente di programmazione un gruppo di modifiche visive collegate al codice sorgente.",
+        "configuration_1": "Carica un progetto web locale, avvia il server di sviluppo rilevato o inserisci un URL esistente, passa alla modalità Edit, fai clic destro sugli elementi e invia il gruppo."
       }
     },
     "fileExplorer": {
@@ -1602,7 +1622,9 @@
         "highlight_4": "L’albero delle cartelle mostra in linea lo stato git di ogni file",
         "highlight_5": "Cerca in tutta una cartella con corrispondenze riga per riga e anteprima del contesto",
         "highlight_6": "I percorsi raggiungibili si limitano alla tua home, /tmp e /opt — i symlink che escono da lì vengono rifiutati",
-        "page_label": "File"
+        "page_label": "File",
+        "use_case_1": "Leggi, cerca, visualizza in anteprima, scarica o discuti i file sull'host del gateway senza concedere alla pagina accesso in scrittura.",
+        "configuration_1": "Attiva l'app e apri una directory consentita dalla barra del percorso; non serve un account e Git o ripgrep aggiungono solo funzioni opzionali per stato e ricerca."
       },
       "pathBar": {
         "click_to_edit_path": "Clicca per modificare il percorso",
@@ -2130,7 +2152,9 @@
         "highlight_7": "Mette in evidenza i repository a cui hai contribuito di recente, così collegarne uno è questione di un clic",
         "highlight_8": "Mette in cache in locale issue, etichette e membri, aggiornandoli su richiesta",
         "highlight_9": "Funziona con GitHub, GitLab e Azure DevOps; richiede sull’host del gateway una CLI autenticata per il provider che colleghi (`gh`, `glab` o `az`) — per l’installazione non serve la CLI di un provider specifico",
-        "page_label": "Issue Radar"
+        "page_label": "Issue Radar",
+        "use_case_1": "Classifica issue e pull request tra provider collegati conservando riepiloghi, etichette suggerite e cronologia delle indagini.",
+        "configuration_1": "Collega un repository e autentica la CLI del provider sull'host del gateway: gh per GitHub, glab per GitLab oppure az con l'estensione Azure DevOps su macOS, Linux o WSL."
       },
       "views": {
         "comingSoon": {
@@ -2636,7 +2660,9 @@
         "highlight_6": "La sincronizzazione in un passaggio fa commit, pull e push; un conflitto di merge elenca le note in conflitto e non sovrascrive nulla",
         "highlight_7": "Un salvataggio viene rifiutato se il file è cambiato su disco da quando l’hai aperto, così le modifiche fatte altrove non vengono mai schiacciate",
         "highlight_8": "Se vuoi, indicizza un vault nella libreria Conoscenza così gli agenti possono cercare nelle tue note",
-        "page_label": "Note"
+        "page_label": "Note",
+        "use_case_1": "Modifica un vault Markdown portabile con wikilink, backlink, ricerca, cronologia Git e indicizzazione Knowledge opzionale.",
+        "configuration_1": "Clona un repository Git o collega una cartella locale esistente, quindi abilita facoltativamente Knowledge e la sincronizzazione pianificata; i cloni GitHub privati richiedono un PAT o gh autenticato."
       },
       "panel": {
         "connectVault": "Collega un vault",
@@ -2799,7 +2825,9 @@
         "highlight_3": "Correggi una volta sola gli errori ricorrenti del riconoscimento vocale con un dizionario di dominio e tutte le riunioni successive li scriveranno bene",
         "highlight_4": "Rivedi le azioni estratte prima che qualcosa venga registrato — archivia il rumore, registra il resto",
         "highlight_5": "Provider di attività e calendario collegabili: include un registro locale delle attività e un lettore iCalendar (.ics), e un’organizzazione può registrarne di propri",
-        "page_label": "Riunioni"
+        "page_label": "Riunioni",
+        "use_case_1": "Acquisisci una riunione dal vivo mentre agenti paralleli creano la trascrizione, le note strutturate, il diagramma e la revisione delle attività.",
+        "configuration_1": "Consenti al browser di accedere al microfono per l'acquisizione dal vivo; configura facoltativamente nelle Impostazioni un percorso o URL iCalendar, il registro attività locale, i ruoli agente e i termini di correzione vocale."
       },
       "meeting": {
         "agentsPaused": "Gli agenti si sono fermati dopo ripetuti errori.",
@@ -3151,7 +3179,9 @@
         "highlight_4": "Ricorda il vostro rapporto — serie di giorni consecutivi, giorni più intensi, traguardi festeggiati una volta sola",
         "highlight_5": "Discreto per scelta: le notifiche si uniscono, la modalità silenziosa le trattiene, le riunioni vengono rispettate",
         "highlight_6": "Il nucleo autonomo è interamente nello stesso processo — nessuna seconda app, nessun runtime aggiuntivo",
-        "page_label": "Mochi"
+        "page_label": "Mochi",
+        "use_case_1": "Tieni un discreto animaletto desktop che conversa, segue promemoria e modifiche delle pagine pubbliche e si adatta agli eventi del calendario collegato.",
+        "configuration_1": "Usa Kiro Crew Desktop, attiva Mochi, scegline aspetto e comportamento, quindi aggiungi gli obiettivi da seguire nella chat o nella dashboard; la pianificazione basata sugli impegni richiede uno strumento MCP di calendario collegato."
       },
       "menu": {
         "clear_screen": "Svuota schermo",
@@ -3604,7 +3634,9 @@
         "highlight_4": "Si collega ad AWS CloudWatch, PagerDuty, Datadog, GitHub Issues o a qualsiasi sistema in grado di fare POST di JSON firmato — compresi i payload in formato Alertmanager, suddivisi in un incidente per ogni avviso",
         "highlight_5": "Di sola lettura per impostazione predefinita — le azioni di scrittura vanno attivate per singolo schema di segnale, e ognuna viene tracciata",
         "highlight_6": "Conosce i turni: il livello di automazione in servizio si arma e si disarma da sé",
-        "page_label": "Mission Control"
+        "page_label": "Mission Control",
+        "use_case_1": "Monitora i segnali operativi, indaga sugli incidenti, riutilizza le correzioni collaudate e consegna una traccia di controllo locale completa.",
+        "configuration_1": "Aggiungi provider nelle Impostazioni con credenziali d'ambiente o token, mantieni Observe per l'uso in sola lettura e abilita esplicitamente le azioni Propose o Act consentite; l'output Slack riutilizza una connessione Kiro Crew esistente."
       },
       "opsMissionControlPage": {
         "act": "Act",
@@ -3975,7 +4007,9 @@
         "highlight_5": "Chat con il coautore AI limitata all’articolo — legge e modifica il LaTeX che hai davanti",
         "highlight_6": "Clona un articolo da qualsiasi remoto git, poi fai commit, pull e push dalla barra degli strumenti",
         "highlight_7": "Non esegue mai il compilatore con lo shell escape, così un file .tex ostile non può eseguire comandi",
-        "page_label": "Papyrus"
+        "page_label": "Papyrus",
+        "use_case_1": "Scrivi un articolo LaTeX accanto al PDF compilato, passa dagli errori di build al sorgente e collabora con un agente limitato all'articolo.",
+        "configuration_1": "Installa Tectonic gestito dall'app o aggiungi tectonic o pdflatex a PATH, quindi crea un articolo o clona un repository con credenziali Git non interattive già configurate."
       },
       "page": {
         "actions": "Azioni",
@@ -4062,7 +4096,9 @@
         "highlight_3": "Consulta solo i negozi che gli indichi, e segnala che i prezzi vengono da pagine pubbliche, non dal tuo account",
         "highlight_4": "Non ha alcun modo di raggiungere carrello o pagamento",
         "highlight_5": "Organizza le preferenze salvate in gruppi nella scheda Preferenze",
-        "page_label": "Personal Shopper"
+        "page_label": "Personal Shopper",
+        "use_case_1": "Cerca prodotti nei negozi pubblici indicati mantenendo sotto il tuo controllo decisione, carrello, account e pagamento.",
+        "configuration_1": "Non servono credenziali dei negozi; salva facoltativamente Preferences e Sites come riferimento, quindi incolla i vincoli e i nomi dei negozi pertinenti nella conversazione con il consulente."
       },
       "historyTab": {
         "liked": "Mi piace",
@@ -4191,7 +4227,9 @@
         "highlight_4": "Importa un tuo stile HTML o un modello .pptx esistente e l’agente ne segue colori, caratteri e layout",
         "highlight_5": "Apri il file finito o mostra la sua cartella senza uscire dalla dashboard",
         "highlight_6": "Incapsula il motore pubblico spec-driven-presentation-maker, scaricato a una versione fissata con sha256; niente da installare a mano",
-        "page_label": "PPTX Maker"
+        "page_label": "PPTX Maker",
+        "use_case_1": "Trasforma un'idea, un URL o un testo sorgente in una vera presentazione con anteprime live delle slide e stili visivi riutilizzabili.",
+        "configuration_1": "Al primo utilizzo installa il motore con versione bloccata, facoltativamente LibreOffice per più anteprime, scegli una directory di output e importa gli stili HTML o i modelli PPTX da riutilizzare."
       },
       "pptxMakerPage": {
         "deck_output_directory": "Cartella di output delle presentazioni",
@@ -4252,7 +4290,9 @@
         "highlight_3": "Le esecuzioni procedono senza supervisione, con i progressi passo per passo sulla pagina dell’esecuzione stessa",
         "highlight_4": "Metti in pausa, riprendi, ritenta o ferma un’esecuzione in qualsiasi momento",
         "highlight_5": "Conserva uno storico delle esecuzioni passate e dei loro esiti",
-        "page_label": "Task Runner"
+        "page_label": "Task Runner",
+        "use_case_1": "Pianifica ed esegui un lavoro multi-agente con dipendenze partendo da linguaggio naturale, una specifica esistente o YAML deterministico.",
+        "configuration_1": "Apri Task Runner, scegli Compose, From Spec o From YAML, seleziona un agente e facoltativamente uno spazio di lavoro assoluto, quindi verifica con Plan o avvia subito con Run."
       }
     },
     "specBuilder": {
@@ -4443,7 +4483,9 @@
       "manifest": {
         "description": "Sviluppo guidato dalle spec dentro Kiro Crew: trasforma l’idea di una funzionalità in Requisiti → Progettazione → Attività con un agente integrato, rivedi il markdown nell’app e poi affida il piano approvato a una sessione di esecuzione autonoma.",
         "display_name": "Spec Builder",
-        "page_label": "Spec Builder"
+        "page_label": "Spec Builder",
+        "use_case_1": "Trasforma una funzionalità, un bug o un'attività rapida in requisiti, progettazione e passaggi di implementazione legati al repository e pronti da revisionare.",
+        "configuration_1": "Scegli una cartella di progetto e la modalità Feature, Bug o Quick, crea facoltativamente un nuovo worktree, quindi revisiona e approva ogni fase generata prima di avviare la build."
       },
       "specBuilderPage": {
         "dismiss_error": "Ignora l'errore",
@@ -4460,7 +4502,9 @@
         "highlight_3": "Gli script si limitano a un’API di workflow in sandbox, non a Python arbitrario",
         "highlight_4": "Di solito scritti per te a partire da un obiettivo in linguaggio naturale, poi modificabili a mano",
         "highlight_5": "Include esempi eseguibili da cui partire",
-        "page_label": "Workflow"
+        "page_label": "Workflow",
+        "use_case_1": "Convalida e ispeziona script di workflow limitati oppure monitora fase per fase le esecuzioni principali di workflow multi-agente.",
+        "configuration_1": "Attiva l'app nascosta con kirocrew app enable workflows; convalida Python DSL in Author oppure usa gli strumenti di workflow della chat o MCP per una vera orchestrazione degli agenti e monitorala in Runs."
       },
       "workflowRunTree": {
         "agent_many": "{{count}} agenti",
@@ -4536,7 +4580,9 @@
       "leave_scope": "Torna a tutti i comandi",
       "manifest": {
         "display_name": "Barra dei comandi",
-        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, artefatti, competenze e prompt: disattivalo per riaverlo."
+        "description": "Sostituisce la ricerca rapida (Cmd+K / Ctrl+K) con un launcher: digita un comando, non una ricerca. La prima pagina contiene comandi delle app, destinazioni e impostazioni di sistema e non invia richieste, quindi digitare non costa nulla. Le sessioni diventano una riga in cui si entra; mentre e attivo non si può cercare in conoscenza, artefatti, competenze e prompt: disattivalo per riaverlo.",
+        "use_case_1": "Passa ad app, impostazioni, sessioni che richiedono attenzione o a una nuova richiesta per l'agente senza lasciare la tastiera.",
+        "configuration_1": "È attiva per impostazione predefinita: premi Cmd+K o Ctrl+K ovunque, digita un comando e usa l'ambito Sessions per le conversazioni recenti o corrispondenti."
       },
       "no_matches": "Nessun risultato",
       "no_sessions": "Nessuna sessione corrispondente",
@@ -7524,6 +7570,8 @@
       "failed_to_load_app": "Caricamento dell'app non riuscito",
       "failed_to_uninstall": "Disinstallazione non riuscita",
       "features": "Funzionalità",
+      "use_cases": "Casi d’uso",
+      "configuration": "Configurazione",
       "fix_with_ai": "Correggi con l'IA",
       "install": "Installa",
       "install_complete": "Installazione completata",

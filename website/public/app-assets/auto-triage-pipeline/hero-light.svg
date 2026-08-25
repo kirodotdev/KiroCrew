@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 270">
+  <defs><linearGradient id="b" x2="1" y2="1"><stop stop-color="#eef2ff"/><stop offset="1" stop-color="#fdf4ff"/></linearGradient><filter id="s"><feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#4338ca" flood-opacity=".14"/></filter></defs>
+  <rect width="480" height="270" rx="12" fill="url(#b)"/><circle cx="416" cy="38" r="72" fill="#c4b5fd" opacity=".24"/><circle cx="54" cy="242" r="88" fill="#f0abfc" opacity=".18"/>
+  <g filter="url(#s)" fill="#fff" stroke="#c7d2fe"><rect x="38" y="46" width="404" height="178" rx="18"/><path d="M38 88h404"/></g>
+  <g fill="#6366f1"><circle cx="74" cy="67" r="5"/><rect x="94" y="63" width="56" height="8" rx="4" opacity=".55"/></g>
+  <g stroke="#c7d2fe" stroke-dasharray="3 5"><path d="M132 104v96M218 104v96M304 104v96M390 104v96"/></g>
+  <g fill="none" stroke-linecap="round" stroke-width="4"><path d="M64 128h68l86 28h86l86-32" stroke="#8b5cf6"/><path d="M64 188h68l86-46h86l86 28" stroke="#f59e0b"/></g>
+  <g fill="#fff" stroke-width="3"><circle cx="132" cy="128" r="7" stroke="#8b5cf6"/><circle cx="218" cy="156" r="7" stroke="#8b5cf6"/><circle cx="304" cy="156" r="7" stroke="#8b5cf6"/><circle cx="390" cy="124" r="7" stroke="#8b5cf6"/><circle cx="132" cy="188" r="7" stroke="#f59e0b"/><circle cx="218" cy="142" r="7" stroke="#f59e0b"/><circle cx="304" cy="142" r="7" stroke="#f59e0b"/><circle cx="390" cy="170" r="7" stroke="#f59e0b"/></g>
+</svg>

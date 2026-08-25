@@ -129,7 +129,7 @@ export function appNavTarget(app: AppNavRecord): AppNavTarget | null {
     name: app.name,
     route,
     id: appHostRouted ? `app-${app.name}` : app.name,
-    label: appPageLabel(app.name, page.label, app.displayName),
+    label: appPageLabel(app.name, page.label, app.displayName, app.origin),
     orphaned,
     builtin: isBuiltin,
     // Routed through the shared resolver rather than taken raw: an installed

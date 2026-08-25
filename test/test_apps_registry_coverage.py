@@ -836,12 +836,16 @@ class TestMergeManifest:
                 "author": "someone",
                 "tags": ["a"],
                 "highlights": ["h"],
+                "useCases": ["u"],
+                "configuration": ["c"],
                 "license": "MIT",
                 "minKiroCrewVersion": "0.1.0",
             },
         )
         assert merged["displayName"] == "Demo"
         assert merged["tags"] == ["a"]
+        assert merged["useCases"] == ["u"]
+        assert merged["configuration"] == ["c"]
         assert merged["minKiroCrewVersion"] == "0.1.0"
         # Registry-only fields survive.
         assert merged["name"] == "demo" and merged["branch"] == "main"

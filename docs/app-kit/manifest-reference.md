@@ -20,6 +20,11 @@ The app manifest (`app.json`) declares your app's identity, resources, and requi
 | `minKiroCrewVersion` | string | Minimum Gateway version required |
 | `tags` | string[] | Discovery tags (e.g. `["oncall", "monitoring"]`) |
 | `jobFamilies` | string[] | Job families this app is relevant to |
+| `highlights` | string[] | Concise feature bullets for the detail page |
+| `useCases` | string[] | Short, operator-oriented situations where the app is useful |
+| `configuration` | string[] | Concise setup or configuration steps shown on the detail page |
+| `screenshots` | string[] | Real product screenshots; paths follow the same distribution rules as hero art |
+| `screenshotsDark` | string[] | Optional dark-appearance screenshot variants |
 
 ## Resources
 
@@ -179,7 +184,9 @@ and detail cards. The path form depends on how the app is distributed:
   ```json
   {
     "heroImage": "/apps/my-app/ui/hero-light.svg",
-    "heroImageDark": "/apps/my-app/ui/hero-dark.svg"
+    "heroImageDark": "/apps/my-app/ui/hero-dark.svg",
+    "heroImageDetail": "/apps/my-app/ui/hero-detail-light.svg",
+    "heroImageDetailDark": "/apps/my-app/ui/hero-detail-dark.svg"
   }
   ```
 
@@ -190,7 +197,9 @@ and detail cards. The path form depends on how the app is distributed:
   ```json
   {
     "heroImage": "ui/hero-light.svg",
-    "heroImageDark": "ui/hero-dark.svg"
+    "heroImageDark": "ui/hero-dark.svg",
+    "heroImageDetail": "ui/hero-detail-light.svg",
+    "heroImageDetailDark": "ui/hero-detail-dark.svg"
   }
   ```
 
@@ -198,6 +207,11 @@ and detail cards. The path form depends on how the app is distributed:
 |-------|------|-------------|
 | `heroImage` | string | Hero image shown on the App Store card (light theme) |
 | `heroImageDark` | string | Hero image variant used in dark theme |
+| `heroImageDetail` | string | Wide banner preferred by the detail page (light theme) |
+| `heroImageDetailDark` | string | Wide detail banner used in dark theme |
+
+Hero images are illustrative marketing art. `screenshots` are separate and must
+show the real product UI; the detail page renders both when both are declared.
 
 ## Backend
 
@@ -510,6 +524,9 @@ the user to run locally instead of executing it on the server.
   "description": "Monitor tickets, pipelines, and alarms for your on-call rotation",
   "author": "kirocrew",
   "tags": ["oncall", "monitoring"],
+  "useCases": ["Keep a shared view of firing alerts and active investigations"],
+  "configuration": ["Connect an alert provider in Settings, then start in read-only mode"],
+  "screenshots": ["ui/screenshots/board.png"],
   "agents": ["agents/ticket-analyst.json"],
   "skills": ["skills/oncall-runbook"],
   "crons": [

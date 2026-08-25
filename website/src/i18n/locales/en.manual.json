@@ -2581,6 +2581,8 @@
       "failed_to": "Failed to {{action}}",
       "failed_to_load_app": "Failed to load app",
       "failed_to_uninstall": "Failed to uninstall",
+      "use_cases": "Use cases",
+      "configuration": "Configuration",
       "open_screenshot": "Open screenshot {{n}}",
       "screenshot": "Screenshot {{n}}",
       "install_complete": "Install complete",

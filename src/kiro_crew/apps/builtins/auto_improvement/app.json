@@ -66,5 +66,14 @@
   "heroImage": "/app-assets/auto-improvement/hero-light.svg",
   "heroImageDark": "/app-assets/auto-improvement/hero-dark.svg",
   "heroImageDetail": "/app-assets/auto-improvement/hero-detail-light.svg",
-  "heroImageDetailDark": "/app-assets/auto-improvement/hero-detail-dark.svg"
+  "heroImageDetailDark": "/app-assets/auto-improvement/hero-detail-dark.svg",
+  "useCases": [
+    "Prove measurable performance gains or reproducible bug fixes before turning survivors into reviewable GitHub changes."
+  ],
+  "configuration": [
+    "The gateway host needs git and an authenticated gh CLI; connect a GitHub repository, choose its base branch, and calibrate a ruler before performance runs."
+  ],
+  "screenshots": [
+    "/app-assets/auto-improvement/screenshot-main.png"
+  ]
 }

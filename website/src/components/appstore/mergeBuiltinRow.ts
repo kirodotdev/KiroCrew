@@ -19,6 +19,8 @@ export type BuiltinManifestFields = {
   author?: string
   tags?: string[]
   highlights?: string[]
+  useCases?: string[]
+  configuration?: string[]
   screenshots?: string[]
   screenshotsDark?: string[]
   heroImage?: string
@@ -113,6 +115,8 @@ export function mergeBuiltinRow(
     installed: row.installed ?? true,
     tags: row.tags?.length ? row.tags : m?.tags,
     highlights: row.highlights?.length ? row.highlights : m?.highlights,
+    useCases: row.useCases?.length ? row.useCases : m?.useCases,
+    configuration: row.configuration?.length ? row.configuration : m?.configuration,
     screenshots: row.screenshots?.length ? row.screenshots : m?.screenshots,
     heroImage: row.heroImage || m?.heroImage,
     heroImageDark: row.heroImageDark || m?.heroImageDark,

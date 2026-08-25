@@ -29,5 +29,14 @@
         "icon": "Gamepad2"
       }
     ]
-  }
+  },
+  "useCases": [
+    "Keep an at-a-glance, second-screen view of live agents, crons, and subagents while a crew is working."
+  ],
+  "configuration": [
+    "Enable the app, open Agent Worlds, choose a scene, and optionally pop it out; no credentials or external service are required."
+  ],
+  "screenshots": [
+    "/app-assets/worlds/screenshot-main.png"
+  ]
 }

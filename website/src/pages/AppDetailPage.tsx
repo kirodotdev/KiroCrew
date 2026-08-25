@@ -11,7 +11,7 @@ import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
-  Sparkles,
+  Sparkles, Target, Settings2,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
@@ -24,7 +24,9 @@ import { useTheme } from '../hooks/useTheme'
 import AskAgentButton from '../components/AskAgentButton'
 
 import { i18nT } from '../i18n/t'
-import { appDisplayName, appDescription, appHighlights } from '../components/appstore/appManifest'
+import {
+  appDisplayName, appDescription, appHighlights, appUseCases, appConfiguration,
+} from '../components/appstore/appManifest'
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { manifestArt, manifestArtList, classifyManifestArt } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric } from '../i18n/format'
@@ -39,6 +41,8 @@ type AppInfo = {
   iconUrlDark?: string
   tags?: string[]
   highlights?: string[]
+  useCases?: string[]
+  configuration?: string[]
   screenshots?: string[]
   screenshotsDark?: string[]
   heroImage?: string
@@ -100,6 +104,8 @@ interface AppManifest {
   author?: string
   tags?: string[]
   highlights?: string[]
+  useCases?: string[]
+  configuration?: string[]
   screenshots?: string[]
   screenshotsDark?: string[]
   // Store-listing metadata. For built-in apps these live on the manifest
@@ -323,6 +329,8 @@ export default function AppDetailPage() {
               || manifestArt(m.iconUrlDark, artRepo) || '',
             tags: m.tags || registryEntry?.tags || [],
             highlights: m.highlights || registryEntry?.highlights || [],
+            useCases: m.useCases || registryEntry?.useCases || [],
+            configuration: m.configuration || registryEntry?.configuration || [],
             screenshots: registryEntry?.screenshots || manifestArtList(m.screenshots, artRepo),
             screenshotsDark: registryEntry?.screenshotsDark
               || manifestArtList(m.screenshotsDark, artRepo),
@@ -663,6 +671,12 @@ export default function AppDetailPage() {
   // 1200x288 (25:6) ratio so object-cover doesn't horizontally crop the art
   // on viewports narrower than 1200px. Fall back to 16:9 for the Browse hero.
   const heroIsDetail = Boolean(heroDetailSrc)
+  // Resolve untrusted registry metadata once and use the same normalized arrays
+  // for both visibility and content. Reading the raw field for visibility would
+  // render an empty titled card when a third-party index supplied a string or a
+  // mixed array that the resolver correctly rejects.
+  const useCases = appUseCases(app)
+  const configuration = appConfiguration(app)
 
   return (
     <>
@@ -973,6 +987,44 @@ export default function AppDetailPage() {
           const light = app.screenshots || []
           return resolvedMode === 'dark' && dark.length ? dark : light
         })()} />
+
+        {/* Concise operator guidance, kept separate from the marketing feature list. */}
+        {(useCases.length > 0 || configuration.length > 0) && (
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(280px,1fr))] gap-4 mb-4">
+            {useCases.length > 0 && (
+              <Card>
+                <CardTitle>
+                  <Target className="lucide-inline text-accent" />{' '}
+                  {i18nT('pages.appDetailPage.use_cases')}
+                </CardTitle>
+                <div className="grid gap-2 mt-2">
+                  {useCases.map((item, i) => (
+                    <div key={i} className="flex items-start gap-2.5 text-[13px] text-text">
+                      <span className="mt-[7px] size-1.5 rounded-full bg-accent shrink-0" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+            {configuration.length > 0 && (
+              <Card>
+                <CardTitle>
+                  <Settings2 className="lucide-inline text-accent" />{' '}
+                  {i18nT('pages.appDetailPage.configuration')}
+                </CardTitle>
+                <div className="grid gap-2 mt-2">
+                  {configuration.map((item, i) => (
+                    <div key={i} className="flex items-start gap-2.5 text-[13px] text-text">
+                      <span className="mt-[7px] size-1.5 rounded-full bg-accent shrink-0" />
+                      <span>{item}</span>
+                    </div>
+                  ))}
+                </div>
+              </Card>
+            )}
+          </div>
+        )}
 
         {/* Features */}
         {(app.highlights || []).length > 0 && (

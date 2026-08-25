@@ -63,6 +63,8 @@ const BUILTIN = {
     iconUrl: '/app-assets/worlds/icon.svg',
     heroImage: '/app-assets/worlds/hero-light.svg',
     heroImageDark: '/app-assets/worlds/hero-dark.svg',
+    useCases: ['raw use case'],
+    configuration: ['raw configuration'],
     ui: { pages: [{ route: '/worlds', label: 'Worlds', icon: 'Gamepad2' }] },
   },
 }
@@ -94,6 +96,16 @@ describe('AppDetailPage — built-in icon/hero resolution', () => {
     await screen.findByTestId('app-icon')
     const hero = document.querySelector('img[src="/app-assets/worlds/hero-light.svg"]')
     expect(hero).not.toBeNull()
+  })
+
+  it('renders localized use-case and configuration guidance from the manifest', async () => {
+    getApp.mockResolvedValue(BUILTIN)
+    renderDetail()
+
+    expect(await screen.findByText('Use cases')).toBeInTheDocument()
+    expect(screen.getByText('Configuration')).toBeInTheDocument()
+    expect(screen.getByText(/second-screen view of live agents/)).toBeInTheDocument()
+    expect(screen.getByText(/no credentials or external service/)).toBeInTheDocument()
   })
 
   it('shows no hero banner when the built-in ships no hero image', async () => {
@@ -254,5 +266,32 @@ describe('AppDetailPage — installed external app whose registry row carries no
     expect(icon.getAttribute('data-icon-url')).toBe('')
     const srcs = [...document.querySelectorAll('img')].map((i) => i.getAttribute('src') || '')
     expect(srcs.some((s) => s.includes('evil.example'))).toBe(false)
+  })
+})
+
+describe('AppDetailPage — malformed registry guidance', () => {
+  beforeEach(() => {
+    getApp.mockReset()
+    listRegistry.mockReset()
+    system.mockReset()
+    getApp.mockResolvedValue(null)
+    system.mockResolvedValue({ hostname: '' })
+  })
+
+  it('does not render empty guidance cards for rejected third-party fields', async () => {
+    listRegistry.mockResolvedValue({
+      apps: [{
+        ...ART_LESS_ROW,
+        installed: false,
+        useCases: 'not an array',
+        configuration: ['valid-looking', null],
+      }],
+      serverPlatform: { os: 'linux', arch: 'x86_64' },
+    })
+    renderDetail('some-app')
+
+    await screen.findByTestId('app-icon')
+    expect(screen.queryByText('Use cases')).toBeNull()
+    expect(screen.queryByText('Configuration')).toBeNull()
   })
 })

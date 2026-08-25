@@ -1800,6 +1800,8 @@ def _merge_manifest(entry: dict[str, Any], manifest: dict[str, Any]) -> dict[str
         "author",
         "tags",
         "highlights",
+        "useCases",
+        "configuration",
         "license",
         "minKiroCrewVersion",
     ):
