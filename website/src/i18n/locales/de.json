@@ -6934,6 +6934,7 @@
       "desc_todos": "Aufgabenliste anzeigen oder verwalten",
       "desc_tools": "Verfügbare Werkzeuge anzeigen",
       "desc_usage": "Abrechnungs- und Nutzungsinformationen anzeigen",
+      "desc_workflow": "Gespeicherte Workflows nach Namen auflisten oder ausführen",
       "no_matching_commands_ctrl_enter_sends": "Keine passenden Befehle — Ctrl+Enter sendet die Nachricht",
       "no_matching_commands_enter_sends": "Keine passenden Befehle — Enter sendet die Nachricht"
     },
@@ -8289,6 +8290,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "Agenten-Fähigkeiten",
+      "workflows_label": "Workflows",
+      "workflows_description": "Wiederverwendbare Agenten-Workflows erstellen, bearbeiten und ausführen",
       "connections_description": "Offizielle Dienste verbinden und benutzerdefinierte MCP-Server verwalten",
       "connections_label": "Verbindungen",
       "crews_description": "Agenten, mit denen du chattest – jeder mit eigenem Arbeitsbereich",
@@ -8823,8 +8826,14 @@
         "could_not_load_run_snapshot": "Ausführungs-Snapshot konnte nicht geladen werden:"
       },
       "workflowRunCard": {
+        "cancel": "Abbrechen",
         "open_in_the_workflows_panel": "Im Workflows-Panel öffnen",
-        "open_workflows_panel": "· Workflows-Panel öffnen"
+        "open_workflows_panel": "· Workflows-Panel öffnen",
+        "save_help": "Behalte den exakten Workflow dieses abgeschlossenen Laufs in deiner globalen Bibliothek.",
+        "save_title": "Diesen Workflow speichern",
+        "save_workflow": "Workflow speichern",
+        "saved_as": "Gespeichert als {{command}}",
+        "source_unavailable": "Der Quelltext des abgeschlossenen Workflows konnte nicht geladen werden."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Snapshot konnte nicht geladen werden:",
@@ -10151,6 +10160,31 @@
       "unread": "Ungelesen"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Angepasst von",
+        "create_draft": "Entwurf erstellen",
+        "create_title": "Wiederverwendbaren Workflow erstellen",
+        "description": "Gespeicherte Workflows gelten global in Kiro Crew und funktionieren mit jedem unterstützten Agenten-Harness. Neue Entwürfe können passende Workflows anpassen, ohne sie zu verändern.",
+        "empty": "Keine gespeicherten Workflows gefunden.",
+        "intent": "Was soll dieser Workflow tun?",
+        "loading": "Workflows werden geladen…",
+        "name": "Name",
+        "new_workflow": "Neuer Workflow",
+        "request_failed": "Workflow-Anfrage fehlgeschlagen",
+        "revision": "Revision {{revision}}",
+        "run": "Workflow ausführen",
+        "run_input": "Eingabe (verfügbar als ctx.args.input)",
+        "save_revision": "Neue Revision speichern",
+        "save_to_library": "In Bibliothek speichern",
+        "search": "Workflows suchen…",
+        "select_or_create": "Gespeicherten Workflow auswählen oder einen neuen erstellen.",
+        "slug": "Slash-Befehlsname",
+        "source": "Workflow-Quelltext",
+        "started": "{{runId}} gestartet",
+        "title": "Workflow-Bibliothek",
+        "updated": "Aktualisiert: {{date}}",
+        "workflow_description": "Beschreibung"
+      },
       "agentCfgTab": {
         "after_saving_use": "Verwenden Sie nach dem Speichern",
         "agent_config_file": "Agenten-Konfiguration ({{file}})",

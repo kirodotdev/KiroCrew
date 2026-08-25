@@ -6825,6 +6825,7 @@
       "desc_todos": "显示或管理任务清单",
       "desc_tools": "显示可用工具",
       "desc_usage": "显示计费和用量信息",
+      "desc_workflow": "按名称列出或运行已保存的工作流",
       "no_matching_commands_ctrl_enter_sends": "无匹配的命令 —— 按 Ctrl+Enter 直接发送消息",
       "no_matching_commands_enter_sends": "无匹配的命令 —— 按 Enter 直接发送消息"
     },
@@ -8167,6 +8168,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "代理能力",
+      "workflows_label": "工作流",
+      "workflows_description": "创建、编辑和运行可复用的代理工作流",
       "connections_description": "连接官方服务并管理自定义 MCP 服务器",
       "connections_label": "连接",
       "crews_description": "你与之聊天的代理，每个都有自己的工作区",
@@ -8688,8 +8691,14 @@
         "could_not_load_run_snapshot": "无法加载运行快照："
       },
       "workflowRunCard": {
+        "cancel": "取消",
         "open_in_the_workflows_panel": "在“工作流”面板中打开",
-        "open_workflows_panel": "· 打开工作流面板"
+        "open_workflows_panel": "· 打开工作流面板",
+        "save_help": "将此已完成运行中的原始工作流保存到全局库。",
+        "save_title": "保存此工作流",
+        "save_workflow": "保存工作流",
+        "saved_as": "已保存为 {{command}}",
+        "source_unavailable": "无法加载已完成工作流的源代码。"
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "无法加载快照：",
@@ -9998,6 +10007,31 @@
       "unread": "未读"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "改编自",
+        "create_draft": "创建草稿",
+        "create_title": "创建可复用工作流",
+        "description": "已保存的工作流在 Kiro Crew 中全局共享，并适用于所有受支持的代理框架。新草稿可以改编匹配的工作流，而不会更改原工作流。",
+        "empty": "未找到已保存的工作流。",
+        "intent": "此工作流应执行什么操作？",
+        "loading": "正在加载工作流…",
+        "name": "名称",
+        "new_workflow": "新建工作流",
+        "request_failed": "工作流请求失败",
+        "revision": "修订版 {{revision}}",
+        "run": "运行工作流",
+        "run_input": "输入（可通过 ctx.args.input 使用）",
+        "save_revision": "保存新修订版",
+        "save_to_library": "保存到库",
+        "search": "搜索工作流…",
+        "select_or_create": "选择已保存的工作流或新建一个。",
+        "slug": "斜杠命令名称",
+        "source": "工作流源代码",
+        "started": "已启动 {{runId}}",
+        "title": "工作流库",
+        "updated": "更新时间：{{date}}",
+        "workflow_description": "说明"
+      },
       "agentCfgTab": {
         "after_saving_use": "保存后，使用",
         "agent_config_file": "代理配置 ({{file}})",

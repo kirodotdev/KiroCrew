@@ -82,6 +82,7 @@ def _no_session_key(monkeypatch: pytest.MonkeyPatch) -> None:
     care whether it returns something header-safe, so freeze it.
     """
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:chat-1")
+    monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
     monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "s3cr3t")
 
 
@@ -210,7 +211,9 @@ class TestVerbHelpers:
     ):
         fn = getattr(mcp_core, verb)
         monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:chat—1")
-        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=AssertionError("must not be called")):
+        with patch(
+            "kiro_crew.mcp_core.loopback_urlopen", side_effect=AssertionError("must not be called")
+        ):
             out = fn("/api/thing")
         assert "invalid in HTTP headers" in out["error"]
 
@@ -229,14 +232,18 @@ class TestVerbHelperBodies:
             assert req.headers["Content-type"] == "application/json"
 
     def test_delete_without_body_sends_no_content_type(self):
-        with patch("kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})) as m:
+        with patch(
+            "kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})
+        ) as m:
             mcp_core._delete("/api/thing")
         req = m.call_args[0][0]
         assert req.data is None
         assert "Content-type" not in req.headers
 
     def test_delete_with_body_sends_json(self):
-        with patch("kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})) as m:
+        with patch(
+            "kiro_crew.mcp_core.loopback_urlopen", return_value=_FakeResponse({"ok": True})
+        ) as m:
             mcp_core._delete("/api/thing", {"rule": "x"})
         req = m.call_args[0][0]
         assert json.loads(req.data.decode()) == {"rule": "x"}
@@ -262,7 +269,10 @@ class TestPostTransportClassification:
         assert out == {"error": "read timeout", "transport_error": True}
 
     def test_http_error_is_not_flagged_transport_error(self):
-        with patch("kiro_crew.mcp_core.loopback_urlopen", side_effect=_http_error(400, b'{"error": "nope"}')):
+        with patch(
+            "kiro_crew.mcp_core.loopback_urlopen",
+            side_effect=_http_error(400, b'{"error": "nope"}'),
+        ):
             out = mcp_core._post("/api/spawn", {})
         assert out == {"error": "nope"}
 
@@ -411,9 +421,7 @@ class TestDoSelectCrew:
         assert [c["name"] for c in out["crews"]] == ["docs"]
         assert "high confidence" in out["guidance"]
 
-    def test_unknown_crew_returns_error_with_available_names(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_unknown_crew_returns_error_with_available_names(self, monkeypatch: pytest.MonkeyPatch):
         cfg = _crew_config({"main": SimpleNamespace(triggers="", model="auto")}, "main")
         self._patch_cfg(monkeypatch, cfg)
         out = json.loads(_do_select_crew("ghost"))
@@ -424,9 +432,7 @@ class TestDoSelectCrew:
         self._patch_cfg(monkeypatch, _crew_config({}, ""))
         assert json.loads(_do_select_crew("ghost"))["available"] == "(none)"
 
-    def test_named_crew_returns_resolved_bindings(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path
-    ):
+    def test_named_crew_returns_resolved_bindings(self, monkeypatch: pytest.MonkeyPatch, tmp_path):
         cfg = _crew_config({"docs": SimpleNamespace(triggers="d", model="opus")}, "main")
         self._patch_cfg(monkeypatch, cfg)
         monkeypatch.setattr(
@@ -445,9 +451,7 @@ class TestDoSelectCrew:
             "model": "opus",
         }
 
-    def test_select_crew_tool_routes_through_do_select_crew(
-        self, monkeypatch: pytest.MonkeyPatch
-    ):
+    def test_select_crew_tool_routes_through_do_select_crew(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr(mcp_core, "_do_select_crew", lambda crew: f"crew={crew!r}")
         assert _call_tool("select_crew", {"crew": "docs"}) == "crew='docs'"
 
@@ -661,6 +665,48 @@ class TestWorkflowAuthor:
 
 
 class TestWorkflowRun:
+    def test_refuses_to_start_without_strict_session_identity(self):
+        with (
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+            patch.object(mcp_core, "_post") as mocked,
+        ):
+            out = _call_tool("workflow_run", {"workflow": "debug-project"})
+
+        assert "cannot verify caller identity" in out
+        mocked.assert_not_called()
+
+    def test_ad_hoc_run_keeps_the_existing_identity_fallback(self):
+        with (
+            patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
+            patch.object(mcp_core, "_post", return_value={"run_id": "r-ad-hoc"}) as mocked,
+        ):
+            out = _call_tool("workflow_run", {"source": "ctx.agent('x')"})
+
+        mocked.assert_called_once_with(
+            "/api/workflows/run",
+            {"source": "ctx.agent('x')"},
+        )
+        assert "r-ad-hoc" in out
+
+    def test_saved_workflow_reference_runs_exact_definition(self):
+        response = {"run_id": "r-saved", "workflow_id": "wfd_1", "revision": 2}
+        with (
+            patch.object(
+                mcp_core, "_resolve_session_key_strict", return_value="dashboard:verified"
+            ),
+            patch.object(mcp_core, "_post", return_value=response) as mocked,
+        ):
+            out = _call_tool(
+                "workflow_run",
+                {"workflow": "debug-project", "input": "login failure", "args": {"depth": 2}},
+            )
+        assert mocked.call_args[0] == (
+            "/api/workflows/definitions/debug-project/run",
+            {"input": "login failure", "args": {"depth": 2}},
+        )
+        assert mocked.call_args.kwargs == {"session_key": "dashboard:verified"}
+        assert "r-saved" in out and "revision 2" in out
+
     def test_neither_source_nor_intent_is_rejected(self):
         out = _call_tool("workflow_run", {})
         assert out == "Error: provide either 'source' or 'intent'"
@@ -709,6 +755,19 @@ class TestWorkflowRun:
     def test_non_int_budget_total_is_rejected_by_the_schema(self):
         out = _call_tool("workflow_run", {"source": "ctx.agent('x')", "budget_total": "lots"})
         assert "budget_total" in out
+
+
+class TestWorkflowDefinitionLibrary:
+    def test_list_saved_definitions(self):
+        response = {
+            "definitions": [
+                {"id": "wfd_1", "slug": "debug-project", "revision": 2, "name": "Debug"}
+            ]
+        }
+        with patch.object(mcp_core, "_get", return_value=response) as mocked:
+            out = _call_tool("workflow_library_list", {"search": "debugging"})
+        assert mocked.call_args[0][0] == "/api/workflows/definitions?q=debugging"
+        assert "/workflow debug-project" in out
 
 
 class TestWorkflowStatusAndResult:
@@ -774,7 +833,12 @@ class TestWorkflowStatusAndResult:
         assert secret not in out
 
     def test_result_leaves_non_str_scalars_untouched(self):
-        snap = {"run_id": "r1", "status": "finished", "result": {"n": 3, "flag": True}, "events": []}
+        snap = {
+            "run_id": "r1",
+            "status": "finished",
+            "result": {"n": 3, "flag": True},
+            "events": [],
+        }
         with patch.object(mcp_core, "_get", return_value=snap):
             payload = json.loads(_call_tool("workflow_result", {"run_id": "r1"}))
         assert payload["result"] == {"n": 3, "flag": True}
@@ -1220,6 +1284,7 @@ class TestFileSend:
 
 
 # ── argument validation seam ──────────────────────────────────────────────
+
 
 class TestValidateArgs:
     def test_schema_backed_tool_is_validated_and_cleaned(self):

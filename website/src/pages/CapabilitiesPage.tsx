@@ -1,6 +1,6 @@
 import { useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass } from 'lucide-react'
+import { Link2, BookOpen, Users, MessageSquareText, Webhook, LayoutTemplate, Compass, Workflow } from 'lucide-react'
 import SidePanelLayout from '../components/SidePanelLayout'
 import RestartButton from '../components/RestartButton'
 import { useProvider } from '../providers'
@@ -10,6 +10,7 @@ import KiroCrewAgentsPage from './KiroCrewAgentsPage'
 import HooksPage from './HooksPage'
 import ConnectionsPage from './connections/ConnectionsPage'
 import { SkillsTab, PromptsTab, SteeringTab } from './overview'
+import WorkflowLibraryTab from './overview/WorkflowLibraryTab'
 
 
 /**
@@ -49,6 +50,7 @@ export default function CapabilitiesPage() {
       { key: 'steering', label: t('pages.capabilitiesPage.steering_label'), icon: <Compass size={16} />, description: t('pages.capabilitiesPage.steering_description') },
       { key: 'hooks', label: t('pages.capabilitiesPage.hooks_label'), icon: <Webhook size={16} />, description: t('pages.capabilitiesPage.hooks_description') },
       { key: 'prompts', label: t('pages.capabilitiesPage.prompts_label'), icon: <MessageSquareText size={16} />, description: t('pages.capabilitiesPage.prompts_description', { registry: provider.labels.pluginRegistryName || 'packages' }) },
+      { key: 'workflows', label: t('pages.capabilitiesPage.workflows_label'), icon: <Workflow className="lucide-inline" />, description: t('pages.capabilitiesPage.workflows_description') },
     ]
     // `t` is a real dependency, not decoration: it subscribes to the language, so
     // a memo keyed only on `provider` would keep whichever language's labels it
@@ -65,6 +67,7 @@ export default function CapabilitiesPage() {
         {tab === 'steering' && <SteeringTab />}
         {tab === 'hooks' && <HooksPage embedded />}
         {tab === 'prompts' && <PromptsTab />}
+        {tab === 'workflows' && <WorkflowLibraryTab />}
       </>}
     </SidePanelLayout>
   )

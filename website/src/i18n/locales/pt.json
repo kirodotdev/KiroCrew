@@ -7043,6 +7043,7 @@
       "desc_todos": "Mostrar ou gerenciar a lista de tarefas",
       "desc_tools": "Mostrar as ferramentas disponíveis",
       "desc_usage": "Mostrar informações de cobrança e uso",
+      "desc_workflow": "Listar ou executar um fluxo salvo pelo nome",
       "no_matching_commands_ctrl_enter_sends": "Nenhum comando correspondente — Ctrl+Enter envia a mensagem",
       "no_matching_commands_enter_sends": "Nenhum comando correspondente — Enter envia a mensagem"
     },
@@ -8411,6 +8412,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "Recursos do agente",
+      "workflows_label": "Fluxos de trabalho",
+      "workflows_description": "Crie, edite e execute fluxos reutilizáveis de agentes",
       "connections_description": "Conecte serviços oficiais e gerencie servidores MCP personalizados",
       "connections_label": "Conexões",
       "crews_description": "Agentes com quem você conversa, cada um com seu próprio espaço de trabalho",
@@ -8958,8 +8961,14 @@
         "could_not_load_run_snapshot": "Não foi possível carregar o snapshot da execução:"
       },
       "workflowRunCard": {
+        "cancel": "Cancelar",
         "open_in_the_workflows_panel": "Abrir no painel de fluxos de trabalho",
-        "open_workflows_panel": "· Abrir painel de fluxos de trabalho"
+        "open_workflows_panel": "· Abrir painel de fluxos de trabalho",
+        "save_help": "Guarde o fluxo de trabalho exato desta execução concluída na sua biblioteca global.",
+        "save_title": "Salvar este fluxo de trabalho",
+        "save_workflow": "Salvar fluxo de trabalho",
+        "saved_as": "Salvo como {{command}}",
+        "source_unavailable": "Não foi possível carregar o código do fluxo de trabalho concluído."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Não foi possível carregar o snapshot:",
@@ -10304,6 +10313,31 @@
       "unread": "Não lidas"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Adaptado de",
+        "create_draft": "Criar rascunho",
+        "create_title": "Criar um fluxo reutilizável",
+        "description": "Os fluxos salvos são globais no Kiro Crew e funcionam com todos os mecanismos de agente compatíveis. Novos rascunhos podem adaptar fluxos correspondentes sem alterá-los.",
+        "empty": "Nenhum fluxo salvo encontrado.",
+        "intent": "O que este fluxo deve fazer?",
+        "loading": "Carregando fluxos…",
+        "name": "Nome",
+        "new_workflow": "Novo fluxo",
+        "request_failed": "Falha na solicitação do fluxo",
+        "revision": "Revisão {{revision}}",
+        "run": "Executar fluxo",
+        "run_input": "Entrada (disponível como ctx.args.input)",
+        "save_revision": "Salvar nova revisão",
+        "save_to_library": "Salvar na biblioteca",
+        "search": "Pesquisar fluxos…",
+        "select_or_create": "Selecione um fluxo salvo ou crie um novo.",
+        "slug": "Nome do comando de barra",
+        "source": "Código-fonte do fluxo",
+        "started": "{{runId}} iniciado",
+        "title": "Biblioteca de fluxos",
+        "updated": "Atualizado em {{date}}",
+        "workflow_description": "Descrição"
+      },
       "agentCfgTab": {
         "after_saving_use": "Após salvar, use",
         "agent_config_file": "Configuração do agente ({{file}})",

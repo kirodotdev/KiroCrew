@@ -6825,6 +6825,7 @@
       "desc_todos": "タスクリストを表示または管理する",
       "desc_tools": "利用可能なツールを表示する",
       "desc_usage": "課金と使用情報を表示する",
+      "desc_workflow": "保存済みワークフローを名前で一覧表示または実行する",
       "no_matching_commands_ctrl_enter_sends": "一致するコマンドがありません — Ctrl+Enter でメッセージを送信します",
       "no_matching_commands_enter_sends": "一致するコマンドがありません — Enter でメッセージを送信します"
     },
@@ -8167,6 +8168,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "エージェント機能",
+      "workflows_label": "ワークフロー",
+      "workflows_description": "再利用可能なエージェントワークフローを作成、編集、実行します",
       "connections_description": "公式サービスを接続してカスタム MCP サーバーを管理",
       "connections_label": "接続",
       "crews_description": "チャットするエージェント、それぞれが独自のワークスペースを備えている",
@@ -8688,8 +8691,14 @@
         "could_not_load_run_snapshot": "実行スナップショットを読み込めませんでした:"
       },
       "workflowRunCard": {
+        "cancel": "キャンセル",
         "open_in_the_workflows_panel": "ワークフローパネルで開く",
-        "open_workflows_panel": "· ワークフローパネルを開く"
+        "open_workflows_panel": "· ワークフローパネルを開く",
+        "save_help": "この完了した実行のワークフローをそのままグローバルライブラリに保存します。",
+        "save_title": "このワークフローを保存",
+        "save_workflow": "ワークフローを保存",
+        "saved_as": "{{command}} として保存済み",
+        "source_unavailable": "完了したワークフローのソースを読み込めませんでした。"
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "スナップショットを読み込めませんでした:",
@@ -9998,6 +10007,31 @@
       "unread": "未読"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "派生元",
+        "create_draft": "下書きを作成",
+        "create_title": "再利用可能なワークフローを作成",
+        "description": "保存済みワークフローは Kiro Crew 全体で共有され、対応するすべてのエージェントハーネスで動作します。新しい下書きは、元を変更せずに一致するワークフローを適応できます。",
+        "empty": "保存済みワークフローが見つかりません。",
+        "intent": "このワークフローで何を行いますか？",
+        "loading": "ワークフローを読み込み中…",
+        "name": "名前",
+        "new_workflow": "新しいワークフロー",
+        "request_failed": "ワークフローのリクエストに失敗しました",
+        "revision": "リビジョン {{revision}}",
+        "run": "ワークフローを実行",
+        "run_input": "入力（ctx.args.input として利用可能）",
+        "save_revision": "新しいリビジョンを保存",
+        "save_to_library": "ライブラリに保存",
+        "search": "ワークフローを検索…",
+        "select_or_create": "保存済みワークフローを選択するか、新規作成してください。",
+        "slug": "スラッシュコマンド名",
+        "source": "ワークフローソース",
+        "started": "{{runId}} を開始しました",
+        "title": "ワークフローライブラリ",
+        "updated": "更新日時: {{date}}",
+        "workflow_description": "説明"
+      },
       "agentCfgTab": {
         "after_saving_use": "保存後、使用",
         "agent_config_file": "エージェント設定 ({{file}})",

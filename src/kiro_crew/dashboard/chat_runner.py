@@ -93,6 +93,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_harness_slash_command,
     is_system_injection_item,
     mirror_is_paused,
+    parse_workflow_command,
     remember_slack_options,
     slack_mirror_is_paused,
     slot_history_key,
@@ -3401,6 +3402,66 @@ async def _prefetch_ttl(state: "DashboardState", slot: "_ChatSlot", session_key:
         logger.warning("Prefetch TTL failed for slot %s", slot.key, exc_info=True)
 
 
+async def _handle_workflow_command(
+    state: "DashboardState", slot: "_ChatSlot", message: str, session_key: str
+) -> None:
+    """List saved workflows or run one exactly from ``/workflow``."""
+    parsed = parse_workflow_command(message)
+    if parsed is None:
+        return
+    workflow_ref, input_text = parsed
+    workflow_service = getattr(state, "workflow_service", None)
+    outcome = "ok"
+    if workflow_service is None:
+        text = "Saved workflows are not available in this runtime."
+        outcome = "unavailable"
+    elif not workflow_ref:
+        definitions = await asyncio.to_thread(workflow_service.list_definitions)
+        if not definitions:
+            text = "No saved workflows yet. Create one under Agent Capabilities > Workflows."
+            outcome = "empty"
+        else:
+            lines = ["**Saved workflows** — run one with `/workflow <name> [input]`\n"]
+            for definition in definitions:
+                description = definition.get("description") or ""
+                suffix = f" — {description}" if description else ""
+                lines.append(
+                    f"- `/workflow {definition.get('slug')}` "
+                    f"(revision {definition.get('revision')}){suffix}"
+                )
+            text = "\n".join(lines)
+    else:
+        started = await workflow_service.start_definition(
+            workflow_ref,
+            input_text=input_text,
+            author=session_key,
+            session_key=session_key,
+        )
+        if "run_id" not in started:
+            text = str(started.get("error") or "Could not start the saved workflow.")
+            outcome = "error"
+        else:
+            text = (
+                f"Started `/workflow {started.get('slug') or workflow_ref}` as "
+                f"`{started.get('run_id')}` from revision {started.get('revision')}. "
+                "Its result will appear here when it finishes."
+            )
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    slot.append("assistant", text, "msg msg-a")
+    sel().log_tool_invocation(
+        session_key=session_key,
+        agent=slot.agent or "kirocrew",
+        source="dashboard",
+        tool_name="/workflow",
+        tool_kind="slash_command",
+        outcome=outcome,
+        metadata={"slot": slot.key, "workflow": workflow_ref},
+    )
+    state.push_slots_update()
+    slot.append("done", "", "done")
+
+
 async def _handle_goal_command(state: "DashboardState", slot: "_ChatSlot", message: str) -> None:
     """Handle the ``/goal`` slash command (v0 self-verdict loop).
 
@@ -4834,6 +4895,10 @@ async def _run_chat(
     # met.
     if first_word == "/goal":
         await _handle_goal_command(state, slot, message)
+        return
+
+    if first_word == "/workflow":
+        await _handle_workflow_command(state, slot, message, session_key)
         return
 
     # ── /prompts: handle locally instead of forwarding to kiro-cli ──

@@ -1500,7 +1500,11 @@ async def api_slash_commands(request: web.Request) -> web.Response:
             for c in cc_commands
             if f"/{c}" not in _BLOCKED_SLASH_COMMANDS
         ]
-        result.append({"name": "/side", "description": SLASH_COMMAND_DESCRIPTIONS.get("/side", "")})
+        for command in ("/side", "/workflow"):
+            if not any(item["name"] == command for item in result):
+                result.append(
+                    {"name": command, "description": SLASH_COMMAND_DESCRIPTIONS.get(command, "")}
+                )
         return web.json_response(result)
 
     # Blocked commands stay in _SLASH_COMMANDS (typing one still gets the

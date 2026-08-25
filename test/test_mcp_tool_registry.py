@@ -95,6 +95,13 @@ def test_unknown_tool_falls_through() -> None:
     assert dispatch("no_such_tool", {}) == "Unknown tool: no_such_tool"
 
 
+@pytest.mark.parametrize("tool_name", ("workflow_save", "workflow_update"))
+def test_workflow_library_mutations_are_human_only(tool_name: str) -> None:
+    """Untrusted model output cannot persist or replace a durable workflow."""
+    assert tool_name not in {tool["name"] for tool in build_tool_list()}
+    assert dispatch(tool_name, {}) == f"Unknown tool: {tool_name}"
+
+
 @pytest.mark.parametrize("domain", DOMAIN_MODULES)
 def test_every_mcp_core_attribute_a_handler_reads_exists(domain: str) -> None:
     """Guards the late-binding seam against a rename in mcp_core.

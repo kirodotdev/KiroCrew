@@ -7043,6 +7043,7 @@
       "desc_todos": "Mostrar o gestionar la lista de tareas",
       "desc_tools": "Mostrar las herramientas disponibles",
       "desc_usage": "Mostrar la información de facturación y de uso",
+      "desc_workflow": "Mostrar o ejecutar un flujo guardado por nombre",
       "no_matching_commands_ctrl_enter_sends": "No hay comandos coincidentes: Ctrl+Enter envía el mensaje",
       "no_matching_commands_enter_sends": "No hay comandos coincidentes: Enter envía el mensaje"
     },
@@ -8411,6 +8412,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacidades del agente",
+      "workflows_label": "Flujos de trabajo",
+      "workflows_description": "Crea, edita y ejecuta flujos de agentes reutilizables",
       "connections_description": "Conecta servicios oficiales y gestiona servidores MCP personalizados",
       "connections_label": "Conexiones",
       "crews_description": "Agentes con los que chateas, cada uno con su propio espacio de trabajo",
@@ -8958,8 +8961,14 @@
         "could_not_load_run_snapshot": "No se pudo cargar la instantánea de la ejecución:"
       },
       "workflowRunCard": {
+        "cancel": "Cancelar",
         "open_in_the_workflows_panel": "Abrir en el panel de Flujos de trabajo",
-        "open_workflows_panel": "· Abrir el panel de Flujos de trabajo"
+        "open_workflows_panel": "· Abrir el panel de Flujos de trabajo",
+        "save_help": "Guarda el flujo exacto de esta ejecución completada en tu biblioteca global.",
+        "save_title": "Guardar este flujo de trabajo",
+        "save_workflow": "Guardar flujo de trabajo",
+        "saved_as": "Guardado como {{command}}",
+        "source_unavailable": "No se pudo cargar el código del flujo de trabajo completado."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "No se pudo cargar la instantánea:",
@@ -10304,6 +10313,31 @@
       "unread": "Sin leer"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Adaptado de",
+        "create_draft": "Crear borrador",
+        "create_title": "Crear un flujo reutilizable",
+        "description": "Los flujos guardados son globales en Kiro Crew y funcionan con todos los arneses de agente compatibles. Los borradores nuevos pueden adaptar flujos coincidentes sin modificarlos.",
+        "empty": "No se encontraron flujos guardados.",
+        "intent": "¿Qué debe hacer este flujo?",
+        "loading": "Cargando flujos…",
+        "name": "Nombre",
+        "new_workflow": "Nuevo flujo",
+        "request_failed": "Falló la solicitud del flujo",
+        "revision": "Revisión {{revision}}",
+        "run": "Ejecutar flujo",
+        "run_input": "Entrada (disponible como ctx.args.input)",
+        "save_revision": "Guardar nueva revisión",
+        "save_to_library": "Guardar en la biblioteca",
+        "search": "Buscar flujos…",
+        "select_or_create": "Selecciona un flujo guardado o crea uno nuevo.",
+        "slug": "Nombre del comando con barra",
+        "source": "Código fuente del flujo",
+        "started": "Se inició {{runId}}",
+        "title": "Biblioteca de flujos",
+        "updated": "Actualizado el {{date}}",
+        "workflow_description": "Descripción"
+      },
       "agentCfgTab": {
         "after_saving_use": "Después de guardar, usa",
         "agent_config_file": "Configuración del agente ({{file}})",

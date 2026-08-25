@@ -69,6 +69,39 @@ export type McpShareReason = {
   detail: string
 }
 
+export interface WorkflowLineage {
+  workflow_id: string
+  revision: number
+}
+
+export interface WorkflowDefinitionRevision {
+  revision: number
+  source: string
+  created_at: string
+}
+
+export interface WorkflowDefinition {
+  schema_version: number
+  id: string
+  slug: string
+  name: string
+  description: string
+  created_at: string
+  updated_at: string
+  revision: number
+  source: string
+  content_hash: string
+  derived_from: WorkflowLineage | null
+  revisions: WorkflowDefinitionRevision[]
+}
+
+export interface WorkflowDefinitionWrite {
+  source: string
+  name?: string
+  description?: string
+  slug?: string
+  derived_from?: WorkflowLineage | null
+}
 /** The gateway's advisory reading of whether a server's backend can be shared.
  *
  *  `strength` is the evidence tier, weakest first: `unknown`, `no_objection`,
@@ -2751,6 +2784,32 @@ export const api = {
    */
   workflowRuns: () =>
     get('/api/workflows/runs').then(j) as Promise<{ runs?: WorkflowRunSummary[] }>,
+  workflowDefinitions: (search = '') =>
+    get('/api/workflows/definitions' + (search ? `?q=${encodeURIComponent(search)}` : '')).then(j) as Promise<{ definitions: WorkflowDefinition[] }>,
+  authorWorkflow: (intent: string) =>
+    post('/api/workflows/author', { intent }).then(j) as Promise<{
+      ok: boolean
+      source: string
+      meta?: { name?: string; description?: string }
+      derived_from?: WorkflowLineage | null
+      errors?: string[]
+    }>,
+  saveWorkflowDefinition: (body: WorkflowDefinitionWrite) =>
+    post('/api/workflows/definitions', body).then(j) as Promise<{ ok: boolean; definition: WorkflowDefinition }>,
+  promoteWorkflowRun: (
+    runId: string,
+    body: Omit<WorkflowDefinitionWrite, 'source' | 'derived_from'>,
+  ) =>
+    post(`/api/workflows/runs/${encodeURIComponent(runId)}/promote`, body).then(j) as Promise<{
+      ok: boolean
+      definition: WorkflowDefinition
+    }>,
+  updateWorkflowDefinition: (
+    workflowRef: string,
+    body: Omit<WorkflowDefinitionWrite, 'derived_from'> & { expected_revision: number },
+  ) => patch(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}`, body).then(j) as Promise<{ ok: boolean; definition: WorkflowDefinition }>,
+  runWorkflowDefinition: (workflowRef: string, input: string, args: Record<string, unknown> = {}) =>
+    post(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}/run`, { input, args }).then(j) as Promise<{ run_id: string; workflow_id: string; revision: number; slug: string }>,
   refineTaskInput: (input: string) => post('/api/taskrunner/refine', { input }).then(j),
   refineStatus: () => fetch('/api/taskrunner/refine').then(j),
   refineCancel: () => post('/api/taskrunner/refine/cancel').then(j),

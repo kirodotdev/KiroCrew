@@ -76,6 +76,9 @@ class RunHandle:
     session_key: str = ""  # originating chat session (for result injection)
     task: Optional["asyncio.Task[Any]"] = None
     source: str = ""  # the script (so a resume/restart can re-run it)
+    # False when the durable store had to redact source bytes (or provenance is
+    # unknown). Such source remains usable for display/rerun, but not promotion.
+    source_is_original: bool = True
     args: dict = field(default_factory=dict)
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
     # call_index → bounded reason that call failed. Kept next to agent_results so a
@@ -154,6 +157,7 @@ class RunHandle:
             "author": self.author,
             "session_key": self.session_key,
             "source": self.source,
+            "source_is_original": self.source_is_original,
             "args": self.args,
             "agent_results": {str(k): v for k, v in self.agent_results.items()},
             "agent_errors": {str(k): v for k, v in self.agent_errors.items()},
@@ -181,6 +185,8 @@ class RunHandle:
             author=obj.get("author", ""),
             session_key=obj.get("session_key", ""),
             source=obj.get("source", ""),
+            # Legacy records lack provenance and therefore fail closed.
+            source_is_original=obj.get("source_is_original") is True,
             args=obj.get("args") or {},
             agent_results={_int_key(k): v for k, v in (obj.get("agent_results") or {}).items()},
             agent_errors={_int_key(k): v for k, v in (obj.get("agent_errors") or {}).items()},
@@ -375,6 +381,7 @@ async def start_background_run(
     author: str = "",
     session_key: str = "",
     source: str = "",
+    source_is_original: bool = True,
     args: Optional[dict] = None,
 ) -> str:
     """Schedule a workflow run on the loop, register a handle, return its run_id.
@@ -392,6 +399,7 @@ async def start_background_run(
         author=author,
         session_key=session_key,
         source=source,
+        source_is_original=source_is_original,
         args=args or {},
     )
     registry.register(handle)

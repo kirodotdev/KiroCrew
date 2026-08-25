@@ -14,11 +14,14 @@ See GATES (M6) and docs/system-specs/modules/workflows.md.
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 
 import kiro_crew.llm_helpers as llm_helpers
+from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.service import WorkflowService
+from kiro_crew.workflows.store import WorkflowRunStore
 
 pytestmark = pytest.mark.asyncio
 
@@ -136,6 +139,310 @@ async def test_author_strips_code_fence(monkeypatch) -> None:
     out = await svc.author("x")
     assert out["ok"] is True
     assert "```" not in out["source"]
+
+
+async def test_author_uses_a_matching_saved_workflow_as_an_adaptation_example(
+    monkeypatch, tmp_path
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(
+        source=GOOD_SCRIPT,
+        name="Debug Project",
+        description="Investigate failures and identify the root cause",
+    )
+    adapted = GOOD_SCRIPT.replace(
+        '"description": "d"',
+        f'"description": "d", "adapted_from": "{parent["id"]}@1"',
+    )
+    captured: list[str] = []
+
+    async def fake_stream(provider, message, **kw):
+        captured.append(message)
+        return adapted
+
+    import kiro_crew.workflows.service as svc_mod
+
+    monkeypatch.setattr(svc_mod, "stream_and_collect", fake_stream)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    out = await svc.author("debugging a failing login flow")
+
+    assert parent["id"] in captured[0]
+    assert GOOD_SCRIPT in captured[0]
+    assert out["derived_from"] == {"workflow_id": parent["id"], "revision": 1}
+
+
+async def test_author_rejects_lineage_to_an_unsupplied_historical_revision(
+    monkeypatch, tmp_path
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(
+        source=GOOD_SCRIPT,
+        name="Debug Project",
+        description="Investigate failures and identify the root cause",
+    )
+    library.update(
+        parent["id"],
+        source=GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('revision two')"),
+        expected_revision=1,
+    )
+    adapted = GOOD_SCRIPT.replace(
+        '"description": "d"',
+        f'"description": "d", "adapted_from": "{parent["id"]}@1"',
+    )
+    _patch_stream(monkeypatch, [adapted])
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    out = await svc.author("debugging a failing login flow")
+
+    assert out["ok"] is True
+    assert out["derived_from"] is None
+
+
+async def test_author_searches_the_definition_library_off_the_event_loop(
+    monkeypatch, tmp_path
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    library.create(source=GOOD_SCRIPT, name="Debug Project")
+    loop_thread = threading.get_ident()
+    search_threads: list[int] = []
+    real_search = library.search
+
+    def observed_search(*args, **kwargs):
+        search_threads.append(threading.get_ident())
+        return real_search(*args, **kwargs)
+
+    monkeypatch.setattr(library, "search", observed_search)
+    _patch_stream(monkeypatch, [GOOD_SCRIPT])
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    out = await svc.author("debug a failure")
+
+    assert out["ok"] is True
+    assert search_threads and search_threads[0] != loop_thread
+
+
+async def test_save_and_update_definition_validate_before_persisting(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    saved = svc.save_definition(GOOD_SCRIPT)
+    assert saved["ok"] is True
+    assert saved["definition"]["slug"] == "demo"
+
+    changed = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('changed')")
+    updated = svc.update_definition(saved["definition"]["id"], source=changed, expected_revision=1)
+    assert updated["ok"] is True
+    assert updated["definition"]["revision"] == 2
+
+    invalid = svc.save_definition("import os\n")
+    assert invalid["ok"] is False
+    assert len(library.list()) == 1
+
+
+async def test_update_definition_distinguishes_missing_from_stale_revision(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    saved = svc.save_definition(GOOD_SCRIPT)
+
+    missing = svc.update_definition("wfd_missing", source=GOOD_SCRIPT, expected_revision=1)
+    stale = svc.update_definition(
+        saved["definition"]["id"], source=GOOD_SCRIPT, expected_revision=99
+    )
+
+    assert missing["not_found"] is True
+    assert "conflict" not in missing
+    assert stale["conflict"] is True
+
+
+async def test_save_definition_ignores_lineage_declared_only_in_source(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(
+        source=GOOD_SCRIPT,
+        name="Debug Project",
+        description="Investigate failures",
+    )
+    adapted = GOOD_SCRIPT.replace(
+        '"description": "d"',
+        f'"description": "d", "adapted_from": "{parent["id"]}@1"',
+    )
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    saved = svc.save_definition(adapted)
+
+    assert saved["ok"] is True
+    assert saved["definition"]["derived_from"] is None
+
+
+async def test_save_definition_validates_explicit_lineage_against_revision_history(
+    tmp_path,
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(source=GOOD_SCRIPT, name="Debug Project")
+    library.update(
+        parent["id"],
+        source=GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('revision two')"),
+        expected_revision=1,
+    )
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    accepted = svc.save_definition(
+        GOOD_SCRIPT,
+        name="Adapted",
+        derived_from={"workflow_id": parent["id"], "revision": 1},
+    )
+    rejected = svc.save_definition(
+        GOOD_SCRIPT,
+        name="Fabricated",
+        derived_from={"workflow_id": "wfd_missing", "revision": 99},
+    )
+
+    assert accepted["ok"] is True
+    assert accepted["definition"]["derived_from"] == {
+        "workflow_id": parent["id"],
+        "revision": 1,
+    }
+    assert rejected["ok"] is False
+    assert "lineage" in rejected["error"]
+
+
+async def test_save_and_update_reject_source_that_would_be_redacted(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+
+    rejected_create = svc.save_definition(sensitive)
+    saved = svc.save_definition(GOOD_SCRIPT)
+    rejected_update = svc.update_definition(
+        saved["definition"]["id"], source=sensitive, expected_revision=1
+    )
+
+    assert rejected_create["ok"] is False
+    assert "sensitive data" in rejected_create["error"]
+    assert rejected_update["ok"] is False
+    assert library.get(saved["definition"]["id"])["revision"] == 1
+
+
+async def test_promote_run_uses_raw_source_and_declared_lineage(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    parent = library.create(source=GOOD_SCRIPT, name="Debug Project")
+    adapted = GOOD_SCRIPT.replace(
+        '"description": "d"',
+        f'"description": "d", "adapted_from": "{parent["id"]}@1"',
+    )
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    started = await svc.start(adapted, name="Adapted")
+    await _wait_terminal(svc, started["run_id"])
+
+    promoted = await svc.promote_run_definition(
+        started["run_id"],
+        name="Saved adaptation",
+        description="Kept from this completed run",
+        slug="saved-adaptation",
+    )
+
+    assert promoted["ok"] is True
+    assert promoted["definition"]["source"] == adapted
+    assert promoted["definition"]["derived_from"] == {
+        "workflow_id": parent["id"],
+        "revision": 1,
+    }
+
+
+async def test_promote_run_rejects_sensitive_raw_source(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    started = await svc.start(sensitive, name="Sensitive")
+    await _wait_terminal(svc, started["run_id"])
+
+    promoted = await svc.promote_run_definition(started["run_id"], name="Must not save")
+
+    assert promoted["ok"] is False
+    assert "sensitive data" in promoted["error"]
+    assert library.list() == []
+
+
+async def test_promote_run_rejects_redacted_source_restored_after_restart(tmp_path) -> None:
+    store = WorkflowRunStore(tmp_path / "store")
+    library = WorkflowDefinitionLibrary(tmp_path / "library")
+    sensitive = GOOD_SCRIPT.replace("ctx.log('hi')", "ctx.log('AKIAIOSFODNN7EXAMPLE')")
+    original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    started = await original.start(sensitive, name="Sensitive")
+    await _wait_terminal(original, started["run_id"])
+
+    restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    promoted = await restored.promote_run_definition(
+        started["run_id"], name="Must not save a redacted mutation"
+    )
+
+    assert promoted["ok"] is False
+    assert promoted["source_not_original"] is True
+    assert library.list() == []
+
+    rerun = await restored.rerun_subtree(started["run_id"])
+    await _wait_terminal(restored, rerun["run_id"])
+    rerun_promoted = await restored.promote_run_definition(
+        rerun["run_id"], name="Rerun must preserve provenance"
+    )
+
+    assert rerun_promoted["ok"] is False
+    assert rerun_promoted["source_not_original"] is True
+    assert library.list() == []
+
+
+async def test_promote_run_accepts_exact_source_restored_after_restart(tmp_path) -> None:
+    store = WorkflowRunStore(tmp_path / "store")
+    library = WorkflowDefinitionLibrary(tmp_path / "library")
+    original = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    started = await original.start(GOOD_SCRIPT, name="Exact")
+    await _wait_terminal(original, started["run_id"])
+
+    restored = WorkflowService(sessions=FakeSessions([]), store=store, definition_library=library)
+    promoted = await restored.promote_run_definition(started["run_id"], name="Still exact")
+
+    assert promoted["ok"] is True
+    assert promoted["definition"]["source"] == GOOD_SCRIPT
+
+
+async def test_start_definition_runs_exact_saved_source_with_input(tmp_path) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    source = (
+        'META = {"name": "echo", "description": "d"}\n'
+        "async def workflow(ctx):\n"
+        "    return {'input': ctx.args.get('input', '')}\n"
+    )
+    saved = library.create(source=source, name="Echo")
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    started = await svc.start_definition(saved["slug"], input_text="hello world")
+    snap = await _wait_terminal(svc, started["run_id"])
+
+    assert started["workflow_id"] == saved["id"]
+    assert started["revision"] == 1
+    assert snap["result"] == {"input": "hello world"}
+
+
+async def test_start_definition_loads_saved_source_off_the_event_loop(
+    monkeypatch, tmp_path
+) -> None:
+    library = WorkflowDefinitionLibrary(tmp_path)
+    saved = library.create(source=GOOD_SCRIPT, name="Demo")
+    loop_thread = threading.get_ident()
+    get_threads: list[int] = []
+    real_get = library.get
+
+    def observed_get(*args, **kwargs):
+        get_threads.append(threading.get_ident())
+        return real_get(*args, **kwargs)
+
+    monkeypatch.setattr(library, "get", observed_get)
+    svc = WorkflowService(sessions=FakeSessions([]), persist=False, definition_library=library)
+
+    started = await svc.start_definition(saved["id"])
+    await _wait_terminal(svc, started["run_id"])
+
+    assert get_threads and get_threads[0] != loop_thread
 
 
 # --------------------------------------------------------------------------- #

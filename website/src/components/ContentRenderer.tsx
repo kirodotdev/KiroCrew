@@ -13,10 +13,13 @@
  *   - `extOf`, `langFor`, `wrapCode`, `MD_EXTS` — shared helpers used by
  *     both consumers to compute `displayContent` / `isMarkdown` etc.
  */
-import { memo, useCallback, useMemo, useRef } from 'react'
+import { memo, useMemo } from 'react'
 import MarkdownRenderer, { BasePathCtx } from './MarkdownRenderer'
 import { ImageViewer, CsvViewer, JsonViewer, JsonlViewer, HtmlViewer, PdfViewer, OfficeViewer, SheetViewer, SvgViewer, ExcalidrawViewer, MediaPlayer } from './FileRenderers'
-import { PierreCode, PierreEditor, type PierreEditorHandle } from '../pierre'
+import { PierreCode, type PierreEditorHandle } from '../pierre'
+import { CodeEditor } from './CodeEditor'
+
+export { CodeEditor } from './CodeEditor'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -42,113 +45,6 @@ export function langFor(ext: string): string {
     '.rb': 'ruby', '.sql': 'sql', '.xml': 'xml', '.toml': 'ini', '.cfg': 'ini',
   }
   return map[ext] || 'plaintext'
-}
-
-/** Pierre-based code editor for editable text content. */
-export function CodeEditor({
-  content, lang, lineNums, wordWrap, onChange, onSave, flush, editorRef, filePath, diffBase, diffSplit, diffExpandUnchanged,
-}: {
-  content: string
-  lang: string
-  lineNums: boolean
-  wordWrap: boolean
-  onChange: (v: string) => void
-  /** Cmd/Ctrl+S inside the editor surface. */
-  onSave?: () => void
-  /** Drop the rounded border box — the host surface (e.g. a side-panel tab
-   *  body) provides the frame, so content runs edge-to-edge. */
-  flush?: boolean
-  /** Imperative reveal/focus handle — how a host jumps to a cited line. */
-  editorRef?: React.Ref<PierreEditorHandle>
-  filePath?: string
-  /** Live-diff editing: baseline contents to diff the buffer against while
-   *  typing (`null` = new file). `undefined` renders the plain editor. */
-  diffBase?: string | null
-  /** Live-diff surface: show unchanged regions instead of folding them. */
-  diffExpandUnchanged?: boolean
-  /** Split vs unified layout for the live-diff surface. */
-  diffSplit?: boolean
-}) {
-  // Pierre owns the buffer during an edit session: the file object is the
-  // session's INITIAL state, so it must not change identity on every parent
-  // re-render fed by our own onChange — that would restart the session per
-  // keystroke and drop the caret. Keyed by path/lang/mode; a diff-mode toggle
-  // deliberately restarts the session seeded from the CURRENT buffer so
-  // unsaved edits carry across the flip.
-  //
-  // EXTERNAL content changes are the exception: a `content` value this editor
-  // did not emit (Cancel restoring the on-disk text, refresh, a live-watch
-  // reload) must actually show up, so the session reseeds — the seed counter
-  // in the cacheKey remounts the editor on the new text (caret loss is
-  // correct there).
-  const initialRef = useRef<{ key: string; file: { name: string; contents: string; cacheKey: string } }>()
-  const lastEmittedRef = useRef<string | null>(null)
-  const lastContentRef = useRef<string | null>(null)
-  const seedRef = useRef(0)
-  const key = `${filePath ?? ''}:${lang}:${diffBase === undefined ? 'plain' : 'diff'}`
-  const seedFile = () => ({
-    key,
-    file: {
-      name: filePath?.split('/').pop() || `file.${lang}`,
-      contents: content,
-      cacheKey: `edit:${key}:${seedRef.current}`,
-    },
-  })
-  if (initialRef.current?.key !== key) {
-    initialRef.current = seedFile()
-  } else if (content !== lastContentRef.current) {
-    if (content === lastEmittedRef.current) {
-      // Our own edit echoing back through the parent. Consume the marker: it
-      // matches exactly ONE echo, so a LATER external change that happens to
-      // restore this same text (Cancel, refresh, live-watch reload) is still
-      // seen as external and still reseeds. Leaving it set made that case
-      // silently keep the stale buffer, and the next save wrote it back.
-      lastEmittedRef.current = null
-    } else {
-      // The prop changed to a value this editor did not emit — an external
-      // change. (Compared against the last RECEIVED prop, not the initial seed:
-      // Cancel restores the original text, which must still reseed.)
-      seedRef.current++
-      initialRef.current = seedFile()
-    }
-  }
-  lastContentRef.current = content
-  const handleChange = useCallback((v: string) => {
-    lastEmittedRef.current = v
-    onChange(v)
-  }, [onChange])
-  // Contents track the live buffer while the cacheKey stays pinned to the seed.
-  // The editor owns its TextDocument and only rebuilds it when name/lang/
-  // cacheKey change, so a fresh `contents` cannot disturb the caret — but the
-  // File render DOES size its rows from `contents`, and a frozen value leaves
-  // the row scaffolding one line short after an insert (the line below appears
-  // to vanish) or one long after a delete (the row below duplicates).
-  const liveFile = useMemo(
-    () => ({ ...initialRef.current!.file, contents: content }),
-    [content],
-  )
-  const options = useMemo(
-    () => ({
-      disableLineNumbers: !lineNums,
-      overflow: (wordWrap ? 'wrap' : 'scroll') as 'wrap' | 'scroll',
-    }),
-    [lineNums, wordWrap],
-  )
-  return (
-    <div className={`w-full h-full overflow-hidden ${flush ? '' : 'border border-border rounded-md'}`}>
-      <PierreEditor
-        key={initialRef.current.file.cacheKey}
-        ref={editorRef}
-        file={liveFile}
-        options={options}
-        onChange={handleChange}
-        onSave={onSave}
-        diffBase={diffBase}
-        diffSplit={diffSplit}
-        diffExpandUnchanged={diffExpandUnchanged}
-      />
-    </div>
-  )
 }
 
 /**

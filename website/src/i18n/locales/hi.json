@@ -6934,6 +6934,7 @@
       "desc_todos": "कार्य सूची दिखाएँ या प्रबंधित करें",
       "desc_tools": "उपलब्ध टूल दिखाएँ",
       "desc_usage": "बिलिंग और उपयोग की जानकारी दिखाएँ",
+      "desc_workflow": "सहेजे गए वर्कफ़्लो को नाम से सूचीबद्ध करें या चलाएँ",
       "no_matching_commands_ctrl_enter_sends": "कोई मेल खाता कमांड नहीं — Ctrl+Enter संदेश भेज देगा",
       "no_matching_commands_enter_sends": "कोई मेल खाता कमांड नहीं — Enter संदेश भेज देगा"
     },
@@ -8289,6 +8290,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "एजेंट क्षमताएँ",
+      "workflows_label": "वर्कफ़्लो",
+      "workflows_description": "दोबारा उपयोग योग्य एजेंट वर्कफ़्लो बनाएँ, संपादित करें और चलाएँ",
       "connections_description": "आधिकारिक सेवाएँ कनेक्ट करो और कस्टम MCP सर्वर प्रबंधित करो",
       "connections_label": "कनेक्शन",
       "crews_description": "जिन एजेंट से तुम चैट करते हो, हर एक का अपना वर्कस्पेस होता है",
@@ -8823,8 +8826,14 @@
         "could_not_load_run_snapshot": "रन स्नैपशॉट लोड नहीं हो सका:"
       },
       "workflowRunCard": {
+        "cancel": "रद्द करें",
         "open_in_the_workflows_panel": "वर्कफ़्लो पैनल में खोलें",
-        "open_workflows_panel": "· वर्कफ़्लो पैनल खोलें"
+        "open_workflows_panel": "· वर्कफ़्लो पैनल खोलें",
+        "save_help": "इस पूर्ण रन के सटीक वर्कफ़्लो को अपनी ग्लोबल लाइब्रेरी में रखें।",
+        "save_title": "इस वर्कफ़्लो को सहेजें",
+        "save_workflow": "वर्कफ़्लो सहेजें",
+        "saved_as": "{{command}} के रूप में सहेजा गया",
+        "source_unavailable": "पूर्ण वर्कफ़्लो का स्रोत लोड नहीं किया जा सका।"
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "स्नैपशॉट लोड नहीं हो सका:",
@@ -10151,6 +10160,31 @@
       "unread": "अपठित"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "इससे अनुकूलित",
+        "create_draft": "ड्राफ़्ट बनाएँ",
+        "create_title": "दोबारा उपयोग योग्य वर्कफ़्लो बनाएँ",
+        "description": "सहेजे गए वर्कफ़्लो पूरे Kiro Crew में उपलब्ध होते हैं और हर समर्थित एजेंट हार्नेस के साथ काम करते हैं। नया ड्राफ़्ट किसी मेल खाते वर्कफ़्लो को बदले बिना उससे अनुकूलित हो सकता है।",
+        "empty": "कोई सहेजा गया वर्कफ़्लो नहीं मिला।",
+        "intent": "यह वर्कफ़्लो क्या करे?",
+        "loading": "वर्कफ़्लो लोड हो रहे हैं…",
+        "name": "नाम",
+        "new_workflow": "नया वर्कफ़्लो",
+        "request_failed": "वर्कफ़्लो अनुरोध विफल रहा",
+        "revision": "संशोधन {{revision}}",
+        "run": "वर्कफ़्लो चलाएँ",
+        "run_input": "इनपुट (ctx.args.input के रूप में उपलब्ध)",
+        "save_revision": "नया संशोधन सहेजें",
+        "save_to_library": "लाइब्रेरी में सहेजें",
+        "search": "वर्कफ़्लो खोजें…",
+        "select_or_create": "सहेजा गया वर्कफ़्लो चुनें या नया बनाएँ।",
+        "slug": "स्लैश-कमांड नाम",
+        "source": "वर्कफ़्लो स्रोत",
+        "started": "{{runId}} शुरू हुआ",
+        "title": "वर्कफ़्लो लाइब्रेरी",
+        "updated": "अपडेट किया गया: {{date}}",
+        "workflow_description": "विवरण"
+      },
       "agentCfgTab": {
         "after_saving_use": "सहेजने के बाद, उपयोग करें",
         "agent_config_file": "एजेंट कॉन्फ़िग ({{file}})",

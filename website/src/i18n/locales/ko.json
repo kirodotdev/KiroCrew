@@ -6825,6 +6825,7 @@
       "desc_todos": "작업 목록을 표시하거나 관리합니다",
       "desc_tools": "사용할 수 있는 도구를 표시합니다",
       "desc_usage": "청구 및 사용량 정보를 표시합니다",
+      "desc_workflow": "저장된 워크플로를 이름으로 나열하거나 실행합니다",
       "no_matching_commands_ctrl_enter_sends": "일치하는 명령 없음 — Ctrl+Enter 키를 누르면 메시지가 전송됩니다",
       "no_matching_commands_enter_sends": "일치하는 명령 없음 — Enter 키를 누르면 메시지가 전송됩니다"
     },
@@ -8167,6 +8168,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "에이전트 기능",
+      "workflows_label": "워크플로",
+      "workflows_description": "재사용 가능한 에이전트 워크플로를 만들고 편집하고 실행합니다",
       "connections_description": "공식 서비스를 연결하고 사용자 지정 MCP 서버를 관리합니다",
       "connections_label": "연결",
       "crews_description": "대화하는 에이전트, 각각 자증 작업 공간을 가집니다",
@@ -8688,8 +8691,14 @@
         "could_not_load_run_snapshot": "실행 스냅샷을 불러올 수 없습니다:"
       },
       "workflowRunCard": {
+        "cancel": "취소",
         "open_in_the_workflows_panel": "워크플로 패널에서 열기",
-        "open_workflows_panel": "· 워크플로 패널 열기"
+        "open_workflows_panel": "· 워크플로 패널 열기",
+        "save_help": "완료된 실행의 정확한 워크플로를 전역 라이브러리에 보관합니다.",
+        "save_title": "이 워크플로 저장",
+        "save_workflow": "워크플로 저장",
+        "saved_as": "{{command}}(으)로 저장됨",
+        "source_unavailable": "완료된 워크플로 소스를 불러올 수 없습니다."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "스냅샷을 불러올 수 없습니다:",
@@ -9998,6 +10007,31 @@
       "unread": "읽지 않음"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "원본",
+        "create_draft": "초안 만들기",
+        "create_title": "재사용 가능한 워크플로 만들기",
+        "description": "저장된 워크플로는 Kiro Crew 전체에서 공유되며 지원되는 모든 에이전트 하네스에서 작동합니다. 새 초안은 원본을 변경하지 않고 일치하는 워크플로를 조정할 수 있습니다.",
+        "empty": "저장된 워크플로가 없습니다.",
+        "intent": "이 워크플로가 무엇을 해야 하나요?",
+        "loading": "워크플로 불러오는 중…",
+        "name": "이름",
+        "new_workflow": "새 워크플로",
+        "request_failed": "워크플로 요청 실패",
+        "revision": "리비전 {{revision}}",
+        "run": "워크플로 실행",
+        "run_input": "입력(ctx.args.input으로 사용 가능)",
+        "save_revision": "새 리비전 저장",
+        "save_to_library": "라이브러리에 저장",
+        "search": "워크플로 검색…",
+        "select_or_create": "저장된 워크플로를 선택하거나 새로 만드세요.",
+        "slug": "슬래시 명령 이름",
+        "source": "워크플로 소스",
+        "started": "{{runId}} 시작됨",
+        "title": "워크플로 라이브러리",
+        "updated": "업데이트: {{date}}",
+        "workflow_description": "설명"
+      },
       "agentCfgTab": {
         "after_saving_use": "저장한 후",
         "agent_config_file": "에이전트 설정 ({{file}})",

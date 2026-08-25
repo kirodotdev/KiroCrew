@@ -180,6 +180,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "session-memory titles below.",
     ),
     (
+        "Workflow management responses",
+        "dashboard/handlers/workflows.py",
+        "Authored workflow source, reusable definitions, revision lineage, and run output "
+        "served to the Agent Capabilities panel or returned through the workflow MCP tools. "
+        "These values can contain model-authored text or tool results, so every nested key and "
+        "value passes through the credential + exfiltration-URL chain before egress.",
+    ),
+    (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "
@@ -1251,12 +1259,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/handlers/themes.py",
         "dashboard/handlers/updates.py",
         "dashboard/handlers/webapp_preview.py",
-        "dashboard/handlers/workflows.py",
         "dashboard/handlers_project.py",
         "knowledge/agent_fetch.py",
         "knowledge/agent_source.py",
         "knowledge/artifact_ingest.py",
         "knowledge/ingestion.py",
+        "workflows/library.py",
         "mcp_core.py",
         "mcp_cron.py",
         # Same class as mcp_core.py: an MCP stdio server redacts tool RESULTS and

@@ -354,7 +354,6 @@ src/kiro_crew/mcp_tools/control.py
 src/kiro_crew/mcp_tools/knowledge.py
 src/kiro_crew/mcp_tools/skills.py
 src/kiro_crew/mcp_tools/spawn.py
-src/kiro_crew/mcp_tools/workflows.py
 src/kiro_crew/mcp_utils.py
 src/kiro_crew/messaging/link.py
 src/kiro_crew/metrics/http_metrics.py
@@ -415,7 +414,6 @@ src/kiro_crew/weixin/client.py
 src/kiro_crew/workflows/agent_exec.py
 src/kiro_crew/workflows/context.py
 src/kiro_crew/workflows/runner.py
-src/kiro_crew/workflows/service.py
 test/conftest.py
 test/fake_mcp_app_server.py
 test/metrics/test_context_occupancy.py
@@ -891,7 +889,6 @@ test/test_mcp_caller.py
 test/test_mcp_core.py
 test/test_mcp_core_arg_crash.py
 test/test_mcp_core_audit_e.py
-test/test_mcp_core_coverage.py
 test/test_mcp_core_more_coverage.py
 test/test_mcp_core_set_project.py
 test/test_mcp_core_spawn_sub_agents.py

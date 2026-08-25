@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from typing import Any, Callable, Optional
 
 from kiro_crew import autonudge
@@ -29,7 +30,8 @@ from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 
 from .agent_exec import build_agent_fn
 from .agent_pool import build_pooled_agent_fn
-from .registry import RunRegistry
+from .library import SensitiveWorkflowSourceError, WorkflowDefinitionLibrary
+from .registry import STATUS_FINISHED, RunRegistry
 from .runner import WorkflowRunner, clamp_run_timeout
 from .store import WorkflowRunStore
 from .validate import validate
@@ -38,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 # Bounded attempts to coax a valid script out of the model (mirrors schema retry).
 _AUTHOR_RETRIES = 2
+_AUTHOR_REFERENCE_LIMIT = 3
+_AUTHOR_REFERENCE_SOURCE_CHARS = 16000
 
 _AUTHOR_SYSTEM = """\
 You are authoring a KiroCrew DYNAMIC WORKFLOW: one Python module that orchestrates
@@ -115,6 +119,8 @@ is clean on all three.
 Author the workflow for this task:
 
 {intent}
+
+{references}
 """
 
 
@@ -134,6 +140,7 @@ class WorkflowService:
         pool_agents: bool = True,
         nudge_authorizer: Optional[Callable[..., Any]] = None,
         timeout_secs: Optional[int] = None,
+        definition_library: Any = None,
     ) -> None:
         # Durable store: runs are mirrored to disk so they survive gateway
         # restarts. Pass persist=False (or store=None) to keep a purely in-memory
@@ -144,6 +151,13 @@ class WorkflowService:
             except Exception:  # noqa: BLE001 - persistence is best-effort
                 store = None
         self.registry = RunRegistry(store=store)
+        self._definition_library = (
+            definition_library if definition_library is not None else WorkflowDefinitionLibrary()
+        )
+        # Library calls run in worker threads from async gateway paths. Preserve
+        # the single-writer ordering the event loop previously provided so slug
+        # allocation and optimistic revision checks remain atomic in-process.
+        self._definition_lock = threading.RLock()
         if on_done is not None:
             self.registry.set_on_done(on_done)
         if on_event is not None:
@@ -250,9 +264,7 @@ class WorkflowService:
             return
         binding = autonudge.binding_key_for(session_key)
         if not binding:
-            logger.warning(
-                "workflow ctx.nudge skipped: session %r is not nudge-able", session_key
-            )
+            logger.warning("workflow ctx.nudge skipped: session %r is not nudge-able", session_key)
             _say(
                 f"ctx.nudge NOT armed: originating session {session_key!r} is not "
                 "nudge-able (only dashboard/Slack/Discord sessions can be nudged)"
@@ -435,7 +447,9 @@ class WorkflowService:
                     )
                 else:
                     _say(f"Drafting the workflow script (attempt {i + 1}/{attempts})…")
-                prompt = _AUTHOR_SYSTEM.format(intent=intent)
+                matches = await asyncio.to_thread(self._search_definitions, intent)
+                references = _authoring_references(matches)
+                prompt = _AUTHOR_SYSTEM.format(intent=intent, references=references)
                 if errors:
                     prompt += f"\n\nYour previous script was INVALID: {'; '.join(errors)}. Fix it."
                 text = await stream_and_collect(
@@ -445,7 +459,17 @@ class WorkflowService:
                 vr = validate(source)
                 if vr.ok:
                     _say(f"Script validated: {(vr.meta or {}).get('name', 'workflow')}")
-                    return {"ok": True, "source": source, "meta": vr.meta}
+                    # The model may claim only a reference it actually saw in
+                    # this authoring attempt. Historical revisions remain valid
+                    # for explicit/session promotion, but they are not included
+                    # in the prompt and therefore cannot establish provenance.
+                    derived_from = _verified_lineage(vr.meta or {}, matches)
+                    return {
+                        "ok": True,
+                        "source": source,
+                        "meta": vr.meta,
+                        "derived_from": derived_from,
+                    }
                 errors = vr.errors
             return {"ok": False, "errors": errors, "source": source}
         finally:
@@ -534,6 +558,175 @@ class WorkflowService:
         )
         return {"run_id": run_id, "name": name or (vr.meta or {}).get("name", "")}
 
+    def list_definitions(self, search: str = "") -> list[dict[str, Any]]:
+        """List the global saved library, optionally ranked for a search intent."""
+        with self._definition_lock:
+            if search.strip():
+                return self._definition_library.search(search)
+            return self._definition_library.list()
+
+    def _search_definitions(self, intent: str) -> list[dict[str, Any]]:
+        with self._definition_lock:
+            return self._definition_library.search(intent, limit=_AUTHOR_REFERENCE_LIMIT)
+
+    def get_definition(self, workflow_ref: str) -> Optional[dict[str, Any]]:
+        with self._definition_lock:
+            return self._definition_library.get(workflow_ref)
+
+    def save_definition(
+        self,
+        source: str,
+        *,
+        name: str = "",
+        description: str = "",
+        slug: str = "",
+        derived_from: Any = None,
+    ) -> dict[str, Any]:
+        """Validate and explicitly promote an authored script into the library."""
+        with self._definition_lock:
+            vr = validate(source)
+            if not vr.ok:
+                return {"ok": False, "error": "; ".join(vr.errors), "errors": vr.errors}
+            meta = vr.meta or {}
+            if derived_from is not None:
+                definitions = self._definition_library.list()
+                if not _lineage_exists(derived_from, definitions):
+                    error = "workflow lineage does not resolve to a saved revision"
+                    return {"ok": False, "error": error, "errors": [error]}
+            try:
+                definition = self._definition_library.create(
+                    source=source,
+                    name=name or str(meta.get("name", "")) or "workflow",
+                    description=description or str(meta.get("description", "")),
+                    slug=slug,
+                    derived_from=derived_from,
+                )
+            except SensitiveWorkflowSourceError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)]}
+        return {"ok": True, "definition": definition}
+
+    async def promote_run_definition(
+        self,
+        run_id: str,
+        *,
+        name: str = "",
+        description: str = "",
+        slug: str = "",
+    ) -> dict[str, Any]:
+        """Promote a completed run from its unredacted server-side snapshot."""
+        handle = self.registry.get(run_id)
+        if handle is None:
+            return {"ok": False, "error": "no such workflow run", "not_found": True}
+        if handle.status != STATUS_FINISHED:
+            return {
+                "ok": False,
+                "error": "workflow run is not finished",
+                "not_finished": True,
+            }
+        if not handle.source_is_original:
+            return {
+                "ok": False,
+                "error": "the original workflow source is no longer available",
+                "source_not_original": True,
+            }
+        source = handle.source
+        if not source:
+            return {"ok": False, "error": "workflow run has no source", "no_source": True}
+        validated = validate(source)
+        if not validated.ok:
+            return {
+                "ok": False,
+                "error": "; ".join(validated.errors),
+                "errors": validated.errors,
+            }
+        derived_from = _declared_lineage(validated.meta or {})
+        return await asyncio.to_thread(
+            self.save_definition,
+            source,
+            name=name,
+            description=description,
+            slug=slug,
+            derived_from=derived_from,
+        )
+
+    def update_definition(
+        self,
+        workflow_id: str,
+        *,
+        source: str,
+        expected_revision: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        slug: Optional[str] = None,
+    ) -> dict[str, Any]:
+        """Validate and append an optimistic-concurrency-controlled revision."""
+        with self._definition_lock:
+            current = self._definition_library.get(workflow_id)
+            if current is None:
+                return {
+                    "ok": False,
+                    "error": "no such saved workflow",
+                    "not_found": True,
+                }
+            vr = validate(source)
+            if not vr.ok:
+                return {"ok": False, "error": "; ".join(vr.errors), "errors": vr.errors}
+            try:
+                definition = self._definition_library.update(
+                    str(current["id"]),
+                    source=source,
+                    expected_revision=expected_revision,
+                    name=name,
+                    description=description,
+                    slug=slug,
+                )
+            except SensitiveWorkflowSourceError as exc:
+                return {"ok": False, "error": str(exc), "errors": [str(exc)]}
+        if definition is None:
+            return {
+                "ok": False,
+                "error": "workflow definition has a newer revision",
+                "conflict": True,
+            }
+        return {"ok": True, "definition": definition}
+
+    async def start_definition(
+        self,
+        workflow_ref: str,
+        *,
+        input_text: str = "",
+        args: Optional[dict[str, Any]] = None,
+        author: str = "",
+        session_key: str = "",
+        budget_total: Optional[int] = None,
+        timeout_secs: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Run the exact current revision of a named saved workflow."""
+        definition = await asyncio.to_thread(self.get_definition, workflow_ref)
+        if definition is None:
+            return {"error": f"no such saved workflow: {workflow_ref}"}
+        run_args = dict(args or {})
+        if input_text:
+            run_args["input"] = input_text
+        started = await self.start(
+            str(definition["source"]),
+            name=str(definition.get("name", "")),
+            args=run_args,
+            author=author,
+            session_key=session_key,
+            budget_total=budget_total,
+            timeout_secs=timeout_secs,
+        )
+        if "run_id" in started:
+            started.update(
+                {
+                    "workflow_id": definition["id"],
+                    "slug": definition["slug"],
+                    "revision": definition["revision"],
+                }
+            )
+        return started
+
     def status(self, run_id: str) -> Optional[dict]:
         return self.registry.status(run_id, include_events=False)
 
@@ -596,6 +789,7 @@ class WorkflowService:
             session_key=prior.session_key,
             replay_results=replay_results,
             replay_before=replay_before,
+            source_is_original=edited or prior.source_is_original,
         )
         return {
             "run_id": new_id,
@@ -624,3 +818,76 @@ def _strip_fence(text: str) -> str:
             elif t.startswith("py"):
                 t = t[len("py") :]
     return t.strip() + "\n"
+
+
+def _authoring_references(matches: list[dict[str, Any]]) -> str:
+    if not matches:
+        return (
+            "No saved local workflow matched this intent. Author from scratch and "
+            "do not add META.adapted_from."
+        )
+    blocks = [
+        "Saved local workflows matched this intent. Adapt the closest one when useful; "
+        "otherwise author from scratch. If you adapt one, add its exact reference as "
+        'META["adapted_from"] = "<workflow-id>@<revision>". Never edit or overwrite the '
+        "saved definition while authoring."
+    ]
+    for definition in matches:
+        source = str(definition.get("source", ""))[:_AUTHOR_REFERENCE_SOURCE_CHARS]
+        blocks.append(
+            "\n--- saved workflow "
+            f"{definition.get('id')}@{definition.get('revision')} "
+            f"({definition.get('slug')}) ---\n{source}"
+        )
+    return "\n".join(blocks)
+
+
+def _verified_lineage(
+    meta: dict[str, Any], matches: list[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    lineage = _declared_lineage(meta)
+    if lineage is None:
+        return None
+    workflow_id = lineage["workflow_id"]
+    revision = lineage["revision"]
+    exists = any(
+        definition.get("id") == workflow_id and definition.get("revision") == revision
+        for definition in matches
+    )
+    return lineage if exists else None
+
+
+def _declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Parse a validated workflow's optional ``META.adapted_from`` reference."""
+    reference = meta.get("adapted_from")
+    if not isinstance(reference, str) or "@" not in reference:
+        return None
+    workflow_id, revision_text = reference.rsplit("@", 1)
+    if not revision_text.isdigit():
+        return None
+    revision = int(revision_text)
+    return {"workflow_id": workflow_id, "revision": revision}
+
+
+def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:
+    if not isinstance(value, dict):
+        return False
+    workflow_id = value.get("workflow_id")
+    revision = value.get("revision")
+    if (
+        not isinstance(workflow_id, str)
+        or not workflow_id
+        or isinstance(revision, bool)
+        or not isinstance(revision, int)
+    ):
+        return False
+    for definition in definitions:
+        if definition.get("id") != workflow_id:
+            continue
+        if definition.get("revision") == revision:
+            return True
+        revisions = definition.get("revisions", [])
+        return any(
+            isinstance(item, dict) and item.get("revision") == revision for item in revisions
+        )
+    return False

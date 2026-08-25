@@ -19,11 +19,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from typing import Any
+from urllib.parse import quote
 
 from kiro_crew import mcp_core
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import (
     WORKFLOW_AUTHOR_SCHEMA,
+    WORKFLOW_LIBRARY_LIST_SCHEMA,
     WORKFLOW_RERUN_SCHEMA,
     WORKFLOW_RUN_ID_SCHEMA,
     WORKFLOW_RUN_SCHEMA,
@@ -72,6 +74,14 @@ def schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {
                     "source": {"type": "string", "description": "Workflow script source (Python)"},
+                    "workflow": {
+                        "type": "string",
+                        "description": "Saved workflow id or slug to run exactly",
+                    },
+                    "input": {
+                        "type": "string",
+                        "description": "Free-form input exposed as ctx.args['input']",
+                    },
                     "intent": {
                         "type": "string",
                         "description": "If no source: a NL goal to author then run",
@@ -86,6 +96,17 @@ def schemas() -> list[dict[str, Any]]:
                         "description": "Optional token budget ceiling for the run",
                     },
                 },
+            },
+        },
+        {
+            "name": "workflow_library_list",
+            "description": (
+                "List reusable workflows explicitly saved in the global Kiro Crew library. "
+                "Pass search to find local workflows relevant to a new request before authoring."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"search": {"type": "string"}},
             },
         },
         {
@@ -211,7 +232,12 @@ def workflow_author(name: str, args: dict[str, Any]) -> str:
 def workflow_run(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, WORKFLOW_RUN_SCHEMA)
     source = args.get("source") or ""
+    workflow_ref = (args.get("workflow") or "").strip()
     intent = (args.get("intent") or "").strip()
+    if not (source or workflow_ref or intent):
+        return _wf_return(
+            "workflow_run", "Error: provide either 'source' or 'intent'", outcome="error"
+        )
     wf_body: dict[str, Any] = {}
     if args.get("name"):
         wf_body["name"] = args["name"]
@@ -219,6 +245,29 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         wf_body["args"] = args["args"]
     if isinstance(args.get("budget_total"), int):
         wf_body["budget_total"] = args["budget_total"]
+    if workflow_ref:
+        session_key = mcp_core._resolve_session_key_strict()
+        if not session_key:
+            return _wf_return(
+                "workflow_run",
+                "Error: cannot verify caller identity for workflow_run. Refusing to start a "
+                "session-bound workflow." + mcp_core.strict_identity_diagnosis(),
+                outcome="error",
+            )
+        if args.get("input"):
+            wf_body["input"] = args["input"]
+        d = mcp_core._post(
+            f"/api/workflows/definitions/{quote(workflow_ref, safe='')}/run",
+            wf_body,
+            session_key=session_key,
+        )
+        if d.get("error"):
+            return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
+        return _wf_return(
+            "workflow_run",
+            f"Started saved workflow `/workflow {workflow_ref}` as `{d.get('run_id')}` "
+            f"from revision {d.get('revision')}. Its result will be injected here on completion.",
+        )
     if not source and intent:
         # Author-in-run (M6.7): returns a run_id INSTANTLY — the script is
         # authored inside the background run as a visible "Authoring" phase, so
@@ -226,19 +275,13 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         wf_body["intent"] = intent
         d = mcp_core._post("/api/workflows/run_intent", wf_body)
         if d.get("error"):
-            return _wf_return(
-                "workflow_run", f"workflow_run failed: {d['error']}", outcome="error"
-            )
+            return _wf_return("workflow_run", f"workflow_run failed: {d['error']}", outcome="error")
         return _wf_return(
             "workflow_run",
             f"Started workflow run `{d.get('run_id')}`. It is authoring the workflow "
             "from your request now (watch the Authoring phase in the Workflows tab / "
             "chat activity), then runs in the background. Its result will be injected "
             f"here on completion — or check progress with workflow_status('{d.get('run_id')}').",
-        )
-    if not source:
-        return _wf_return(
-            "workflow_run", "Error: provide either 'source' or 'intent'", outcome="error"
         )
     wf_body["source"] = source
     d = mcp_core._post("/api/workflows/run", wf_body)
@@ -251,6 +294,28 @@ def workflow_run(name: str, args: dict[str, Any]) -> str:
         "will be injected here on completion. You can keep working; check back with "
         f"workflow_status('{d.get('run_id')}').",
     )
+
+
+def workflow_library_list(name: str, args: dict[str, Any]) -> str:
+    args = validate_tool_args(args, WORKFLOW_LIBRARY_LIST_SCHEMA)
+    search = (args.get("search") or "").strip()
+    path = "/api/workflows/definitions"
+    if search:
+        path += f"?q={quote(search, safe='')}"
+    d = mcp_core._get(path)
+    if d.get("error"):
+        return _wf_return(
+            "workflow_library_list", f"workflow_library_list: {d['error']}", outcome="error"
+        )
+    definitions = d.get("definitions", [])
+    if not definitions:
+        return _wf_return("workflow_library_list", "No saved workflows yet.")
+    lines = [
+        f"- `/workflow {item.get('slug')}` — {item.get('name') or item.get('slug')} "
+        f"(revision {item.get('revision')}, id `{item.get('id')}`)"
+        for item in definitions
+    ]
+    return _wf_return("workflow_library_list", "Saved workflows:\n" + "\n".join(lines))
 
 
 def workflow_status(name: str, args: dict[str, Any]) -> str:
@@ -360,6 +425,7 @@ def workflow_rerun_subtree(name: str, args: dict[str, Any]) -> str:
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "workflow_author": workflow_author,
     "workflow_run": workflow_run,
+    "workflow_library_list": workflow_library_list,
     "workflow_status": workflow_status,
     "workflow_result": workflow_result,
     "workflow_list": workflow_list,

@@ -4990,6 +4990,13 @@ _CREW_SECRET_LEAVES: list[str] = [
     # treatment ``webhooks`` and ``profiles`` already get.
     "crons.json",
     "cron-history",
+    # Saved workflow definitions are executable capabilities whose presence is
+    # authorized only by an explicit dashboard action. Same-UID owner-only file
+    # modes do not stop an agent file tool from planting or rewriting a valid
+    # definition, so fence the whole directory, including atomic-write temp
+    # files. The dashboard and workflow service open it directly and remain able
+    # to create, list, update, and execute definitions.
+    "workflow_library",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),

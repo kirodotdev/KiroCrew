@@ -991,6 +991,7 @@ class WorkflowRunner:
         author: str = "",
         replay_results: Optional[dict] = None,
         replay_before: int = 0,
+        source_is_original: bool = True,
         intent: str = "",
         author_fn: Optional[AuthorFn] = None,
     ) -> str:
@@ -1101,5 +1102,6 @@ class WorkflowRunner:
             author=author,
             session_key=session_key,
             source=source,
+            source_is_original=source_is_original,
             args=args or {},
         )

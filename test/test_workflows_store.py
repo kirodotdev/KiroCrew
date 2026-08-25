@@ -58,6 +58,7 @@ def test_run_persists_and_reloads_across_restart(tmp_path) -> None:
     assert snap["event_count"] == 6
     h2 = reg_b.get("wf_000001")
     assert h2.args == {"k": "v"}
+    assert h2.source_is_original is True
     # resume cache survives AND keys are coerced back to int
     assert h2.agent_results == {0: "a", 1: "b"}
     assert all(isinstance(k, int) for k in h2.agent_results)
@@ -109,6 +110,30 @@ def test_store_writes_no_temp_leftover_and_is_valid_json(tmp_path) -> None:
     assert not list(runs.glob("*.tmp"))  # atomic write left no temp file
     obj = json.loads((runs / "wf_000010.json").read_text(encoding="utf-8"))
     assert obj["run_id"] == "wf_000010" and obj["status"] == "finished"
+
+
+def test_store_marks_redacted_source_as_non_original(tmp_path) -> None:
+    store = _store(tmp_path)
+    reg = RunRegistry(store=store)
+    source = "META={}\n" "async def workflow(ctx):\n" "    return 'AKIAIOSFODNN7EXAMPLE'\n"
+    _seed(reg, run_id="wf_000012", source=source)
+    reg.mark_terminal("wf_000012", STATUS_FINISHED, result={})
+
+    obj = json.loads((tmp_path / "runs" / "wf_000012.json").read_text(encoding="utf-8"))
+    assert obj["source_is_original"] is False
+
+
+def test_legacy_store_record_has_unknown_source_provenance() -> None:
+    restored = RunHandle.from_store_json(
+        {
+            "run_id": "wf_legacy",
+            "name": "legacy",
+            "status": STATUS_FINISHED,
+            "source": "META={}\nasync def workflow(ctx):\n    return {}\n",
+        }
+    )
+
+    assert restored.source_is_original is False
 
 
 def test_no_store_is_pure_in_memory(tmp_path) -> None:

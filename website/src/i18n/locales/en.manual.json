@@ -2348,6 +2348,7 @@
       "desc_todos": "Show or manage the task list",
       "desc_tools": "Show available tools",
       "desc_usage": "Show billing and usage information",
+      "desc_workflow": "List or run a saved workflow by name",
       "no_matching_commands_ctrl_enter_sends": "No matching commands — Ctrl+Enter sends the message",
       "no_matching_commands_enter_sends": "No matching commands — Enter sends the message"
     },
@@ -2826,7 +2827,9 @@
       "hooks_label": "Hooks",
       "hooks_description": "Shell commands that run automatically on agent events like prompts, tool calls, and session start/stop",
       "prompts_label": "Prompts",
-      "prompts_description": "Reusable prompt templates from {{registry}}"
+      "prompts_description": "Reusable prompt templates from {{registry}}",
+      "workflows_label": "Workflows",
+      "workflows_description": "Create, edit, and run reusable agent workflows"
     },
     "channelPage": {
       "agent_joining_one": "{{count}} agent joining",
@@ -2853,6 +2856,14 @@
       "state_working": "working"
     },
     "chat": {
+      "workflowRunCard": {
+        "cancel": "Cancel",
+        "save_help": "Keep the exact workflow from this completed run in your global library.",
+        "save_title": "Save this workflow",
+        "save_workflow": "Save workflow",
+        "saved_as": "Saved as {{command}}",
+        "source_unavailable": "The completed workflow source could not be loaded."
+      },
       "activityViewer": {
         "approval_needed": "Approval Needed",
         "artifact_save_permanently": "Save permanently",
@@ -3791,6 +3802,31 @@
       "click_a_notification_to_view_details_jump_to_the": "Click a notification to view details. Jump to the source chat or job from the detail panel."
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Adapted from",
+        "create_draft": "Create draft",
+        "create_title": "Create a reusable workflow",
+        "description": "Saved workflows are global to Kiro Crew and work with every supported agent harness. New drafts can adapt matching saved workflows without changing them.",
+        "empty": "No saved workflows found.",
+        "intent": "What should this workflow do?",
+        "loading": "Loading workflows…",
+        "name": "Name",
+        "new_workflow": "New workflow",
+        "request_failed": "Workflow request failed",
+        "revision": "Revision {{revision}}",
+        "run": "Run workflow",
+        "run_input": "Input (available as ctx.args.input)",
+        "save_revision": "Save new revision",
+        "save_to_library": "Save to library",
+        "search": "Search workflows…",
+        "select_or_create": "Select a saved workflow or create a new one.",
+        "slug": "Slash-command name",
+        "source": "Workflow source",
+        "started": "Started {{runId}}",
+        "title": "Workflow library",
+        "updated": "Updated {{date}}",
+        "workflow_description": "Description"
+      },
       "agentCfgTab": {
         "agent_config_file": "Agent Config ({{file}})",
         "agent_config_tip": "The {{process}} agent definition — prompt, tools, MCP servers, model settings. This is the execution layer config, separate from {{productName}}'s operational bindings.",

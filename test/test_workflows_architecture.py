@@ -43,11 +43,20 @@ ALLOWED_SIBLING_IMPORTS: dict[str, set[str]] = {
     #                       llm_helpers (external), no intra-pkg siblings — OPTIONAL adapter
     "store": set(),  # durable JSON-per-run persistence; imports config.paths + security
     #                  (external), no intra-pkg siblings — an OPTIONAL persistence adapter
+    "library": {"store"},  # reusable-definition persistence; shares store path resolution
     "context": {"validate"},
     "runner": {"validate", "dsl", "events", "context", "schema", "registry"},
     # service is the gateway-side façade ABOVE runner — composes the engine for the
     # live process (chat tools / app / injection). Top of the stack.
-    "service": {"validate", "registry", "runner", "agent_exec", "agent_pool", "store"},
+    "service": {
+        "validate",
+        "registry",
+        "runner",
+        "agent_exec",
+        "agent_pool",
+        "store",
+        "library",
+    },
 }
 
 # Modules outside the package the engine must never import directly (F1).

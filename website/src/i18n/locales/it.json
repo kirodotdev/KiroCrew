@@ -7043,6 +7043,7 @@
       "desc_todos": "Mostra o gestisci l’elenco delle attività",
       "desc_tools": "Mostra gli strumenti disponibili",
       "desc_usage": "Mostra informazioni su fatturazione e utilizzo",
+      "desc_workflow": "Elenca o esegui un workflow salvato per nome",
       "no_matching_commands_ctrl_enter_sends": "Nessun comando corrispondente — Ctrl+Invio invia il messaggio",
       "no_matching_commands_enter_sends": "Nessun comando corrispondente — Invio invia il messaggio"
     },
@@ -8411,6 +8412,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacità dell'agente",
+      "workflows_label": "Workflow",
+      "workflows_description": "Crea, modifica ed esegui workflow riutilizzabili per gli agenti",
       "connections_description": "Connetti servizi ufficiali e gestisci server MCP personalizzati",
       "connections_label": "Connessioni",
       "crews_description": "Gli agenti con cui chatti, ognuno con il proprio spazio di lavoro",
@@ -8958,8 +8961,14 @@
         "could_not_load_run_snapshot": "Impossibile caricare lo snapshot dell'esecuzione:"
       },
       "workflowRunCard": {
+        "cancel": "Annulla",
         "open_in_the_workflows_panel": "Apri nel pannello dei workflow",
-        "open_workflows_panel": "· Apri il pannello dei workflow"
+        "open_workflows_panel": "· Apri il pannello dei workflow",
+        "save_help": "Conserva il workflow esatto di questa esecuzione completata nella libreria globale.",
+        "save_title": "Salva questo workflow",
+        "save_workflow": "Salva workflow",
+        "saved_as": "Salvato come {{command}}",
+        "source_unavailable": "Impossibile caricare il sorgente del workflow completato."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossibile caricare lo snapshot:",
@@ -10304,6 +10313,31 @@
       "unread": "Non letti"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Adattato da",
+        "create_draft": "Crea bozza",
+        "create_title": "Crea un workflow riutilizzabile",
+        "description": "I workflow salvati sono globali in Kiro Crew e funzionano con ogni harness agente supportato. Le nuove bozze possono adattare workflow corrispondenti senza modificarli.",
+        "empty": "Nessun workflow salvato trovato.",
+        "intent": "Cosa deve fare questo workflow?",
+        "loading": "Caricamento dei workflow…",
+        "name": "Nome",
+        "new_workflow": "Nuovo workflow",
+        "request_failed": "Richiesta del workflow non riuscita",
+        "revision": "Revisione {{revision}}",
+        "run": "Esegui workflow",
+        "run_input": "Input (disponibile come ctx.args.input)",
+        "save_revision": "Salva nuova revisione",
+        "save_to_library": "Salva nella libreria",
+        "search": "Cerca workflow…",
+        "select_or_create": "Seleziona un workflow salvato o creane uno nuovo.",
+        "slug": "Nome del comando slash",
+        "source": "Sorgente del workflow",
+        "started": "Avviato {{runId}}",
+        "title": "Libreria dei workflow",
+        "updated": "Aggiornato il {{date}}",
+        "workflow_description": "Descrizione"
+      },
       "agentCfgTab": {
         "after_saving_use": "Dopo il salvataggio, usa",
         "agent_config_file": "Configurazione agente ({{file}})",

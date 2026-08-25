@@ -7043,6 +7043,7 @@
       "desc_todos": "Afficher ou gérer la liste des tâches",
       "desc_tools": "Afficher les outils disponibles",
       "desc_usage": "Afficher les informations de facturation et d’utilisation",
+      "desc_workflow": "Lister ou exécuter un workflow enregistré par son nom",
       "no_matching_commands_ctrl_enter_sends": "Aucune commande correspondante — Ctrl+Enter envoie le message",
       "no_matching_commands_enter_sends": "Aucune commande correspondante — Enter envoie le message"
     },
@@ -8411,6 +8412,8 @@
     },
     "capabilitiesPage": {
       "agent_capabilities": "Capacités de l'agent",
+      "workflows_label": "Workflows",
+      "workflows_description": "Créer, modifier et exécuter des workflows d’agents réutilisables",
       "connections_description": "Connectez des services officiels et gérez des serveurs MCP personnalisés",
       "connections_label": "Connexions",
       "crews_description": "Les agents avec lesquels vous discutez, chacun avec son propre espace de travail",
@@ -8958,8 +8961,14 @@
         "could_not_load_run_snapshot": "Impossible de charger l'instantané de l'exécution :"
       },
       "workflowRunCard": {
+        "cancel": "Annuler",
         "open_in_the_workflows_panel": "Ouvrir dans le panneau Workflows",
-        "open_workflows_panel": "· Ouvrir le panneau Workflows"
+        "open_workflows_panel": "· Ouvrir le panneau Workflows",
+        "save_help": "Conservez le workflow exact de cette exécution terminée dans votre bibliothèque globale.",
+        "save_title": "Enregistrer ce workflow",
+        "save_workflow": "Enregistrer le workflow",
+        "saved_as": "Enregistré sous {{command}}",
+        "source_unavailable": "Impossible de charger la source du workflow terminé."
       },
       "workflowSidebarRow": {
         "could_not_load_snapshot": "Impossible de charger l'instantané :",
@@ -10304,6 +10313,31 @@
       "unread": "Non lues"
     },
     "overview": {
+      "workflowLibrary": {
+        "adapted_from": "Adapté de",
+        "create_draft": "Créer le brouillon",
+        "create_title": "Créer un workflow réutilisable",
+        "description": "Les workflows enregistrés sont globaux dans Kiro Crew et fonctionnent avec tous les harnais d’agent pris en charge. Un nouveau brouillon peut adapter un workflow correspondant sans le modifier.",
+        "empty": "Aucun workflow enregistré trouvé.",
+        "intent": "Que doit faire ce workflow ?",
+        "loading": "Chargement des workflows…",
+        "name": "Nom",
+        "new_workflow": "Nouveau workflow",
+        "request_failed": "Échec de la requête de workflow",
+        "revision": "Révision {{revision}}",
+        "run": "Exécuter le workflow",
+        "run_input": "Entrée (disponible dans ctx.args.input)",
+        "save_revision": "Enregistrer une nouvelle révision",
+        "save_to_library": "Enregistrer dans la bibliothèque",
+        "search": "Rechercher des workflows…",
+        "select_or_create": "Sélectionnez un workflow enregistré ou créez-en un.",
+        "slug": "Nom de commande slash",
+        "source": "Source du workflow",
+        "started": "{{runId}} démarré",
+        "title": "Bibliothèque de workflows",
+        "updated": "Mis à jour le {{date}}",
+        "workflow_description": "Description"
+      },
       "agentCfgTab": {
         "after_saving_use": "Après l'enregistrement, utilisez",
         "agent_config_file": "Config de l'agent ({{file}})",

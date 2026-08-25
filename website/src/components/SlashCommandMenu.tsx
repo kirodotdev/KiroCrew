@@ -73,6 +73,7 @@ const COMMAND_DESC_KEY: Record<string, string> = {
   '/todos': 'components.slashCommandMenu.desc_todos',
   '/tools': 'components.slashCommandMenu.desc_tools',
   '/usage': 'components.slashCommandMenu.desc_usage',
+  '/workflow': 'components.slashCommandMenu.desc_workflow',
 }
 
 /**
@@ -103,7 +104,7 @@ function commandDescription(cmd: SlashCommand): string {
 const FALLBACK_COMMAND_NAMES = [
   '/agent', '/changelog', '/clear', '/code', '/compact', '/context',
   '/experiment', '/help', '/hooks', '/issue', '/kb', '/logdump',
-  '/mcp', '/model', '/prompts', '/side', '/todos', '/tools', '/usage',
+  '/mcp', '/model', '/prompts', '/side', '/todos', '/tools', '/usage', '/workflow',
 ] as const
 
 const FALLBACK_COMMANDS: SlashCommand[] = FALLBACK_COMMAND_NAMES.map(name => ({ name }))

@@ -245,6 +245,7 @@ _SLASH_COMMANDS = frozenset(
         "/todos",
         "/tools",
         "/usage",
+        "/workflow",
     }
 )
 
@@ -297,7 +298,18 @@ SLASH_COMMAND_DESCRIPTIONS: dict[str, str] = {
     "/tools": "Show available tools",
     "/usage": "Show billing and usage information",
     "/workflows": "List and manage dynamic workflow runs",
+    "/workflow": "List or run a saved workflow by name",
 }
+
+
+def parse_workflow_command(message: str) -> tuple[str, str] | None:
+    """Parse ``/workflow <slug> [input]`` without interpreting the input."""
+    parts = message.strip().split(None, 2)
+    if not parts or parts[0] != "/workflow":
+        return None
+    workflow_ref = parts[1] if len(parts) > 1 else ""
+    input_text = parts[2] if len(parts) > 2 else ""
+    return workflow_ref, input_text
 
 
 def user_text_span(
