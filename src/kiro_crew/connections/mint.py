@@ -104,6 +104,14 @@ class MintState(TypedDict, total=False):
     agent: str  # ephemeral spec name
     spec_path: str  # the exact file this flow wrote, and the only one it deletes
     pid: int  # sweep-protected for as long as the process is held
+    # Set only by the warm table (:mod:`kiro_crew.connections.warm`). A shared row
+    # owns no ``client``: its URL was minted on a process it shares with every
+    # other card, so redeemability is judged by generation AND activation liveness
+    # instead. Declared here because the table itself is shared, and a row type
+    # that cannot describe half its rows pushes every read through a cast.
+    shared: bool
+    generation: int  # the shared process that holds this row's PKCE verifier
+    activation: int  # the session that owns this row's loopback listener
 
 
 _mints: dict[str, MintState] = {}

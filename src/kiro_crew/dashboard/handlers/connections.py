@@ -385,7 +385,14 @@ async def api_connections_status(request: web.Request) -> web.Response:
     # for grant presence -- test_the_handlers_package_does_not_import_the_mint_engine
     # keeps that engine off the boot path.
     from kiro_crew.connections.status import _STATUS_SCHEMA_VERSION, collect_connection_statuses
+    from kiro_crew.connections.warm import expire_dead_mints
 
+    # Withdraw shared rows whose minting process is gone BEFORE the statuses are
+    # read, so a card cannot be served an approval URL nothing can redeem. Keyed on
+    # the fact rather than a cause, which is what covers a process that went away by
+    # a route no expiry path anticipated; cheap enough to run per request because
+    # liveness is a returncode read, not I/O.
+    await expire_dead_mints()
     statuses = await collect_connection_statuses()
     return web.json_response({"schema_version": _STATUS_SCHEMA_VERSION, "connections": statuses})
 
