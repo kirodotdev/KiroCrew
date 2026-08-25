@@ -5,7 +5,11 @@
 # artifact pip users install — frontend staged in, version stamped), never a
 # raw source tree. Building from source here would duplicate build-wheel.yml
 # and let the Docker bytes drift from the pip bytes for the same version.
-#   docker build -f docker/Dockerfile .        (requires dist/kirocrew-*.whl)
+#   docker build -f docker/Dockerfile .        (requires dist/kirocrew-*.whl
+#                                                and BuildKit — the default
+#                                                builder since Docker 23; on
+#                                                older engines prefix with
+#                                                DOCKER_BUILDKIT=1)
 #
 # Base: python:3.12-slim-trixie is pinned (not bare -slim) because kiro-cli's
 # gnu builds enforce a glibc floor of 2.34 on x86_64 and 2.39 on aarch64;
@@ -114,12 +118,22 @@ RUN set -eux; \
 
 # The CI-built wheel (build-wheel.yml artifact). The glob keeps the Dockerfile
 # version-agnostic; the lane stages exactly one wheel into dist/.
-COPY dist/*.whl /tmp/wheels/
-RUN set -eux; \
+#
+# The wheel is BIND-MOUNTED from the build context, never COPYed. Layers are
+# append-only: a COPY commits the ~48MB wheel to its own layer, and an `rm`
+# in a later instruction can only stack a whiteout on top, so every pull
+# still fetched the wheel next to the installed copy of the same code
+# (#5778, 5.7% of the published image). The mount exists only for the
+# duration of this RUN and commits no wheel bytes to any layer, which makes
+# the cleanup `rm` unnecessary rather than merely late -- do not "simplify"
+# this back to COPY. The mount is read-only (BuildKit default); pip only
+# reads the wheel. .dockerignore's allowlist means the mounted dist/ contains
+# exactly the staged *.whl, so the one-wheel guard keeps its meaning.
+RUN --mount=type=bind,source=dist,target=/tmp/wheels \
+    set -eux; \
     WHEEL_COUNT=$(ls /tmp/wheels/*.whl | wc -l); \
     [ "${WHEEL_COUNT}" -eq 1 ] || { echo "expected exactly one wheel, found ${WHEEL_COUNT}" >&2; exit 1; }; \
     pip install --no-cache-dir /tmp/wheels/*.whl; \
-    rm -rf /tmp/wheels; \
     kirocrew --version
 
 # Re-stamp the provenance the wheel already carries: this image installs the
