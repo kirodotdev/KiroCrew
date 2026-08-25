@@ -22,6 +22,7 @@ from kiro_crew.agent_discovery import agent_skill_globs
 from kiro_crew.config.loader import KiroCrewConfig, workspace_dir_for
 from kiro_crew.config.paths import kiro_agents_dir
 from kiro_crew.cron import get_local_tz
+from kiro_crew.frontmatter import STEERING_LOADER, parse_frontmatter
 from kiro_crew.hooks import (
     HOOK_INJECT_CONTEXT,
     HOOK_MODIFY,
@@ -1041,13 +1042,41 @@ def _build_ui_language_section(cfg: "KiroCrewConfig") -> str:
     )
 
 
+# Steering front matter declares WHEN a document loads via ``inclusion``. Kiro
+# spells three values; this injector honors only ``manual``, and the reason for
+# each is in _steering_inclusion_skips().
+_STEERING_INCLUSION_MANUAL = "manual"
+
+
+def _steering_inclusion_skips(text: str) -> bool:
+    """True when a steering document's front matter opts it out of auto-loading.
+
+    ``inclusion: manual`` is the author stating the document loads only when
+    explicitly referenced, so injecting it into every session contradicts the
+    one instruction the file gives about itself.
+
+    ``inclusion: fileMatch`` is deliberately NOT skipped, even though this
+    injector cannot evaluate ``fileMatchPattern``: unconditional injection is a
+    coarse approximation of "load when working on matching files", but dropping
+    the document is a strictly worse one — the condition would never be met, so
+    the document would never apply at all, and no signal would say so. It stays
+    on the current unconditional path until the matcher exists.
+
+    An unrecognized or absent value is treated as ``always``, Kiro's documented
+    default: a typo must not silently remove a document from every session.
+    """
+    inclusion = parse_frontmatter(text, STEERING_LOADER).get("inclusion", "")
+    return inclusion.strip().lower() == _STEERING_INCLUSION_MANUAL
+
+
 def _load_steering_resources() -> str:
     """Load steering files from the agent config's resources array.
 
     kiro-cli injects these automatically for its sessions; the dashboard
     must do it explicitly so that dashboard chat sessions also benefit
     from project-specific steering conventions.
-    Only loads ``file://`` resources matching ``*.md``.
+    Only loads ``file://`` resources matching ``*.md``, and only those whose
+    front matter does not opt out (see :func:`_steering_inclusion_skips`).
     """
     try:
         cfg_path = kiro_agents_dir() / "kirocrew.json"
@@ -1056,6 +1085,7 @@ def _load_steering_resources() -> str:
         cfg = json.loads(safe_read_file(str(cfg_path)))
         resources = cfg.get("resources", [])
         parts: list[str] = []
+        skipped = 0
         home_resolved = str(Path.home().resolve()) + os.sep
         for res in resources:
             if not isinstance(res, str) or not res.startswith("file://"):
@@ -1072,12 +1102,22 @@ def _load_steering_resources() -> str:
                     and not is_sensitive_path(str(resolved))
                 ):
                     try:
-                        parts.append(safe_read_file(str(p)))
+                        text = safe_read_file(str(p))
                     except PermissionError:
-                        pass
-        if parts:
+                        continue
+                    if _steering_inclusion_skips(text):
+                        skipped += 1
+                        continue
+                    parts.append(text)
+        if parts or skipped:
+            # Count the SKIPS too: a document withheld on its own declaration is
+            # indistinguishable at the prompt from one that failed to load, and
+            # the skip is the half nothing else records.
             logger.debug(
-                "loaded %d steering bytes from %d files", sum(len(p) for p in parts), len(parts)
+                "loaded %d steering bytes from %d files (%d skipped by inclusion)",
+                sum(len(p) for p in parts),
+                len(parts),
+                skipped,
             )
         return "\n".join(parts) if parts else ""
     except Exception as exc:

@@ -1088,6 +1088,90 @@ class TestLoadSteeringResources:
         )
 
 
+class TestSteeringInclusion:
+    """The ``inclusion`` front-matter gate on the CC-backend steering injector."""
+
+    @staticmethod
+    def _write(tmp_path, **docs: str) -> None:
+        """Write ``~/.kiro/steering/<name>.md`` docs + an agent config globbing them."""
+        import json
+
+        steering_dir = tmp_path / ".kiro" / "steering"
+        steering_dir.mkdir(parents=True, exist_ok=True)
+        for name, body in docs.items():
+            (steering_dir / f"{name}.md").write_text(body)
+        agents_dir = tmp_path / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (agents_dir / "kirocrew.json").write_text(
+            json.dumps({"resources": ["file://.kiro/steering/**/*.md"]})
+        )
+
+    @staticmethod
+    def _load(tmp_path) -> str:
+        from kiro_crew.context import _load_steering_resources
+
+        with patch("pathlib.Path.home", return_value=tmp_path):
+            return _load_steering_resources()
+
+    def test_manual_document_is_not_injected(self, tmp_path):
+        """``inclusion: manual`` is the author saying "only when referenced"."""
+        self._write(tmp_path, notes="---\ninclusion: manual\n---\nMANUAL_MARKER")
+        assert "MANUAL_MARKER" not in self._load(tmp_path)
+
+    def test_manual_skip_does_not_drop_its_siblings(self, tmp_path):
+        """One withheld document must not cost the whole steering block."""
+        self._write(
+            tmp_path,
+            a_manual="---\ninclusion: manual\n---\nMANUAL_MARKER",
+            b_always="---\ninclusion: always\n---\nALWAYS_MARKER",
+        )
+        result = self._load(tmp_path)
+        assert "ALWAYS_MARKER" in result
+        assert "MANUAL_MARKER" not in result
+
+    def test_always_and_bare_documents_are_injected(self, tmp_path):
+        """Explicit ``always`` and no front matter at all are the same case."""
+        self._write(
+            tmp_path,
+            declared="---\ninclusion: always\n---\nALWAYS_MARKER",
+            bare="# Plain doc\nBARE_MARKER",
+        )
+        result = self._load(tmp_path)
+        assert "ALWAYS_MARKER" in result
+        assert "BARE_MARKER" in result
+
+    def test_file_match_still_injects_unconditionally(self, tmp_path):
+        """``fileMatch`` is NOT treated as manual while no matcher exists.
+
+        Dropping it would mean the document never applies at all, since nothing
+        here can satisfy ``fileMatchPattern`` — a silent capability loss, where
+        over-inclusion is merely the coarse behavior this path already had.
+        """
+        self._write(
+            tmp_path,
+            api="---\ninclusion: fileMatch\nfileMatchPattern: 'src/**/*.ts'\n---\nMATCH_MARKER",
+        )
+        assert "MATCH_MARKER" in self._load(tmp_path)
+
+    def test_unknown_inclusion_value_is_treated_as_always(self, tmp_path):
+        """A typo must not silently remove a document from every session."""
+        self._write(tmp_path, typo="---\ninclusion: manaul\n---\nTYPO_MARKER")
+        assert "TYPO_MARKER" in self._load(tmp_path)
+
+    def test_inclusion_value_is_matched_case_insensitively(self, tmp_path):
+        self._write(tmp_path, shouty="---\ninclusion: Manual\n---\nSHOUTY_MARKER")
+        assert "SHOUTY_MARKER" not in self._load(tmp_path)
+
+    def test_inclusion_in_body_prose_is_not_front_matter(self, tmp_path):
+        """Only a real column-0 front-matter block gates the document.
+
+        Without the fence the line is prose, and prose that happens to read
+        ``inclusion: manual`` must not withhold a document nobody opted out.
+        """
+        self._write(tmp_path, prose="# Doc\nUse inclusion: manual for optional docs.\nPROSE_MARKER")
+        assert "PROSE_MARKER" in self._load(tmp_path)
+
+
 class TestLessonsCap:
     def test_over_cap_injects_error_block(self, tmp_path):
         from kiro_crew.context import _LESSONS_CAP

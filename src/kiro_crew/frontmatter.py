@@ -93,6 +93,19 @@ SKILL_LOADER = FrontmatterDialect(
     resolve_block_scalars=True,
 )
 
+# ``context._steering_inclusion`` — the CC-backend steering injector. Steering
+# documents are the same markdown-with-front-matter family as SKILL.md, so they
+# accept the same grammar; it is a SEPARATE constant rather than a second
+# reference to ``SKILL_LOADER`` because the two document families have no reason
+# to move together — retuning what the skills catalog accepts must not silently
+# change which steering documents load.
+STEERING_LOADER = FrontmatterDialect(
+    extraction="column0_fence",
+    indent_policy="reject_indented",
+    strip_quotes=True,
+    resolve_block_scalars=True,
+)
+
 # ``onboarding_import._frontmatter`` — the import screen's collapsed map.
 # Lenient on the opener (trailing text tolerated), the closer indentation,
 # and indented keys; quotes stripped; no block-scalar resolution. The
