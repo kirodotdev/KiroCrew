@@ -15,7 +15,7 @@ import os
 import platform
 import sys
 from contextlib import ExitStack
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -374,6 +374,26 @@ def _passthrough_sandbox():
     return patch.object(apple_speech, "_sandboxed", side_effect=lambda argv: (argv, {}, None))
 
 
+def _cleanup_file_sandbox(tmp_path):
+    """Stub `_sandboxed` like a host WITH a sandbox backend: a real cleanup file.
+
+    `sandboxed_spawn_argv` returns a real temp launcher/profile as its third
+    element on any host with a backend, and the caller must unlink it after the
+    child exits. Returns ``(patcher, created)`` where *created* collects every
+    file handed out, so a test can assert the call site dropped each one on the
+    exit path under test.
+    """
+    created: list = []
+
+    def _fake(argv):
+        launcher = tmp_path / f"sb-launcher-{len(created)}"
+        launcher.write_text("# fake sandbox launcher/profile")
+        created.append(launcher)
+        return argv, {}, str(launcher)
+
+    return patch.object(apple_speech, "_sandboxed", side_effect=_fake), created
+
+
 class TestTranscribePlumbing:
     @pytest.mark.asyncio
     async def test_unavailable_returns_reason_not_exception(self):
@@ -673,6 +693,232 @@ class TestStreamingSession:
         session = apple_speech.StreamingSession()
         await session.close()
         await session.close()
+
+
+class TestSandboxCleanupPathIsDropped:
+    """Every `_sandboxed` call site must unlink the returned cleanup path (#5776).
+
+    The third tuple element is a real temp file on any host with a sandbox
+    backend (Linux namespace launcher / macOS ``.sb`` profile), and the
+    ``sandboxed_spawn_argv`` contract makes the CALLER unlink it after the child
+    exits. A site that discards it leaks one file per call, forever — and the
+    leak is per-call, so a launcher dropped only on the success path still
+    accumulates. Each test hands back a real file and asserts it is gone on the
+    exit path under test.
+    """
+
+    @staticmethod
+    def _availability_ok():
+        return patch.object(
+            apple_speech, "availability", return_value=apple_speech.Availability(True)
+        )
+
+    @pytest.mark.asyncio
+    async def test_transcribe_drops_launcher_on_success(self, tmp_path):
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(json.dumps({"text": "hi"}).encode(), b""))
+        proc.returncode = 0
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            text, _ = await apple_speech.transcribe("/tmp/x.wav")
+        assert text == "hi"
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_drops_launcher_on_timeout(self, tmp_path):
+        """The timeout exit kills the child, and must drop the launcher too."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        killed = asyncio.Event()
+        proc = AsyncMock()
+
+        async def communicate():
+            # Hangs until kill(), like a wedged helper; returns once killed, so
+            # the reap in the timeout handler completes instead of hanging.
+            # No timing flake: the wait is unbounded-until-kill, and the small
+            # positive timeout (NOT 0: wait_for's `timeout <= 0` fast path
+            # cancels before the first step) only decides when kill() happens.
+            if not killed.is_set():
+                await killed.wait()
+            return b"", b""
+
+        proc.communicate = communicate
+        proc.kill = Mock(side_effect=killed.set)
+        proc.returncode = None
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            text, meta = await apple_speech.transcribe("/tmp/x.wav", timeout_secs=0.01)
+        assert text is None
+        assert "timed out" in meta["error"]
+        proc.kill.assert_called_once()
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_transcribe_drops_launcher_on_spawn_failure(self, tmp_path):
+        """OSError from the spawn means no child ever held the launcher."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("boom")),
+            sandbox_patch,
+        ):
+            text, meta = await apple_speech.transcribe("/tmp/x.wav")
+        assert text is None
+        assert "could not run speech helper" in meta["error"]
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_inventory_drops_launcher_on_success(self, tmp_path):
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(
+            return_value=(json.dumps({"supported": ["en-US"], "installed": []}).encode(), b"")
+        )
+        with (
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            result = await apple_speech.inventory()
+        assert result == {"supported": ["en-US"], "installed": []}
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_inventory_drops_launcher_on_spawn_failure(self, tmp_path):
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        with (
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("boom")),
+            sandbox_patch,
+        ):
+            result = await apple_speech.inventory()
+        assert "error" in result
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_inventory_timeout_kills_then_drops_launcher(self, tmp_path):
+        """The timeout exit must reap the wedged helper BEFORE the finally
+        unlinks — the contract is 'after the child exits', and a helper past
+        the ceiling must not be left running with nobody waiting on it."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        killed = asyncio.Event()
+        proc = AsyncMock()
+
+        async def communicate():
+            if not killed.is_set():
+                raise asyncio.TimeoutError  # stands in for the wait_for ceiling
+            return b"", b""
+
+        proc.communicate = communicate
+        proc.kill = Mock(side_effect=killed.set)
+        proc.returncode = None
+        with (
+            patch.object(apple_speech, "helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            result = await apple_speech.inventory()
+        assert "error" in result
+        proc.kill.assert_called_once()
+        assert created and not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_streaming_start_failure_drops_launcher(self, tmp_path):
+        """The spawn-OSError exit has a launcher but no child; it must drop it."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("boom")),
+            sandbox_patch,
+        ):
+            problem = await session.start()
+        assert "could not start streaming helper" in problem
+        assert created and not any(f.exists() for f in created)
+        assert session._sb_cleanup is None
+
+    @pytest.mark.asyncio
+    async def test_streaming_launcher_survives_start_and_drops_on_close(self, tmp_path):
+        """The streaming child OUTLIVES start(): unlinking there would pull the
+        profile/launcher out from under a live process. It is held on the
+        session and dropped in close(), after the process teardown — and a
+        double close must not trip over the already-removed file."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+        proc.stdout.readline = AsyncMock(side_effect=[b'{"type": "ready"}\n', b""])
+        proc.kill = Mock()
+        proc.returncode = None
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            assert await session.start() == ""
+            assert created and all(f.exists() for f in created), "unlinked under a live child"
+            await session.close()
+            assert not any(f.exists() for f in created)
+            await session.close()  # idempotent: the swap keeps this from re-unlinking
+
+    @pytest.mark.asyncio
+    async def test_streaming_finish_then_close_drops_launcher_once(self, tmp_path):
+        """The production teardown order (stt_stream.py) is finish() then
+        close(). finish() may leave the process draining, so the unlink belongs
+        to close() alone — a refactor moving it into finish() fails here."""
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+        proc.stdout.readline = AsyncMock(side_effect=[b'{"type": "ready"}\n', b""])
+        proc.kill = Mock()
+        proc.returncode = None
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            assert await session.start() == ""
+            await session.finish()
+            assert created and all(f.exists() for f in created), "finish() must not unlink"
+            await session.close()
+            assert not any(f.exists() for f in created)
+
+    @pytest.mark.asyncio
+    async def test_streaming_ready_timeout_drops_launcher(self, tmp_path, monkeypatch):
+        """The readiness-timeout exit reaches the unlink through the close()
+        that start() already performs there."""
+        monkeypatch.setattr(apple_speech, "_READY_TIMEOUT_SECS", 0.05)
+        sandbox_patch, created = _cleanup_file_sandbox(tmp_path)
+        proc = AsyncMock()
+
+        async def never_ready(*_a, **_k):
+            await asyncio.sleep(60)
+            return b""
+
+        proc.stdout.readline = never_ready
+        proc.kill = Mock()
+        proc.returncode = None
+        session = apple_speech.StreamingSession()
+        with (
+            self._availability_ok(),
+            patch.object(apple_speech, "stream_helper_path", return_value="/fake/helper"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+            sandbox_patch,
+        ):
+            problem = await session.start()
+        assert problem == "streaming helper did not become ready"
+        assert created and not any(f.exists() for f in created)
 
 
 class TestStreamingEndpointGate:

@@ -349,6 +349,14 @@ def _sandboxed(argv: list[str]) -> tuple[list[str], dict[str, str], str | None]:
     protects; keeping the probe out of ``availability()`` was necessary but not
     sufficient, because these three call sites are themselves async.
 
+    Returns:
+        ``(wrapped_argv, scrubbed_env, cleanup_path_or_None)`` — the chokepoint's
+        own contract. The third element is a real temp launcher/profile whenever
+        the backend materializes one (``None`` for the nested-sandbox
+        passthrough), and the CALLER must unlink it after the child exits
+        (:func:`_drop_sandbox_launcher`); discarding it leaks one file per call,
+        forever.
+
     Raises:
         SandboxUnavailableError: propagated from the chokepoint when the host has no
             sandbox backend. Callers MUST catch this and surface the message, which
@@ -357,6 +365,24 @@ def _sandboxed(argv: list[str]) -> tuple[list[str], dict[str, str], str | None]:
             deliberate — see the callers.
     """
     return sandbox.sandboxed_spawn_argv(argv, mode="strict", env=_build_env())
+
+
+def _drop_sandbox_launcher(path: str | None) -> None:
+    """Remove the sandbox's temp launcher/profile once the child is done.
+
+    ``sandboxed_spawn_argv`` makes the caller responsible for unlinking the
+    cleanup path after the child exits (the Linux namespace launcher script or
+    the macOS ``sandbox-exec`` profile). Same shape as
+    ``mcp_gateway/resolve_once.py``: idempotent and silent, because a failed
+    unlink is a leaked temp file, never a reason to fail a transcription that
+    otherwise succeeded.
+    """
+    if not path:
+        return
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _mkstemp_path(suffix: str) -> str:
@@ -597,7 +623,7 @@ async def transcribe(
         argv.append(native_path)
 
         try:
-            argv, spawn_env, _sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
+            argv, spawn_env, sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
         except sandbox.SandboxUnavailableError as exc:
             logger.warning("apple_speech: %s%s", _NO_SANDBOX_HINT, exc)
             return None, {"error": f"{_NO_SANDBOX_HINT}{exc}"}
@@ -619,6 +645,12 @@ async def transcribe(
                 return None, {"error": f"timed out after {timeout_secs}s"}
         except OSError as exc:
             return None, {"error": f"could not run speech helper: {exc}"}
+        finally:
+            # Covers the success, timeout and spawn-failure exits alike: the
+            # leak is per-call, so a launcher dropped only on success still
+            # accumulates. The sandbox-unavailable return above yields no
+            # tuple, hence no file to drop.
+            _drop_sandbox_launcher(sb_cleanup)
     finally:
         if is_temp:
             try:
@@ -647,9 +679,14 @@ async def inventory() -> dict:
     helper = await asyncio.to_thread(helper_path)
     if not helper:
         return {"error": "speech helper unavailable"}
+    # None until `_sandboxed` returns: its unavailable-raise yields no tuple and
+    # hence no file, so the `finally` below is a no-op on that branch.
+    inv_cleanup: str | None = None
     try:
         try:
-            inv_argv, inv_env, _ = await asyncio.to_thread(_sandboxed, [helper, "--inventory"])
+            inv_argv, inv_env, inv_cleanup = await asyncio.to_thread(
+                _sandboxed, [helper, "--inventory"]
+            )
         except sandbox.SandboxUnavailableError as exc:
             return {"error": f"{_NO_SANDBOX_HINT}{exc}"}
         proc = await asyncio.create_subprocess_exec(
@@ -658,10 +695,25 @@ async def inventory() -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        try:
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+        except asyncio.TimeoutError:
+            # Reap before the finally unlinks, honouring the "after the child
+            # exits" contract — and a helper wedged past the ceiling must not
+            # be left running with nobody waiting on it. Same shape as
+            # transcribe(); the outer except turns the re-raise into the same
+            # error dict this path always returned.
+            try:
+                proc.kill()
+                await proc.communicate()
+            except (OSError, ProcessLookupError):
+                pass
+            raise
         return dict(json.loads(stdout.decode().strip().splitlines()[-1]))
     except (OSError, asyncio.TimeoutError, json.JSONDecodeError, IndexError) as exc:
         return {"error": str(exc)}
+    finally:
+        _drop_sandbox_launcher(inv_cleanup)
 
 
 # ─────────────────────────── live streaming ───────────────────────────────────
@@ -701,6 +753,11 @@ class StreamingSession:
         self._queue: asyncio.Queue[dict | None] = asyncio.Queue()
         self._pump: asyncio.Task | None = None
         self._final_text = ""
+        #: Sandbox temp launcher/profile for the live helper. The child OUTLIVES
+        #: :meth:`start`, so unlike the batch sites this cannot be dropped in a
+        #: ``finally`` there — it is held for the session and unlinked in
+        #: :meth:`close`, once the process is torn down.
+        self._sb_cleanup: str | None = None
 
     async def start(self) -> str:
         """Spawn the helper and wait for ``ready``. Returns "" on success, else why not."""
@@ -712,7 +769,7 @@ class StreamingSession:
             return "streaming speech helper could not be built"
         try:
             try:
-                stream_argv, stream_env, _ = await asyncio.to_thread(
+                stream_argv, stream_env, self._sb_cleanup = await asyncio.to_thread(
                     _sandboxed,
                     [helper, "--locale", self.locale, "--sample-rate", str(self.sample_rate)],
                 )
@@ -726,6 +783,10 @@ class StreamingSession:
                 stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError as exc:
+            # The launcher exists but no child ever held it; the readiness
+            # failures below instead reach the same unlink through `close()`.
+            cleanup, self._sb_cleanup = self._sb_cleanup, None
+            _drop_sandbox_launcher(cleanup)
             return f"could not start streaming helper: {exc}"
 
         self._pump = asyncio.create_task(self._read_events())
@@ -820,3 +881,7 @@ class StreamingSession:
         if self._pump is not None:
             self._pump.cancel()
             self._pump = None
+        # After the kill/wait above, so the launcher is never unlinked out from
+        # under a live child. The swap keeps a double close from re-unlinking.
+        cleanup, self._sb_cleanup = self._sb_cleanup, None
+        _drop_sandbox_launcher(cleanup)
