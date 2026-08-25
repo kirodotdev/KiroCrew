@@ -56,6 +56,8 @@
     "memory_unavailable": "内存：不可用",
     "metrics_are_stale_latest_fetch_failed": "指标已过期，最近一次获取失败",
     "metrics_unavailable": "指标不可用",
+    "n_more_other": "还有 {{count}} 个",
+    "notification_count_other": "{{count}} 条通知",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -82,6 +84,7 @@
     "search_sessions_files_and_commands": "搜索会话、文件和命令",
     "show_fewer_apps": "显示更少应用",
     "show_less": "收起",
+    "show_more_apps_other": "再显示 {{count}} 个应用",
     "signed_in_with": "已通过 {{provider}} 登录",
     "skip_to_content": "跳到主内容",
     "social_login": "社交账号登录",
@@ -1552,6 +1555,7 @@
         "path_to_folder": "/path/to/folder"
       },
       "searchPanel": {
+        "capped": "（已截断）",
         "close_esc": "关闭 (Esc)",
         "close_search": "关闭搜索",
         "comma_separated_glob_patterns": "以逗号分隔的 glob 模式",
@@ -1913,6 +1917,7 @@
         "prList": {
           "clear_search": "清除搜索",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "已关闭/已合并的 PR 最多显示最近更新的 100 个 — 开启“me”筛选条件可在整个仓库范围内完整搜索",
+          "file_changed_other": "{{count}} 个文件已更改",
           "loading_the_rest": "正在加载其余内容…",
           "pr_other": "{{count}} 个 PR",
           "re_fetch_from": "从 {{provider}} 重新获取 {{label}}",
@@ -2361,6 +2366,8 @@
             "labels": "标签",
             "looking_for_labels_this_repo_is_missing": "正在查找此仓库缺失的标签…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "无 — 此仓库的分类体系已覆盖其待处理 issue 的需要。",
+            "open_issue_other": "{{count}} 个待处理 issue",
+            "open_with_description_other": "{{description}} — {{count}} 个待处理",
             "propose_labels_this_repo_is_missing_from_its_ope": "根据待处理 issue 提出此仓库缺失的标签",
             "read_only_repo_needs_triage_push_access": "仓库只读 — 需要 triage/push 权限",
             "suggest_again": "再次建议",
@@ -2383,6 +2390,7 @@
         },
         "taggingView": {
           "analyzing": "正在分析…",
+          "apply_suggestion_other": "应用 {{count}} 条建议",
           "applying": "正在应用…",
           "applying_is_disabled_until_they_load_because_a_s": "在加载完成前无法应用，因为若建议指定了仓库已不存在的\n            标签，整批都会被拒绝。",
           "applying_needs_write_access": "应用需要写入权限",
@@ -2394,6 +2402,8 @@
           "created_but_settings_not_updated": "“{{name}}”已在 GitHub 上创建，但此仓库的本地分类设置无法更新：{{error}}",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "尚未定义任何标签，因此无可分配项。请先在上方提出几个建议，\n            创建你需要的标签，然后回到这里推荐标签。",
           "every_open_issue_in": "以下位置的每个待处理 issue：",
+          "labelled_issue_other": "已为 {{count}} 个 issue 添加标签。",
+          "labelled_issue_with_failures_other": "已为 {{count}} 个 issue 添加标签；{{failed}} 个未能更新（见下方行）。",
           "loading_the_untagged_queue": "正在加载未标记队列…",
           "newest_first": "最新优先",
           "read_only_repo_needs_triage_or_push_access": "仓库只读 — 需要 triage 或 push 权限",
@@ -7448,6 +7458,7 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "已安装 {{name}}。在下方打开开关即可启用。",
       "synced_from_its_source_directory": "已从源目录同步 {{name}}。",
+      "updated_app_other": "已更新 {{count}} 个应用。",
       "updated_from_the_registry": "已从注册表更新 {{name}}。"
     },
     "artifactDeployPage": {

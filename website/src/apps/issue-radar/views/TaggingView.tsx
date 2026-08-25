@@ -358,12 +358,12 @@ function TaggingDashboard() {
       // Partial failure is expected (a locked or transferred issue). Report it
       // per row AND in the banner instead of pretending the batch succeeded.
       if (res.failed.length > 0) {
-        setApplyNote(
-          `Labelled ${res.applied.length} issue${res.applied.length === 1 ? '' : 's'}; `
-          + `${res.failed.length} could not be updated (see the rows below).`,
-        )
+        setApplyNote(i18nT('apps.issueRadar.views.taggingView.labelled_issue_with_failures', {
+          count: res.applied.length,
+          failed: res.failed.length,
+        }))
       } else {
-        setApplyNote(`Labelled ${res.applied.length} issue${res.applied.length === 1 ? '' : 's'}.`)
+        setApplyNote(i18nT('apps.issueRadar.views.taggingView.labelled_issue', { count: res.applied.length }))
       }
     },
     onError: (e: Error) => setApplyError(e.message),
@@ -516,7 +516,7 @@ function TaggingDashboard() {
               <Check size={12} />
               {applyAll.isPending
                 ? i18nT('apps.issueRadar.views.taggingView.applying')
-                : `Apply ${applicable.length} suggestion${applicable.length === 1 ? '' : 's'}`}
+                : i18nT('apps.issueRadar.views.taggingView.apply_suggestion', { count: applicable.length })}
             </button>
           </div>
         </div>

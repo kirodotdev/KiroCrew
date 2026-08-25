@@ -76,7 +76,7 @@ const CHECK = process.argv.includes('--check')
  * in `src/` when the detector landed, because a hard zero would have failed on
  * arrival and been disabled.
  */
-const HARDCODED_CEILING = 37
+const HARDCODED_CEILING = 7
 
 /**
  * The two shapes in the codebase, both anchored so the count expression is

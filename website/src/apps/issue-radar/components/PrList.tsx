@@ -216,7 +216,7 @@ export default function PrList({ resizing = false }: { resizing?: boolean }) {
                 {files > 0 && (
                   <span
                     className="inline-flex items-center gap-1"
-                    title={`${files} file${files === 1 ? '' : 's'} changed`}
+                    title={i18nT('apps.issueRadar.components.prList.file_changed', { count: files })}
                   >
                     <FileDiff size={11} />
                     {files}

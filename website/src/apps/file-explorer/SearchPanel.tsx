@@ -67,7 +67,10 @@ export default function SearchPanel({ rootPath, onClose, onJump }: SearchPanelPr
       <div className="mc-fe-search-status">
         {searching ? i18nT('apps.fileExplorer.searchPanel.searching')
           : error ? <span style={{ color: 'var(--danger)' }}>{(error as Error).message || i18nT('apps.fileExplorer.searchPanel.search_failed')}</span>
-          : `${results.length} result${results.length !== 1 ? 's' : ''}${truncated ? ' (capped)' : ''}${engine ? ` · ${engine}` : ''}`}
+          /* The result count shares components.discoverySearchBar.result (owned by
+             DiscoverySearchBar) — if that component is ever removed, re-home the base
+             before the codemod prunes it. */
+          : `${i18nT('components.discoverySearchBar.result', { count: results.length })}${truncated ? ` ${i18nT('apps.fileExplorer.searchPanel.capped')}` : ''}${engine ? ` · ${engine}` : ''}`}
       </div>
       <div className="mc-fe-search-results">
         {results.length === 0 && !searching && q && !error

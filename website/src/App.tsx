@@ -628,8 +628,8 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   // offers to re-collapse rather than reveal "0 more".
   const showsCollapse = expanded || hiddenCount === 0
   const Icon = showsCollapse ? ChevronUp : MoreHorizontal
-  const labelText = showsCollapse ? i18nT('app.show_less') : `${hiddenCount} more`
-  const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : `Show ${hiddenCount} more app${hiddenCount === 1 ? '' : 's'}`
+  const labelText = showsCollapse ? i18nT('app.show_less') : i18nT('app.n_more', { count: hiddenCount })
+  const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : i18nT('app.show_more_apps', { count: hiddenCount })
   return (
     <button ref={rowRef}
       className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
@@ -644,7 +644,10 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
       // click), so it also clears a label that focus had just re-armed.
       onClick={() => { dismissTip(); onClick() }}
       aria-expanded={expanded}
-      aria-label={titleText}
+      // WCAG 2.5.3 Label in Name: while the text label is visible the accessible
+      // name must contain it, so the name IS the label; collapsed (icon-only)
+      // mode uses the fuller title instead.
+      aria-label={collapsed ? titleText : labelText}
       title={titleText}
       onMouseEnter={showTip}
       onMouseLeave={hideTip}
@@ -804,7 +807,7 @@ function NotificationsBellButton() {
         ref={bellRef}
         className={`flex items-center justify-center w-7 h-7 rounded-md hover:bg-bg-hover transition-colors bg-transparent border-none cursor-pointer shrink-0 relative ${open ? 'text-accent' : 'text-muted hover:text-text'}`}
         onClick={() => { if (open) closePanel(); else openPanel() }}
-        title={unacked.length > 0 ? `${unacked.length} notification${unacked.length === 1 ? '' : 's'}` : i18nT('app.notifications')}
+        title={unacked.length > 0 ? i18nT('app.notification_count', { count: unacked.length }) : i18nT('app.notifications')}
         aria-label={i18nT('app.notifications')}
         aria-haspopup="dialog"
         aria-expanded={open}

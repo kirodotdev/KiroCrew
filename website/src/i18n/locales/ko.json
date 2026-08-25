@@ -56,6 +56,8 @@
     "memory_unavailable": "메모리: 사용 불가",
     "metrics_are_stale_latest_fetch_failed": "지표가 오래되었습니다. 최근 가져오기에 실패했습니다",
     "metrics_unavailable": "지표 사용 불가",
+    "n_more_other": "{{count}}개 더",
+    "notification_count_other": "알림 {{count}}개",
     "resource_critical": "Critical",
     "resource_posture_tooltip_critical": "Host memory is critically low ({{gb}} GB free). Avoid heavy parallel work.",
     "resource_posture_tooltip_tight": "Host memory is tight ({{gb}} GB free). Heavy work may be slower.",
@@ -82,6 +84,7 @@
     "search_sessions_files_and_commands": "세션, 파일, 명령 검색",
     "show_fewer_apps": "앱 적게 보기",
     "show_less": "간략히 보기",
+    "show_more_apps_other": "앱 {{count}}개 더 보기",
     "signed_in_with": "{{provider}}(으)로 로그인됨",
     "skip_to_content": "본문으로 건너뛰기",
     "social_login": "소셜 로그인",
@@ -1594,6 +1597,7 @@
         "path_to_folder": "/path/to/folder"
       },
       "searchPanel": {
+        "capped": "(상한 도달)",
         "close_esc": "닫기 (Esc)",
         "close_search": "검색 닫기",
         "comma_separated_glob_patterns": "쉼표로 구분한 글로브 패턴",
@@ -1955,6 +1959,7 @@
         "prList": {
           "clear_search": "검색 지우기",
           "closed_merged_prs_are_capped_at_the_100_most_rec": "닫힘·병합된 PR은 가장 최근 업데이트된 100건으로 제한됩니다 — 저장소 전체를 완전히 검색하려면 ‘me’ 필터를 켜세요",
+          "file_changed_other": "파일 {{count}}개 변경됨",
           "loading_the_rest": "나머지를 불러오고 있습니다…",
           "pr_other": "PR {{count}}건",
           "re_fetch_from": "{{label}}을(를) {{provider}}에서 다시 가져오기",
@@ -2403,6 +2408,8 @@
             "labels": "레이블",
             "looking_for_labels_this_repo_is_missing": "이 저장소에 없는 레이블을 찾는 중…",
             "none_the_repo_s_taxonomy_already_covers_what_its": "없음 — 저장소의 분류 체계가 열린 이슈에 필요한 것을 이미 모두 담고 있습니다.",
+            "open_issue_other": "열린 이슈 {{count}}개",
+            "open_with_description_other": "{{description}} — 열린 이슈 {{count}}개",
             "propose_labels_this_repo_is_missing_from_its_ope": "열린 이슈를 바탕으로 이 저장소에 없는 레이블 제안",
             "read_only_repo_needs_triage_push_access": "읽기 전용 저장소 — 트리아지·푸시 권한이 필요합니다",
             "suggest_again": "다시 제안",
@@ -2425,6 +2432,7 @@
         },
         "taggingView": {
           "analyzing": "분석 중…",
+          "apply_suggestion_other": "제안 {{count}}개 적용",
           "applying": "적용 중…",
           "applying_is_disabled_until_they_load_because_a_s": "불러오기 전까지는 적용이 비활성화됩니다. 저장소에 더 이상 없는\n 레이블을 지정한 제안은 배치 전체가 거부되기 때문입니다.",
           "applying_needs_write_access": "적용하려면 쓰기 권한이 필요합니다",
@@ -2436,6 +2444,8 @@
           "created_but_settings_not_updated": "‘{{name}}’을(를) GitHub에 생성했지만 이 저장소의 로컬 트리아지 설정을 업데이트하지 못했습니다: {{error}}",
           "defines_no_labels_yet_so_there_is_nothing_to_ass": "아직 레이블을 정의하지 않아 지정할 것이 없습니다. 위에서 몇 가지를 제안받고\n 원하는 것을 만든 다음, 여기로 돌아와 레이블을 제안하세요.",
           "every_open_issue_in": "다음의 모든 열린 이슈:",
+          "labelled_issue_other": "이슈 {{count}}개에 라벨을 지정했습니다.",
+          "labelled_issue_with_failures_other": "이슈 {{count}}개에 라벨을 지정했습니다. {{failed}}개는 업데이트하지 못했습니다(아래 행 참조).",
           "loading_the_untagged_queue": "태그 없는 대기열을 불러오는 중…",
           "newest_first": "최신순",
           "read_only_repo_needs_triage_or_push_access": "읽기 전용 저장소 — 트리아지 또는 푸시 권한이 필요합니다",
@@ -7448,6 +7458,7 @@
       "v": "v",
       "installed_app_find_in_library_and_enable": "{{name}} 설치됨. 아래에서 켜서 활성화하세요.",
       "synced_from_its_source_directory": "{{name}}을(를) 소스 디렉터리에서 동기화했습니다.",
+      "updated_app_other": "앱 {{count}}개를 업데이트했습니다.",
       "updated_from_the_registry": "{{name}}을(를) 레지스트리에서 업데이트했습니다."
     },
     "artifactDeployPage": {
