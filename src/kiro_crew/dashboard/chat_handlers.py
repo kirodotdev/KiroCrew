@@ -399,8 +399,68 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # Slot already has an agent — only reject explicit mismatches (non-empty different agent).
         # Empty agent in request means "use existing" (e.g. follow-up messages from frontend).
         if agent and slot.agent != agent:
-            _emit_agent_assignment(slot.key, agent or "", outcome="denied_mismatch")
-            return web.json_response({"error": "slot agent mismatch"}, status=409)
+            # Different NAMES can still be the same BINDING: slots record the
+            # resolved default ALIAS at creation, while a client may send the
+            # underlying kiro agent name (the E2E smoke tests do exactly this).
+            # 409 only when the two names resolve to different dispatch targets.
+            # Identity is EVERY dispatch-relevant binding field — kiro agent,
+            # workspace, memory store, and model — because aliases configure
+            # memory stores and model pins independently of workspace, and a
+            # request landing in another alias's memory store is the exact
+            # cross-scoping this guard exists to prevent. An unknown requested
+            # name (requested_resolved=False) still 409s — the resolver would
+            # silently fall back to the default, which is the same lie.
+            # Resolution failure falls back to the strict name comparison
+            # (fail closed), reported as its own outcome so a config-load
+            # blip is not triaged as an agent-naming problem.
+            same_binding = False
+            resolution_failed = False
+            try:
+                # Config load is file IO (stat + read + jsonschema validate on a
+                # cache miss), so it rides a thread like the member-slot load
+                # above — never the event loop.
+                _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+                # Resolve within the slot's PROJECT scope, exactly as dispatch
+                # does (see the agent-switch path below): a project-scoped agent
+                # exists only inside slot.project, so resolving without it would
+                # fall back to default bindings and falsely equate a
+                # project-agent slot with a request naming the default alias.
+                # Warm the cache off-loop first so the on-loop lookup is a hit.
+                await warm_project_agent_names(slot.project or None)
+                _stored = resolve_agent_bindings(_cfg, slot.agent, slot.project or None)
+                _requested = resolve_agent_bindings(_cfg, agent, slot.project or None)
+                # Identity itself lives on ResolvedBindings, next to the field
+                # set, so a new dispatch-relevant field cannot silently widen
+                # this bypass. requested_resolved stays a separate caller-side
+                # check: an unknown name would resolve to the default and MATCH
+                # a default-bound slot, which is the lie this guard prevents.
+                same_binding = _requested.requested_resolved and _stored.same_dispatch_binding(
+                    _requested
+                )
+            except Exception:
+                resolution_failed = True
+                logger.warning(
+                    "agent-conflict binding resolution failed; using strict name comparison",
+                    exc_info=True,
+                )
+            if not same_binding:
+                _emit_agent_assignment(
+                    slot.key,
+                    agent or "",
+                    outcome=(
+                        "denied_resolution_failed" if resolution_failed else "denied_mismatch"
+                    ),
+                )
+                return web.json_response({"error": "slot agent mismatch"}, status=409)
+            # The one outcome of this guard that overrides a 409 boundary must be
+            # auditable alongside the denials and adoptions it sits between.
+            _emit_agent_assignment(slot.key, agent, outcome="allowed_same_binding")
+            logger.debug(
+                "agent names differ but resolve to the same binding: slot=%s stored=%s requested=%s",
+                slot.key,
+                slot.agent,
+                agent,
+            )
         else:
             logger.debug("agent match for slot=%s agent=%s", slot.key, agent)
     elif agent:
@@ -1899,6 +1959,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # Infra failure loading config must not block slot creation outright, so
         # validation below is skipped rather than failing closed.
         logger.warning("Failed to load config for slot create", exc_info=True)
+    # An agent-less create means "use the default agent": stamp the RESOLVED
+    # default alias into the slot instead of storing "", so the slot's
+    # metadata records what will actually answer — otherwise the dashboard
+    # footer chip renders its literal 'default' fallback while dispatch
+    # quietly resolves the real default (#2891 fixed the same class for
+    # channel-transport writes). Placed BEFORE the normalization below so
+    # the stamped alias also gets its workspace resolved by the existing
+    # binding path.
+    if cfg is not None and not agent:
+        agent = cfg.default_agent or ""
     # Normalize an agent nothing will dispatch to the one that WILL answer.
     # Otherwise the name is stored verbatim and resolve_agent_bindings silently
     # falls back to the default agent: the sidebar advertises the requested agent

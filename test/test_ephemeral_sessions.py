@@ -382,7 +382,7 @@ class TestSlotAPI:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_persistence.KiroCrewConfig.load",
-            MagicMock(return_value=MagicMock(agents={})),
+            MagicMock(return_value=MagicMock(agents={}, default_agent="")),
         )
         state = _make_state(tmp_path)
 
@@ -403,7 +403,7 @@ class TestSlotAPI:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_persistence.KiroCrewConfig.load",
-            MagicMock(return_value=MagicMock(agents={})),
+            MagicMock(return_value=MagicMock(agents={}, default_agent="")),
         )
         state = _make_state(tmp_path)
 
@@ -418,7 +418,7 @@ class TestSlotAPI:
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_persistence.KiroCrewConfig.load",
-            MagicMock(return_value=MagicMock(agents={})),
+            MagicMock(return_value=MagicMock(agents={}, default_agent="")),
         )
         state = _make_state(tmp_path)
         state.get_or_create_slot("conflict")
