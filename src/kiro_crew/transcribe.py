@@ -533,6 +533,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             logger.error("ffmpeg required to remux webm to ogg for Transcribe")
             return None
         tmp_ogg = await asyncio.to_thread(_make_temp_ogg)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 ffmpeg_bin,
@@ -558,6 +559,42 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
             if tmp_ogg:
                 await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
             return None
+        except BaseException:
+            # ``CancelledError`` derives from ``BaseException``, so the
+            # ``Exception`` guard above never sees it: a cancellation landing
+            # mid-``communicate`` used to leave the ffmpeg child running and the
+            # owned temp on disk (#5780). Mirror ``_to_native_audio``'s cleanup
+            # (#5777): stop AND reap the child BEFORE the unlink — Windows keeps
+            # the output file locked until the child fully exits, and on POSIX a
+            # live child can race the removal. Every step is best-effort, and
+            # the unlink stays synchronous (one-file unlink, matching #5777): a
+            # repeat cancellation could eat an off-loop hop before it runs. The
+            # exception in flight is the one that must surface.
+            if proc is not None:
+                try:
+                    proc.kill()
+                except (OSError, ProcessLookupError):
+                    logger.debug(
+                        "ffmpeg kill during cancellation cleanup failed",
+                        exc_info=True,
+                    )
+                else:
+                    try:
+                        await proc.communicate()
+                    except BaseException:
+                        # A repeat cancellation can land on this await; swallow
+                        # it so the unlink below still runs and the ORIGINAL
+                        # exception is the one that propagates.
+                        pass
+            if tmp_ogg:
+                try:
+                    _unlink_if_exists(tmp_ogg)
+                except OSError:
+                    # A not-yet-exited child can still hold the file (Windows
+                    # lock); letting that escape would REPLACE the in-flight
+                    # cancellation with a PermissionError.
+                    pass
+            raise
         actual_path = tmp_ogg
 
     transcript_parts: list[str] = []
@@ -609,13 +646,31 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
         logger.exception("AWS Transcribe streaming STT failed")
         return None
     finally:
-        if stream is not None:
-            try:
-                await stream.input_stream.end_stream()
-            except Exception:
-                pass
-        if tmp_ogg:
-            await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
+        # Nested ``finally`` so the unlink is unconditional: the ``end_stream``
+        # await can itself raise on a REPEAT cancellation (``CancelledError`` is
+        # a ``BaseException``, so its ``Exception`` guard misses it), and that
+        # escape used to skip the temp removal below (#5780).
+        try:
+            if stream is not None:
+                try:
+                    await stream.input_stream.end_stream()
+                except Exception:
+                    pass
+        finally:
+            if tmp_ogg:
+                try:
+                    await asyncio.to_thread(_unlink_if_exists, tmp_ogg)
+                except BaseException:
+                    # A repeat cancellation can land on this await before the
+                    # off-loop hop runs; unlink synchronously (one file,
+                    # matching #5777) and let the cancellation propagate. The
+                    # OSError guard keeps a locked/contended file from
+                    # REPLACING the exception already in flight.
+                    try:
+                        _unlink_if_exists(tmp_ogg)
+                    except OSError:
+                        pass
+                    raise
 
 
 def _collect_whisper_output(
