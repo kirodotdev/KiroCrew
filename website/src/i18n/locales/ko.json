@@ -7031,7 +7031,11 @@
       "restart_action": "지금 재시작",
       "restarting": "재시작 중입니다. 이 페이지는 자동으로 다시 연결됩니다.",
       "no_peers": "이 Tailscale 네트워크에 아직 다른 기기가 참여하지 않아 이 주소를 열 수 있는 기기가 없습니다. 휴대폰에 Tailscale을 설치하고 같은 계정으로 로그인하세요.",
-      "peers_offline": "다른 기기가 이 네트워크에 참여했지만 지금은 모두 오프라인이므로, 하나가 연결될 때까지 주소가 열리지 않습니다."
+      "peers_offline": "다른 기기가 이 네트워크에 참여했지만 지금은 모두 오프라인이므로, 하나가 연결될 때까지 주소가 열리지 않습니다.",
+      "automatic_https": "Tailscale이 비공개 HTTPS 인증서를 자동으로 만들고 갱신하므로 인증서를 따로 설정할 필요가 없습니다.",
+      "setting_up": "비공개 HTTPS 설정 중…",
+      "setup_action": "설정하고 QR 표시",
+      "setup_timeout": "{{productName}}이(가) 제시간에 다시 온라인 상태가 되지 않았습니다. Gateway를 다시 확인한 후 재시도하세요."
     }
   },
   "hooks": {

@@ -7213,7 +7213,11 @@
       "restart_action": "Redémarrer",
       "restarting": "Redémarrage — cette page va se reconnecter.",
       "no_peers": "Aucun autre appareil n'a encore rejoint ce réseau Tailscale, donc rien ne peut ouvrir cette adresse. Installez Tailscale sur le téléphone et connectez-vous avec le même compte.",
-      "peers_offline": "Vos autres appareils ont rejoint ce réseau mais aucun n'est en ligne actuellement, donc l'adresse ne se chargera pas avant qu'un appareil se connecte."
+      "peers_offline": "Vos autres appareils ont rejoint ce réseau mais aucun n'est en ligne actuellement, donc l'adresse ne se chargera pas avant qu'un appareil se connecte.",
+      "automatic_https": "Tailscale crée et renouvelle automatiquement le certificat HTTPS privé — aucune configuration de certificat n'est nécessaire.",
+      "setting_up": "Configuration du HTTPS privé…",
+      "setup_action": "Configurer et afficher le QR",
+      "setup_timeout": "{{productName}} n'est pas revenu en ligne à temps. Vérifiez de nouveau la gateway, puis réessayez."
     }
   },
   "hooks": {

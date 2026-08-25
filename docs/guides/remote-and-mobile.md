@@ -286,7 +286,18 @@ the same and the difference is the whole security story:
 - [`tailscale serve`](https://tailscale.com/kb/1242/tailscale-serve) publishes the
   dashboard **only inside your tailnet** — nothing is reachable from the public
   internet, you get TLS and a stable MagicDNS hostname, and who can reach it is
-  governed by your tailnet ACLs. This is the better answer for the phone case:
+  governed by your tailnet ACLs. This is the better answer for the phone case.
+
+  The guided path is in **Settings → Overview → Phone access**. Once Tailscale is
+  installed, signed in, and has MagicDNS enabled, click **Set up & show QR** once.
+  The dashboard enables its daemon-derived origin, restarts the gateway when the
+  running origin set needs it, publishes through Tailscale Serve, reconnects, and
+  displays a short-lived sign-in QR. Tailscale creates and renews the private HTTPS
+  certificate itself; there is no certificate file to create or install manually.
+  The action still refuses to replace a different service already mounted at
+  `443/`.
+
+  The CLI equivalent is:
   ```bash
   kirocrew config set dashboard.tailscale.enabled true   # once per machine
   kirocrew tailnet up

@@ -7031,7 +7031,11 @@
       "restart_action": "立即重启",
       "restarting": "正在重启——本页会自动重新连接。",
       "no_peers": "这个 Tailscale 网络里还没有加入别的设备，因此没有任何设备能打开这个地址。请在手机上安装 Tailscale 并用同一个账号登录。",
-      "peers_offline": "你的其他设备已加入这个网络，但当前都不在线，因此在有设备连上之前这个地址不会加载。"
+      "peers_offline": "你的其他设备已加入这个网络，但当前都不在线，因此在有设备连上之前这个地址不会加载。",
+      "automatic_https": "Tailscale 会自动创建并续期专用 HTTPS 证书，无需手动配置证书。",
+      "setting_up": "正在配置专用 HTTPS…",
+      "setup_action": "一键设置并显示二维码",
+      "setup_timeout": "{{productName}} 未能及时恢复在线。请重新检查 Gateway，然后再试一次。"
     }
   },
   "hooks": {

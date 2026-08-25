@@ -283,7 +283,7 @@ describe('TailnetMobileCard — the daemon detail line', () => {
     // though the two were connected.
     await mount(data({ step: 'trust_off', detail: 'zzz port 443 already in use' }))
     expect(screen.queryByText('zzz port 443 already in use')).toBeNull()
-    expect(screen.getByText('Allow this name')).toBeInTheDocument()
+    expect(screen.getByText('Set up & show QR')).toBeInTheDocument()
   })
 })
 
@@ -295,7 +295,7 @@ describe('TailnetMobileCard — occupied', () => {
     expect(screen.getByText('kirocrew tailnet up')).toBeInTheDocument()
     // And no publish button: publishing here would replace whatever Tailscale is
     // already serving, which is exactly what this step exists to avoid.
-    expect(screen.queryByRole('button', { name: /Turn on phone access/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
   })
 })
 
@@ -443,13 +443,16 @@ describe('TailnetMobileCard — copy', () => {
 })
 
 describe('TailnetMobileCard — mutating actions', () => {
-  it('publishes from the publish step', async () => {
+  it('publishes and immediately shows the QR from the publish step', async () => {
     mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount(data({ step: 'publish', published: false }))
+    mockApi.tailnetMobile.mockResolvedValue(data())
 
-    fireEvent.click(screen.getByRole('button', { name: /Turn on phone access/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
   })
 
   it('renders a refused publish as the server explained it', async () => {
@@ -462,33 +465,63 @@ describe('TailnetMobileCard — mutating actions', () => {
     })
     await mount(data({ step: 'publish', published: false }))
 
-    fireEvent.click(screen.getByRole('button', { name: /Turn on phone access/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     expect(
       await screen.findByText('zzz something else is already served here'),
     ).toBeInTheDocument()
   })
 
-  it('enables origin trust from the trust_off step', async () => {
+  it('configures, restarts, publishes HTTPS, and shows the QR with one click', async () => {
     mockApi.patchConfig.mockResolvedValue({})
+    mockApi.restartGateway.mockResolvedValue({})
+    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount(data({ step: 'trust_off', trusted: false }))
+    mockApi.tailnetMobile
+      .mockResolvedValueOnce(data({
+        step: 'restart_gateway',
+        trusted: true,
+        startup_trusted: false,
+        published: false,
+      }))
+      .mockResolvedValueOnce(data({ step: 'publish', published: false }))
+      .mockResolvedValue(data())
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow this name' }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     await waitFor(() =>
       expect(mockApi.patchConfig).toHaveBeenCalledWith('dashboard.tailscale.enabled', true),
     )
+    await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
+    await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
   })
 
-  it('restarts, then says to wait — there is no success state to show', async () => {
+  it('continues automatically after a required gateway restart', async () => {
     mockApi.restartGateway.mockResolvedValue({})
+    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
     await mount(data({ step: 'restart_gateway', startup_trusted: false }))
+    mockApi.tailnetMobile
+      .mockResolvedValueOnce(data({ step: 'publish', published: false }))
+      .mockResolvedValue(data())
 
-    fireEvent.click(screen.getByRole('button', { name: /Restart now/ }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
-    // The gateway replaces its own process image, so the request answers and THEN
-    // the connection drops; "asked, now wait" is the only honest feedback.
-    expect(await screen.findByText('Restarting — this page will reconnect.')).toBeInTheDocument()
+    await waitFor(() => expect(mockApi.restartGateway).toHaveBeenCalled())
+    await waitFor(() => expect(mockApi.tailnetMobilePublish).toHaveBeenCalled())
+    expect(await screen.findByAltText('QR code linking to this dashboard')).toBeInTheDocument()
+  })
+
+  it('labels the full operation as private HTTPS setup while it is running', async () => {
+    mockApi.patchConfig.mockReturnValue(new Promise<void>(() => {}))
+    await mount(data({ step: 'trust_off', trusted: false }))
+
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
+
+    const pending = await screen.findByRole('button', { name: /Setting up private HTTPS/ })
+    expect(pending).toBeDisabled()
   })
 
   it('re-checks from a mid-setup step', async () => {
@@ -504,7 +537,7 @@ describe('TailnetMobileCard — mutating actions', () => {
     mockApi.patchConfig.mockRejectedValue(new Error('zzz network unreachable'))
     await mount(data({ step: 'trust_off', trusted: false }))
 
-    fireEvent.click(screen.getByRole('button', { name: 'Allow this name' }))
+    fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
     expect(await screen.findByText('zzz network unreachable')).toBeInTheDocument()
   })
@@ -516,7 +549,7 @@ describe('TailnetMobileCard — terminal steps', () => {
     expect(screen.getByText('Blocked by policy')).toBeInTheDocument()
     // Nothing here is the operator's to change, so no button pretends otherwise.
     expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /Turn on phone access/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Set up & show QR/ })).toBeNull()
   })
 
   it('links to the Tailscale DNS console from enable_magicdns', async () => {

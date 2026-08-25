@@ -7213,7 +7213,11 @@
       "restart_action": "Reiniciar agora",
       "restarting": "Reiniciando — esta página vai reconectar.",
       "no_peers": "Nenhum outro dispositivo entrou nesta rede Tailscale ainda, portanto nada pode abrir este endereço. Instale o Tailscale no telefone e entre com a mesma conta.",
-      "peers_offline": "Seus outros dispositivos entraram nesta rede, mas nenhum está online agora, portanto o endereço não vai carregar até que um se conecte."
+      "peers_offline": "Seus outros dispositivos entraram nesta rede, mas nenhum está online agora, portanto o endereço não vai carregar até que um se conecte.",
+      "automatic_https": "O Tailscale cria e renova automaticamente o certificado HTTPS privado — não é preciso configurar certificados.",
+      "setting_up": "Configurando HTTPS privado…",
+      "setup_action": "Configurar e mostrar QR",
+      "setup_timeout": "O {{productName}} não voltou a ficar online a tempo. Verifique o gateway novamente e tente de novo."
     }
   },
   "hooks": {

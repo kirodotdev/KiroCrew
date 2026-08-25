@@ -1216,6 +1216,12 @@
       "run_named_now": "Run {{name}} now",
       "running": "running"
     },
+    "tailnetMobile": {
+      "automatic_https": "Tailscale creates and renews the private HTTPS certificate automatically — no certificate setup is required.",
+      "setting_up": "Setting up private HTTPS…",
+      "setup_action": "Set up & show QR",
+      "setup_timeout": "{{productName}} did not come back online in time. Re-check the gateway, then try again."
+    },
     "filePickerMenu": {
       "no_matches_ctrl_enter_sends": "No matching files — Ctrl+Enter sends the message",
       "no_matches_enter_sends": "No matching files — Enter sends the message"
