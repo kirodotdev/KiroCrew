@@ -752,6 +752,18 @@ class TestPodConfigWrite:
         assert data["tunnel"]["enabled"] is False  # sanitized
         assert stat.S_IMODE((home / "config.json").stat().st_mode) == 0o600
 
+    def test_a_failed_lockdown_publishes_no_config(self, tmp_path: Path, monkeypatch) -> None:
+        """restrict_to_owner runs on the temp; a failure must not leave config.json."""
+        monkeypatch.setattr(
+            "kiro_crew.atomic_write.platform_compat.restrict_to_owner",
+            lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+        )
+        home = tmp_path / "pod-home"
+        with pytest.raises(OSError, match="icacls"):
+            rt.write_pod_config(home, seed="")
+        assert not (home / "config.json").exists()
+        assert not list(home.glob("*.tmp"))
+
 
 class TestCleanupHome:
     def test_removes_pod_dir(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

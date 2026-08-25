@@ -18,8 +18,9 @@ so the caller reads remediation instead of a raw regex. It is metadata only: it
 never participates in matching. Create-only, mirroring ``pattern`` — neither has
 an edit endpoint; you delete the rule and re-add it.
 
-Mutations run under the shared config lock, write atomically (0600), and emit a
-SEL audit entry (``ok`` on success, ``denied`` on reject). Governance
+Mutations run under the shared config lock, write atomically (owner-only
+before the payload is published), and emit a SEL audit entry (``ok`` on
+success, ``denied`` on reject). Governance
 ``commands``-scope pins force a built-in rule enabled even when the user disabled
 it or set disable-all (tightest-wins): a pinned rule cannot be turned off (409)
 and always counts as enabled in the snapshot.
@@ -353,7 +354,7 @@ async def _write_denied_state(mutate) -> dict:
 
     ``mutate(denied: dict) -> None`` edits the opt-out object (the file root) in
     place. Runs under the shared config lock. Returns the updated object so the
-    caller can hot-reload the live HookManager. The file is locked down to the
+    caller can hot-reload the live HookManager.     The file is locked down to the
     owner only on every write: 0600 on POSIX and an owner-only DACL on Windows.
     The lockdown is applied to the temp file before any content reaches it, so
     the keystone never exists in a world-readable file.
@@ -363,12 +364,15 @@ async def _write_denied_state(mutate) -> dict:
     loop; the async config lock still serializes concurrent mutations.
     """
     from kiro_crew.atomic_write import atomic_write
+
     path: Path = denied_commands_path()
 
     def _read_modify_write() -> dict:
         denied = _read_denied_strict()
         mutate(denied)
-        path.parent.mkdir(parents=True, exist_ok=True)
+        # atomic_write(..., restrict_to_owner=True) refuses a linked parent
+        # before it mkdir's, then locks the temp. A mkdir here would walk
+        # through a planted link and create dirs under its target first.
         atomic_write(
             path,
             json.dumps(denied, indent=2) + "\n",

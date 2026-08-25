@@ -968,3 +968,20 @@ def test_write_denied_state_does_not_fall_back_to_chmod_safe(
     assert captured.get("called"), (
         "_write_denied_state must route the keystone write through atomic_write"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_failed_lockdown_publishes_no_denied_commands(
+    home: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """restrict_to_owner runs on the temp; a failure must not leave the keystone file."""
+    monkeypatch.setattr(
+        "kiro_crew.atomic_write.platform_compat.restrict_to_owner",
+        lambda path: (_ for _ in ()).throw(OSError("icacls: transient failure")),
+    )
+    from kiro_crew.dashboard.handlers.security import _write_denied_state
+
+    with pytest.raises(OSError, match="icacls"):
+        await _write_denied_state(lambda d: d.update({"disable_all": True}))
+    assert not (home / "denied_commands.json").exists()
+    assert not list(home.glob("*.tmp"))
