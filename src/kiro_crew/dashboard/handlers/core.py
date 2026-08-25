@@ -1240,7 +1240,9 @@ echo "Done. whisper=$(command -v whisper 2>/dev/null || echo 'check PATH') ffmpe
 async def api_stt_transcribe(request: web.Request) -> web.Response:
     """POST /api/stt/transcribe — transcribe uploaded audio via whisper."""
     import tempfile  # noqa: F811
+    import uuid
 
+    from kiro_crew.dashboard import part_stream
     from kiro_crew.transcribe import is_available, transcribe_audio  # noqa: F811
 
     if not is_available():
@@ -1254,19 +1256,19 @@ async def api_stt_transcribe(request: web.Request) -> web.Response:
     # Use uploaded filename extension (recording.webm / .mp4 / .ogg)
     fname = getattr(field, "filename", None) or "recording.webm"
     ext = os.path.splitext(fname)[1] or ".webm"
-    fd, tmp = tempfile.mkstemp(suffix=ext)
+    # A fresh unpublished path: stream_part_to_file writes to a sibling temp
+    # off the event loop and publishes here atomically, so no exit path (413,
+    # backend failure, cancellation) can leave a partial file at this name.
+    tmp = os.path.join(tempfile.gettempdir(), f"kc_stt_{uuid.uuid4().hex}{ext}")
     try:
-        os.close(fd)
-        size = 0
-        with open(tmp, "wb") as f:
-            while True:
-                chunk = await field.read_chunk(8192)  # type: ignore[union-attr]
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > 25 * 1024 * 1024:  # 25 MB cap
-                    return web.json_response({"error": "audio too large"}, status=413)
-                f.write(chunk)
+        try:
+            await part_stream.stream_part_to_file(
+                field,  # type: ignore[arg-type]
+                Path(tmp),
+                max_bytes=25 * 1024 * 1024,
+            )
+        except part_stream.PartTooLarge:
+            return web.json_response({"error": "audio too large"}, status=413)
 
         text = await transcribe_audio(tmp)
         if text:
