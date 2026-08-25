@@ -503,11 +503,32 @@ class TestInstanceBinding:
         skill_trust.grant_project_trust(project)
         assert skill_trust.is_project_trusted(project) is True
 
-        # Replace the reviewed tree with a different directory at the same path.
+        # The identity the grant actually bound, captured before the delete.
+        granted_st = os.stat(project)
+        granted_instance = (granted_st.st_dev, granted_st.st_ino)
+
+        # Replace the reviewed tree with a different directory at the same
+        # path. On Linux ``_instance_identity`` is ``dev:ino`` alone (no birth
+        # time), so the replacement must land on a DIFFERENT inode for the
+        # untrusted outcome to be observable -- and recreating after the delete
+        # would leave that to the allocator, which is free to hand the
+        # just-freed inode straight back (the flake in #5932). Creating the
+        # replacement WHILE the granted directory still exists forces distinct
+        # inodes -- two live directories on one device cannot share one -- and
+        # the rename preserves the replacement's inode while giving it the
+        # granted path.
+        replacement = _real_dir(tmp_path, "replacement-instance")
         os.rmdir(project)
-        _real_dir(tmp_path, "an-intervening-inode")
-        recreated = _real_dir(tmp_path, "project")
+        os.rename(replacement, project)
+
+        recreated = os.path.realpath(project)
         assert recreated == project, "the path is unchanged; only the instance differs"
+        replacement_st = os.stat(project)
+        assert (replacement_st.st_dev, replacement_st.st_ino) != granted_instance, (
+            "precondition: inode reuse -- the replacement directory was handed "
+            "the granted directory's own (st_dev, st_ino) back, so the trust "
+            "assertions below could not distinguish the instances"
+        )
         skill_trust.reset_cache_for_tests()
 
         assert skill_trust.is_project_trusted(project) is False
