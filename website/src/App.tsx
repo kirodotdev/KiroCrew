@@ -16,6 +16,7 @@ import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/arti
 import { applyNavIntentInMain } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
 import { agentSwitchFailureMessage } from './utils/agentSwitchFeedback'
+import { readSendReceipt } from './utils/sendDelivery'
 import { updateAffordance } from './utils/updateAffordance'
 import { metricColor } from './utils/metricColor'
 import { fetchNotifications, ackNotification, armBootNotificationsFallback } from './store/notificationsSlice'
@@ -2143,10 +2144,14 @@ export default function App() {
     } catch { /* Send the visible request even if hidden context is unavailable. */ }
     try {
       const r = await api.sendChat(visibleMessage, slot, colorTheme)
-      const body = await r.json().catch(() => ({}))
+      const { body, outcome } = await readSendReceipt(r)
       // Resolution is not success: the server accepted neither `ok` nor
-      // `queued`, so no turn started and no WS response is coming.
-      if (!body.ok && !body.queued) reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
+      // `queued`, so no turn started and no WS response is coming. An UNKNOWN
+      // outcome (a 2xx whose body would not parse) is deliberately silent — the
+      // request WAS accepted, so a turn may be running, and this row is the only
+      // signal the pill has: claiming a failure it cannot prove tells the user to
+      // resend a request that already went out.
+      if (outcome === 'refused') reportFailedSend(typeof body.error === 'string' ? body.error : undefined)
     } catch { reportFailedSend() }
   }, [dispatch, navigate, colorTheme, appStore])
 

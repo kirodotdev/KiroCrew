@@ -166,6 +166,25 @@ describe('send() confirms its own optimistic bubble from the response', { timeou
     expect(userRow(store)?.meta?.optimistic).toBe(true)
   })
 
+  it('leaves an unreadable 2xx receipt SILENT — pending bubble, no error row (#4217)', async () => {
+    // The request was accepted and only its answer is mangled, so the turn may
+    // be running. The bubble stays pending, which is exactly what it means, and
+    // no error row claims a refusal that nothing proves — telling the user to
+    // retry here duplicates a delivered turn, side effects included.
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.reject(new Error('unexpected end of JSON input')) })
+    const store = makeStore()
+    await renderPage(store)
+    await sendText('maybe it landed')
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(userRow(store)).toBeTruthy())
+    expect(userRow(store)?.meta?.optimistic).toBe(true)
+    expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
+    // The payload is NOT handed back: a composer holding it again is the retry
+    // invitation this whole branch exists to withhold.
+    expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('')
+  })
+
   it('leaves the bubble pending when the server rejects the send', async () => {
     sendChat.mockResolvedValue({ ok: false, json: () => Promise.resolve({ ok: false, error: 'refused' }) })
     const store = makeStore()

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, saveDrafts, setDraft, __resetForTests } from '../utils/chatDrafts'
+import { DRAFTS_KEY, DRAFT_MAX_ENTRIES, DRAFT_TTL_MS, loadDrafts, mergeIntoDraft, mergeRecoveredDraft, saveDrafts, setDraft, __resetForTests } from '../utils/chatDrafts'
 import { DRAFT_MAX_STORE_BYTES } from '../utils/draftConstants'
 
 describe('chatDrafts', () => {
@@ -279,5 +279,60 @@ describe('chatDrafts', () => {
     // get re-stamped and have their TTL reset.
     expect(calls[0]).toBe('mc-chat-drafts-ts')
     expect(calls[1]).toBe(DRAFTS_KEY)
+  })
+})
+
+/**
+ * The composer's append-merge, and the one edit it is NOT allowed to make.
+ *
+ * Both merges drop the trailing newlines before the paragraph break they are
+ * about to supply. Neither may drop trailing SPACES: two of them are a Markdown
+ * hard line break, so a blanket `/\s+$/` strip rewrites the last line of a draft
+ * the user is still holding (#4217).
+ */
+describe('draft merges keep the draft verbatim except for the newlines they replace', () => {
+  it('preserves a Markdown hard line break at the end of the kept draft', () => {
+    // "shipped  " ends in the two spaces that make a hard break. They survive.
+    expect(mergeIntoDraft('shipped  ', 'P')).toBe('shipped  \n\nP')
+    expect(mergeRecoveredDraft('line one  \nline two  ', 'P')).toBe('line one  \nline two  \n\nP')
+  })
+
+  it('preserves it even when a newline FOLLOWS the hard break', () => {
+    // The regression a matcher that opens with `[^\S\n]*` produces: it reaches
+    // back across the spaces preceding the first newline and eats the very hard
+    // break the strip exists to protect, so "line  \n" came out as "line".
+    expect(mergeIntoDraft('line  \n', 'P')).toBe('line  \n\nP')
+    expect(mergeIntoDraft('kept  \n  \n  ', 'P')).toBe('kept  \n\nP')
+  })
+
+  it('still collapses the trailing newline run it is about to replace', () => {
+    // Without this the merged draft grows blank lines the user never typed.
+    expect(mergeIntoDraft('kept\n\n', 'P')).toBe('kept\n\nP')
+    expect(mergeIntoDraft('kept\n  \n  ', 'P')).toBe('kept\n\nP')
+    // CRLF drafts must not leave their `\r` behind as a stray character.
+    expect(mergeIntoDraft('kept\r\n', 'P')).toBe('kept\n\nP')
+    expect(mergeIntoDraft('kept\r\n\r\n', 'P')).toBe('kept\n\nP')
+  })
+
+  it('appends the recovered payload below whatever was typed while it was in flight', () => {
+    // NEITHER payload may win: preferring the newer one discards the message the
+    // error row is telling the user to retry, preferring the older one loses the
+    // work they just did.
+    expect(mergeRecoveredDraft('newer work', 'the failed one')).toBe('newer work\n\nthe failed one')
+    expect(mergeRecoveredDraft('', 'the failed one')).toBe('the failed one')
+    expect(mergeRecoveredDraft('   \n ', 'the failed one')).toBe('the failed one')
+  })
+
+  it('does not duplicate a payload the composer already holds', () => {
+    // A synchronously rejected create can land before React flushes the clear.
+    expect(mergeRecoveredDraft('same text', 'same text')).toBe('same text')
+    expect(mergeRecoveredDraft(' same text\n', 'same text ')).toBe(' same text\n')
+  })
+
+  it('dedupes on EQUALITY only, never containment', () => {
+    // "please run tests first" contains the distinct payload "run tests";
+    // treating that as already restored drops the message the user must retry.
+    expect(mergeRecoveredDraft('please run tests first', 'run tests'))
+      .toBe('please run tests first\n\nrun tests')
   })
 })

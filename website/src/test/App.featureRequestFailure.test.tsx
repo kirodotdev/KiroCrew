@@ -103,7 +103,7 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
   it('appends an error row and undoes the running state on a resolved not-ok receipt', async () => {
     // The real-world shape: the server answers the POST (e.g. 409/403), so the
     // promise RESOLVES — the failure must come from reading the receipt.
-    sendChatMock.mockResolvedValue({ json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
+    sendChatMock.mockResolvedValue({ ok: false, json: vi.fn().mockResolvedValue({ ok: false, error: 'slot agent mismatch' }) })
     const { store } = await clickRequestFeature()
 
     const chat = store.getState().chat
@@ -117,7 +117,9 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
   })
 
   it('falls back to the shared send-failed string when the receipt has no reason', async () => {
-    sendChatMock.mockResolvedValue({ json: vi.fn().mockResolvedValue({}) })
+    // A 2xx whose body parsed but carries neither flag: still a refusal, and
+    // the one with no reason to quote.
+    sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({}) })
     const { store } = await clickRequestFeature()
 
     const chat = store.getState().chat
@@ -134,8 +136,22 @@ describe('Request a Feature — failed send is reported (#4198)', () => {
     expect(chat.slotRunning).toBe(false)
   })
 
+  it('says NOTHING when a 2xx receipt will not parse — the request was accepted (#4217)', async () => {
+    // A truncated or proxy-mangled body on an ACCEPTED post proves only that the
+    // request got through, so the turn may be running right now. Reporting a
+    // failure here tells the user to resend a request that already went out.
+    sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockRejectedValue(new Error('unexpected end of JSON input')) })
+    const { store } = await clickRequestFeature()
+
+    const chat = store.getState().chat
+    expect(chat.messages.some(m => m.role === 'error')).toBe(false)
+    // Running is NOT undone either: the pill's own optimistic state is the only
+    // thing standing in for a turn whose stream is still to come.
+    expect(chat.slotRunning).toBe(true)
+  })
+
   it('leaves an accepted send untouched — running stays on, no error row', async () => {
-    sendChatMock.mockResolvedValue({ json: vi.fn().mockResolvedValue({ ok: true }) })
+    sendChatMock.mockResolvedValue({ ok: true, json: vi.fn().mockResolvedValue({ ok: true }) })
     const { store } = await clickRequestFeature()
 
     const chat = store.getState().chat
