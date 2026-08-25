@@ -25,6 +25,8 @@ export interface FileTab {
 }
 
 export interface FileMeta {
+  /** Nanosecond mtime token from /read — lossless concurrency guard. */
+  mtime_ns?: number
   size?: number
   mtime?: number
   mime?: string
@@ -45,4 +47,72 @@ export interface SearchResult {
   line: number
   col: number
   preview: string
+}
+
+// ── Structured Office extraction (/extract) ──
+
+export interface DocxBlock {
+  type: string // 'p' | 'h1'..'h6' | 'table'
+  text?: string
+  rows?: string[][]
+}
+
+export interface XlsxSheet {
+  name: string
+  rows: string[][]
+  truncated?: boolean
+}
+
+export interface PptxRun {
+  t: string
+  b?: boolean
+  i?: boolean
+  sz?: number
+  c?: string
+}
+
+export interface PptxParagraph {
+  algn: string
+  lvl: number
+  bullet: boolean
+  runs: PptxRun[]
+}
+
+export interface PptxShape {
+  kind: 'text' | 'image' | 'table'
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+  paras?: PptxParagraph[]
+  fill?: string
+  member?: string
+  rows?: string[][]
+}
+
+export interface PptxSlide {
+  n: number
+  bg: string | null
+  shapes: PptxShape[]
+  lines: string[]
+}
+
+export interface OfficeExtract {
+  kind: 'docx' | 'xlsx' | 'pptx'
+  blocks?: DocxBlock[]
+  sheets?: XlsxSheet[]
+  slides?: PptxSlide[]
+  slideW?: number
+  slideH?: number
+  truncated?: boolean
+  path: string
+  size: number
+  mtime: number
+}
+
+export interface WriteResult {
+  mtime_ns?: number
+  ok: boolean
+  size: number
+  mtime: number
 }

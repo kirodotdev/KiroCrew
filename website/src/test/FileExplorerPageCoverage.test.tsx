@@ -38,6 +38,21 @@ vi.mock('../apps/file-explorer/api', () => ({
     gitStatus: vi.fn(),
     resolve: vi.fn(),
     complete: vi.fn(),
+    extract: vi.fn(),
+    write: vi.fn(),
+    // URL builders are pure string helpers — keep them real so href
+    // assertions exercise the actual encoding.
+    rawUrl: (path: string, download = false) => {
+      const q = new URLSearchParams({ path })
+      if (download) q.set('download', '1')
+      return `/apps/file-explorer/api/raw?${q.toString()}`
+    },
+    extractMemberUrl: (path: string, member: string) =>
+      `/apps/file-explorer/api/extract?${new URLSearchParams({ path, member }).toString()}`,
+  },
+  FileExplorerApiError: class FileExplorerApiError extends Error {
+    status: number
+    constructor(message: string, status: number) { super(message); this.status = status }
   },
 }))
 
@@ -272,7 +287,9 @@ describe('FileExplorerPage file tabs', () => {
     await ready()
     await openFromTree('notes.txt')
     const before = vi.mocked(fileExplorerApi.read).mock.calls.length
-    await userEvent.click(screen.getByLabelText('Reload'))
+    // Reload now lives in the ⋯ overflow menu.
+    await userEvent.click(screen.getByLabelText('More options'))
+    await userEvent.click(await screen.findByText('Reload'))
     await waitFor(() =>
       expect(vi.mocked(fileExplorerApi.read).mock.calls.length).toBeGreaterThan(before),
     )
@@ -286,15 +303,19 @@ describe('FileExplorerPage download', () => {
   function captureDownload() {
     const blobs: Blob[] = []
     const names: string[] = []
+    const hrefs: string[] = []
     const origCreate = URL.createObjectURL
     const origRevoke = URL.revokeObjectURL
     URL.createObjectURL = vi.fn((b: Blob) => { blobs.push(b); return 'blob:fe' }) as typeof URL.createObjectURL
     URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL
     const clickSpy = vi
       .spyOn(HTMLAnchorElement.prototype, 'click')
-      .mockImplementation(function mockClick(this: HTMLAnchorElement) { names.push(this.download) })
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) {
+        names.push(this.download)
+        hrefs.push(this.getAttribute('href') || '')
+      })
     return {
-      blobs, names,
+      blobs, names, hrefs,
       restore: () => {
         clickSpy.mockRestore()
         URL.createObjectURL = origCreate
@@ -317,7 +338,10 @@ describe('FileExplorerPage download', () => {
     } finally { cap.restore() }
   })
 
-  it('decodes a base64 payload into a binary blob of the reported mime', async () => {
+  it('streams binary and base64 payloads via /raw instead of an empty blob', async () => {
+    // A binary file's /read carries metadata only, so the old blob-from-content
+    // path downloaded an EMPTY file. The anchor now points at the /raw
+    // endpoint with download=1, which serves the real bytes.
     const cap = captureDownload()
     try {
       vi.mocked(fileExplorerApi.tree).mockResolvedValue({
@@ -331,9 +355,9 @@ describe('FileExplorerPage download', () => {
       await openFromTree('shot.png')
       await pickFromOverflow('Download')
       expect(cap.names).toEqual(['shot.png'])
-      // atob branch: bytes, not the base64 text, and the backend's mime.
-      expect(cap.blobs[0].type).toBe('image/png')
-      expect(cap.blobs[0].size).toBe(3)
+      // No blob is built at all — the href is the streaming endpoint.
+      expect(cap.blobs).toHaveLength(0)
+      expect(cap.hrefs[0]).toBe(fileExplorerApi.rawUrl('/home/user/shot.png', true))
     } finally { cap.restore() }
   })
 })
@@ -430,17 +454,19 @@ describe('FileExplorerPage reveal', () => {
     expect(screen.queryByText('Open in Finder')).not.toBeInTheDocument()
   })
 
-  it('keeps the action row at two controls, with reveal in the overflow', async () => {
-    // The row caps at two peer buttons, so a third action has to live in the
-    // menu — pin the shape, not just the behaviour.
+  it('keeps the action row to one direct action plus the overflow', async () => {
+    // Two controls, no more: the direct action (find-in-document here; the
+    // edit toggle on markdown) and the ⋯ overflow. Reload and the
+    // file-location actions live in the menu.
     renderPage()
     await ready()
     await openFromTree('notes.txt')
     const row = document.querySelector('.mc-fe-viewer-actions') as HTMLElement
     expect(row.querySelectorAll('button')).toHaveLength(2)
-    expect(within(row).getByLabelText('Reload')).toBeInTheDocument()
+    expect(within(row).getByLabelText('Find in document')).toBeInTheDocument()
     expect(within(row).getByLabelText('More options')).toBeInTheDocument()
     expect(screen.queryByText('Show in file manager')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Reload')).not.toBeInTheDocument()
   })
 })
 

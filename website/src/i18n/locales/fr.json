@@ -1636,14 +1636,14 @@
         "truncated": "· tronqué"
       },
       "manifest": {
-        "description": "Parcours et lis les fichiers de la machine qui exécute Kiro Crew sans quitter le tableau de bord. Garde plusieurs fichiers ouverts dans des onglets, explore l’arborescence avec le statut git de chaque fichier affiché à côté, cherche une chaîne dans tout un dossier et lis le markdown rendu plutôt que brut. Il est en lecture seule par conception : il ouvre les fichiers et y effectue des recherches, mais ne les modifie, déplace ni supprime jamais, et il ne peut atteindre que ton répertoire personnel, /tmp et /opt.",
+        "description": "Parcourez et lisez les fichiers de la machine exécutant Kiro Crew sans quitter le tableau de bord. Gardez plusieurs fichiers ouverts dans des onglets, parcourez l'arborescence avec le statut Git de chaque fichier, recherchez un terme dans tout un dossier (y compris dans les fichiers Word, Excel, PowerPoint et PDF) et affichez de nombreux types de fichiers sur place : Markdown rendu, PDF, images, pages HTML, tableaux CSV/TSV, documents Office avec couleurs et mise en page des diapositives, et audio/vidéo. Les fichiers Markdown se modifient sur place avec enregistrement automatique ; tous les autres types restent strictement en lecture seule, et seuls votre répertoire personnel, /tmp et /opt sont accessibles.",
         "display_name": "Fichiers",
-        "highlight_1": "Lecture seule : ouvre les fichiers et y effectue des recherches, sans jamais les écrire, les déplacer ni les supprimer",
-        "highlight_2": "Plusieurs fichiers ouverts en même temps dans des onglets, avec coloration syntaxique",
-        "highlight_3": "Les fichiers Markdown s’affichent en texte mis en forme au lieu du source brut",
-        "highlight_4": "L’arborescence affiche le statut git de chaque fichier en ligne",
-        "highlight_5": "Recherche dans un dossier entier, avec correspondances à la ligne et aperçu du contexte",
-        "highlight_6": "Les chemins accessibles sont limités à ton répertoire personnel, /tmp et /opt — les liens symboliques qui en sortent sont refusés",
+        "highlight_1": "Les fichiers Markdown sont modifiables sur place avec enregistrement automatique et protection contre les modifications sur disque ; tout le reste demeure en lecture seule",
+        "highlight_2": "Affiche sur place les PDF, images, aperçus HTML, tableaux CSV/TSV, contenus Word/Excel/PowerPoint et l'audio/vidéo",
+        "highlight_3": "Les diapositives PowerPoint s'affichent avec leurs vraies couleurs, positions et images intégrées",
+        "highlight_4": "La recherche de dossier trouve aussi les mots à l'intérieur des fichiers Word, Excel, PowerPoint et PDF",
+        "highlight_5": "L'arborescence affiche le statut Git de chaque fichier en ligne",
+        "highlight_6": "Les chemins accessibles se limitent à votre répertoire personnel, /tmp et /opt — les liens symboliques sortants sont refusés",
         "page_label": "Fichiers"
       },
       "pathBar": {
@@ -1672,6 +1672,33 @@
       },
       "treeNode": {
         "loading": "chargement..."
+      },
+      "find": {
+        "find_in_document": "Rechercher dans le document",
+        "find_in_file": "Rechercher dans {{name}}",
+        "previous_match": "Occurrence précédente",
+        "next_match": "Occurrence suivante",
+        "close_find": "Fermer la recherche"
+      },
+      "editor": {
+        "saving": "Enregistrement…",
+        "saved": "Enregistré",
+        "file_changed_on_disk": "⚠ Fichier modifié sur le disque — recharger",
+        "save_failed": "⚠ Échec de l'enregistrement",
+        "edit_file": "Modifier {{name}}",
+        "edit_file_action": "Modifier",
+        "done_editing": "Terminé — enregistrer et afficher",
+        "recovered_unsaved": "Modifications non enregistrées récupérées"
+      },
+      "viewers": {
+        "preview": "Aperçu",
+        "source": "Source",
+        "table": "Tableau",
+        "slide_n": "Diapositive {{n}}",
+        "empty_workbook": "Classeur vide",
+        "extracting_document": "Extraction du document…",
+        "could_not_extract": "Impossible d'extraire ce document",
+        "showing_first_rows": "… affichage des {{count}} premières lignes"
       }
     },
     "issueRadar": {
