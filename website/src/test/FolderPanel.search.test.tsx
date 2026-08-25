@@ -182,6 +182,48 @@ describe('FolderPanel search', () => {
     await waitFor(() => expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument())
   })
 
+  it('keeps the control mounted and focusable while the wider page loads', async () => {
+    // Regression (UX review on #5830): unmounting the notice mid-fetch made the
+    // list read as complete ("no notice" is this panel's untruncated state) and
+    // dropped keyboard focus to <body> on every activation. Inertness is
+    // aria-disabled + an in-handler guard, NOT `disabled`, which blurs the
+    // focused element in real browsers.
+    const all = Array.from({ length: 25 }, (_, i) => hit(`src/f${String(i).padStart(2, '0')}.ts`))
+    let releaseWider: (() => void) | undefined
+    vi.spyOn(api, 'fileSearch').mockImplementation((_q, _p, _s, _k, limit) => {
+      if ((limit ?? 15) > 15) {
+        return new Promise(resolve => {
+          releaseWider = () => resolve({ results: all.slice(0, limit), root: ROOT } as never)
+        })
+      }
+      return Promise.resolve({ results: all.slice(0, 15), root: ROOT } as never)
+    })
+
+    renderPanel()
+    await screen.findByText('README.md')
+    await type('fs')
+
+    const expand = await screen.findByRole('button', { name: /Showing the first 15 matches/ })
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    await user.click(expand)
+
+    // Mid-fetch: still mounted, inert, label still honest about the 15 rows on
+    // screen, and focus still on the control.
+    const pending = screen.getByRole('button', { name: /Showing the first 15 matches/ })
+    expect(pending).toHaveAttribute('aria-disabled', 'true')
+    expect(pending).toHaveFocus()
+    expect(screen.getByTitle(`${ROOT}/src/f00.ts`)).toBeInTheDocument()
+    // A second activation while in flight is guarded: no extra request.
+    const callsBefore = (api.fileSearch as ReturnType<typeof vi.fn>).mock.calls.length
+    await user.click(pending)
+    expect((api.fileSearch as ReturnType<typeof vi.fn>).mock.calls.length).toBe(callsBefore)
+
+    releaseWider!()
+    // 25 < 30: once the wider page lands the set is untruncated, so the notice goes.
+    await waitFor(() => expect(screen.queryByText(/Showing the first/)).not.toBeInTheDocument())
+    expect(screen.getByTitle(`${ROOT}/src/f24.ts`)).toBeInTheDocument()
+  })
+
   it('renders the notice as plain text once the server ceiling is reached', async () => {
     // Every tier comes back full: 15 -> 30 -> 60 (the server clamp). At 60 a
     // button could not fetch more, so the notice must degrade to text rather

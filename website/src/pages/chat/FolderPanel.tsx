@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Folder, RotateCw, ExternalLink, ChevronUp, Search, X } from 'lucide-react'
+import { Folder, RotateCw, ExternalLink, ChevronDown, ChevronUp, Search, X } from 'lucide-react'
 import DetailPanel from '../../components/DetailPanel'
 import { useGatewayPlatform } from '../../hooks/useGatewayPlatform'
 import { api } from '../../api/client'
@@ -140,6 +140,12 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
   // a list whose header promises files.
   const matches = (searchData?.results ?? []).filter(r => r.kind !== 'dir')
   const searchRoot = searchData?.root || cwd
+  // While a wider page is in flight, `matches` are placeholder rows from the
+  // PREVIOUS tier. `expanding` names that window so the control stays mounted
+  // (inert) instead of vanishing mid-fetch, and `shownCount` keeps the notice
+  // label describing the rows actually on screen.
+  const expanding = isSearching && searchLimit > SEARCH_RESULT_CAP && matches.length < searchLimit
+  const shownCount = expanding ? Math.min(matches.length, searchLimit) : searchLimit
 
   // Name the real application where the gateway HAS one, and fall back to the
   // generic term for Linux and for a platform we could not read. The platform is
@@ -238,23 +244,38 @@ export default function FolderPanel({ path, onClose, onFileOpen, onPathChange }:
                 />
               )
             })}
-            {matches.length >= searchLimit && (searchLimit < SEARCH_RESULT_LIMIT_MAX ? (
+            {(matches.length >= searchLimit || expanding) && (searchLimit < SEARCH_RESULT_LIMIT_MAX || expanding ? (
               // The notice IS the control: clicking "showing first N" is the
               // natural gesture (#5639), so the text itself requests the next
               // tier. Reusing the notice string keeps the accessible name honest
-              // and adds zero i18n keys.
+              // and adds zero i18n keys; the chevron is the visual cue that this
+              // is an action, not just a status line.
+              //
+              // While the wider page loads (`expanding`) the button stays
+              // MOUNTED and inert-but-focusable: unmounting it mid-fetch would
+              // both show an untruncated-looking list (which this panel defines
+              // as "no more matches") and drop keyboard focus to <body> on every
+              // activation. `aria-disabled` + the in-handler guard — NOT the
+              // `disabled` attribute, which blurs the focused element in real
+              // browsers and would drop focus anyway. `shownCount` names the
+              // tier the visible rows were fetched for, so the label never
+              // overstates what is on screen.
               <button
                 type="button"
-                onClick={() => setSearchLimit(l => Math.min(l * 2, SEARCH_RESULT_LIMIT_MAX))}
-                className="block w-full text-left px-2 py-1.5 text-[10.5px] text-muted/80 underline decoration-dotted underline-offset-2 hover:text-fg transition-colors"
+                aria-disabled={expanding}
+                onClick={() => { if (!expanding) setSearchLimit(l => Math.min(l * 2, SEARCH_RESULT_LIMIT_MAX)) }}
+                className="flex w-full items-center gap-1 text-left px-2 py-1.5 text-[10.5px] text-muted/80 underline decoration-dotted underline-offset-2 hover:text-fg transition-colors aria-disabled:opacity-60 aria-disabled:no-underline"
               >
-                {t('pages.chat.folderPanel.showing_first_matches', { shown: searchLimit })}
+                {expanding
+                  ? <RotateCw size={11} className="shrink-0 animate-spin" />
+                  : <ChevronDown size={11} className="shrink-0" />}
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: shownCount })}
               </button>
             ) : (
               // At the server ceiling a button could not fetch more; plain text
               // avoids recreating the inert affordance this control replaces.
               <div className="px-2 py-1.5 text-[10.5px] text-muted/80">
-                {t('pages.chat.folderPanel.showing_first_matches', { shown: searchLimit })}
+                {t('pages.chat.folderPanel.showing_first_matches', { shown: shownCount })}
               </div>
             ))}
           </>
