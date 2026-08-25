@@ -551,6 +551,14 @@ unit-testable without mocking globals.
   validated to `1–65535`). `BACKEND_URL` / health checks target that port.
 - Sets `KIROCREW_PROJECT_DIR` to the Electron app's parent directory so the
   bundled `agents/` and `skills/` are discovered.
+- On every desktop platform, pins `PYTHONUTF8=1` and
+  `PYTHONIOENCODING=utf-8:backslashreplace` at the Electron-to-Gateway spawn
+  boundary. This applies before CPython constructs redirected stdout/stderr and
+  is inherited by the Gateway's `os.execv` successor plus its MCP/session
+  children. Consequently the initial launch, Tailnet/explicit restart, update
+  and stale-asset re-exec, and Electron liveness respawn all use the same UTF-8
+  contract instead of falling back to the Windows ANSI code page or an
+  incompatible inherited POSIX encoding override.
 - Leaves the inherited child `PATH` unchanged. The gateway prerequisite service
   probes supported Kiro CLI locations independently, so Finder-launched macOS
   apps and Linux desktop launchers still find user-local installations without

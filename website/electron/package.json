@@ -139,6 +139,7 @@
       "instance-guard.js",
       "context-menu.js",
       "find-bin.js",
+      "gateway-env.js",
       "mac-env.js",
       "bundle-integrity.js",
       "data-home.js",

@@ -41,6 +41,27 @@ IS_LINUX: bool = sys.platform == "linux"
 IS_MACOS: bool = sys.platform == "darwin"
 
 
+_UTF8_PROCESS_ENV = {
+    "PYTHONUTF8": "1",
+    "PYTHONIOENCODING": "utf-8:backslashreplace",
+}
+
+
+def _ensure_utf8_process_environment() -> None:
+    """Pin UTF-8 for Python successors and child processes on every platform.
+
+    ``sys.stdout.reconfigure`` can repair the current process, but Windows
+    implements ``os.execv`` by creating a successor process.  Its standard
+    streams are constructed before Kiro Crew code runs, so the encoding must be
+    present in the environment at interpreter startup.  POSIX ``execv`` keeps
+    the current environment, where an inherited ``PYTHONIOENCODING`` can also
+    override the platform's normal UTF-8 defaults.  Overwrite inherited settings
+    deliberately: Kiro Crew's process tree emits Unicode as part of its normal
+    protocols and boot output.
+    """
+    os.environ.update(_UTF8_PROCESS_ENV)
+
+
 def reexec_python_module(module: str, args: Sequence[str]) -> None:
     """Replace this process with ``sys.executable -m module``.
 
@@ -50,6 +71,11 @@ def reexec_python_module(module: str, args: Sequence[str]) -> None:
     executable path passed separately to ``execv`` still selects the exact
     interpreter; only its display name needs to be space-free.
     """
+    # Publish UTF-8 before exec so in-app gateway restarts (Tailnet, update,
+    # stale-assets, explicit restart) cannot create a successor that inherits a
+    # Windows ANSI stream or a hostile POSIX PYTHONIOENCODING and crashes on the
+    # first emoji printed during boot.
+    _ensure_utf8_process_environment()
     executable = sys.executable
     argv0 = ntpath.basename(executable) if IS_WINDOWS else executable
     os.execv(executable, [argv0, "-m", module, *args])
@@ -339,20 +365,28 @@ def tcc_prune_walk_dirs(root: str, dirpath: str, dirnames: list[str]) -> list[st
 
 
 def ensure_utf8_console() -> None:
-    """Make stdout/stderr UTF-8 on Windows so KiroCrew's emoji output can't crash it.
+    """Keep Kiro Crew's process tree UTF-8 and repair current Windows streams.
 
     KiroCrew prints non-ASCII glyphs throughout its CLI/gateway output. On
     Windows the default console code page is cp1252, and when stdout is a pipe
     (e.g. the gateway launched detached with redirected output, or under the
     KiroCrewHub client) Python encodes prints as cp1252 — so the FIRST non-ASCII
     print raises ``UnicodeEncodeError: 'charmap' codec can't encode character``
-    and the process dies before the gateway binds. POSIX defaults to UTF-8, so
-    this is a no-op there. Best-effort: reconfigure (Python 3.7+) the streams to
-    UTF-8 with backslashreplace so a stray un-encodable char degrades to an
-    escape instead of crashing. Idempotent and safe to call once at startup.
+    and the process dies before the gateway binds.  On every platform, publish
+    the encoding contract for later re-exec and child processes; an inherited
+    ``PYTHONIOENCODING`` can otherwise override POSIX UTF-8 defaults too.  On
+    Windows, best-effort reconfigure (Python 3.7+) the current streams to UTF-8
+    with backslashreplace so a stray un-encodable char degrades to an escape
+    instead of crashing. Idempotent and safe to call once at startup.
     """
+    _ensure_utf8_process_environment()
     if not IS_WINDOWS:
         return
+    # Repair the current streams below, and separately make the invariant
+    # inheritable by MCP/session children and any later re-exec.  Environment
+    # variables affect the next interpreter at construction time; setting them
+    # here is intentional even though they cannot retroactively rebuild the
+    # current process's streams.
     for name in ("stdout", "stderr"):
         stream = getattr(sys, name, None)
         if stream is None:  # pythonw / fully detached — no stream to fix
@@ -4192,9 +4226,7 @@ def count_open_fds() -> int | None:
         ]
         kernel32.GetProcessHandleCount.restype = wintypes.BOOL
         handle_count = wintypes.DWORD()
-        if kernel32.GetProcessHandleCount(
-            kernel32.GetCurrentProcess(), ctypes.byref(handle_count)
-        ):
+        if kernel32.GetProcessHandleCount(kernel32.GetCurrentProcess(), ctypes.byref(handle_count)):
             return int(handle_count.value)
         return None
     except Exception:

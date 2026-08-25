@@ -70,6 +70,8 @@ class TestReexecPythonModule:
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc.sys, "executable", executable)
         monkeypatch.setattr(pc.os, "execv", lambda path, argv: calls.append((path, argv)))
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
 
         pc.reexec_python_module("kiro_crew", ["gateway", "--port", "5476"])
 
@@ -79,17 +81,63 @@ class TestReexecPythonModule:
                 ["python.exe", "-m", "kiro_crew", "gateway", "--port", "5476"],
             )
         ]
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
-    def test_posix_preserves_full_argv0(self, monkeypatch):
+    def test_posix_preserves_full_argv0_and_pins_utf8(self, monkeypatch):
         executable = "/opt/Kiro Crew/bin/python3"
         calls = []
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
         monkeypatch.setattr(pc.sys, "executable", executable)
         monkeypatch.setattr(pc.os, "execv", lambda path, argv: calls.append((path, argv)))
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "latin-1")
 
         pc.reexec_python_module("kiro_crew", ["gateway"])
 
         assert calls == [(executable, [executable, "-m", "kiro_crew", "gateway"])]
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+
+    def test_reexec_successor_survives_hostile_parent_encoding(self, tmp_path):
+        """Exercise the real failure shape behind desktop in-app restarts.
+
+        The first interpreter intentionally starts with cp1252 streams on every
+        OS.  It re-execs without calling ensure_utf8_console, so only the
+        environment published by reexec_python_module can make the successor's
+        first emoji print safe.
+        """
+        probe = tmp_path / "utf8_reexec_probe.py"
+        probe.write_text(
+            "import os\n"
+            "from kiro_crew.platform_compat import reexec_python_module\n"
+            "if os.environ.get('_KIROCREW_UTF8_REEXEC_PROBE') == '1':\n"
+            "    print('👻 restarted')\n"
+            "else:\n"
+            "    os.environ['_KIROCREW_UTF8_REEXEC_PROBE'] = '1'\n"
+            "    reexec_python_module('utf8_reexec_probe', [])\n",
+            encoding="utf-8",
+        )
+        source_root = str(Path(__file__).resolve().parents[1] / "src")
+        inherited_path = os.environ.get("PYTHONPATH", "")
+        env = {
+            **os.environ,
+            "PYTHONUTF8": "0",
+            "PYTHONIOENCODING": "cp1252",
+            "PYTHONPATH": os.pathsep.join(p for p in (source_root, inherited_path) if p),
+        }
+
+        result = subprocess.run(
+            [sys.executable, "-m", "utf8_reexec_probe"],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+        assert "👻 restarted".encode() in result.stdout
 
 
 class TestFileLock:
@@ -491,10 +539,24 @@ class TestFindPythonInterpreter:
 
 
 class TestUtf8Console:
+    @pytest.mark.parametrize("is_windows", [False, True])
+    def test_call_publishes_utf8_for_children(self, monkeypatch, is_windows):
+        monkeypatch.setattr(pc, "IS_WINDOWS", is_windows)
+        monkeypatch.setattr(pc.sys, "stdout", None)
+        monkeypatch.setattr(pc.sys, "stderr", None)
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "cp1252")
+
+        pc.ensure_utf8_console()
+
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
+
     def test_ensure_utf8_console_is_safe_to_call(self):
-        # No-op on POSIX; reconfigures stdout/stderr on Windows. Either way it
-        # must never raise (it swallows non-reconfigurable streams), and must be
-        # idempotent (safe to call from both __main__ and cli.main).
+        # Publishes the child environment on every OS and reconfigures the
+        # current stdout/stderr only on Windows. Either way it must never raise
+        # (it swallows non-reconfigurable streams), and must be idempotent (safe
+        # to call from both __main__ and cli.main).
         pc.ensure_utf8_console()
         pc.ensure_utf8_console()
 
@@ -514,11 +576,10 @@ class TestUtf8Console:
         # crashed on the first non-ASCII log record. ensure_utf8_console() must
         # re-wrap the underlying buffer so the record emits cleanly.
         #
-        # This is a WINDOWS-only behavior: ensure_utf8_console() is a deliberate
-        # no-op on POSIX (which already defaults to UTF-8), so forcing a cp1252
-        # stderr here and asserting emoji survives only makes sense on Windows —
-        # on POSIX the function intentionally leaves the forced cp1252 stream
-        # alone, so the emoji would (correctly) fail to encode. Gate accordingly.
+        # This stream repair is WINDOWS-only behavior: on POSIX the function
+        # publishes the environment for children but leaves current streams
+        # alone. Forcing a cp1252 stderr and asserting emoji survives therefore
+        # only makes sense on Windows. Gate accordingly.
         if not pc.IS_WINDOWS:
             pytest.skip("ensure_utf8_console re-wrap is Windows-only (no-op on POSIX)")
 
@@ -3981,14 +4042,10 @@ class TestTrustedGitBin:
     """
 
     def test_uses_the_trusted_system_resolver(self, monkeypatch) -> None:
-        monkeypatch.setattr(
-            pc, "trusted_system_bin", lambda _n: "/usr/bin/git"
-        )
+        monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: "/usr/bin/git")
         assert pc.trusted_git_bin() == "/usr/bin/git"
 
-    def test_windows_falls_back_to_the_git_for_windows_roots(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_windows_falls_back_to_the_git_for_windows_roots(self, monkeypatch, tmp_path) -> None:
         """Git for Windows installs under Program Files, never System32.
 
         Without the fallback every supported Windows source install resolves to
@@ -4014,9 +4071,7 @@ class TestTrustedGitBin:
         """
         monkeypatch.setattr(pc, "trusted_system_bin", lambda _n: None)
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
-        monkeypatch.setattr(
-            pc, "_WINDOWS_GIT_DIRS", (r"Z:\nonexistent\Git\cmd",)
-        )
+        monkeypatch.setattr(pc, "_WINDOWS_GIT_DIRS", (r"Z:\nonexistent\Git\cmd",))
         assert pc.trusted_git_bin() is None
 
     def test_posix_never_probes_the_windows_roots(self, monkeypatch) -> None:
