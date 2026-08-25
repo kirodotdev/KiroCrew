@@ -157,6 +157,20 @@ describe('KiroAccountModal', () => {
     expect(screen.queryByText('Account details unavailable')).not.toBeInTheDocument()
   })
 
+  it('explains API-key auth instead of spinning or claiming a generic failure', async () => {
+    // 'api-key' is terminal by construction: the usage API needs an SSO/OIDC
+    // token that auth type never has (#5728). The panel must say so — not spin,
+    // and not show the generic unavailable line that reads as a transient error.
+    renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage="api-key" />)
+
+    expect(
+      await screen.findByText('Credit usage isn’t available for API key authentication'),
+    ).toBeInTheDocument()
+    expect(screen.queryByText('Credit usage unavailable')).not.toBeInTheDocument()
+    expect(screen.queryByText('Checking account…')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Checking credit usage')).not.toBeInTheDocument()
+  })
+
   it('calls onClose from the accessible close control', async () => {
     const onClose = vi.fn()
     renderWithProviders(

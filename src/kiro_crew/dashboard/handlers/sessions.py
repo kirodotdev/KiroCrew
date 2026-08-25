@@ -723,6 +723,23 @@ async def _fetch_usage_bg() -> None:
         # credential from a signed-out profile supplying the numbers. Fetched
         # once here and reused by both the API and text branches below.
         identity = await _fetch_whoami(kiro_bin)
+        # Fail fast on API-key auth. kiro-cli's whoami reports the AuthMethod
+        # enum variant ``ApiKey``; the compare normalizes case and strips
+        # separators so an upstream respelling (``API_KEY``, ``Api-Key``)
+        # still fails fast instead of silently regressing to the slow path —
+        # such accounts hold no SSO/OIDC bearer token, so ``fetch_usage_limits``
+        # would spend its full timeout walking credential stores that cannot
+        # contain one, and the billed text scrape is no better a source. The
+        # ``reason`` rides the existing unavailable-marker shape so the
+        # frontend can say WHY instead of hiding the pill without explanation.
+        account_type = identity.get("account_type")
+        if (
+            isinstance(account_type, str)
+            and re.sub(r"[^a-z0-9]", "", account_type.lower()) == "apikey"
+        ):
+            _publish_usage({"available": False, "reason": "api_key_auth"})
+            logger.info("Kiro usage: not available under API key auth; skipping fetch")
+            return
         raw_arn = identity.get("_profile_arn")
         expected_arn = raw_arn if isinstance(raw_arn, str) and raw_arn else None
         # Primary source: the real GetUsageLimits API. It reads the live bearer

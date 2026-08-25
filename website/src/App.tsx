@@ -1833,7 +1833,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -1902,8 +1902,11 @@ export default function App() {
         }
         return normalized
       }
-      // Non-Kiro provider (kiro-cli absent) -> hide. Empty cache (Kiro warming) -> spinner.
-      if (u.available === false) return 'none' as const
+      // Non-Kiro provider (kiro-cli absent) -> hide. API-key auth -> terminal
+      // "not available for this auth type" (the pill and modal explain instead
+      // of hiding, because for this account type the state is permanent, not a
+      // warming cache). Empty cache (Kiro warming) -> spinner.
+      if (u.available === false) return u.reason === 'api_key_auth' ? ('api-key' as const) : ('none' as const)
       return null
     }),
     refetchInterval: 30_000,
@@ -2644,6 +2647,13 @@ export default function App() {
                 // spinner are both dropped: without it the failed and warming
                 // states are one coin glyph apart in opacity alone.
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_unavailable')} aria-label={i18nT('app.kiro_credit_usage_unavailable')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'api-key') {
+                // API-key auth: the usage API needs an SSO/OIDC token this
+                // account type never has, so this is a PERMANENT state, not a
+                // failure. Same terminal dash as 'failed' (nothing is in
+                // flight), but the label says why, and clicking through opens
+                // the modal's fuller explanation.
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_api_key')} aria-label={i18nT('app.kiro_credit_usage_api_key')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {

@@ -14,12 +14,14 @@ export type { KiroBonusCreditGrant, KiroCreditUsage }
 
 /**
  * What the modal can be handed: a reading, `null` while the gateway's usage
- * cache warms, `'none'` when the account has no credit plan, or `'failed'` when
- * the fetch itself failed with nothing cached. `null` is the ONLY value that
- * means "still loading" — the other two have nothing more to wait for, so
- * spinning on them would repeat the defect this distinction exists to remove.
+ * cache warms, `'none'` when the account has no credit plan, `'failed'` when
+ * the fetch itself failed with nothing cached, or `'api-key'` when the account
+ * authenticates with an API key (usage needs an SSO/OIDC token that auth type
+ * never has, so the state is terminal by construction). `null` is the ONLY
+ * value that means "still loading" — the others have nothing more to wait for,
+ * so spinning on them would repeat the defect this distinction exists to remove.
  */
-export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed'
+export type KiroAccountUsage = KiroCreditUsage | null | 'none' | 'failed' | 'api-key'
 
 /** True only for an actual reading, so the sentinels cannot reach a field access. */
 const isUsageReading = (usage: KiroAccountUsage): usage is KiroCreditUsage =>
@@ -232,7 +234,10 @@ function CreditUsage({ usage }: { usage: KiroAccountUsage }) {
   if (!isUsageReading(usage)) {
     return (
       <div className="flex items-center gap-2 rounded-lg border border-border bg-bg-elevated/40 p-3.5 text-[13px] text-muted">
-        <AlertCircle className="lucide-inline shrink-0" /> {i18nT('components.kiroAccountModal.credit_usage_unavailable')}
+        <AlertCircle className="lucide-inline shrink-0" />{' '}
+        {i18nT(usage === 'api-key'
+          ? 'components.kiroAccountModal.credit_usage_api_key_auth'
+          : 'components.kiroAccountModal.credit_usage_unavailable')}
       </div>
     )
   }

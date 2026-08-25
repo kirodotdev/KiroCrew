@@ -1609,6 +1609,8 @@ export interface KiroBonusCreditGrantPayload {
 
 export interface KiroUsagePayload {
   available?: boolean
+  /** Why usage is unavailable when `available` is false (e.g. `api_key_auth`). */
+  reason?: string
   credits_used?: number
   credits_covered?: number
   credits_overage?: number
