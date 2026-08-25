@@ -295,6 +295,7 @@ async def _synthesize_piper(
     fd, path = tempfile.mkstemp(suffix=".wav")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    succeeded = False
     try:
         try:
             cmd: list[str] = [bin_path, "-m", model, "-f", path]
@@ -322,11 +323,16 @@ async def _synthesize_piper(
                     proc.communicate(text.encode("utf-8")),
                     timeout=60,
                 )
-            except asyncio.TimeoutError:
-                # asyncio.wait_for cancels communicate() on timeout but does NOT
-                # terminate the child process — kill it explicitly to avoid a
-                # zombie piper consuming CPU after we return.
-                logger.error("piper timed out after 60s; killing subprocess")
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+                # asyncio.wait_for cancels communicate() on timeout — and a
+                # caller cancellation (client disconnect) arrives here as
+                # CancelledError — but neither terminates the child process:
+                # kill it explicitly to avoid a zombie piper consuming CPU
+                # after we exit. Temp-file discard is owned by the ``finally``
+                # invariant below.
+                timed_out = isinstance(exc, asyncio.TimeoutError)
+                if timed_out:
+                    logger.error("piper timed out after 60s; killing subprocess")
                 try:
                     proc.kill()
                 except ProcessLookupError:
@@ -335,10 +341,8 @@ async def _synthesize_piper(
                     await proc.wait()
                 except Exception:
                     logger.debug("piper wait after kill failed", exc_info=True)
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+                if not timed_out:
+                    raise  # CancelledError must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error(
@@ -346,12 +350,11 @@ async def _synthesize_piper(
                     proc.returncode,
                     stderr.decode(errors="replace")[:500],
                 )
-                os.unlink(path)
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("piper output too small")
-                os.unlink(path)
                 return None
+            succeeded = True
             return path
         except SandboxUnavailableError as exc:
             # Same fail-closed sandbox refusal as the Polly path — relay the
@@ -363,19 +366,19 @@ async def _synthesize_piper(
                 exc.kind,
                 exc,
             )
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             return None
         except Exception:
             logger.exception("piper synthesis error")
+            return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned temp file, or a new exit path re-opens the leak.
+        if not succeeded:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return None
-    finally:
         # Clean up the sandbox launcher script / seatbelt profile spawned
         # by wrap_argv (None on platforms without a sandbox backend).
         if sandbox_cleanup:
@@ -493,6 +496,7 @@ async def _synthesize_polly(
     fd, path = tempfile.mkstemp(suffix=".mp3")
     os.close(fd)
     sandbox_cleanup: str | None = None
+    succeeded = False
     try:
         try:
             cmd: list[str] = [aws_bin, "polly", "synthesize-speech"]
@@ -528,12 +532,16 @@ async def _synthesize_polly(
             )
             try:
                 _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
-            except asyncio.TimeoutError:
+            except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
                 # ``asyncio.wait_for`` cancels ``proc.communicate()`` on
-                # timeout but does NOT terminate the child — kill it
-                # explicitly to avoid a hung ``aws polly`` process consuming
-                # resources after we return.
-                logger.error("Polly timed out after 30s; killing subprocess")
+                # timeout — and a caller cancellation (client disconnect)
+                # arrives here as CancelledError — but neither terminates the
+                # child: kill it explicitly to avoid a hung ``aws polly``
+                # process consuming resources after we exit. Temp-file discard
+                # is owned by the ``finally`` invariant below.
+                timed_out = isinstance(exc, asyncio.TimeoutError)
+                if timed_out:
+                    logger.error("Polly timed out after 30s; killing subprocess")
                 try:
                     proc.kill()
                 except ProcessLookupError:
@@ -542,19 +550,16 @@ async def _synthesize_polly(
                     await proc.wait()
                 except Exception:
                     logger.debug("polly wait after kill failed", exc_info=True)
-                try:
-                    os.unlink(path)
-                except OSError:
-                    pass
+                if not timed_out:
+                    raise  # CancelledError must propagate to the caller
                 return None
             if proc.returncode != 0:
                 logger.error("Polly failed: %s", stderr.decode())
-                os.unlink(path)
                 return None
             if os.path.getsize(path) < 100:
                 logger.error("Polly output too small")
-                os.unlink(path)
                 return None
+            succeeded = True
             return path
         except SandboxUnavailableError as exc:
             # A host with no OS sandbox backend (every Windows host, and Linux
@@ -575,19 +580,19 @@ async def _synthesize_polly(
                 exc.kind,
                 exc,
             )
-            try:
-                os.unlink(path)
-            except OSError:
-                pass
             return None
         except Exception:
             logger.exception("Polly synthesis error")
+            return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned temp file, or a new exit path re-opens the leak.
+        if not succeeded:
             try:
                 os.unlink(path)
             except OSError:
                 pass
-            return None
-    finally:
         # Clean up the sandbox launcher script / seatbelt profile spawned
         # by wrap_argv (None on platforms without a sandbox backend).
         if sandbox_cleanup:
