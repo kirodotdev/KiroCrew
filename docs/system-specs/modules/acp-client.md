@@ -17,6 +17,13 @@ fixed path — KiroCrew is not the authority on where Kiro CLI is installed, and
 Kiro CLI's own self-updater legitimately rewrites its bytes as the user, so an
 install-source/owner/path/codesign gate would strand real installs (toolbox,
 Homebrew, winget, a self-updated `/Applications` bundle) with no recovery path.
+On Windows the fixed candidates include the native per-user install at
+`%LOCALAPPDATA%\Kiro-Cli` before the machine-wide `Program Files\Kiro-Cli`
+location. After the inherited `PATH`, discovery also checks the shared set of
+standard user tool directories, preserving managed installations without
+hardcoding package-manager-specific paths. Discovery therefore sees a CLI
+installed after the desktop gateway started even though that process retains
+its old `PATH`.
 `snapshot_trusted_acp_executable` refuses only a non-runnable candidate and
 returns the resolved path; `TrustedAcpExecutableSnapshot` now carries just
 `launch_path`.

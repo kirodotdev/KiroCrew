@@ -173,6 +173,11 @@ complete the device-code flow in the browser. The dashboard opens automatically
 after `kiro-cli whoami` succeeds. This setup runs on the gateway machine, which
 may be different from the computer running the browser.
 
+The per-user Kiro CLI install under `%LOCALAPPDATA%\Kiro-Cli` is discovered
+independently of the gateway's inherited `PATH`. Installing it while the desktop
+gateway is already running is therefore picked up by the setup page's next
+automatic check; neither a gateway restart nor a Windows reboot is required.
+
 `kirocrew` lands in `.venv\Scripts\`. If a launched (non-shell)
 gateway can't find the built-in `kirocrew-cron` / `kirocrew-core` MCP servers,
 that dir is appended to the MCP spawn `PATH` automatically
