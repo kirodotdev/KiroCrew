@@ -23,7 +23,7 @@ import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useAvailableModels } from '../hooks/useAvailableModels'
 import { useListboxKeyboard } from '../hooks/useListboxKeyboard'
 import { useAppSelector, useAppDispatch, store } from '../store'
-import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
+import { PANE_HYDRATE_LIMIT, retireStatelessQuestion, captureStatelessCard, capturePendingAskId, confirmOptimisticSend, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, appendSlotMessage, requestStop, cancelQueuedMessage, editQueuedMessage, setAgentSwitchNotice } from '../store/chatSlice'
 import { confirmedDelivered, readSendReceipt } from '../utils/sendDelivery'
 import { mergeRecoveredDraft } from '../utils/chatDrafts'
 import { triggerRefresh, updateSlot } from '../store/dashboardSlice'
@@ -451,6 +451,15 @@ export default function ChatPane({
     api.cancelQueuedMessage(slotKey, queueId).catch(() => undefined)
   }, [dispatch, slotKey])
   const onInterruptQueued = useCallback((queueId: string) => { api.interruptSlot(slotKey, queueId).catch(() => undefined) }, [slotKey])
+  const onEditQueued = useCallback((queueId: string, content: string) => {
+    const trimmed = content.trim()
+    if (!trimmed) return
+    // Optimistically update the card; WS event reconciles other clients.
+    // Mirrors ChatPage.handleEditQueued — split view (⌘D) must offer the same
+    // inline edit the single-chat QueueStack does.
+    dispatch(editQueuedMessage({ slot: slotKey, queue_id: queueId, content: trimmed }))
+    api.editQueuedMessage(slotKey, queueId, trimmed).catch(() => undefined)
+  }, [dispatch, slotKey])
   const onReorderQueued = useCallback((queueId: string, direction: 'next' | 'later') => {
     // Build the order from ALL queued messages in the slot, not just the
     // interactive ones QueueStack renders: hidden system deliveries and
@@ -590,7 +599,7 @@ export default function ChatPane({
 
         <SubagentDeliveryProgress count={systemDeliveryCount} />
         {queuedMessages.length > 0 && (
-          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onReorder={onReorderQueued} />
+          <QueueStack messages={queuedMessages} onCancel={onCancelQueued} onInterrupt={onInterruptQueued} onEdit={onEditQueued} onReorder={onReorderQueued} />
         )}
 
         {/* The pending ask_question card renders per pane: in split mode the
