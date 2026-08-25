@@ -12771,6 +12771,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "एक टर्न अभी चल रहा है — उसके पूरा होने पर फिर से आज़माएँ।"
+    },
     "channelOrigin": {
       "direct_message": "डायरेक्ट मैसेज"
     },

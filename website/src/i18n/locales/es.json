@@ -12925,6 +12925,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Hay un turno en curso — inténtalo de nuevo cuando termine."
+    },
     "channelOrigin": {
       "direct_message": "Mensaje directo"
     },

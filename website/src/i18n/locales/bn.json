@@ -12771,6 +12771,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "একটি টার্ন এখন চলছে — সেটি শেষ হলে আবার চেষ্টা করুন।"
+    },
     "channelOrigin": {
       "direct_message": "সরাসরি মেসেজ"
     },

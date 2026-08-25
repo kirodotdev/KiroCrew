@@ -13079,6 +13079,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Сейчас выполняется ход — повторите попытку, когда он завершится."
+    },
     "channelOrigin": {
       "direct_message": "Личное сообщение"
     },

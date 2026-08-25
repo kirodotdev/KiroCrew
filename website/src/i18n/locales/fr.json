@@ -12925,6 +12925,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Un tour est en cours — réessayez quand il sera terminé."
+    },
     "channelOrigin": {
       "direct_message": "Message privé"
     },

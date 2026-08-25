@@ -12770,6 +12770,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Ein Zug läuft gerade — versuche es erneut, sobald er abgeschlossen ist."
+    },
     "channelOrigin": {
       "direct_message": "Direktnachricht"
     },

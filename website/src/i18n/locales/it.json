@@ -12924,6 +12924,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "Un turno è in corso — riprova quando sarà terminato."
+    },
     "channelOrigin": {
       "direct_message": "Messaggio diretto"
     },

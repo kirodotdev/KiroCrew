@@ -617,11 +617,11 @@ const Field: React.FC<{ label: string; desc?: string; value: string; onChange: (
 )
 
 
-const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void }> = ({ label, desc, value, options, onChange }) => (
+const SelectField: React.FC<{ label: string; desc?: string; value: string; options: (string | { value: string; label: string })[]; onChange: (v: string) => void; disabled?: boolean }> = ({ label, desc, value, options, onChange, disabled }) => (
   <div style={{ marginBottom: 8 }}>
     <div style={{ fontSize: 12, color: 'var(--text)', marginBottom: 1 }}>{label}</div>
     {desc && <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 3 }}>{desc}</div>}
-    <select value={value} onChange={(e) => onChange(e.target.value)}
+    <select value={value} onChange={(e) => onChange(e.target.value)} disabled={disabled}
       style={{ width: '100%', background: 'var(--bg-input)', border: '1px solid var(--border)', borderRadius: 6, padding: '5px 8px', color: 'var(--text)', fontSize: 12, outline: 'none' }}>
       {options.map((o) => { const v = typeof o === 'string' ? o : o.value; const l = typeof o === 'string' ? o : o.label; return <option key={v} value={v}>{l}</option> })}
     </select>
@@ -1382,6 +1382,9 @@ const ModelSelector: React.FC<{
   const [current, setCurrent] = React.useState('')
   const [loading, setLoading] = React.useState(true)
   const [switching, setSwitching] = React.useState(false)
+  const [switchNotice, setSwitchNotice] = React.useState('')
+  // A pick made before the initial hydration resolves must win over it.
+  const touchedRef = React.useRef(false)
 
   React.useEffect(() => {
     api?.getModels?.().then((list: any) => {
@@ -1394,12 +1397,48 @@ const ModelSelector: React.FC<{
       }
       setLoading(false)
     }).catch(() => setLoading(false))
+    // Hydrate the selector from the slot's ACTUAL model. Without this it
+    // opens on "Auto" whatever the gateway runs, and the refusal rollback
+    // below would "restore" that lie instead of the real prior model.
+    api?.getSlotModel?.()?.then((m: string) => {
+      if (!touchedRef.current && typeof m === 'string') setCurrent(m)
+    })?.catch(() => {})
   }, [])
 
+  // Same expiry the dashboard's own switch notice uses (App.tsx): the advice
+  // is only useful while fresh — a turn that has since finished makes a
+  // sticky "try again later" wrong.
+  React.useEffect(() => {
+    if (!switchNotice) return
+    const timer = window.setTimeout(() => setSwitchNotice(''), 6000)
+    return () => window.clearTimeout(timer)
+  }, [switchNotice])
+
   const handleChange = async (model: string) => {
+    touchedRef.current = true
+    const prior = current
     setCurrent(model)
     setSwitching(true)
-    try { await api?.setModel?.(model) } catch {}
+    setSwitchNotice('')
+    try {
+      const res = await api?.setModel?.(model)
+      // A REPORTED refusal means the gateway definitively kept the old model —
+      // put the selector back so it does not misreport, and always say why:
+      // the specific mid-turn copy when the bridge carried the 409
+      // turn_in_flight code, the shared generic copy otherwise (a silent
+      // snap-back is the same "failed for no stated reason" defect this
+      // change exists to remove). A thrown failure stays optimistic as
+      // before: the bridge itself never throws (it maps every failure into
+      // the result), so a throw means the outcome is genuinely unknown.
+      if (res && !res.ok) {
+        setCurrent(prior)
+        setSwitchNotice(res.code === 'turn_in_flight'
+          ? i18nT('utils.agentSwitchFeedback.turn_in_flight')
+          : i18nT('components.errorBoundary.something_went_wrong'))
+      }
+    } catch {
+      // keep the optimistic value — see above
+    }
     setSwitching(false)
   }
 
@@ -1428,10 +1467,16 @@ const ModelSelector: React.FC<{
       <SelectField label={i18nT('apps.mochi.settingsPanel.chat_model')} desc={i18nT('apps.mochi.settingsPanel.model_desc')}
         value={current}
         options={chatOptions}
+        disabled={switching}
         onChange={(v) => void handleChange(v)} />
       {switching && (
         <div style={{ fontSize: 10, color: 'var(--accent)', marginTop: -4, marginBottom: 6 }}>
           {i18nT('apps.mochi.settingsPanel.model_switching')}
+        </div>
+      )}
+      {!switching && switchNotice && (
+        <div role="status" style={{ fontSize: 10, color: 'var(--warn)', marginTop: -4, marginBottom: 6 }}>
+          {switchNotice}
         </div>
       )}
       <SelectField label={i18nT('apps.mochi.settingsPanel.bg_model')} desc={i18nT('apps.mochi.settingsPanel.bg_model_desc')}

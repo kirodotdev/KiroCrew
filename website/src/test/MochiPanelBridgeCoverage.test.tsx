@@ -1212,16 +1212,17 @@ describe('panelBridge model selection', () => {
 
   it('switches the slot model and reports failure honestly', async () => {
     const bridge = await loadBridge()
-    expect(await bridge.setModel('sonnet')).toBe(true)
+    expect(await bridge.setModel('sonnet')).toEqual({ ok: true })
     expect(bodyOf(calls('/api/chat/slots/mochi/model', 'POST')[0])).toEqual({ model: 'sonnet' })
 
+    // A code-less refusal stays a generic failure (no `code` field invented).
     route('/api/chat/slots/mochi/model', { ok: false, status: 400 }, 'POST')
     const failing = await loadBridge()
-    expect(await failing.setModel('bogus')).toBe(false)
+    expect(await failing.setModel('bogus')).toEqual({ ok: false })
 
     route('/api/chat/slots/mochi/model', { reject: true }, 'POST')
     const offline = await loadBridge()
-    expect(await offline.setModel('sonnet')).toBe(false)
+    expect(await offline.setModel('sonnet')).toEqual({ ok: false })
   })
 })
 

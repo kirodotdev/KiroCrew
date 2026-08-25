@@ -12616,6 +12616,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "当前有一轮对话正在进行 — 等它结束后再试。"
+    },
     "channelOrigin": {
       "direct_message": "私信"
     },

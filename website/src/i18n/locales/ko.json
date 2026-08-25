@@ -12616,6 +12616,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "턴이 진행 중입니다 — 완료된 후 다시 시도하세요."
+    },
     "channelOrigin": {
       "direct_message": "다이렉트 메시지"
     },

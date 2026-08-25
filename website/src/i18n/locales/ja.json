@@ -12616,6 +12616,9 @@
     }
   },
   "utils": {
+    "agentSwitchFeedback": {
+      "turn_in_flight": "ターンが進行中です — 完了してからもう一度お試しください。"
+    },
     "channelOrigin": {
       "direct_message": "ダイレクトメッセージ"
     },
