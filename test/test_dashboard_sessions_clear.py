@@ -13,7 +13,9 @@ tracked separately by (Clean Up button).
 
 from __future__ import annotations
 
+import contextlib
 import json
+from typing import Iterator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,20 +61,61 @@ def _make_request(
     *,
     slots: dict[str, _FakeSlot] | None = None,
     metadata: dict[str, dict] | None = None,
+    unreadable_keys: set[str] | None = None,
+    raising_keys: set[str] | None = None,
 ) -> tuple[web.Request, MagicMock, list[str]]:
     """Build a minimal ``web.Request`` with a fake ``conversation_log`` + ``_slots``.
 
     Returns (request, state, deleted_keys) where ``deleted_keys`` is populated
     by ``delete_session`` so tests can assert exactly which keys were removed.
+
+    Args:
+        unreadable_keys: Keys for which get_metadata_status returns ({}, False)
+            simulating a transient read failure (Windows indexer/AV hold).
+        raising_keys: Keys for which get_metadata_status raises an exception
+            simulating corrupt metadata.
     """
     deleted_keys: list[str] = []
     metadata = metadata or {}
+    unreadable_keys = unreadable_keys or set()
+    raising_keys = raising_keys or set()
 
     conv_log = MagicMock()
     conv_log.list_sessions.return_value = sessions
     conv_log.get_metadata.side_effect = lambda k: metadata.get(k, {})
 
-    def _delete(key: str) -> bool:
+    def _get_metadata_status(k: str) -> tuple[dict, bool]:
+        if k in raising_keys:
+            raise json.JSONDecodeError("bad", "", 0)
+        if k in unreadable_keys:
+            return {}, False  # transient read failure
+        return metadata.get(k, {}), True
+
+    conv_log.get_metadata_status.side_effect = _get_metadata_status
+
+    # Mock _locked as a reentrant context manager (no-op for tests)
+    @contextlib.contextmanager
+    def _locked_mock(k: str) -> Iterator[None]:
+        yield
+
+    conv_log._locked = _locked_mock
+
+    def _delete(key: str, *, skip_pinned: bool = False) -> bool | None:
+        """Mock delete_session returning canned values per key.
+
+        The skip_pinned invariant (pinned/unreadable/raising -> None) is
+        already tested by 4 real-lock tests in test_history.py. Here we
+        just return canned values so api_sessions_clear's counting is
+        exercised.
+        """
+        if skip_pinned:
+            if key in raising_keys or key in unreadable_keys:
+                return None
+            meta = metadata.get(key, {})
+            if not isinstance(meta, dict):
+                return None  # corrupt metadata -> skip
+            if meta.get("pinned"):
+                return None
         deleted_keys.append(key)
         return True
 
@@ -247,19 +290,12 @@ async def test_skips_all_sessions_no_refresh() -> None:
 
 @pytest.mark.asyncio
 async def test_skips_session_when_metadata_raises() -> None:
-    """If get_metadata raises (corrupt JSON), the session is skipped, not deleted."""
+    """If get_metadata_status raises (corrupt JSON), the session is skipped, not deleted."""
     k1 = _history_key_for("chat-1")
     k2 = _history_key_for("chat-2")
     sessions = [{"key": k1}, {"key": k2}]
-    request, state, deleted = _make_request(sessions)
-
-    # k1 raises, k2 returns normal metadata
-    def _meta(key: str) -> dict:
-        if key == k1:
-            raise json.JSONDecodeError("bad", "", 0)
-        return {}
-
-    state.conversation_log.get_metadata.side_effect = _meta
+    # k1 raises (via raising_keys), k2 returns normal metadata
+    request, state, deleted = _make_request(sessions, raising_keys={k1})
 
     status, body = await _call_and_parse(request)
 
@@ -275,8 +311,11 @@ async def test_delete_failure_tracked_as_failed() -> None:
     sessions = [{"key": k1}, {"key": k2}]
     request, state, _ = _make_request(sessions)
 
-    # k1 succeeds, k2 fails
-    state.conversation_log.delete_session.side_effect = lambda k: k == k1
+    # k1 succeeds, k2 fails (simulating unlink failure)
+    def _delete(key: str, *, skip_pinned: bool = False) -> bool | None:
+        return key == k1
+
+    state.conversation_log.delete_session.side_effect = _delete
 
     status, body = await _call_and_parse(request)
 
@@ -291,7 +330,7 @@ async def test_delete_exception_tracked_as_failed() -> None:
     sessions = [{"key": k1}, {"key": k2}]
     request, state, _ = _make_request(sessions)
 
-    def _delete(key: str) -> bool:
+    def _delete(key: str, *, skip_pinned: bool = False) -> bool | None:
         if key == k1:
             raise PermissionError("access denied")
         return True
@@ -310,7 +349,7 @@ async def test_all_failed_returns_ok_false() -> None:
     k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
     sessions = [{"key": k1}, {"key": k2}]
     request, state, _ = _make_request(sessions)
-    state.conversation_log.delete_session.side_effect = lambda k: False
+    state.conversation_log.delete_session.side_effect = lambda k, *, skip_pinned=False: False
 
     status, body = await _call_and_parse(request)
 
@@ -379,3 +418,33 @@ async def test_skips_the_transcript_a_bound_channel_tab_is_reading() -> None:
 
     assert status == 200
     assert deleted == [other]
+
+
+@pytest.mark.asyncio
+async def test_skips_session_with_transient_unreadable_metadata() -> None:
+    """A session whose metadata is transiently unreadable is SKIPPED, not deleted.
+
+    Regression test for data-loss bug: get_metadata() returns {} on transient
+    read failure (Windows indexer/AV holding the file) WITHOUT raising, so
+    {}.get("pinned") is falsy and a PINNED session gets permanently deleted.
+
+    The fix is to use get_metadata_status() which returns (meta, readable=False)
+    on transient failure, and skip when not readable.
+    """
+    k_pinned = _history_key_for("chat-pinned")
+    k_normal = _history_key_for("chat-normal")
+    sessions = [{"key": k_pinned}, {"key": k_normal}]
+    # k_pinned is actually pinned on disk, but its metadata is transiently unreadable
+    metadata = {k_pinned: {"pinned": True}, k_normal: {}}
+    # Simulate transient read failure for k_pinned
+    request, _state, deleted = _make_request(
+        sessions, metadata=metadata, unreadable_keys={k_pinned}
+    )
+
+    status, body = await _call_and_parse(request)
+
+    assert status == 200
+    # k_pinned should be SKIPPED (unreadable), not deleted
+    assert k_pinned not in deleted, "Pinned session with unreadable metadata was deleted!"
+    assert deleted == [k_normal]
+    assert body == {"ok": True, "cleared": 1, "skipped": 1, "failed": 0}

@@ -169,7 +169,10 @@ def _redact_suggestions(suggestions: list[str]) -> list[str]:
 
 async def generate_suggestions(state: DashboardState) -> list[str]:
     """Generate suggestions using the background kiro-cli session."""
-    context = _build_context(state)
+    # _build_context() calls list_sessions() + recent() — O(all sessions) disk IO.
+    # Offload to keep the event loop responsive (same pattern as this PR's other
+    # two offload sites in sessions.py).
+    context = await asyncio.to_thread(_build_context, state)
     if not context or len(context) < 50:
         logger.debug("Insufficient context for suggestions — using fallback")
         return list(_FALLBACK_SUGGESTIONS)
