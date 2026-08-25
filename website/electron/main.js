@@ -7,6 +7,7 @@ const path = require("path");
 const http = require("http");
 
 const { findKirocrewBin } = require("./find-bin");
+const { buildGatewayEnvironment } = require("./gateway-env");
 const { resolveGatewayPath } = require("./mac-env");
 const {
   findMissingBundleParts,
@@ -982,7 +983,7 @@ function spawnGateway(resolve) {
           // without this every app launch opens a persistent console window
           // beside the Electron app. Ignored on POSIX.
           windowsHide: true,
-          env: {
+          env: buildGatewayEnvironment({
             ...cleanEnv,
             // Overrides the inherited PATH only when the launchd domain
             // actually contributed a directory (see resolveGatewayPath above);
@@ -1003,7 +1004,7 @@ function spawnGateway(resolve) {
             // gateway spawns (app servers run on the same interpreter), so
             // the whole process tree stays out of the bundle.
             PYTHONPYCACHEPREFIX: path.join(kirocrewDir, "cache", "pycache"),
-          },
+          }),
         });
         gatewayProcess = child;
         // We own this child — recovery may kill+respawn it. Ownership

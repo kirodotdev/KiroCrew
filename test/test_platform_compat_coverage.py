@@ -266,11 +266,15 @@ class _StubbornStream:
 
 
 class TestEnsureUtf8Console:
-    def test_noop_off_windows(self, monkeypatch):
+    def test_off_windows_only_publishes_environment(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setenv("PYTHONUTF8", "0")
+        monkeypatch.setenv("PYTHONIOENCODING", "ascii")
         before = sys.stdout
         pc.ensure_utf8_console()
         assert sys.stdout is before
+        assert os.environ["PYTHONUTF8"] == "1"
+        assert os.environ["PYTHONIOENCODING"] == "utf-8:backslashreplace"
 
     def test_reconfigure_in_place_is_preferred(self, monkeypatch):
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
