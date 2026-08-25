@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from kiro_crew import platform_compat
-from kiro_crew.executors import subprocess_executor
+from kiro_crew.executors import configure_default_executor, subprocess_executor
 from kiro_crew.jsonl_util import rotate_jsonl_at
 from kiro_crew.mcp_caller import CallerContext, _parent_pid
 from kiro_crew.mcp_gateway import transport
@@ -1697,6 +1697,13 @@ async def _recaller_loop(
 
 
 async def _amain(argv: Optional[list[str]] = None) -> int:
+    # ── Name the default executor ──
+    # asyncio.to_thread and run_in_executor(None, ...) route onto the loop's
+    # default executor, which Python names threads anonymously.  This names
+    # them ``mc-default`` so profilers like py-spy can attribute blocking work
+    # to this stub.  Must run BEFORE any to_thread offload.
+    configure_default_executor()
+
     # An invalid MC_MCP_LOG (e.g. "verbose") would make basicConfig raise
     # "Unknown level" and kill the stub BEFORE its fallback-to-per-session-exec
     # path can run. Fall back to WARNING on any unrecognised level.

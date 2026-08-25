@@ -147,6 +147,7 @@ from kiro_crew.embeddings import (
 )
 from kiro_crew.executors import (
     CronQueueTimeout,
+    configure_default_executor,
     cron_gate_budget,
     maintenance_executor,
     run_in_cron_gate_pool,
@@ -10582,6 +10583,13 @@ async def run_gateway(
     all services (chat, cron, subagents, task runner) are available via
     the web dashboard, but Slack connectivity is disabled.
     """
+    # ── Name the default executor ──
+    # asyncio.to_thread and run_in_executor(None, ...) route onto the loop's
+    # default executor, which Python names threads anonymously.  This names
+    # them ``mc-default`` so profilers like py-spy can attribute blocking work
+    # to this gateway.  Must run BEFORE any to_thread offload.
+    configure_default_executor()
+
     # ── Platform context boot (CPP seam) ──
     # Resolve + install the PlatformContext ONCE before any service spins up.
     # Idempotent: a no-op when ``cli.main`` already booted in this process.

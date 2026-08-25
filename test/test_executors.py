@@ -619,3 +619,82 @@ async def test_the_gate_keeps_most_of_its_budget_for_a_claimed_call() -> None:
     finally:
         release.set()
         ex.shutdown_maintenance_executor()
+
+
+# --- configure_default_executor: naming ----------------------------------------
+#
+# The default executor is the pool asyncio.to_thread and run_in_executor(None, ...)
+# route onto.  The loop itself uses it for getaddrinfo (DNS).  These tests cover
+# the thread naming (`mc-default-*`) -- sizing is left to Python's default.
+
+
+@pytest.mark.asyncio
+async def test_configure_default_executor_installs_named_pool() -> None:
+    """configure_default_executor installs a pool with mc-default-* threads."""
+    ex.configure_default_executor()
+
+    loop = asyncio.get_running_loop()
+    thread_name = await loop.run_in_executor(None, lambda: threading.current_thread().name)
+
+    assert thread_name.startswith(
+        "mc-default"
+    ), f"Expected thread name starting with 'mc-default', got {thread_name!r}"
+
+
+@pytest.mark.asyncio
+async def test_configure_default_executor_creates_fresh_pool_per_call() -> None:
+    """Each call to configure_default_executor creates a fresh pool for the loop.
+
+    The per-loop design means the loop owns the pool and shuts it down on close,
+    removing the need for process-global tracking and private-attribute probes.
+    """
+    ex.configure_default_executor()
+    loop = asyncio.get_running_loop()
+    first_executor = loop._default_executor
+
+    ex.configure_default_executor()
+    second_executor = loop._default_executor
+
+    # Each call creates a fresh pool
+    assert first_executor is not second_executor
+
+
+def test_second_loop_gets_configured_executor() -> None:
+    """A second event loop gets a configured mc-default executor, not anonymous.
+
+    Uses explicit loop management (new_event_loop + run_until_complete + close)
+    rather than asyncio.run to avoid a false positive from test_spawn_audit's
+    subprocess-spawn detector, which matches asyncio.run as base=asyncio attr=run.
+
+    This test pins the per-loop design: configure_default_executor creates a
+    fresh pool for each loop, and each loop gets mc-default threads.
+    """
+    results: list[str] = []
+
+    async def capture_thread_name() -> None:
+        ex.configure_default_executor()
+        loop = asyncio.get_running_loop()
+        thread_name = await loop.run_in_executor(None, lambda: threading.current_thread().name)
+        results.append(thread_name)
+
+    # First event loop
+    loop1 = asyncio.new_event_loop()
+    try:
+        loop1.run_until_complete(capture_thread_name())
+    finally:
+        loop1.close()
+
+    # Second event loop -- the per-loop design gives it its own fresh pool
+    loop2 = asyncio.new_event_loop()
+    try:
+        loop2.run_until_complete(capture_thread_name())
+    finally:
+        loop2.close()
+
+    assert len(results) == 2
+    assert results[0].startswith(
+        "mc-default"
+    ), f"First loop: expected 'mc-default*', got {results[0]!r}"
+    assert results[1].startswith(
+        "mc-default"
+    ), f"Second loop: expected 'mc-default*', got {results[1]!r}"

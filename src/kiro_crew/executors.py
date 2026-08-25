@@ -7,8 +7,10 @@ agent-overlay rewrites) piles onto that default pool it can saturate it and
 starve the loop's own DNS resolution -- which is exactly the failure mode that
 turns a brief network blip into a multi-second event-loop stall.
 
-This module provides *separate*, bounded pools for that blocking work so it
-can never contend with the loop's default executor.
+This module provides *separate*, bounded pools for that blocking work and also
+names the loop's default executor's threads ``mc-default`` (Python's default
+names them anonymously), so profilers like py-spy can attribute blocking work
+to this gateway.
 
 Three pools, deliberately split:
 
@@ -76,6 +78,7 @@ _T = TypeVar("_T")
 
 __all__ = [
     "CronQueueTimeout",
+    "configure_default_executor",
     "maintenance_executor",
     "subprocess_executor",
     "cron_executor",
@@ -94,9 +97,16 @@ __all__ = [
     "shutdown_maintenance_executor",
 ]
 
+# ── Default executor naming ──
+# asyncio.to_thread and run_in_executor(None, ...) route onto the loop's default
+# executor.  The loop itself uses that same pool for getaddrinfo (DNS).  Python
+# caps it at min(32, cpu_count + 4) and names threads anonymously.  This module
+# keeps that cap but names threads ``mc-default`` so profilers like py-spy can
+# attribute blocking work to this gateway.
+
 # Bounded so a burst of maintenance work cannot spawn unbounded threads.  Four
-# is enough for the periodic sweeps + agent-overlay rewrites while leaving the
-# default executor entirely free for the loop's own I/O.
+# is enough for the periodic sweeps + agent-overlay rewrites while keeping them
+# isolated from the default executor's own bounded pool.
 _MAX_MAINT_WORKERS = 4
 
 # Subprocess/PTY teardown can block on a wedged kernel resource and a single
@@ -244,6 +254,31 @@ _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
+
+
+def configure_default_executor() -> None:
+    """Name the event loop's default executor threads.
+
+    Call once per event loop at startup, BEFORE any ``asyncio.to_thread`` or
+    ``run_in_executor(None, ...)`` runs.  Creates a fresh pool for the current
+    loop; the loop owns the pool and shuts it down when it closes.
+
+    Effects:
+
+    * Keeps Python's default cap (``min(32, cpu_count + 4)``).
+    * Names threads ``mc-default`` so they appear labeled in profilers like
+      py-spy, instead of the anonymous ``ThreadPoolExecutor-N_M``.
+
+    Does NOT make the documented "default executor free for the loop's own I/O"
+    invariant literally true -- 1700+ call sites still route onto it.  That
+    migration is tracked separately; this function names the pool until then.
+    """
+    loop = asyncio.get_running_loop()
+    pool = ThreadPoolExecutor(
+        max_workers=None,  # keep Python's default: min(32, cpu_count + 4)
+        thread_name_prefix="mc-default",
+    )
+    loop.set_default_executor(pool)
 
 
 def maintenance_executor() -> ThreadPoolExecutor:
@@ -726,7 +761,11 @@ async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: An
 
 
 def shutdown_maintenance_executor() -> None:
-    """Shut down all maintenance pools if they were created.  Idempotent."""
+    """Shut down all maintenance pools if they were created.  Idempotent.
+
+    The default executor pool is NOT included here -- it is owned by each event
+    loop and shut down by asyncio when the loop closes.
+    """
     global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool
     with _lock:

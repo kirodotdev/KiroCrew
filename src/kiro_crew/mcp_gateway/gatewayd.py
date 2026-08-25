@@ -50,7 +50,11 @@ from typing import Any, Callable, Collection, Iterator, Optional
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.loader import config_dir as _config_dir
-from kiro_crew.executors import maintenance_executor, subprocess_executor
+from kiro_crew.executors import (
+    configure_default_executor,
+    maintenance_executor,
+    subprocess_executor,
+)
 from kiro_crew.mcp_caller import CallerContext
 from kiro_crew.mcp_caller import _parent_pid as _ppid_fn
 from kiro_crew.mcp_gateway import credwatch, hazards, socketsec, transport
@@ -3713,6 +3717,13 @@ async def _amain(argv: Optional[list[str]] = None) -> int:
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
+
+    # ── Name the default executor ──
+    # asyncio.to_thread and run_in_executor(None, ...) route onto the loop's
+    # default executor, which Python names threads anonymously.  This names
+    # them ``mc-default`` so profilers like py-spy can attribute blocking work
+    # to this gateway.  Must run BEFORE any to_thread offload.
+    configure_default_executor()
 
     # Catch exceptions that slip past per-task handlers — e.g. a
     # fire-and-forget coroutine that blows up without ``await``. Without
