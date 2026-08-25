@@ -109,7 +109,12 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("skill_hint", r"\[End of relevant skills\]"),
         ("channel_context", r"\[END SLACK THREAD CONTEXT\]"),
         ("conversation_replay", r"\[END CONVERSATION HISTORY\]"),
-        ("hook_context", r"\[End of hook context\]"),
+        # Two spellings reach this opener: `context.py` emits
+        # `[End of hook context]` and `chat_runner.py` emits `[End hook
+        # context]`. Both are real emit sites, so one alternation covers them
+        # rather than picking whichever the assembly happened to use last.
+        ("hook_context", r"\[End (?:of )?hook context\]"),
+        ("history_prefix", r"\[End of history\]"),
         ("theme_persona", r"\[END THEME PERSONA\]"),
         ("user_profile", r"\[End of user profile\]"),
         ("ui_language", r"\[End of UI language\]"),
@@ -209,7 +214,13 @@ def split_blocks(
     # book its bytes as memory while the header's bytes were credited to the
     # message.
     header_at = next(
-        (m.start() for label, pat in _COMPILED if label == "request_header" for m in [pat.search(prompt)] if m),
+        (
+            m.start()
+            for label, pat in _COMPILED
+            if label == "request_header"
+            for m in [pat.search(prompt)]
+            if m
+        ),
         None,
     )
     user_start = user_end = -1

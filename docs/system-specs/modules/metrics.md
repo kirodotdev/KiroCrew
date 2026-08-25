@@ -596,7 +596,14 @@ must stay complete.
 A block owns the span from its opener up to **the earlier of** the next opener and
 its OWN closer (`_CLOSERS`, keyed by the same labels — only the closers the
 assembly actually emits are listed, so extending it is a data change rather than a
-scanner edit). The closer taken is the LAST match before the next opener, not the
+scanner edit). **A label with an opener in `_MARKERS` but no `_CLOSERS` entry keeps
+the absorbing behaviour this table exists to remove**, so the two are kept in step
+by grepping the assembly for `[End ` / `[END ` rather than by adding a closer only
+when one is noticed. One opener can have MORE than one closer spelling — a hook
+context is closed `[End of hook context]` by `context.py` and `[End hook context]`
+by `chat_runner.py` — and an entry covering one spelling silently leaves the other
+block absorbing what follows it, so such a label carries an alternation rather than
+whichever spelling was found first. The closer taken is the LAST match before the next opener, not the
 first: a block's content can quote its own closer — a custom agent prompt that
 documents the envelope it is injected into embeds `[END AGENT SYSTEM PROMPT]`
 verbatim — and first-match would end the block at that quotation and book the rest

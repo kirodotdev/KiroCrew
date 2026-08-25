@@ -7,6 +7,7 @@ closure: every character is attributed exactly once, which is what lets a reader
 trust the per-block sizes. These drive the real function over realistic prompt
 shapes rather than restating its arithmetic.
 """
+
 from kiro_crew.context_blocks import (
     REPLY_FORMAT_LABEL,
     UNCLASSIFIED_LABEL,
@@ -237,7 +238,9 @@ class TestExpandedInputAttribution:
         prompt = self._prompt(message)
         # Caller passes the ORIGINAL typed length (attributable_user_chars with
         # prompt_expanded=False and original_len=len(typed)).
-        blocks = split_blocks(prompt, user_chars=attributable_user_chars(len(typed), prompt_expanded=False))
+        blocks = split_blocks(
+            prompt, user_chars=attributable_user_chars(len(typed), prompt_expanded=False)
+        )
         # The user gets exactly their typed text — not the skill body.
         assert blocks[USER_LABEL] == len(typed)
         # The appended skill classifies by its own marker.
@@ -249,7 +252,9 @@ class TestExpandedInputAttribution:
         # After @prompt expansion the whole message is injected SOP content.
         sop = "Execute the following instructions:\n\n" + ("do the thing. " * 40)
         prompt = self._prompt(sop)
-        blocks = split_blocks(prompt, user_chars=attributable_user_chars(len(sop), prompt_expanded=True))
+        blocks = split_blocks(
+            prompt, user_chars=attributable_user_chars(len(sop), prompt_expanded=True)
+        )
         # None of the SOP body is attributed to the user.
         assert blocks.get(USER_LABEL, 0) == 0
         assert sum(blocks.values()) == len(prompt)
@@ -423,7 +428,9 @@ class TestAppendedSuffixDoesNotShiftUserOffset:
         # body opens with a [Skill: ...] marker), then an APPENDED persona with
         # no marker of its own — it folds into the loaded_skill block.
         trailer = "[Skill: demo]\nskill body line one\nskill body line two\n"
-        persona = "\n[THEME PERSONA]\n" + ("persona voice line. " * 12) + "\n[END THEME PERSONA]\n\n"
+        persona = (
+            "\n[THEME PERSONA]\n" + ("persona voice line. " * 12) + "\n[END THEME PERSONA]\n\n"
+        )
         prompt = f"{header}{typed}{trailer}{persona}"
 
         # Correct offset excludes the appended suffix: no prepend here, so 0.
@@ -594,9 +601,9 @@ class TestABlockEndsAtItsOwnCloser:
         orphan = "assembly text with no marker\n\n"
         prompt = body + orphan + "[CURRENT DATE] today\n"
         out = split_blocks(prompt)
-        assert out["agent_instructions"] == len(body), (
-            "the block must run to its REAL closer, not to the one it quotes"
-        )
+        assert out["agent_instructions"] == len(
+            body
+        ), "the block must run to its REAL closer, not to the one it quotes"
         assert out[UNCLASSIFIED_LABEL] == len(orphan)
         assert sum(out.values()) == len(prompt)
 
@@ -610,3 +617,32 @@ class TestABlockEndsAtItsOwnCloser:
         assert out["date"] == len(date)
         assert out["surface"] == len(runtime)
         assert UNCLASSIFIED_LABEL not in out
+
+    def test_the_history_prefix_block_stops_at_its_own_closer(self):
+        """``chat_persistence`` emits this block with a closer, so it must have a
+        ``_CLOSERS`` entry — an opener in ``_MARKERS`` whose real closer is not
+        listed keeps exactly the absorbing behaviour this table removes."""
+        block = (
+            "[Previous chat history for this tab — session was reset after stop]\n"
+            "user: hello\n"
+            "[End of history]\n\n"
+        )
+        orphan = "assembly text with no marker\n\n"
+        prompt = block + orphan + "[CURRENT DATE] today\n"
+        out = split_blocks(prompt)
+        assert out["history_prefix"] == len(block)
+        assert out[UNCLASSIFIED_LABEL] == len(orphan)
+        assert sum(out.values()) == len(prompt)
+
+    def test_both_hook_context_closer_spellings_are_recognised(self):
+        """Two emit sites, two spellings: ``context.py`` writes ``[End of hook
+        context]`` and ``chat_runner.py`` writes ``[End hook context]``. A table
+        covering only one leaves the other block absorbing what follows it."""
+        for closer in ("[End of hook context]", "[End hook context]"):
+            block = f"[Hook context]\nsomething a hook added\n{closer}\n\n"
+            orphan = "assembly text with no marker\n\n"
+            prompt = block + orphan + "[CURRENT DATE] today\n"
+            out = split_blocks(prompt)
+            assert out["hook_context"] == len(block), f"{closer} was not treated as a closer"
+            assert out[UNCLASSIFIED_LABEL] == len(orphan)
+            assert sum(out.values()) == len(prompt)

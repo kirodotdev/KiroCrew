@@ -200,7 +200,6 @@ src/kiro_crew/connections/l0_probe.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/registry.py
 src/kiro_crew/connections/tool_aliases.py
-src/kiro_crew/context_blocks.py
 src/kiro_crew/context_management.py
 src/kiro_crew/crew_chat.py
 src/kiro_crew/cron.py
@@ -428,7 +427,6 @@ src/kiro_crew/workflows/runner.py
 src/kiro_crew/workflows/service.py
 test/conftest.py
 test/fake_mcp_app_server.py
-test/metrics/test_context_blocks.py
 test/metrics/test_context_occupancy.py
 test/metrics/test_cost_breakdown.py
 test/metrics/test_gateway_http_metrics.py
