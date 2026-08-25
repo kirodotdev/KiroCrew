@@ -8,6 +8,7 @@ fallback), and one genuine end-to-end run marked macOS-only.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import os
@@ -464,6 +465,158 @@ class TestTranscribePlumbing:
             text, meta = await apple_speech.transcribe("/tmp/x.wav")
         assert text == "hello there"
         assert meta["transcribe_secs"] == 0.15
+
+
+class TestTranscodeTempOwnership:
+    """The transcode temp is invocation-owned until explicitly handed over.
+
+    `_to_native_audio` creates the `.wav` with `mkstemp`, so it owns the file
+    until the success return transfers it to the caller; `transcribe` then owns
+    the received temp until its cleanup `finally`. Every failure exit on either
+    side must remove the owned temp, while an original input path — not created
+    by these invocations — is never removed on any path.
+    """
+
+    @staticmethod
+    def _owned_temp(tmp_path, monkeypatch):
+        """Pin `_mkstemp_path` to a known file so the tests can watch it."""
+        owned = tmp_path / "owned.wav"
+        owned.write_bytes(b"")
+        monkeypatch.setattr(apple_speech, "_mkstemp_path", lambda suffix: str(owned))
+        return owned
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_removes_the_owned_temp(self, tmp_path, monkeypatch):
+        """An ffmpeg that fails to spawn never ran, so nothing else will ever
+        remove the mkstemp output — the invocation must."""
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch("asyncio.create_subprocess_exec", side_effect=OSError("spawn failed")),
+        ):
+            with pytest.raises(OSError):
+                await apple_speech._to_native_audio(str(src))
+        assert not owned.exists()
+        assert src.exists()
+
+    @pytest.mark.asyncio
+    async def test_cancellation_reaps_ffmpeg_before_removing_the_owned_temp(
+        self, tmp_path, monkeypatch
+    ):
+        """`CancelledError` is a `BaseException`, so an `except Exception` guard
+        would miss it. The child must also be killed AND reaped before the
+        unlink: Windows keeps the output file locked until the child fully
+        exits, so an unlink issued earlier fails and the temp survives."""
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+        events: list[str] = []
+
+        class _Proc:
+            def __init__(self):
+                self._calls = 0
+
+            async def communicate(self):
+                self._calls += 1
+                if self._calls == 1:
+                    raise asyncio.CancelledError()
+                events.append("reaped")
+                return b"", b""
+
+            def kill(self):
+                events.append("killed")
+
+        real_unlink = os.unlink
+
+        def tracked_unlink(path, *args, **kwargs):
+            if str(path) == str(owned):
+                events.append("unlinked")
+            return real_unlink(path, *args, **kwargs)
+
+        monkeypatch.setattr(apple_speech.os, "unlink", tracked_unlink)
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch("asyncio.create_subprocess_exec", return_value=_Proc()),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await apple_speech._to_native_audio(str(src))
+        assert events == ["killed", "reaped", "unlinked"]
+        assert not owned.exists()
+        assert src.exists()
+
+    @pytest.mark.asyncio
+    async def test_successful_transcode_still_hands_the_temp_to_the_caller(
+        self, tmp_path, monkeypatch
+    ):
+        """The cleanup must not eat the success path: the caller's existing
+        cleanup relies on receiving the temp path with ownership."""
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.returncode = 0
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("kiro_crew.transcribe.ensure_ffmpeg_in_path"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+        ):
+            path, is_temp = await apple_speech._to_native_audio(str(src))
+        assert (path, is_temp) == (str(owned), True)
+        assert owned.exists()
+        assert src.exists()
+
+    @pytest.mark.asyncio
+    async def test_sandbox_rejection_removes_the_owned_native_temp(self, tmp_path, monkeypatch):
+        """The fail-closed sandbox refusal returns after `transcribe` received an
+        owned temp but used to exit before the cleanup `finally` was armed."""
+        from kiro_crew import sandbox as sb
+
+        owned = tmp_path / "native.wav"
+        owned.write_bytes(b"x")
+
+        async def fake_native(_path):
+            return str(owned), True
+
+        def boom(argv):
+            raise sb.SandboxUnavailableError(
+                "no backend: unshare(CLONE_NEWNS) EPERM", "no_backend", "EPERM"
+            )
+
+        monkeypatch.setattr(apple_speech, "_to_native_audio", fake_native)
+        monkeypatch.setattr(apple_speech, "availability", lambda: apple_speech.Availability(True))
+        monkeypatch.setattr(apple_speech, "helper_path", lambda *a, **k: "/fake/helper")
+        monkeypatch.setattr(apple_speech, "_sandboxed", boom)
+        text, meta = await apple_speech.transcribe(str(tmp_path / "orig.webm"))
+        assert text is None
+        assert "no backend" in meta["error"]
+        assert not owned.exists()
+
+    @pytest.mark.asyncio
+    async def test_sandbox_rejection_never_removes_an_original_input(self, tmp_path, monkeypatch):
+        """A non-temp native path is the caller's own file; the widened cleanup
+        must stay keyed on the ownership flag, not on reaching the exit."""
+        from kiro_crew import sandbox as sb
+
+        original = tmp_path / "voice.wav"
+        original.write_bytes(b"x")
+
+        def boom(argv):
+            raise sb.SandboxUnavailableError(
+                "no backend: unshare(CLONE_NEWNS) EPERM", "no_backend", "EPERM"
+            )
+
+        monkeypatch.setattr(apple_speech, "availability", lambda: apple_speech.Availability(True))
+        monkeypatch.setattr(apple_speech, "helper_path", lambda *a, **k: "/fake/helper")
+        monkeypatch.setattr(apple_speech, "_sandboxed", boom)
+        text, meta = await apple_speech.transcribe(str(original))
+        assert text is None
+        assert "no backend" in meta["error"]
+        assert original.exists()
 
 
 class TestStreamingSession:

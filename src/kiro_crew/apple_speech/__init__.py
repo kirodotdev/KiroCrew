@@ -508,20 +508,50 @@ async def _to_native_audio(audio_path: str) -> tuple[str, bool]:
     # `tempfile.mkstemp` is the heavier half — it creates a file — and leaving it
     # on the loop while offloading only the close would be the worse split.
     out = await asyncio.to_thread(_mkstemp_path, ".wav")
-    proc = await asyncio.create_subprocess_exec(
-        ffmpeg,
-        "-y",
-        "-i",
-        audio_path,
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        out,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    _, err = await proc.communicate()
+    # The `.wav` stays invocation-owned until the success return below hands it
+    # to the caller. A spawn failure or a cancellation (`CancelledError` is a
+    # `BaseException`, so `except Exception` would miss it) never transfers
+    # ownership, so remove the temp before propagating. Stop AND reap a live
+    # ffmpeg first: Windows keeps the output file locked until the child fully
+    # exits (the unlink would fail and the temp would survive), and on POSIX a
+    # still-running child can race the removal. Every cleanup step is
+    # best-effort — the exception in flight is the one that must surface.
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg,
+            "-y",
+            "-i",
+            audio_path,
+            "-ar",
+            "16000",
+            "-ac",
+            "1",
+            out,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            _, err = await proc.communicate()
+        except BaseException:
+            try:
+                proc.kill()
+            except (OSError, ProcessLookupError):
+                pass
+            else:
+                try:
+                    await proc.communicate()
+                except BaseException:
+                    # A repeat cancellation can land on this await; swallow it
+                    # so the unlink below still runs and the ORIGINAL exception
+                    # is the one that propagates.
+                    pass
+            raise
+    except BaseException:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        raise
     if proc.returncode != 0:
         logger.warning(
             "apple_speech: ffmpeg transcode failed: %s", err.decode(errors="replace")[-300:]
@@ -556,34 +586,39 @@ async def transcribe(
         return None, {"error": "speech helper could not be built"}
 
     native_path, is_temp = await _to_native_audio(audio_path)
-    argv = [helper, "--locale", locale]
-    if install:
-        argv.append("--install")
-    argv.append(native_path)
+    # When `is_temp` is true this invocation owns the transcode temp from here
+    # on, so every exit — the sandbox rejection included — must route through
+    # the cleanup `finally` below. An original input (`is_temp` false) is the
+    # caller's file and is never removed on any path.
+    try:
+        argv = [helper, "--locale", locale]
+        if install:
+            argv.append("--install")
+        argv.append(native_path)
 
-    try:
-        argv, spawn_env, _sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
-    except sandbox.SandboxUnavailableError as exc:
-        logger.warning("apple_speech: %s%s", _NO_SANDBOX_HINT, exc)
-        return None, {"error": f"{_NO_SANDBOX_HINT}{exc}"}
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *argv,
-            env=spawn_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
-        except asyncio.TimeoutError:
+            argv, spawn_env, _sb_cleanup = await asyncio.to_thread(_sandboxed, argv)
+        except sandbox.SandboxUnavailableError as exc:
+            logger.warning("apple_speech: %s%s", _NO_SANDBOX_HINT, exc)
+            return None, {"error": f"{_NO_SANDBOX_HINT}{exc}"}
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                env=spawn_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
             try:
-                proc.kill()
-                await proc.communicate()
-            except (OSError, ProcessLookupError):
-                pass
-            return None, {"error": f"timed out after {timeout_secs}s"}
-    except OSError as exc:
-        return None, {"error": f"could not run speech helper: {exc}"}
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_secs)
+            except asyncio.TimeoutError:
+                try:
+                    proc.kill()
+                    await proc.communicate()
+                except (OSError, ProcessLookupError):
+                    pass
+                return None, {"error": f"timed out after {timeout_secs}s"}
+        except OSError as exc:
+            return None, {"error": f"could not run speech helper: {exc}"}
     finally:
         if is_temp:
             try:
