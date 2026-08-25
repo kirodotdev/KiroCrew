@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from kiro_crew.dashboard.snapshot_commit import commit_snapshot_while_holding_the_lock
 from kiro_crew.loop_lock import LoopBoundLock
 
 FOLDERS_FILE = "folders.json"
@@ -22,18 +23,44 @@ class FolderRepository:
     def __init__(self, logger_provider: Callable[[], logging.Logger]) -> None:
         self._logger_provider = logger_provider
 
-    def load(self, path: Path, current: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Return usable rows from *path*, retaining *current* on store failure."""
+    def load(self, path: Path, current: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+        """Return usable rows from *path*, retaining *current* on store failure.
+
+        The second element says whether the returned rows ARE the committed vocabulary,
+        and the distinction it carries is load-bearing rather than informational:
+
+        * ``False`` — the vocabulary is UNKNOWN. The file was absent, was not a
+          list, or could not be read. A reader must FAIL OPEN, because an absent
+          file cannot be told apart from a store that was deleted or is
+          unreadable; treating that as an authoritative empty vocabulary would
+          make every persisted ``folder_id`` dangling, so restore would prune
+          them all and the next save would unfile every conversation.
+        * ``True`` — the vocabulary is KNOWN, INCLUDING a legitimately
+          empty one (the user deleted their last folder). That IS the vocabulary,
+          so pruning a ``folder_id`` naming no known folder is correct.
+
+        Reported from here rather than recovered by the caller because only this
+        method can tell the three failure shapes apart: each of them returns
+        *current*, so the returned ROWS alone cannot distinguish "unreadable"
+        from "parsed an empty list".
+
+        A BOOL rather than the set itself, so this method is not a second spelling of
+        the derivation: the caller turns these rows into the committed set through
+        :meth:`DashboardState.publish_committed_folder_ids`, the one place that decides
+        which ids qualify. The rows handed back are already filtered to non-empty
+        ``str`` ids, so that helper filters nothing further here rather than offering a
+        second opinion.
+        """
         try:
             if not path.exists():
-                return current
+                return current, False
             raw = json.loads(path.read_text(encoding="utf-8"))
             if not isinstance(raw, list):
                 self._logger_provider().warning(
                     "folders.json is a %s, not a list — ignoring it",
                     type(raw).__name__,
                 )
-                return current
+                return current, False
             kept = [
                 folder
                 for folder in raw
@@ -44,10 +71,10 @@ class FolderRepository:
                     "dropped %d unusable folder row(s) from folders.json (not a dict, or no id)",
                     len(raw) - len(kept),
                 )
-            return kept
+            return kept, True
         except Exception:
             self._logger_provider().warning("Failed to load folders", exc_info=True)
-            return current
+            return current, False
 
     @staticmethod
     def save(path: Path, folders: list[dict[str, Any]], write_json: _JsonWriter) -> None:
@@ -60,7 +87,7 @@ class FolderRepository:
         mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
         path_provider: Callable[[], Path],
         write_confirmed: Callable[[Path, list[dict[str, Any]]], None],
-        on_committed: Callable[[], None] | None = None,
+        on_committed: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> _T:
         """Serialize one mutation and retain it only after a confirmed off-loop write.
 
@@ -74,6 +101,10 @@ class FolderRepository:
         Keeping post-commit signals in the same critical section prevents two
         concurrent transactions from collapsing a monotonic generation bump.
         It is deliberately skipped for no-op and rolled-back transactions.
+
+        It receives the SNAPSHOT that was serialized and confirmed, not the live
+        list, so a signal derived from the store's contents cannot disagree with
+        the bytes that actually landed.
         """
         async with lock:
             before = [dict(folder) for folder in folders_provider()]
@@ -82,13 +113,27 @@ class FolderRepository:
                 return value
             path = path_provider()
             snapshot = [dict(folder) for folder in folders_provider()]
+
+            # CANCELLATION-ATOMIC, via the one shared spelling of the protocol -- see
+            # ``commit_snapshot_while_holding_the_lock`` for why each of its three parts
+            # is load-bearing. The tag side calls the same helper, so the two
+            # vocabularies cannot drift apart.
+            #
+            # The pre-mutation restore lives HERE rather than as a helper parameter: the
+            # helper propagates the write's error precisely so this arm is reached, which
+            # is the same shape the tag side already uses. A cancellation must NOT restore
+            # -- the shielded write is still completing and its bytes will land -- and the
+            # helper only re-raises the write's own failure, never the cancellation, so
+            # ``except Exception`` cannot see one.
+            write = asyncio.ensure_future(asyncio.to_thread(write_confirmed, path, snapshot))
             try:
-                await asyncio.to_thread(write_confirmed, path, snapshot)
+                await commit_snapshot_while_holding_the_lock(
+                    write,
+                    publish=lambda: on_committed(snapshot) if on_committed is not None else None,
+                )
             except Exception:
                 folders_provider()[:] = before
                 raise
-            if on_committed is not None:
-                on_committed()
             return value
 
     @staticmethod

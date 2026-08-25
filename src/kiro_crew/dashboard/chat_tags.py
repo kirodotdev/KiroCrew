@@ -21,9 +21,16 @@ from typing import Any, Callable, TypeVar
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import (
+    persist_swept_slot_meta,
+    save_slot_off_loop,
+)
 from kiro_crew.dashboard.chat_utils import slot_history_key
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
+from kiro_crew.dashboard.snapshot_commit import (
+    commit_snapshot_while_holding_the_lock,
+    sweep_to_completion_despite_cancellation,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -83,34 +90,35 @@ def validate_folder_tag_ids(raw: Any, state: DashboardState) -> list[str]:
       and the test itself would raise, turning a malformed store row into a
       500 on every chat created in that folder). Order-preserving,
       de-duplicated.
-    * AUTHORITY-GATED vocabulary intersection — ids are checked against the
-      live vocabulary (``state._tags``) only when it is authoritative,
-      mirroring the three sibling restore paths (``_tags_authoritative`` is
-      False when ``tags.json`` was unreadable at boot). Failing OPEN there is
-      load-bearing: intersecting with an unknown (empty) vocabulary would
-      drop every id, the next save would persist the loss, and the sticky
-      filing marker would block re-inheritance forever. A dangling id kept
-      this way is pruned by the restore paths on the next authoritative boot.
+    * AUTHORITY-GATED vocabulary intersection — DELEGATED to
+      ``DashboardState.tag_ids_for_restore``, the one reader every restore path
+      shares, which also holds the UNKNOWN-vs-KNOWN rule and why failing open is
+      load-bearing. A dangling id kept that way is pruned on the next authoritative
+      boot.
+
+      Knownness therefore has exactly ONE encoding, ``_committed_tag_ids``, and this
+      helper reads it through the same accessor as everything else — there is no
+      second flag to keep in sync and no per-site spelling of the fail-open rule.
+      The committed snapshot is also the correct SET to intersect against: live
+      ``state._tags`` is a working copy that a mutation moves ahead of disk and a
+      failed write restores, so validating against it can admit an id that never
+      landed. In normal operation the two agree, because a tag write publishes the
+      snapshot as soon as it confirms.
     """
     if not isinstance(raw, list):
         return []
-    check_vocab = getattr(state, "_tags_authoritative", True)
-    # Only string ids enter the vocabulary set: a malformed persisted entry
-    # (e.g. a hand-edited tags.json with a list/dict id) must degrade to
-    # "unknown id" — not crash the set build with an unhashable type.
-    valid_ids = (
-        {i for t in state._tags if isinstance(i := t.get("id"), str)} if check_vocab else None
-    )
+    # Only string ids survive the shape tier: a malformed persisted entry (e.g. a
+    # hand-edited folders.json carrying a list or dict id) must degrade to "unknown
+    # id" rather than reaching a membership test that would raise on an unhashable
+    # type. Order-preserving and de-duplicated.
     out: list[str] = []
     seen: set[str] = set()
     for tid in raw:
         if not isinstance(tid, str) or tid in seen:
             continue
-        if valid_ids is not None and tid not in valid_ids:
-            continue
         seen.add(tid)
         out.append(tid)
-    return out
+    return state.tag_ids_for_restore(out)
 
 
 def _tags_write_lock(state: Any) -> LoopBoundLock:
@@ -144,7 +152,7 @@ async def _mutate_tags_locked(state: DashboardState, mutate: Callable[[], _T]) -
         result = mutate()
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             # Roll back to pre-mutate state.
             state._tags = pre_snapshot
@@ -161,6 +169,66 @@ def _write_tags_snapshot(state: DashboardState, snapshot: list[dict]) -> None:
     state.save_tags_snapshot(snapshot)
 
 
+async def _commit_tags_snapshot(state: DashboardState, snapshot: list[dict]) -> None:
+    """THE choke point for a confirmed tag-vocabulary write: persist, then publish.
+
+    EVERY tag write in this module routes through here, with no exception. Publication is
+    UNCONDITIONAL once the write confirms -- there is no knownness test in this helper,
+    because by the time a write has landed the vocabulary IS known: these bytes are it.
+    Knownness is decided at LOAD instead (``load_tags`` publishes only when the document
+    parsed and the file exists), which is the only place the question is open.
+
+    For every other path this makes "the committed vocabulary matches disk" a MECHANISM
+    rather than a convention each new call site has to remember. The alternative is a
+    publication per call site, which is what allows ``_mutate_tags_locked`` -- a
+    confirmed-write helper in the same file -- to leave ``_committed_tag_ids`` stale
+    while disk moves on. Staleness in the
+    missing-a-live-id direction is the damaging one, because the adopt and restore paths
+    PRUNE against this set: an id on disk but absent from the snapshot is stripped off
+    the user's slots and the next save makes that loss durable. Mirrors
+    ``mutate_folders`` on the folder side.
+
+    Deliberately NOT inside ``_write_tags_snapshot``. That function is the sync body
+    handed to ``asyncio.to_thread``, and the suites replace it wholesale to simulate a
+    pop mid-write and an ``IOError`` -- so a publication living in there would be
+    patched out exactly where the vocabulary matters most, and would also mutate state
+    from a worker thread. Publishing HERE keeps it on the event loop and keeps the
+    patched seam meaning what it says.
+
+    ORDER IS THE POINT: ``save_tags_snapshot`` raises on failure, so publication is
+    reached only when the bytes landed and *snapshot* IS the on-disk vocabulary. A
+    failure leaves the committed set untouched, leaving each caller's own rollback to
+    restore the live list.
+
+    Publication is NOT gated on the vocabulary already being KNOWN. After a malformed
+    ``tags.json`` the field is ``None``, and such a gate would skip the very write that
+    ends the ignorance, leaving it ``None`` for the life of the process: every restore
+    then fails open, and a tag deleted after that load is retained on resumed slots as a
+    dangling id no sweep reaches. The loader itself fails open, which is correct there --
+    it genuinely does not know what an unparsable file contains. ``mutate_folders``
+    publishes on the same rule, so both vocabularies obey one.
+
+    CANCELLATION-ATOMIC. ``asyncio.to_thread`` hands the body to a worker that cannot
+    be interrupted, so cancelling the awaiting handler does NOT stop the write -- the
+    bytes still land. Awaiting it bare therefore loses the publication on cancellation:
+    disk moves to *snapshot* while ``_committed_tag_ids`` keeps the old set, which is
+    the exact missing-a-live-id staleness this helper exists to prevent, and the
+    fork/restore validators then prune a valid assignment. The protocol that answers
+    this -- shield, publish as a statement on both exits, drain under the lock -- lives in
+    ONE place, ``commit_snapshot_while_holding_the_lock``, which the folder store calls too
+    so the two vocabularies cannot drift apart.
+
+    No ``rollback`` is passed: this helper's caller (``_mutate_tags_locked``) restores
+    ``state._tags`` on ``except Exception``, and the shared helper propagates the
+    write's own failure rather than the cancellation precisely so that arm is reached.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(_write_tags_snapshot, state, snapshot))
+    await commit_snapshot_while_holding_the_lock(
+        write,
+        publish=lambda: state.publish_committed_tag_ids(snapshot),
+    )
+
+
 async def persist_tags_snapshot_unlocked(state: DashboardState) -> None:
     """Persist the current state._tags to disk without acquiring the lock.
 
@@ -168,7 +236,7 @@ async def persist_tags_snapshot_unlocked(state: DashboardState) -> None:
     cross-module critical sections (e.g. chat_auto_tag.maybe_auto_tag).
     """
     snapshot = [dict(t) for t in state._tags]
-    await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+    await _commit_tags_snapshot(state, snapshot)
 
 
 def _valid_color(value: str) -> str:
@@ -234,7 +302,7 @@ async def create_tag_definition_off_loop(
         tag = create_tag_definition(state, name, color, status=status)
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             # Roll back in-memory mutation.
             state._tags = [t for t in state._tags if t.get("id") != tag["id"]]
@@ -344,7 +412,7 @@ async def api_chat_tag_update(request: web.Request) -> web.Response:
 
         snapshot = [dict(t) for t in state._tags]
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
         except Exception:
             state._tags = pre_snapshot
             logger.warning("tag update failed to persist: %s", tid)
@@ -390,11 +458,45 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
         if not removed_tag:
             return web.json_response({"error": "not found", "code": "not_found"}, status=404)
 
+        # CAPTURED BEFORE THE WRITE, NOT AFTER, and the ordering is the whole point.
+        # The strip pass below reads ``state._slots`` AFTER the vocabulary write has
+        # awaited, so it cannot see a slot a concurrent close popped DURING that
+        # await (``chat_handlers.py`` ``_slots.pop``, then its own
+        # ``save_slot_off_loop`` await). When that save FAILS the close handler puts
+        # the SAME object back, still carrying this tag id, and the periodic flush
+        # then full-saves it from memory -- so the deleted id reaches disk. A later
+        # pass cannot repair it either: the object is in no snapshot while it is out.
+        # It is pruned on the next AUTHORITATIVE boot, because the restore validators
+        # intersect against the committed vocabulary; it therefore persists as
+        # in-session staleness, and survives restarts only for as long as that
+        # vocabulary reads UNKNOWN, where the fail-open rule keeps every id.
+        #
+        # A capture only READS, so it is safe to take before the commit: if the write
+        # below raises, this list is discarded having mutated nothing.
+        #
+        # Mirrors ``chat_folders``' pre-commit capture for the identical hazard.
+        closing: list[Any] = [s for s in state._slots.values() if tid in s.tags]
+
+        # The committed vocabulary AS IT STANDS BEFORE THIS DELETE, captured so the
+        # adopt callback below does not read the live field. Publication happens at the
+        # write rather than at the end of this handler, because for the whole strip
+        # ``_committed_tag_ids`` would otherwise still advertise the deleted id: a slot
+        # RESUMED in that window -- in neither the capture above nor the live view the
+        # strip reads -- prunes against a set that admits the id, keeps it, and persists
+        # it as a dangling tag no later sweep touches. Capturing here lets the adopt keep
+        # validating against exactly the vocabulary this transaction started from.
+        pre_delete_committed = getattr(state, "_committed_tag_ids", None)
+
         # ── Single durable commit: remove from vocabulary and persist ────
         state._tags = [t for t in state._tags if t.get("id") != tid]
         snapshot = [dict(t) for t in state._tags]
+        # CAPTURED, NOT PROPAGATED, then CONFIRMED below -- a cancellation can arrive
+        # before any write, so it does not prove the removal landed.
+        commit_cancellation: BaseException | None = None
         try:
-            await asyncio.to_thread(_write_tags_snapshot, state, snapshot)
+            await _commit_tags_snapshot(state, snapshot)
+        except asyncio.CancelledError as exc:
+            commit_cancellation = exc
         except Exception:
             # Nothing else has been written — restore memory and abort.
             state._tags.append(removed_tag)
@@ -402,50 +504,139 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "persist failed", "code": "persist_failed"}, status=500
             )
+        if commit_cancellation is not None:
+            # Publication proves the write confirmed; ``state._tags`` was edited before it
+            # and is not rolled back, so it cannot serve. UNKNOWN refuses too.
+            committed_after = getattr(state, "_committed_tag_ids", None)
+            if committed_after is None or tid in committed_after:
+                state._tags.append(removed_tag)
+                raise commit_cancellation
+
+        # Publication happened inside the helper, immediately after the write confirmed,
+        # so no window exists in which the committed vocabulary still admits the deleted
+        # id -- a slot RESUMED during the strip below would otherwise prune against a set
+        # that still contained it, keep it, and persist it as a dangling tag no later
+        # sweep touches. Everything below that needs the PRE-delete vocabulary uses
+        # ``pre_delete_committed``, captured above, so the publication cannot disturb it.
+        # That separation is what lets this write use the shared helper at all: the
+        # ordering and the known-ness rule are the helper's, and the only thing local to
+        # this handler is which vocabulary the adopt validates against.
 
         # ── Best-effort cleanup: strip the (now nonexistent) id ──────────
         # Failures here are tolerable: a dangling id on disk is pruned on
         # the next load; mark the slot dirty so the periodic flush retries.
-        for slot in state._slots.values():
-            if tid in slot.tags:
-                # Pin the write to the transcript this iteration's membership
-                # check covered: the save awaits inside the loop, so a rebind
-                # can land mid-persist and the save would otherwise resolve
-                # its target from the moved routing at write time. No await
-                # between this capture and the strip below.
-                authorized_history_key = slot_history_key(slot)
-                slot.tags = [t for t in slot.tags if t != tid]
-                try:
-                    applied = await save_slot_off_loop(
-                        state,
-                        slot,
-                        force=True,
-                        best_effort=False,
-                        expected_history_key=authorized_history_key,
-                    )
-                except Exception:
-                    slot._dirty = True
-                    logger.warning(
-                        "tag delete: slot strip persist failed for %s; "
-                        "marked dirty for periodic-flush retry",
-                        getattr(slot, "key", "?"),
-                        exc_info=True,
-                    )
-                else:
-                    if not applied:
-                        # Refused without writing (session permanently deleted
-                        # or rebound mid-persist). The in-memory strip stands —
-                        # the id is already gone from the vocabulary — so mark
-                        # dirty and let the periodic flush persist wherever the
-                        # slot now routes; a dangling id left on the old
-                        # transcript is pruned on the next load.
-                        slot._dirty = True
-                        logger.warning(
-                            "tag delete: slot strip save refused for %s "
-                            "(session deleted or rebound); marked dirty for "
-                            "periodic-flush retry",
-                            getattr(slot, "key", "?"),
-                        )
+        # Snapshot the view: the ``await`` below yields INSIDE this iteration and
+        # other coroutines mutate ``state._slots`` while it runs, so iterating the
+        # live view risks "dictionary changed size during iteration" — which here
+        # would raise out of the handler AFTER the tag row was already deleted,
+        # leaving the strip half-applied.
+        #
+        # TWO PASSES, mirroring chat_folders; see the protocol in
+        # ``docs/system-specs/modules/history.md`` under "Vocabulary Deletes and Slot
+        # Metadata Persistence". Do not restate it here; a second copy is what drifts.
+        stripped: list[Any] = []
+        # The captured slots first, then the live view. A slot in both is visited
+        # twice and that is harmless: the first visit removes the id, so the second
+        # takes the ``continue`` below and cannot double-append.
+        for slot in [*closing, *state._slots.values()]:
+            if tid not in slot.tags:
+                continue
+            # Strip in memory UNCONDITIONALLY; the in-memory strip writes nothing
+            # so it cannot erase a close, and doing it before the identity test
+            # (pass two) means a slot that was merely TRANSIENTLY absent — popped by
+            # an in-flight close whose save then FAILS, so the close handler restores
+            # it — comes back without the deleted tag id. That holds for a pop on
+            # EITHER side of the vocabulary write: after it, because the object is
+            # still in the view this loop reads; before it, because ``closing``
+            # captured the object itself and stripping it reaches the same instance
+            # the close handler will put back.
+            slot.tags = [t for t in slot.tags if t != tid]
+            stripped.append((slot, slot_history_key(slot)))
+        # Pass two delegates the shared persist protocol -- metadata-only merge,
+        # superseded adoption, dirty-on-transient, log-never-raise -- to
+        # ``persist_swept_slot_meta`` so this strip cannot drift from the folder
+        # one. See its docstring for why a full save would clobber a close. The
+        # identity re-check lives INSIDE that helper, not here, so a sweep site
+        # cannot omit it -- the same arrangement the folder sweep relies on.
+        #
+        # The GUARD confirms, under the record's own lock, that it still carries the
+        # tag being deleted. Without it the merge writes a tag list decided from an
+        # in-memory read, so a retag landing in the window is overwritten -- and an
+        # absent record is UPSERT-ed back into existence by ``update_metadata``,
+        # resurrecting deleted history.
+
+        def _still_carries_the_deleted_tag(meta: dict) -> bool:
+            return bool(meta) and tid in (meta.get("tags") or [])
+
+        def _adopt_observed_tags(slot: Any, observed: dict, submitted: dict[str, object]) -> None:
+            # CONDITIONAL on the slot still holding what was SUBMITTED. ``observed``
+            # is what the record's lock saw BEFORE the await, so a retag landing
+            # inside the window is newer than it; adopting unconditionally would
+            # replace the newer list with the older one. When it changed, the newer
+            # list stands and ``_dirty`` stays untouched -- whoever retagged owns
+            # persisting it.
+            if list(slot.tags) != submitted.get("tags"):
+                return
+            # TYPE **and** MEMBERSHIP. ``observed`` is persisted metadata, and
+            # iterating it directly is unsafe in a way a per-entry ``isinstance``
+            # cannot catch: a ``str`` persisted here is itself iterable, so
+            # ``for t in "t1"`` yields ``'t'`` and ``'1'`` -- both ``str``, both
+            # ``!= tid`` -- and single characters become live tag ids. A dict
+            # contributes its KEYS the same way. So the container must BE a list
+            # before anything is read out.
+            #
+            # Membership then mirrors the vocabulary prune the restore paths already
+            # perform, including its fail-open rule: an unreadable ``tags.json`` is
+            # not evidence of absence, and pruning against it would wipe every
+            # assignment. Type is checked regardless -- fail-open covers an
+            # untrustworthy VOCABULARY, never a structurally invalid value.
+            #
+            # Validated against the COMMITTED vocabulary, not live ``state._tags``.
+            # The live list is a working copy: a tag mutation applies to it in memory
+            # before persisting and is rolled back if that write raises, and this
+            # handler itself strips the deleted id from it above. So it can be ahead
+            # of disk in one direction and about to be restored in the other, and
+            # adopting against it can import an id that never landed.
+            #
+            # Validated against ``pre_delete_committed`` -- the committed vocabulary as
+            # this transaction found it -- rather than by re-reading the live field. Both
+            # exclude uncommitted state, but the capture is also STABLE: it cannot be
+            # moved by this handler's own publication, so the adopt's meaning no longer
+            # depends on when that publication happens. ``None`` is UNKNOWN and fails
+            # open; an empty frozenset is a KNOWN-empty vocabulary and does prune.
+            observed_tags = observed.get("tags")
+            if isinstance(observed_tags, list):
+                kept_tags = [t for t in observed_tags if isinstance(t, str) and t != tid]
+                committed = pre_delete_committed
+                if committed is not None:
+                    kept_tags = [t for t in kept_tags if t in committed]
+            else:
+                kept_tags = []
+            slot.tags = kept_tags
+
+        async def _persist_stripped() -> None:
+            for slot, pinned_key in stripped:
+                # The identity re-check lives inside ``persist_swept_slot_meta``: a
+                # concurrent close can pop this slot while we are suspended.
+                await persist_swept_slot_meta(
+                    state,
+                    slot,
+                    # Captured per slot, so the adoption above can tell whether a retag
+                    # landed while we were suspended.
+                    {"tags": list(slot.tags)},
+                    guard=_still_carries_the_deleted_tag,
+                    adopt=_adopt_observed_tags,
+                    label="tag delete",
+                    expected_history_key=pinned_key,
+                )
+
+        # CAPTURED, not propagated: the helper drains the sweep and then RE-RAISES by
+        # contract, so leaving it uncaught skips the dereference below and the audit.
+        sweep_cancellation: BaseException | None = None
+        try:
+            await sweep_to_completion_despite_cancellation(_persist_stripped())
+        except asyncio.CancelledError as exc:
+            sweep_cancellation = exc
 
         # ── Best-effort cleanup: strip the deleted id from folders ───────
         # A folder can carry tags (copied onto new chats filed into it); the
@@ -468,27 +659,42 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
                     changed = True
             return changed, None
 
-        try:
-            await state.mutate_folders(_strip_folder_tag)
-        except Exception:
-            # Dangling folder reference — pruned on next load.
-            logger.warning("tag delete: folder strip persist failed for %s", tid, exc_info=True)
-
-        # Strip from sidebar columns (flat list of column dicts).
-        changed_boards = False
-        for col in state._tag_boards:
-            tag_ids = col.get("tag_ids") or []
-            filtered = [t for t in tag_ids if t != tid]
-            if len(filtered) != len(tag_ids):
-                col["tag_ids"] = filtered
-                changed_boards = True
-        if changed_boards:
+        async def _strip_the_deleted_id_from_folders_and_boards() -> None:
             try:
-                boards_snapshot = [dict(c) for c in state._tag_boards]
-                await asyncio.to_thread(state.save_tag_boards_snapshot, boards_snapshot)
+                await state.mutate_folders(_strip_folder_tag)
             except Exception:
-                # Dangling board reference — pruned on next load.
-                logger.warning("tag delete: board strip persist failed for %s", tid, exc_info=True)
+                # Dangling folder reference — pruned on next load.
+                logger.warning("tag delete: folder strip persist failed for %s", tid, exc_info=True)
+
+            # Strip from sidebar columns (flat list of column dicts).
+            changed_boards = False
+            for col in state._tag_boards:
+                tag_ids = col.get("tag_ids") or []
+                filtered = [t for t in tag_ids if t != tid]
+                if len(filtered) != len(tag_ids):
+                    col["tag_ids"] = filtered
+                    changed_boards = True
+            if changed_boards:
+                try:
+                    boards_snapshot = [dict(c) for c in state._tag_boards]
+                    await asyncio.to_thread(state.save_tag_boards_snapshot, boards_snapshot)
+                except Exception:
+                    # Dangling board reference — pruned on next load.
+                    logger.warning(
+                        "tag delete: board strip persist failed for %s", tid, exc_info=True
+                    )
+
+        # SHIELDED, not merely reordered: the task is still cancelled, so these awaits
+        # raise again and ``except Exception`` cannot catch a ``CancelledError``.
+        # CAPTURED for the same reason as the first sweep: the helper re-raises once
+        # drained, which would escape before the audit below. See history.md.
+        try:
+            await sweep_to_completion_despite_cancellation(
+                _strip_the_deleted_id_from_folders_and_boards()
+            )
+        except asyncio.CancelledError as exc:
+            if sweep_cancellation is None:
+                sweep_cancellation = exc
 
     state.push_slots_update()
     sel().log_api_access(
@@ -498,6 +704,10 @@ async def api_chat_tag_delete(request: web.Request) -> web.Response:
         source="dashboard",
         resources=tid,
     )
+    if commit_cancellation is not None:
+        raise commit_cancellation
+    if sweep_cancellation is not None:
+        raise sweep_cancellation
     return web.json_response({"ok": True})
 
 
@@ -567,8 +777,8 @@ async def api_chat_slot_tags(request: web.Request) -> web.Response:
             # rebound mid-persist. Roll back the live field — but only while
             # it still holds THIS request's value: the write span awaits, so
             # a concurrent writer may have committed a newer value that an
-            # unconditional restore would erase (the same guard
-            # _restore_unfiled applies to its rollback).
+            # unconditional restore would erase (the same compare-and-set rule
+            # every rollback here applies).
             if slot.tags == new_tags:
                 slot.tags = prior_tags
             # The UNPINNED periodic flush may have persisted the provisional

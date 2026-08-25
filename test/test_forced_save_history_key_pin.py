@@ -192,16 +192,21 @@ class TestRefusalDispositionPerSite:
 
     @pytest.mark.asyncio
     async def test_tag_delete_strip_marks_dirty_and_delete_succeeds(self, tmp_path, monkeypatch):
+        # The strip no longer calls save_slot_off_loop from chat_tags: it routes
+        # through persist_swept_slot_meta, which owns the identity re-check and the
+        # dirty-arming so a sweep site cannot omit either. Refuse at that helper's
+        # merge instead, and assert the same disposition this site documents.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_tags_app(state)
-        refusing = AsyncMock(return_value=False)
+        from kiro_crew.dashboard.chat_persistence import SweepMergeOutcome
+
+        unconfirmed = AsyncMock(return_value=(SweepMergeOutcome.UNCONFIRMED, {}))
         async with TestClient(TestServer(app)) as client:
             tag = await (await client.post("/api/chat/tags", json={"name": "Del"})).json()
             slot = state.get_or_create_slot("s1")
             slot.tags = [tag["id"]]
-            pinned = slot_history_key(slot)
-            with patch("kiro_crew.dashboard.chat_tags.save_slot_off_loop", refusing):
+            with patch("kiro_crew.dashboard.chat_persistence._merge_slot_meta", unconfirmed):
                 resp = await client.delete(f"/api/chat/tags/{tag['id']}")
             # The vocabulary commit already made the deletion durable; the
             # refused strip is best-effort cleanup, so the delete still
@@ -210,22 +215,27 @@ class TestRefusalDispositionPerSite:
             assert all(t["id"] != tag["id"] for t in state._tags)
             assert slot.tags == []
             assert slot._dirty is True
-            assert refusing.await_args.kwargs["expected_history_key"] == pinned
+            # The refusal was reached through the shared helper, which is what
+            # enforces the pin now that the site does not pass it itself.
+            assert unconfirmed.await_count >= 1
 
     @pytest.mark.asyncio
     async def test_folder_delete_unfile_marks_dirty_and_delete_succeeds(
         self, tmp_path, monkeypatch
     ):
+        # Same relocation as the tag strip: the unfile is the post-commit re-scan
+        # and persists through persist_swept_slot_meta, so refuse at that helper.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
-        refusing = AsyncMock(return_value=False)
+        from kiro_crew.dashboard.chat_persistence import SweepMergeOutcome
+
+        unconfirmed = AsyncMock(return_value=(SweepMergeOutcome.UNCONFIRMED, {}))
         async with TestClient(TestServer(app)) as client:
             folder = await (await client.post("/api/chat/folders", json={"name": "F"})).json()
             slot = state.get_or_create_slot("s1")
             slot.folder_id = folder["id"]
-            pinned = slot_history_key(slot)
-            with patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", refusing):
+            with patch("kiro_crew.dashboard.chat_persistence._merge_slot_meta", unconfirmed):
                 resp = await client.delete(f"/api/chat/folders/{folder['id']}")
             # The unfile stands in memory (the folder is gone); the refused
             # persist marks the slot dirty so the flush re-persists wherever
@@ -233,37 +243,33 @@ class TestRefusalDispositionPerSite:
             assert resp.status == 200
             assert slot.folder_id == ""
             assert slot._dirty is True
-            assert refusing.await_args.kwargs["expected_history_key"] == pinned
+            assert unconfirmed.await_count >= 1
 
     @pytest.mark.asyncio
-    async def test_restore_unfiled_refusal_marks_dirty_and_keeps_restored_field(
-        self, tmp_path, monkeypatch
-    ):
+    async def test_a_failed_folder_commit_mutates_no_slot(self, tmp_path, monkeypatch):
+        """Supersedes the restore-rollback disposition: there is nothing to restore.
+
+        The delete now COMMITS the folder removal before touching any slot, so a
+        failed commit has mutated nothing and no rollback runs — which is why
+        ``_restore_unfiled`` is gone. That is a strictly stronger guarantee than
+        restoring afterwards: the previous ordering could leave a conversation
+        durably unfiled when its restore save was refused on the same identity
+        test that refused the original persist, and nothing repaired it.
+        """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
         app = _make_folder_app(state)
-        refusing = AsyncMock(return_value=False)
         async with TestClient(TestServer(app)) as client:
             folder = await (await client.post("/api/chat/folders", json={"name": "F"})).json()
             slot = state.get_or_create_slot("s1")
             slot.folder_id = folder["id"]
-            # Force the folder-store commit to fail so the rollback runs and
-            # its restore save is also refused.
-            with (
-                patch("kiro_crew.dashboard.chat_folders.save_slot_off_loop", refusing),
-                patch.object(state, "mutate_folders", AsyncMock(side_effect=OSError("disk full"))),
-            ):
+            with patch.object(state, "mutate_folders", AsyncMock(side_effect=OSError("disk full"))):
                 resp = await client.delete(f"/api/chat/folders/{folder['id']}")
             # The commit failure propagates (the delete did NOT land)…
             assert resp.status == 500
-            # …and the rollback restored the live field despite its own save
-            # being refused, leaving the slot dirty for the flush to retry.
+            # …and the slot was never touched, so there is no half-applied state
+            # for a rollback to repair.
             assert slot.folder_id == folder["id"]
-            assert slot._dirty is True
-            # Both the unfile and the restore were pinned.
-            assert refusing.await_count == 2
-            for call in refusing.await_args_list:
-                assert call.kwargs["expected_history_key"] == slot_history_key(slot)
 
 
 class TestRefusalRollbackHardening:

@@ -12,7 +12,8 @@ import threading
 import time
 import uuid
 from collections import OrderedDict, deque
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from enum import Enum
 from itertools import islice
 
 from kiro_crew import model_registry
@@ -1003,6 +1004,7 @@ def _rehydrate_slot_from_history(
             # fail-closed `not_creator` check would strand them.
             slot._created_by = str(meta["created_by"])
         if meta.get("folder_id"):
+            # ADOPTED VERBATIM, as the base did. See history.md.
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
             slot._channel_folder_filed = True
@@ -1027,16 +1029,15 @@ def _rehydrate_slot_from_history(
             slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
             # Prune ids missing from the vocabulary: tag deletion commits the
             # vocab write first (crash-atomic), so a crash mid-delete can
-            # leave dangling ids on the persisted slot line. load_tags() runs
-            # before any slot restore, so state._tags is authoritative here.
-            # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-            # or I/O failure): pruning then would wipe EVERY assignment and
-            # the next save persists the loss. A legitimately-empty vocabulary
-            # (user deleted the last tag) IS authoritative and must prune —
-            # otherwise a crash mid-delete resurrects the dangling id forever.
-            if getattr(state, "_tags_authoritative", True):
-                known = {t.get("id") for t in state._tags}
-                slot.tags = [t for t in slot.tags if t in known]
+            # leave dangling ids on the persisted slot line.
+            #
+            # Validated against the COMMITTED snapshot, never live ``state._tags``.
+            # The live list is a working copy that moves in both directions -- a
+            # mutation applies to it before it persists and is rolled back if that
+            # write raises -- so pruning against it can strip an id that IS on disk.
+            # Prune against the COMMITTED vocabulary; ``state.tag_ids_for_restore`` holds
+            # the UNKNOWN-vs-KNOWN rule and why each arm is load-bearing.
+            slot.tags = state.tag_ids_for_restore(slot.tags)
         if meta.get("auto_tagged"):
             slot._auto_tagged = True
         if meta.get("human_seen"):
@@ -1511,6 +1512,7 @@ def _apply_recent_session(
         # legitimate member with not_creator.
         slot._created_by = str(meta["created_by"])
     if meta.get("folder_id"):
+        # ADOPTED VERBATIM, as the base did, matching the bulk path. See history.md.
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
         slot._channel_folder_filed = True
@@ -1536,16 +1538,9 @@ def _apply_recent_session(
         slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
         # Prune ids missing from the vocabulary: tag deletion commits the
         # vocab write first (crash-atomic), so a crash mid-delete can
-        # leave dangling ids on the persisted slot line. load_tags() runs
-        # before any slot restore, so state._tags is authoritative here.
-        # FAIL-OPEN only when the vocabulary is UNKNOWN (tags.json parse
-        # or I/O failure): pruning then would wipe EVERY assignment and
-        # the next save persists the loss. A legitimately-empty vocabulary
-        # (user deleted the last tag) IS authoritative and must prune —
-        # otherwise a crash mid-delete resurrects the dangling id forever.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
+        # leave dangling ids on the persisted slot line. Rule in
+        # ``state.tag_ids_for_restore``.
+        slot.tags = state.tag_ids_for_restore(slot.tags)
     if meta.get("auto_tagged"):
         slot._auto_tagged = True
     if meta.get("human_seen"):
@@ -3508,6 +3503,229 @@ def session_was_deleted(state: DashboardState, slot: _ChatSlot) -> bool:
     return False
 
 
+class SweepMergeOutcome(Enum):
+    """The three-way result of a sweep merge, named so a caller cannot mis-decode it.
+
+    Naming the outcomes is what makes the DISPOSITION explicit: ``COMMITTED`` owes
+    nothing, ``SUPERSEDED`` must adopt, and ``UNCONFIRMED`` must arm ``_dirty`` — three
+    answers that want different handling, two of which are falsy. It also makes an
+    incoherent combination unexpressible, where a pair of booleans could say a write
+    both landed and was superseded.
+
+    The dispatch in :func:`persist_swept_slot_meta` names all three members, so a member
+    ADDED here without giving it a disposition there would fall into the transient
+    branch. There is exactly one dispatching consumer and none is invited, so that
+    coupling is deliberate: change the two together.
+    """
+
+    #: The merge was written under the record's own lock. Nothing further is owed.
+    COMMITTED = "committed"
+    #: The guard ran against a non-empty record and REFUSED: another writer owns the
+    #: field, and the observed value is the newer truth. The caller's in-memory value
+    #: is stale, so it must be RECONCILED via ``adopt`` and ``_dirty`` must NOT be
+    #: armed -- the periodic flush full-saves from memory and would write back exactly
+    #: the stale value the guard just refused.
+    SUPERSEDED = "superseded"
+    #: No ``conversation_log``, or the record is absent/unreadable, or the guard never
+    #: ran. Transient: arm ``_dirty`` and let the periodic flush retry.
+    UNCONFIRMED = "unconfirmed"
+
+
+async def _merge_slot_meta(
+    state: DashboardState,
+    slot: _ChatSlot,
+    fields: dict[str, object],
+    guard: Callable[[dict], bool],
+    expected_history_key: str,
+) -> tuple[SweepMergeOutcome, dict]:
+    """Merge a few slot-owned metadata fields into a slot's record, lock-held.
+
+    PRIVATE, and the single step of :func:`persist_swept_slot_meta` -- there is
+    exactly one caller and none is invited. It is a module-level function because the
+    two halves are different responsibilities with different contracts: this one owns
+    the LOCK-HELD WRITE and the outcome it produces (a required guard with no
+    default, the existence re-check taken inside the lock, and the refusal CAUSE in
+    its ``(SweepMergeOutcome, observed)`` result), while the caller owns the
+    DISPOSITION of that outcome
+    (adopt the observed value, arm ``_dirty``, log, never raise). Inlining would put
+    both contracts in one body and leave the cause distinction to be rebuilt by
+    whoever reads it. That the two suites can also substitute it to inject the
+    concurrency window and the superseded/absent outcomes is a consequence of the
+    split, not its reason.
+
+    It exists at all because a full save REBUILDS every
+    ``SLOT_OWNED_META_KEYS`` entry from the in-memory object, and in that set an
+    absent field means "cleared" — so a full save issued after a concurrent close
+    committed silently erases that close's ``closed`` / ``closed_at`` and the
+    dismissed tab returns on the next restart. An identity re-check before the
+    persist cannot close that window, because the check is taken BEFORE the
+    await: the close can land in between and still be clobbered.
+
+    A merge writes only the named fields under the SAME per-session cross-process
+    lock (``update_metadata_if`` enters ``_locked``), so every key it does not
+    name — ``closed`` included — survives whatever landed in the meantime.
+
+    Deliberately NOT :func:`update_metadata_off_loop`: on a running loop that one
+    dispatches fire-and-forget and swallows I/O errors, so the write would be
+    unordered against the response and a failure invisible. Its own docstring
+    points async callers at the ``to_thread`` form used here, which both orders
+    the write and lets an error propagate so the caller can arm ``_dirty``.
+
+    Returns ``(outcome, observed)``. ``COMMITTED`` means the merge was written;
+    ``SUPERSEDED`` and ``UNCONFIRMED`` both mean nothing was written, and they are
+    not interchangeable — see below.
+
+    THE EXISTENCE CHECK IS RE-TAKEN INSIDE THE LOCK, via
+    :meth:`update_metadata_if`, and that is not a refinement of checking first.
+    ``update_metadata`` UPSERTS: it creates the file when absent. Acquiring the
+    lock can itself mean waiting, so a check taken before it is a decision made
+    against a snapshot, and "checked, then wrote" is not "checked at the moment of
+    writing". A session deleted in that window was RECREATED by the write, so
+    deleted history came back. Guarding under the lock is the only shape that
+    refuses.
+
+    *guard* is REQUIRED, and evaluated under the same lock, for the mirror-image
+    hazard: the write is decided from an IN-MEMORY read of the slot, so if another
+    writer has since changed the same field on disk, the caller's value is stale
+    and writing it destroys the newer one. A caller passes the guard to say what it
+    believed about the record; when that belief no longer holds the merge is
+    skipped rather than forced. There is deliberately NO default: an
+    existence-only fallback would let a caller opt out of stating its belief, which
+    is the weaker discipline this function exists to enforce, and every real
+    consumer has a belief worth checking.
+
+    A refusal is reported with its CAUSE, as ``(SweepMergeOutcome, observed)``:
+
+    * ``COMMITTED, {}`` — the merge landed. Nothing owed.
+    * ``SUPERSEDED, meta`` — the guard ran under the record's lock and refused, so
+      another writer already owns the field and *meta* is what the lock saw. The
+      caller's in-memory value is the stale one, so it must be RECONCILED, and
+      ``_dirty`` must NOT be armed: the periodic flush full-saves from the in-memory
+      object, which would write exactly the stale value the guard just refused.
+    * ``UNCONFIRMED, {}`` — no ``conversation_log``, or the record is
+      absent/unreadable. Transient, so arm ``_dirty`` and let the flush retry.
+
+    The three ways a merge declines to write want OPPOSITE handling, which is why the
+    cause travels as a NAMED outcome rather than a bare bool. The guard
+    is wrapped here rather than at each call site so the distinction between
+    "another writer owns this" and "there is no record" is produced once, by the
+    code that actually knows which happened.
+    """
+    log = state.conversation_log
+    if log is None:
+        return SweepMergeOutcome.UNCONFIRMED, {}
+    # PINNED, not re-resolved: a rebind across the caller's await would otherwise
+    # retarget the scrub onto the new transcript. See history.md.
+    key = expected_history_key
+
+    def _merge() -> tuple[SweepMergeOutcome, dict]:
+        seen: dict = {}
+        ran = [False]
+
+        def _observing_guard(meta: dict) -> bool:
+            ran[0] = True
+            seen.clear()
+            seen.update(meta)
+            return guard(meta)
+
+        if log.update_metadata_if(key, fields, _observing_guard):
+            return SweepMergeOutcome.COMMITTED, {}
+        # No write. If the guard RAN against a non-empty record and still
+        # refused, another writer owns the field and ``seen`` is the newer
+        # truth. If it never ran (unreadable record — update_metadata_if fails
+        # closed before calling it) or ran against an empty one, there is simply
+        # nothing to merge into.
+        if ran[0] and seen:
+            return SweepMergeOutcome.SUPERSEDED, dict(seen)
+        return SweepMergeOutcome.UNCONFIRMED, {}
+
+    return await asyncio.to_thread(_merge)
+
+
+async def persist_swept_slot_meta(
+    state: DashboardState,
+    slot: _ChatSlot,
+    fields: dict[str, object],
+    *,
+    guard: Callable[[dict], bool],
+    adopt: Callable[[_ChatSlot, dict, dict[str, object]], None],
+    label: str,
+    expected_history_key: str,
+) -> None:
+    """Persist one slot's field during a vocabulary-delete sweep.
+
+    INTERIM BY DESIGN, and now with a destination: this helper exists only to bridge the
+    deferred merge-aware-save layer decision, tracked at kirodotdev/KiroCrew#8361. When
+    that lands, this function and its ``guard``/``adopt`` closures retire together with the
+    force-save census gate and the adopter allowlist. Do not grow a third sweep site onto
+    it -- that makes the real fix more expensive, not less.
+
+    A single helper for both the folder-delete and tag-delete strips, because near-twin
+    copies are the drift risk this exists to prevent: the next fix would otherwise have
+    to be made twice, correctly, in two files.
+
+    THE PROTOCOL IS NOT RESTATED HERE. The two checks, the five-way disposition, the rule
+    that ``adopt`` must not arm ``_dirty``, and why one big lock was rejected are stated
+    once in ``docs/system-specs/modules/history.md`` under "Metadata-only persistence for
+    a sweep". Scoped to ONE slot on purpose: the caller keeps its own loop. This returns
+    ``None``: the :class:`SweepMergeOutcome` is consumed HERE, and dispatching on it is
+    exactly what the helper exists to centralise -- a caller that received it back would
+    be free to disposition it differently, which is the drift this replaced.
+
+    A THIRD SWEEP SITE SHOULD NOT LAND ON THIS. It is a stopgap for the two delete
+    sweeps, not an on-ramp: every consumer is a bespoke guard/adopt closure that the
+    layer fix (a merge-aware save) has to unwind
+    again, so a third site makes that fix more expensive rather than less. If one is
+    genuinely needed before the layer decision is taken, that is the signal to take the
+    decision instead. The dispatch below is exhaustive by construction rather than by
+    machinery: three members, three arms.
+
+    Everything field-specific is passed in, because the two deletes genuinely
+    differ and collapsing them would be the bad abstraction:
+
+    * *fields* is the merge payload the caller already computed, handed back to
+      *adopt* so it can tell whether the slot still holds what was submitted.
+    * *guard* is the under-lock predicate stating what the caller believed.
+    * *adopt* owns both that unchanged test and the validation of ``observed``.
+      Those diverge sharply: the folder side routes a scalar through one
+      validator, while the tag side must check the container's TYPE before
+      reading any entry out of it and then prune against the tag vocabulary.
+    * *label* prefixes the warning so the log still names which delete failed.
+    """
+    if state._slots.get(slot.key) is not slot:
+        # Absent, or the key was rebound to a different object. The dirty flag is
+        # inert unless the slot returns, because the periodic flush only iterates
+        # ``state._slots``.
+        slot._dirty = True
+        return
+    try:
+        outcome, observed = await _merge_slot_meta(
+            state, slot, fields, guard=guard, expected_history_key=expected_history_key
+        )
+        # Every member names its disposition, because the two non-committed ones want
+        # OPPOSITE handling: SUPERSEDED reconciles against the observed record, while
+        # UNCONFIRMED retries. The three arms cover all three members, so the shape is
+        # exhaustive by construction and nothing can fall through.
+        if outcome is SweepMergeOutcome.COMMITTED:
+            pass
+        elif outcome is SweepMergeOutcome.SUPERSEDED:
+            # SUPPRESSED when routing moved: ``observed`` describes a transcript the
+            # slot has left, so adopting it would import a stale placement.
+            if slot_history_key(slot) == expected_history_key:
+                adopt(slot, observed, fields)
+        else:
+            # UNCONFIRMED: absent or unreadable — transient, so retry via the flush.
+            slot._dirty = True
+    except Exception:  # noqa: BLE001 - retried by the periodic flush
+        slot._dirty = True
+        logger.warning(
+            "%s: slot persist failed for %s; marked dirty for periodic-flush retry",
+            label,
+            getattr(slot, "key", "?"),
+            exc_info=True,
+        )
+
+
 async def save_slot_off_loop(
     state: DashboardState,
     slot: _ChatSlot,
@@ -3522,6 +3740,58 @@ async def save_slot_off_loop(
     rows_only: bool = False,
 ) -> bool:
     """Persist a slot from the event loop without blocking or dropping the save.
+
+    .. _force-save-layer-decision:
+
+    DEFERRED LAYER DECISION -- READ BEFORE ADDING A ``force=True`` CALLER.
+
+    TRACKED, not merely narrated: the count of callers still on this protocol is pinned
+    by ``test_the_deferred_force_save_layer_decision_has_not_grown``
+    (``_FORCE_SAVE_CLOBBER_SITES``), so adding an eleventh fails the build and puts this
+    decision in front of whoever is adding it. Grep ``_FORCE_SAVE_CLOBBER_SITES`` to
+    find the gate and the current floor.
+
+    ``force=True`` writes the WHOLE slot from memory, so a full save issued after a
+    concurrent close committed erases that close's ``closed`` flag: the in-memory
+    object still reads open, and last-write-wins makes the resurrection durable.
+    Nine call sites in ``dashboard/`` pass ``force=True``, and a TENTH lives outside
+    it in ``crew_chat.py``. Three of the ten span multiple lines -- which is why a
+    single-line ``save_slot_off_loop(.*force=True`` grep finds only 7 calls and the AST
+    census in the gate reports 10. All ten remain on that protocol; the two
+    vocabulary-delete sweeps do NOT, because they route through
+    :func:`persist_swept_slot_meta`, which writes metadata only. The protocol that makes
+    that safe is NOT restated here -- it is stated once in
+    ``docs/system-specs/modules/history.md`` under "Metadata-only persistence for a
+    sweep", and summarised at the helper itself.
+
+    That helper is deliberately NOT the general answer, and must not be copied
+    per-site. Ten hand-built variants of one format bug is strictly worse than one:
+    the correct fix is a single decision at the persistence layer -- and it is
+    narrower than it first looks, because only ONE of the two obvious candidates
+    works.
+
+    * Make the save MERGE-AWARE, so a full save cannot clobber a field it did not
+      author. This is the viable one, but it is not a one-line key-set edit: see
+      ``test_removing_closed_from_the_owned_set_requires_an_explicit_adopt_clear``.
+      Dropping ``closed``/``closed_at`` from ``SLOT_OWNED_META_KEYS`` closes the
+      clobber at every site at once via :func:`carry_unowned_metadata`, but it also
+      breaks ADOPT-REOPEN: a session restored with ``adopt_closed=True`` is live in
+      memory while ``closed=True`` is still on disk, and today it is the next
+      ordinary save's OMISSION that clears the flag. So the save must be TOLD which
+      case it is in -- an explicit clear at the adopt sites, or a tri-state argument
+      -- since it cannot otherwise distinguish "stale, unaware of the close" from
+      "deliberately reopened". Both present as a slot that reads open.
+    * Persist ``closed`` POSITIVELY. This does NOT work, and is recorded here so it
+      is not attempted: the payload is rebuilt from a slot that reads open, so an
+      explicit ``False`` overwrites an on-disk ``True`` exactly as an absent key
+      erases it. The encoding changes; the staleness that causes the clobber does
+      not.
+
+    The viable fix removes the hazard for all ten sites at once and lets
+    ``persist_swept_slot_meta``'s guard/adopt machinery be retired rather than
+    replicated. Until one is chosen, a NEW ``force=True`` caller inherits the
+    clobber window; a new sweep site should route through
+    :func:`persist_swept_slot_meta` rather than grow an eleventh spelling.
 
     :func:`_save_slot_to_history` holds the per-session cross-process
     ``_locked`` across its read-modify-``atomic_write``. That lock, invoked on

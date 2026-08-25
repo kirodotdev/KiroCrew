@@ -69,6 +69,9 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    # Observed HERE, before every await below, so the inherit-copy near the end prunes only
+    # on a real present -> absent transition rather than on bare absence.
+    parent_folder_committed = state.committed_folder_membership(slot.folder_id)
 
     # Rate/resource guard: reject if we're already at the cap. Counts slots still
     # under construction too (``live_slot_count``): the import path retracts a
@@ -849,10 +852,31 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
     # context (agent resolution, steering files, CWD) instead of falling back to
     # the config/workspace default on first message.
     new_slot.project = slot.project
-    # Inherit the sidebar folder so the fork appears next to its parent in the UI.
-    new_slot.folder_id = slot.folder_id
+    # VALIDATED AT THE PRODUCER, not merely swept downstream. This is the one
+    # inherit-from-another-slot copy in the tree, and it was the sole vocabulary
+    # adoption not routed through the shared validators while eight sibling sites
+    # were. That asymmetry is what made this the one producer a downstream sweep
+    # had to chase: the parent is resolved from ``state._slots`` before several
+    # awaits, so a delete landing in that window leaves ``slot`` naming a folder or
+    # tag that is already gone, and the copy made it durable on a NEW record
+    # outside every snapshot the delete swept.
+    #
+    # The validators hold the UNKNOWN-vs-KNOWN rule; see ``folder_id_for_restore`` /
+    # ``tag_ids_for_restore``. Only the structurally invalid and the provably-deleted are
+    # dropped here.
+    #
+    # THIS IS THE ONLY GUARD -- the one fact that is local to this site. Do not read a
+    # downstream sweep into the delete handlers: neither ``api_chat_folder_delete`` nor
+    # ``api_chat_tag_delete`` re-sweeps the live view after its awaits, and validating
+    # here is what allowed both to drop that pass. A NEW writer that adopts a
+    # ``folder_id`` or a tag id must therefore validate at its own source; nothing later
+    # will catch a mid-await write. Protocol in
+    # ``docs/system-specs/modules/history.md``.
+    new_slot.folder_id = state.folder_id_for_restore(
+        slot.folder_id, was_committed=parent_folder_committed
+    )
     # Inherit tags (copied, so later edits to either slot's list stay independent).
-    new_slot.tags = list(slot.tags)
+    new_slot.tags = state.tag_ids_for_restore(list(slot.tags))
     parent_title = slot.title if slot._titled else "Untitled"
     parent_title, _ = redact_exfiltration_urls(parent_title)
     parent_title, _ = redact_credentials(parent_title)

@@ -333,9 +333,9 @@ class TestFolderTagInheritance:
             for i, tid in enumerate(folder_tags)
         ]
         # Direct population stands in for a successful load_tags(), which is
-        # what makes the vocabulary authoritative (the inheritance validator
+        # what makes the vocabulary KNOWN (the inheritance validator
         # deliberately fails open when it is not).
-        state._tags_authoritative = True
+        state.publish_committed_tag_ids(state._tags)
         return state
 
     @staticmethod
@@ -436,7 +436,7 @@ class TestFolderTagInheritance:
         state._folders[0]["tags"] = ["gone", "t1"]
         # Only t1 is a live tag; "gone" was deleted from the vocabulary.
         state._tags = [{"id": "t1", "name": "t1", "color": "#6b7280", "order": 0}]
-        state._tags_authoritative = True
+        state.publish_committed_tag_ids(state._tags)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots", json={"name": "fresh", "folder_id": FOLDER_ID}
@@ -457,7 +457,7 @@ class TestFolderTagInheritance:
         state = _make_state(tmp_path)
         state._folders[0]["tags"] = [{}, None, 42, "t1"]
         state._tags = [{"id": "t1", "name": "t1", "color": "#6b7280", "order": 0}]
-        state._tags_authoritative = True
+        state.publish_committed_tag_ids(state._tags)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
                 "/api/chat/slots", json={"name": "fresh", "folder_id": FOLDER_ID}
@@ -537,4 +537,67 @@ class TestDurableWriteOrdering:
         assert meta.get("title") == "Pinned", (
             "the pinned title never reached disk — a restart rehydrates the old "
             "title with a refreshable 'auto' origin"
+        )
+
+
+class TestRefusedRefileDoesNotResurrectADeletedFolder:
+    """The revert path here is the sibling of ``api_chat_slot_folder``'s.
+
+    Both capture ``previous_folder`` BEFORE awaiting ``_unhide_folder`` and restore
+    it when that await reports the target gone. The restore is deliberate -- ``name``
+    can address an already-used slot, so clearing outright would unfile a
+    conversation sitting in a perfectly good folder of its own. But a delete of
+    THAT folder can land inside the same window, and then the restored value names
+    a folder that no longer exists, which the next save makes durable.
+
+    This site is the one with no pre-check at all: the handler assigns the target
+    unconditionally and relies solely on ``_unhide_folder``'s lock-held verdict, so
+    the revert is the only place the stale capture can be caught.
+    """
+
+    @pytest.mark.asyncio
+    async def test_refused_refile_does_not_restore_a_folder_deleted_in_the_window(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.dashboard import chat_handlers as mod
+
+        state = _make_state(tmp_path)
+        state._folders.append({"id": "f-target", "name": "Target", "order": 1})
+        # The committed vocabulary is what the validator reads; publish it the way
+        # ``load_folders``/``mutate_folders`` do so the check is ENABLED.
+        state._committed_folder_ids = frozenset({FOLDER_ID, "f-target"})
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots", json={"name": "s1", "folder_id": FOLDER_ID})
+            assert resp.status == 200
+            assert state._slots["s1"].folder_id == FOLDER_ID
+
+            refused: list[str] = []
+
+            async def _delete_lands_inside_the_window(st, folder_id):
+                # Model the concurrent delete of the slot's CURRENT folder landing
+                # while this move is awaiting the lock-held existence check, then
+                # report the move's own target gone so the revert path runs.
+                st._folders = [f for f in st._folders if f["id"] not in (FOLDER_ID, "f-target")]
+                st._committed_folder_ids = frozenset()
+                refused.append(folder_id)
+                return False
+
+            monkeypatch.setattr(mod, "_unhide_folder", _delete_lands_inside_the_window)
+
+            resp2 = await client.post(
+                "/api/chat/slots", json={"name": "s1", "folder_id": "f-target"}
+            )
+
+        # NEGATIVE CONTROLS -- true on unfixed code too, so a vacuous green shows:
+        # the refusal really ran, and the previous folder really was deleted.
+        assert refused == ["f-target"], "the move was never refused; the revert path did not run"
+        assert not any(f["id"] == FOLDER_ID for f in state._folders), "the folder really is gone"
+        assert resp2.status == 200, "declining the move must not fail the turn"
+
+        assert state._slots["s1"].folder_id != FOLDER_ID, (
+            "the refused move restored the folder id captured before the await, but that "
+            "folder was deleted inside the window -- the slot now names a folder that does "
+            "not exist and the next save makes it durable. Validate the restored value "
+            "through folder_id_for_restore, exactly as api_chat_slot_folder's revert does"
         )

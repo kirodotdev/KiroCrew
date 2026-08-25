@@ -2632,6 +2632,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # Harmless on the new-slot path: that turn is `is_new`, so the
             # breadcrumb fires regardless and the flag is consumed there.
             previous_folder = slot.folder_id
+            previous_committed = state.committed_folder_membership(previous_folder)
             previous_changed = slot._folder_changed
             if folder_id != slot.folder_id:
                 slot._folder_changed = True
@@ -2643,7 +2644,19 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # of its own. This is a chat turn, so declining the move beats
             # failing the turn.
             if not await _unhide_folder(state, folder_id):
-                slot.folder_id = previous_folder
+                # ``previous_folder`` was captured BEFORE this await, so a delete of
+                # THAT folder can have landed inside the window -- and restoring it
+                # verbatim reattaches a folder that no longer exists, which the next
+                # save makes durable. Validated through the same committed-vocabulary
+                # reader ``api_chat_slot_folder``'s revert uses, which keeps a value
+                # still in a KNOWN vocabulary (so the intent above is preserved: a
+                # conversation sitting in a good folder of its own is left alone) and
+                # still fails open while a folder write is in flight.
+                # ``previous_committed`` was observed at the same instant, so only a real
+                # present -> absent transition prunes; a stale store cannot unfile.
+                slot.folder_id = state.folder_id_for_restore(
+                    previous_folder, was_committed=previous_committed
+                )
                 slot._folder_changed = previous_changed
             else:
                 folder_applied = True
@@ -4764,6 +4777,9 @@ async def close_slot(
             state.push_slots_update()
             raise
     state._slots.pop(name, None)
+    # Observed HERE, before any post-pop await: the cancellation and handover-tail awaits
+    # below are exactly the window a folder delete commits in. See history.md.
+    folder_committed_before_save = state.committed_folder_membership(slot.folder_id)
     # Release any blocking wait before cancelling the task: a question pending on
     # the blocking POST /api/ask-question path holds an MCP worker on an open
     # HTTP request, and the slot is going away, so nobody will answer its card.
@@ -4875,6 +4891,12 @@ async def close_slot(
         # ours (or the key is now empty).
         restored = _slot_still_ours(state, name, slot)
         if restored:
+            # A vocabulary delete can commit while this slot is POPPED, where neither
+            # sweep pass can reach it. Observed before the save, so only a transition prunes.
+            slot.folder_id = state.folder_id_for_restore(
+                slot.folder_id, was_committed=folder_committed_before_save
+            )
+            slot.tags = state.tag_ids_for_restore(slot.tags)
             state._slots[name] = slot
         else:
             # Not restored means not referenced: the periodic flush that would have
@@ -5137,6 +5159,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
         removed = state._slots.pop(name, None)
         if not removed:
             continue
+        # Observed before any post-pop await, same reason as the single-tab close.
+        removed_folder_committed = state.committed_folder_membership(removed.folder_id)
         # Same tombstone as the single-tab close: the archive pass must not
         # race a concurrent channel reconcile into resurrecting the slot. Its
         # instant is persisted as closed_at for the same teardown-window
@@ -5217,6 +5241,12 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # case; the error-row / dead-task handling below still applies to the
             # original object we hold.
             if _slot_still_ours(state, name, removed):
+                # Same window as the sibling restore above: revalidate the vocabulary
+                # ids before this object goes back into ``_slots``.
+                removed.folder_id = state.folder_id_for_restore(
+                    removed.folder_id, was_committed=removed_folder_committed
+                )
+                removed.tags = state.tag_ids_for_restore(removed.tags)
                 state._slots[name] = removed
             else:
                 # The restore is what this arm's own comment relies on to keep the
@@ -8069,6 +8099,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # next save of this slot drops it and the conversation is re-filed.
         slot._channel_folder_filed = True
     if meta.get("folder_id"):
+        # ADOPTED VERBATIM, as the base did: the in-lock verdict below handles deletion.
         slot.folder_id = meta["folder_id"]
         # Re-engaging a hidden empty folder (Model B) un-hides it so it stays
         # visible until the user hides it again. A folder deleted since this
@@ -8081,10 +8112,13 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         # ``state._folders`` is the race its own docstring warns about; and it
         # cannot simply be re-run, because a second await here would reopen the
         # publish-to-hydrate window this ordering exists to close. Holding no
-        # verdict for a newly filed id, we KEEP it: a dangling id is visible and
-        # self-corrects on the next folder operation, whereas erasing a live
-        # filing is silent and indistinguishable from the user unfiling the
-        # session -- and the dirty-slot flush would then persist that erasure.
+        # verdict for a newly filed id, we KEEP it here rather than erase it:
+        # erasing a live filing is silent and indistinguishable from the user
+        # unfiling the session, and the dirty-slot flush would persist that
+        # erasure.
+        #
+        # The id is KEPT, and cold-start restore adopts it verbatim too; cleanup
+        # happens on the next folder operation, not at boot. See history.md.
         if not folder_unhidden and meta["folder_id"] == folder_checked_id:
             slot.folder_id = ""
     if meta.get("pinned"):
@@ -8116,13 +8150,11 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if isinstance(raw_tags, list):
         slot.tags = [str(t) for t in raw_tags if isinstance(t, str) and t]
         # Prune ids missing from the vocabulary (crash-atomic delete leaves
-        # dangling ids on disk; see api_chat_tag_delete). FAIL-OPEN only when
-        # the vocabulary is UNKNOWN (tags.json parse/I/O failure) — pruning
-        # then would wipe every assignment. A legitimately-empty vocabulary
-        # is authoritative and must prune dangling ids.
-        if getattr(state, "_tags_authoritative", True):
-            known = {t.get("id") for t in state._tags}
-            slot.tags = [t for t in slot.tags if t in known]
+        # dangling ids on disk; see api_chat_tag_delete). Read from the COMMITTED
+        # snapshot, not live ``state._tags`` -- the live list is a working copy that a
+        # rollback can leave ahead of disk. ``None`` fails open, an empty frozenset
+        # prunes; see ``state.tag_ids_for_restore``.
+        slot.tags = state.tag_ids_for_restore(slot.tags)
     if meta.get("auto_tagged"):
         slot._auto_tagged = True
     mm = meta.get("memory_mode", "persistent")
