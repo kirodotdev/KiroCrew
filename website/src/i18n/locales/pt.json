@@ -4783,6 +4783,10 @@
       "trusted_auto_approving_future_calls": "Confiável — aprovando automaticamente as chamadas futuras"
     },
     "approvalModePicker": {
+      "nudge_body": "É aqui que você ajusta como o {{productName}} pede aprovação. Ao escolher \"Confiança\" aqui, ele pode trabalhar neste chat sem perguntar antes — você pode voltar atrás a qualquer momento.",
+      "nudge_dismiss": "Entendi",
+      "nudge_title": "Quer menos pedidos de aprovação?",
+      "nudge_view_options": "Ver opções",
       "all_tools_will_get_auto_approved_across_all_sess": "Todas as ferramentas serão aprovadas automaticamente em todas as sessões.",
       "approval_mode": "Modo de aprovação",
       "approval_mode_aria": "Modo de aprovação: {{mode}}",
@@ -5029,6 +5033,8 @@
       "more_actions": "Mais ações"
     },
     "chatInput": {
+      "approval_hint_adjust": "Ajustar o modo de aprovação",
+      "approval_hint_question": "Cansado de confirmar cada etapa?",
       "send_a_message_or_tap_the_mic_for_voice": "Envie uma mensagem ou toque no microfone para voz",
       "release_to_transcribe": "Solte para transcrever",
       "hold_to_talk": "Mantenha pressionado para falar",

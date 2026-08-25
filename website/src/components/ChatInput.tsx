@@ -15,7 +15,7 @@ import { useSlotId } from '../providers/SlotContext'
 import { useToolPillVisible } from '../store/toolPillRegistry'
 import { ToolDetails } from '../pages/chat/ToolDetails'
 import { api, ApiError } from '../api/client'
-import { safeSetItem } from '../utils/safeStorage'
+import { safeSetItem, safeGetItem } from '../utils/safeStorage'
 import { offlineProps } from '../utils/offline'
 import { shallowEqual } from 'react-redux'
 import { motion, AnimatePresence } from 'framer-motion'
@@ -108,7 +108,7 @@ function nameClipboardImage(f: File, batchIndex: number): File {
   return new File([f], `pasted-image-${stamp}${suffix}.${ext}`, { type: f.type, lastModified: f.lastModified })
 }
 
-import ApprovalModePicker from './ApprovalModePicker'
+import ApprovalModePicker, { APPROVAL_MODE_ADJUSTED_LS_KEY } from './ApprovalModePicker'
 // Effort vocabulary lives in lib/effort.ts (mirrors backend effort.py).
 // Re-exported here for back-compat with existing `from './ChatInput'` imports.
 export {
@@ -191,6 +191,11 @@ function toApiDecision(d: string): 'approve' | 'reject' {
  *  Allow once / Reject are offered. Kept in sync with the backend's
  *  `_BACKGROUND_APPROVAL_SOURCES` minus `autonudge`, which does run in-session. */
 export const UNATTENDED_APPROVAL_SOURCES = new Set(['cron', 'heartbeat', 'taskrunner'])
+
+/** B2 nudge: after this many manual one-shot approvals in one slot while the
+ *  mode is still `normal`, offer the approval-mode picker once. Three is the
+ *  point where repeated prompting reads as friction rather than safety. */
+const APPROVAL_NUDGE_THRESHOLD = 3
 
 // Pending-approval selection is slot-aware — see selectSlotPendingApproval
 // in chatSlice: each grid pane's approval bar reflects ITS slot.
@@ -796,6 +801,33 @@ function ChatInput({
   const pendingApproval = slotApprovalChrome ? pendingApprovalRaw : null
   const hasApproval = !!pendingApproval
   const [approvalSubmitting, setApprovalSubmitting] = useState(false)
+  // A2: bumping this opens the footer ApprovalModePicker with a spotlight
+  // ring, so the approval bar's hint lands the user on the real control.
+  const [approvalPickerSignal, setApprovalPickerSignal] = useState(0)
+  // A1: the hint retires once the user has ever adjusted the mode themselves.
+  // Read per approval arrival (cheap), not once per mount, so adjusting the
+  // mode hides the hint on the very next approval without a reload.
+  const approvalModeAdjusted = !!pendingApproval && !!safeGetItem(APPROVAL_MODE_ADJUSTED_LS_KEY)
+  // B2: per-slot manual one-shot approval tally for this dashboard session.
+  // In-memory by design — "3 approvals in one sitting" is the annoyance
+  // signal; persisting it would fire the nudge on stale history.
+  const approvalCountsRef = useRef<Record<string, number>>({})
+  const [approvalNudgeSlot, setApprovalNudgeSlot] = useState<string | null>(null)
+  const approvalNudgeActive = !!approvalNudgeSlot && approvalNudgeSlot === slotId
+  // Permanent dismissal (buttons / menu open): the callout has delivered its
+  // lesson, so the A1 hint retires with it — otherwise a "Got it" user keeps
+  // seeing "Tired of confirming every step?" on every later approval.
+  const dismissApprovalNudge = useCallback(() => {
+    setApprovalNudgeSlot(null)
+    // One flag carries both retirements: the adjusted/discovery flag already
+    // suppresses the hint AND gates the nudge, so a separate dismissed flag
+    // would only ever be written alongside it — dead state.
+    safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
+  }, [])
+  // Session-scoped hide (Escape): a reflexive Escape aimed at the composer
+  // must not spend the one-time callout unseen; it may re-fire on a later
+  // approval in this sitting.
+  const hideApprovalNudge = useCallback(() => setApprovalNudgeSlot(null), [])
   // Non-null while the last approval decision failed. Rendered as a one-line
   // strip under the composer; auto-clears so it cannot become permanent chrome.
   const [approvalNotice, setApprovalNotice] = useState<string | null>(null)
@@ -882,6 +914,21 @@ function ChatInput({
     const finish = () => {
       dispatch(resolveByApprovalId({ id: approvalId, decision }))
       setApprovalSubmitting(false)
+      // B2: tally manual one-shot approvals per slot. Only 'approved' counts —
+      // a trust grant already reduces future prompts, and a rejection is not
+      // approval fatigue. Fires once per dashboard install (localStorage
+      // guard) and only while the slot still asks about everything (normal).
+      if (decision === 'approved' && activeSlot && !approvalIsUnattended) {
+        const n = (approvalCountsRef.current[activeSlot] || 0) + 1
+        approvalCountsRef.current[activeSlot] = n
+        if (
+          n >= APPROVAL_NUDGE_THRESHOLD &&
+          approvalMode === 'normal' &&
+          !safeGetItem(APPROVAL_MODE_ADJUSTED_LS_KEY)
+        ) {
+          setApprovalNudgeSlot(activeSlot)
+        }
+      }
     }
     const fail = (err: unknown) => {
       setApprovalSubmitting(false)
@@ -922,7 +969,7 @@ function ChatInput({
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision)).then(finish).catch(fail)
     }
-  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, dispatch])
+  }, [approvalId, activeSlot, approvalIsUnattended, approvalSource, approvalMode, dispatch])
 
   // Pending sub-agent SPAWN approvals for this slot (blocked on user approval).
   // Surfaced as a top-level banner with inline Approve/Reject so the user can
@@ -2751,6 +2798,31 @@ function ChatInput({
                       <button disabled={approvalSubmitting} className={`${approvalBtnClass} hover:!text-danger hover:!bg-[color-mix(in_srgb,var(--danger)_10%,transparent)]`} onClick={() => handleApprovalAction('rejected')}><Ban size={12} className="shrink-0" />{i18nT('components.chatInput.reject')}</button>
                   </div>
               </div>
+              {/* A1 discoverability hint: points at the footer mode picker so a
+                  new user learns approval prompting is adjustable. Withheld for
+                  unattended sources (the mode picker governs THIS slot, not the
+                  job that raised the card), in the ghost state (the collapsed
+                  composer unmounts the picker, so the link would have nothing
+                  to open), while the B2 nudge is up (two pointers at one
+                  control), and retired forever once the user has found the
+                  picker — via this link or by adjusting the mode. */}
+              {!showGhost && !approvalIsUnattended && !approvalModeAdjusted && !approvalNudgeActive && approvalMode && (
+                <div className="flex items-center gap-1.5 flex-wrap px-3.5 pb-2 -mt-1 text-[12px] text-muted select-none">
+                  <span>{i18nT('components.chatInput.approval_hint_question')}</span>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-0.5 p-0 bg-transparent border-none text-accent text-[12px] cursor-pointer hover:underline"
+                    onClick={() => {
+                      // Discovery achieved: the picker is about to open under a
+                      // spotlight, so the hint has done its job for good.
+                      safeSetItem(APPROVAL_MODE_ADJUSTED_LS_KEY, '1')
+                      setApprovalPickerSignal(n => n + 1)
+                    }}
+                  >
+                    {i18nT('components.chatInput.approval_hint_adjust')}
+                  </button>
+                </div>
+              )}
             </div>
           </motion.div>
         )}
@@ -3144,7 +3216,7 @@ function ChatInput({
                 />
               )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} />
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               </div>
               {/* Edge cues, same treatment as the sibling strips that already
@@ -3165,7 +3237,7 @@ function ChatInput({
               )}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact />
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">

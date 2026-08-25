@@ -4718,6 +4718,10 @@
       "trusted_auto_approving_future_calls": "विश्वसनीय — भविष्य के कॉल स्वतः स्वीकृत होंगे"
     },
     "approvalModePicker": {
+      "nudge_body": "यहाँ आप समायोजित कर सकते हैं कि {{productName}} अनुमोदन कैसे माँगता है। यहाँ \"ट्रस्ट\" चुनने पर यह इस चैट में बिना पहले पूछे काम कर सकता है — आप कभी भी वापस बदल सकते हैं।",
+      "nudge_dismiss": "समझ गया",
+      "nudge_title": "कम अनुमोदन संकेत चाहते हैं?",
+      "nudge_view_options": "विकल्प देखें",
       "all_tools_will_get_auto_approved_across_all_sess": "सभी सेशन में सभी टूल स्वतः स्वीकृत हो जाएँगे।",
       "approval_mode": "स्वीकृति मोड",
       "approval_mode_aria": "स्वीकृति मोड: {{mode}}",
@@ -4955,6 +4959,8 @@
       "more_actions": "और कार्रवाइयां"
     },
     "chatInput": {
+      "approval_hint_adjust": "अनुमोदन मोड समायोजित करें",
+      "approval_hint_question": "हर बार पुष्टि करते-करते थक गए?",
       "send_a_message_or_tap_the_mic_for_voice": "संदेश भेजें, या वॉइस के लिए माइक टैप करें",
       "release_to_transcribe": "लिखने के लिए छोड़ें",
       "hold_to_talk": "बोलने के लिए दबाए रखें",

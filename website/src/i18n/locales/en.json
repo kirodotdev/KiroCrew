@@ -3520,6 +3520,10 @@
       "trusted_auto_approving_future_calls": "Trusted — auto-approving future calls"
     },
     "approvalModePicker": {
+      "nudge_body": "This is where you adjust how {{productName}} asks for approval. Choosing \"Trust\" here lets it work in this chat without asking first — you can switch back anytime.",
+      "nudge_dismiss": "Got it",
+      "nudge_title": "Want fewer approval prompts?",
+      "nudge_view_options": "See options",
       "all_tools_will_get_auto_approved_across_all_sess": "All tools will get auto-approved across all sessions.",
       "approval_mode": "Approval mode",
       "cancel": "Cancel",
@@ -3665,6 +3669,8 @@
       "more_actions": "More actions"
     },
     "chatInput": {
+      "approval_hint_adjust": "Adjust approval mode",
+      "approval_hint_question": "Tired of confirming every step?",
       "add_files_options": "Add files & options",
       "allow_once": "Allow once",
       "apply_a_ready_made_set_of_instructions": "Apply a ready-made set of instructions",

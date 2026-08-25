@@ -4718,6 +4718,10 @@
       "trusted_auto_approving_future_calls": "Vertrauenswürdig — künftige Aufrufe werden automatisch genehmigt"
     },
     "approvalModePicker": {
+      "nudge_body": "Hier stellst du ein, wie {{productName}} um Genehmigung bittet. Wählst du hier „Vertrauen“, arbeitet es in diesem Chat, ohne vorher zu fragen – du kannst jederzeit zurückwechseln.",
+      "nudge_dismiss": "Verstanden",
+      "nudge_title": "Weniger Genehmigungsanfragen?",
+      "nudge_view_options": "Optionen ansehen",
       "all_tools_will_get_auto_approved_across_all_sess": "Alle Werkzeuge werden in allen Sitzungen automatisch genehmigt.",
       "approval_mode": "Genehmigungsmodus",
       "approval_mode_aria": "Freigabemodus: {{mode}}",
@@ -4955,6 +4959,8 @@
       "more_actions": "Weitere Aktionen"
     },
     "chatInput": {
+      "approval_hint_adjust": "Genehmigungsmodus anpassen",
+      "approval_hint_question": "Keine Lust, jeden Schritt zu bestätigen?",
       "send_a_message_or_tap_the_mic_for_voice": "Nachricht senden oder Mikrofon antippen für Sprache",
       "release_to_transcribe": "Loslassen zum Transkribieren",
       "hold_to_talk": "Zum Sprechen halten",

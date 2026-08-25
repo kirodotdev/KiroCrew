@@ -4653,6 +4653,10 @@
       "trusted_auto_approving_future_calls": "已信任 — 后续调用将自动批准"
     },
     "approvalModePicker": {
+      "nudge_body": "在这里可以调整 {{productName}} 的审批模式——选择这里的“信任”后，它在此对话中无需先询问即可工作，随时可以改回。",
+      "nudge_dismiss": "知道了",
+      "nudge_title": "想减少确认次数？",
+      "nudge_view_options": "看看选项",
       "all_tools_will_get_auto_approved_across_all_sess": "所有会话中的全部工具都将自动批准。",
       "approval_mode": "审批模式",
       "approval_mode_aria": "审批模式：{{mode}}",
@@ -4881,6 +4885,8 @@
       "more_actions": "更多操作"
     },
     "chatInput": {
+      "approval_hint_adjust": "调整审批模式",
+      "approval_hint_question": "不想每次都确认？",
       "send_a_message_or_tap_the_mic_for_voice": "发消息，或点麦克风用语音",
       "release_to_transcribe": "松手转文字",
       "hold_to_talk": "按住说话",

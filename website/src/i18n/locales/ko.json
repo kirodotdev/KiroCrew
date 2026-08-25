@@ -4636,6 +4636,10 @@
       "trusted_auto_approving_future_calls": "신뢰함 — 이후 호출을 자동 승인"
     },
     "approvalModePicker": {
+      "nudge_body": "여기에서 {{productName}}의 승인 모드를 조정할 수 있습니다. 여기에서 '신뢰'를 선택하면 이 대화에서 먼저 묻지 않고 작업합니다. 언제든지 되돌릴 수 있습니다.",
+      "nudge_dismiss": "확인",
+      "nudge_title": "승인 요청을 줄이고 싶으신가요?",
+      "nudge_view_options": "옵션 보기",
       "all_tools_will_get_auto_approved_across_all_sess": "모든 세션에서 모든 도구가 자동 승인됩니다.",
       "approval_mode": "승인 모드",
       "approval_mode_aria": "승인 모드: {{mode}}",
@@ -4881,6 +4885,8 @@
       "more_actions": "추가 작업"
     },
     "chatInput": {
+      "approval_hint_adjust": "승인 모드 조정",
+      "approval_hint_question": "매번 확인하기 번거로우신가요?",
       "send_a_message_or_tap_the_mic_for_voice": "메시지를 보내거나 마이크를 눌러 음성 사용",
       "release_to_transcribe": "놓으면 텍스트 변환",
       "hold_to_talk": "눌러서 말하기",

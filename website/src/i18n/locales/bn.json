@@ -4718,6 +4718,10 @@
       "trusted_auto_approving_future_calls": "বিশ্বস্ত — ভবিষ্যতের কলগুলি স্বয়ংক্রিয়ভাবে অনুমোদন করা হচ্ছে"
     },
     "approvalModePicker": {
+      "nudge_body": "এখানে আপনি সামঞ্জস্য করতে পারেন {{productName}} কীভাবে অনুমোদন চায়। এখানে \"ট্রাস্ট\" বেছে নিলে এটি এই চ্যাটে আগে জিজ্ঞাসা না করে কাজ করতে পারবে — যেকোনো সময় ফিরিয়ে নিতে পারেন।",
+      "nudge_dismiss": "বুঝেছি",
+      "nudge_title": "কম অনুমোদন প্রম্পট চান?",
+      "nudge_view_options": "বিকল্প দেখুন",
       "all_tools_will_get_auto_approved_across_all_sess": "সব সেশনে সব টুল স্বয়ংক্রিয়ভাবে অনুমোদিত হবে।",
       "approval_mode": "অনুমোদন মোড",
       "approval_mode_aria": "অনুমোদন মোড: {{mode}}",
@@ -4955,6 +4959,8 @@
       "more_actions": "আরও অ্যাকশন"
     },
     "chatInput": {
+      "approval_hint_adjust": "অনুমোদন মোড সামঞ্জস্য করুন",
+      "approval_hint_question": "প্রতিবার নিশ্চিত করতে ক্লান্ত?",
       "send_a_message_or_tap_the_mic_for_voice": "বার্তা পাঠান, বা ভয়েসের জন্য মাইকে ট্যাপ করুন",
       "release_to_transcribe": "লেখায় রূপান্তরে ছেড়ে দিন",
       "hold_to_talk": "বলতে চেপে ধরুন",

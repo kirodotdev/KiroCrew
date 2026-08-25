@@ -4848,6 +4848,10 @@
       "trusted_auto_approving_future_calls": "Доверенный — последующие вызовы разрешаются автоматически"
     },
     "approvalModePicker": {
+      "nudge_body": "Здесь можно настроить, как {{productName}} запрашивает одобрение. Если выбрать здесь «Доверие», он сможет работать в этом чате без предварительных вопросов — вернуть можно в любой момент.",
+      "nudge_dismiss": "Понятно",
+      "nudge_title": "Хотите меньше запросов на одобрение?",
+      "nudge_view_options": "Посмотреть варианты",
       "all_tools_will_get_auto_approved_across_all_sess": "Все инструменты будут автоматически разрешены во всех сеансах.",
       "approval_mode": "Режим разрешений",
       "approval_mode_aria": "Режим подтверждения: {{mode}}",
@@ -5103,6 +5107,8 @@
       "more_actions": "Другие действия"
     },
     "chatInput": {
+      "approval_hint_adjust": "Настроить режим одобрения",
+      "approval_hint_question": "Надоело подтверждать каждый шаг?",
       "send_a_message_or_tap_the_mic_for_voice": "Отправьте сообщение или нажмите микрофон для голоса",
       "release_to_transcribe": "Отпустите для расшифровки",
       "hold_to_talk": "Удерживайте, чтобы говорить",

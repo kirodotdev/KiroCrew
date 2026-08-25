@@ -4636,6 +4636,10 @@
       "trusted_auto_approving_future_calls": "信頼済み—今後の呼び出しを自動承認"
     },
     "approvalModePicker": {
+      "nudge_body": "ここで {{productName}} の承認モードを調整できます。ここで「信頼」を選ぶと、このチャットでは事前に確認せずに作業します。いつでも戻せます。",
+      "nudge_dismiss": "了解しました",
+      "nudge_title": "確認の回数を減らしたいですか？",
+      "nudge_view_options": "オプションを見る",
       "all_tools_will_get_auto_approved_across_all_sess": "すべてのツールはすべてのセッション全体で自動承認されます。",
       "approval_mode": "承認モード",
       "approval_mode_aria": "承認モード: {{mode}}",
@@ -4881,6 +4885,8 @@
       "more_actions": "その他の操作"
     },
     "chatInput": {
+      "approval_hint_adjust": "承認モードを調整",
+      "approval_hint_question": "毎回の確認が面倒ですか？",
       "send_a_message_or_tap_the_mic_for_voice": "メッセージを送信、またはマイクをタップして音声入力",
       "release_to_transcribe": "離して文字起こし",
       "hold_to_talk": "押して話す",
