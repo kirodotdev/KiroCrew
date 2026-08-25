@@ -10916,7 +10916,9 @@
         "view_this_commit_on_github": "GitHub-এ এই কমিট দেখুন",
         "what_s_new": "নতুন কী আছে",
         "you_are_on_the_latest_version": "আপনি সর্বশেষ সংস্করণ ব্যবহার করছেন।",
-        "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণেই আছেন।"
+        "you_re_on_the_latest_version": "আপনি সর্বশেষ সংস্করণেই আছেন।",
+        "checks_for_updates_with_timing": "{{name}} স্বয়ংক্রিয়ভাবে আপডেট পরীক্ষা করে। {{timing}} আপনি এখনই পরীক্ষা করতেও পারেন।",
+        "last_checked_ago_next_check_in": "শেষ পরীক্ষা {{ago}}, পরবর্তী স্বয়ংক্রিয় পরীক্ষা {{next}}।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "অনুমোদিত ইউজার ID",

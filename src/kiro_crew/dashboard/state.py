@@ -5592,6 +5592,8 @@ class DashboardState:
         update_managed_by: str = "",
         update_commits_ahead: int = 0,
         update_commits_behind: int = 0,
+        update_last_checked_at: float | None = None,
+        update_check_interval_secs: int = 43200,
     ) -> dict[str, Any]:
         """Core status fields shared by /api/status, SSE, and WebSocket pushes."""
         uptime = int(time.time() - self.start_time)
@@ -5651,6 +5653,8 @@ class DashboardState:
             # tell the two apart. 0/0 on non-git layouts and before any check.
             "update_commits_ahead": update_commits_ahead,
             "update_commits_behind": update_commits_behind,
+            "update_last_checked_at": update_last_checked_at,
+            "update_check_interval_secs": update_check_interval_secs,
             "no_crons": self.no_crons,
             "branch": branch,
             "commit": commit,

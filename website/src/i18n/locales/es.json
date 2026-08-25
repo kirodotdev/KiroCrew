@@ -11061,7 +11061,9 @@
         "view_this_commit_on_github": "Ver este commit en GitHub",
         "what_s_new": "Novedades",
         "you_are_on_the_latest_version": "Tienes la última versión.",
-        "you_re_on_the_latest_version": "Tienes la última versión."
+        "you_re_on_the_latest_version": "Tienes la última versión.",
+        "checks_for_updates_with_timing": "{{name}} busca actualizaciones automáticamente. {{timing}} También puedes buscar ahora.",
+        "last_checked_ago_next_check_in": "Última comprobación {{ago}}, próxima comprobación automática {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "IDs de usuario permitidos",

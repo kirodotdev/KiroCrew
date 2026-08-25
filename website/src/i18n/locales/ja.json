@@ -10770,7 +10770,9 @@
         "view_this_commit_on_github": "GitHub でこのコミットを表示",
         "what_s_new": "新着情報",
         "you_are_on_the_latest_version": "最新版を使用しています。",
-        "you_re_on_the_latest_version": "最新版を使用しています。"
+        "you_re_on_the_latest_version": "最新版を使用しています。",
+        "checks_for_updates_with_timing": "{{name}} は自動的にアップデートを確認します。{{timing}} 今すぐ確認することもできます。",
+        "last_checked_ago_next_check_in": "最終確認 {{ago}}、次回の自動確認 {{next}}。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "許可されたユーザー ID",

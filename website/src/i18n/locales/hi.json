@@ -10847,7 +10847,7 @@
         "channel_switch_failed": "चैनल बदला नहीं जा सका",
         "check_for_updates": "अपडेट जाँचें",
         "checking_for_updates": "अपडेट जाँच रहे हैं...",
-        "checks_for_updates_automatically_you_can_also_ch": "स्वचालित रूप से अपडेट जाँचता है। आप अभी खुद भी जाँच सकते हैं।",
+        "checks_for_updates_automatically_you_can_also_ch": "स्वचालित रूप से अपडेट जाँचता है। तुम अभी खुद भी जाँच सकते हो।",
         "close": "बंद करें",
         "copied": "कॉपी किया गया",
         "copy_command": "कमांड कॉपी करें",
@@ -10916,7 +10916,9 @@
         "view_this_commit_on_github": "इस कमिट को GitHub पर देखें",
         "what_s_new": "नया क्या है",
         "you_are_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
-        "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।"
+        "you_re_on_the_latest_version": "आप नवीनतम संस्करण पर हैं।",
+        "checks_for_updates_with_timing": "{{name}} अपडेट की स्वचालित जाँच करता है। {{timing}} तुम अभी भी जाँच कर सकते हो।",
+        "last_checked_ago_next_check_in": "पिछली जाँच {{ago}}, अगली स्वचालित जाँच {{next}}।"
       },
       "botChannelPanel": {
         "allowed_user_ids": "अनुमत उपयोगकर्ता ID",

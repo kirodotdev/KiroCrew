@@ -10846,7 +10846,7 @@
         "channel_switch_failed": "Kanal konnte nicht gewechselt werden",
         "check_for_updates": "Nach Aktualisierungen suchen",
         "checking_for_updates": "Suche nach Aktualisierungen…",
-        "checks_for_updates_automatically_you_can_also_ch": "sucht automatisch nach Aktualisierungen. Sie können auch jetzt suchen.",
+        "checks_for_updates_automatically_you_can_also_ch": "sucht automatisch nach Aktualisierungen. Du kannst auch jetzt suchen.",
         "close": "Schließen",
         "copied": "Kopiert",
         "copy_command": "Befehl kopieren",
@@ -10915,7 +10915,9 @@
         "view_this_commit_on_github": "Diesen Commit auf GitHub anzeigen",
         "what_s_new": "Neuigkeiten",
         "you_are_on_the_latest_version": "Sie verwenden die neueste Version.",
-        "you_re_on_the_latest_version": "Sie verwenden die neueste Version."
+        "you_re_on_the_latest_version": "Sie verwenden die neueste Version.",
+        "checks_for_updates_with_timing": "{{name}} sucht automatisch nach Updates. {{timing}} Du kannst auch jetzt suchen.",
+        "last_checked_ago_next_check_in": "Zuletzt geprüft {{ago}}, nächste automatische Prüfung {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Erlaubte Benutzer-IDs",

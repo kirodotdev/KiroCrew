@@ -242,6 +242,8 @@ def status_update_fields() -> dict[str, object]:
         # manual check. 0/0 everywhere except a successful git-checkout check.
         "update_commits_ahead": ahead if isinstance(ahead, int) else 0,
         "update_commits_behind": behind if isinstance(behind, int) else 0,
+        "update_last_checked_at": _last_update_check or None,
+        "update_check_interval_secs": _UPDATE_CHECK_INTERVAL,
     }
 
 

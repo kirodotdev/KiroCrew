@@ -10770,7 +10770,9 @@
         "view_this_commit_on_github": "GitHub에서 이 커밋 보기",
         "what_s_new": "새로운 기능",
         "you_are_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
-        "you_re_on_the_latest_version": "최신 버전을 사용하고 있습니다."
+        "you_re_on_the_latest_version": "최신 버전을 사용하고 있습니다.",
+        "checks_for_updates_with_timing": "{{name}}은(는) 자동으로 업데이트를 확인합니다. {{timing}} 지금 바로 확인할 수도 있습니다.",
+        "last_checked_ago_next_check_in": "마지막 확인 {{ago}}, 다음 자동 확인 {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "허용된 사용자 ID",

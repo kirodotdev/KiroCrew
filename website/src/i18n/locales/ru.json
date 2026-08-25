@@ -11206,7 +11206,9 @@
         "view_this_commit_on_github": "Посмотреть этот коммит на GitHub",
         "what_s_new": "Что нового",
         "you_are_on_the_latest_version": "У вас установлена последняя версия.",
-        "you_re_on_the_latest_version": "У вас установлена последняя версия."
+        "you_re_on_the_latest_version": "У вас установлена последняя версия.",
+        "checks_for_updates_with_timing": "{{name}} автоматически проверяет обновления. {{timing}} Вы также можете проверить сейчас.",
+        "last_checked_ago_next_check_in": "Последняя проверка {{ago}}, следующая автоматическая проверка {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "Разрешённые ID пользователей",

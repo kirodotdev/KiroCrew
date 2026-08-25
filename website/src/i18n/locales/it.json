@@ -11060,7 +11060,9 @@
         "view_this_commit_on_github": "Visualizza questo commit su GitHub",
         "what_s_new": "Novità",
         "you_are_on_the_latest_version": "Stai usando la versione più recente.",
-        "you_re_on_the_latest_version": "Stai usando la versione più recente."
+        "you_re_on_the_latest_version": "Stai usando la versione più recente.",
+        "checks_for_updates_with_timing": "{{name}} controlla automaticamente gli aggiornamenti. {{timing}} Puoi anche controllare ora.",
+        "last_checked_ago_next_check_in": "Ultimo controllo {{ago}}, prossimo controllo automatico {{next}}."
       },
       "botChannelPanel": {
         "allowed_user_ids": "ID utente consentiti",

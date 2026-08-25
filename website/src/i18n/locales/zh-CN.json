@@ -10770,7 +10770,9 @@
         "view_this_commit_on_github": "在 GitHub 上查看此提交",
         "what_s_new": "新增内容",
         "you_are_on_the_latest_version": "你已使用最新版本。",
-        "you_re_on_the_latest_version": "你已使用最新版本。"
+        "you_re_on_the_latest_version": "你已使用最新版本。",
+        "checks_for_updates_with_timing": "{{name}} 会自动检查更新。{{timing}}你也可以立即检查。",
+        "last_checked_ago_next_check_in": "上次检查 {{ago}},下次自动检查 {{next}}。"
       },
       "botChannelPanel": {
         "allowed_user_ids": "允许的用户 ID",

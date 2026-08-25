@@ -56,6 +56,8 @@ export interface StatusData {
    */
   update_commits_ahead?: number
   update_commits_behind?: number
+  update_last_checked_at?: number | null
+  update_check_interval_secs?: number
   update_progress?: { step: string; detail: string } | null
   version?: string
   /**
