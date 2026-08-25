@@ -13,6 +13,7 @@
   ],
   "highlights": [
     "Live transcription through Kiro Crew's own speech-to-text — no extra daemon, no cloud account beyond what you already use",
+    "Records both sides of a call, not just your microphone, and keeps the audio as a plain WAV in your own data directory",
     "A crew of agents works the meeting in parallel: structured notes, an HTML/Mermaid diagram, and an action-item list",
     "Correct recurring speech-to-text mistakes once with a domain dictionary and every later meeting gets them right",
     "Review extracted action items before anything is filed — archive the noise, file the rest",
@@ -34,7 +35,8 @@
     "api": [
       "/api/apps/meetings",
       "/api/apps/meetings/*",
-      "/api/ws/stt"
+      "/api/ws/stt",
+      "/api/ws/recording"
     ],
     "network": true,
     "storage": true

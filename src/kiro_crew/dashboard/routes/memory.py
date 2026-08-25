@@ -32,6 +32,15 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/stt/install", handlers.api_stt_install)
     app.router.add_post("/api/stt/transcribe", handlers.api_stt_transcribe)
     app.router.add_get("/api/ws/stt", stt_stream.api_ws_stt)
+    # Audio capture. A separate socket from /api/ws/stt on purpose: that one caps
+    # a stream at _MAX_STREAM_DURATION_SECS (300 s), which is right for dictation
+    # and far too short for a meeting. This one is built for long sessions and
+    # persists the audio, while reusing stt_stream's hardening rather than
+    # reimplementing it. Imported lazily so the module's own imports stay off the
+    # startup path.
+    from kiro_crew.recording.ws import api_ws_recording
+
+    app.router.add_get("/api/ws/recording", api_ws_recording)
 
     # Vector Memory (Semantic)
     app.router.add_get("/api/memory/semantic", handlers.api_memory_semantic)

@@ -22,6 +22,8 @@ import {
   type TranscriptResponse,
   type TranscriptSegment,
 } from '../api'
+import type { SystemAudioFailure } from '../audio/systemAudio'
+import { useMeetingRecording, type RecordingErrorCode } from './useMeetingRecording'
 import { useMeetingTranscription } from './useMeetingTranscription'
 
 /** Transcript segments arrive with overlap; a repeat inside this window is dropped. */
@@ -56,6 +58,36 @@ const STT_ERROR_KEY = {
   connection: 'apps.meetings.session.sttConnectionFailed',
   disconnected: 'apps.meetings.session.sttDisconnected',
 } as const
+
+/**
+ * Recording failure code -> catalog key. FILE SCOPE for the same reason as
+ * `STT_ERROR_KEY`: `check-i18n-keys.mjs` only resolves file-scope consts, so a map
+ * declared inside the handler would leave every key here unverified.
+ */
+const RECORDING_ERROR_KEY: Record<RecordingErrorCode, string> = {
+  unsupported: 'apps.meetings.session.recUnsupported',
+  // The upgrade was refused before it opened. In practice this is the one-session
+  // concurrency cap, so the message names that rather than being generic.
+  unavailable: 'apps.meetings.session.recUnavailable',
+  disconnected: 'apps.meetings.session.recDisconnected',
+  // Not a fault: the AWS Transcribe billing bound was reached and the audio up to
+  // that point IS saved, which is the opposite of what "failed" would imply.
+  duration: 'apps.meetings.session.recDurationCap',
+  server: 'apps.meetings.session.recFailed',
+}
+
+/**
+ * System-audio failure code -> catalog key. File scope, as above.
+ *
+ * None of these are errors in the recording: they all mean "the microphone is
+ * captured, the other participants are not", so they are reported as info rather
+ * than blocking the recording.
+ */
+const SYSTEM_AUDIO_KEY: Record<SystemAudioFailure, string> = {
+  unsupported: 'apps.meetings.session.sysAudioUnsupported',
+  cancelled: 'apps.meetings.session.sysAudioCancelled',
+  'no-audio': 'apps.meetings.session.sysAudioNoAudio',
+}
 
 /** True when *text* repeats, contains, or is contained by the previous segment. */
 export function isDuplicateSegment(
@@ -434,6 +466,30 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     [markTranscriptFull, notify],
   )
 
+  const onRecordingError = useCallback(
+    (code: RecordingErrorCode) => {
+      // The duration cap is not a failure — the audio up to it was saved — so it is
+      // reported as info. Everything else genuinely went wrong.
+      notify(i18nT(RECORDING_ERROR_KEY[code]), {
+        type: code === 'duration' ? 'info' : 'error',
+      })
+    },
+    [notify],
+  )
+
+  // Instantiated BEFORE transcription: transcription owns the capture pipeline and
+  // tees PCM into `recording.pushPcm`, so the recording hook has to exist first.
+  // The dependency runs one way only — recording never touches the microphone.
+  const recording = useMeetingRecording({
+    meetingId,
+    title: meta?.title || fallbackTitle,
+    onError: onRecordingError,
+  })
+
+  const onSystemAudioEnded = useCallback(() => {
+    notify(i18nT('apps.meetings.session.sysAudioEnded'), { type: 'info' })
+  }, [notify])
+
   const transcription = useMeetingTranscription({
     meetingId,
     onCaption,
@@ -441,6 +497,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     onPartial: setPartialTranscript,
     onCommitted: commitTranscriptSegment,
     onError: onTranscriptionError,
+    onPcm: recording.pushPcm,
+    onSystemAudioEnded,
   })
 
   // Bind the microphone to the meeting's status: recording exactly while active
@@ -471,6 +529,61 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       transcriptionRef.current.stop()
     }
   }, [status, ingressReady, transcriptFull, transcriptionActive])
+
+  // ── recording ─────────────────────────────────────────────────────────────
+
+  // Bind the recording to the meeting's lifecycle.
+  //
+  // A meeting pause PAUSES the recording rather than stopping it. Stopping
+  // finalizes the WAV, and the next start would open `audio.wav` in the same
+  // directory again — so a pause-resume would truncate the meeting to whatever came
+  // after the pause. Pausing keeps one continuous file with the paused stretch
+  // simply absent, which is also what the server's state machine is built for.
+  //
+  // Ending or reviewing DOES stop it: that is the point where the file should be
+  // final, and the transcript persister flushes on the same transition.
+  const recordingRef = useRef(recording)
+  recordingRef.current = recording
+  const recordingActive = recording.active
+  useEffect(() => {
+    const rec = recordingRef.current
+    if (!rec.active) return
+    if (status === 'active') {
+      if (rec.paused) rec.resume()
+      return
+    }
+    if (status === 'paused') {
+      if (!rec.paused) rec.pause()
+      return
+    }
+    // idle / reviewing / ended — the meeting is over as far as audio is concerned.
+    rec.stop()
+    // Release the display capture too. Without this, ending a meeting from the
+    // PAUSED state left the share alive: the pause branch above deliberately keeps
+    // it (so resuming does not re-prompt), and nothing else would let it go until
+    // the view unmounted — leaving the browser's "sharing" indicator on for a
+    // meeting that has finished.
+    transcriptionRef.current.detachSystemAudio()
+  }, [status, recordingActive])
+
+  const startRecording = useCallback(async () => {
+    // Ask for the meeting's audio BEFORE opening the socket. The share picker can be
+    // cancelled, and doing it first means a cancellation never leaves a registered
+    // recording session behind — the server's cap is one session, so a stale one
+    // would refuse the next attempt.
+    const failure = await transcriptionRef.current.attachSystemAudio()
+    // Reported as info, not an error: every one of these still leaves a working
+    // microphone recording. Only the remote side is missing.
+    if (failure) notify(i18nT(SYSTEM_AUDIO_KEY[failure]), { type: 'info' })
+    await recordingRef.current.start()
+  }, [notify])
+
+  const stopRecording = useCallback(() => {
+    recordingRef.current.stop()
+    // Release the display capture with it, so the browser's "sharing" indicator
+    // does not outlive the recording that needed it.
+    transcriptionRef.current.detachSystemAudio()
+  }, [])
 
   // ── mutations ─────────────────────────────────────────────────────────────
 
@@ -651,6 +764,9 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     chatViewAgents,
     selectedPreset,
     transcription,
+    recording,
+    /** True while display-capture audio is mixed into the transcript and the recording. */
+    systemAudio: transcription.systemAudio,
     loading: initQuery.isLoading || metaQuery.isLoading,
     error: (initQuery.error ?? metaQuery.error) as Error | null,
     agentsPaused: Boolean(live?.agents_paused),
@@ -668,6 +784,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
         toggleAgentMutation.mutate({ agentId, enable }),
+      startRecording,
+      stopRecording,
       broadcast: (text: string) => broadcastMutation.mutate(text),
       messageAgent: (agentId: string, text: string) =>
         agentMessageMutation.mutate({ agentId, text }),

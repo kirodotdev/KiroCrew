@@ -6,7 +6,18 @@ a small crew of background agents (structured notes, an HTML/Mermaid diagram, an
 action-item list), and gates the meeting's close behind a review of the extracted
 action items.
 
+Around that core it also **records** the meeting to a WAV file, capturing the far
+side of a call as well as the microphone — see *Recording* below.
+
 `defaultEnabled: false` — it appears in the App Store and is opt-in.
+
+**One capture, many consumers.** The single most important structural fact about
+the audio path: a meeting prompts for the microphone once and for a display
+surface once, however many things want the audio.
+`hooks/useMeetingTranscription.ts` owns the one pipeline and TEES every PCM chunk
+to the recording through an `onPcm` option, so transcription and recording are two
+readers of one stream rather than two captures. `useMeetingSession` instantiates
+the recording hook BEFORE transcription, because the tee points that way.
 
 ## Layout
 
@@ -17,12 +28,16 @@ action items.
 | `.../backend/store.py` | on-disk layout **and the single path-containment barrier** |
 | `.../backend/domain/dictionary.py` | speech-correction dictionary (TOML) |
 | `.../backend/domain/session.py` | batching dispatcher + meeting state machine |
+| `.../backend/recording_store.py` | the `MeetingStore` adapter core recording resolves paths through |
 | `.../backend/providers/tasks.py` | **task-provider seam** + the local ledger |
 | `.../backend/providers/calendar.py` | **calendar-provider seam** + the `.ics` reader |
 | `.../backend/routes/` | `_common` (gate + validation), `meeting_lifecycle`, `agents`, `tasks`, `calendar`, `settings` |
 | `.../agents/*.json` | the three shipped agent specs |
+| `src/kiro_crew/recording/` | **core**, not this app: WAV writer, session, `/api/ws/recording`, recovery |
 | `src/kiro_crew/builtin_skills/meetings/SKILL.md` | the bundled skill (data layout, lifecycle, provider config) |
 | `website/src/apps/meetings/` | `MeetingsPage` (list) → `MeetingView` → `TaskReviewView`, `SettingsView` |
+| `.../meetings/audio/systemAudio.ts` | requests the display surface and drops its video track |
+| `.../meetings/hooks/useMeetingRecording.ts` | owns the `/api/ws/recording` socket |
 | `website/public/app-assets/meetings/` | icon + hero art |
 
 ## Routes
@@ -72,6 +87,10 @@ POST   /meetings/{id}/tasks/file    file through the task provider  {id}
 POST   /meetings/{id}/tasks/review  {id, review_status} — pending | archived
 ```
 
+Audio itself does **not** travel over these routes. Recording uses core's own
+`/api/ws/recording` socket (`src/kiro_crew/recording/ws.py`) — see *Recording*
+below for why the app still owns the path it writes to.
+
 Every handler is wrapped by `_common.route`, which applies the enable gate and
 turns validation failures into 4xx.
 
@@ -89,6 +108,7 @@ meetings/<safe_id>/tasks.json    extracted action items
 meetings/<safe_id>/transcript.jsonl finalized speech + typed broadcasts
 meetings/<safe_id>/<agent>.md    a markdown agent's output
 meetings/<safe_id>/<agent>.html  an HTML agent's output
+meetings/<safe_id>/audio.wav     the recording (written by core, path resolved here)
 ```
 
 Deleting a meeting removes its complete per-meeting directory (metadata,
@@ -220,6 +240,42 @@ goes straight to the shared `SessionManager` via
 `llm_helpers.stream_and_collect` under `ToolApprovalPolicy.HOOK_BASED` — the
 agents' file writes still traverse the PreToolUse gate (deny patterns,
 sensitive paths, governance) exactly like any other turn.
+
+## Recording
+
+The writer, the session, and the `/api/ws/recording` socket are **core**
+(`src/kiro_crew/recording/`), not this app — recording a meeting is not
+meetings-specific. But the file has to land in the right per-meeting directory, and
+core must not import an app.
+
+That is resolved through the `MeetingStore` seam `recording/recovery.py` already
+had: `start` takes an optional `meeting_id`, and core asks the registered store to
+`resolve_meeting_dir`. This app registers `backend/recording_store.py` from
+`register_routes`. So `safe_meeting_id` + `contain` stay in the app, and an id core
+cannot place is REFUSED rather than started. A registration failure costs recording
+persistence, not gateway startup.
+
+The socket refuses non-loopback clients by default
+(`recording.require_local_gateway`, a core config key): raw room audio is the most
+sensitive artifact this app produces, and streaming it to a remotely reachable
+gateway is an explicit opt-out, not a silent default. Interim and finalized
+transcript events the socket emits back to the browser are redacted first —
+`recording/ws.py` is a registered redaction sink in `security_posture.py`.
+
+**Crash recovery is not wired up yet, and there is one blocker worth knowing**:
+`recovery.py` looks for meetings whose status is `"recording"`, and this app has no
+such status (`idle`/`active`/`paused`/`reviewing`/`ended`, gated by
+`ALLOWED_TRANSITIONS`), so detection finds nothing. Reconciling the two
+vocabularies is a change to the meeting lifecycle rather than to the adapter.
+
+### Capturing the far side of a call
+
+`audio/systemAudio.ts` requests the display surface, and the shape of that request
+is load-bearing: **`getDisplayMedia({audio: true})` does not work and must not be
+put back.** The spec requires a video track — omitting `video`, or passing
+`video: false`, rejects with a `TypeError` in every browser. The code asks for a
+1 fps video track and then stops and removes it. `systemAudioConstraints`' test is
+the regression guard.
 
 ## The two provider seams
 
@@ -424,7 +480,8 @@ toast, and the user can still type into the broadcast bar to feed the agents.
   against over-stripping the panel into a blank).
 * **No blocking call on the loop.** The calendar fetch is aiohttp; transcript
   reads/appends, DNS validation, the local `.ics` read, the data-dir seed, the
-  enable check, and the task-provider `create` all run on an executor.
+  enable check, the recording-path resolution, and the task-provider `create` all
+  run on an executor.
 
 ## What the port changed
 
@@ -444,7 +501,11 @@ internal-git update-check cron was deleted (a builtin versions with the package)
 scheme/address refusals), `test_meetings_routes.py` (the HTTP contract,
 validation, redaction, the enable gate), with the shared fixtures and the fake
 session manager in `test/meetings_helpers.py`. Every dispatch goes through that
-fake session manager; no test spawns a process or opens a socket.
+fake session manager; no test spawns a process or opens a socket. The core
+recording package has its own suite: `test_recording.py` (writer + session),
+`test_recording_storage.py` (the `MeetingStore` seam and this app's adapter),
+`test_recording_ws.py` (the socket protocol, the loopback guard, redaction), and
+`test_recording_recovery.py`.
 
 These live in the repo-level `test/` tree, not an in-package `tests/`:
 `setup.cfg` sets `testpaths = test transfer`, so a test under
@@ -453,6 +514,8 @@ These live in the repo-level `test/` tree, not an in-package `tests/`:
 Frontend: `website/src/test/MeetingsApiClient.test.ts` (fetch-boundary
 translation), `MeetingsSessionLogic.test.ts` (dedup, preset resolution, the
 transition table), `MeetingsAgentPillBar.test.tsx`, `MeetingsBroadcastBar.test.tsx`,
-`MeetingsAgentPanel.test.tsx` (including the iframe sandbox), and
+`MeetingsAgentPanel.test.tsx` (including the iframe sandbox),
+`MeetingsRecording.test.ts`, `MeetingsSystemAudio.test.ts` (including the
+`getDisplayMedia` constraint guard), and
 `MeetingsTranscriptPanel.test.tsx` (durable/live rows, follow mode, and the
 split-to-primary layout transition).

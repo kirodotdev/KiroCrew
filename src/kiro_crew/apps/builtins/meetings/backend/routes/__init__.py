@@ -24,7 +24,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.apps.builtins.meetings.backend import constants as k
-from kiro_crew.apps.builtins.meetings.backend import store
+from kiro_crew.apps.builtins.meetings.backend import recording_store, store
 from kiro_crew.apps.builtins.meetings.backend.domain import session as sess
 from kiro_crew.apps.builtins.meetings.backend.routes import agents as agents_routes
 from kiro_crew.apps.builtins.meetings.backend.routes import calendar as calendar_routes
@@ -246,6 +246,15 @@ def register_routes(app: web.Application) -> None:
     router.add_post(
         BASE + "/meetings/{meeting_id}/tasks/review", route(tasks_routes.handle_review_task)
     )
+
+    # Tell the core recording package where this app keeps its meetings, so
+    # /api/ws/recording can write audio.wav into the right (containment-checked)
+    # directory. Core cannot import this app, hence the registration. Guarded:
+    # a failure here costs recording persistence, not gateway startup.
+    try:
+        recording_store.register(app)
+    except Exception:  # pragma: no cover — defensive
+        logger.warning("meetings: could not register the recording store", exc_info=True)
 
     # register_routes runs before runner.setup() freezes the signal lists, so
     # these appends fire (same pattern as issue-radar's watcher hooks). Guarded

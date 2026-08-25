@@ -1,8 +1,26 @@
-// PCM downsampler AudioWorklet: converts mic Float32 (usually 48 kHz)
+// PCM downsampler AudioWorklet: converts Float32 audio (usually 48 kHz)
 // to 16 kHz mono Int16 PCM and posts ArrayBuffers to the main thread
-// via `port.postMessage`. Used by useStreamingStt.ts for live STT.
+// via `port.postMessage`. Used by useStreamingStt.ts for live STT and by
+// the Meetings app for meeting capture.
 //
 // Kept intentionally small — runs on the realtime audio thread.
+//
+// TWO INPUTS, ONE STREAM. A meeting needs the microphone *and* what the other
+// participants are saying, which arrive as two separate MediaStreams (mic via
+// getUserMedia, system audio via getDisplayMedia or an Electron loopback), and
+// speech-to-text takes one mono stream. Mixing here rather than with a
+// GainNode/ChannelMergerNode graph keeps the decimation single-pass and avoids
+// a second worklet hop.
+//
+// A node constructed with the default single input is unaffected: inputs[1] is
+// absent and the second term contributes nothing. That backward compatibility
+// is load-bearing — useStreamingStt.ts (voice input) shares this file.
+//
+// Sources are SUMMED and clipped, not averaged. In a meeting only one side is
+// usually talking, and averaging would halve the level of whichever side that
+// is, which costs transcription accuracy on every utterance. Summing only
+// distorts while both talk at once, which is brief and already hard to
+// transcribe.
 
 const TARGET_RATE = 16000
 // AWS Transcribe streaming recommends chunk sizes of 50-200ms for
@@ -31,6 +49,13 @@ class PcmWorklet extends AudioWorkletProcessor {
     if (!input || input.length === 0) return true
     const channel = input[0]
     if (!channel || channel.length === 0) return true
+    // Optional second source. Absent for a single-input node, and absent for a
+    // two-input node whose second source has not been connected yet or has
+    // ended (a screen share the user stopped), so this stays a per-block check
+    // rather than something latched at construction.
+    const second = inputs[1]
+    const channel2 = second && second.length > 0 ? second[0] : null
+    const mix2 = channel2 && channel2.length > 0 ? channel2 : null
 
     // Linear decimation: pick one sample every `_ratio` input samples.
     // Good enough for speech STT at 16 kHz from any browser rate.
@@ -46,7 +71,12 @@ class PcmWorklet extends AudioWorkletProcessor {
     // Emit samples directly into the batch buffer; flush when full.
     for (let i = 0; i < outCount; i++) {
       const idx = Math.floor(this._carry + i * this._ratio)
-      const s = Math.max(-1, Math.min(1, channel[idx] || 0))
+      // `|| 0` also covers an index past a shorter second block: the two inputs
+      // normally carry the same 128-sample quantum, but a source that just
+      // started or stopped can hand over a short one, and undefined here would
+      // become NaN and then a click.
+      const sum = (channel[idx] || 0) + (mix2 ? (mix2[idx] || 0) : 0)
+      const s = Math.max(-1, Math.min(1, sum))
       this._batch[this._batchLen++] = s < 0 ? s * 0x8000 : s * 0x7FFF
       if (this._batchLen === BATCH_SAMPLES) {
         // Transferable copy — the worklet retains the pre-allocated batch.

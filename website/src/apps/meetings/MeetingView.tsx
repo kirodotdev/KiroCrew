@@ -6,9 +6,12 @@ import { AnimatePresence, motion } from 'framer-motion'
 import {
   AlertTriangle,
   ArrowLeft,
+  CircleDot,
+  CircleStop,
   ListChecks,
   Mic,
   MicOff,
+  MonitorSpeaker,
   Play,
   RefreshCw,
   Square,
@@ -21,6 +24,7 @@ import AgentPanel from './components/AgentPanel'
 import AgentPillBar from './components/AgentPillBar'
 import BroadcastBar from './components/BroadcastBar'
 import MeetingWorkspace from './components/MeetingWorkspace'
+import RecordingMeter from './components/RecordingMeter'
 import TaskSidebar from './components/TaskSidebar'
 import TranscriptPanel from './components/TranscriptPanel'
 import TaskReviewView from './TaskReviewView'
@@ -68,6 +72,8 @@ export default function MeetingView({
     syncing,
     actions,
     pending,
+    recording,
+    systemAudio,
   } = session
 
   if (loading) return <Skeleton className="h-40 m-6" />
@@ -175,6 +181,44 @@ export default function MeetingView({
                 <MicOff className="lucide-inline" />
                 {i18nT('apps.meetings.meeting.unpause')}
               </Btn>
+            )}
+            {/* Recording is offered only while the meeting is live, because the
+                capture pipeline that feeds it belongs to the live transcription —
+                there is no audio to record before that. Once running, the stop
+                control stays available at any status so a recording can always be
+                ended deliberately. */}
+            {status === 'active' && !recording.active && (
+              <Btn
+                onClick={() => void actions.startRecording()}
+                disabled={!recording.supported}
+                aria-label={i18nT('apps.meetings.meeting.record')}
+                title={i18nT('apps.meetings.meeting.recordHint')}
+              >
+                <CircleDot className="lucide-inline" />
+                {i18nT('apps.meetings.meeting.record')}
+              </Btn>
+            )}
+            {recording.active && (
+              <div className="flex items-center gap-2">
+                {systemAudio && (
+                  <MonitorSpeaker
+                    className="lucide-inline text-muted"
+                    aria-label={i18nT('apps.meetings.meeting.meetingAudioOn')}
+                  />
+                )}
+                <RecordingMeter subscribe={recording.subscribeLevel} />
+                <Btn
+                  danger
+                  onClick={actions.stopRecording}
+                  aria-label={i18nT('apps.meetings.meeting.stopRecording')}
+                  title={i18nT('apps.meetings.meeting.stopRecording')}
+                >
+                  <CircleStop className="lucide-inline" />
+                  {recording.paused
+                    ? i18nT('apps.meetings.meeting.recordingPaused')
+                    : i18nT('apps.meetings.meeting.recording')}
+                </Btn>
+              </div>
             )}
             {(status === 'active' || status === 'paused') && (
               <Btn

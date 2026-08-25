@@ -4551,6 +4551,20 @@ class ResolvedBindings:
 
 
 @dataclass
+class RecordingConfig:
+    """Recording session configuration."""
+
+    require_local_gateway: bool = field(
+        default=True,
+        metadata=_meta(
+            "Require Local Gateway",
+            "Refuse to start a recording session when the Gateway is reachable on a "
+            "non-loopback address. Disable explicitly for remote capture scenarios.",
+        ),
+    )
+
+
+@dataclass
 class SttConfig:
     """Speech-to-text configuration (opt-in, disabled by default)."""
 
@@ -6496,6 +6510,10 @@ class KiroCrewConfig:
     stt: SttConfig = field(
         default_factory=SttConfig,
         metadata=_meta("STT", "Speech-to-text transcription settings."),
+    )
+    recording: RecordingConfig = field(
+        default_factory=RecordingConfig,
+        metadata=_meta("Recording", "Recording session settings."),
     )
     computer_use: ComputerUseConfig = field(
         default_factory=ComputerUseConfig,

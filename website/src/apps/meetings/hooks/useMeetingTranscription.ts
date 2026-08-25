@@ -16,11 +16,28 @@
 //
 // Every FINAL segment is POSTed to the meeting's dispatch endpoint, which is
 // what feeds the agents. Partials only drive the live caption.
+//
+// ── This hook owns the meeting's ONE capture pipeline ──────────────────────────
+// Microphone (worklet input 0) plus, optionally, system audio (input 1) so the
+// remote participants are transcribed too — a meeting where only the local mic is
+// captured produces notes with half the conversation missing. Both are mixed
+// inside `/pcm-worklet.js`; see its TWO INPUTS, ONE STREAM note.
+//
+// Every PCM chunk is also teed to `onPcm`, which is how `useMeetingRecording`
+// persists a WAV from the same audio. The tee exists so a meeting prompts for the
+// microphone once and for a display surface once, no matter how many consumers
+// the audio has.
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { MeetingsApiError, meetingsApi, type TranscriptSegment } from '../api'
 import { reportIfMicDenied } from '../../../hooks/mic'
+import {
+  defaultSystemAudioDeps,
+  requestSystemAudio,
+  stopStream,
+  type SystemAudioFailure,
+} from '../audio/systemAudio'
 
 /** Feature detection mirroring `useStreamingStt` — the dashboard's own hook. */
 export const transcriptionSupported =
@@ -134,6 +151,15 @@ interface Options {
   onCommitted?: (segment: TranscriptSegment) => void
   /** Called with a user-facing message when transcription cannot run. */
   onError?: (message: string) => void
+  /**
+   * Called with every PCM chunk the worklet produces, mic and system audio already
+   * mixed, BEFORE the STT ready-gate. Unconditional on purpose: a recording has its
+   * own buffer-until-ready logic, and audio spoken while the STT stream is still
+   * coming up (2-3 s cold) still belongs in the file.
+   */
+  onPcm?: (chunk: ArrayBuffer) => void
+  /** Called when a connected system-audio stream ends on its own (user hit "Stop sharing"). */
+  onSystemAudioEnded?: () => void
 }
 
 export function useMeetingTranscription({
@@ -143,11 +169,29 @@ export function useMeetingTranscription({
   onPartial,
   onCommitted,
   onError,
+  onPcm,
+  onSystemAudioEnded,
 }: Options) {
   const [active, setActive] = useState(false)
+  const [systemAudio, setSystemAudio] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const ctxRef = useRef<AudioContext | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  /** The live display-capture audio stream, or null. Outlives a socket reconnect. */
+  const sysStreamRef = useRef<MediaStream | null>(null)
+  /** The worklet node currently receiving audio, so system audio can join a running capture. */
+  const nodeRef = useRef<AudioWorkletNode | null>(null)
+  const sysSourceRef = useRef<MediaStreamAudioSourceNode | null>(null)
+  /**
+   * Whether the user has asked for system audio.
+   *
+   * Separate from `sysStreamRef` because it must SURVIVE the watchdog's
+   * reconnect: that tears the AudioContext down, which invalidates the source
+   * node but not the MediaStream, so the intent is what tells the rebuilt
+   * pipeline to reconnect the stream it still holds — without prompting the user
+   * for a display surface a second time.
+   */
+  const sysWantedRef = useRef(false)
   const watchdogRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const lastFrameRef = useRef(0)
   const finalsRef = useRef<string[]>([])
@@ -163,11 +207,15 @@ export function useMeetingTranscription({
   const onPartialRef = useRef(onPartial)
   const onCommittedRef = useRef(onCommitted)
   const onErrorRef = useRef(onError)
+  const onPcmRef = useRef(onPcm)
+  const onSystemAudioEndedRef = useRef(onSystemAudioEnded)
   onCaptionRef.current = onCaption
   onFinalRef.current = onFinal
   onPartialRef.current = onPartial
   onCommittedRef.current = onCommitted
   onErrorRef.current = onError
+  onPcmRef.current = onPcm
+  onSystemAudioEndedRef.current = onSystemAudioEnded
 
   useEffect(() => {
     dispatchBlockedRef.current = false
@@ -241,6 +289,19 @@ export function useMeetingTranscription({
     wsRef.current = null
     try { streamRef.current?.getTracks().forEach(t => t.stop()) } catch { /* ignore */ }
     streamRef.current = null
+    // The system-audio STREAM deliberately outlives this teardown while the user
+    // still wants it: `cleanup` also runs on the watchdog's reconnect, and stopping
+    // the display capture there would pop the browser's share picker again every
+    // time the socket stalled. Its source NODE does not outlive the context, so it
+    // is dropped and rebuilt by `start`. `detachSystemAudio` (and unmount) are what
+    // actually stop the stream.
+    sysSourceRef.current = null
+    nodeRef.current = null
+    if (!sysWantedRef.current) {
+      stopStream(sysStreamRef.current)
+      sysStreamRef.current = null
+      setSystemAudio(false)
+    }
     try { ctxRef.current?.close() } catch { /* ignore */ }
     ctxRef.current = null
     // Release the in-progress guard here as well as on the success path: `cleanup`
@@ -252,8 +313,80 @@ export function useMeetingTranscription({
     setActive(false)
   }, [clearWatchdog])
 
-  // Never leave the microphone open when the page unmounts.
-  useEffect(() => () => { cleanup() }, [cleanup])
+  // Never leave the microphone — or a display capture — open when the page
+  // unmounts. Clearing the intent first is what makes `cleanup` release the
+  // system-audio stream it otherwise deliberately keeps across a reconnect.
+  useEffect(() => () => {
+    sysWantedRef.current = false
+    cleanup()
+  }, [cleanup])
+
+  /**
+   * Connect the held system-audio stream to input 1 of the running worklet node.
+   *
+   * Idempotent, and a no-op when the capture pipeline is not up yet — `start`
+   * calls it once the node exists, so a stream granted while the socket happened
+   * to be down still lands as soon as the pipeline is rebuilt.
+   */
+  const wireSystemAudio = useCallback((): boolean => {
+    const ctx = ctxRef.current
+    const node = nodeRef.current
+    const stream = sysStreamRef.current
+    if (!ctx || !node || !stream) return false
+    if (sysSourceRef.current) return true
+    try {
+      const sysSource = ctx.createMediaStreamSource(stream)
+      sysSource.connect(node, 0, 1)
+      sysSourceRef.current = sysSource
+    } catch {
+      return false
+    }
+    setSystemAudio(true)
+    return true
+  }, [])
+
+  /** Stop the display capture and drop it out of the graph. */
+  const detachSystemAudio = useCallback(() => {
+    sysWantedRef.current = false
+    try { sysSourceRef.current?.disconnect() } catch { /* context already closed */ }
+    sysSourceRef.current = null
+    stopStream(sysStreamRef.current)
+    sysStreamRef.current = null
+    setSystemAudio(false)
+  }, [])
+
+  /**
+   * Ask for a display surface and mix its audio into the transcript.
+   *
+   * Returns `null` on success or the reason it did not happen. Failure is never
+   * fatal: the microphone keeps transcribing, so the caller reports the reason and
+   * carries on. That is why this is a separate, explicit call rather than part of
+   * `start` — the browser's share picker is intrusive, and a meeting must be able
+   * to begin without one.
+   */
+  const attachSystemAudio = useCallback(async (): Promise<SystemAudioFailure | null> => {
+    if (sysStreamRef.current) {
+      sysWantedRef.current = true
+      wireSystemAudio()
+      return null
+    }
+    const outcome = await requestSystemAudio(defaultSystemAudioDeps())
+    if (!outcome.ok) return outcome.reason
+    sysStreamRef.current = outcome.stream
+    sysWantedRef.current = true
+    // The user can revoke the share from the browser's own "Stop sharing" bar, which
+    // we only learn about from the track. Without this the graph keeps a dead input
+    // connected and the UI keeps claiming the remote side is being captured.
+    for (const track of outcome.stream.getAudioTracks()) {
+      track.addEventListener('ended', () => {
+        if (sysStreamRef.current !== outcome.stream) return
+        detachSystemAudio()
+        onSystemAudioEndedRef.current?.()
+      })
+    }
+    wireSystemAudio()
+    return null
+  }, [detachSystemAudio, wireSystemAudio])
 
   const start = useCallback(async () => {
     if (!transcriptionSupported) {
@@ -390,7 +523,20 @@ export function useMeetingTranscription({
       return
     }
     const source = ctx.createMediaStreamSource(stream)
-    const node = new AudioWorkletNode(ctx, 'pcm-worklet')
+    // TWO inputs: microphone on 0, system audio on 1. The worklet sums them, and
+    // an unconnected input 1 contributes nothing — so this is safe before (and
+    // without) any system audio, which is what keeps mic-only meetings unchanged.
+    //
+    // `channelCount: 1` + `'explicit'` makes the graph DOWNMIX each input to mono
+    // rather than leaving the worklet to read channel 0 and silently discard the
+    // rest. Display capture is routinely stereo, and a participant panned to the
+    // right channel would otherwise be transcribed at whatever leaked into the left.
+    const node = new AudioWorkletNode(ctx, 'pcm-worklet', {
+      numberOfInputs: 2,
+      channelCount: 1,
+      channelCountMode: 'explicit',
+    })
+    nodeRef.current = node
 
     // Buffer PCM until the server is ready, then flush and switch to live send.
     // Over the cap, drop the OLDEST frames — the most recent speech wins.
@@ -399,6 +545,11 @@ export function useMeetingTranscription({
     const buffer: ArrayBuffer[] = []
     node.port.onmessage = e => {
       const chunk = e.data as ArrayBuffer
+      // Tee FIRST and unconditionally: a recording keeps its own pre-ready buffer,
+      // and it must not inherit this socket's ready-gate or its stalls. Safe to
+      // hand the same ArrayBuffer to both — `WebSocket.send` copies it into the
+      // outgoing queue rather than retaining it.
+      onPcmRef.current?.(chunk)
       if (ready) {
         if (ws.readyState === WebSocket.OPEN) {
           try { ws.send(chunk) } catch { /* CLOSING */ }
@@ -411,8 +562,11 @@ export function useMeetingTranscription({
         bufferedBytes -= buffer.shift()!.byteLength
       }
     }
-    source.connect(node)
+    source.connect(node, 0, 0)
     // The worklet's output is never heard — do NOT connect it to the destination.
+    // Re-attach system audio the user already granted. The stream survived the
+    // teardown; only its source node, which belonged to the closed context, did not.
+    if (sysWantedRef.current) wireSystemAudio()
     startingRef.current = false
     setActive(true)
 
@@ -439,7 +593,7 @@ export function useMeetingTranscription({
     ready = true
     // `meetingId` is no longer a direct dependency: the only use left in here is
     // inside `dispatchWithRetry`, which closes over it and is listed instead.
-  }, [cleanup, clearWatchdog, dispatchWithRetry])
+  }, [cleanup, clearWatchdog, dispatchWithRetry, wireSystemAudio])
 
   const stop = useCallback(() => {
     stoppingRef.current = true
@@ -457,5 +611,14 @@ export function useMeetingTranscription({
     }, CLOSE_GRACE_MS)
   }, [cleanup, clearWatchdog])
 
-  return { active, start, stop, supported: transcriptionSupported }
+  return {
+    active,
+    start,
+    stop,
+    supported: transcriptionSupported,
+    /** True while a display-capture stream is mixed into input 1. */
+    systemAudio,
+    attachSystemAudio,
+    detachSystemAudio,
+  }
 }
