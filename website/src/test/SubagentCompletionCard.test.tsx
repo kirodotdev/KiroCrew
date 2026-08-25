@@ -616,6 +616,49 @@ describe('isModelDowngrade / normalizeModelId (GPT review on #3582)', () => {
     // Boundary: opus-4-8 must NOT be treated as the same as opus-4-80.
     expect(isModelDowngrade('claude-opus-4-8', 'claude-opus-4-80')).toBe(true)
   })
+
+  it('treats an UNRECOGNIZED routing prefix as inconclusive, never a downgrade (#5394)', () => {
+    // A partition/provider outside the known strip set (a new region token,
+    // a vendor the fold has never heard of) leaves the served id as
+    // `<unknown-prefix>-<bare pin>` — an unstripped routing shape, not
+    // evidence of a different model. A missed downgrade is safer than a
+    // false amber on an honored pin.
+    expect(isModelDowngrade('claude-opus-4.8', 'apac.anthropic.claude-opus-4-8-v1:0')).toBe(false)
+    expect(isModelDowngrade('claude-opus-4.8', 'newvendor.claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('gpt-5.6-sol', 'azure.openai.gpt-5.6-sol')).toBe(false)
+  })
+
+  it('folds BOTH sides symmetrically: a canonical-form pin vs its bare served id (#5394)', () => {
+    // A pin can itself be written in provider-canonical form; stripping only
+    // the served side would false-flag the honored pin.
+    expect(isModelDowngrade('us.anthropic.claude-opus-4-8-v1:0', 'claude-opus-4-8')).toBe(false)
+    expect(isModelDowngrade('anthropic.claude-opus-4-8:0', 'claude-opus-4.8')).toBe(false)
+  })
+
+  it('still flags a genuinely different model under an unknown prefix (#5394)', () => {
+    // The inconclusive guard requires the WHOLE tail to match at a token
+    // boundary — a different bare model under an unknown prefix is not a
+    // suffix match and must keep flagging.
+    expect(isModelDowngrade('claude-opus-4.8', 'apac.anthropic.claude-opus-4-7-v1:0')).toBe(true)
+  })
+
+  it('still flags when BOTH sides carry version/date tails that differ (#5394)', () => {
+    // Dated snapshot ids are first-class pins (model_registry carries two
+    // -YYYYMMDD snapshots of one base): a tail is folded only to MEET a
+    // tail-less side, so two PRESENT tails must agree — different snapshots
+    // or revisions of the same base are different models and must flag.
+    expect(isModelDowngrade('claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620')).toBe(true)
+    expect(
+      isModelDowngrade(
+        'anthropic.claude-3-5-sonnet-20241022-v2:0',
+        'anthropic.claude-3-5-sonnet-20240620-v1:0',
+      ),
+    ).toBe(true)
+    // Matching tails on both sides are an honored pin, not a downgrade.
+    expect(
+      isModelDowngrade('us.anthropic.claude-opus-4-8-v1:0', 'anthropic.claude-opus-4-8-v1:0'),
+    ).toBe(false)
+  })
 })
 
 describe('downgrade is visible, not hover-only (UX review on #3582)', () => {

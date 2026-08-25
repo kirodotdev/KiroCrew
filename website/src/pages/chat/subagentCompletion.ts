@@ -98,14 +98,28 @@ const OUTCOME_BY_GLYPH: Record<string, SubagentOutcome> = {
  * `normalizeModelKey` does NOT fold a provider/partition prefix or a version
  * suffix, so a served canonical id (`us.anthropic.claude-opus-4-8-...-v1:0`)
  * would still differ from its alias pin (`claude-opus-4.8`). Rather than diverge
- * the shared key here, we strip ONLY a leading provider/partition prefix and a
- * trailing version/revision suffix from the served key, then require EXACT
- * equality with the pin. This deliberately does NOT accept an arbitrary
- * `-`-delimited substring: a pin `claude-opus-4` against served `claude-opus-4-1`
- * is a genuine version-family change and must still flag (UX review on #3582) —
- * a loose containment check would silently pass it, the exact miss this feature
- * exists to catch. (A full alias→canonical fold belongs in the shared registry —
- * tracked separately, #5339.)
+ * the shared key here, we strip a KNOWN leading provider/partition prefix from
+ * BOTH sides (symmetric — a pin can be given in canonical form too), fold a
+ * trailing version/revision tail only when the OTHER side has none (two present
+ * tails must agree: dated snapshots are distinct models), then require EXACT
+ * equality. This deliberately does NOT accept an arbitrary `-`-delimited
+ * substring: a pin `claude-opus-4` against served `claude-opus-4-1` is a
+ * genuine version-family change and must still flag (UX review on #3582) — a
+ * loose containment check would silently pass it, the exact miss this feature
+ * exists to catch.
+ *
+ * CONSERVATIVE ON UNRECOGNIZED SHAPES (#5394): this is an audit surface, and a
+ * missed downgrade is safer than a false one — a false amber on an honored pin
+ * trains users to ignore the exact signal the flag exists to provide. A served
+ * id whose routing prefix is OUTSIDE the known strip set (a new partition like
+ * `apac.`, a new provider) folds to `<unknown-prefix>-<bare pin>`: still a
+ * `!==` against the pin, but not evidence of a different model. So when one
+ * folded id names the whole tail of the other at a `-` token boundary, the
+ * comparison is INCONCLUSIVE and the flag is skipped. The token boundary keeps
+ * the version-family guarantee: `claude-opus-4-1` does not END with
+ * `-claude-opus-4`, so that case still flags. (The durable fix — routing both
+ * sides through the shared registry alias→canonical fold — is #5339; this
+ * guard is the interim measure until it lands.)
  */
 export function isModelDowngrade(requestedModel: string, resolvedModel: string): boolean {
   const req = requestedModel.trim()
@@ -117,16 +131,48 @@ export function isModelDowngrade(requestedModel: string, resolvedModel: string):
   if (reqKey === 'auto') return false
   const resKey = normalizeModelKey(res)
   if (reqKey === resKey) return false
-  // Fold the served key to its bare model id: drop a KNOWN leading
-  // provider/partition prefix and a trailing version/revision suffix, then
-  // require exact equality — never an arbitrary substring.
-  // Leading: `us-`/`eu-`/… region, `anthropic-`/`openai-`/`bedrock-`/`global-`.
-  // Trailing: a version/revision tail like `-v1:0`, `:0`, `-20250101`.
-  let bare = resKey
-  bare = bare.replace(/^(?:[a-z]{2}-)?(?:anthropic-|openai-|bedrock-|global-)+/, '')
-  bare = bare.replace(/(?::\d+|-v\d+(?::\d+)?|-\d{6,})$/g, '')
-  if (bare === reqKey) return false
+  const pReq = stripKnownRoutingPrefix(reqKey)
+  const pRes = stripKnownRoutingPrefix(resKey)
+  // A version/date tail is folded only to MEET a side that has none — the
+  // canonical-pin-vs-bare-alias shape. When BOTH sides carry a tail the tails
+  // are kept and must agree: dated snapshot ids are first-class pins
+  // (model_registry.py carries e.g. two -YYYYMMDD snapshots of one base), and
+  // stripping both tails would silently equate two different snapshots —
+  // exactly the version-family miss this comparison must catch.
+  const reqTail = VERSION_TAIL_RE.test(pReq)
+  const resTail = VERSION_TAIL_RE.test(pRes)
+  const bareReq = reqTail && !resTail ? pReq.replace(VERSION_TAIL_RE, '') : pReq
+  const bareRes = resTail && !reqTail ? pRes.replace(VERSION_TAIL_RE, '') : pRes
+  // A fold that consumed the whole id (nothing but prefix/suffix matter) left
+  // nothing to compare — inconclusive, never a flag.
+  if (!bareReq || !bareRes) return false
+  if (bareReq === bareRes) return false
+  // One bare id is the token-suffix of the other: an unstripped routing prefix
+  // (unknown partition/provider), not a demonstrably different model.
+  if (isTokenSuffix(bareReq, bareRes)) return false
   return true
+}
+
+/** Trailing version/revision tail: `-v1:0`, `:0`, or a date like `-20250101`.
+ *  No `g` flag — `$`-anchored, and a stateful `lastIndex` would poison
+ *  `.test()` across calls. */
+const VERSION_TAIL_RE = /(?::\d+|-v\d+(?::\d+)?|-\d{6,})$/
+
+/** Drop a KNOWN leading provider/partition prefix from a normalized model key.
+ *  Leading: `us-`/`eu-`/… region, `anthropic-`/`openai-`/`bedrock-`/`global-`. */
+function stripKnownRoutingPrefix(key: string): string {
+  return key.replace(/^(?:[a-z]{2}-)?(?:anthropic-|openai-|bedrock-|global-)+/, '')
+}
+
+/** True when the shorter of the two ids names the WHOLE tail of the longer one
+ *  at a `-` token boundary — the shape an unrecognized routing prefix leaves
+ *  behind (checked by length, so it is inconclusive in BOTH directions: an
+ *  unknown prefix on the served id or on the pin). Anchored on the boundary so
+ *  a version-family extension (`claude-opus-4` vs `claude-opus-4-1`) never
+ *  matches: the longer id there ends in `-1`, not in `-claude-opus-4`. */
+function isTokenSuffix(a: string, b: string): boolean {
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a]
+  return long.endsWith('-' + short)
 }
 
 

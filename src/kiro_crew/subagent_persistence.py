@@ -140,17 +140,26 @@ def read_state(agent_id: str) -> dict | None:
         return None
 
 
-def update_state(agent_id: str, **fields: object) -> None:
-    """Merge *fields* into state.json (atomic rewrite)."""
+def update_state(agent_id: str, **fields: object) -> bool:
+    """Merge *fields* into state.json (atomic rewrite).
+
+    Returns True when the merge was written, False when it was SKIPPED because
+    the current state could not be read (missing/corrupt/unreadable). The skip
+    is deliberate -- fabricating a fresh state here would resurrect a record
+    the reaper deleted -- but callers with a durability contract (the pre-spawn
+    provenance write, #5394) need to see the skip to retry rather than mistake
+    a silent no-op for success.
+    """
     p = _agent_dir(agent_id) / "state.json"
     try:
         state = json.loads(p.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         logger.debug("update_state: cannot read state for %s, skipping", agent_id)
-        return
+        return False
     state.update(fields)
     state["updated_at"] = time.time()
     _atomic_write(p, state)
+    return True
 
 
 # ── result streaming ─────────────────────────────────────────────────

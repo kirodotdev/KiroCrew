@@ -5566,17 +5566,27 @@ class SubagentManager:
         # in the window between the event and the later session_id state write
         # cannot lose it — orphan recovery reads these from disk (GPT review on
         # #3582). Off-loop (to_thread): update_state does a synchronous fsync, so
-        # a slow FS must not freeze the gateway/heartbeat. Best-effort — a
-        # persistence hiccup must not block the spawn.
-        try:
-            await asyncio.to_thread(
-                update_state,
-                info.id,
-                requested_model=info.requested_model,
-                resolved_model=info.resolved_model,
-            )
-        except Exception:
-            logger.debug("Failed to persist model provenance for %s", info.id, exc_info=True)
+        # a slow FS must not freeze the gateway/heartbeat. Best-effort with ONE
+        # bounded retry: this write is the SINGLE owner of these two fields on
+        # the spawn path (#5394) — the later session_id write no longer doubles
+        # as a fallback, so a transient failure gets its second chance HERE
+        # rather than from a second writer downstream. update_state reports a
+        # silently-skipped merge (unreadable state) as False, which counts as a
+        # failure for the retry — only a REPORTED write ends the loop. A
+        # persistence hiccup must still never block the spawn.
+        for _provenance_attempt in range(2):
+            try:
+                _wrote = await asyncio.to_thread(
+                    update_state,
+                    info.id,
+                    requested_model=info.requested_model,
+                    resolved_model=info.resolved_model,
+                )
+                if _wrote:
+                    break
+                logger.debug("Provenance write skipped (unreadable state) for %s", info.id)
+            except Exception:
+                logger.debug("Failed to persist model provenance for %s", info.id, exc_info=True)
         await self._fire_event(
             "subagent_spawn",
             info,
@@ -5605,11 +5615,15 @@ class SubagentManager:
             state_update: dict[str, object] = {
                 "session_id": session_id,
                 "provider": provider_type,
-                # Persist the resolved/requested models so orphan-recovery
-                # completions (which rebuild the record from disk, not memory)
-                # can still show provenance (Design suggestion on #3582).
-                "resolved_model": info.resolved_model,
-                "requested_model": info.requested_model,
+                # Model provenance (requested_model/resolved_model) is NOT
+                # re-written here: the crash-safe write BEFORE the
+                # subagent_spawn event above is the single owner of those two
+                # fields on the spawn path, and a transient failure there is
+                # handled by that write's own bounded retry (#5394). This write
+                # still performs the same read-merge-rewrite either way, so the
+                # point is one authoritative writer, not saved I/O. The CC-path
+                # refinement below still updates resolved_model when it first
+                # becomes known.
                 # keep marks this run's session files as resume material: the
                 # orphan reconciler and tombstone pruner skip file deletion
                 # for keep runs (restart-safe — read from disk, not memory).
