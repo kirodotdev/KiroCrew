@@ -550,7 +550,7 @@ async def _transcribe_aws(audio_path: str, stt_config) -> str | None:  # type: i
                 await asyncio.wait_for(proc.communicate(), timeout=10)
             except asyncio.TimeoutError:
                 proc.kill()
-                await proc.wait()
+                await proc.communicate()
                 raise
             if proc.returncode != 0:
                 raise RuntimeError(f"ffmpeg exited with {proc.returncode}")

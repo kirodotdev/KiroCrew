@@ -723,7 +723,7 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             except ProcessLookupError:
                 pass
             try:
-                await proc.wait()
+                await proc.communicate()
             except Exception:
                 logger.debug("ffmpeg wait after kill failed", exc_info=True)
             raise

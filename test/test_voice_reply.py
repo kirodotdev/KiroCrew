@@ -1524,10 +1524,12 @@ class TestStitchMp3s:
 
         assert result is None
         # wait_for cancels communicate() but does not terminate the child;
-        # the child must be killed and reaped BEFORE the unlink, or Windows
-        # refuses to remove the still-open output file.
+        # the child must be killed and reaped via communicate() (which drains
+        # the pipes) BEFORE the unlink, or Windows refuses to remove the
+        # still-open output file. Using wait() instead of communicate() can
+        # hang when the child is blocked writing to a full stderr PIPE (#5834).
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited()
+        proc.communicate.assert_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
 
@@ -1549,7 +1551,7 @@ class TestStitchMp3s:
                 await stitch_mp3s(self._two_inputs(tmp_path))
 
         proc.kill.assert_called_once()
-        proc.wait.assert_awaited()
+        proc.communicate.assert_awaited()
         assert len(allocated) == 1
         assert not os.path.exists(allocated[0])
 
@@ -1613,6 +1615,34 @@ class TestStitchMp3s:
             # the mkstemp file behind as test residue.
             if allocated and os.path.exists(allocated[0]):
                 os.unlink(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_timeout_reaps_child_via_communicate_not_wait(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """After a timeout kills the ffmpeg child, the cleanup must call
+        ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
+        drained. A child blocked writing to a full stderr PIPE would hang
+        the event loop if only ``wait()`` were used (#5834)."""
+        allocated = _capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        proc.kill.assert_called_once()
+        # The critical pin: reap via communicate(), not wait(). The stitch
+        # call itself awaits communicate once; the reap must award a SECOND
+        # await, and wait() must never be touched.
+        assert proc.communicate.await_count == 2
+        proc.wait.assert_not_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
 
 
 # ---------------------------------------------------------------------------

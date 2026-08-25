@@ -1825,6 +1825,45 @@ class TestTranscribeAwsTempOwnership:
         assert owned.exists()
         assert src.exists()
 
+    @pytest.mark.asyncio
+    async def test_timeout_reaps_ffmpeg_via_communicate(self, tmp_path, monkeypatch):
+        """When the ffmpeg remux times out, the killed child must be reaped via
+        ``communicate()`` -- not ``wait()`` -- so the PIPE buffers are drained
+        and a child blocked writing to a full stderr PIPE cannot hang the
+        event loop (#5834)."""
+        from kiro_crew import transcribe as tr
+
+        cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
+        self._grant_consent(tmp_path, monkeypatch, cfg)
+        owned = self._owned_temp(tmp_path, monkeypatch)
+        src = tmp_path / "voice.webm"
+        src.write_bytes(b"data")
+
+        proc = AsyncMock()
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+        proc.kill = MagicMock()
+        proc.returncode = -9
+
+        monkeypatch.setattr(tr, "boto3", object())
+        monkeypatch.setattr(
+            tr, "_load_aws_transcribe_components", lambda: (object, object)
+        )
+        with (
+            patch("kiro_crew.transcribe._find_ffmpeg", return_value="/fake/ffmpeg"),
+            patch("asyncio.create_subprocess_exec", return_value=proc),
+        ):
+            result = await tr._transcribe_aws(str(src), cfg)
+
+        # The timeout is caught by ``except Exception``; returns None.
+        assert result is None
+        proc.kill.assert_called_once()
+        # The critical pin: reap via communicate(), not wait(). The remux
+        # call itself awaits communicate once; the reap must award a SECOND
+        # await, and wait() must never be touched.
+        assert proc.communicate.await_count == 2
+        proc.wait.assert_not_awaited()
+        assert not owned.exists()
+        assert src.exists()
 
 # ---------------------------------------------------------------------------
 # _run_whisper_cli child/temp-dir ownership under cancellation (#5821)
