@@ -278,6 +278,20 @@ def test_persist_returns_empty_when_the_write_fails(spool: Path, monkeypatch: py
     assert capture_macos.persist_jpeg(_JPEG) == ""
 
 
+def test_persist_removes_the_owned_file_when_write_fails(
+    spool: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """Allocation succeeded, so a rejected write has one exact owned path."""
+
+    def _fail_after_allocation(fd, *args, **kwargs):
+        os.close(fd)
+        raise OSError("disk full")
+
+    monkeypatch.setattr(capture_macos.os, "fdopen", _fail_after_allocation)
+    assert capture_macos.persist_jpeg(_JPEG) == ""
+    assert _spooled(spool) == []
+
+
 def test_frame_names_never_collide_even_within_one_millisecond(
     spool: Path, monkeypatch: pytest.MonkeyPatch
 ):

@@ -488,6 +488,19 @@ class TestPersistJpeg:
         monkeypatch.setattr(C, "ensure_shots_dir", boom)
         assert C.persist_jpeg(b"JPEGBYTES") == ""
 
+    def test_a_failed_write_removes_the_owned_file(self, monkeypatch, tmp_path) -> None:
+        """A file allocated by this call must not survive a rejected write."""
+
+        def fail_after_allocation(fd, *args, **kwargs):
+            C.os.close(fd)
+            raise OSError("disk full")
+
+        monkeypatch.setattr(C, "shots_dir", lambda: str(tmp_path))
+        monkeypatch.setattr(C, "_dir_ready", True)
+        monkeypatch.setattr(C.os, "fdopen", fail_after_allocation)
+        assert C.persist_jpeg(b"JPEGBYTES") == ""
+        assert list(tmp_path.iterdir()) == []
+
 
 class TestEnsureShotsDir:
     def test_it_creates_the_directory_owner_only(self, monkeypatch, tmp_path) -> None:

@@ -408,16 +408,30 @@ def persist_jpeg(raw: bytes) -> str:
     """
     if not raw:
         return ""
+    handle_fd: int | None = None
+    path = ""
     try:
         directory = ensure_shots_dir()
         prefix = f"{SCREENSHOT_FILE_PREFIX}{int(time.time() * 1000)}-"
         handle_fd, path = tempfile.mkstemp(
             prefix=prefix, suffix=SCREENSHOT_FILE_SUFFIX, dir=directory
         )
-        with os.fdopen(handle_fd, "wb") as handle:
+        handle = os.fdopen(handle_fd, "wb")
+        handle_fd = None
+        with handle:
             handle.write(raw)
     except OSError:
         logger.warning("could not persist computer-use screenshot", exc_info=True)
+        if handle_fd is not None:
+            try:
+                os.close(handle_fd)
+            except OSError:
+                pass
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
         return ""
     try:
         platform_compat.restrict_to_owner(path)

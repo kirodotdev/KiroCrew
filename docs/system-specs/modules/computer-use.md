@@ -323,8 +323,9 @@ and touches no other application, so it is neither observe nor mutate). The
 class labels above are the code-owned `governance._CU_ACTION_CLASSES` table —
 see [governance.md](governance.md).
 
-Both spool writers (`service._persist_image` and `capture_macos.persist_jpeg`) name
-their files with `tempfile.mkstemp`, not a millisecond timestamp. `_shot_lock`
+The screenshot spool writers (`service._persist_image`, `capture_macos.persist_jpeg`,
+and `capture_windows.persist_jpeg`) name their files with `tempfile.mkstemp`, not a
+millisecond timestamp. `_shot_lock`
 serializes writers within one service instance but cannot serialize a second
 PROCESS — the gateway, the CLI and the permission-probe child all spool into the
 same `tempfile.gettempdir()` directory — so a timestamp-only name let two captures
@@ -333,7 +334,9 @@ leaving its caller holding a screenshot of an application it never asked about
 (a cross-capture pixel leak, reviewer finding). `mkstemp` also creates the file
 `0o600` from the outset, so there is no window in which it exists world-readable
 before `restrict_to_owner` runs. The timestamp stays in the *prefix* because the
-ring trim orders by name.
+ring trim orders by name. If a persistence write fails after allocation, the writer
+removes that exact invocation-owned path before returning no screenshot; a partial
+frame is never left in the spool without a caller that owns it.
 
 **`computer_list_apps` only omits an app it cannot name.** It used to carry a
 per-app governance filter (`gate.app_is_disclosable` against the `computer_use.apps`
