@@ -154,6 +154,17 @@ to verify none crept back in. Which keys are plural comes from that registry,
 never from sniffing a `_one` / `_other` suffix, because real copy ends in those
 words (`panel_to_add_one` is "panel to add one.").
 
+A **fully hardcoded** literal commits the same defect with no `i18nT` in it:
+
+```tsx
+// WRONG for the same reason — the suffix is chosen in JS, in English
+aria-label={`Retry ${n} failed subagent${n > 1 ? 's' : ''}`}
+```
+
+`--check` counts these too (`[plurals-hardcoded]`), against a ceiling that fails
+only when the class grows: the frozen sites each need a new catalog key, so they
+are converted by hand and the ceiling ratchets down with them.
+
 ## One key, one meaning
 
 **Never reuse a key across two grammatical roles.** English collapses distinctions

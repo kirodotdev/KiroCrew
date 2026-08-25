@@ -1227,7 +1227,7 @@ jobs:
         # unrecognised flag makes those scripts refuse to run rather than fall through to
         # their destructive conversion path.
         #
-        # ONLY TWO KINDS OF CHECK CAN FAIL THIS STEP.
+        # ONLY THREE KINDS OF CHECK CAN FAIL THIS STEP.
         #
         #   DIFF-SCOPED, zero tolerance — a finding on a line you wrote is yours and there
         #   is no number to raise:
@@ -1243,8 +1243,16 @@ jobs:
         #                       reference and its catalog entry are edited independently, so
         #                       a catalog-only rename dangles references in files the PR
         #                       never opens. Needs no base ref, so it cannot skip itself.
-        #     [plurals]         a `{n} {t('item')}s` concatenation.
+        #     [plurals]         an i18nT-adjacent `{n} {t('item')}s` concatenation.
         #     [pseudolocale]    `en-XA.json` stale against its generator.
+        #
+        #   WHOLE-REPO CEILING — fails only when the class GROWS:
+        #     [plurals-hardcoded] the same plural-glue defect with NO i18nT in it, e.g.
+        #                       a fully hardcoded aria-label gluing `?'s':''` onto a
+        #                       noun. The frozen sites are pinned at HARDCODED_CEILING
+        #                       in i18n-plural-codemod.mjs and ratchet DOWN as they are
+        #                       converted; a failure lists every site with file:line so
+        #                       the added one is findable.
         #
         # EVERYTHING ELSE IS REPORT ONLY — [untranslated], [allcaps], [extractable] and
         # [dynamic-keys]. Each is a stored whole-repo total, written by whichever branch

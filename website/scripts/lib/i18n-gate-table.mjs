@@ -37,7 +37,7 @@ export const SCRIPTS = [
 ]
 
 /**
- * The eighteen checks, in reading order within their section.
+ * The nineteen checks, in reading order within their section.
  *
  * `find` pulls the numbers out of the owning script's output on the PASSING path;
  * `whenFailed` does the same for the failing path, because most of these scripts print
@@ -120,9 +120,40 @@ export const CHECKS = [
     id: 'plurals', script: 'plural', scope: 'repo', enforce: 'hard-zero',
     find: /^OK: no literal-'s' pluralization found\./m,
     summary: () => "0 literal-'s' concatenations",
+    // The script hosts a second, independent tier (`plurals-hardcoded`): a
+    // failure THERE also exits the script non-zero, so this row must judge
+    // itself by its own printed line, not inherit the shared exit code.
+    ok: () => true,
     whenFailed: {
       find: /^FAIL: (\d+) file\(s\) still use the literal-'s'/m,
       summary: m => `${m[1]} file(s) use the literal-'s' plural hack`,
+    },
+  },
+  {
+    // The ONE whole-repo ceiling that can fail the step, and deliberately so.
+    // The i18nT-adjacent tier above keys on an incidental property (an i18nT
+    // call is adjacent), so a FULLY hardcoded plural literal reports zero to
+    // it and the class regrows silently. What exempts this row from the
+    // stored-total rule: the ceiling is pinned at the frozen debt's worst
+    // point, so main crosses it only when a PR ADDS a site — the totals
+    // behind `[untranslated]`/`[allcaps]` move whenever any counted file
+    // changes, this one moves only with the defect class itself. Slack can
+    // open when a conversion declines the optional tightening (the runner
+    // suggests it on every run), and a site re-added inside that slack rides
+    // free — accepted deliberately: forcing every improving branch to edit
+    // one shared constant makes it a merge conflict between all of them,
+    // the same recorded reason lowering `[extractable]`'s --baseline is
+    // optional. A failure prints every site with file:line, so a red names
+    // lines an author can check against their own diff. The ceiling only
+    // ratchets down (see HARDCODED_CEILING in the owning script).
+    id: 'plurals-hardcoded', script: 'plural', scope: 'repo', enforce: 'ceiling',
+    find: /^OK: (\d+) hardcoded plural literal\(s\), (?:at|below) the ceiling of (\d+)\./m,
+    summary: m => `${m[1]} hardcoded plural literal(s)`,
+    note: m => `ceiling ${m[2]}, slack ${Number(m[2]) - Number(m[1])}`,
+    ok: () => true,
+    whenFailed: {
+      find: /^FAIL: (\d+) hardcoded plural literal\(s\) — (\d+) above the ceiling of (\d+)/m,
+      summary: m => `${m[1]} hardcoded plural literal(s) — ${m[2]} over the ceiling of ${m[3]}`,
     },
   },
   {
@@ -236,6 +267,7 @@ export const CHECKS = [
 export const ENFORCE_LABEL = {
   zero: 'zero tolerance',
   'hard-zero': 'hard zero',
+  ceiling: 'ceiling — fails on growth',
   info: 'report only',
 }
 
