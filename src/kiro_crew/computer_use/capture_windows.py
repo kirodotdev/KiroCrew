@@ -414,10 +414,51 @@ def persist_jpeg(raw: bytes) -> str:
         handle_fd, path = tempfile.mkstemp(
             prefix=prefix, suffix=SCREENSHOT_FILE_SUFFIX, dir=directory
         )
-        with os.fdopen(handle_fd, "wb") as handle:
+    except OSError:
+        # Allocation itself failed — ``mkstemp`` raised, so no file exists and
+        # there is nothing to remove.
+        logger.warning("could not persist computer-use screenshot", exc_info=True)
+        return ""
+    try:
+        handle = os.fdopen(handle_fd, "wb")
+    except OSError:
+        logger.warning(
+            "could not write computer-use screenshot; removing the partial frame",
+            exc_info=True,
+        )
+        # ``fdopen`` raised before adopting the descriptor (fd pressure), so
+        # nothing will ever close it — close it here, or the unlink below fails
+        # on Windows, which refuses to remove a file with an open handle. This
+        # is the ONLY branch that may close the raw fd: once ``fdopen`` returns,
+        # the file object owns it, and a second ``os.close`` on the number could
+        # hit an unrelated descriptor another executor thread was just handed.
+        try:
+            os.close(handle_fd)
+        except OSError:
+            pass
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        return ""
+    try:
+        with handle:
             handle.write(raw)
     except OSError:
-        logger.warning("could not persist computer-use screenshot", exc_info=True)
+        logger.warning(
+            "could not write computer-use screenshot; removing the partial frame",
+            exc_info=True,
+        )
+        # The ``mkstemp`` above succeeded, so this invocation owns *path* and no
+        # caller will ever receive it — without the unlink the partially-written
+        # frame (which can hold sensitive screen pixels) sits in the spool as an
+        # orphan until the ring trim happens to reach it. Best-effort: cleanup
+        # must never mask the original failure. The ``with`` has already closed
+        # the descriptor; do NOT close the fd number again (see above).
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
         return ""
     try:
         platform_compat.restrict_to_owner(path)
