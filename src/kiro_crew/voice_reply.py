@@ -635,6 +635,11 @@ def split_sentences(text: str) -> list[str]:
 async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None:
     """Concatenate MP3 files into a single file using ffmpeg.
 
+    Returns ``None`` on failure (spawn error, timeout, non-zero exit, or an
+    empty output file). An output this call allocated itself (no ``output``
+    argument) is removed on any unsuccessful exit; a caller-supplied
+    ``output`` path is left untouched.
+
     Windows: ffmpeg is not guaranteed on PATH, so the dashboard-streaming stitch
     path fails there; making it optional with a warning is a known gap. The
     Slack thread-upload path is unaffected.
@@ -646,10 +651,23 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             shutil.copy2(paths[0], output)
             return output
         return paths[0]
+    owned = output is None
     if output is None:
         fd, output = tempfile.mkstemp(suffix=".mp3")
         os.close(fd)
+
+    def _discard_owned_output() -> None:
+        # On failure this function returns None, so no caller ever receives an
+        # internally allocated (mkstemp) path — remove it or it leaks with no
+        # surviving owner. A caller-supplied ``output`` is never ours to delete.
+        if owned:
+            try:
+                os.unlink(output)
+            except OSError:
+                pass
+
     concat = "|".join(paths)
+    succeeded = False
     try:
         proc = await asyncio.create_subprocess_exec(
             "ffmpeg",
@@ -662,13 +680,42 @@ async def stitch_mp3s(paths: list[str], output: str | None = None) -> str | None
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await asyncio.wait_for(proc.communicate(), timeout=30)
-        if proc.returncode != 0 or not os.path.exists(output):
+        try:
+            await asyncio.wait_for(proc.communicate(), timeout=30)
+        except (asyncio.TimeoutError, asyncio.CancelledError):
+            # asyncio.wait_for cancels communicate() but does NOT terminate
+            # the child — kill it explicitly (mirroring the piper/polly
+            # paths) so it stops consuming CPU and, on Windows, releases the
+            # output handle that would otherwise make the unlink in the
+            # ``finally`` below fail and re-leak the file.
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.wait()
+            except Exception:
+                logger.debug("ffmpeg wait after kill failed", exc_info=True)
+            raise
+        if (
+            proc.returncode != 0
+            or not os.path.exists(output)
+            # The mkstemp allocation always exists, so "ffmpeg produced no
+            # output" manifests as an empty file, not an absent one.
+            or os.path.getsize(output) == 0
+        ):
             return None
+        succeeded = True
         return output
     except Exception:
         logger.exception("ffmpeg stitch failed")
         return None
+    finally:
+        # Invariant, not per-exit cleanup: EVERY unsuccessful exit — including
+        # CancelledError, which ``except Exception`` does not catch — must
+        # discard the owned output, or a new exit path re-opens the leak.
+        if not succeeded:
+            _discard_owned_output()
 
 
 async def streaming_voice_reply(

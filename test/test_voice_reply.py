@@ -25,6 +25,7 @@ from kiro_crew.voice_reply import (
     _validate_rate,
     is_available,
     split_sentences,
+    stitch_mp3s,
     strip_markdown,
     synthesize_speech,
     text_to_ssml,
@@ -1323,3 +1324,174 @@ class TestTextTypeAutoDetection:
         result = text_to_ssml("Hello world", engine="standard")
         assert result.startswith("<speak")
         assert "</speak>" in result
+
+
+# ── stitch_mp3s() failure-path cleanup ──────────────────────────────────
+
+
+class TestStitchMp3s:
+    """Failure exits must not leak the internally allocated (mkstemp) output.
+
+    When the caller supplies no ``output``, ``stitch_mp3s`` allocates one via
+    ``mkstemp``. On any unsuccessful exit it returns ``None``, so no caller
+    ever receives that path — the file must be removed before returning. A
+    caller-supplied ``output`` is never owned by the function and must stay
+    untouched on failure.
+    """
+
+    @staticmethod
+    def _capture_mkstemp(monkeypatch) -> list[str]:
+        """Record every path the module allocates via ``tempfile.mkstemp``."""
+        allocated: list[str] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def recording_mkstemp(*args, **kwargs):
+            fd, path = real_mkstemp(*args, **kwargs)
+            allocated.append(path)
+            return fd, path
+
+        monkeypatch.setattr("kiro_crew.voice_reply.tempfile.mkstemp", recording_mkstemp)
+        return allocated
+
+    @staticmethod
+    def _two_inputs(tmp_path) -> list[str]:
+        """Two fake MP3 inputs — one path short-circuits before ffmpeg runs."""
+        paths = []
+        for name in ("a.mp3", "b.mp3"):
+            p = tmp_path / name
+            p.write_bytes(b"fake-mp3")
+            paths.append(str(p))
+        return paths
+
+    @pytest.mark.asyncio
+    async def test_spawn_failure_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = self._capture_mkstemp(monkeypatch)
+
+        async def fake_exec(*cmd, **kwargs):
+            raise FileNotFoundError("ffmpeg not on PATH")
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_nonzero_exit_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = self._capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=1, stderr=b"concat error")
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_timeout_kills_child_and_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        allocated = self._capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.TimeoutError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        # wait_for cancels communicate() but does not terminate the child;
+        # the child must be killed and reaped BEFORE the unlink, or Windows
+        # refuses to remove the still-open output file.
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_cancellation_kills_child_and_removes_owned_temp(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # CancelledError is a BaseException: it bypasses ``except Exception``,
+        # so only a finally-based invariant discards the owned output here.
+        allocated = self._capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+        proc.communicate = AsyncMock(side_effect=asyncio.CancelledError)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            with pytest.raises(asyncio.CancelledError):
+                await stitch_mp3s(self._two_inputs(tmp_path))
+
+        proc.kill.assert_called_once()
+        proc.wait.assert_awaited()
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_empty_output_removes_owned_temp(self, tmp_path, monkeypatch) -> None:
+        # The mkstemp allocation always exists on disk, so "ffmpeg produced no
+        # output" manifests as a zero-byte file, never an absent one.
+        allocated = self._capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc  # exits 0 but writes nothing to the output path
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        assert result is None
+        assert len(allocated) == 1
+        assert not os.path.exists(allocated[0])
+
+    @pytest.mark.asyncio
+    async def test_failure_leaves_caller_supplied_output_untouched(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        allocated = self._capture_mkstemp(monkeypatch)
+        caller_output = tmp_path / "caller.mp3"
+        caller_output.write_bytes(b"pre-existing caller data")
+        proc = _mock_subprocess(returncode=1)
+
+        async def fake_exec(*cmd, **kwargs):
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path), output=str(caller_output))
+
+        assert result is None
+        assert allocated == []  # caller supplied the path; nothing was allocated
+        assert caller_output.exists()
+        assert caller_output.read_bytes() == b"pre-existing caller data"
+
+    @pytest.mark.asyncio
+    async def test_success_returns_owned_output_intact(self, tmp_path, monkeypatch) -> None:
+        allocated = self._capture_mkstemp(monkeypatch)
+        proc = _mock_subprocess(returncode=0)
+
+        async def fake_exec(*cmd, **kwargs):
+            with open(cmd[-1], "wb") as f:  # output path is the last argv entry
+                f.write(b"stitched-mp3-data")
+            return proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_exec):
+            result = await stitch_mp3s(self._two_inputs(tmp_path))
+
+        try:
+            assert len(allocated) == 1
+            assert result == allocated[0]
+            assert os.path.exists(result)
+            assert os.path.getsize(result) > 0
+        finally:
+            # Not on the happy path: a failing assert above must not leave
+            # the mkstemp file behind as test residue.
+            if allocated and os.path.exists(allocated[0]):
+                os.unlink(allocated[0])
