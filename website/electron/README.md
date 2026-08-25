@@ -19,7 +19,9 @@ The app will:
    `/api/status`, so it is never adopted; the app waits for the port to clear
    and spawns fresh instead
 2. Launch `kirocrew gateway` when needed
-3. Show a loading screen while the backend boots
+3. Show a loading screen while the backend boots. A live bundled backend gets an
+   extended Windows cold-start window; a child that actually exits still fails
+   immediately with its launch-log cause.
 4. Load the dashboard
 5. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing

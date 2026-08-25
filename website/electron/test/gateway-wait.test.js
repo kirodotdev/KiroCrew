@@ -1,6 +1,16 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { waitForGateway, describeGatewayFailure, tailLines, isPortInUse } = require("../gateway-wait");
+const fs = require("node:fs");
+const path = require("node:path");
+const {
+  DEFAULT_GATEWAY_WAIT_MS,
+  WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  gatewayWaitTimeoutMs,
+  waitForGateway,
+  describeGatewayFailure,
+  tailLines,
+  isPortInUse,
+} = require("../gateway-wait");
 
 // Synchronous fake clock + timer so poll loops resolve instantly and
 // deterministically (no real waiting). setTimeoutFn advances the clock by the
@@ -42,6 +52,45 @@ test("waitForGateway resolves after a few unhealthy polls", async () => {
   });
   await p;
   assert.strictEqual(n, 3);
+});
+
+test("Windows local cold start stays on the splash past the ordinary deadline", async () => {
+  let polls = 0;
+  const maxWaitMs = gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true });
+  const { p } = harness({
+    // 110 failed 500ms polls model a 55-second packaged cold start.
+    checkBackend: () => (++polls <= 110
+      ? Promise.reject(new Error("not yet"))
+      : Promise.resolve()),
+    maxWaitMs,
+  });
+
+  await p;
+  assert.strictEqual(polls, 111);
+  assert.ok(maxWaitMs > DEFAULT_GATEWAY_WAIT_MS);
+});
+
+test("gateway wait policy extends only the primary Windows gateway", () => {
+  assert.strictEqual(
+    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: true }),
+    WINDOWS_LOCAL_GATEWAY_WAIT_MS,
+  );
+  assert.strictEqual(
+    gatewayWaitTimeoutMs({ platform: "win32", watchSpawn: false }),
+    DEFAULT_GATEWAY_WAIT_MS,
+  );
+  assert.strictEqual(
+    gatewayWaitTimeoutMs({ platform: "darwin", watchSpawn: true }),
+    DEFAULT_GATEWAY_WAIT_MS,
+  );
+});
+
+test("main extends the Windows deadline only for a gateway it spawned", () => {
+  const main = fs.readFileSync(path.join(__dirname, "..", "main.js"), "utf8");
+  assert.match(
+    main,
+    /watchSpawn: watchSpawn && gatewayOwnership === "spawned"/,
+  );
 });
 
 test("waitForGateway fails fast when the spawned gateway exited (no health polling)", async () => {
