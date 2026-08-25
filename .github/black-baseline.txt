@@ -225,7 +225,6 @@ src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/agents.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
-src/kiro_crew/dashboard/handlers/auth_refresh.py
 src/kiro_crew/dashboard/handlers/cron.py
 src/kiro_crew/dashboard/handlers/discover.py
 src/kiro_crew/dashboard/handlers/files.py
@@ -254,7 +253,6 @@ src/kiro_crew/dashboard/handlers_cloud.py
 src/kiro_crew/dashboard/handlers_instances.py
 src/kiro_crew/dashboard/loop_watchdog.py
 src/kiro_crew/dashboard/port_reclaim.py
-src/kiro_crew/dashboard/refresh_tokens.py
 src/kiro_crew/dashboard/routes/skills.py
 src/kiro_crew/dashboard/session_directive_apply.py
 src/kiro_crew/dashboard/session_health.py

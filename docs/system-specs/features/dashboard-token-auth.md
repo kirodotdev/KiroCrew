@@ -104,6 +104,27 @@ Two expiry times:
 - `exp`: link click window — 5 minutes (`LINK_WINDOW_SECS = 300`). The URL must be opened within this time.
 - `session_exp`: cookie session TTL — capped at 20 hours (`MAX_SESSION_TTL_SECS = 20 * 3600`). Once the cookie is set, the access session lasts this long; the refresh cookie (see Cookies) lets the SPA rotate it silently before expiry.
 
+Two optional claims scope a session more tightly than its `session_exp`, and are
+mutually exclusive in practice because they answer the same question differently:
+
+- `no_refresh`: no refresh chain is issued at the token→session exchange, and any
+  refresh cookie already held for this port is expired. `session_exp` therefore
+  becomes a real ceiling instead of a starting value. Available for the
+  phone-access QR by opting out of `dashboard.qr_session_until_restart`.
+- `boot`: the session is scoped to the gateway PROCESS that minted it
+  (`boot_id.current_boot_id`, a per-process value that is never persisted).
+  Validation rejects a mismatch on both the link and the cookie path, and the
+  refresh chain carries and checks the same claim, so rotation cannot outlive the
+  process. Idling does not end the session; a restart does, and so does letting
+  the refresh credential lapse (30 days, renewed on each rotation). The rotated
+  access token also keeps its address pin when tailnet identity trust is off,
+  which a `no_refresh` session got for free by never rotating. This is the
+  DEFAULT for the phone-access QR (`dashboard.qr_session_until_restart`, on by
+  default).
+
+Both are CLAIM-GATED: a token without the claim is not checked against either
+mechanism, so existing sessions and every default path are unaffected.
+
 #### Public API
 
 ```python

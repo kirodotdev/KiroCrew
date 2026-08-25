@@ -29,12 +29,14 @@ from kiro_crew.dashboard.refresh_tokens import (
     foreign_port_cookies,
     generate_refresh_token,
     refresh_cookie_name,
+    refresh_token_boot,
     validate_refresh_token,
 )
 from kiro_crew.dashboard.tailnet import TailnetTrust, peer_pin_key, resolve_forwarded_peer
 from kiro_crew.dashboard.token_auth import (
     MAX_SESSION_TTL_SECS,
     _cookie_port_from_host,
+    bind_token_ip,
     bind_token_peer,
     extract_numeric_claim,
     generate_token,
@@ -408,15 +410,11 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     if not valid:
         if reason == "chain revoked":
             _audit(user_id, "refresh_token_use", "chain_revoked", reason)
-            resp = web.json_response(
-                {"error": "refresh_chain_revoked"}, status=401
-            )
+            resp = web.json_response({"error": "refresh_chain_revoked"}, status=401)
             _clear_refresh_cookie(resp, request)
             return resp
         _audit(user_id, "refresh_token_use", "invalid", reason)
-        return web.json_response(
-            {"error": "invalid_refresh"}, status=401
-        )
+        return web.json_response({"error": "invalid_refresh"}, status=401)
 
     state = _get_state()
 
@@ -437,9 +435,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
                 # where JS or a network observer can read them.
                 public = {k: v for k, v in payload.items() if not k.startswith("_")}
                 resp = web.json_response(public)
-                _set_access_cookie(
-                    resp, request, payload["_access_token"], payload["session_exp"]
-                )
+                _set_access_cookie(resp, request, payload["_access_token"], payload["session_exp"])
                 _set_refresh_cookie(
                     resp, request, payload["_refresh_token"], payload["refresh_exp"]
                 )
@@ -452,9 +448,7 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         # Wrap in to_thread: revoke_chain does sync file I/O (mode=0o600
         # atomic-rename writes to refresh_chains.json) — must not block
         # the event loop.
-        await asyncio.to_thread(
-            state.revoke_chain, chain_id, now + MAX_REFRESH_TTL_SECS
-        )
+        await asyncio.to_thread(state.revoke_chain, chain_id, now + MAX_REFRESH_TTL_SECS)
         _audit(user_id, "refresh_token_use", "reuse_detected", chain_id)
         resp = web.json_response({"error": "refresh_chain_revoked"}, status=401)
         _clear_refresh_cookie(resp, request)
@@ -466,12 +460,31 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
     # NOT be added to the bounded 50-slot nonce set — otherwise each refresh
     # churns/evicts pending one-time link nonces (e.g. Slack challenge links).
     # Mirrors the middleware's own link->session exchange in token_auth.py.
+    # Boot binding is CARRIED rather than read from current_boot_id() here.
+    #
+    # Today the two are equivalent, and the reason is worth stating rather than
+    # leaving as luck: validate_refresh_token above has ALREADY rejected a token
+    # whose boot does not match this process, so anything reaching this line is
+    # either unbound or bound to the current boot. Re-deriving would produce the
+    # same value.
+    #
+    # Carrying is still what belongs here. It keeps this function's output a
+    # function of its INPUT, so the rotated pair says what the presented
+    # credential said instead of what the process happens to be — and that
+    # property does not depend on a check in another module having run first. If
+    # a future change ever admits an unvalidated or partially-validated token to
+    # this path, carrying degrades to "unbound", while re-deriving would silently
+    # mint a live binding for it.
+    carried_boot = refresh_token_boot(refresh_token)
     new_access_token = generate_token(
-        user_id, ttl_seconds=MAX_SESSION_TTL_SECS, register_nonce=False
+        user_id,
+        ttl_seconds=MAX_SESSION_TTL_SECS,
+        register_nonce=False,
+        extra={"boot": carried_boot} if carried_boot else None,
     )
     new_session_exp = now + MAX_SESSION_TTL_SECS
     new_refresh_token, _new_chain, _new_jti, new_refresh_exp = generate_refresh_token(
-        user_id, chain_id=chain_id
+        user_id, chain_id=chain_id, boot=carried_boot
     )
 
     public_payload = {
@@ -500,7 +513,9 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
         replacement=json.dumps(grace_payload, separators=(",", ":")),
     )
 
-    await _rebind_rotated_token_to_peer(request, new_access_token, new_session_exp)
+    await _rebind_rotated_token_to_peer(
+        request, new_access_token, new_session_exp, boot_bound=bool(carried_boot)
+    )
 
     resp = web.json_response(public_payload)
     _set_access_cookie(resp, request, new_access_token, new_session_exp)
@@ -511,9 +526,9 @@ async def api_auth_refresh(request: web.Request) -> web.Response:
 
 
 async def _rebind_rotated_token_to_peer(
-    request: web.Request, access_token: str, session_exp: float
+    request: web.Request, access_token: str, session_exp: float, *, boot_bound: bool = False
 ) -> None:
-    """Carry the tailnet identity pin across an access-token rotation (RFC §3).
+    """Carry the peer pin across an access-token rotation (RFC §3).
 
     This endpoint is bypassed by the auth middleware, so without this the
     replacement access token would be UNBOUND — one rotation would launder a
@@ -524,16 +539,31 @@ async def _rebind_rotated_token_to_peer(
     The middleware's early allowlist deny already covers this route (it runs
     before the bypass list), so a verified-but-unallowlisted peer never
     reaches this mint in the first place.
+
+    ``boot_bound`` additionally preserves the ADDRESS pin when tailnet identity
+    trust is off. That case previously could not arise for the session type that
+    needs it most: a phone-access QR session was minted ``no_refresh``, so it
+    never rotated and the ``ip:`` pin the middleware set at the exchange held for
+    its whole life. Letting such a session rotate without this would drop the pin
+    on the first rotation, so a stolen rotated cookie would authenticate from any
+    reachable peer — a real regression, not a theoretical one.
+
+    Scoped to boot-bound sessions on purpose. Pinning EVERY rotation would change
+    roaming behaviour for ordinary browser sessions, which today survive an
+    address change precisely because their rotated token is unbound; that is a
+    separate decision and does not belong in a change about phone sessions.
     """
     trust = request.app.get("tailnet_trust")
-    if not isinstance(trust, TailnetTrust) or not trust.trust_identity:
-        return
-    if not trust.allowed_logins:
-        return
-    peer = await resolve_forwarded_peer(request, trust)
-    if peer is None:
-        return
-    bind_token_peer(access_token, peer_pin_key(peer, trust.pin_scope), session_exp)
+    if isinstance(trust, TailnetTrust) and trust.trust_identity and trust.allowed_logins:
+        peer = await resolve_forwarded_peer(request, trust)
+        if peer is not None:
+            bind_token_peer(access_token, peer_pin_key(peer, trust.pin_scope), session_exp)
+            return
+    if boot_bound:
+        # Same key shape the middleware uses for the default address pin, so the
+        # rotated token is checked exactly as the one it replaces was.
+        client_ip = request.remote or "unknown"
+        bind_token_ip(access_token, client_ip, session_exp)
 
 
 async def api_auth_logout(request: web.Request) -> web.Response:
@@ -567,9 +597,7 @@ async def api_auth_logout(request: web.Request) -> web.Response:
     user_id = ""
     chain_id = ""
     if refresh_cookie:
-        valid, user_id, _reason, chain_id, _jti, _exp = validate_refresh_token(
-            refresh_cookie
-        )
+        valid, user_id, _reason, chain_id, _jti, _exp = validate_refresh_token(refresh_cookie)
         if valid and chain_id:
             # Revoke the chain so the cookie cannot be replayed even if
             # the browser ignores the Set-Cookie below (extension tampering,

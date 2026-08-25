@@ -25,6 +25,7 @@ from typing import Any, cast
 from aiohttp import web
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.origin import (
     is_https_request,
     is_loopback,
@@ -857,6 +858,21 @@ def validate_token(token: str, *, use_session_exp: bool = False) -> tuple[bool, 
         return False, "", "revocation state unavailable"
     if int(data.get("gen", 0)) < current_gen:
         return False, "", "session revoked"
+    # Boot binding: a token minted with a ``boot`` claim is scoped to the
+    # gateway PROCESS that issued it, so a restart ends it. This is what makes
+    # an opt-in "the phone stays signed in until the gateway restarts" session
+    # honest — the alternative, a long wall-clock TTL, keeps working after a
+    # restart and after the operator has stopped thinking about that device.
+    #
+    # CLAIM-GATED on purpose: a token without the claim is not checked at all,
+    # so this cannot log out an existing session or change any default. The
+    # check is also deliberately unconditional in the other direction — it
+    # applies to the LINK path and the COOKIE path alike, because a boot-bound
+    # link that survived a restart in someone's history must not be redeemable
+    # either.
+    token_boot = str(data.get("boot", ""))
+    if token_boot and token_boot != current_boot_id():
+        return False, "", "session ended at gateway restart"
     # Nonce is a single-use guard for the one-time LINK click only. For an
     # established session cookie (use_session_exp=True), a valid HMAC signature
     # plus an unexpired session_exp is sufficient — requiring the in-memory
@@ -2471,14 +2487,28 @@ def token_auth_middleware(
             # nonce (see RevokedNonceStore / api_auth_logout).
             _remaining = int(session_exp - time.time()) if session_exp else MAX_SESSION_TTL_SECS
             if _remaining > 0:
+                # Claims that must SURVIVE the exchange are copied explicitly.
+                # The session token is a fresh mint, so anything not named here
+                # is dropped — and silently dropping ``boot`` would be the worst
+                # possible failure: the link would be boot-bound, the cookie it
+                # became would not, and the phone session would quietly outlive
+                # the restart it was supposed to end at. The claim is carried,
+                # never re-derived from current_boot_id(), so a link minted by a
+                # PREVIOUS process cannot launder itself into a live session —
+                # validate_token has already rejected it by this point, and
+                # re-deriving would hide that.
+                _carried: dict[str, str] = {}
+                if _embed_parent_port:
+                    _carried["embed_parent_port"] = _embed_parent_port
+                _token_boot = str(data.get("boot", ""))
+                if _token_boot:
+                    _carried["boot"] = _token_boot
                 session_token = generate_token(
                     user_id,
                     ttl_seconds=_remaining,
                     app=app_name,
                     register_nonce=False,
-                    extra=(
-                        {"embed_parent_port": _embed_parent_port} if _embed_parent_port else None
-                    ),
+                    extra=_carried or None,
                 )
             # Kill the link token AS A COOKIE. Exchange alone is not enough: the
             # link token still carries the 20h ``session_exp``, so a captured
@@ -2646,7 +2676,14 @@ def token_auth_middleware(
                 )
             else:
                 try:
-                    refresh_token, chain_id, _jti, refresh_exp = generate_refresh_token(user_id)
+                    # The refresh chain inherits the boot binding. Without this
+                    # the chain is the escape hatch: the access cookie would die
+                    # at restart while a 30-day refresh credential beside it
+                    # re-minted a fresh session on the next visit, and "ends at
+                    # restart" would be false by one rotation.
+                    refresh_token, chain_id, _jti, refresh_exp = generate_refresh_token(
+                        user_id, boot=str(data.get("boot", ""))
+                    )
                     refresh_remaining = int(refresh_exp - time.time())
                     if refresh_remaining > 0:
                         resp.set_cookie(

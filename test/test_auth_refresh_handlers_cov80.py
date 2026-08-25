@@ -30,7 +30,7 @@ import json
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -43,9 +43,15 @@ from kiro_crew.dashboard.refresh_tokens import (
     RefreshStateManager,
     generate_refresh_token,
     refresh_cookie_name,
+    validate_refresh_token,
 )
 from kiro_crew.dashboard.tailnet import TailnetTrust
-from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
+from kiro_crew.dashboard.token_auth import (
+    MAX_SESSION_TTL_SECS,
+    _b64url_decode,
+    generate_token,
+    validate_token,
+)
 
 PORT = 7777
 
@@ -377,6 +383,123 @@ async def test_refresh_happy_path_rotates_both_cookies(
     assert state.is_consumed(jti)
     assert audit[-1] == ("alice", "refresh_token_use", "ok", "")
     assert chain_id
+
+
+@pytest.mark.asyncio
+async def test_rotation_carries_the_boot_binding_onto_both_new_cookies(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """Rotation must CARRY the boot claim rather than drop it.
+
+    This is the one place the "signed in until the gateway restarts" guarantee
+    can be lost without anything else noticing: drop the claim and the rotated
+    pair is an ordinary 20h/30d session that keeps working after the restart it
+    was supposed to end at.
+
+    Re-deriving the id instead of carrying it is deliberately NOT asserted here,
+    because it is not reachable as a defect — validate_refresh_token has already
+    rejected a stale binding, so in-process the carried and re-derived values are
+    the same. Writing a test that "caught" it would only be testing the mock.
+
+    Asserted on the SET-COOKIE values rather than on the JSON body, because the
+    body deliberately carries no tokens — the cookies are the credential that
+    the phone actually keeps.
+    """
+    from kiro_crew.dashboard import boot_id
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_boot
+
+    bid = boot_id.current_boot_id()
+    token, _chain, _jti, _exp = generate_refresh_token("alice", boot=bid)
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+
+    cookies = {morsel.key: morsel.value for morsel in response.cookies.values()}
+
+    new_access = cookies[f"mc_token_{PORT}"]
+    new_refresh = cookies[refresh_cookie_name(str(PORT))]
+
+    assert json.loads(_b64url_decode(new_access.split(".")[0]))["boot"] == bid
+    assert refresh_token_boot(new_refresh) == bid
+
+    # And the rotated pair dies with the process, which is the property the
+    # carrying exists to preserve.
+    with patch.object(boot_id, "_boot_id", "a-different-process"):
+        valid, _uid, _reason = validate_token(new_access, use_session_exp=True)
+        assert not valid
+        r_valid, _u, _r, _c, _j, _e = validate_refresh_token(new_refresh)
+        assert not r_valid
+
+
+@pytest.mark.asyncio
+async def test_a_boot_bound_rotation_keeps_its_address_pin(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """The pin must survive rotation, or enabling refresh loses it silently.
+
+    A phone-access session used to be minted ``no_refresh``, so it never rotated
+    and the ``ip:`` pin set at the token->session exchange held for its whole
+    life. Letting it rotate without carrying the pin means a stolen rotated
+    cookie authenticates from any reachable peer — which is the regression this
+    asserts against, on the path where tailnet identity trust is OFF (the
+    default) and the tailnet branch therefore does nothing.
+    """
+    from kiro_crew.dashboard import boot_id
+    from kiro_crew.dashboard.token_auth import _state as _token_state
+    from kiro_crew.dashboard.token_auth import check_token_ip
+
+    def rt_state_has_binding(tok: str) -> bool:
+        return _token_state.has_binding(tok)
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice", boot=boot_id.current_boot_id())
+    request = _mk(cookies={refresh_cookie_name(str(PORT)): token})
+    response = await h.api_auth_refresh(request)
+    assert response.status == 200
+
+    new_access = response.cookies[f"mc_token_{PORT}"].value
+    # Asserted FIRST and explicitly: check_token_ip returns True for an UNBOUND
+    # token, so a bare "the right peer passes" assertion passes vacuously on
+    # exactly the bug this test exists to catch.
+    assert rt_state_has_binding(new_access), "rotated token was left unbound"
+    assert check_token_ip(new_access, request.remote), "rotated token lost its address pin"
+    assert not check_token_ip(new_access, "198.51.100.7"), "pin must reject another peer"
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_rotation_is_left_unpinned(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """Ordinary sessions keep today's roaming behaviour.
+
+    Pinning every rotation would break a laptop that changes address mid-session,
+    which currently survives because its rotated token is unbound. That is a
+    separate decision, so this pins the scope of the fix above.
+    """
+    from kiro_crew.dashboard.token_auth import _state as _token_state
+    from kiro_crew.dashboard.token_auth import check_token_ip
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+    new_access = response.cookies[f"mc_token_{PORT}"].value
+    # Asserted on the BINDING itself, not via check_token_ip: that helper answers
+    # True for an unbound token, so it cannot tell "unbound" from "bound and
+    # matching" and would pass either way.
+    assert not _token_state.has_binding(new_access)
+    assert check_token_ip(new_access, "198.51.100.7")
+
+
+@pytest.mark.asyncio
+async def test_rotation_of_an_unbound_chain_stays_unbound(
+    state: RefreshStateManager, audit: list
+) -> None:
+    """The default path must not acquire a binding it never asked for."""
+    from kiro_crew.dashboard.refresh_tokens import refresh_token_boot
+
+    token, _chain, _jti, _exp = generate_refresh_token("alice")
+    response = await h.api_auth_refresh(_mk(cookies={refresh_cookie_name(str(PORT)): token}))
+    assert response.status == 200
+    value = response.cookies[refresh_cookie_name(str(PORT))].value
+    assert refresh_token_boot(value) == ""
 
 
 @pytest.mark.asyncio

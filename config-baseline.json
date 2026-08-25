@@ -5541,6 +5541,7 @@
           "keep_awake": true
         },
         "restore_sessions": false,
+        "qr_session_until_restart": true,
         "restore_window_minutes": 30,
         "surface_channel_sessions": true,
         "bot_name": "",
@@ -5719,6 +5720,20 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
+    },
+    {
+      "path": "dashboard.qr_session_until_restart",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Phone Sign-In Lasts Until Restart",
+      "help": "Keep a phone signed in for as long as this gateway process runs. The QR code still has to be scanned within its short window; after that the phone is not signed out for being idle in ordinary use, and a gateway restart signs it out. The one remaining idle limit is the refresh credential's own 30-day lifetime, which each visit renews, so a phone that goes untouched for 30 days re-scans. Turn this OFF to go back to a timed session that expires on a clock whether or not the gateway is still running. Either way `kirocrew logout` ends the session immediately, and the session stays pinned to the peer it was established from.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": true
     },
     {
       "path": "dashboard.restore_window_minutes",

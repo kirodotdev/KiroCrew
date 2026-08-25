@@ -2785,6 +2785,22 @@ class DashboardConfig:
             "Re-open recently active sessions on startup.",
         ),
     )
+    qr_session_until_restart: bool = field(
+        default=True,
+        metadata=_meta(
+            "Phone Sign-In Lasts Until Restart",
+            "Keep a phone signed in for as long as this gateway process runs. "
+            "The QR code still has to be scanned within its short window; after "
+            "that the phone is not signed out for being idle in ordinary use, "
+            "and a gateway restart signs it out. The one remaining idle limit is "
+            "the refresh credential's own 30-day lifetime, which each visit "
+            "renews, so a phone that goes untouched for 30 days re-scans. Turn "
+            "this OFF to go back to a timed session that expires on a clock "
+            "whether or not the gateway is still running. Either way `kirocrew "
+            "logout` ends the session immediately, and the session stays pinned "
+            "to the peer it was established from.",
+        ),
+    )
     restore_window_minutes: int = field(
         default=30,
         metadata=_meta(
@@ -7432,6 +7448,9 @@ class KiroCrewConfig:
                 url=dashboard_data.get("url", ""),
                 tailscale=_tailscale_config_from(dashboard_data.get("tailscale")),
                 restore_sessions=dashboard_data.get("restore_sessions", False),
+                qr_session_until_restart=_safe_bool(
+                    dashboard_data.get("qr_session_until_restart"), True
+                ),
                 restore_window_minutes=dashboard_data.get("restore_window_minutes", 30),
                 surface_channel_sessions=dashboard_data.get("surface_channel_sessions", True),
                 bot_name=dashboard_data.get("bot_name", ""),

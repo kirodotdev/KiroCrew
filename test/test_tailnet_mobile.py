@@ -369,6 +369,7 @@ def _machine(
     logged_in: bool = True,
     published: bool | None = True,
     trusted: bool = True,
+    qr_session_until_restart: bool = True,
     detail: str = "",
 ):
     """Stub the four probes the REAL derivation reads, and let it run.
@@ -380,7 +381,10 @@ def _machine(
     is produced by the same derivation the card renders from.
     """
     cfg = SimpleNamespace(
-        dashboard=SimpleNamespace(tailscale=SimpleNamespace(enabled=trusted, keep_awake=True))
+        dashboard=SimpleNamespace(
+            tailscale=SimpleNamespace(enabled=trusted, keep_awake=True),
+            qr_session_until_restart=qr_session_until_restart,
+        )
     )
     probe = tailnet.DaemonProbe(
         name=name,
@@ -484,6 +488,113 @@ class TestQrRefusals:
         steps = set(get_args(tailnet_mobile.Step))
         assert steps - {"ready"} == set(tailnet_mobile._QR_REFUSALS)
         assert "ready" not in tailnet_mobile._QR_REFUSALS
+
+    @pytest.mark.asyncio
+    async def test_the_default_session_lasts_until_the_gateway_restarts(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """Default: the session is scoped to this process, not to a clock.
+
+        Pinned because it IS the default — the shape a scan produces with no
+        configuration at all is the one most likely to be changed by accident.
+        """
+        from kiro_crew.dashboard.boot_id import current_boot_id
+
+        captured: dict[str, object] = {}
+
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        with _machine():
+            with (
+                patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+        assert resp.status == 200
+        assert captured["extra"] == {"boot": current_boot_id()}
+        assert "no_refresh" not in (captured["extra"] or {})
+
+    @pytest.mark.asyncio
+    async def test_opting_out_restores_the_timed_ceiling(self, _unrestricted, _quiet_audit) -> None:
+        """Opted out: no refresh chain, so ``session_exp`` is a real ceiling.
+
+        The two shapes are mutually exclusive — a token carrying both would
+        neither refresh nor last.
+        """
+        captured: dict[str, object] = {}
+
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        with _machine(qr_session_until_restart=False):
+            with (
+                patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+        assert resp.status == 200
+        assert captured["extra"] == {"no_refresh": "1"}
+        assert "boot" not in (captured["extra"] or {})
+
+    @pytest.mark.asyncio
+    async def test_unreadable_config_falls_back_to_the_default(
+        self, _unrestricted, _quiet_audit
+    ) -> None:
+        """A config problem resolves to the DEFAULT, not to the other shape.
+
+        The stubbed config says opted-OUT, and only the handler's own read fails,
+        so a fallback that guessed "timed" would pass here by accident. Falling
+        back to the default is the honest reading of "we could not read your
+        override"; picking the timed shape instead would present as a phone that
+        signs itself out for no reason the operator can see. Only the first load
+        (``_live_state``'s) succeeds — making every load raise would refuse the
+        request at the origin-trust gate long before the mint and prove nothing.
+        """
+        from kiro_crew.dashboard.boot_id import current_boot_id
+
+        opted_out = SimpleNamespace(
+            dashboard=SimpleNamespace(
+                tailscale=SimpleNamespace(enabled=True, keep_awake=True),
+                qr_session_until_restart=False,
+            )
+        )
+        loads = {"n": 0}
+
+        def _load_then_fail(_cls=None):
+            loads["n"] += 1
+            if loads["n"] == 1:
+                return opted_out
+            raise OSError("unreadable")
+
+        captured: dict[str, object] = {}
+
+        def _fake_mint(_sub, ttl_seconds=0, **kw):
+            captured["extra"] = kw.get("extra")
+            return "tok"
+
+        with _machine():
+            with (
+                patch.object(
+                    tailnet_mobile.KiroCrewConfig,
+                    "load",
+                    classmethod(lambda cls: _load_then_fail()),
+                ),
+                patch.object(tailnet_mobile, "generate_token", side_effect=_fake_mint),
+                patch.object(
+                    tailnet_mobile, "render_qr_data_uri", return_value="data:image/png;base64,x"
+                ),
+            ):
+                resp = await tailnet_mobile.api_tailnet_mobile_qr(_request(tailnet_host=_HOST))
+        assert resp.status == 200
+        assert loads["n"] >= 2, "the handler must do its own read, not reuse _live_state's"
+        assert captured["extra"] == {"boot": current_boot_id()}
 
     @pytest.mark.asyncio
     async def test_ttl_cannot_be_talked_past_the_endpoint_ceiling(

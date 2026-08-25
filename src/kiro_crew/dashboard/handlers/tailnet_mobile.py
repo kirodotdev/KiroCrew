@@ -53,6 +53,7 @@ from aiohttp import web
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import tailnet, tailnet_serve
+from kiro_crew.dashboard.boot_id import current_boot_id
 from kiro_crew.dashboard.handlers._shared import _is_restricted_session
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.token_auth import (
@@ -621,14 +622,54 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
 
     state_obj = request.app.get("state")
     owner_id = str(getattr(state_obj, "owner_id", "") or "")
-    # ``no_refresh`` is what makes the TTL above a real ceiling rather than a
-    # starting value. Without it the phone's session picks up a refresh cookie at
-    # the token->session exchange, and one rotation through ``api_auth_refresh``
-    # re-mints at MAX_SESSION_TTL_SECS — promoting this deliberately short window
-    # to the 20-hour cap. The claim is honoured in ``token_auth``'s exchange by
-    # never issuing the refresh chain, so the phone's session simply ends when
-    # ``session_exp`` does and the operator re-scans.
-    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra={"no_refresh": "1"})
+    # Two session shapes; the operator picks which by configuration. Both bound
+    # the credential — they differ in WHAT bounds it.
+    # Default — ``boot``: the session is scoped to this gateway PROCESS. The
+    # refresh chain IS issued, so being idle no longer signs the phone out, and
+    # both the access cookie and the chain carry the boot id, so a restart does.
+    # This is the default because it matches what handing a phone a QR code
+    # actually means: signed in while my gateway is up. A clock the operator
+    # cannot see, which signs the phone out mid-use and yet keeps working after
+    # the gateway is gone, matches nothing anyone asked for.
+    #
+    # It is a DIFFERENT bound, not a strictly tighter one: a gateway with long
+    # uptime grants a correspondingly long session. What keeps that honest is
+    # that the bound is something the operator can see and act on — `uptime`
+    # answers "is my phone still signed in", and a restart is a hard revoke
+    # needing no recorded state. The peer pin, the revocation counter and
+    # `kirocrew logout` all still apply unchanged.
+    #
+    # Opt out — ``no_refresh``: no refresh chain is issued at the exchange, so
+    # ``session_exp`` becomes a real ceiling and the phone re-scans when it
+    # lapses. Kept as a supported shape for an operator who wants the credential
+    # bounded by a clock regardless of process lifetime.
+    #
+    # Mutually exclusive on purpose: carrying both would mean a session that
+    # neither refreshes nor lasts, which is worse than either.
+    #
+    # The TTL clamp above is untouched under both shapes. Rotation is what
+    # extends a boot-bound session, so no ceiling and no security constant moves.
+    # Read the session-shape choice here rather than widening ``_live_state``'s
+    # tuple, which the status endpoint also consumes.
+    #
+    # An unreadable config falls back to the DEFAULT, not to the other shape.
+    # "We could not read your override, so use the default" is the honest
+    # reading; picking the timed shape instead would hand the phone a session
+    # that expires on a clock the operator did not ask for, which presents as a
+    # phone that randomly signs itself out. The fallback is not unbounded
+    # either — a boot-bound session still ends at the next restart.
+    try:
+        _cfg = await asyncio.to_thread(KiroCrewConfig.load)
+        _until_restart = bool(_cfg.dashboard.qr_session_until_restart)
+    except Exception:
+        logger.debug("tailnet mobile: config unreadable for session shape", exc_info=True)
+        _until_restart = True
+
+    if _until_restart:
+        claims = {"boot": current_boot_id()}
+    else:
+        claims = {"no_refresh": "1"}
+    token = generate_token(owner_id or "local-app", ttl_seconds=ttl, extra=claims)
     url = f"https://{host}/?token={token}"
     try:
 
