@@ -411,13 +411,15 @@ class TestLoadBearerToken:
 
 
 class TestWindowsCliStore:
-    """kiro-cli on Windows keeps the same auth store under ``%APPDATA%\\kiro-cli``
-    (``~/AppData/Roaming/kiro-cli`` by default).
+    """kiro-cli on Windows keeps the same auth store under
+    ``%LOCALAPPDATA%\\kiro-cli`` (``~/AppData/Local/kiro-cli`` by default);
+    older layouts used ``%APPDATA%\\kiro-cli`` (``~/AppData/Roaming/kiro-cli``).
 
-    Absent from ``_CLI_SQLITE_DBS``, a Windows host's only candidate was the
-    JSON SSO cache (``from_cli_store=False``), which can never satisfy the
-    provenance path -- so whenever the ARN anchor also failed, every candidate
-    was rejected and the credit pill silently disappeared.
+    With only the Roaming location in ``_CLI_SQLITE_DBS``, a current Windows
+    host's store was never discovered: no candidate carried
+    ``from_cli_store=True``, the source-anchored provenance path could never be
+    satisfied, and whenever the ARN anchor also failed the usage API returned
+    unavailable and the credit pill silently disappeared.
     """
 
     @pytest.fixture(autouse=True)
@@ -428,13 +430,17 @@ class TestWindowsCliStore:
         api._PROFILE_ARN_CACHE.clear()
         api._PROFILE_NAME_CACHE.clear()
 
-    def test_windows_store_is_a_default_candidate(self):
-        # The FIXED default Roaming location, not %APPDATA%-resolved: the
-        # sensitive-path fence that makes membership a trust claim is
-        # home-anchored at exactly this path, so an APPDATA-resolved location
-        # either equals it or falls outside the fence and must not be trusted.
-        expected = Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
-        assert expected in api._CLI_SQLITE_DBS
+    def test_windows_stores_are_default_candidates(self):
+        # The FIXED default locations, not %LOCALAPPDATA%/%APPDATA%-resolved:
+        # the sensitive-path fence that makes membership a trust claim is
+        # home-anchored at exactly these paths, so an env-resolved location
+        # either equals an entry or falls outside the fence and must not be
+        # trusted. Local is where current kiro-cli writes; Roaming stays for
+        # older layouts.
+        local = Path.home() / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        roaming = Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3"
+        assert local in api._CLI_SQLITE_DBS
+        assert roaming in api._CLI_SQLITE_DBS
 
     def test_windows_store_token_is_trusted_without_arn(self, tmp_path):
         # End-to-end: a token read out of a Windows-layout store carries
@@ -473,6 +479,45 @@ class TestWindowsCliStore:
             out = api.fetch_usage_limits(expected_arn=None)
         assert out is not None
         assert out["credits_used"] == 7.0
+
+    def test_local_appdata_store_token_is_trusted_without_arn(self, tmp_path):
+        # Same end-to-end path for the CURRENT Windows layout
+        # (%LOCALAPPDATA%\kiro-cli): a token read out of a Local-layout store
+        # carries from_cli_store=True, so the provenance path accepts it when
+        # whoami reports no profile ARN -- the exact case #5783 reports, where
+        # the store exists only under AppData/Local and the pill vanished.
+        db = tmp_path / "AppData" / "Local" / "kiro-cli" / "data.sqlite3"
+        db.parent.mkdir(parents=True)
+        con = sqlite3.connect(str(db))
+        con.execute("CREATE TABLE auth_kv (key TEXT PRIMARY KEY, value TEXT)")
+        future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+        con.execute(
+            "INSERT INTO auth_kv VALUES (?, ?)",
+            ("kirocli:odic:token",
+             json.dumps({"access_token": "local-tok", "expires_at": future})),
+        )
+        con.commit()
+        con.close()
+
+        usage_body = {"usageBreakdownList": [
+            {"resourceType": "CREDIT", "currentUsage": 3.0, "usageLimit": 100.0}]}
+
+        def fake_post(token, target, payload):
+            if target == api._TARGET_LIST_PROFILES:
+                return _resp(200, {"profiles": []})
+            return _resp(200, usage_body)
+
+        with patch("kiro_crew.hooks.safe_read_file_internal", return_value=None), \
+             patch("kiro_crew.hooks.emit_internal_read_audit", return_value=True), \
+             patch.object(api, "_CLI_SQLITE_DBS", (db,)), \
+             patch.object(api, "_OTHER_SQLITE_DBS", ()), \
+             patch.object(api, "_post", side_effect=fake_post):
+            cands = api._candidate_tokens()
+            assert [c.token for c in cands] == ["local-tok"]
+            assert cands[0].from_cli_store is True
+            out = api.fetch_usage_limits(expected_arn=None)
+        assert out is not None
+        assert out["credits_used"] == 3.0
 
 
 class TestPostSecurityControls:
@@ -1092,7 +1137,8 @@ class TestTokenStoreSensitivePath:
 
         from kiro_crew.security import is_sensitive_path
         home = Path.home()
-        for base in (".local/share", "Library/Application Support", "AppData/Roaming"):
+        for base in (".local/share", "Library/Application Support",
+                     "AppData/Local", "AppData/Roaming"):
             for app in ("kiro-cli", "amazon-q"):
                 # The DB and its WAL/SHM/journal sidecars must all be sensitive.
                 assert is_sensitive_path(str(home / base / app / "data.sqlite3"))

@@ -140,18 +140,26 @@ _JSON_TOKEN_READ_IDS = (
 # running OS is inert, and a platform-independent module constant is what lets
 # tests patch the tuple without becoming host-dependent.
 #
-# The Windows entry is the fixed default Roaming location, NOT resolved from
-# ``%APPDATA%``. Membership here is a trust claim (``from_cli_store=True``)
-# that rests on agent file tools being unable to write the store, and that
-# fence (``_SENSITIVE_HOME_DIRS``) is home-anchored at exactly this path — so
-# an APPDATA-resolved location either equals this entry or falls outside the
-# fence and must not be trusted. A redirected Roaming profile therefore keeps
-# the text-scrape fallback rather than gaining a forgeable trusted path; the
-# same posture as the Linux entry, which does not follow ``XDG_DATA_HOME``
-# redirection either.
+# The Windows entries are the fixed default locations, NOT resolved from
+# ``%LOCALAPPDATA%`` / ``%APPDATA%``. Membership here is a trust claim
+# (``from_cli_store=True``) that rests on agent file tools being unable to
+# write the store, and that fence (``_SENSITIVE_HOME_DIRS``) is home-anchored
+# at exactly these paths -- so an env-resolved location either equals an entry
+# or falls outside the fence and must not be trusted. A redirected profile
+# therefore keeps the text-scrape fallback rather than gaining a forgeable
+# trusted path; the same posture as the Linux entry, which does not follow
+# ``XDG_DATA_HOME`` redirection either.
+#
+# ``AppData/Local`` is where current kiro-cli actually writes on Windows (its
+# data dir resolves to the local, non-roaming app-data directory -- the same
+# resolver family that yields ``~/.local/share`` on Linux and
+# ``~/Library/Application Support`` on macOS, both matching the entries
+# above). ``AppData/Roaming`` is retained for layouts that used the roaming
+# location; a path that does not exist on the running host is inert.
 _CLI_SQLITE_DBS = (
     Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3",
     Path.home() / "Library" / "Application Support" / "kiro-cli" / "data.sqlite3",
+    Path.home() / "AppData" / "Local" / "kiro-cli" / "data.sqlite3",
     Path.home() / "AppData" / "Roaming" / "kiro-cli" / "data.sqlite3",
 )
 
