@@ -2875,6 +2875,35 @@ async def list_registry() -> list[dict[str, Any]]:
     )
 
 
+def _catalog_installable_names() -> set[Any]:
+    """Names the catalog can install, from a FRESH fetch -- never the local cache.
+
+    ``list_catalog_rows`` reads the cache under the data home, which is
+    agent-writable. That is harmless while a cached row only re-dresses a row that
+    exists anyway -- the posture ``annotate`` already documents -- and NOT harmless
+    if a cached row could CREATE a listed row: a planted name would render with
+    official provenance and deduplicate the real same-named external row out of the
+    listing, so a consent prompt would describe an official app while the name grant
+    it produces installs the external one.
+
+    So the decision to LIST a catalog-only ``git`` name is authorised from the
+    fetched document and never from the cache. ``fetch_inventory_entries`` is the
+    only source allowed to materialise inventory, and it honours the module's
+    failure memory, so an outage costs a refusal rather than a fresh timeout on
+    every listing.
+
+    Returns an empty set on ANY failure, which degrades the storefront to the seed's
+    names -- the listing this path produced before the catalog could supply
+    coordinates. A store listing must never fail because the catalog is unreachable.
+    """
+    try:
+        entries = official_catalog.fetch_inventory_entries()
+        return {row.get("name") for row in official_catalog.inventory(entries)}
+    except Exception:  # noqa: BLE001 - degrade to the seed, never 500 the store
+        logger.warning("cannot confirm the catalog's install coordinates", exc_info=True)
+        return set()
+
+
 async def list_catalog_apps() -> list[dict[str, Any]]:
     """Store rows built from the published catalog, enriched and trust-stamped.
 
@@ -2883,13 +2912,16 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     published document's list and display copy. An empty result means the catalog
     was unavailable, and the caller falls back to ``list_registry`` offline.
 
-    Install coordinates stay with the seed: the catalog is trusted only as far as
-    TLS, so a ``git`` row is kept only when the seed or an external registry also
-    names it, and it carries no clone URL of its own — install resolves the seed
-    entry by name. A catalog-only ``git`` name renders nothing until it is
-    installable. ``verified`` stays ``False`` for non-builtin rows until the
-    catalog signature is checked, so this path never mints the first-party badge
-    from a document trusted only as far as TLS.
+    Install coordinates are the CATALOG's when it pins them: a ``git`` row is kept
+    when the seed or an external registry names it, or when the catalog itself
+    supplies validated pinned coordinates for it -- the same resolution
+    ``inventory_for_install`` performs on the install path. Gating the listing on
+    the seed alone made the two disagree, so a published app stayed invisible in
+    the store until a release shipped a new seed -- the release-per-app cost
+    ``inventory`` exists to remove. The row still carries no clone URL of its own;
+    install resolves the coordinates by name. ``verified`` stays ``False`` for
+    non-builtin rows until the catalog signature is checked, so this path never
+    mints the first-party badge from a document trusted only as far as TLS.
 
     User-configured external registries (``config.registries``) are appended here
     too, through the same ``_append_external_registry_apps`` merge site
@@ -2913,6 +2945,21 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     # `git` row filtered out here for not being installable yet, whose name
     # install still resolves by.
     reserved_names: set[Any] = {row.get("name") for row in rows} | installable_names
+    # A `git` row the seed does not name is STILL installable when the catalog
+    # pins it -- that is exactly what `inventory_for_install` resolves on the
+    # install path. Asking only the seed made the two resolvers disagree: install
+    # accepted a catalog-only row while the storefront dropped it, so a published
+    # app was unlistable, and therefore undiscoverable, until a release shipped a
+    # new seed.
+    #
+    # Only paid when it can change the answer. With every `git` row already seeded
+    # the fetch cannot unlock anything, so the storefront's hot path keeps costing
+    # one cached read.
+    if any(
+        row.get("source", {}).get("type") == "git" and row.get("name") not in installable_names
+        for row in rows
+    ):
+        installable_names |= await asyncio.to_thread(_catalog_installable_names)
     rows = [
         row
         for row in rows
