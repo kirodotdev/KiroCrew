@@ -1164,41 +1164,55 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     return rc == 0
 
 
-async def _restart_gateway(state: DashboardState) -> None:
-    """Save state, close sessions, and exec the same Python process."""
-    state.push_update_progress("restarting", "Restarting server…")
-    exe = sys.executable
-    if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
-        state.push_update_progress("error", "Cannot restart: invalid Python executable path")
-        return
-    # circular import: kiro_crew.dashboard.chat imports from
-    # kiro_crew.dashboard.handlers (which re-exports this module), so this
-    # must stay inline to avoid an import cycle at module load.
-    from kiro_crew.dashboard.chat import save_all_slots_to_history
-    from kiro_crew.executors import subprocess_executor
+async def _restart_gateway(state: DashboardState) -> bool:
+    """Save state, close sessions, and exec the same Python process once.
 
+    Restart is a process-wide transition.  Two callers must never both drain
+    sessions and race separate successors for the same listener/lock, so the
+    claim is made synchronously before the first await.  A successful exec does
+    not return; a refused, failed, or test-double exec releases the claim.
+    """
+    if state._gateway_restart_in_progress:
+        logger.info("Gateway restart already in progress; coalescing duplicate request")
+        return False
+    state._gateway_restart_in_progress = True
     try:
-        # Offload the synchronous per-slot save (per-session lock + disk I/O)
-        # to the bounded subprocess_executor with a deadline: on the event loop
-        # a contended session raises HistoryLockTimeout and a wedged disk would
-        # block the restart, so a slot's final save must run off-loop and be
-        # time-bounded rather than stall (or silently drop) here.
-        await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(
-                subprocess_executor(), save_all_slots_to_history, state
-            ),
-            timeout=5.0,
-        )
-    except Exception:
-        logger.debug("History save before restart failed", exc_info=True)
-    try:
-        await state.sessions.close_all()
-    except Exception:
-        logger.debug("Session cleanup before restart failed", exc_info=True)
-    sys.stdout.flush()
-    sys.stderr.flush()
-    await asyncio.sleep(0.5)
-    reexec_python_module("kiro_crew", sys.argv[1:])
+        state.push_update_progress("restarting", "Restarting server…")
+        exe = sys.executable
+        if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+            state.push_update_progress("error", "Cannot restart: invalid Python executable path")
+            return False
+        # circular import: kiro_crew.dashboard.chat imports from
+        # kiro_crew.dashboard.handlers (which re-exports this module), so this
+        # must stay inline to avoid an import cycle at module load.
+        from kiro_crew.dashboard.chat import save_all_slots_to_history
+        from kiro_crew.executors import subprocess_executor
+
+        try:
+            # Offload the synchronous per-slot save (per-session lock + disk I/O)
+            # to the bounded subprocess_executor with a deadline: on the event loop
+            # a contended session raises HistoryLockTimeout and a wedged disk would
+            # block the restart, so a slot's final save must run off-loop and be
+            # time-bounded rather than stall (or silently drop) here.
+            await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(
+                    subprocess_executor(), save_all_slots_to_history, state
+                ),
+                timeout=5.0,
+            )
+        except Exception:
+            logger.debug("History save before restart failed", exc_info=True)
+        try:
+            await state.sessions.close_all()
+        except Exception:
+            logger.debug("Session cleanup before restart failed", exc_info=True)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        await asyncio.sleep(0.5)
+        reexec_python_module("kiro_crew", sys.argv[1:])
+        return True
+    finally:
+        state._gateway_restart_in_progress = False
 
 
 async def api_update_apply(request: web.Request) -> web.Response:
@@ -1905,6 +1919,15 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
     """
     state: DashboardState = request.app["state"]
 
+    # Coalesce repeat clicks/requests BEFORE the response-flush sleep below.
+    # Without this latch, every POST creates a restart task and they all reach
+    # session drain together.  _restart_gateway has its own process-wide claim
+    # for callers from other routes; this task-level latch also avoids needless
+    # duplicate work on this public endpoint.
+    existing = state._gateway_restart_task
+    if existing is not None and not existing.done():
+        return web.json_response({"ok": True, "status": "restarting", "already_in_progress": True})
+
     # Reply BEFORE restarting. os.execv replaces the process image, so a restart
     # kicked off inline would tear down the connection mid-response and the
     # client could not distinguish "restarting" from "the request failed".
@@ -1918,6 +1941,13 @@ async def api_gateway_restart(request: web.Request) -> web.Response:
             state.push_update_progress("failed", "Restart failed — check logs")
 
     task = asyncio.create_task(_restart())
+    state._gateway_restart_task = task
     state._background_tasks.add(task)
-    task.add_done_callback(state._background_tasks.discard)
+
+    def _restart_done(done: asyncio.Task[None]) -> None:
+        state._background_tasks.discard(done)
+        if state._gateway_restart_task is done:
+            state._gateway_restart_task = None
+
+    task.add_done_callback(_restart_done)
     return web.json_response({"ok": True, "status": "restarting"})

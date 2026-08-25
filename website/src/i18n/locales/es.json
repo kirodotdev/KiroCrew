@@ -7185,6 +7185,8 @@
       "sign_in_body": "Tailscale está en ejecución, pero este equipo aún no ha iniciado sesión en ninguna red. Inicia sesión con la cuenta que usa tu teléfono y vuelve a comprobar.",
       "enable_magicdns_title": "Activa MagicDNS",
       "enable_magicdns_body": "Este equipo ha iniciado sesión, pero su red no tiene un nombre de MagicDNS para él, así que no hay ninguna dirección a la que apuntar el teléfono. Activa MagicDNS en la consola de administración de Tailscale y vuelve a comprobar.",
+      "enable_https_title": "Activa los certificados HTTPS en Tailscale",
+      "enable_https_body": "Tailscale requiere el consentimiento único de un administrador de la tailnet antes de que Serve pueda aprovisionar certificados. Activa HTTPS en la consola de administración de Tailscale y vuelve a comprobar.",
       "trust_off_title": "Permitir el acceso por el nombre de red de este equipo",
       "trust_off_body": "El panel rechaza las solicitudes de direcciones que no reconoce. Permite su propio nombre de red privada para que un teléfono pueda alcanzarlo. Esto no abre ningún puerto a internet ni cambia la forma en que inicias sesión.",
       "restart_gateway_title": "Reinicia Kiro Crew para terminar",
@@ -7198,8 +7200,6 @@
       "copy": "Copiar",
       "copy_link": "Copiar enlace",
       "download": "Descargar Tailscale",
-      "enable_trust": "Permitirlo",
-      "publish_action": "Activar acceso móvil",
       "show_qr": "Mostrar QR",
       "hide_qr": "Ocultar",
       "stop": "Desactivar",
@@ -7208,16 +7208,15 @@
       "qr_warning": "Escanéalo en un plazo de {{minutes}} min. Este código contiene un enlace de inicio de sesión — cualquiera que lo obtenga puede abrir tu panel durante {{hours}} h, así que no lo compartas ni publiques una captura de pantalla.",
       "keep_awake_note": "Este equipo no entrará en suspensión mientras el acceso desde el teléfono esté activado, para que el panel siga siendo accesible. Su pantalla sí puede apagarse.",
       "open_dns_admin": "Abrir la configuración de DNS de Tailscale",
+      "open_https_admin": "Abrir la configuración HTTPS de Tailscale",
       "install_teaser": "Usar esto en el teléfono",
       "install_teaser_hint": "requiere Tailscale",
-      "restart_action": "Reiniciar ahora",
-      "restarting": "Reiniciando: esta página se reconectará.",
       "no_peers": "Ningún otro dispositivo se ha unido todavía a esta red de Tailscale, así que nada puede abrir esta dirección. Instala Tailscale en el teléfono e inicia sesión con la misma cuenta.",
       "peers_offline": "Tus otros dispositivos se han unido a esta red, pero ninguno está en línea ahora, así que la dirección no cargará hasta que alguno se conecte.",
-      "automatic_https": "Tailscale crea y renueva automáticamente el certificado HTTPS privado; no hace falta configurar ningún certificado.",
-      "setting_up": "Configurando HTTPS privado…",
+      "automatic_https": "Después de activar HTTPS para esta tailnet, Tailscale crea y renueva automáticamente el certificado privado.",
+      "setting_up": "Configurando el acceso desde el teléfono…",
       "setup_action": "Configurar y mostrar QR",
-      "setup_timeout": "{{productName}} no volvió a estar en línea a tiempo. Vuelve a comprobar el gateway e inténtalo de nuevo."
+      "setup_timeout": "El acceso desde el teléfono no quedó listo. Comprueba la configuración e inténtalo de nuevo."
     }
   },
   "hooks": {
